@@ -2979,7 +2979,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 207: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 212: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -3017,7 +3017,7 @@ package api
 // whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
-// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 207 — one
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 212 — one
 // that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
 // claims record one — the shape its own contract describes, by 193's serving rule, and this
 // entry adds one band and three value strips to that serving. The band is the row of
@@ -3028,9 +3028,9 @@ package api
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193 and 202 stand between them, so a caller at 202 through 206 is served the pause, the keys
+// of 193 and 202 stand between them, so a caller at 202 through 211 is served the pause, the keys
 // 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
-// caller that states 203 to 206 is served 202's shape, the nearest recorded contract below it), a
+// caller that states 203 to 211 is served 202's shape, the nearest recorded contract below it), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
@@ -3045,7 +3045,7 @@ package api
 // (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
 // states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
 // `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
-// `gatedSteps`. Every reader from 207 on takes `treeRuns` and `basis` as optional and reads the
+// `gatedSteps`. Every reader from 212 on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
 // `20261119185013_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
@@ -3056,7 +3056,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller below 207 knows neither word — its phase enum and its held
+// `LEGION_HELD_REASONS` names. A caller below 212 knows neither word — its phase enum and its held
 // words are the ones before this change — so the daemon serves it that issue's `phase` as
 // `admitted`, the status that names no worker's phase, and that held entry's `reason` as
 // `children_first`, the word a started parent's wait took over. Both are value strips, rows of
@@ -3065,7 +3065,7 @@ package api
 // `withoutUnadmittedPhases` and `withoutUnadmittedHeldReasons`. `heldFrom` and
 // `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
 // as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
-// the word for a caller below 207; the daemon writes the word in neither, since `heldFrom` is null
+// the word for a caller below 212; the daemon writes the word in neither, since `heldFrom` is null
 // in the phase and a hold never comes from it, and no task is queued for a phase no role works.
 // The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
 // and the parent's held start to the issues table; it moves the daemon's own record and is no part
@@ -3162,7 +3162,13 @@ package api
 // REST raw read of each of the 341 open heads' file between 2026-11-21T03:27Z and 03:30Z found
 // 203 (six heads), 204 (#3831 and #4030), 205 (#4573) and 206 (#4540) declared by other heads, so
 // this change moved 203 → 207, the lowest number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21b-md). Read the base's own number and
-// every open head again, by a REST raw read of each head's file, at the next forward merge rather
-// than from this line.)
-const DaemonAPIVersion = 207
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21b-md). At the forward merge of
+// 2026-11-21 that brought main in at 0f26570963c5, main carried 202, and a REST raw read of each
+// of the 396 open heads' file between 2026-11-21T11:29Z and 11:32Z found 203 (#4175), 204 (#4173
+// and #4193), 205 (#4539 and #4573), 206 (#3712), 207 (twelve heads beside this change), 208
+// (#2230), 209 (#4049, #4540, #4553 and #4580), 210 (#4661) and 211 (#4611) declared by other
+// heads, so this change moved 207 → 212, the lowest number above main's that no other open head
+// declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-21c-md). Read the base's own
+// number and every open head again, by a REST raw read of each head's file, at the next forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 212

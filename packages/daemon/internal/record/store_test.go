@@ -2728,6 +2728,48 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	})
 }
 
+// ClaimPhaseTask reads the text of the task a claim holds for one phase of one run at the entry
+// asked alone, as the admission pass's stop of a phase holds the task its worker was given for the
+// entry the phase stands on (workflow's givenTask), and nothing for a task of another phase,
+// another run or another entry, for no entry named, or for a token no claim stands under.
+func TestClaimPhaseTaskReadsTheTaskOfThatPhaseRunAndEntry(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	implementer := claim.Token("legion-legion-legion-208-implementer")
+	held := supervise.Claim{Token: implementer, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+		Generation: 1, State: supervise.StateWorking, Session: "ses_implementer", SessionFile: "/tmp/implementer.jsonl"}
+	const retry = "Continue LEGION-208. Issue: LEGION-208. Phase: implementing. Reason: the runner is back."
+	if err := st.PutClaimAndDelivery(ctx, held, supervise.Delivery{ID: "outbox:21", Task: retry, Generation: 1, Phase: phase.Implementing,
+		Entry: 3, QueuedAt: time.Now(), ConfirmedAt: time.Now()}); err != nil {
+		t.Fatalf("record the implementer's claim and the retry's task it holds: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		token      claim.Token
+		at         phase.Phase
+		generation uint64
+		entry      int64
+		want       string
+	}{
+		{name: "its own entry", token: implementer, at: phase.Implementing, generation: 1, entry: 3, want: retry},
+		{name: "a later entry", token: implementer, at: phase.Implementing, generation: 1, entry: 4},
+		{name: "no entry named", token: implementer, at: phase.Implementing, generation: 1, entry: 0},
+		{name: "an earlier entry", token: implementer, at: phase.Implementing, generation: 1, entry: 2},
+		{name: "another phase", token: implementer, at: phase.Testing, generation: 1, entry: 3},
+		{name: "another run", token: implementer, at: phase.Implementing, generation: 2, entry: 3},
+		{name: "no claim", token: "legion-legion-legion-208-tester", at: phase.Implementing, generation: 1, entry: 3},
+	} {
+		inTx(t, st, func(tx pgx.Tx) {
+			got, err := records.ClaimPhaseTask(ctx, tx, tc.token, tc.at, tc.generation, tc.entry)
+			if err != nil || got != tc.want {
+				t.Fatalf("%s: the task %s holds for %s of run %d at entry %d = %q, %v; want %q", tc.name, tc.token, tc.at,
+					tc.generation, tc.entry, got, err, tc.want)
+			}
+		})
+	}
+}
+
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
 // replaces it (an approval after a changes request of the same spec), an older one arriving late
 // does not. A read names them all, newest first and ties by reference, and leaves them; the forget

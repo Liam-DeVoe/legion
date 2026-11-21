@@ -193,8 +193,8 @@ func basisSeedPending(generation uint64) record.PendingBasisSeed {
 // read again is told nothing new.
 func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 	approvedAt, sentBackAt := basisSeedApprovedAt.Add(24*time.Hour), basisSeedApprovedAt.Add(25*time.Hour)
-	approved := dispatch.Review{Version: 4, State: "approved", Kind: "person", Actor: basisSeedPerson, At: approvedAt, AskID: "ask-100"}
-	sentBack := dispatch.Review{Version: 4, State: "changes_requested", Kind: "person", Actor: basisSeedPerson, At: sentBackAt, Reason: "name the rollback path"}
+	approved := dispatch.Review{Version: 4, State: "approved", Actor: basisSeedPerson, At: approvedAt}
+	sentBack := dispatch.Review{Version: 4, State: "changes_requested", Actor: basisSeedPerson, At: sentBackAt, Reason: "name the rollback path"}
 	reason := "name the rollback path"
 	changesEnded := `user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): "name the rollback path".`
 	approvedRead := dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisSeedPerson}
@@ -272,10 +272,10 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 // given before that approval passes nothing on. A newer version of the root's own document closes
 // the step as ever, and the closed step reads no ancestor.
 func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testing.T) {
-	approved := dispatch.Review{Version: 3, State: "approved", Kind: "person", Actor: basisSeedPerson, At: basisSeedApprovedAt}
+	approved := dispatch.Review{Version: 3, State: "approved", Actor: basisSeedPerson, At: basisSeedApprovedAt}
 	reason := "name the rollback path"
 	asked := dispatch.Approval{State: "changes_requested", LatestVersion: 3, Version: new(3), Reason: &reason, At: basisSeedApprovedAt.Add(time.Hour), Seq: 45, By: basisSeedPerson}
-	firstAsked := dispatch.Review{Version: 3, State: "changes_requested", Kind: "person", Actor: basisSeedPerson, At: asked.At, Reason: reason}
+	firstAsked := dispatch.Review{Version: 3, State: "changes_requested", Actor: basisSeedPerson, At: asked.At, Reason: reason}
 	seed := record.GateSeed{ArtifactID: basisSeedRootDoc, Step: record.DesignStepSpec, Version: 4, Generation: 1}
 
 	t.Run("two changes requests after the approval", func(t *testing.T) {
@@ -286,7 +286,7 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 		restore := "and the restore path"
 		rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "changes_requested", LatestVersion: 3, Version: new(3), Reason: &restore,
 			At: basisSeedApprovedAt.Add(2 * time.Hour), Seq: 47, By: basisSeedPerson}
-		rig.client.reviews[basisSeedDoc] = []dispatch.Review{{Version: 3, State: "changes_requested", Kind: "person", Actor: basisSeedPerson,
+		rig.client.reviews[basisSeedDoc] = []dispatch.Review{{Version: 3, State: "changes_requested", Actor: basisSeedPerson,
 			At: basisSeedApprovedAt.Add(2 * time.Hour), Reason: restore}, firstAsked, approved}
 
 		rig.execute(seed)
@@ -319,7 +319,7 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 		rig := newBasisSeedRig(t)
 		rig.openOnBasis(basisSeedRoot, basisSeedRootDoc)
 		rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "approved", LatestVersion: 3, Version: new(3), At: basisSeedApprovedAt, Seq: 40, By: basisSeedPerson}
-		rig.client.reviews[basisSeedDoc] = []dispatch.Review{approved, {Version: 3, State: "changes_requested", Kind: "person", Actor: basisSeedPerson,
+		rig.client.reviews[basisSeedDoc] = []dispatch.Review{approved, {Version: 3, State: "changes_requested", Actor: basisSeedPerson,
 			At: basisSeedApprovedAt.Add(-time.Hour)}}
 
 		rig.execute(seed)
@@ -413,7 +413,7 @@ func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 
 	rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: basisSeedApprovedAt.Add(24 * time.Hour),
 		Seq: 60, By: basisSeedPerson}
-	rig.client.reviews[basisSeedDoc] = []dispatch.Review{{Version: 4, State: "approved", Kind: "person", Actor: basisSeedPerson, At: basisSeedApprovedAt.Add(24 * time.Hour)}}
+	rig.client.reviews[basisSeedDoc] = []dispatch.Review{{Version: 4, State: "approved", Actor: basisSeedPerson, At: basisSeedApprovedAt.Add(24 * time.Hour)}}
 	rig.execute(seeds[0].seed)
 	if gate := rig.gate(); !gate.OnBasis() || !record.GateOpen(gate) || gate.Basis.Version != 4 {
 		t.Fatalf("the spec step after the boot's seed = %#v, want it open on version 4 of the ancestor's document", gate)

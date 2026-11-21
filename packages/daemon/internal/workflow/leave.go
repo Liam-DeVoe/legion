@@ -41,8 +41,9 @@ import (
 // child-closed at a close): the owner walk starts at the parent (record.NoticeStartsAtParent). An
 // issue with nothing above it in Legion's work has no architect above to tell. A root whose step
 // rests on an ancestor's approval ends here the wait that ancestor's sign-off and close hold for
-// it (dispatch://INFRA-3320, R8), whichever way it leaves, so that ancestor's architect is told
-// (tellRestingLeft).
+// it (dispatch://INFRA-3320, R8), whichever way it leaves, so that ancestor's architect is told,
+// and a step of it that waits on an ancestor's approval request ends that wait with nobody told,
+// so no approval opens it later (leaveBases).
 //
 // The departure may be the last one a merged issue above it waited for: an issue whose pull
 // request merged stands in merging while a Dispatch child of it is not done (closeMerged), and
@@ -78,7 +79,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
-	if err := e.tellRestingLeft(ctx, tx, issue, status); err != nil {
+	if err := e.leaveBases(ctx, tx, issue, status); err != nil {
 		return err
 	}
 	if held, err := record.OperatorHolds(ctx, e.store, tx, issue); err != nil || held {

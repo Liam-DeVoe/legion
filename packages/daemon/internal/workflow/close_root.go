@@ -55,16 +55,8 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if err != nil {
 		return intake.Result{}, err
 	}
-	switch held.code {
-	case signOffChildInWorkflow:
-		return refused(held.code, fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would close their parent under them mid-turn; run each one to done, and close the tree again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
-			root.Key, held.names)), nil
-	case signOffRestingRoot:
-		return refused(held.code, fmt.Sprintf("%s is not closed while these roots that rest on its approval are still in the workflow: %s. The design-gate step of each rests on an approval of %s, so %s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
-			root.Key, held.names, root.Key, root.Key)), nil
-	case signOffChildOpen:
-		return refused(held.code, fmt.Sprintf("%s is not closed while these Dispatch children of it are open: %s. A parent closes after its children. Close or icebox each child that was never released "+parkRule+", say in a comment which of those it is, and close the tree again. A child that runs as a tree of its own is moved by its own architect or a person. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer",
-			root.Key, held.names)), nil
+	if refusal, refuses := held.refusal(actCloseRoot, root.Key); refuses {
+		return refusal, nil
 	}
 	open, err := e.childrenNotDoneOf(ctx, tx, *root)
 	if err != nil {

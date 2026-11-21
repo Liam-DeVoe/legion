@@ -238,7 +238,10 @@ func (e *Engine) leaveGateOff(ctx context.Context, tx pgx.Tx, root record.Issue,
 // That answer is recorded, and shown on the API, as AnsweredByApproval: the contract's answeredBy
 // enum, which refuses a value it does not list, has no value of its own for it. But no person
 // approved anything, so the detail tells the resume (resumeTask) never to say so, should the gate
-// be on again by then.
+// be on again by then. This mark, basisOpenedAnswer, basisEndedAfter and basisEndedAnswer are
+// stored in the wait's answered detail (record.Awaiting.AnsweredDetail) and parsed back from it
+// at the resume (resumeTask), which can come after a deploy, so a release that changes the words
+// of any of them must go on reading the words a release before it stored as well.
 const gateOffAnswer = ", answered with the design gate off"
 
 // basisOpenedAnswer marks the detail of a wait answered as an approval where an ancestor's

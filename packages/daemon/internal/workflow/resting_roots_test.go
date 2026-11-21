@@ -557,3 +557,28 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		}
 	})
 }
+
+// A hold refuses the sign-off and the close of a root whatever its code (acceptanceHold.refusal):
+// each hold the table names carries a text for both acts, a hold the table does not name refuses
+// both with its own code and the issues it names rather than letting either through, and no hold
+// refuses nothing.
+func TestEveryAcceptanceHoldRefusesBothActs(t *testing.T) {
+	acts := []architectAct{actSignOff, actCloseRoot}
+	for code, texts := range acceptanceRefusals {
+		for _, act := range acts {
+			if texts[act] == "" {
+				t.Errorf("the hold %s has no refusal text for %s", code, act)
+			}
+		}
+	}
+	unnamed := acceptanceHold{code: "SIGNOFF_A_HOLD_NOT_IN_THE_TABLE", names: "LEGION-9"}
+	for _, act := range acts {
+		result, refuses := unnamed.refusal(act, "LEGION-8")
+		if !refuses || result.Refusal == nil || result.Refusal.Code != unnamed.code || !strings.Contains(result.Refusal.Message, "LEGION-9") {
+			t.Errorf("%s under a hold the table does not name = %t, %+v; want it refused with %s, naming LEGION-9", act, refuses, result.Refusal, unnamed.code)
+		}
+	}
+	if result, refuses := (acceptanceHold{}).refusal(actSignOff, "LEGION-8"); refuses || result.Refusal != nil {
+		t.Errorf("the sign-off under no hold = %t, %+v; want it not refused", refuses, result.Refusal)
+	}
+}

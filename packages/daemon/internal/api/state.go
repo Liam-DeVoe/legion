@@ -821,10 +821,10 @@ type Issue struct {
 	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
 	// phase a root's own architect works, so the two numbers there are the architect's as they
 	// are the implementer's in implementing. Both are absent together for a phase no role works —
-	// awaiting_person, done and held — where no row is read and a difference written for one
-	// would never close. GivenEntry alone is absent where it is 0, which is a role the daemon
-	// holds no claim row of — the start is what creates the claim — and one whose claim has been
-	// queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// awaiting_person, awaiting_children, done and held — where no row is read and a difference
+	// written for one would never close. GivenEntry alone is absent where it is 0, which is a role
+	// the daemon holds no claim row of — the start is what creates the claim — and one whose claim
+	// has been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
 	// transition has raised an entry for. They are keys of the issue and not of PhaseView because
 	// a phases row exists for a role whose claim row does not, where PhaseView.Claim is a
 	// required value no reader parses empty.

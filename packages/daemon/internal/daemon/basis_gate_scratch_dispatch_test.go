@@ -35,7 +35,7 @@ import (
 // Dispatch itself gave, and the criteria step, on the API tests' fake client
 // (internal/api/gate_basis_test.go); a root waiting on a person, the phase tasks after planning,
 // the production check's task and the merger's start, in internal/workflow and internal/record;
-// and a caller at a contract below 207, whose narrowing needs a caller that states such a contract
+// and a caller at a contract below 212, whose narrowing needs a caller that states such a contract
 // or one in a pod, which the rig runs neither of (callerPodOf), in
 // internal/api/gate_basis_wire_test.go.
 
@@ -260,7 +260,9 @@ func catchUpGate(t *testing.T, notice record.Notice) record.CatchUpGate {
 // (dispatch://INFRA-3320): one to root's own architect and one to parent's, the architect above
 // it now, each queued on root and naming the architect it tells (record.Notice.To), and requires
 // those words to name R1's path, the view on parent, and not that root's work reaches parent's
-// tree only through its own issues.
+// tree only through its own issues. Where it records parent in none, it waits only for the daemon
+// to apply the link: that the link told no architect of parent's tree is read once root's step has
+// opened (untoldAtTheLink).
 func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 	t := r.t
 	t.Helper()
@@ -283,6 +285,35 @@ func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 		return toldTo(root.Key) && toldTo(parent.Key)
 	})
 	t.Logf("%s, set under %s, and the architect of %s were told R1's path: %q", root.Key, parent.Key, parent.Key, path)
+}
+
+// untoldAtTheLink fails unless the link of root under parent, whose tree is not live, told no
+// architect of parent's tree: R18's reparented notices go to each architect the owner walk names
+// (workflow's reparentRead), and the walk from a parent with nothing in Legion's work at or above
+// it names nobody, so only root's own architect can be told. It is read once root's step has opened
+// and the outbox has finished every Dispatch row of root (dispatchRowsDone), so the re-parent seed
+// the link queued has run and queued every notice it tells by now. A child-status notice keyed by
+// parent, the root of parent's tree, is read where it stands in the outbox and in the daemon's
+// log, where the outbox writes one line for a notice it finishes undelivered: a tree with no
+// architect finishes it so (notice_routing.go), and the row is gone by the time this reads it.
+func (r *personHandoverRig) untoldAtTheLink(root, parent scratchIssue) {
+	t := r.t
+	t.Helper()
+	r.dispatchRowsDone(root.Key)
+	for _, notice := range r.notices(root.Key, string(record.ReparentedNotice)) {
+		if notice.To != root.Key {
+			t.Fatalf("the daemon told the architect of %s of %s's link under %s, whose tree is not live: %+v", notice.To, root.Key, parent.Key, notice)
+		}
+	}
+	if notices := childStatusNotices(t, r.pool, parent.Key); len(notices) != 0 {
+		t.Fatalf("the child-status notices queued for an architect of %s's tree = %q, want none: the tree is not live", parent.Key, notices)
+	}
+	for _, line := range loggedLines(t, r.logs.String(), `"kind":"child-status"`) {
+		if line["issue"] == parent.Key {
+			t.Fatalf("the outbox ran a child-status notice for an architect of %s's tree, which is not live: %v", parent.Key, line)
+		}
+	}
+	t.Logf("the link of %s under %s, whose tree is not live, told no architect of %s's tree", root.Key, parent.Key, parent.Key)
 }
 
 // openedOnBasis is what every opening of root's spec step on parent's approval reads, once its
@@ -398,9 +429,10 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 
 	// P's architect is told that R rests on P where the daemon records P in a live tree. P on the
 	// backlog is in none, so while R opens no architect of P runs to be told or to catch up: the
-	// daemon queues no resting-root row, and P's architect hears of R in its start task once the
-	// person sets P todo and P is admitted. P's architect then registers P's own gate, as the first
-	// case's step 5 does, so that from here on P stands where the first case's P stands.
+	// link of R under P told no architect of P's tree, the daemon queues no resting-root row, and
+	// P's architect hears of R in its start task once the person sets P todo and P is admitted. P's
+	// architect then registers P's own gate, as the first case's step 5 does, so that from here on
+	// P stands where the first case's P stands.
 	told := 1
 	if c.parentLive {
 		resting := r.notices(parent.Key, "resting-root")
@@ -411,6 +443,7 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 		}
 	} else {
 		told = 0
+		r.untoldAtTheLink(root, parent)
 		if resting := r.notices(parent.Key, "resting-root"); len(resting) != 0 {
 			t.Fatalf("the daemon queued resting-root notices %+v on %s, which it records in no live tree; want none", resting, parent.Key)
 		}
@@ -645,10 +678,11 @@ func insertAtEnd(markdown string) map[string]string {
 //  8. R is taken to done: P's architect is told again, and P's first phase starts.
 //  9. The repeats, each read as steps 7 and 8 read the first case (readAncestorOpening): P's
 //     approval carried by Dispatch in the person's name; P labelled and on the backlog, no live
-//     tree while R opens, so no resting-root row and no architect of P to catch up until P is
-//     admitted, whose start task then names R; and R holding the person's approval of v2 of its
-//     own document while at v4, where no reader names v2: not the state, the message, a notice
-//     queued on R or a role message of its tree.
+//     tree while R opens, so the link of R under P tells no architect of P's tree, no resting-root
+//     row is queued and no architect of P catches up until P is admitted, whose start task then
+//     names R; and R holding the person's approval of v2 of its own document while at v4, where no
+//     reader names v2: not the state, the message, a notice queued on R or a role message of its
+//     tree.
 //
 // Where the rig reaches no phase — the implementer's, the tester's and the reviewer's tasks, the
 // production check's task, the merger's start — the workflow and record tests do:
@@ -656,7 +690,7 @@ func insertAtEnd(markdown string) map[string]string {
 // TestTheProductionCheckTaskOfAViewNamesTheAncestorsRequirements (internal/workflow), and
 // TestABasisOpeningTakesTheRegistrationsMomentInTheLine (internal/record: GateOpen, the tree's gate
 // and its first opening, which the merger's start reads, and TreeGate.OpenedAt). A caller below
-// contract 207 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
+// contract 212 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
@@ -782,8 +816,9 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
 	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason, parentLive: true})
 
-	// 9b. P labelled and on the backlog: no live tree while R opens, so no resting-root row and no
-	// architect of P, whose start task at its admission names R.
+	// 9b. P labelled and on the backlog: no live tree while R opens, so the link tells no architect
+	// of P's tree, no resting-root row is queued, and no architect of P runs until P's admission,
+	// whose start task names R.
 	backlogRoot := r.create(asSession, "Glacier telemetry probe", labelled)
 	backlogGrant := r.admit(backlogRoot.Key)
 	backlogParent := r.create(asSession, "Arctic sensor network", parentOf("Sensors", ""))
@@ -931,8 +966,14 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 //
 // The cases the rig cannot build are the fake client's and the workflow's: an approval a session
 // or Dispatch itself gave, and the criteria step, in TestBasisGateRefusals and
-// TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument (internal/api); R waiting on a
-// person, in TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep (internal/workflow).
+// TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument (internal/api); a check that
+// serves a paragraph block of P's primary document, in TestBasisGateRefusals (internal/api), since
+// every API route of the scratch Dispatch that writes R's Verification document refuses a
+// `serves` pointer it introduces at a block that is no requirement (pmdoc.CheckBlockPointers), and no
+// route gives a paragraph an id its writer chose (a paragraph's id is minted, and a retype keeps
+// an id only into a typed block, pmdoc.RetypeBlock), so no check can come to name a paragraph the
+// way kn comes to name a callout; and R waiting on a person, in
+// TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep (internal/workflow).
 // P's live text after its approved version cannot be written on the rig, since every route of the
 // scratch Dispatch that writes a document writes a version; the fake client holds it, in
 // TestBasisGateRefusals and TestBasisGateOpenings (internal/api), where the view is judged at the

@@ -521,10 +521,8 @@ func (c *HTTPClient) Reviews(ctx context.Context, artifactID string) ([]Review, 
 	}
 	reviews := make([]Review, len(response))
 	for i, review := range response {
-		reviews[i] = Review{
-			Version: review.Version, State: review.State, Kind: review.Kind, Actor: Actor(review.Actor),
-			At: review.CreatedAt.UTC(), AskID: deref(review.AskID), Reason: deref(review.Reason),
-		}
+		reviews[i] = Review{Version: review.Version, State: review.State, Actor: Actor(review.Actor), At: review.CreatedAt.UTC(),
+			Reason: deref(review.Reason)}
 	}
 	return reviews, nil
 }
@@ -796,15 +794,13 @@ type issueArtifactResponse struct {
 	} `json:"versions"`
 }
 
-// reviewResponse is one review of a document's review list as Dispatch answers it, its content
-// digests left undecoded.
+// reviewResponse is one review of a document's review list as Dispatch answers it, its kind, the
+// request it answered and its content digests left undecoded.
 type reviewResponse struct {
 	Version   int       `json:"version"`
 	State     string    `json:"state"`
-	Kind      string    `json:"kind"`
 	Actor     actor     `json:"actor"`
 	Reason    *string   `json:"reason"`
-	AskID     *string   `json:"ask_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

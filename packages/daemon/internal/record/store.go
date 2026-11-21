@@ -1985,9 +1985,16 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 
 // GatesForBasisArtifact is every gate whose basis names artifactID as the ancestor's document,
 // standing or pending, of every tree, in issue and then step order. PutGate writes the basis
-// columns only while a basis stands or waits, so an ended basis names no document here.
+// columns only while a basis stands or waits, so an ended basis names no document here. The
+// condition is the indexed prefilter, and the row as read decides, as GatesRestingOn's does: a row
+// whose basis an earlier release moved still names the document in basis_artifact_id, but reads
+// back with no basis (basisAsWritten), so it is no step on that document and is left out.
 func (s *Postgres) GatesForBasisArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error) {
-	return gatesWhere(ctx, tx, "basis_artifact_id = $1", artifactID, "on the ancestor's document "+artifactID)
+	gates, err := gatesWhere(ctx, tx, "basis_artifact_id = $1", artifactID, "on the ancestor's document "+artifactID)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return gate.Basis == nil }), nil
 }
 
 // GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, of every
@@ -3920,6 +3927,30 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 		return nil, err
 	}
 	return held, nil
+}
+
+// ClaimPhaseTask reads the task token's claim holds pending (pending_task_deliveries) where that
+// delivery is of phase at, of run generation and of entry itself, and answers "" where entry is 0
+// or the claim holds no such task. It reads less than supervise.Machine.RetireStoppedTask retires,
+// which takes a task of an earlier entry, or of none, as well: a task of no entry is the phase's
+// resume task, which names none of the work of the entry the phase stands on, and a task of an
+// earlier entry is work that entry has replaced, so its reader holds the entry's own work in their
+// place (workflow's givenTask). The daemon's own delivery of a relaunch's record names no phase,
+// so a phase at never reads it.
+func (s *Postgres) ClaimPhaseTask(ctx context.Context, tx pgx.Tx, token claim.Token, at phase.Phase, generation uint64, entry int64) (string, error) {
+	if entry == 0 {
+		return "", nil
+	}
+	var task string
+	switch err := tx.QueryRow(ctx, `select task from pending_task_deliveries
+		where claim_token = $1 and phase = $2 and generation = $3 and entry = $4`,
+		string(token), string(at), int64(generation), entry).Scan(&task); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("read the %s task the claim %s holds: %w", at, token, err)
+	}
+	return task, nil
 }
 
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and

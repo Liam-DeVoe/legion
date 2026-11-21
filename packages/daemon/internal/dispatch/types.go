@@ -416,19 +416,14 @@ func (a Approval) LatestReviewer() Actor {
 }
 
 // Review is one review Dispatch keeps of a document, pinned to the version it was given on. State
-// is `approved` or `changes_requested`. Kind is what gave it: `person` for a person's review and
-// `plan_review` for a plan review's approval of a plan version, a review Dispatch carried forward
-// to a later version keeping the kind of the one it carried. Actor is who Dispatch names as
-// having given it, At its time (Dispatch's `created_at`), AskID the approval request it answered,
-// empty for none, and Reason the reason the reviewer gave, empty for none (an approval given with
-// nothing written beside it).
+// is `approved` or `changes_requested`. Actor is who Dispatch names as having given it, At its
+// time (Dispatch's `created_at`), and Reason the reason the reviewer gave, empty for none (an
+// approval given with nothing written beside it).
 type Review struct {
 	Version int
 	State   string
-	Kind    string
 	Actor   Actor
 	At      time.Time
-	AskID   string
 	Reason  string
 }
 

@@ -460,6 +460,13 @@ func TestARowAnEarlierReleaseMovedReadsItsBasisEnded(t *testing.T) {
 			if len(resting) != 0 {
 				t.Fatalf("the gates resting on LEGION-100 = %#v, want none: the step's wait ended", resting)
 			}
+			// Its basis_artifact_id still names LEGION-100's document, but the step as read is no
+			// step on that document, standing or pending.
+			byDocument, err := records.GatesForBasisArtifact(ctx, tx, "artifact-LEGION-100")
+			must(t, err)
+			if len(byDocument) != 0 {
+				t.Fatalf("the gates on LEGION-100's document = %#v, want none: the step's wait ended", byDocument)
+			}
 		})
 	})
 }
