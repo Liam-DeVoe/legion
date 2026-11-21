@@ -32,24 +32,29 @@ import (
 //
 // Each subtest creates ten labelled issues one at a time and hands each to Legion as the person's
 // todo, waiting until the daemon has recorded it and launched its architect, so the order of the
-// draws is the order of creation. The owner of the first gives the plan `implementer reviewer`
-// twice before its gate opens, and each issue's gate is registered and approved by the person.
-// Then each issue's row of the experiment, the phase its first step started in and the source of
-// the plan its run walks are read from the daemon's database:
+// draws is the order of creation. The owner of each issue gives the plan `implementer reviewer`
+// twice before its gate opens, and each issue's gate is registered and approved by the person. So
+// the runs tell the groups apart issue by issue: an issue that takes its owner's plan starts at
+// implementing, and one that runs the project's default steps starts at planning. Then each
+// issue's row of the experiment, the phase its first step started in and the source of the plan
+// its run walks are read from the daemon's database, and each issue is held to the run its own
+// recorded group sets (ranAsTheirGroups):
 //
-//   - owner: mode on at the arm a, so ten rows a/owner; the first issue's plan is taken and its
-//     run starts at implementing, and each other issue runs the default steps from planning;
-//   - default: mode on at the arm b, so ten rows b/default; both sends of the owner's plan are
-//     answered 409 PLAN_NOT_TAKEN, since a refusal leaves the fact unspent, and each issue
-//     runs the default steps from planning;
+//   - owner: mode on at the arm a, so ten rows a/owner; each issue's plan is taken at both sends
+//     and its run starts at implementing;
+//   - default: mode on at the arm b, so ten rows b/default; both sends of each owner's plan are
+//     answered 409 PLAN_NOT_TAKEN, since a refusal leaves the fact unspent, and each issue runs
+//     the default steps from planning;
 //   - shares: mode random, a and b of weight 1 each, so the ten recorded arms, in the order of
-//     creation, are the ten arms experiment.Draw gives over a fresh seeded(11), and each issue
-//     runs as its arm says;
+//     creation, are the ten arms experiment.Draw gives over a fresh seeded(11), both arms are
+//     drawn, and each issue runs as its own arm says; its control swaps one issue's recorded
+//     group, and the check must then fail;
 //   - children: the settings of shares, one root handed to Legion and ten children put to todo
 //     under it one at a time: admission draws the root and the workflow draws each child it
 //     records, from the one source, so the eleven arms are the seed's first eleven draws;
 //   - control-no-experiment: the settings of shares with no experiment, so no issue holds a row
-//     of planning, the comparison of shares fails, and each issue runs as with no experiment.
+//     of planning, the comparison of shares fails, and each issue runs as with no experiment: it
+//     takes its owner's plan.
 func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 	t.Run("owner", func(t *testing.T) {
 		issues := tenIssuesUnder(t, []config.Experiment{planningExperiment(config.ExperimentOn, "a")})
@@ -58,7 +63,9 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 				t.Fatalf("%s holds the row %+v of the experiment planning; want the arm a, whose plan is owner", issue.key, issue)
 			}
 		}
-		ranAsTheirGroups(t, issues)
+		if err := ranAsTheirGroups(issues); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("default", func(t *testing.T) {
@@ -68,7 +75,9 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 				t.Fatalf("%s holds the row %+v of the experiment planning; want the arm b, whose plan is default", issue.key, issue)
 			}
 		}
-		ranAsTheirGroups(t, issues)
+		if err := ranAsTheirGroups(issues); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("shares", func(t *testing.T) {
@@ -84,7 +93,21 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 		if arms["a"] == 0 || arms["b"] == 0 {
 			t.Fatalf("the seed drew the arms %v for the ten issues; want both arms drawn, so each group's run is read", arms)
 		}
-		ranAsTheirGroups(t, issues)
+		if err := ranAsTheirGroups(issues); err != nil {
+			t.Fatal(err)
+		}
+		// Control: the same runs, with one issue's recorded group swapped to the other arm's, must
+		// fail the check, so the check reads each issue's run against its own group. The issue is
+		// the first after the first of the arm a, or else of the arm b.
+		swapped := slices.Clone(issues)
+		k := swappable(swapped)
+		if k < 0 {
+			t.Fatalf("no issue after the first to swap among %+v", issues)
+		}
+		swapped[k].variant, swapped[k].plan = otherArm(swapped[k])
+		if err := ranAsTheirGroups(swapped); err == nil {
+			t.Fatalf("the check passed with %s's group swapped from %q to %q; want it to fail, since the runs tell each issue's group apart", issues[k].key, issues[k].plan, swapped[k].plan)
+		}
 		t.Logf("the ten issues were drawn %v, the seed's own draws in the order of creation", arms)
 	})
 
@@ -111,7 +134,9 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 				t.Fatalf("%s holds the row %+v of the experiment planning, which the project does not declare", issue.key, issue)
 			}
 		}
-		ranAsTheirGroups(t, issues)
+		if err := ranAsTheirGroups(issues); err != nil {
+			t.Fatal(err)
+		}
 		t.Logf("with no experiment declared, the comparison failed: %v", err)
 	})
 }
@@ -157,7 +182,7 @@ var experimentTitles = [...]string{
 	"Profiles show avatar thumbnails",
 }
 
-// ownersPlan is the plan the owner of each subtest's first issue gives: one task whose steps are
+// ownersPlan is the plan the owner of each issue of a subtest gives: one task whose steps are
 // an implementer's and then a reviewer's, so a run that takes it starts at implementing, where the
 // project's default steps start at planning.
 const ownersPlan = ":::plan_task{#a steps=\"implementer reviewer\"}\nBuild the widget.\n:::\n"
@@ -169,8 +194,7 @@ type drawnIssue struct {
 	// that row's arm and its plan.
 	drawn         bool
 	variant, plan string
-	// answers are the daemon's answers to the two sends of the owner's register_plan, on the first
-	// issue alone.
+	// answers are the daemon's answers to the two sends of the owner's register_plan.
 	answers []planAnswer
 	// firstStep is the phase the issue's run started its work in once its gate opened, and source
 	// the source of the plan that run walks (record.PlanSourceOwner or record.PlanSourceDefault).
@@ -199,10 +223,8 @@ func tenIssuesUnder(t *testing.T, experiments []config.Experiment) []drawnIssue 
 		created := r.create(asSession, title, map[string]any{"labels": []string{"legion"}})
 		grant := r.admit(created.Key)
 		issues[i].key = created.Key
-		if i == 0 {
-			document := r.uploadDocument(created.Key, "plan.md", ownersPlan)
-			issues[i].answers = []planAnswer{r.givePlan(created.Key, document, grant), r.givePlan(created.Key, document, grant)}
-		}
+		document := r.uploadDocument(created.Key, "plan.md", ownersPlan)
+		issues[i].answers = []planAnswer{r.givePlan(created.Key, document, grant), r.givePlan(created.Key, document, grant)}
 		r.registerGate(created.Key, created.PrimaryArtifactID, grant)
 		r.approve(created.PrimaryArtifactID)
 		settled(t, r.d, "start the first step of "+created.Key, func(s api.State) bool {
@@ -321,33 +343,49 @@ func drawnAsTheSeed(issues []drawnIssue, declared config.Experiment, seed uint64
 	return nil
 }
 
-// ranAsTheirGroups holds each issue to the run its group sets. An issue of the group default runs
-// the project's default steps, from planning, on a plan of the source default, and the owner of
-// such a first issue was answered PLAN_NOT_TAKEN at both sends. Any other issue, of the group owner
-// or of none, runs as with no experiment: the first issue takes its owner's plan, taken at both
-// sends, and starts at implementing, and each other issue runs the default steps.
-func ranAsTheirGroups(t *testing.T, issues []drawnIssue) {
-	t.Helper()
-	for i, issue := range issues {
-		runsByDefault := issue.plan == string(config.PlanGroupDefault)
-		wantStep, wantSource := phase.Planning, record.PlanSourceDefault
-		if i == 0 && !runsByDefault {
-			wantStep, wantSource = phase.Implementing, record.PlanSourceOwner
-		}
-		if issue.firstStep != wantStep || issue.source != wantSource {
-			t.Fatalf("%s, of the group %q, started at %s on a plan of the source %s; want %s on a plan of the source %s",
-				issue.key, issue.plan, issue.firstStep, issue.source, wantStep, wantSource)
-		}
-		if i != 0 {
-			continue
-		}
+// ranAsTheirGroups is nil where each issue ran as its own recorded group sets, and otherwise names
+// the first issue that did not. Each issue's owner gave its plan twice. An issue of the group
+// default runs the project's default steps, from planning, on a plan of the source default, and
+// its owner was answered PLAN_NOT_TAKEN at both sends. Any other issue, of the group owner or of
+// none, runs as with no experiment: its owner's plan is taken at both sends, and its run starts at
+// implementing on a plan of the source owner.
+func ranAsTheirGroups(issues []drawnIssue) error {
+	for _, issue := range issues {
+		wantStep, wantSource := phase.Implementing, record.PlanSourceOwner
 		want := planAnswer{status: http.StatusOK}
-		if runsByDefault {
+		if issue.plan == string(config.PlanGroupDefault) {
+			wantStep, wantSource = phase.Planning, record.PlanSourceDefault
 			refusal := intake.PlanNotTaken(issue.key, record.Assignment{Experiment: "planning", Variant: issue.variant, Plan: issue.plan})
 			want = planAnswer{status: refusal.Status, failure: api.Failure{Code: refusal.Code, Error: refusal.Message}}
 		}
+		if issue.firstStep != wantStep || issue.source != wantSource {
+			return fmt.Errorf("%s, of the group %q, started at %s on a plan of the source %s; want %s on a plan of the source %s",
+				issue.key, issue.plan, issue.firstStep, issue.source, wantStep, wantSource)
+		}
 		if !slices.Equal(issue.answers, []planAnswer{want, want}) {
-			t.Fatalf("the two sends of the owner's plan of %s, of the group %q, were answered %+v; want %+v both times", issue.key, issue.plan, issue.answers, want)
+			return fmt.Errorf("the two sends of the owner's plan of %s, of the group %q, were answered %+v; want %+v both times", issue.key, issue.plan, issue.answers, want)
 		}
 	}
+	return nil
+}
+
+// swappable is the index of the first issue after the first whose group is owner, or else of the
+// first after the first whose group is default, or -1 where neither stands.
+func swappable(issues []drawnIssue) int {
+	for _, plan := range []config.PlanGroup{config.PlanGroupOwner, config.PlanGroupDefault} {
+		for k := 1; k < len(issues); k++ {
+			if issues[k].plan == string(plan) {
+				return k
+			}
+		}
+	}
+	return -1
+}
+
+// otherArm is the arm and the group of planning that issue was not drawn into.
+func otherArm(issue drawnIssue) (variant, plan string) {
+	if issue.plan == string(config.PlanGroupOwner) {
+		return "b", string(config.PlanGroupDefault)
+	}
+	return "a", string(config.PlanGroupOwner)
 }
