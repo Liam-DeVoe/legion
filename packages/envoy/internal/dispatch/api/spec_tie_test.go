@@ -244,8 +244,10 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	// The agent's decision, shaping the first three, written by an agent's session.
 	agentUpload := func(what, content string) {
 		t.Helper()
-		requireAgentWrite(t, what, sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+		path := "/api/v1/issues/" + issue.Key + "/artifacts"
+		requireAgentWrite(t, what, sessionRequest(t, handler, http.MethodPost, path, map[string]any{
 			"name": "choices.md", "content": content, "actor": sessionActor(),
+			"precondition": uploadBaseNamed(t, handler, path, "choices.md"),
 		}), http.StatusCreated)
 	}
 	decision := func(id, shaped, text string) string {

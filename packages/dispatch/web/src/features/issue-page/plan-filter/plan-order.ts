@@ -8,10 +8,15 @@ import { blockNodeId } from "../tree-drafts";
 /**
  * The plan's tasks as ordered steps.
  *
- * A step stands after every task in its `needs`. The order is stable: where the `needs` leave
- * two tasks free to stand in either order, the plan's own order decides, so a plan already
- * written in an order its `needs` allow is drawn in that order and a reader who knows the plan
- * document recognises it.
+ * A step stands after every task in its `needs`. The order is a walk over the `needs`: it starts
+ * from each task no other task needs, in the plan's own order, and places a task by first placing
+ * each task it needs, the same way and in the plan's own order, and then the task itself; a task
+ * placed already keeps its place. So each task something needs stands above the first task that
+ * needs it, with nothing between them but that task's other needs and what they need in turn,
+ * and a chain reads down the page: a reader sees the step that follows a step next to it rather
+ * than far down the chart, and a task that needs nothing stands just above the first task that
+ * needs it, not at the top. Where the `needs` leave a choice the plan's own order makes it, so a
+ * reader who knows the plan document recognises it.
  *
  * Tasks that need each other, directly or through the rest, are one cycle: no order can put any
  * of them after every task it needs, so they are one group, which the page draws as one line
@@ -89,13 +94,6 @@ function neededId(task: TreeNode, chip: NodeChip): string | undefined {
   return block === undefined ? undefined : blockNodeId(documentOf(task.id), block.id);
 }
 
-/** Puts `group` into `ready`, which is kept in the plan's own order: the next group taken is the
- *  one holding the earliest task, so two groups free to stand in either order keep that order. */
-function readyFor(ready: number[], group: number): void {
-  const at = ready.findIndex((held) => held > group);
-  ready.splice(at === -1 ? ready.length : at, 0, group);
-}
-
 /**
  * The documents the plan's tasks are blocks of (`issue-artifacts.ts`'s `documentOfNode`, which
  * reads a block node's id against the issue's artifacts by slug), each once, in the order of its
@@ -118,7 +116,7 @@ export function taskDocumentIds(
 
 /**
  * `tasks` in the order the plan is written in, which is the plan's own order: the order
- * `planOrder` keeps where the `needs` leave two tasks free. The Plan filter's view hands the
+ * `planOrder` follows wherever the `needs` leave it a choice. The Plan filter's view hands the
  * tasks over grouped by the statement each one serves, which is the spec's order and not the
  * plan's, so the view hands them to `planOrder` through this.
  *
@@ -160,10 +158,10 @@ export function writtenOrder(
  * other, one cycle holding them all. `nodes` are the rows the Plan filter draws with no words
  * filter on, in the plan's own order (`writtenOrder`): the whole plan, since a words filter
  * chooses which places the view draws and not where they stand. A node that is no plan task
- * needs nothing and is needed by nothing, so it keeps the place the plan gave it; the Plan view
- * hands over none, since it keeps the address's node only where it is a task
- * (`slots/view-plan.tsx`). A task the filter drew under two statements is one task here, at its
- * first place: a plan holds each task once, and its second statement is its "Also under" chip,
+ * needs nothing and is needed by nothing, so the walk starts from it at its place in the plan's
+ * own order; the Plan view hands over none, since it keeps the address's node only where it is a
+ * task (`slots/view-plan.tsx`). A task the filter drew under two statements is one task here, at
+ * its first place: a plan holds each task once, and its second statement is its "Also under" chip,
  * so the task is not drawn twice.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
@@ -211,10 +209,10 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     if (held === undefined) members.set(group, [index]);
     else held.push(index);
   });
-  // Which groups each group waits on, and which wait on it. An edge inside one group is no
-  // wait: that is what being one group means.
+  // Which groups each group waits on, and every group some other group waits on. An edge inside
+  // one group is no wait: that is what being one group means.
   const waitsOn = new Map<number, Set<number>>();
-  const holdsUp = new Map<number, Set<number>>();
+  const waitedOn = new Set<number>();
   needs.forEach((needed, index) => {
     const group = groupOf[index] ?? index;
     for (const one of needed) {
@@ -223,18 +221,23 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
       const waiting = waitsOn.get(group) ?? new Set<number>();
       waiting.add(before);
       waitsOn.set(group, waiting);
-      const holding = holdsUp.get(before) ?? new Set<number>();
-      holding.add(group);
-      holdsUp.set(before, holding);
+      waitedOn.add(before);
     }
   });
-  const ready = [...members.keys()]
-    .filter((group) => (waitsOn.get(group)?.size ?? 0) === 0)
-    .sort((one, other) => one - other);
+  // The order is a depth-first walk that places the groups a group needs, each the same way,
+  // before the group itself, so a need stands above the first group that needs it, past only
+  // that group's other needs, and a chain reads down the page. It starts from each group no other
+  // group needs, in the plan's own order, and takes the groups one needs in that order too. A
+  // group placed already keeps its place. Every group is reached from a start, since groups never
+  // wait on each other in a circle: the tasks of such a circle would be one group.
   const entries: PlanEntry[] = [];
-  while (ready.length > 0) {
-    const group = ready.shift();
-    if (group === undefined) break;
+  const placed = new Set<number>();
+  const place = (group: number): void => {
+    if (placed.has(group)) return;
+    placed.add(group);
+    for (const before of [...(waitsOn.get(group) ?? [])].sort((one, other) => one - other)) {
+      place(before);
+    }
     const tasks = (members.get(group) ?? []).flatMap((index) => {
       const node = nodes[index];
       return node === undefined ? [] : [node];
@@ -243,12 +246,9 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     const first = tasks[0];
     if (alone && first !== undefined) entries.push({ kind: "step", task: first });
     else entries.push({ kind: "cycle", tasks });
-    for (const next of holdsUp.get(group) ?? []) {
-      const waiting = waitsOn.get(next);
-      if (waiting === undefined) continue;
-      waiting.delete(group);
-      if (waiting.size === 0) readyFor(ready, next);
-    }
+  };
+  for (const group of [...members.keys()].sort((one, other) => one - other)) {
+    if (!waitedOn.has(group)) place(group);
   }
   return entries;
 }

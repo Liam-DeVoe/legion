@@ -50,9 +50,11 @@
 #   seed_decisions_further_kinds
 #       Called after seed_decisions, by decision-nodes.sh alone, so the corpus and the counts the
 #       other drivers read stay as they are. It writes, through the same server, one section of each
-#       of the four further kinds of R9 into issue A's decisions.md (below), and prints, as
-#       key=value lines kept in seed_ids, the ids it wrote: questions_a, the five asks, and the
-#       heading block of each section.
+#       of the four further kinds of R9 into issue A's decisions.md, and issue E, whose decisions.md
+#       holds a section citing an answered ask a person removed from the spec (below), and prints,
+#       as key=value lines kept in seed_ids, the ids it wrote: questions_a, the five asks, the
+#       heading block of each section, issue_e, spec_e, ask_e_removed, the version of spec E the
+#       person's removal wrote (spec_e_removal_version), decisions_e and section_removed.
 #
 # The corpus, in project SEED, whose gated steps hold `decisions` and `spec`:
 #
@@ -79,9 +81,13 @@
 #     - "The census runs before the view", which cites no ask and carries a standing Keep a
 #       person recorded through the Keep route (section_kept);
 #     - "Which reader reads the corpus first", holding ask block #q-doc-plain (ask_doc_plain), an
-#       answered ask whose row names the decisions document, the second shape of the restore;
+#       answered ask whose row names the decisions document, the second shape of the restore,
+#       whose question cites dispatch://<B>;
 #     - "Which line names a moved block", holding ask block #q-doc-collide (ask_doc_collide),
-#       answered, whose block id the spec holds too;
+#       answered, whose block id the spec holds too, and whose question cites dispatch://<D>;
+#       the base release indexes each of those two citations as a block_refs row of the
+#       question's paragraph, a block the ask block holds (document_blocks.parent_block_id), so
+#       each of the two asks holds an edge of its own, which the restore moves with it;
 #     - `## Replaced`, holding one `###` section (section_replaced).
 #   A third document, notes.md (notes_a), holds one block citing
 #   dispatch://<A>/artifact/decisions-md#b-q-doc-plain, which a comment (comment_decisions_block)
@@ -123,6 +129,13 @@
 #     (section_issue_level);
 #   - "The census counts in one pass", citing ask_body, linking r-store, and holding a list beside
 #     its paragraph, which no reading holds (section_body).
+#
+# and issue E (issue_e), whose spec (spec_e) held ask_e_removed (#q-e-removed), which the person
+# answered and then, as themselves through the base release's edit route, removed from the spec;
+# the version that left it out (spec_e_removal_version) names the person, so the restore declines
+# to write it back. Its decisions.md (decisions_e) holds one section, "The printed corpus stands on
+# the top shelf", which cites that ask and adds words of its own (section_removed): R9 deletes it,
+# and its heading takes one moved_to to the ask's node.
 
 # What the functions below read of their caller, named here so that a reader of this file sees
 # it, as does shellcheck, which reads one file at a time: lib.sh's work_dir sets `work`, and
@@ -561,7 +574,7 @@ The census reads the corpus before any view of it is drawn.
 ## Which reader reads the corpus first
 
 :::ask{#q-doc-plain urgency="med"}
-Which reader reads the corpus first?
+Which reader reads the corpus first, as dispatch://$b asks too?
 
 - The census: it counts.
 - The decisions view: it shows.
@@ -570,7 +583,7 @@ Which reader reads the corpus first?
 ## Which line names a moved block
 
 :::ask{#q-doc-collide urgency="low"}
-Which line names a block that moved?
+Which line names a block that moved, as dispatch://${seed_ids[issue_d]} asks too?
 :::
 
 ## Replaced
@@ -775,4 +788,58 @@ MD
   seed_record section_issue_level "$seed_decision_id"
   seed_decision_block "read decisions.md's sections" "$a" "The census counts in one pass"
   seed_record section_body "$seed_decision_id"
+
+  # Issue E: its spec holds an ask the person answers and then removes from the spec as
+  # themselves, through the base release's edit route, so the version that leaves the block out is
+  # the person's and the restore declines to write it back; its decisions.md holds one section that
+  # cites the ask, which R9 deletes, its heading taking one moved_to to the ask's node.
+  cat >"$seed_dir/spec-e.md" <<'MD'
+# Fifth seeded spec
+
+:::requirement{#r-e-shelf}
+The printed corpus stands on one shelf.
+:::
+
+:::ask{#q-e-removed urgency="med"}
+Which shelf holds the printed corpus?
+:::
+MD
+  seed_issue issue_e spec_e "Seeded corpus: an answered ask its person removed" "$seed_dir/spec-e.md"
+  local e="${seed_ids[issue_e]}" spec_e="${seed_ids[spec_e]}" removal
+  seed_ask ask_e_removed "$e" "$spec_e" q-e-removed
+  seed_answer ask_e_removed "$spec_e" q-e-removed "The top shelf, beside the census."
+  # The answer's own version lands first: the version that first holds an answer is read as its
+  # answerer's, never as their removal (docs' answerersVersion), and the restore would write a
+  # block that version left out back.
+  seed_wait_settled "the answer to q-e-removed settles into a version of spec E"
+  seed_request person POST "/api/v1/artifacts/$spec_e/edits" '{"ops":[{"op":"delete","block":"q-e-removed"}]}'
+  seed_want 200 "$seed_person removes the answered block q-e-removed from spec E"
+  jq -e '.changed == true' "$seed_dir/body" >/dev/null ||
+    fail seed "$seed_person removes the answered block q-e-removed from spec E" \
+      "the edit changed nothing: $(head -c 600 "$seed_dir/body")"
+  seed_wait_settled "the removal of q-e-removed from spec E settles"
+  # The newest version of spec E leaves the block out and names the person.
+  seed_request agent GET "/api/v1/artifacts/$spec_e/text"
+  seed_want 200 "read spec E's newest version"
+  seed_field "read spec E's newest version" .version
+  removal="$seed_value"
+  seed_request agent GET "/api/v1/artifacts/$spec_e/versions/$removal"
+  seed_want 200 "read version $removal of spec E"
+  jq -e --arg p "$seed_person" \
+    '(.markdown | contains(":::ask{#q-e-removed") | not) and any(.authors[]; .kind == "user" and .id == $p)' \
+    "$seed_dir/body" >/dev/null ||
+    fail seed "version $removal of spec E leaves q-e-removed out and names $seed_person" \
+      "$(jq -c '{authors, markdown}' "$seed_dir/body" | head -c 600)"
+  seed_record spec_e_removal_version "$removal"
+  cat >"$seed_dir/decisions-e.md" <<MD
+# Decisions
+
+## The printed corpus stands on the top shelf
+
+The person chose the top shelf, beside the census, before they took the question back. Decided in dispatch://$e/ask/${seed_ids[ask_e_removed]}.
+MD
+  seed_upload decisions_e "$e" decisions.md "$seed_dir/decisions-e.md"
+  seed_wait_settled "the decisions.md of $e settles"
+  seed_decision_block "read decisions.md's sections" "$e" "The printed corpus stands on the top shelf"
+  seed_record section_removed "$seed_decision_id"
 }

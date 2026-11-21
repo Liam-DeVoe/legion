@@ -99,8 +99,8 @@ func TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval(t *testing.T) {
 		t.Fatalf("the state history of %s is %+v (%v), want live then gone", ref, history, err)
 	}
 	gone := history[1]
-	if gone.ToID != graphstore.StateGone || gone.SourceEvent != removal || gone.Who != sweepActor {
-		t.Errorf("the gone statement of %s is %+v, want gone, caused by the removal event %d, stated by %+v", ref, gone, removal, sweepActor)
+	if gone.ToID != graphstore.StateGone || gone.SourceEvent != removal || gone.Who != SweepActor {
+		t.Errorf("the gone statement of %s is %+v, want gone, caused by the removal event %d, stated by %+v", ref, gone, removal, SweepActor)
 	}
 	requireComplete(t, ctx, database, "after the orphan was stated gone")
 	if orphaned, _ := OrphanedDocumentNodes(ctx, database.Pool, 10); len(orphaned) != 0 {
@@ -124,8 +124,12 @@ func TestTheOrphanSweepLosesNothingOfACreateItRacesWith(t *testing.T) {
 	ref, _ := seedOrphan(t, database, "notes-md")
 	create := &lockstep.Hold{Name: "a create of " + ref + " that wrote its node and its row"}
 	lockstep.Begin(t, database, create)
-	if _, err := graphstore.WriteUncaused(ctx, create.Tx, []graphstore.Node{graphstore.ArtifactNode(
-		ref, "ORPH", "", model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())}, nil); err != nil {
+	created := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(
+		ref, "ORPH", "", model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())}, nil)
+	if err := store.RunWrite(ctx, create.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, created)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the created document's node: %v", err)
 	}
 	if _, err := create.Tx.Exec(ctx, `
@@ -192,7 +196,7 @@ func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
 	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
 		ToKind: graphstore.KindValue, ToID: graphstore.StateGone,
-		At: time.Now().UTC(), Who: sweepActor, SourceEvent: removal, Asserted: true,
+		At: time.Now().UTC(), Who: SweepActor, SourceEvent: removal, Asserted: true,
 	}}); err != nil {
 		t.Fatalf("hold %s: %v", state.Name, err)
 	}

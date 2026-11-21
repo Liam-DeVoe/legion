@@ -1,8 +1,8 @@
 -- 20261116081010_block_pointer_targets_present.up.sql
 --
--- INFRA-1950: a node is present at every state but `gone`. The node `state` takes `proposed`,
+-- A node is present at every state but `gone`. The node `state` takes `proposed`,
 -- `settled` and `overtaken` beside `live` and `gone` now, and no read of the store takes
--- `state = 'live'` to mean present (dispatch://INFRA-1950/spec#b-r-census-states).
+-- `state = 'live'` to mean present (spec requirement r-census-states).
 -- `block_pointer_targets` (20261109215947) read a pointer's attribute node only while its state
 -- was `live`; this replaces it with the same function, reading that node while its state is not
 -- `gone`, and nothing else. It still reads the schema as `pmdoc/schemanodes.Read` installs it,

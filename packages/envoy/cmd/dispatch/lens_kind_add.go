@@ -37,7 +37,7 @@ holds no lens_kind or constraint type), naming why and adding nothing; 2 when it
 `
 
 // lensKindAdd is `envoy-dispatch lens-kind-add`, the one writer of a lens kind after the seed
-// (dispatch://INFRA-1950/spec#b-r-lens-catalogue): adding a kind is one node, its source and one
+// (spec requirement r-lens-catalogue): adding a kind is one node, its source and one
 // tuple, and never a code change or a schema bump. It writes through graphstore.AddLensKind, the
 // function the catalogue's own test calls, and migrates nothing: the schema it writes into is the
 // deployment's own, read from DATABASE_URL as every other database subcommand reads it.

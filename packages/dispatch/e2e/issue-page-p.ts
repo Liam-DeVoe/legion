@@ -1,17 +1,8 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { IssueDecisions } from "../web/src/api/types";
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import {
-  baseUrl,
-  createAsk,
-  createIssue,
-  createIssueArtifact,
-  createProject,
-  patchIssue,
-  userHeaders,
-} from "./api";
+import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
 import { filterRow } from "./issue-page";
 import { typefaceAddress as stylesheetTypefaceAddress, TYPEFACE } from "./issue-page-typeface";
 import { assertWhole } from "./unclipped";
@@ -88,7 +79,7 @@ export const TWENTY_LABELS = [
   "presets",
   "contents",
   "composer",
-  "decisions",
+  "revisions",
   "verification",
   "plan",
   "children",
@@ -303,18 +294,6 @@ export async function labelFillingTheRoom(page: Page, under: number): Promise<st
 /** The count of what waits on the reader, or whose turn it is when nothing waits. */
 export function waitingCount(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-whose-turn");
-}
-
-/** The issue's decisions as the server reads them for alice, each with `waiting_review`
- *  (`GET /api/v1/issues/{key}/decisions`). `e2e/api.ts` wraps no read of the route, so this is a
- *  plain fetch with her sign-in, as `e2e/bare-references.e2e.ts` reads an issue. */
-export async function issueDecisions(key: string): Promise<IssueDecisions> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
-  const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
-  if (!response.ok) {
-    throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
-  }
-  return (await response.json()) as IssueDecisions;
 }
 
 /** Details, the drawer over the right of the page. */
@@ -637,15 +616,18 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 }
 
 /**
- * The header's height limit at `width`: 3 lines and 130 px at 1440 px; at 390 px, on the
- * 20-label seed and the measured title, 8 lines and 250 px while no approval request waits on
- * the reader and 9 lines and 280 px while one does. No other width has a limit.
+ * The header's height limit at `width`: at 1440 px 3 lines and 130 px, and 4 lines and 130 px
+ * where the issue's project gates two steps, since the header then draws one approval entry for
+ * each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
+ * 8 lines and 250 px while no approval request waits on the reader and 9 lines and 280 px while
+ * one does. No other width has a limit.
  */
 function headerLimit(
   width: number,
-  requestWaiting: boolean
+  requestWaiting: boolean,
+  gatedSteps: number
 ): { readonly height: number; readonly lines: number } | undefined {
-  if (width === DESKTOP.width) return { height: 130, lines: 3 };
+  if (width === DESKTOP.width) return { height: 130, lines: gatedSteps >= 2 ? 4 : 3 };
   if (width !== IPHONE_13.width) return undefined;
   return requestWaiting ? { height: 280, lines: 9 } : { height: 250, lines: 8 };
 }
@@ -653,18 +635,21 @@ function headerLimit(
 /**
  * The header read against its limit at `width`, softly so one run reports every width and seed,
  * with the page at its top; at 390 px the title is drawn whole. `drawnIn` names the typeface the
- * page is drawn in, for the message. The header is read alone: no row of the outline is waited
- * for.
+ * page is drawn in, for the message, and `gatedSteps` how many steps the issue's project gates
+ * (one, or none, unless a caller says otherwise). The header is read alone: no row of the
+ * outline is waited for.
  */
 export async function expectHeaderWithinItsLimit(
   page: Page,
   width: number,
   requestWaiting: boolean,
-  drawnIn: string
+  drawnIn: string,
+  gatedSteps = 1
 ): Promise<void> {
-  const limit = headerLimit(width, requestWaiting);
+  const limit = headerLimit(width, requestWaiting, gatedSteps);
   if (limit === undefined) return;
-  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting`;
+  const gated = gatedSteps >= 2 ? ` on a project that gates ${gatedSteps} steps` : "";
+  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting${gated}`;
   await expect(filterRow(page), `the page draws no view row ${where}`).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
   // The view row was waited visible just above, and every caller waits for the header drawn
@@ -790,6 +775,43 @@ export interface LabelsAgainstTheCount {
   readonly whole: number;
 }
 
+/** Reads `LabelsAgainstTheCount` off the header's properties line `line`, inside the page.
+ *  Playwright sends the page a page function's own source and nothing it closes over, so this
+ *  closes over nothing, and a page function builds it there from `LABELS_READING`. */
+function readLabelsAgainstTheCount(line: Element): LabelsAgainstTheCount {
+  const box = line.querySelector('[data-testid="issue-header-labels"]');
+  if (box === null) throw new Error("the header draws no labels' box");
+  const outer = box.getBoundingClientRect();
+  const edges = (rect: DOMRect) =>
+    `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
+  const cut: string[] = [];
+  let whole = 0;
+  for (const chip of box.querySelectorAll("[data-header-label]")) {
+    const rect = chip.getBoundingClientRect();
+    const inside =
+      rect.left >= outer.left - 0.5 &&
+      rect.right <= outer.right + 0.5 &&
+      rect.top >= outer.top - 0.5 &&
+      rect.bottom <= outer.bottom + 0.5;
+    const outside =
+      rect.right <= outer.left + 0.5 ||
+      rect.left >= outer.right - 0.5 ||
+      rect.bottom <= outer.top + 0.5 ||
+      rect.top >= outer.bottom - 0.5;
+    if (inside) whole += 1;
+    else if (!outside)
+      cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
+  }
+  const count = line.querySelector('[data-testid="issue-labels-left"]');
+  return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
+}
+
+/** The source of `readLabelsAgainstTheCount`, which a page function turns back into the reading
+ *  with `new Function`, as `labelsAgainstTheCount` does. A row whose one page function reads the
+ *  line at many widths reads with it too, so the two read a chip the same way. Dispatch sends no
+ *  Content-Security-Policy, so the page may build a function from a string. */
+export const LABELS_READING = String(readLabelsAgainstTheCount);
+
 /**
  * Reads `LabelsAgainstTheCount` on the header's properties line. With `narrowBy`, it reads the
  * frame after the line narrows by that many px: in one task, so before any frame is drawn and
@@ -801,36 +823,16 @@ export function labelsAgainstTheCount(
   page: Page,
   narrowBy?: number
 ): Promise<LabelsAgainstTheCount> {
-  return propertiesLine(page).evaluate((line, narrowBy) => {
-    if (narrowBy !== undefined) {
-      line.style.maxWidth = `${line.getBoundingClientRect().width - narrowBy}px`;
-    }
-    const box = line.querySelector('[data-testid="issue-header-labels"]');
-    if (box === null) throw new Error("the header draws no labels' box");
-    const outer = box.getBoundingClientRect();
-    const edges = (rect: DOMRect) =>
-      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
-    const cut: string[] = [];
-    let whole = 0;
-    for (const chip of box.querySelectorAll("[data-header-label]")) {
-      const rect = chip.getBoundingClientRect();
-      const inside =
-        rect.left >= outer.left - 0.5 &&
-        rect.right <= outer.right + 0.5 &&
-        rect.top >= outer.top - 0.5 &&
-        rect.bottom <= outer.bottom + 0.5;
-      const outside =
-        rect.right <= outer.left + 0.5 ||
-        rect.left >= outer.right - 0.5 ||
-        rect.bottom <= outer.top + 0.5 ||
-        rect.top >= outer.bottom - 0.5;
-      if (inside) whole += 1;
-      else if (!outside)
-        cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
-    }
-    const count = line.querySelector('[data-testid="issue-labels-left"]');
-    return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
-  }, narrowBy);
+  return propertiesLine(page).evaluate(
+    (line, { narrowBy, reading }) => {
+      if (narrowBy !== undefined) {
+        line.style.maxWidth = `${line.getBoundingClientRect().width - narrowBy}px`;
+      }
+      const read = new Function(`return ${reading}`)() as (line: Element) => LabelsAgainstTheCount;
+      return read(line);
+    },
+    { narrowBy, reading: LABELS_READING }
+  );
 }
 
 /** Holds the header's labels' box at the width the chips it draws now fill, rounded up to a

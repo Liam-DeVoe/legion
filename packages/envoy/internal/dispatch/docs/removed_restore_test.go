@@ -3,12 +3,14 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -73,8 +75,12 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	versionEvents := map[string]int64{}
 	dropAs := func(id string, authors *model.Actor, kept ...string) {
 		t.Helper()
+		// The drop is the version the upload writes, the one after the latest before it: an
+		// upload resets the server-owned attributes of the asks it keeps, so the settlement after
+		// it writes back what a version keeps of each answered ask (keptAskState) as a version of
+		// its own, which is no drop.
+		number := latestVersionNumber(t, issue.service, issue.spec) + 1
 		issue.replace(issue.spec, spec(kept...))
-		number := latestVersionNumber(t, issue.service, issue.spec)
 		if authors != nil {
 			if _, err := issue.database.Pool.Exec(ctx, `update artifact_versions set authors = jsonb_build_array($3::jsonb) where artifact_id = $1 and number = $2`,
 				issue.spec, number, actorJSON(t, *authors)); err != nil {
@@ -108,7 +114,30 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	if len(sections) != 2 {
 		t.Fatalf("the decisions document holds %d sections, want two", len(sections))
 	}
-	heading := storeBlockAddress(issue.refKey(decisions), sections[0].headingID())
+	heading := refs.BlockAddress(issue.refKey(decisions), sections[0].headingID())
+
+	// The store census's dangling counter reads its returning set by the restore's own test of a
+	// person's removal (ReturnDeclined): over the restore's work before the step runs, it declines
+	// the returns of q-person and q-scoped, which the restore declines below, and not q-agent's,
+	// which it writes back. q-marked's node holds its removal already, so it is no return.
+	work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool)
+	if err != nil {
+		t.Fatalf("read the restore's work: %v", err)
+	}
+	judged := map[string]bool{}
+	for _, item := range work {
+		if item.Shape != graphcensus.RestoreReturns {
+			continue
+		}
+		declined, err := ReturnDeclined(ctx, issue.database.Pool, item)
+		if err != nil {
+			t.Fatalf("judge the return of %s: %v", name[item.Ask], err)
+		}
+		judged[name[item.Ask]] = declined
+	}
+	if want := map[string]bool{"q-person": true, "q-scoped": true, "q-agent": false}; !maps.Equal(judged, want) {
+		t.Fatalf("the restore's test declines the returns %v, want %v", judged, want)
+	}
 
 	step := NewDecisionStep(issue.database, "", nil)
 	step.UseDocuments(issue.service)
@@ -255,6 +284,57 @@ func TestAnAnswerersOwnLaterDropOfHerAnsweredAskStays(t *testing.T) {
 	}
 	if held := heldRemovalsOf(t, issue, ask); len(held) != 1 || !held[0].Asserted || held[0].ToID != "alice" || held[0].SourceEvent != event {
 		t.Fatalf("the ask %s holds the removals %+v, want one asserted to alice under the event %d", ask, held, event)
+	}
+	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-own ") {
+		t.Fatalf("the spec holds q-own again:\n%s", spec)
+	}
+}
+
+// A person's deletion of an answered ask's block in the browser is that person's removal, as the
+// same deletion over HTTP is, and it stays taken (R6). Alice answers q-own, which writes the ask's
+// state into its block in her name, and her browser deletes the block before that answer's
+// settlement runs: the one version the settlement writes, whose one author is alice, first holds
+// her answer and leaves the block out, which is the version the restore reads as the answer's own
+// (answerersVersion) and would write the block back over. The settlement records her removal on
+// the ask's node; the finder reads no work for the ask; and a pass that read the ask as its work
+// before the settlement declines it, so no version writes the block back.
+func TestAPersonsBrowserDeletionOfAnAnsweredAskStaysThroughTheRestore(t *testing.T) {
+	ctx := context.Background()
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	issue := newRestoreIssue(t, head+removedRestoreAsk("q-own", "Which store holds the corpus?"))
+	before := latestVersionNumber(t, issue.service, issue.spec)
+	ask := issue.answer(issue.spec, "q-own", "The database we run.")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	browserReplaceText(t, issue.service, issue.spec, head, alice)
+	settleCurrentGeneration(t, issue.service, issue.spec)
+	settled := latestVersionNumber(t, issue.service, issue.spec)
+	var authors []model.Actor
+	if err := issue.database.Pool.QueryRow(ctx, `select authors from artifact_versions where artifact_id = $1 and number = $2`,
+		issue.spec, settled).Scan(&authors); err != nil || settled != before+1 || len(authors) != 1 || authors[0].ID != "alice" {
+		t.Fatalf("the settlement wrote version %d after %d with the authors %+v (%v), want one version whose one author is alice", settled, before, authors, err)
+	}
+	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-own ") {
+		t.Fatalf("the settled version holds q-own, which alice's browser deleted:\n%s", spec)
+	}
+
+	if held := heldRemovalsOf(t, issue, ask); len(held) != 1 || !held[0].Asserted || held[0].ToID != "alice" {
+		t.Errorf("the ask %s holds the removals %+v, want one asserted to alice: her browser deleted its block", ask, held)
+	}
+	work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool)
+	if err != nil {
+		t.Fatalf("read the restore's work: %v", err)
+	}
+	for _, item := range work {
+		if item.Ask == ask {
+			t.Errorf("the finder reads %+v as the restore's work, want none for the ask alice removed", item)
+		}
+	}
+	result := issue.restoreWith([]graphcensus.RestoreWork{{
+		Shape: graphcensus.RestoreReturns, Issue: "DOC-1", Ask: ask, BlockID: "q-own",
+		Address: refs.BlockAddress(issue.refKey(issue.spec), "q-own"), Spec: issue.refKey(issue.spec),
+	}}, false)
+	if len(result.Restored) != 0 || result.SpecVersion != 0 {
+		t.Fatalf("the restore over the ask's work did %+v, want nothing written: alice removed q-own", result)
 	}
 	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-own ") {
 		t.Fatalf("the spec holds q-own again:\n%s", spec)

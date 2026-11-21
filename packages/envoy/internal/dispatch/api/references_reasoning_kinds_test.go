@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,24 +41,58 @@ func edgeEnds(edges []model.GraphEdge) []string {
 // requireNobodysAnswer fails unless hidden, the answer to a node the reader may not see, is
 // nobodys, the answer to an address of the same form nobody wrote, byte for byte once the id
 // nobody holds is read as the hidden node's: the same status, the same Content-Type and the same
-// body.
-func requireNobodysAnswer(t *testing.T, name string, hidden, nobodys *httptest.ResponseRecorder, hiddenID, nobodysID string) {
+// body. It reports whether hidden answered so.
+func requireNobodysAnswer(t *testing.T, name string, hidden, nobodys *httptest.ResponseRecorder, hiddenID, nobodysID string) bool {
 	t.Helper()
 	t.Logf("%s: hidden status=%d body=%s; nobody's status=%d body=%s", name, hidden.Code, hidden.Body.String(), nobodys.Code, nobodys.Body.String())
+	held := true
 	if hidden.Code != http.StatusNotFound {
 		t.Errorf("%s: the hidden node answers %d %s, want 404", name, hidden.Code, hidden.Body.String())
+		held = false
 	}
 	if hidden.Code != nobodys.Code {
 		t.Errorf("%s: the hidden node answers %d and an address nobody holds %d", name, hidden.Code, nobodys.Code)
+		held = false
 	}
 	if got, want := hidden.Header().Get("Content-Type"), nobodys.Header().Get("Content-Type"); got != want {
 		t.Errorf("%s: the hidden node answers Content-Type %q and an address nobody holds %q", name, got, want)
+		held = false
 	}
 	if !strings.Contains(nobodys.Body.String(), nobodysID) {
 		t.Fatalf("%s: the answer to an address nobody holds %s does not name %s", name, nobodys.Body.String(), nobodysID)
 	}
 	if got, want := hidden.Body.String(), strings.ReplaceAll(nobodys.Body.String(), nobodysID, hiddenID); got != want {
 		t.Errorf("%s: the hidden node answers\n%s\nand an address nobody holds, its id read as the hidden one's,\n%s", name, got, want)
+		held = false
+	}
+	return held
+}
+
+// lensReader is one reader of a lens for requireReadsAsALensNobodyWrote: the reader's login, which
+// a failure names, the requests it sends, and the lens it reads.
+type lensReader struct {
+	login string
+	as    sender
+	lens  lensInvoked
+}
+
+// requireReadsAsALensNobodyWrote holds each reader's GET /api/v1/lenses?on= and GET
+// /api/v1/references?to= of its lens, by the lens's dispatch:// address, to what the same read of a
+// lens nobody wrote answers (requireNobodysAnswer): 404 NOT_FOUND, byte for byte once the id is
+// substituted, since the reference read names such a lens by its id alone. failure is the words of
+// a read that answers otherwise, given the read, its status and body, and the reader's login.
+func requireReadsAsALensNobodyWrote(t *testing.T, failure func(read, status, login string) string, readers ...lensReader) {
+	t.Helper()
+	nobodysID := uuid.NewString()
+	nobodys := refs.StoreRef(graphstore.KindLens, nobodysID)
+	for _, reader := range readers {
+		for _, route := range []string{"/api/v1/lenses?on=", "/api/v1/references?to="} {
+			read := "GET " + route + reader.lens.Address
+			own := reader.as(http.MethodGet, route+url.QueryEscape(reader.lens.Address), nil)
+			if !requireNobodysAnswer(t, reader.login+"'s "+read, own, reader.as(http.MethodGet, route+url.QueryEscape(nobodys), nil), reader.lens.ID, nobodysID) {
+				t.Error(failure(read, fmt.Sprintf("%d %s", own.Code, own.Body.String()), reader.login))
+			}
+		}
 	}
 }
 

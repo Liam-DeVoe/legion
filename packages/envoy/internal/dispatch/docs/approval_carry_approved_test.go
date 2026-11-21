@@ -36,10 +36,11 @@ func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 		_, err := service.NamedVersion(ctx, artifactID, "Named by the agent with the repeat", agent)
 		return err
 	})
-	if markdown := storedVersionMarkdown(t, database, artifactID, 2); strings.Count(markdown, "#region") != 2 {
-		t.Fatalf("version 2 = %q, want it to hold the block id twice", markdown)
+	repeated := latestVersionNumber(t, service, artifactID)
+	if markdown := storedVersionMarkdown(t, database, artifactID, repeated); strings.Count(markdown, "#region") != 2 {
+		t.Fatalf("version %d = %q, want it to hold the block id twice", repeated, markdown)
 	}
-	approveStoredVersion(t, database, artifactID, 2, "alice")
+	approveStoredVersion(t, database, artifactID, repeated, "alice")
 
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		kept := tree.Children[:0]
@@ -61,10 +62,11 @@ func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 		_, err := service.NamedVersion(ctx, artifactID, "Named by the agent without the repeat", agent)
 		return err
 	})
-	if markdown := storedVersionMarkdown(t, database, artifactID, 3); strings.Count(markdown, "#region") != 1 || !strings.Contains(markdown, `answered_by="alice"`) {
-		t.Fatalf("version 3 = %q, want it to hold the block once, answered by alice", markdown)
+	named := latestVersionNumber(t, service, artifactID)
+	if markdown := storedVersionMarkdown(t, database, artifactID, named); named != repeated+1 || strings.Count(markdown, "#region") != 1 || !strings.Contains(markdown, `answered_by="alice"`) {
+		t.Fatalf("version %d = %q, want version %d holding the block once, answered by alice", named, markdown, repeated+1)
 	}
 	if reviews, approvals := carriedReviews(t, database, artifactID); reviews != 1 || approvals != 0 {
-		t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval of version 2 alone and no event", reviews, approvals)
+		t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval of version %d alone and no event", reviews, approvals, repeated)
 	}
 }

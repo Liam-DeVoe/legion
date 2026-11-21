@@ -1,4 +1,4 @@
-import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { shortDay } from "../web/src/features/issue-page/node-time";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
@@ -162,7 +162,7 @@ function canonical(value: unknown): string {
 
 /** What row 1 reads of one seed's page. */
 interface OutlineRead {
-  readonly answer: IssueTreeAnswer;
+  readonly answer: IssueTreeRead;
   readonly decisions: DecisionsRead | undefined;
   readonly keys: ReadonlyMap<string, string>;
   readonly opened: readonly RowReading[];
@@ -213,12 +213,9 @@ interface HeldNode {
   readonly order: number;
 }
 
-function heldNodes(
-  answer: IssueTreeAnswer,
-  idOf: (readId: string) => string
-): Map<string, HeldNode> {
+function heldNodes(answer: IssueTreeRead, idOf: (readId: string) => string): Map<string, HeldNode> {
   const held = new Map<string, HeldNode>();
-  for (const [order, node] of answer.nodes.entries()) {
+  for (const [order, node] of (answer.nodes ?? []).entries()) {
     const id = idOf(node.id);
     if (!held.has(id)) held.set(id, { node, order });
   }
@@ -259,14 +256,14 @@ function homesOf(
   drawn: ReadonlySet<string>
 ): ReadonlySet<string | null> {
   const key = outline.reads.issue.key;
-  const nodes = new Map(outline.answer.nodes.map((one) => [one.id, one]));
+  const nodes = new Map((outline.answer.nodes ?? []).map((one) => [one.id, one]));
   const foreign = (one: IssueTreeNode): boolean => one.issue !== undefined && one.issue !== key;
   let parent: string | null = null;
   const passed = new Set<string>();
   for (
-    let above = node.parent;
+    let above = node.parent?.id ?? null;
     above !== null && !passed.has(above);
-    above = nodes.get(above)?.parent ?? null
+    above = nodes.get(above)?.parent?.id ?? null
   ) {
     passed.add(above);
     const id = idOf(above);
@@ -279,9 +276,9 @@ function homesOf(
   if ((node.supertag !== "check" && node.supertag !== "plan_task") || foreign(node)) {
     return new Set([parent]);
   }
-  const served = outline.answer.tuples.flatMap((tuple) => {
+  const served = (outline.answer.tuples ?? []).flatMap((tuple) => {
     const target =
-      tuple.kind === "serves" && tuple.from === node.id ? nodes.get(tuple.to) : undefined;
+      tuple.kind === "serves" && tuple.from.id === node.id ? nodes.get(tuple.to.id) : undefined;
     return target?.supertag === "requirement" && !foreign(target) ? [idOf(target.id)] : [];
   });
   return new Set(parent === null && served.length > 0 ? served : [parent, ...served]);
@@ -441,7 +438,7 @@ function timeDifferences(
     const decision = reading.kind.type === "decision";
     const id = reading.id ?? "";
     const source = decision ? decided.get(id) : held.get(id)?.node.made_at;
-    if (source === undefined) {
+    if (source === undefined || source === null) {
       const read = decision ? "decisions read" : "tree read";
       return [`${where}, ${rowName(row)} draws a time, and the ${read} holds none for it`];
     }
@@ -454,10 +451,10 @@ function timeDifferences(
 
 /** The review state the tree read answers on decision `node`, as the page's token for it. */
 function answeredReviewState(node: IssueTreeNode, changed: boolean): string | null {
-  if (node.replaced === true) return "replaced";
+  if (node.decision?.replaced === true) return "replaced";
   if (changed) return "change_requested";
-  if (node.waiting_review === true) return "waiting_review";
-  return node.kept == null ? null : "kept";
+  if (node.decision?.waiting_review === true) return "waiting_review";
+  return node.decision?.kept == null ? null : "kept";
 }
 
 /** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
@@ -468,7 +465,7 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
   const held = heldNodes(answer, idOf);
-  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const changes = decisionNodeChanges(answer);
   const under = rows.map((_, index) => parentIdOf(rows, index));
 
@@ -481,11 +478,11 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   });
   expect(states, "each decision row's review state is the tree read's").toEqual([]);
 
-  const strays = answer.nodes.flatMap((node) => {
-    const decision = node.parent === null ? undefined : nodes.get(node.parent);
+  const strays = (answer.nodes ?? []).flatMap((node) => {
+    const decision = node.parent === null ? undefined : nodes.get(node.parent.id);
     if (
       node.supertag !== "comment" ||
-      node.author[0]?.kind !== "user" ||
+      node.author?.[0]?.kind !== "user" ||
       decision?.supertag !== "decision"
     ) {
       return [];
@@ -511,8 +508,11 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   const unnamed = asks.flatMap((askKey) => {
     const row = rows[keyed.findIndex((one) => one.key === askKey)];
     if (row === undefined || row.id === null) return [`the answered question ${askKey} is no row`];
-    const shaped = answer.tuples.flatMap((tuple) =>
-      tuple.kind === "shaped" && idOf(tuple.from) === row.id ? [tuple.to] : []
+    // A chip's address names a block by its id in its document (`block_id`).
+    const shaped = (answer.tuples ?? []).flatMap((tuple) =>
+      tuple.kind === "shaped" && idOf(tuple.from.id) === row.id
+        ? [nodes.get(tuple.to.id)?.block_id ?? tuple.to.id]
+        : []
     );
     if (shaped.length === 0) return [`the answered question ${askKey} shaped no node`];
     return shaped.flatMap((target) =>
@@ -732,12 +732,12 @@ function idsOfType(nodes: readonly DrawnNode[], type: string): string[] {
 /** Each check of the view that is drawn under no row of a statement its `serves` names. */
 function checksOutOfPlace(
   rows: readonly RowReading[],
-  answer: IssueTreeAnswer,
+  answer: IssueTreeRead,
   reads: TreeIdReads
 ): string[] {
   const idOf = treeIdOf(answer, reads);
   const key = reads.issue.key;
-  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const own = (node: IssueTreeNode | undefined): node is IssueTreeNode =>
     node !== undefined && (node.issue === undefined || node.issue === key);
   const placements = new Set(
@@ -746,15 +746,15 @@ function checksOutOfPlace(
       return row.id === null ? [] : [`${row.id} ${parent === undefined ? "" : rows[parent]?.id}`];
     })
   );
-  return answer.tuples.flatMap((tuple) => {
-    const check = nodes.get(tuple.from);
-    const statement = nodes.get(tuple.to);
+  return (answer.tuples ?? []).flatMap((tuple) => {
+    const check = nodes.get(tuple.from.id);
+    const statement = nodes.get(tuple.to.id);
     if (
       tuple.kind !== "serves" ||
       !own(check) ||
       !own(statement) ||
       check.supertag !== "check" ||
-      check.mark !== "query" ||
+      check.role !== "query" ||
       statement.supertag !== "requirement"
     ) {
       return [];
@@ -875,11 +875,11 @@ test("each filter draws its view read's rows, and each decision that shaped a st
       const drawn = await pressFilter(page, traffic, "spec");
       const answer = await heldAnswer(spec, "the Spec view read");
       const idOf = treeIdOf(answer, reads);
-      const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+      const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
       const statements = new Set(drawn.rows.flatMap((row) => (row.id === null ? [] : [row.id])));
-      const lines = answer.tuples.flatMap((tuple) => {
-        const decision = nodes.get(tuple.from);
-        const statement = idOf(tuple.to);
+      const lines = (answer.tuples ?? []).flatMap((tuple) => {
+        const decision = nodes.get(tuple.from.id);
+        const statement = idOf(tuple.to.id);
         if (tuple.kind !== "shaped" || decision?.supertag !== "decision") return [];
         if (!statements.has(statement)) return [];
         const words = (

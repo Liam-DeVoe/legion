@@ -297,11 +297,11 @@ func takeArtifactSnapshot(t *testing.T, database *store.Store) artifactSnapshot 
 
 // The object pass writes the node only of a row still there once it holds the row's owner
 // (writeObjectBatch, heldObjects). A second transaction stands for the removal of an issue's
-// document (api's removeArtifact): it takes the issue's row, as the removal does through
-// beginArtifactWrite, and deletes the document's row. The backfill starts while that transaction
-// is open, so its read of the batch sees the row, and the test reads it waiting at the owner row
-// before it lets the removal commit. A pass that wrote from its first read would bring the removed
-// document back as a live node hanging under its issue, with no row.
+// document (api's removeArtifact): it takes the issue's owner lock (store.LockOwners), as the
+// removal does through beginArtifactWrite, and deletes the document's row. The backfill starts
+// while that transaction is open, so its read of the batch sees the row, and the test reads it
+// waiting at the owner lock before it lets the removal commit. A pass that wrote from its first
+// read would bring the removed document back as a live node hanging under its issue, with no row.
 func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -335,18 +335,16 @@ func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 		t.Fatalf("begin the removal: %v", err)
 	}
 	defer removal.Rollback(ctx)
-	for _, statement := range []struct{ what, sql, arg string }{
-		{"take the owner row", `select status, closed_at is null from issues where key = $1 for no key update`, "LOCK-1"},
-		{"delete the document", `delete from artifacts where ref_key = $1`, removed},
-	} {
-		if _, err := removal.Exec(ctx, statement.sql, statement.arg); err != nil {
-			t.Fatalf("the removal could not %s: %v", statement.what, err)
-		}
+	if err := store.LockOwners(ctx, removal, store.IssueOwner("LOCK-1")); err != nil {
+		t.Fatalf("the removal could not take the issue's owner lock: %v", err)
+	}
+	if _, err := removal.Exec(ctx, `delete from artifacts where ref_key = $1`, removed); err != nil {
+		t.Fatalf("the removal could not delete the document: %v", err)
 	}
 
 	pid, answered := startBackfill(t, database)
 	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered, 30*time.Second); done {
-		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the removal's owner row", early.report, early.err)
+		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the removal's owner lock", early.report, early.err)
 	}
 	t.Logf("the backfill waits behind the removal at: %s", lockstep.WaitingStatement(t, database, pid))
 	if err := removal.Commit(ctx); err != nil {

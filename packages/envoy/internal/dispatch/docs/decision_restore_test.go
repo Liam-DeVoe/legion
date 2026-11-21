@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -152,13 +153,15 @@ func (issue *restoreIssue) replaceAsPerson(document, markdown string) {
 }
 
 // write writes markdown over document as actor, in a context mark gives, with its version, whose
-// facts it appends with no event, as a version of the fixtures is recorded, and settles it.
+// facts it appends with no event, as a version of the fixtures is recorded, and settles it. The
+// upload names the token the document stands at, read before the write as a caller reads it.
 func (issue *restoreIssue) write(document, markdown string, actor model.Actor, mark func(context.Context) context.Context) {
 	t := issue.t
 	t.Helper()
+	base := liveDocumentToken(t, issue.service, document)
 	if err := joinedWrite(issue.service, func(ctx context.Context) error {
 		ctx = mark(ctx)
-		if _, err := issue.service.ReplaceText(ctx, document, markdown, actor); err != nil {
+		if _, err := issue.service.ReplaceText(ctx, document, markdown, actor, base); err != nil {
 			return err
 		}
 		written, err := issue.service.SnapshotVersion(ctx, document, actor)
@@ -293,10 +296,13 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 	spec := issue.latest(issue.spec)
 	part := spec[strings.Index(spec, "## Decisions"):]
+	// Each restored ask is answered, so its opener keeps what a version keeps of it on a fleet of
+	// one build - its state, who answered and when (keptAskState) - and none of the answer's words.
 	for _, want := range []string{
-		`#q-store urgency="high" multiple="false" shaped="dispatch://DOC-1/spec#b-r1"}`,
+		`#q-store urgency="high" multiple="false" state="answered" answered_by="alice" answered_at="`,
+		`" shaped="dispatch://DOC-1/spec#b-r1"}`,
 		"we add that it stays small",
-		`#q-format urgency="med" multiple="false"}`,
+		`#q-format urgency="med" multiple="false" state="answered" answered_by="`,
 		`uncertainty="high" uncertainty_reason="a reader who wants a file export would change this."`,
 		"We write no file beside the database",
 		`replaced="true"`,
@@ -306,7 +312,7 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 			t.Errorf("the spec's Decisions part holds no %q:\n%s", want, part)
 		}
 	}
-	for _, gone := range []string{pointer, "Unsure:", "one line  for each", `state="answered"`} {
+	for _, gone := range []string{pointer, "Unsure:", "one line  for each", "selected=", ` answer="`} {
 		if strings.Contains(spec, gone) {
 			t.Errorf("the converted spec still holds %q:\n%s", gone, spec)
 		}
@@ -565,22 +571,26 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 		settle func(issue *restoreIssue, decisions, ask string)
 		// held is whether a section held the ask block, and becomes a decision of its own.
 		held bool
+		// state is the state the restored block's stored opener keeps, as its node holds it
+		// (keptAskState): none for an ask its node holds open, the release before's answer on
+		// its row alone among them.
+		state string
 	}{
 		{"a section holding an open ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-open") + lean, "q-open",
-			func(*restoreIssue, string, string) {}, true},
+			func(*restoreIssue, string, string) {}, true, ""},
 		{"a section holding a declined ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-declined") + lean, "q-declined",
 			func(issue *restoreIssue, decisions, held string) {
 				at := time.Now().UTC()
 				change := asks.Resolved(model.AskResolution{Kind: model.AskResolutionDeclined, Reason: "Not ours to rule.", Actor: alice, At: at})
 				change.Who, change.At = alice, at
 				settleAskAs(issue.t, issue.service, decisions, "q-declined", held, alice, change)
-			}, true},
+			}, true, asks.StateResolved},
 		{"a section holding an ask the release before answered on its row alone", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-skipped") + lean, "q-skipped",
 			func(issue *restoreIssue, _, held string) {
 				answerAsThePreviousBuild(issue.t, issue.database, "DOC-1", held, "East")
-			}, true},
+			}, true, ""},
 		{"an open ask block outside every section", "# Decisions\n\n" + ask("q-loose") + "\n" + plain, "q-loose",
-			func(*restoreIssue, string, string) {}, false},
+			func(*restoreIssue, string, string) {}, false, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -617,6 +627,9 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 			}
 			if markdown := issue.latest(issue.spec); !strings.Contains(markdown, "#"+test.block+" ") {
 				t.Errorf("the spec's newest version holds no ask block %s:\n%s", test.block, markdown)
+			} else if opener := openerOf(markdown, test.block); test.state == "" && strings.Contains(opener, " state=") ||
+				test.state != "" && !strings.Contains(opener, ` state="`+test.state+`"`) || strings.Contains(opener, "answered_by=") {
+				t.Errorf("the restored block of %s opens %q, want it keeping the state %q its node holds and no answerer", test.block, opener, test.state)
 			}
 			if markdown := issue.latest(decisions); strings.Contains(markdown, "#"+test.block+" ") {
 				t.Errorf("the decisions document's newest version still holds the ask block %s:\n%s", test.block, markdown)
@@ -820,5 +833,228 @@ func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t 
 	}
 	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") {
 		t.Errorf("the restored spec holds no block of the ask:\n%s", spec)
+	}
+}
+
+// openerOf is the opening line of the ask block id that markdown holds, "" where it holds none.
+func openerOf(markdown, id string) string {
+	start := strings.Index(markdown, "ask{#"+id+" ")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(markdown[start:], "\n")
+	if end < 0 {
+		return markdown[start:]
+	}
+	return markdown[start : start+end]
+}
+
+// approveLatest records alice's approval of document's newest version, and answers its number.
+func (issue *restoreIssue) approveLatest(document string) int {
+	issue.t.Helper()
+	approved := latestVersionNumber(issue.t, issue.service, document)
+	approveStoredVersion(issue.t, issue.database, document, approved, "alice")
+	return approved
+}
+
+// The restore writes back the ask block it moves byte for byte (R7): an answered ask whose block
+// a person approved with a link and a code span in its question and a sub-list under an option,
+// which an agent then removed from the spec, comes back holding every one of them, and the
+// restore's version reads approved, since it changed where the block stands and not its bytes.
+// Where an agent changed the block's link after the approval and then removed the block, the
+// restore writes the block back as the spec last held it: its words are the approved ones and
+// its bytes are not, so the restore supersedes the approval and reports it with the ask.
+func TestTheRestoreWritesBackTheBytesOfTheAskBlockAPersonApproved(t *testing.T) {
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	const approvedLink = "https://example.com/archive"
+	block := func(link string) string {
+		return ":::ask{#q-bytes urgency=\"med\" multiple=\"false\"}\nWhich store holds the corpus, [the archive](" + link + ") or `pg_dump` files?\n\n" +
+			"- Archive: The cold tier.\n  - Its restores take a day.\n- Files: A nightly dump.\n:::\n"
+	}
+	for _, test := range []struct {
+		name string
+		// link is the block's link as the agent left it before removing the block.
+		link     string
+		approval string
+	}{
+		{"a block unchanged since the approval", approvedLink, "carried"},
+		{"a block whose link an agent changed since the approval", "https://example.com/elsewhere", "superseded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block(approvedLink))
+			ask := blockAskOn(t, issue.service, issue.spec, "q-bytes")
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			at := time.Now().UTC()
+			change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Archive"}, At: at})
+			change.Who, change.At = alice, at
+			settleAskAs(t, issue.service, issue.spec, "q-bytes", ask.ID, alice, change)
+			approved := issue.approveLatest(issue.spec)
+			if test.link != approvedLink {
+				issue.replace(issue.spec, head+block(test.link))
+			}
+			issue.replace(issue.spec, head)
+
+			result := issue.run(false)
+			if len(result.Restored) != 1 || result.SpecApproval != test.approval {
+				t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d %s", result, approved, test.approval)
+			}
+			spec := issue.latest(issue.spec)
+			heading := strings.Index(spec, "## Decisions\n")
+			if heading < 0 {
+				t.Fatalf("the restored spec holds no Decisions part:\n%s", spec)
+			}
+			part := spec[heading:]
+			for _, want := range []string{"[the archive](" + test.link + ")", "`pg_dump` files", "Its restores take a day."} {
+				if !strings.Contains(part, want) {
+					t.Errorf("the restored block holds no %q, which the spec last held:\n%s", want, part)
+				}
+			}
+			if test.approval == "superseded" {
+				reported := false
+				for _, superseded := range result.Superseded {
+					reported = reported || superseded.Approval.ApprovedVersion == approved && slices.Contains(superseded.Asks, "dispatch://DOC-1/ask/"+ask.ID)
+				}
+				if !reported {
+					t.Errorf("the restore reported %+v, want the approval of version %d superseded with the ask %s", result.Superseded, approved, ask.ID)
+				}
+			}
+		})
+	}
+}
+
+// An ask block moved out of a standing decisions document keeps its `shaped` ties (R6: "its
+// `shaped` tuples stay intact"): the block of q-a, which shaped the spec's r1 and the decisions
+// document's q-b, moves into the spec with q-b, and holds a pointer to r1 and one to q-b where q-b
+// now stands, the spec; its ask's node states both ties, and none to the decisions document.
+func TestAnAskBlockMovedOutOfTheDecisionsDocumentKeepsItsShapedTies(t *testing.T) {
+	ctx := context.Background()
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+
+		"## Which store holds the corpus\n\n:::ask{#q-a urgency=\"med\" multiple=\"false\" "+
+		"shaped=\"dispatch://DOC-1/spec#b-r1 dispatch://DOC-1/artifact/decisions-md#b-q-b\"}\nWhich store holds the corpus?\n:::\n\n"+
+		"## Which reader reads it first\n\n:::ask{#q-b urgency=\"low\" multiple=\"false\"}\nWhich reader reads it first?\n:::\n")
+	askA := blockAskOn(t, issue.service, decisions, "q-a").ID
+	if ties, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, askA, []string{refs.TupleShaped}); err != nil || len(ties) != 2 {
+		t.Fatalf("before the restore q-a's node holds the shaped ties %+v (%v), want two", ties, err)
+	}
+
+	result := issue.run(false)
+	if len(result.Restored) != 2 {
+		t.Fatalf("the restore did %+v, want both ask blocks moved", result.Restored)
+	}
+	const want = `shaped="dispatch://DOC-1/spec#b-r1 dispatch://DOC-1/spec#b-q-b"`
+	if opener := openerOf(issue.latest(issue.spec), "q-a"); !strings.Contains(opener, want) {
+		t.Fatalf("the restored block of q-a opens %q, want it holding %s", opener, want)
+	}
+	ties, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, askA, []string{refs.TupleShaped})
+	if err != nil {
+		t.Fatalf("read q-a's shaped ties: %v", err)
+	}
+	held := map[string]bool{}
+	for _, tie := range ties {
+		if tie.Asserted {
+			held[tie.ToID] = true
+		}
+	}
+	spec := issue.refKey(issue.spec)
+	if len(held) != 2 || !held[refs.BlockAddress(spec, "r1")] || !held[refs.BlockAddress(spec, "q-b")] {
+		t.Fatalf("after the restore q-a's node holds the shaped ties %+v, want one to %s and one to %s", ties,
+			refs.BlockAddress(spec, "r1"), refs.BlockAddress(spec, "q-b"))
+	}
+}
+
+// The restore takes out of the spec's `## Decisions` part only its pointer line to the decisions
+// document, a paragraph whose one content is the citation of that document (isPointerLine). A
+// person's paragraph that cites the document among other words is the person's prose, which the
+// restore keeps wherever it stands in the part: before the pointer line, the ask takes the
+// pointer line's place after it; with no pointer line, the ask stands after the part's last
+// block. Each restore changed nothing else, so the approval carries, and no carry takes the
+// person's paragraph out of the version they approved.
+func TestTheRestoreKeepsAPersonsParagraphCitingTheDecisionsDocumentAmongOtherWords(t *testing.T) {
+	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
+	const prose = "We chose the base release because backups are cheap; the trade-offs are in dispatch://DOC-1/artifact/decisions-md."
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	const block = ":::ask{#q1 urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n\n"
+	for _, test := range []struct {
+		name, part string
+	}{
+		{"before the pointer line", prose + "\n\n" + pointer + "\n"},
+		{"with no pointer line", prose + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block+"## Decisions\n\n"+test.part)
+			issue.answer(issue.spec, "q1", "The base release.")
+			approved := issue.approveLatest(issue.spec)
+			issue.replace(issue.spec, head+"## Decisions\n\n"+test.part)
+			issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## The base release writes the corpus\n\nIts corpus is the one we measured.\n")
+
+			result := issue.run(false)
+			if len(result.Restored) != 1 || result.SpecApproval != "carried" {
+				t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d carried", result, approved)
+			}
+			spec := issue.latest(issue.spec)
+			part := spec[strings.Index(spec, "## Decisions"):]
+			if !strings.Contains(part, prose) {
+				t.Fatalf("the restored spec's Decisions part reads\n%s\nwant the person's paragraph citing the decisions document kept", part)
+			}
+			if strings.Contains(spec, pointer) || strings.Index(part, "#q1 urgency=") < strings.Index(part, prose) {
+				t.Errorf("the restored spec's Decisions part reads\n%s\nwant the ask after the person's paragraph, in place of any pointer line", part)
+			}
+		})
+	}
+}
+
+// The `## Decisions` heading is no change to what a person approved where the decisions step made
+// it, and an empty heading the person approved is theirs. A spec approved with no Decisions part,
+// whose answered ask an agent then removed, reads approved at the restore's version, which returns
+// the ask under a heading it adds. A spec approved with an empty Decisions heading, whose answered
+// ask a decisions section restates, reads approved at the conversion's version, which writes the
+// section's links and words into the ask and keeps the heading; where an agent deleted that empty
+// heading after the approval, the conversion's version, which holds no heading, supersedes it.
+func TestTheStepCarriesAnApprovalAcrossOnlyTheDecisionsHeadingItMade(t *testing.T) {
+	const head = "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n\n"
+	const block = ":::ask{#q-h urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n"
+	t.Run("a spec approved with no Decisions part, its ask returned under the heading the restore adds", func(t *testing.T) {
+		issue := newRestoreIssue(t, head+block)
+		issue.answer(issue.spec, "q-h", "The base release.")
+		approved := issue.approveLatest(issue.spec)
+		issue.replace(issue.spec, head)
+		result := issue.run(false)
+		if len(result.Restored) != 1 || result.SpecApproval != "carried" {
+			t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d carried", result, approved)
+		}
+		if spec := issue.latest(issue.spec); strings.Count(spec, "## Decisions\n") != 1 || !strings.Contains(spec[strings.Index(spec, "## Decisions\n"):], "#q-h urgency=") {
+			t.Fatalf("the restored spec holds no one Decisions part with the ask under it:\n%s", spec)
+		}
+	})
+	for _, test := range []struct {
+		name, written, approval string
+	}{
+		{"a spec approved with an empty Decisions heading, which the conversion's version keeps", head + block + "\n## Decisions\n", "carried"},
+		{"a spec approved with an empty Decisions heading an agent deleted, which the conversion's version lacks", head + block, "superseded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block+"\n## Decisions\n")
+			ask := issue.answer(issue.spec, "q-h", "The base release.")
+			approved := issue.approveLatest(issue.spec)
+			if test.written != head+block+"\n## Decisions\n" {
+				issue.replace(issue.spec, test.written)
+			}
+			issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+
+				"## The base release writes the corpus\n\nIts corpus is the one we measured. This shapes dispatch://DOC-1/spec#b-r1. "+
+				"Decided in dispatch://DOC-1/ask/"+ask+".\n")
+
+			result := issue.run(true)
+			if result.Readings != 1 || result.SpecVersion == 0 || result.SpecApproval != test.approval {
+				t.Fatalf("the conversion did %+v, want one reading written into the spec and the approval of version %d %s", result, approved, test.approval)
+			}
+			spec := issue.latest(issue.spec)
+			if opener := openerOf(spec, "q-h"); !strings.Contains(opener, `shaped="dispatch://DOC-1/spec#b-r1"`) {
+				t.Fatalf("the converted spec's ask opens %q, want the section's link as its shaped pointer:\n%s", opener, spec)
+			}
+			if held := strings.Contains(spec, "## Decisions"); held != (test.approval == "carried") {
+				t.Fatalf("the converted spec holds a Decisions heading %t:\n%s", held, spec)
+			}
+		})
 	}
 }

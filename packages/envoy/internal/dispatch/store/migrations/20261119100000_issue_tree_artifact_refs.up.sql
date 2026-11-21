@@ -208,7 +208,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
       from graph_tuples tuple
       where tuple.from_kind <> 'artifact' or tuple.kind <> 'mentions'
       union all
-      select tuple.from_kind, mentioning.id::text, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id,
+      select 'artifact', mentioning.id::text, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id,
              projected.created_at, projected.source_seq, tuple.asserted, tuple.seq
       from graph_tuples tuple
       join artifacts mentioning on mentioning.ref_key = tuple.from_id and mentioning.node_kind is not null

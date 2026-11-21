@@ -183,13 +183,14 @@ func skipUnreadableSettlement(room string, err error) bool {
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
 //
-// A settlement is made for no run of the command bar (graphstore.WithRun): it saves what the
-// room's writers left in it, whoever they were, so it carries no run even when a request's context
-// starts it - an issue's close settles its documents first on the closer's (api's
+// A settlement is made for no run of the command bar (store.WithRun): it saves what the room's
+// writers left in it, whoever they were, so it carries no run even when a request's context starts
+// it - an issue's close settles its documents first on the closer's (api's
 // settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
-// timer's settlement on a background context appends none.
+// timer's settlement on a background context appends none: its write phase's batch is built for
+// that context (store.NewWriteBatch), which carries no run.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
-	parent = graphstore.WithRun(parent, "")
+	parent = store.WithRun(parent, "")
 	// A room entry point that takes a document's id resolves it first: a document converted into
 	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
 	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
@@ -725,9 +726,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
 			for _, stated := range caused[index] {
-				if err := graphstore.QueueCaused(ctx, b, *stated, graphstore.LatestEvent); err != nil {
-					return err
-				}
+				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
 		return nil
@@ -946,6 +945,15 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
 		}
+		// A person's edit in the room that took an answered ask's block out of the document is
+		// that person's removal, which the version's index pass states on the ask's node, as the
+		// same edit over HTTP records it (holdSettledRemovals). Only an answered ask the
+		// reconciled tree held no block of can be one, or any where the version is a later read.
+		if st.reconciliation.answeredGone || st.versioned != st.reconciled {
+			if err := holdSettledRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
+				return settleDone, st.abandon(err)
+			}
+		}
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
@@ -1100,14 +1108,12 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
 // readRoomVersions reads it: its number, 0 for a document that holds none, its markdown and its
-// row's created_at, with the document's name, which its version event carries, and whether the
-// document is retired (RetireDocument), whose fragment the room's settlement versions no more.
+// row's created_at, with the document's name, which its version event carries.
 type roomVersion struct {
 	number   int
 	markdown string
 	at       time.Time
 	name     string
-	retired  bool
 }
 
 // readRoomVersions reads, in one statement through q, the latest markdown version of each of
@@ -1116,8 +1122,7 @@ type roomVersion struct {
 // dispatch://INFRA-1253's plan), and a block of the room records a version of its own document.
 func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roomVersion, error) {
 	rows, err := q.Query(ctx, `
-		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name,
-		       a.retired_at is not null
+		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name
 		from unnest($1::uuid[]) with ordinality as d (id, position)
 		join artifacts a on a.id = d.id
 		left join lateral (
@@ -1131,7 +1136,7 @@ func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roo
 	}
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (roomVersion, error) {
 		var version roomVersion
-		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name, &version.retired)
+		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name)
 		return version, err
 	})
 	if err != nil {
@@ -1197,8 +1202,8 @@ type roomFragment struct {
 // each whose rendering differs from that document's latest version where the room's content
 // changed since the tree artifact's latest version (contentChanged): a settlement of an issue
 // room writes one version of each document whose fragment it changed, and no version of the room
-// as a whole (T12a of this branch's plan). A retired document takes no new text (RetireDocument),
-// so its fragment is never marked changed, whatever a peer of the room typed into it.
+// as a whole (T12a of this branch's plan). A retired document is in no room's layout
+// (roomLayoutSQL), so no fragment of it is versioned.
 func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([]roomFragment, error) {
 	documents := st.layout.documents(st.room)
 	parts := st.layout.parts(st.versioned, st.versionedCounts)
@@ -1217,7 +1222,7 @@ func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([
 		}
 		fragments[index] = roomFragment{
 			document: document, tree: parts[index], markdown: markdown, offsets: offsets, latest: latest[index],
-			changed: contentChanged && !latest[index].retired && (latest[index].number == 0 || markdown != latest[index].markdown),
+			changed: contentChanged && (latest[index].number == 0 || markdown != latest[index].markdown),
 		}
 	}
 	return fragments, nil

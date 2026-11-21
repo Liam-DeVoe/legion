@@ -625,9 +625,7 @@ test("a spec node shows the decisions that shaped it at every version", async ({
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const statement = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const decisionNode = (index: number) =>
-      blockNodeId(decisionsSlug, seeded.decisions[index] ?? "");
+    const decisionNode = (index: number) => blockNodeId(specSlug, seeded.decisions[index] ?? "");
     const stored = (await getIssueDecisions(seeded.key)).decisions ?? [];
     expect(
       stored.some((one) => one.kind === "person"),
@@ -821,8 +819,7 @@ test("the Spec view draws statements alone, each parent once, and no check once"
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const statement = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const decision = blockNodeId(decisionsSlug, seeded.decisions[0] ?? "");
+    const decision = blockNodeId(specSlug, seeded.decisions[0] ?? "");
     const coverage = (await getIssueCoverage(seeded.key)).requirements ?? [];
     const statements = coverage.map((one) => blockNodeId(specSlug, one.block_id));
     const unchecked = coverage

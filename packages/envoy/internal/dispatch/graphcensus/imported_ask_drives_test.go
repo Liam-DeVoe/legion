@@ -57,6 +57,8 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// approval request, the document whose answered ask a person removes, the document an upload
 	// leaves as it was, and the project the decisions step converts.
 	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, unchanged string
+	// The token of the version same.md's replacement replaces, read before its drive.
+	var unchangedBase map[string]string
 	const decided = "DECIDE"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
@@ -166,7 +168,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		}),
 	}, {
 		// The settlement of a document of the issue holding a copy of the notes' ask block, whose
-		// ask is open: the copy opens none, and the settlement claims the copy's copied_from.
+		// ask is open: the copy opens none, and the settlement claims the copy's copied_from. The
+		// version it writes keeps the copy's source on the block's opener (docs' keptAskState), whose
+		// copied_from_document is a dispatch:// address the block index reads as the block's mention
+		// of the notes, as it read the same opener the release before stored, and the document's own
+		// mention of the notes beside it. That version states its node, and the block's text value.
 		Name: "docs/ask_blocks.go#claimCopies", Database: r.database,
 		Sites: []string{"docs/ask_blocks.go#claimCopies"},
 		Ready: func(t *testing.T) {
@@ -184,7 +190,12 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 					where d.artifact_id = $1::uuid and d.block_id = 'sizing-ask' and t.kind = $2)
 			`, copied, graphstore.TupleCopiedFrom)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{refs.BlockNodeKind, graphstore.TupleCopiedFrom}: {"ask_copy"}},
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.TupleCopiedFrom}:    {"ask_copy"},
+			{refs.BlockNodeKind, "mentions"}:                    {"block_ref"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:      {"block_text"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}: {"document_ref"},
+		}),
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
 		// own editor left with no question: the block fails the strict read, and the settlement
@@ -314,10 +325,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n",
 			}, "alice", http.StatusCreated)).Artifact.ID
+			unchangedBase = r.uploadBase(t, unchanged)
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
-				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n",
+				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n", "precondition": unchangedBase,
 			}, "alice", http.StatusCreated)
 			r.awaitTrue(t, "the upload writing version 2 of same.md", `
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)
@@ -428,10 +440,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			}
 		},
 		// The versions' blocks - the spec's new decision with its values, and the decisions
-		// document's section stated gone - the two versions' nodes, the decision's decided_by, the
-		// section's move, the Keep it carries with the keeper's node, and the retired document's
-		// node stated gone.
-		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, map[graphcensus.StoredKind][]string{
+		// document's section stated gone - the two versions' nodes, the spec's a query version with
+		// its definition_version, the decision's decided_by, the section's move, the Keep it
+		// carries with the keeper's node, and the retired document's node stated gone.
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, queryVersionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block", "block_gone"},
 			{refs.BlockNodeKind, graphstore.TupleDecidedBy}:         {"decision"},
 			{refs.BlockNodeKind, graphstore.TupleMovedTo}:           {"block_move"},
@@ -500,7 +512,10 @@ func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, mark
 	if err != nil {
 		t.Fatalf("index the decisions document's version 1: %v", err)
 	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueCaused(joined, b, indexed, graphstore.NoEvent) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexed, graphstore.NoEvent)
+		return nil
+	}); err != nil {
 		t.Fatalf("queue the cause of the decisions document's index: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {

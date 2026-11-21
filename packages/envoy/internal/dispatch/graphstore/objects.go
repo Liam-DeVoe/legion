@@ -121,16 +121,26 @@ const (
 
 // The attributes a version node and a query node carry, each a value of the node, since none
 // points at anything: a version's number and the time its row was written, each named as the
-// artifact_versions column that holds it; a query's name, the supertags it takes, and the node its
-// walk starts at. The last is `subtree` and not `from`, because no attribute of that name stands
-// among the store's type nodes (R2).
+// artifact_versions column that holds it; a query's name, the supertags it takes, the node its
+// walk starts at, and the version of the definition its record is built by, which a query version
+// carries too. The node its walk starts at is `subtree` and not `from`, because no attribute of
+// that name stands among the store's type nodes (R2).
 const (
-	AttributeNumber    = "number"
-	AttributeCreatedAt = "created_at"
-	AttributeQuery     = "query"
-	AttributeTakes     = "takes"
-	AttributeSubtree   = "subtree"
+	AttributeNumber            = "number"
+	AttributeCreatedAt         = "created_at"
+	AttributeQuery             = "query"
+	AttributeTakes             = "takes"
+	AttributeSubtree           = "subtree"
+	AttributeDefinitionVersion = "definition_version"
 )
+
+// QueryDefinitionVersion is the definition_version of every query this build writes (QueryNode),
+// and so of every query version a version write makes of one (VersionFacts): the version of the
+// layout of a query's record, the bytes docs' IssueTree.QueryRecord writes and an approval covers
+// the digest of (R14). A change of that layout - a field's order, its prefix, a value left in or
+// out, the order of the values or of the relations - raises it, so no approval of a version
+// written under one layout reads as an approval of a version written under another.
+const QueryDefinitionVersion = 1
 
 // The four queries of an issue (R8): each is a query node, a view of the issue's one tree.
 const (
@@ -156,24 +166,29 @@ func QueryTakes(query string) []string { return slices.Clone(queryTakes[query]) 
 
 // QueryNode is the node of a document a query replaces, addressed by its ref_key as the document's
 // node is (ArtifactRefKey), in the issue's project: supertag `query`, and as values the query's
-// name, the supertags it takes (QueryTakes) and the node its walk starts at, `issue:<KEY>`, the
-// root of the issue's tree (R1, R8). The issue is read off refKey, `<issue key>/<slug>`, since a
-// query node is always an issue's and no issue key holds a `/`. The values ride on the node's
-// Attributes, which its row projects, and AttributeFacts states them as the tuples they are, so a
-// writer writes the node with AttributeFacts(nil, node). No column of its artifacts row holds a
-// role (R8).
+// name, the supertags it takes (QueryTakes), the node its walk starts at, `issue:<KEY>`, the root
+// of the issue's tree (R1, R8), and the version of the definition its record is built by
+// (QueryDefinitionVersion). The issue is read off refKey, `<issue key>/<slug>`, since a query node
+// is always an issue's and no issue key holds a `/`. The values ride on the node's Attributes,
+// which its row projects, and AttributeFacts states them as the tuples they are, so a writer writes
+// the node with AttributeFacts(nil, node). No column of its artifacts row holds a role (R8).
 //
 // A document's node becomes a query node through Write, whose node move rewrites a stored node's
 // supertag and attributes, never through WriteArms, whose node arm moves nothing on a node already
-// there.
+// there. The query's writer owns the values it states, so the node does not restate the document
+// (Node.Restates false): a restating write keeps the attributes its row stores (writtenAttributes),
+// which would leave the row of a document made a query without the query's values, and a version
+// written after it would read no definition_version off that row (VersionOwnerColumns).
 func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Node {
 	issue, _, _ := strings.Cut(refKey, "/")
 	node := objectNode(KindArtifact, refKey, SupertagQuery, project, nil, who, at)
 	node.Attributes = map[string]any{
-		AttributeQuery:   query,
-		AttributeTakes:   QueryTakes(query),
-		AttributeSubtree: KindIssue + ":" + issue,
+		AttributeQuery:             query,
+		AttributeTakes:             QueryTakes(query),
+		AttributeSubtree:           KindIssue + ":" + issue,
+		AttributeDefinitionVersion: QueryDefinitionVersion,
 	}
+	node.Restates = false
 	return node
 }
 
@@ -192,11 +207,15 @@ const ArtifactQueryRoleSQL = `(select nullif(node.attributes->>'` + AttributeQue
 func VersionID(refKey string, number int) string { return refKey + "@v" + strconv.Itoa(number) }
 
 // VersionOwner is what a version's node takes of its document (VersionFacts): the document's
-// address, its project or its conversation's session, and whether the document's node is a query
-// node, which makes its versions query versions.
+// address, its project or its conversation's session, whether the document's node is a query
+// node, which makes its versions query versions, and the definition_version that query node holds
+// as the version is written, 0 where it holds none. An owner read after its version was written
+// names no definition version (graphcensus' owedVersionNodes), since the query node it reads then
+// can be newer than the version.
 type VersionOwner struct {
 	RefKey, Project, Session string
 	Query                    bool
+	DefinitionVersion        int
 }
 
 // VersionOwnerColumns is the select list that reads VersionOwner of the document the SQL
@@ -207,25 +226,31 @@ func VersionOwnerColumns(artifactID string) string {
 	owner := func(column string) string {
 		return `(select ` + column + ` from artifacts owner where owner.id = ` + artifactID + `)`
 	}
-	return owner("owner.ref_key") + ", " + owner("coalesce(owner.project_key, '')") + ", " +
-		owner("coalesce(owner.session_id, '')") + `, exists (
-			select 1 from artifacts owner
+	query := func(column string) string {
+		return `(select ` + column + ` from artifacts owner
 			join graph_nodes n on n.kind = '` + KindArtifact + `' and n.id = owner.ref_key
 			where owner.id = ` + artifactID + ` and n.supertag = '` + SupertagQuery + `')`
+	}
+	return owner("owner.ref_key") + ", " + owner("coalesce(owner.project_key, '')") + ", " +
+		owner("coalesce(owner.session_id, '')") + ", exists " + query("1") + ", coalesce(" +
+		query(`(n.attributes->>'`+AttributeDefinitionVersion+`')::int`) + ", 0)"
 }
 
 // Targets are the scan targets of VersionOwnerColumns, in its order.
-func (o *VersionOwner) Targets() []any { return []any{&o.RefKey, &o.Project, &o.Session, &o.Query} }
+func (o *VersionOwner) Targets() []any {
+	return []any{&o.RefKey, &o.Project, &o.Session, &o.Query, &o.DefinitionVersion}
+}
 
 // VersionFacts is what this store holds of one version of a document (R16): its node, addressed by
 // VersionID, supertag `document version`, or `query version` where its document is a query node,
 // in its document's project or between its conversation's parties, made by who at at, the time its
 // row was written; and, appended to tuples, its part_of its document's node and its number and its
-// time as values (AttributeFacts). A version is a fact of the write that stored it, which owns it
-// whole; the node restates the version (Node.Restates) all the same, so a write of it again keeps
-// a state a later write gave it. ok is false where the version's address is past the store's
-// bound, of which nothing is stated. The cause is Caused's to fill, or the sentinel where no event
-// recorded the write.
+// time as values (AttributeFacts), and for a query version whose owner names the definition
+// version its query node held as the version was written, that definition_version as a value too
+// (R14). A version is a fact of the write that stored it, which owns it whole; the node restates
+// the version (Node.Restates) all the same, so a write of it again keeps a state a later write
+// gave it. ok is false where the version's address is past the store's bound, of which nothing is
+// stated. The cause is Caused's to fill, or the sentinel where no event recorded the write.
 func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Actor, at time.Time) (node Node, facts []Tuple, ok bool) {
 	id := VersionID(owner.RefKey, number)
 	if !AddressFits(id) {
@@ -240,6 +265,9 @@ func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Acto
 	node.Attributes = map[string]any{
 		AttributeNumber:    number,
 		AttributeCreatedAt: at.UTC().Format(time.RFC3339Nano),
+	}
+	if owner.Query && owner.DefinitionVersion != 0 {
+		node.Attributes[AttributeDefinitionVersion] = owner.DefinitionVersion
 	}
 	tuples = append(tuples, Tuple{
 		FromKind: KindVersion, FromID: id, Kind: TuplePartOf,
@@ -410,13 +438,37 @@ var ErrBadParty = errors.New("a party is empty or holds white space")
 // named, or neither found, answers nothing, which a writer then states nothing of.
 func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (project string, parties []string, err error) {
 	var projectKey, session *string
-	if err := q.QueryRow(ctx, `
-		select coalesce((select project_key from issues where key = $1), a.project_key), a.session_id
-		from (select 1) as one
-		left join artifacts a on a.id = $2::uuid
-	`, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
+	if err := q.QueryRow(ctx, `select `+scopeRead, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
 		return "", nil, fmt.Errorf("read the project of what an item belongs to: %w", err)
 	}
+	project, parties = rowScope(projectKey, session)
+	return project, parties, nil
+}
+
+// CommentScopeOf is ScopeOf of a comment that belongs to issueKey or artifactID, read in the same
+// statement as whether the comment's row names its node (comments.node_kind): a comment left out
+// of the store, or one a process of the release before wrote and the backfill has not stated yet,
+// names none. It is the one read of an edit of a comment's words made for a run (api's
+// editComment).
+func CommentScopeOf(ctx context.Context, q Queryer, commentID string, issueKey, artifactID *string) (stored bool, project string, parties []string, err error) {
+	var projectKey, session *string
+	if err := q.QueryRow(ctx, `select (select node_kind is not null from comments where id = $3), `+scopeRead,
+		issueKey, artifactID, commentID).Scan(&stored, &projectKey, &session); err != nil {
+		return false, "", nil, fmt.Errorf("read whether the comment %s names its node, and the project of what it belongs to: %w", commentID, err)
+	}
+	project, parties = rowScope(projectKey, session)
+	return stored, project, parties, nil
+}
+
+// scopeRead is the select list and the source of ScopeOf's read, the issue's key bound at $1 and
+// the document's id at $2: the issue's project, else the document's, and the document's session.
+const scopeRead = `coalesce((select project_key from issues where key = $1), a.project_key), a.session_id
+		from (select 1) as one
+		left join artifacts a on a.id = $2::uuid`
+
+// rowScope is the scope ScopeOf answers for the project and the session its read found, either
+// nil where the row holds none.
+func rowScope(projectKey, session *string) (project string, parties []string) {
 	var owner, conversation string
 	if projectKey != nil {
 		owner = *projectKey
@@ -424,8 +476,7 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 	if session != nil {
 		conversation = *session
 	}
-	project, parties = SessionScope(owner, conversation)
-	return project, parties, nil
+	return SessionScope(owner, conversation)
 }
 
 // ThreadParties is the parties a message on no issue is between, read off its thread's root: who

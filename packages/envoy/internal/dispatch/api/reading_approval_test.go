@@ -18,9 +18,14 @@ import (
 // the decision, and never clears it. The approval carry's reading case (docs.readingCase) holds
 // that at the version the write stores: the document's current version reads approved through
 // GET /api/v1/artifacts/{id}, the read the Legion daemon's design gate makes
-// (packages/daemon/internal/dispatch HTTPClient.Approval and Approval.ApprovedLatest). The broken
-// state this fails on is a write that carries the approval onto the old version alone and leaves
-// the new current version unapproved, which a test reading the old approval would pass.
+// (packages/daemon/internal/dispatch HTTPClient.Approval and Approval.ApprovedLatest). A write
+// that writes a decided ask's block from the agent's text, which holds none of the block's
+// server-owned attributes, stores its version without them and the settlement after it stores
+// one more that puts them back (R10's kept form); R10's attribute case composes with the reading
+// case across the first and carries the approval alone across the second, so the current version
+// is the second. The broken state this fails on is a write that carries the approval onto an
+// older version alone and leaves the new current version unapproved, which a test reading the
+// old approval would pass.
 
 // The fixture spec of the reading tests, as c-reading-approval's fixture holds it: prose; the
 // agent's decision d1, uploaded by its session with its level of certainty and its reason, that
@@ -62,6 +67,13 @@ func readingCarrySentence(from int) string {
 	return fmt.Sprintf("Carried forward from the approval of version %d: the readings of its decisions and of its answered asks, which change no decision, were the whole change since it.", from)
 }
 
+// readingAndAttributeCarrySentence is the reason the reading case and R10's attribute case record
+// together, carrying the approval of version from to a version whose change since is both: the
+// changes of the two cases in docs.carryCases' order, joined by ", and " (docs.carryVerdictOver).
+func readingAndAttributeCarrySentence(from int) string {
+	return fmt.Sprintf("Carried forward from the approval of version %d: the readings of its decisions and of its answered asks, which change no decision, and the server-owned attributes of its ask blocks, which hold no answer, were the whole change since it.", from)
+}
+
 // readingFixture is one issue whose spec, readingSpec, a person approved once its asks held their
 // answers and its declined ask its decline: the issue, its spec, that approval, and the ask a3
 // leaves open and the one a4 declines.
@@ -73,9 +85,10 @@ type readingFixture struct {
 
 // approvedReadingSpec has the agent's session create an issue of project TEST holding readingSpec,
 // so d1 and d2 are the agent's decisions, waits for settlement to open the asks of a1 to a4, has
-// alice answer a1 and a2 and decline a4 with a note - none of which writes a version - and approve
-// the spec's latest version. It fails unless the spec is the check's fixture: d1 decided by the
-// session with its level of certainty and its reason, a3 open, and a4 declined with the note.
+// alice answer a1 and a2 and decline a4 with a note - each of which settles into a version of its
+// own, the ask block's kept state (R3) - and approve the spec's latest version once it owes no
+// settlement. It fails unless the spec is the check's fixture: d1 decided by the session with its
+// level of certainty and its reason, a3 open, and a4 declined with the note.
 func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Store, title string) readingFixture {
 	t.Helper()
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -96,6 +109,10 @@ func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Sto
 	requireDecidedByNode(t, database, "the agent's decision d1", spec.address("d1"), graphstore.KindSession, decidingSession)
 	requireValue(t, database, spec.address("d1"), refs.ValueUncertainty, "medium")
 	requireValue(t, database, spec.address("d1"), refs.ValueUncertaintyReason, readingReason)
+	// The answers and the decline each settle into a version of their own, the ask block's kept
+	// state (R3): the person approves once the spec owes no settlement, so the version approved is
+	// the latest and the versions each case's write stores follow it.
+	awaitSettled(t, database, issue.PrimaryArtifactID)
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	return readingFixture{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, approval: approval, open: asks["a3"], declined: asks["a4"]}
 }
@@ -129,13 +146,16 @@ func readingAsksOpened(t *testing.T, handler http.Handler, issueKey string, ques
 }
 
 // requireOpenAndDeclinedAsks fails unless version number of fixture's spec, stored as markdown,
-// holds the open ask a3 and the declined ask a4 as the agent wrote them, and the two asks still
-// read open, and declined by alice with her note.
+// holds the open ask a3 and the declined ask a4 as the agent wrote them, but for the server-owned
+// attributes a stored version keeps on a decided ask's block (R10's kept form: a4's
+// state="resolved"), which both sides are compared without (askServerAttribute), and the two asks
+// still read open, and declined by alice with her note.
 func requireOpenAndDeclinedAsks(t *testing.T, handler http.Handler, fixture readingFixture, number int, markdown string) {
 	t.Helper()
+	stored := askServerAttribute.ReplaceAllString(markdown, "")
 	for _, block := range []string{readingOpenAsk, readingDeclinedAsk} {
-		if !strings.Contains(markdown, block) {
-			t.Fatalf("version %d reads\n%s\nwant it holding the ask block\n%s", number, markdown, block)
+		if written := askServerAttribute.ReplaceAllString(block, ""); !strings.Contains(stored, written) {
+			t.Fatalf("version %d reads\n%s\nwant it holding the ask block\n%s\nbut for its server-owned attributes", number, markdown, written)
 		}
 	}
 	if open := readBlockAsk(t, handler, fixture.open); open.State != "open" {
@@ -159,15 +179,34 @@ func replacedOnce(t *testing.T, markdown, old, with string) string {
 
 // readingWrite is one write a session makes to the approved spec: the upload of the whole
 // document, made from the markdown the spec reads back, and the edit of it, as operations of the
-// edits route (nil where the edits route writes no such change); and a passage of the spec the
-// write leaves, which the read-back must hold, and one it takes away, which it must not ("" for
-// none).
+// edits route (nil where the edits route writes no such change); whether that edit writes a
+// decided ask's whole block from the agent's text, as every upload writes each decided ask's
+// block; and a passage of the spec the write leaves, which the read-back must hold, and one it
+// takes away, which it must not ("" for none).
 type readingWrite struct {
-	name   string
-	upload func(t *testing.T, markdown string) string
-	edit   []map[string]string
-	holds  string
-	drops  string
+	name        string
+	upload      func(t *testing.T, markdown string) string
+	edit        []map[string]string
+	rewritesAsk bool
+	holds       string
+	drops       string
+}
+
+// carryReasons is the reason of the carry at each version write stores past the approved version
+// from, oldest first, by an upload of the whole document when upload is set and by its edit
+// otherwise. An edit that leaves each decided ask's block as the live document holds it stores one
+// version, which keeps every block's server-owned attributes and which the reading case carries
+// alone. A write that writes a decided ask's block from the agent's text - every upload, since the
+// text an agent reads and uploads back carries none of those attributes, and an edit that
+// rewrites such a block whole - stores its version without that block's kept attributes, which
+// the reading case and R10's attribute case carry together, and the settlement after it stores
+// one more that puts them back (R10's kept form), which the attribute case carries alone, still
+// naming the version the person approved (docs.approvalOrigin).
+func (write readingWrite) carryReasons(from int, upload bool) []string {
+	if !upload && !write.rewritesAsk {
+		return []string{readingCarrySentence(from)}
+	}
+	return []string{readingAndAttributeCarrySentence(from), attributeRemovalSentence(from)}
 }
 
 // The writes that touch readings alone: one added under a decision, one added inside each
@@ -175,7 +214,8 @@ type readingWrite struct {
 // textblock, and a with that names blocks rewrites the typed block it lands in only where it
 // rewrites all of it, so the edits route writes a reading after an ask's question and never
 // after the options that follow the question: the ask that offers options takes its reading
-// through the upload alone.
+// through the upload alone, and the edit that writes one into the answered a2 rewrites a2's whole
+// block from the agent's text (rewritesAsk).
 var readingWrites = []readingWrite{
 	{
 		name: "a reading added under a decision",
@@ -196,7 +236,8 @@ var readingWrites = []readingWrite{
 		},
 		edit: []map[string]string{replaceOp(readingOpenWords,
 			"::::ask{#a2 urgency=\"med\" multiple=\"false\"}\n"+readingOpenWords+"\n\n:::reading{#r3}\n"+readingOfAnswer+"\n:::\n::::")},
-		holds: ":::reading{#r3}\n" + readingOfAnswer + "\n:::\n",
+		rewritesAsk: true,
+		holds:       ":::reading{#r3}\n" + readingOfAnswer + "\n:::\n",
 	},
 	{
 		name: "a reading added inside the answered ask that offers options",
@@ -243,40 +284,50 @@ var supersedingWrites = []readingWrite{
 }
 
 // writeReadingSpec makes write to fixture's spec as the session, through the upload of the whole
-// document when upload is set and through the edits route otherwise, waits for the version it
-// stores, one past the approved one, and answers the advice the write came back with. It reads
-// the document back and fails unless it holds what the write leaves, and the open and the
-// declined ask beside it (requireOpenAndDeclinedAsks).
-func writeReadingSpec(t *testing.T, handler http.Handler, fixture readingFixture, write readingWrite, upload bool) *testWriteAdvice {
+// document when upload is set and through the edits route otherwise, waits until the spec owes no
+// settlement and fails unless its latest version is versions past the approved one, the versions
+// the write stores (readingWrite.carryReasons), and answers the advice the write came back with.
+// It reads each of those versions back and fails unless it holds what the write leaves, and the
+// open and the declined ask beside it (requireOpenAndDeclinedAsks).
+func writeReadingSpec(t *testing.T, handler http.Handler, database *store.Store, fixture readingFixture, write readingWrite, upload bool, versions int) *testWriteAdvice {
 	t.Helper()
-	version := fixture.approval.Version + 1
+	first, latest := fixture.approval.Version+1, fixture.approval.Version+versions
 	var advice *testWriteAdvice
 	if upload {
 		uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/artifacts", map[string]any{
 			"actor": sessionActor(), "name": "spec.md", "content": write.upload(t, documentMarkdown(t, handler, fixture.artifactID)),
+			"precondition": uploadBase(t, handler, fixture.artifactID),
 		})
 		advice = adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
-		waitForArtifactVersion(t, handler, fixture.artifactID, version)
+		waitForArtifactVersion(t, handler, fixture.artifactID, first)
 	} else {
-		advice = agentEdit(t, handler, fixture.artifactID, version, write.edit...)
+		advice = agentEdit(t, handler, fixture.artifactID, first, write.edit...)
 	}
-	stored := versionMarkdown(t, handler, fixture.artifactID, version)
-	if !strings.Contains(stored, write.holds) || write.drops != "" && strings.Contains(stored, write.drops) {
-		t.Fatalf("%s: version %d reads back as\n%s\nwant it holding %q and not %q", write.name, version, stored, write.holds, write.drops)
+	awaitSettled(t, database, fixture.artifactID)
+	if stored := documentVersions(t, handler, fixture.artifactID); stored[len(stored)-1].Number != latest {
+		t.Fatalf("%s: once the spec owes no settlement its latest version is %d, want %d: the write stores %d versions past the approved version %d",
+			write.name, stored[len(stored)-1].Number, latest, versions, fixture.approval.Version)
 	}
-	requireOpenAndDeclinedAsks(t, handler, fixture, version, stored)
+	for version := first; version <= latest; version++ {
+		stored := versionMarkdown(t, handler, fixture.artifactID, version)
+		if !strings.Contains(stored, write.holds) || write.drops != "" && strings.Contains(stored, write.drops) {
+			t.Fatalf("%s: version %d reads back as\n%s\nwant it holding %q and not %q", write.name, version, stored, write.holds, write.drops)
+		}
+		requireOpenAndDeclinedAsks(t, handler, fixture, version, stored)
+	}
 	return advice
 }
 
-// requireApprovedAtTheCurrentVersion is the four reads after a write that touched readings alone:
-// GET /api/v1/artifacts/{id} answers the approval approved at a version equal to the latest
-// version, which is the version the write stored; the carried review, the document's newest,
-// approves that version in the approver's name and records the version the person approved; the
-// write's advice names no superseded approval; and the person's own approval still stands at its
-// own version.
-func requireApprovedAtTheCurrentVersion(t *testing.T, handler http.Handler, fixture readingFixture, advice *testWriteAdvice, what string) {
+// requireApprovedAtTheCurrentVersion is the four reads after a write that touched readings alone,
+// whose carry recorded reasons, one for each version the write stored past the approved one,
+// oldest first (readingWrite.carryReasons): GET /api/v1/artifacts/{id} answers the approval
+// approved at a version equal to the latest version, which is the last version the write stored;
+// the carried reviews, the document's newest, approve each of those versions in the approver's
+// name with its reason, which records the version the person approved; the write's advice names
+// no superseded approval; and the person's own approval still stands at its own version.
+func requireApprovedAtTheCurrentVersion(t *testing.T, handler http.Handler, fixture readingFixture, advice *testWriteAdvice, reasons []string, what string) {
 	t.Helper()
-	approved, written := fixture.approval.Version, fixture.approval.Version+1
+	approved, written := fixture.approval.Version, fixture.approval.Version+len(reasons)
 	reviews := documentReviews(t, handler, fixture.artifactID)
 	reached := 0
 	for _, review := range reviews {
@@ -298,7 +349,7 @@ func requireApprovedAtTheCurrentVersion(t *testing.T, handler http.Handler, fixt
 			what, fixture.artifactID, state, at, latest, reached, latest)
 	}
 	if got.Approval.LatestVersion != written {
-		t.Fatalf("%s: the latest version is %d, want %d, the one version the write stored", what, got.Approval.LatestVersion, written)
+		t.Fatalf("%s: the latest version is %d, want %d, the last of the %d versions the write stored", what, got.Approval.LatestVersion, written, len(reasons))
 	}
 	var person *servedReview
 	for index := range reviews {
@@ -306,18 +357,24 @@ func requireApprovedAtTheCurrentVersion(t *testing.T, handler http.Handler, fixt
 			person = &reviews[index]
 		}
 	}
-	if person == nil || person.Version != approved || person.State != "approved" {
-		t.Fatalf("%s: the reviews are %+v, want the person's approval %s still standing at version %d", what, reviews, fixture.approval.ID, approved)
+	if person == nil || person.Version != approved || person.State != "approved" || len(reviews) != len(reasons)+1 {
+		t.Fatalf("%s: the reviews are %+v, want the person's approval %s still standing at version %d and one carry for each of the %d versions the write stored",
+			what, reviews, fixture.approval.ID, approved, len(reasons))
 	}
-	carried := reviews[0]
-	if carried.ID == fixture.approval.ID || carried.Version != written || carried.State != "approved" || string(carried.Actor) != string(person.Actor) ||
-		carried.Reason == nil || *carried.Reason != readingCarrySentence(approved) {
-		reason := "<none>"
-		if carried.Reason != nil {
-			reason = *carried.Reason
+	// The reviews are listed newest first: the carry to the last version the write stored leads,
+	// and the person's own approval closes the list.
+	for offset, reason := range reasons {
+		version := approved + 1 + offset
+		carried := reviews[len(reasons)-1-offset]
+		if carried.ID == fixture.approval.ID || carried.Version != version || carried.State != "approved" || string(carried.Actor) != string(person.Actor) ||
+			carried.Reason == nil || *carried.Reason != reason {
+			recorded := "<none>"
+			if carried.Reason != nil {
+				recorded = *carried.Reason
+			}
+			t.Fatalf("%s: the review of version %d is %+v (reason %q), want the carry approving it as %s with the reason %q",
+				what, version, carried, recorded, person.Actor, reason)
 		}
-		t.Fatalf("%s: the newest review is %+v (reason %q), want the carry approving version %d as %s with the reason %q",
-			what, carried, reason, written, person.Actor, readingCarrySentence(approved))
 	}
 	if advice.SupersededApproval != nil {
 		t.Fatalf("%s: the write's advice reports the superseded approval %+v, want none: its version carries the approval", what, advice.SupersededApproval)
@@ -347,14 +404,16 @@ func requireSupersededByTheWrite(t *testing.T, handler http.Handler, fixture rea
 // A person approves the fixture spec at a version - the agent's decision with its level of
 // certainty, its reason and a reading under it, beside an answered ask, an open one and a declined
 // one with a note (approvedReadingSpec) - and a session writes a reading under one of its
-// decisions and reads the document back; the four reads after the write find the current version
-// approved (requireApprovedAtTheCurrentVersion), the open and the declined ask standing in the
-// version that carries (requireOpenAndDeclinedAsks). The same holds for a reading added inside
-// the person's answered ask, an edit of a reading's text and the removal of one, each written as
-// an upload of the whole document and as an edit of it (the reading inside the ask that offers
-// options as an upload alone: readingWrites). Four writes still supersede the approval: the
-// decision's own words, prose outside any reading, both at once beside a reading, and a reading
-// retyped into a decision (requireSupersededByTheWrite).
+// decisions and reads the document back once it owes no settlement; the four reads after the
+// write find the current version approved (requireApprovedAtTheCurrentVersion), the open and the
+// declined ask standing in each version that carries (requireOpenAndDeclinedAsks). The same holds
+// for a reading added inside the person's answered ask, an edit of a reading's text and the
+// removal of one, each written as an upload of the whole document and as an edit of it (the
+// reading inside the ask that offers options as an upload alone: readingWrites). A write that
+// writes a decided ask's block from the agent's text stores two versions, each carried
+// (readingWrite.carryReasons). Four writes still supersede the approval: the decision's own
+// words, prose outside any reading, both at once beside a reading, and a reading retyped into a
+// decision (requireSupersededByTheWrite).
 func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -379,10 +438,11 @@ func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
 			}
 			t.Run(write.name+", by "+how, func(t *testing.T) {
 				spec := fixture(t)
-				advice := writeReadingSpec(t, handler, spec, write, upload)
-				requireApprovedAtTheCurrentVersion(t, handler, spec, advice, write.name+", by "+how)
+				reasons := write.carryReasons(spec.approval.Version, upload)
+				advice := writeReadingSpec(t, handler, database, spec, write, upload, len(reasons))
+				requireApprovedAtTheCurrentVersion(t, handler, spec, advice, reasons, write.name+", by "+how)
 				t.Logf("%s, by %s: version %d reads approved, carried from the person's approval of version %d",
-					write.name, how, spec.approval.Version+1, spec.approval.Version)
+					write.name, how, spec.approval.Version+len(reasons), spec.approval.Version)
 			})
 		}
 	}

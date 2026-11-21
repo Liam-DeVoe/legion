@@ -176,7 +176,7 @@ func TestTheStoreCensusHoldsEachRowToTheTuplesThatAnswerIt(t *testing.T) {
 }
 
 // The two block kinds hold a block to what the block index projects of it and to nothing else
-// (dispatch://INFRA-1950, R11 and R12). A tuple another writer states out of a document's block -
+// (R11 and R12 of the spec). A tuple another writer states out of a document's block -
 // a requirement's constrained_by to a constraint - is no link a block_refs row names, so the
 // block_ref kind reads only the kinds refs.IndexBlocks writes there (refs.BlockRefKindsSQL). And
 // a block of a lens's finding, whose id names its lens, is a block node no document holds, so

@@ -145,7 +145,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			if err != nil {
 				return model.Ask{}, err
 			}
-			if err := ledger.Queue(func(b *store.WriteBatch) error { return settled.Queue(ctx, b) }); err != nil {
+			if err := ledger.Queue(settled.Queue); err != nil {
 				return model.Ask{}, err
 			}
 			ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
@@ -531,7 +531,8 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	}
 	// What the transition stated on the ask's node learns the event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(ctx, b, held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		return model.Ask{}, nil, err
 	}

@@ -21,7 +21,11 @@ import (
 // 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
 // not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
 // build made for the new version installs the old one. A new type migration also joins
-// typeMigrations in cmd/dispatch/supertag_nodes_test.go, which runs each a second time.
+// store.TypeMigrations (internal/dispatch/store/type_migrations.go), each of which cmd/dispatch's
+// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt runs a second time. Written after the
+// store's backfill, it writes under the migration census's bounded-write rule and cannot run twice
+// unchanged, so it joins literalTypeMigrations in cmd/dispatch/supertag_nodes_test.go too, whose
+// rows the second run takes out before it runs the migration again.
 //
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
@@ -650,9 +654,12 @@ func defaultAttributes(typ BlockTypeSchema) Attrs {
 // renderTypedAttributes), as the browser editor reads it. An attribute this build cannot create is
 // left out, so that no write of this build adds it. A server attribute has no written default
 // either: the server writes it into a block or nobody does, and a block it is not written into -
-// an ask's `state` once the fleet keeps an answer on the ask's node alone (docs'
-// rollWindowAskAttributes) - is read, taken at an agent's boundary (StripServerOwnedAttrs) and
-// rendered without it.
+// an open ask's, whose `state` no write keeps once the fleet is one build (docs' keptAskState) -
+// is read, taken at an agent's boundary (StripServerOwnedAttrs) and rendered without it. That is
+// why an open ask keeps no `state`: an ask an agent's upload or `doc-edit` adds is stored in the
+// route's version before settlement opens it, so a `state="open"` written then would cost a
+// version of its own, whose only change is that attribute; an ask a browser adds has no version
+// until settlement, whose one version would carry both the block and its state.
 func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
 	if !hasWrittenDefault(typ, attr) {
 		return nil, false

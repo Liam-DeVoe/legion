@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -15,8 +16,8 @@ import (
 )
 
 // The sessions of the ask seedSessionAsk writes: the session that asks it, which follows its own
-// ask as every asking session does (asks.FollowAuthor, which appends no follower event), and the
-// session that follows it through the follow route, which appends an ask.follower_added.
+// ask as every asking session does (asks.PlanFollowAuthor, which appends no follower event), and
+// the session that follows it through the follow route, which appends an ask.follower_added.
 const (
 	sessionAsker    = "erase-asking-session"
 	sessionFollower = "erase-following-session"
@@ -101,7 +102,7 @@ func TestTheCensusHoldsTheSessionsOfAnErasedAskToTheirNodes(t *testing.T) {
 func requireSessionsCounted(t *testing.T, database *store.Store, when string) {
 	t.Helper()
 	requireCensusZero(t, database, when)
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("the store census %s: %v", when, err)
 	}

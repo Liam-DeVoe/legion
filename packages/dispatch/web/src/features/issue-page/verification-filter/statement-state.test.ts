@@ -6,6 +6,7 @@ import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
 import { treeRows } from "../tree-fold";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   COMMIT_CHARACTERS,
@@ -419,19 +420,11 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     document: Artifact,
     position: number,
     text: string
-  ): TreeAnswerNode => ({
-    attributes: {},
-    author: [],
-    document: { artifact_id: document.id, position, slug: document.slug },
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text,
-    visibility: "project",
-  });
+  ): TreeAnswerNode =>
+    treeNode(id, supertag, parent, {
+      document: { artifact_id: document.id, position, slug: document.slug },
+      text,
+    });
   const issue: IssueDetails = {
     advances: [],
     advances_revision: 0,
@@ -493,36 +486,26 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     },
     // The tree read's answer: the statement under the issue, and each check under it, which it
     // serves.
-    tree: {
-      converted: false,
-      cursor: null,
-      nodes: [
+    tree: treeAnswer(
+      [
         answered("r1", "requirement", ISSUE_KEY, spec, 0, "The page draws it."),
         ...checks.map((one, at) =>
           answered(one.block_id, "check", "r1", verification, at, one.text)
         ),
-        // Each result under its check, as the read answers it.
+        // Each result under its check, as the read answers it, its observed text read as the
+        // results read reads it.
         ...checks.flatMap((one) =>
-          (one.results ?? []).map(
-            (held): TreeAnswerNode => ({
-              attributes: {},
-              author: [],
-              id: held.id,
+          (one.results ?? []).map((held) =>
+            treeNode(held.id, "result", one.block_id, {
               made_at: held.created_at,
-              parent: one.block_id,
-              rank: null,
-              state: "live",
-              supertag: "result",
               text: held.observed,
-              visibility: "project",
+              ...(held.observed_tree === undefined ? {} : { text_tree: held.observed_tree }),
             })
           )
         ),
       ],
-      tree: null,
-      tuples: checks.map((one) => ({ from: one.block_id, kind: "serves", to: "r1" })),
-      view_of: null,
-    },
+      checks.map((one) => treeTuple("serves", one.block_id, "r1"))
+    ),
     issue,
     results: { checks: [...checks], issue: ISSUE_KEY, verification_artifact_id: verification.id },
   });

@@ -72,7 +72,7 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
 	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
@@ -131,14 +131,16 @@ type Actor struct {
 // Recorded is the actor as a write records it: the request's credential dropped. A stored actor
 // is decoded from JSON, which carries no credential, so the credential never reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
-// and the names a credential carries (SameCredential); the one == left is the document
-// rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document service must
-// carry none. actorFrom drops it here, bearerSessionActor builds a session actor without it, and
-// actingPerson answers the person with its Act alone. The handlers that record optionalActor's
-// own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
-// issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
-// write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope). Proven is a fact of the record and stays.
+// and the names a credential carries (SameCredential); the one == left that decides anything is
+// the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
+// service must carry none. The store's writer compares recorded actors with == only to reuse one
+// encoding of a writer across the rows a write binds (graphstore.writerEncoder), and two equal
+// recorded actors encode alike. actorFrom drops it here, bearerSessionActor builds a session
+// actor without it, and actingPerson answers the person with its Act alone. The handlers that
+// record optionalActor's own actor for a browser caller (messages.go, message_delivery.go,
+// comment_delivery.go, issue_claim.go) keep the cookie's credential in memory and hand that actor
+// to no document write. A layer that needs the request's own credential reads it from
+// optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	return a
@@ -149,8 +151,19 @@ func (a Actor) Recorded() Actor {
 // claim's holder against a caller, and an event's actor against the claimant it names. Where
 // the credential itself must be told apart rather than the writer, SameCredential compares the
 // names too.
+//
+// A person's id is compared in its canonical form (sameLogin), on both sides: a stored login may
+// keep the case an earlier build wrote it in, and no backfill rewrites it, so a comment stored
+// under "Alice" is alice's still. Every other kind's id - a session's, a system writer's - is no
+// login, and is compared byte for byte.
 func (a Actor) SameAs(other Actor) bool {
-	return a.Kind == other.Kind && a.ID == other.ID
+	if a.Kind != other.Kind {
+		return false
+	}
+	if a.Kind == "user" {
+		return sameLogin(a.ID, other.ID)
+	}
+	return a.ID == other.ID
 }
 
 // SameCredential reports whether two actors are the one credential: the kind and the id SameAs
@@ -161,26 +174,45 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
+// Owner is a person's login, and is compared in its canonical form (sameLogin) on both sides,
+// as SameAs compares a person's id: a stored owner may keep the case an earlier build wrote it
+// in, so a going run asked under "Dana@Example.COM" is the run of the token whose owner now reads
+// dana@example.com. Service is a workload's subject, no login, and is compared byte for byte.
+//
 // Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
 // for and whether its credential proved its id, which two requests of one credential differ in,
 // so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
-	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
+	return a.SameAs(other) && sameActorName(a.Owner, other.Owner, sameLogin) && sameActorName(a.Service, other.Service, sameName)
 }
 
-// sameActorName compares one optional name of two actors: both unset, or both the same name.
-func sameActorName(left, right *string) bool {
+// sameActorName compares one optional name of two actors: both unset, or both set and the same
+// name as same compares them.
+func sameActorName(left, right *string, same func(left, right string) bool) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	return *left == *right
+	return same(*left, *right)
+}
+
+// sameLogin reports whether two logins name one person: each is read in its canonical form
+// (CanonicalLogin), so two spellings that differ only in the case of their ASCII letters or in
+// the white space around them are one login.
+func sameLogin(left, right string) bool {
+	return CanonicalLogin(left) == CanonicalLogin(right)
+}
+
+// sameName reports whether two names are the one name, byte for byte.
+func sameName(left, right string) bool {
+	return left == right
 }
 
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
-// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// and nothing else folded (fold.Login, the one spelling of that rule, which the broker's
+// record.CanonicalLogin reads too), the form the identity implementations name a person by and
 // the people table holds.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -306,15 +338,22 @@ var GatedStepsKnown = []string{GatedStepCriteria, GatedStepSpec}
 // State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
 // priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
 // the first write left them however often the priority is written again.
+//
+// DescriptionTree is the ProseMirror tree Description is shown as, present only for a caller
+// that sent `Dispatch-Trees: 1` and only for a description that is not empty. It stands on this
+// row rather than on a read shape of the api package's own (display_trees.go), because no event
+// payload carries a priority: `priority.updated` names the id and the change alone
+// (PriorityEventPayload).
 type Priority struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Owner       string    `json:"owner"`
-	Rank        string    `json:"rank"`
-	State       string    `json:"state"`
-	MadeAt      time.Time `json:"made_at"`
-	MadeBy      Actor     `json:"made_by"`
+	ID              string      `json:"id"`
+	Title           string      `json:"title"`
+	Description     string      `json:"description"`
+	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
+	Owner           string      `json:"owner"`
+	Rank            string      `json:"rank"`
+	State           string      `json:"state"`
+	MadeAt          time.Time   `json:"made_at"`
+	MadeBy          Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
@@ -849,7 +888,7 @@ type SearchResponse struct {
 	Degraded string `json:"degraded,omitempty"`
 	// Query is how the words were read and Filters what the search narrowed every leg by: the
 	// route answers both on every path, so a caller never has to guess which of its chips the
-	// search applied (api.searchQueryReading, api.searchAppliedFilters).
+	// search applied (api's searchReading, api.searchAppliedFilters).
 	Query   SearchQueryReading `json:"query"`
 	Filters SearchFilters      `json:"filters"`
 }
@@ -1388,7 +1427,8 @@ type SupersededApproval struct {
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
 // results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository or, for
+// one result, of a repository the issue links a pull request in (CheckBasis.Repo).
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
@@ -1444,9 +1484,16 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is.
+// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// repository, one the check's issue links a pull request in and does not resolve to: the head
+// of a pull request the issue links there, and a branch of it that a result whose commit is
+// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
+// which is of the repository the check's issue resolves to or is the commit a reader named, so
+// a reader can tell pull request #7 or branch main of the linked repository from those of the
+// issue's own.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
@@ -1473,11 +1520,17 @@ type CheckPassStands struct {
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
 // (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
-// which CheckResult.CheckWordsMoved answers on its own.
+// which CheckResult.CheckWordsMoved answers on its own. Repo is the `owner/repo` of the linked
+// repository an other_commit or unknown answer is about: the one the result's commit is taken to
+// be of (CheckResult.CommitRepo), one the check's issue links a pull request in and does not
+// resolve to, which decided the answer, so a reader names that repository and not the issue's
+// own. It is empty for every answer about the issue's own repository, and for at_basis, whose
+// basis names a linked repository itself (CheckBasis.Repo).
 type ResultCommitStands struct {
 	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
 	Basis  *CheckBasis `json:"basis,omitempty"`
 	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+	Repo   string      `json:"repo,omitempty"`
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
@@ -1521,6 +1574,18 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// CommitRepo is the linked repository the record route took CommitSHA to be of
+	// (check_results.commit_repo), one the check's issue links a pull request in and does not
+	// resolve to: one with an open or merged linked pull request that GitHub said holds the
+	// commit, and no other. A linked read that did not answer, where no repository was shown to
+	// hold the commit, and a failed read of the issue's links store no row at all. It is nil for
+	// every other result: a commit of the issue's own repository, a commit whose read there did
+	// not answer and that no linked repository was shown to hold, and a result nothing was asked
+	// about. The results read compares a branch check's result with that repository's branches,
+	// reads a `before_merge` result's pull requests through it, and decides such a result by it
+	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
+	// unknown answer. It is no part of the wire shape.
+	CommitRepo *string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
@@ -1634,19 +1699,38 @@ type IssueCoverage struct {
 // parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
 // are: the words with no link or reference, and the block's whole content as a tree. State is
 // the node state the store holds for the requirement's block (graphstore.NodeStates), live where
-// it holds no row: a requirement at proposed is a question still open, which raises no gap, as
-// the reasoning nodes' rule for a proposed node says. A server of the release before answers
-// no State during a roll, so the OpenAPI document marks it optional (`required:"false"`) and a
-// reader takes a requirement that carries none as live.
+// it holds no row: a requirement at proposed is a question still open, which raises no gap (spec
+// requirement r-proposed). A server of the release before answers no State during a roll, so the
+// OpenAPI document marks it optional (`required:"false"`) and a reader takes a requirement that
+// carries none as live. Coverage and Proof are the coverage read over the tuples' own answer
+// (api's issueCoverageOverTuples), and absent from the read that walks the spec's markdown:
+// Coverage is `gap` for a requirement no check serves, `unproven` for one no check of which holds
+// a passing result against the words it holds now, `proved` for one a check of which does,
+// `proposed` for a requirement still a question, which raises no gap, and `closed` for one whose
+// node or a node above it is overtaken, which lists nothing; Proof is each check that serves it,
+// once, with where its newest result that stands leaves it.
 type RequirementCoverage struct {
-	BlockID   string      `json:"block_id"`
-	Ref       string      `json:"ref"`
-	Text      string      `json:"text"`
-	TextTree  DisplayTree `json:"text_tree,omitempty"`
-	State     string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
-	Checks    int         `json:"checks"`
-	PlanTasks int         `json:"plan_tasks"`
-	Gaps      []string    `json:"gaps"`
+	BlockID   string             `json:"block_id"`
+	Ref       string             `json:"ref"`
+	Text      string             `json:"text"`
+	TextTree  DisplayTree        `json:"text_tree,omitempty"`
+	State     string             `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Checks    int                `json:"checks"`
+	PlanTasks int                `json:"plan_tasks"`
+	Gaps      []string           `json:"gaps"`
+	Coverage  string             `json:"coverage,omitempty" enum:"gap,unproven,proved,proposed,closed"`
+	Proof     []RequirementProof `json:"proof,omitempty"`
+}
+
+// RequirementProof is one check serving a requirement, as the coverage read over the tuples
+// answers it: the check's store id and its issue, and Proves, where its newest result that stands
+// leaves it: `none` where it holds no result or only retracted ones, `fail` where that result
+// failed, `reworded` where it passed against a text sum the check no longer holds, and `pass`
+// where it passed against the words the check holds now.
+type RequirementProof struct {
+	Check  string `json:"check"`
+	Issue  string `json:"issue"`
+	Proves string `json:"proves" enum:"none,fail,reworded,pass"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -1704,7 +1788,10 @@ type ArtifactHumanEditedEventPayload struct {
 // sets and nothing that only indexes blocks does. Document is, for a block of an issue room
 // indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
 // room holds it (dispatch://INFRA-1253 R5), which the block index states as the block's
-// in_document; "" for a block of the indexed document itself. No route answers it.
+// in_document; "" for a block of the indexed document itself. No route answers it. TextTree is
+// the display tree of the block's whole slice of the markdown (From to To), the text the block
+// index stores for it, which the blocks routes answer only to a caller that sent
+// `Dispatch-Trees: 1`, and which the tree read answers for the same block.
 type ArtifactBlock struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
@@ -1715,20 +1802,24 @@ type ArtifactBlock struct {
 	Attributes    []BlockAttributeValue `json:"attributes,omitempty"`
 	Table         *BlockTable           `json:"table,omitempty"`
 	Embedding     string                `json:"embedding,omitempty"`
+	TextTree      DisplayTree           `json:"text_tree,omitempty"`
 	DescendantIDs []string              `json:"-"`
 	Document      string                `json:"-"`
 }
 
 // TextAsk is one entry of the asks member the text routes answer (GET
 // /api/v1/artifacts/{id}/text and its issue and project slug variants): an ask block of the
-// markdown they serve, in document order, with its answer as the ask's node holds it. A person's
-// answer is held once, on the ask's node, so that markdown holds none of it; each field carries
-// the name and the value the server-owned attribute of the block carried in the release before.
-// State is the block's ask's state; for a copy of an ask of another document of the same owner,
-// the source's, with CopiedFrom the source's id and CopiedFromDocument its document's dispatch://
-// address; for a block of a closed issue's document that no settlement has indexed, resolved; and
-// absent for any other block no ask indexes yet, a question nobody has opened, which the text
-// routes showed with no state before they took the attributes off. AnsweredBy, AnsweredAt (RFC
+// markdown they serve, in document order, with its answer as the ask's node holds it - its
+// answer_state, answered_by, answered_at, selected and answer tuples, read as the Decisions read's
+// entries read them - and the asks row saying only which ask indexes the block. A person's answer
+// is held once, on the ask's node, so that markdown holds none of it; each field carries the name
+// and the value the server-owned attribute of the block carried in the release before. State is
+// the block's ask's state, open where its node holds none; for a copy of an ask of another
+// document of the same owner, the source's, with CopiedFrom the source's id and
+// CopiedFromDocument its document's dispatch:// address; for a block of a closed issue's document
+// that no settlement has indexed, resolved; and absent for any other block no ask indexes yet, a
+// question nobody has opened, which the text routes showed with no state before they took the
+// attributes off. AnsweredBy (the answerer's login as the node's person holds it), AnsweredAt (RFC
 // 3339), Selected (empty where no option was chosen) and Answer (absent where the answer has no
 // words) are present on an answered ask alone.
 type TextAsk struct {
@@ -2163,7 +2254,9 @@ type AskEditEventPayload struct {
 	// (requested_version below the version it named), which changes only the version the request
 	// names, and a settlement's move that keeps the request waiting on the human because the new
 	// version, which a settlement wrote, holds byte for byte the text of the version the request
-	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
+	// names, or differs from it only in the server-owned attributes of its ask blocks, each block
+	// agreeing with its ask, as the version a person's answer, resolve or decline writes
+	// (docs.MoveApprovalAsk), which changes no text the person was asked about; a
 	// version a route writes moves the request to its agent whatever text it holds. Like a human's
 	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
 	// follower (the outbox's follower routes), while the event log and the event feed carry it as
@@ -3845,9 +3938,8 @@ type DecisionKeep struct {
 // CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
 // last changed in, and Stale true when that text changed after the tuple was written. The three
-// are absent where the store holds none.
-//
-// kept for one release: compat-objects
+// are absent where the store holds none. It is Decision's, and the Decisions read's `entries`
+// answer it as each entry's `shaped`, so it stays when the old `decisions` member goes.
 type DecisionLink struct {
 	FromBlock        string     `json:"from_block"`
 	To               GraphNode  `json:"to"`
@@ -3859,15 +3951,14 @@ type DecisionLink struct {
 	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
-// Decision is one decision node of an issue in the shape the release before's Decisions read
-// answered (decisionread.Decisions): an agent's `decision` block, Kind "agent", or a person's
-// answered ask, Kind "person". Heading is the ask's question or the decision's first paragraph;
-// Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
-// node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
-// the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
-// old `decisions` member answers it for one release.
-//
-// kept for one release: compat-objects
+// Decision is one decision node of an issue as decisionread.Decisions answers it, the one reader
+// of a decision (plan H1): an agent's `decision` block, Kind "agent", or a person's answered ask,
+// Kind "person". Heading is the ask's question or the decision's first paragraph; Unsure is true
+// where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the node.
+// ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is the
+// sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
+// `entries` and the Keep take their members from it, so it stays when the read's old `decisions`
+// member, which answers it whole for one release, goes.
 type Decision struct {
 	BlockID string `json:"block_id"`
 	Heading string `json:"heading"`

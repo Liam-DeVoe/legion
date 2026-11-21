@@ -286,6 +286,44 @@ func queueDepth(gate *conditionalEditGate) int {
 	return gate.queued
 }
 
+// An upload's precondition names the token of the version it replaces and nothing else, so each
+// shape an upload cannot mean is refused in words true of an upload: a blocks guard names part
+// of a tree the upload rewrites whole, and an object naming nothing names no token at all.
+// Neither is answered with the doc-edit rule about selecting document or blocks, which offers a
+// choice an upload does not have.
+func TestValidateUploadPreconditionRefusesInTheWordsOfAnUpload(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		precondition model.EditPrecondition
+		want         string
+	}{
+		{
+			name:         "a blocks guard",
+			precondition: model.EditPrecondition{Blocks: []model.EditBlockPrecondition{{ID: "intro", Token: "sha256:" + strings.Repeat("a", 64)}}},
+			want:         "an upload's precondition names the document token and nothing else",
+		},
+		{
+			name:         "an object naming nothing",
+			precondition: model.EditPrecondition{},
+			want:         "an upload's precondition names the token of the version it replaces as document",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateUploadPrecondition(test.precondition)
+			var invalid *ErrInvalidPrecondition
+			if !errors.As(err, &invalid) || invalid.Reason != test.want {
+				t.Fatalf("ValidateUploadPrecondition(%#v) = %v, want ErrInvalidPrecondition saying %q", test.precondition, err, test.want)
+			}
+			if strings.Contains(err.Error(), "exactly one of document or blocks") {
+				t.Fatalf("the refusal reads %q, want no choice between document and blocks, which an upload does not have", err)
+			}
+		})
+	}
+	if err := ValidateUploadPrecondition(model.EditPrecondition{Document: "sha256:" + strings.Repeat("a", 64)}); err != nil {
+		t.Fatalf("an upload naming the document token = %v, want it kept", err)
+	}
+}
+
 func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 	pmdoc.SetBlockIDGenerator(func() string { return "generated-body" })
 	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
@@ -342,9 +380,10 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 
 // The answer route's write into an ask's block (KeepAskBlockInStep) puts the ask's state and
 // answer into the block while another build serves, whose pages read them there, as the release
-// before wrote them; on a fleet of one build it writes nothing, and the answer, held on the ask's
-// node and its row, changes no byte of the document.
-func TestKeepAskBlockInStepWritesTheAnswerOnlyWhileAnotherBuildServes(t *testing.T) {
+// before wrote them; on a fleet of one build it writes the state, the answerer and the time
+// (keptAskState), which the release before's readers of a stored version read, and never the
+// answer's words, which the ask's node and its row alone hold.
+func TestKeepAskBlockInStepWritesTheAnswersWordsOnlyWhileAnotherBuildServes(t *testing.T) {
 	const block = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	for _, twoBuilds := range []bool{false, true} {
 		name := "a fleet of one build"
@@ -365,7 +404,7 @@ func TestKeepAskBlockInStepWritesTheAnswerOnlyWhileAnotherBuildServes(t *testing
 			change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, Text: &words, At: at})
 			change.Who, change.At = alice, at
 			settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, alice, change)
-			want := block
+			want := strings.Replace(block, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-12T13:20:00Z"}`, 1)
 			if twoBuilds {
 				want = strings.Replace(block, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-12T13:20:00Z" selected="[&#x22;Yes&#x22;]" answer="Yes."}`, 1)
 			}
@@ -3457,8 +3496,9 @@ func TestApplyOpsMovingAnOpenAskBlockKeepsItsAsk(t *testing.T) {
 // Moving an answered ask's block keeps its answer: the ask stays answered, with no retraction,
 // reopen or repair, and the asks member an agent reads beside the text answers the block at its
 // new place (TextWithAsks). The ask is answered as the answer route answers it, on its node and its
-// row alone (asks.Settle): no byte of the document holds the answer, so
-// the document reads the same before and after it.
+// row (asks.Settle), and the settlement after it writes into the block what a version keeps of the
+// answer on a fleet of one build - its state, who answered and when (keptAskState) - and none of
+// its words or selection, which the move carries along with the block.
 func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	service, artifactID, askID, settle, askEvents := blockAskHarness(t)
 	answeredAt := time.Date(2026, 9, 15, 17, 37, 34, 0, time.UTC)
@@ -3466,14 +3506,15 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	change.Who, change.At = model.Actor{Kind: "user", ID: "alice"}, answeredAt
 	settleTheDocumentsAsk(t, service, artifactID, change)
 	const answered = `#decision state="answered" answered_by="alice" answered_at="2026-09-15T17:37:34Z" selected=["REST"]` + "\n"
+	keptBlock := strings.Replace(askFixture, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-15T17:37:34Z"}`, 1)
 	settle()
-	waitForDocumentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
+	waitForDocumentText(t, service, artifactID, keptBlock+"\nContext ends with no drift.\n")
 	waitForAgentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n", answered)
 
 	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "move", Block: "decision", After: "no drift."}}, editingSession, nil); err != nil {
 		t.Fatalf("move ask block: %v", err)
 	}
-	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture)
+	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n\n"+keptBlock)
 	settle()
 	waitForAgentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture, answered)
 	if state, _ := askRowState(t, service, askID); state != "answered" {

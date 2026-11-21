@@ -171,11 +171,20 @@ corpus_issue() {
 }
 
 # corpus_upload SECTION ISSUE NAME FILE: uploads FILE as the document NAME of ISSUE, as the agent.
-# A name ISSUE holds already writes that document's next version. Sets corpus_doc and corpus_slug.
+# A name ISSUE holds already writes that document's next version, and that upload names the token
+# of the version it replaces, which the earlier release refuses an upload without; the first
+# version names none. Sets corpus_doc and corpus_slug.
 corpus_upload() {
-  local section="$1" issue="$2" name="$3" file="$4"
-  jq -cn --arg n "$name" --rawfile c "$file" --argjson a "$(tree_actor)" \
-    '{name: $n, content: $c, actor: $a}' >"$work/upload.json"
+  local section="$1" issue="$2" name="$3" file="$4" token=""
+  tree_send GET "/api/v1/issues/$issue/artifacts/${name//./-}/text"
+  case "$status" in
+    200) tree_field "$section" "read the token of $name on $issue" .token && token="$tree_value" ;;
+    404) ;;
+    *) fail "$section" "read the token of $name on $issue" "$tree_last_request answered HTTP $status: $(body)" ;;
+  esac
+  jq -cn --arg n "$name" --rawfile c "$file" --arg t "$token" --argjson a "$(tree_actor)" \
+    '{name: $n, content: $c, actor: $a} + (if $t == "" then {} else {precondition: {document: $t}} end)' \
+    >"$work/upload.json"
   tree_send POST "/api/v1/issues/$issue/artifacts" "@$work/upload.json"
   tree_want 201 "$section" "upload $name to $issue"
   tree_field "$section" "upload $name to $issue" .artifact.id

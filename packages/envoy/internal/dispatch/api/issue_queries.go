@@ -64,7 +64,7 @@ var (
 // the relation read, the inheritance walk it climbs and the columns' join, and answers the three
 // columns as the constants an issue with no relation reads as, so one scan and one argument list
 // serve both texts. Its one caller is the speed test that holds the relation read to twice the
-// time of the same page without it; every text the server runs passes true. The `advances`
+// work of the same page without it; every text the server runs passes true. The `advances`
 // filter term stays in both, because it is a filter rather than a read: a request that names no
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
@@ -1022,7 +1022,7 @@ var issueRowStatement = `
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
+		       coalesce((select a.id::text ` + refs.DecisionsDocumentOf("i.key") + `), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,

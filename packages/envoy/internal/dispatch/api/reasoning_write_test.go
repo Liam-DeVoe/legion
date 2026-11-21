@@ -17,7 +17,7 @@ import (
 
 // TestTheReasoningWriteStatesTheWriterItsRecordNames holds the one write path of a lens, a
 // finding, a risk and a constraint (writeReasoningNodes) to what it states of who wrote each node
-// (dispatch://INFRA-1950/spec#b-r-author, #b-r-node-visibility): a project node is made by the
+// (spec requirements r-author and r-node-visibility): a project node is made by the
 // recorded actor and holds its authored_by tuple to the writer graphstore.AuthorOf names of that
 // actor, whose own node the write makes, on a cookie, a personal token and the shared bearer
 // alike; an author-only node is made by the credential that proved the caller; `author` on the
@@ -326,7 +326,7 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("begin append %d: %v", attempt+1, err)
 			}
-			if err := writeReasoningPointer(graphstore.WithRun(ctx, uuid.NewString()), tx, reasoningPointer{issue: issue.Key, action: pointerAppend, pointer: pointer}); err != nil {
+			if err := writeReasoningPointer(store.WithRun(ctx, uuid.NewString()), tx, reasoningPointer{issue: issue.Key, action: pointerAppend, pointer: pointer}); err != nil {
 				_ = tx.Rollback(ctx)
 				t.Fatalf("append %d of the triggered_by: %v", attempt+1, err)
 			}

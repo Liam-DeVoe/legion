@@ -11,11 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // rollbackEdge is one edge graph_edges answers, by its ends and its kind.
@@ -114,6 +118,178 @@ type movedInPlace struct {
 	oldArm     string
 }
 
+// rollbackRelationTables are the tables graph_edges reads an issue's and a component's relations
+// out of: each old arm reads its own, and the tuple arm probes the one whose row projects an edge.
+var rollbackRelationTables = []string{"issues", "issue_links", "components", "component_depends", "issue_component_members"}
+
+// seedRollbackScale writes into project ROLL, by SQL, 500 issues, ROLL-1001 to ROLL-1500, each but
+// the first a child of the issue at half its number and each waiting on the 100 issues after it,
+// 50,000 issue links; 5,000 components of ROLL's source, bulk-1 to bulk-5000, each a part of the
+// component at half its number (bulk-1 of legion) and each depending on the 10 after it, 50,000
+// dependencies; and 100 components each issue holds as its own, 50,000 issue components. The rows
+// of an even issue and of an even component are the ones this build's writers leave: each names
+// its node, which stands, made as issueNode's and componentNode's were, and so does the tuple each
+// row projects, which the tuple arm answers. The rows of an odd one are the ones a build of the
+// release before leaves, naming no node, which the old arms answer. Then it analyzes the database.
+func seedRollbackScale(t *testing.T, database *store.Store, issueNode, componentNode string) {
+	t.Helper()
+	ctx := context.Background()
+	const who = `'{"kind":"user","id":"alice"}'::jsonb`
+	const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties`
+	for _, statement := range []struct {
+		what, sql string
+		args      []any
+	}{
+		{"the issues", `
+			insert into issues (key, project_key, number, title, created_by, rank, parent_key, node_kind, node_address)
+			select 'ROLL-' || (1000 + n), 'ROLL', 1000 + n, 'Bulk issue ' || n, ` + who + `, 'z' || lpad(n::text, 4, '0'),
+			       case when n > 1 then 'ROLL-' || (1000 + n / 2) end,
+			       case when n % 2 = 0 then 'issue' end, case when n % 2 = 0 then 'ROLL-' || (1000 + n) end
+			from generate_series(1, 500) n`, nil},
+		{"the issues' nodes", `
+			insert into graph_nodes (` + nodeColumns + `)
+			select node.kind, i.node_address, node.supertag, node.visibility, node.state, node.attributes, node.made_at, node.made_by, 0,
+			       node.project_key, node.parties
+			from issues i join graph_nodes node on node.kind = 'issue' and node.id = $1
+			where i.project_key = 'ROLL' and i.number > 1000 and i.node_kind is not null`, []any{issueNode}},
+		{"the issues' child_of", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			select 'issue', i.key, 'child_of', 'issue', i.parent_key, i.created_at, ` + who + `, 0, true
+			from issues i
+			where i.project_key = 'ROLL' and i.number > 1000 and i.node_kind is not null and i.parent_key is not null`, nil},
+		{"the issue links", `
+			insert into issue_links (issue_key, kind, target_key, created_at, node_kind, node_address)
+			select i.key, 'blocked_by', 'ROLL-' || (1001 + (i.number - 1001 + k) % 500), now() - interval '1 day', i.node_kind, i.node_address
+			from issues i cross join generate_series(1, 100) k
+			where i.project_key = 'ROLL' and i.number > 1000`, nil},
+		{"the issue links' needs", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			select 'issue', l.issue_key, 'needs', 'issue', l.target_key, l.created_at, ` + who + `, 0, true
+			from issue_links l join issues i on i.key = l.issue_key
+			where i.project_key = 'ROLL' and i.number > 1000 and l.node_kind is not null`, nil},
+		{"the components", `
+			insert into components (project_key, id, title, prose, parent, snapshot_id, source_id, node_kind, node_address)
+			select 'ROLL', 'bulk-' || n, 'Bulk ' || n, 'A bulk component.', case when n > 1 then 'bulk-' || (n / 2) else 'legion' end,
+			       legion.snapshot_id, legion.source_id,
+			       case when n % 2 = 0 then 'component' end, case when n % 2 = 0 then 'ROLL/bulk-' || n end
+			from components legion cross join generate_series(1, 5000) n
+			where legion.project_key = 'ROLL' and legion.id = 'legion'`, nil},
+		{"the components' nodes", `
+			insert into graph_nodes (` + nodeColumns + `)
+			select node.kind, c.node_address, node.supertag, node.visibility, node.state, node.attributes, node.made_at, node.made_by, 0,
+			       node.project_key, node.parties
+			from components c join graph_nodes node on node.kind = 'component' and node.id = $1
+			where c.project_key = 'ROLL' and c.id like 'bulk-%' and c.node_kind is not null`, []any{componentNode}},
+		{"the components' part_of", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			select 'component', c.node_address, 'part_of', 'component', 'ROLL/' || c.parent, s.imported_at, ` + who + `, 0, true
+			from components c join architecture_snapshots s on s.id = c.snapshot_id
+			where c.project_key = 'ROLL' and c.id like 'bulk-%' and c.node_kind is not null`, nil},
+		{"the component dependencies", `
+			insert into component_depends (project_key, from_id, to_id, node_kind, node_address)
+			select 'ROLL', 'bulk-' || n, 'bulk-' || (1 + (n - 1 + k) % 5000),
+			       case when n % 2 = 0 then 'component' end, case when n % 2 = 0 then 'ROLL/bulk-' || n end
+			from generate_series(1, 5000) n cross join generate_series(1, 10) k`, nil},
+		{"the component dependencies' depends_on", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			select 'component', d.node_address, 'depends_on', 'component', 'ROLL/' || d.to_id, s.imported_at, ` + who + `, 0, true
+			from component_depends d
+			join components c on c.project_key = d.project_key and c.id = d.from_id
+			join architecture_snapshots s on s.id = c.snapshot_id
+			where d.project_key = 'ROLL' and d.from_id like 'bulk-%' and d.node_kind is not null`, nil},
+		{"the issues' components", `
+			insert into issue_components (issue_key, mode)
+			select i.key, 'explicit' from issues i where i.project_key = 'ROLL' and i.number > 1000`, nil},
+		{"the issues' component members", `
+			insert into issue_component_members (issue_key, project_key, component_id, node_kind, node_address)
+			select i.key, 'ROLL', 'bulk-' || (1 + ((i.number - 1001) * 100 + k - 1) % 5000), i.node_kind, i.node_address
+			from issues i cross join generate_series(1, 100) k
+			where i.project_key = 'ROLL' and i.number > 1000`, nil},
+		{"the issue component members' affects", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, ` + who + `, 0, true
+			from issue_component_members m join issue_components c using (issue_key)
+			where m.component_id like 'bulk-%' and m.node_kind is not null`, nil},
+		{"the statistics", `analyze`, nil},
+	} {
+		if _, err := database.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("write %s at scale: %v", statement.what, err)
+		}
+	}
+}
+
+// requireAnIssueReadReadsNoRelationTableWhole is c-view-arms' plan of a graph_edges read of one
+// issue at scale. Over seedRollbackScale's rows it takes, under explain (analyze, buffers), the
+// statement each read of one issue the references route makes sends over graph_edges - GET
+// /api/v1/references?from=<issue> and ?to=<issue>, which refs.Edges answers - and finds no Seq Scan
+// of any of rollbackRelationTables in either plan. enable_seqscan stays on (0f8b389c): the hashed
+// `= any` form the planner may take for a probe of a projection row that does not end in
+// `offset 0` reads the probed table whole by a Seq Scan, and with the setting off that scan is
+// priced out and the form hidden. The issue read, ROLL-1250, is a row this build's writers leave,
+// and the issues waiting on it are as many of either build's: graph_edges answers its child_of,
+// its 100 waits and its 100 components out of it, and its one child and the 100 waits on it, 50 by
+// the old blocked_by arm and 50 by the tuple arm, into it.
+func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.Store, issueNode string) {
+	t.Helper()
+	ctx := context.Background()
+	seedRollbackScale(t, database, issueNode, "ROLL/legion")
+	const issue = "ROLL-1250"
+	for _, side := range []struct {
+		name string
+		want map[string]int
+	}{
+		{"from", map[string]int{"child_of": 1, "blocked_by": 100, "affects": 100}},
+		{"to", map[string]int{"child_of": 1, "blocked_by": 100}},
+	} {
+		rows, err := database.Pool.Query(ctx, `
+			select kind, count(*)::int from graph_edges where `+side.name+`_kind = 'issue' and `+side.name+`_id = $1 group by kind
+		`, issue)
+		if err != nil {
+			t.Fatalf("count the edges %s %s: %v", side.name, issue, err)
+		}
+		answered := map[string]int{}
+		var kind string
+		var count int
+		if _, err := pgx.ForEachRow(rows, []any{&kind, &count}, func() error {
+			answered[kind] = count
+			return nil
+		}); err != nil {
+			t.Fatalf("count the edges %s %s: %v", side.name, issue, err)
+		}
+		if !maps.Equal(answered, side.want) {
+			t.Fatalf("graph_edges answers the edges %s %s by kind as %v, want %v", side.name, issue, answered, side.want)
+		}
+	}
+
+	connection, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plans: %v", err)
+	}
+	defer connection.Release()
+	for _, direction := range []string{"out", "in"} {
+		kept := &keepingQueryer{queryer: database.Pool}
+		if _, err := refs.Edges(ctx, kept, model.Actor{Kind: "user", ID: "alice"}, refs.Query{Direction: direction, Kind: graphstore.KindIssue, ID: issue}); err != nil {
+			t.Fatalf("read the %s edges of %s: %v", direction, issue, err)
+		}
+		var reads []sentStatement
+		for _, sent := range kept.sent {
+			if strings.Contains(sent.sql, "from graph_edges") {
+				reads = append(reads, sent)
+			}
+		}
+		if len(reads) != 1 {
+			t.Fatalf("the %s read of %s sends %d statements over graph_edges, want one", direction, issue, len(reads))
+		}
+		name := "the " + direction + " read of " + issue
+		plan, text := explainDismissedScale(t, connection.Conn(), name, reads[0].sql, reads[0].args)
+		for _, table := range rollbackRelationTables {
+			if explaintest.SeqScansRelation(t, plan, table) {
+				t.Errorf("%s reads %s by a Seq Scan, want each of its rows the read reaches reached through an index:\n%s", name, table, text)
+			}
+		}
+	}
+}
+
 // TestGraphEdgesKeepsEveryRelationAcrossARollback holds the arms of dispatch://INFRA-1253's split
 // of the issue relations and of a component's (c-view-arms): the arms over issues (child_of),
 // issue_links (blocked_by), artifacts (attached_to), components (part_of), component_depends
@@ -143,6 +319,10 @@ type movedInPlace struct {
 // the document answers it once in both; and a document this build uploads cites another issue, a
 // citation it states in the store, whose refs row the release before deletes with no retraction,
 // which no arm answers. The target's backlink count holds the release before's citation.
+//
+// Last, over 50,000 issue links, 50,000 component dependencies and 50,000 issue components, half
+// of them of either build, a read of one issue reads no table of an issue's or a component's
+// relations by a Seq Scan (requireAnIssueReadReadsNoRelationTableWhole).
 func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/roll": "read"},
@@ -414,7 +594,7 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	// it as a tuple no row projects until the backfill retracts it.
 	referenceDifferences := func(stage string) (rows, tuples int64) {
 		t.Helper()
-		report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+		report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 		if err != nil {
 			t.Fatalf("%s take the store census: %v", stage, err)
 		}
@@ -508,4 +688,10 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 			t.Errorf("after the backfill the row behind %v names no node, so its old arm still answers it", written.edge)
 		}
 	}
+
+	// The plan of a read of one issue over 50,000 issue links, 50,000 component dependencies and
+	// 50,000 issue components, of either build (c-view-arms).
+	t.Run("a read of one issue at scale scans no relation table", func(t *testing.T) {
+		requireAnIssueReadReadsNoRelationTableWhole(t, database, stamped.Key)
+	})
 }

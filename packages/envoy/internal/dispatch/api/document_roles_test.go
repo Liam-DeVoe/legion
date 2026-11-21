@@ -105,7 +105,7 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 // Where the issue still holds a decisions document an earlier release stored, an upload of its
 // name is that document's next version, as a client of the release before writes it, and the
 // write gives a roleless one no role. Once that document is retired, its name is refused as a
-// new one is, rather than as a retired document.
+// new one is, rather than as a retired document, and so is an edit of it by its id or its slug.
 func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -172,6 +172,11 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 	retireTestDocument(t, database, standing)
 	refused("an upload of decisions.md once it is retired", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/issues/"+other.Key+"/artifacts", map[string]string{"name": "decisions.md", "content": "# Decisions\n\nThree.\n"}, "alice"))
+	ops := map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "Four."}}, "summary": "edit"}
+	refused("an edit of the retired decisions document by its id", dispatchRequest(t, handler, http.MethodPost,
+		"/api/v1/artifacts/"+standing+"/edits", ops, "alice"))
+	refused("an edit of the retired decisions document by its slug", dispatchRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+other.Key+"/artifacts/decisions-md/edits", ops, "alice"))
 }
 
 // Both readers of a document's role - documentRolePredicate, which every query that finds an

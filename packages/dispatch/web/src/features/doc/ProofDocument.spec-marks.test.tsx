@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { cleanup, waitFor, within } from "@testing-library/react";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { act, cleanup, waitFor, within } from "@testing-library/react";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   answerTextReadsWithTheSeededText,
@@ -19,6 +19,7 @@ import type {
   Version,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import type { DecisionsRead } from "../issue/decision-entries";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
 
 answerTextReadsWithTheSeededText();
@@ -64,6 +65,7 @@ const decisions: IssueDecisions = {
         block_id: "d-1",
         ref: "dispatch://CORE-1/artifact/choices-md",
       },
+      from_ask: [],
       kept: null,
       kept_by: null,
       kept_text_sum: null,
@@ -157,9 +159,9 @@ function readOf(version: number | null): DocumentRead {
   };
 }
 
-function stubReads(readVersion: number | null) {
+function stubReads(readVersion: number | null, decisionsRead: IssueDecisions = decisions) {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(spec);
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisions);
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead);
   const getDocumentRead = spyOn(api, "getDocumentRead").mockResolvedValue(readOf(readVersion));
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(parts);
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue(blocks);
@@ -262,6 +264,129 @@ test("with no read version the Spec tab shows no line and marks no changed block
       ])
     );
     expect(screen.queryByText(/Changed since you last read/)).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    reads.restore();
+  }
+});
+
+// A server of the release before answers the Decisions read with no `entries`: its decisions are
+// the sections of the issue's decisions document, each with the links it shaped and the server's
+// own `stale`. A page of this build that reaches it during a roll still marks the block a
+// decision's link went out of date on, rather than marking nothing.
+test("a Decisions read of the release before, with no entries, still marks the stale block", async () => {
+  const before: DecisionsRead = {
+    decisions: [
+      {
+        asks: [],
+        block_id: "h-two-steps",
+        changed_at: "2026-10-04T00:00:00Z",
+        changed_version: 3,
+        heading: "Ship it in two steps",
+        kept: null,
+        kind: "agent",
+        links: [
+          {
+            created_at: "2026-10-01T00:00:00Z",
+            created_version: 1,
+            from_block: "h-two-steps",
+            stale: true,
+            to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
+          },
+        ],
+        ref: "dispatch://CORE-1/artifact/decisions-md#b-h-two-steps",
+        replaced: false,
+        text: "## Ship it in two steps\n\nThe flag goes first.",
+        text_sha256: "sum-two-steps",
+        unsure: false,
+        waiting_review: true,
+      },
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const reads = stubReads(null, before as IssueDecisions);
+  const { editors, sync } = renderProofDocument({
+    document: spec,
+    queryClient: createQueryClient(),
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("editor missing");
+
+    await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(editor.blockMarks.at(-1)).toEqual([
+        { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },
+      ])
+    );
+  } finally {
+    cleanup();
+    reads.restore();
+  }
+});
+
+// A read of the person's read mark asked before the Spec tab's mark lands answers the version they
+// read before this visit. Landing after the mark's answer, it would put that version back, and the
+// next visit would mark every block changed since it again, though the person has read the latest.
+test("a read of the read mark asked before the mark landed does not bring back the version read before", async () => {
+  const reads = stubReads(2);
+  const before = Promise.withResolvers<DocumentRead>();
+  // Version 2 as the visit opens, then the read held while the mark is out; after that, the
+  // server holds the version the mark recorded.
+  reads.getDocumentRead
+    .mockResolvedValue(readOf(4))
+    .mockResolvedValueOnce(readOf(2))
+    .mockReturnValueOnce(before.promise);
+  const marked = Promise.withResolvers<DocumentRead>();
+  reads.putRead.mockImplementationOnce(() => marked.promise);
+  const queryClient = createQueryClient();
+  const first = renderProofDocument({ document: spec, queryClient });
+
+  try {
+    await first.sync();
+    await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
+    // A refresh of the read mark, asked while the mark is out and still out itself.
+    await act(async () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["document-read", spec.id] });
+      await settle();
+    });
+    expect(reads.getDocumentRead).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      marked.resolve(readOf(4));
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<DocumentRead>(["document-read", spec.id])).toEqual(readOf(4))
+    );
+
+    // The read answers the version the person had read before this visit.
+    await act(async () => {
+      before.resolve(readOf(2));
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["document-read", spec.id])?.fetchStatus).toBe("idle")
+    );
+    first.view.unmount();
+
+    // The next visit opens on the version the mark recorded, the latest: nothing changed since.
+    const next = renderProofDocument({ document: spec, queryClient });
+    await next.sync();
+    await waitFor(() => expect(next.editors).toHaveLength(1));
+    const editor = next.editors[0];
+    if (editor === undefined) throw new Error("editor missing");
+    await waitFor(() =>
+      expect(editor.blockMarks.at(-1)).toEqual([
+        { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },
+      ])
+    );
+    expect(
+      within(next.view.container).queryByText(/Changed since you last read/)
+    ).not.toBeInTheDocument();
   } finally {
     cleanup();
     reads.restore();

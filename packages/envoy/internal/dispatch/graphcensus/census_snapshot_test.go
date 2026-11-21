@@ -39,9 +39,10 @@ var censusWriter = backfillActor
 // seedAgreeingStore writes the rows as a build before the store existed wrote them, runs the
 // backfill over them, and states each block's parent as the block index states it, which is the
 // one fact the backfill leaves to the index (Backfill). This package cannot import the block
-// index (docs imports it), so the parent is stated here with the tuples and the column the
-// reconciliation writes (refs' reconcileBlockParents): the outer block's part_of to the
-// document, the inner block's to the outer block, and the inner row's parent_block_id beside it.
+// index (docs imports it), so the parent is stated here with the tuples the block index plans
+// (refs' planBlockParents) and the column it projects them into (queueBlockParents): the outer
+// block's part_of to the document, the inner block's to the outer block, and the inner row's
+// parent_block_id beside it.
 //
 // It then takes the census and fails unless it reads zero differences over rows of every kind
 // it seeded, so a test that breaks one fact afterwards starts from a census that agreed.
@@ -111,10 +112,12 @@ func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 }
 
 // storeCensusOf takes the store census over database as `envoy-dispatch census --store` takes
-// it, on a connection of its own.
+// it, on a connection of its own, with no test of the returns the restore declines: this package
+// cannot read docs' (docs.ReturnDeclined), and a fixture that owes a return takes its census with
+// a test of its own.
 func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}
@@ -171,9 +174,8 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 // and name that kind in its verdict. A tie kind of decisions, readings and asks is a kind a
 // deployment holds none of until somebody writes one, and the agreeing store holds none: no row
 // and no node of it is no refusal, and the report says so on that kind's own line. So is a kind a
-// deployment may
-// hold none of (dispatch://INFRA-1950's runs, frames and the visibility and state of its kinds),
-// which must pass and say on its own line that it checked no row.
+// deployment may hold none of (the runs, the frames and the visibility and state of the
+// reasoning kinds), which must pass and say on its own line that it checked no row.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)
@@ -238,7 +240,7 @@ func TestTheStoreCensusReadsOneSnapshot(t *testing.T) {
 	seeded := seedAgreeingStore(t, database)
 	ghost := seeded.document.refKey + "#ghost"
 	committedAfter := ""
-	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, func(ctx context.Context, kind string) error {
+	report, err := storeCensus(ctx, database.Pool.Config().ConnString(), false, nil, func(ctx context.Context, kind string) error {
 		if committedAfter != "" {
 			return nil
 		}

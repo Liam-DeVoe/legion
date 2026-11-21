@@ -225,7 +225,7 @@ func History(ctx context.Context, q Queryer, fromKind, fromID, kind string) ([]T
 
 // ReadNode answers one node row, the projection of its tuples, and whether the store holds it.
 func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, error) {
-	node, err := scanNode(q.QueryRow(ctx, `
+	node, err := ScanNode(q.QueryRow(ctx, `
 		select `+nodeColumns+`
 		from graph_nodes
 		where kind = $1 and id = $2
@@ -242,6 +242,39 @@ func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, erro
 // nodeColumns is what every node read answers, in the order a node scan takes them, and what
 // every node write writes (nodeArrays binds one array per column).
 const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties`
+
+// NodeColumnsOf is nodeColumns over the graph_nodes row alias names, in their order, for a
+// statement of another package that selects a node row beside columns of its own, which ScanNode
+// reads.
+func NodeColumnsOf(alias string) string {
+	return alias + `.` + strings.ReplaceAll(nodeColumns, `, `, `, `+alias+`.`)
+}
+
+// ProjectedTable is one table that projects the store: each of its rows names the node it is the
+// projection of by its node_kind and node_address, which migration 20261109022248 gave it with a
+// foreign key to graph_nodes. Issue is the column naming the issue that owns a row itself, empty
+// for a table whose rows are owned through their document alone, by the artifact_id each of them
+// carries: a comment is an issue's or a document's (comments_one_owner, migration 0009), and a
+// block and a block reference are their document's. Key is the table's primary key, the order a
+// reader takes a node's rows of it in and how it names each.
+type ProjectedTable struct{ Table, Issue, Key string }
+
+// ProjectedTables are the tables that project the store, the one list of them the tree's
+// production code reads: the erase walks all three by (node_kind, node_address) rather than by the
+// node's kind, to read, lock and delete a node's rows of them (grapherase), so a kind that gains a
+// projection carries no second list there to keep in step. censustest.ProjectedColumns holds the
+// columns of each that the store states, and graphcensus's
+// TestTheProjectedColumnsListEveryTableTheStoreProjects holds its tables to these. asks and
+// ask_followers, which migration 20261116094058 gave the same pair, project only an ask's node,
+// and the erase deletes, locks and lists neither: it refuses an ask's node while its asks row
+// stands (graphcensus.ObjectRowStands), and a follower row goes with its asks row. An asks row
+// still says what its ask's node states, which the erase's blockers read (grapherase's
+// readBlockers).
+var ProjectedTables = []ProjectedTable{
+	{Table: "comments", Issue: "issue_key", Key: "id"},
+	{Table: "document_blocks", Key: "artifact_id, block_id"},
+	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
+}
 
 // NodesOfKind answers every node of one kind, in id order. It reads through the primary key
 // (kind, id), whose leading column it binds, so a kind the store holds few of costs that few
@@ -276,12 +309,63 @@ const nodesOfKind = `
 		order by id
 	`
 
+// NodesBeneath answers the row of each node that stands beneath the node whose kind and id are
+// kind and id, as the store keys it, and is not gone, at every depth and of every kind, in (kind,
+// id) order, in one statement however deep the tree: each node whose current part_of tuple
+// (CurrentTupleRead) points at that node, each whose current part_of points at one of those, and
+// so on. A part_of names a finding of a lens, a node of kind block, by its address kind as a lens
+// invoked on it does (AddressKind), or as a block, so the walk reads the tuples into a node under
+// both. A node moved under another parent holds its part_of here retracted, so neither it nor what
+// stands under it is beneath the old one. The walk goes on through a node that is gone and leaves
+// that node's row out of the answer, since what still stands under a gone node stands beneath the
+// start too. The statement binds `to_kind <> 'value'` as a literal, as CurrentIn does, so the
+// planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
+// reached, and walks that index from each such end. The write that takes a node to gone reads
+// what stands beneath it so (api's writeNodeState).
+func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
+	rows, err := q.Query(ctx, nodesBeneath, kind, id, StateGone)
+	if err != nil {
+		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
+	}
+	beneath, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Node, error) { return ScanNode(row) })
+	if err != nil {
+		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
+	}
+	return beneath, nil
+}
+
+// nodesBeneath is the statement of NodesBeneath: $1 and $2 the start's kind and id and $3 the gone
+// state. walked is the start and each node the walk has reached, each once, as the store keys it:
+// its recursive step is the current part_of tuples into one node it holds, under the node's kind
+// and its address kind, read in a lateral subquery keyed by that node, and its `union` drops a
+// node it holds already, so a part_of cycle ends the walk rather than looping. The relation each
+// step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does not
+// key, so it sorts that node's part_of tuples by node. The start itself is no answer.
+var nodesBeneath = `
+		with recursive walked (node_kind, node_id) as (
+			select $1::text, $2::text
+			union
+			select placed.from_kind, placed.from_id
+			from walked
+			cross join lateral (
+				` + CurrentTupleRead(`t.to_kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+	`t.to_kind in (walked.node_kind, `+AddressKindSQL("walked.node_kind", "walked.node_id")+`)
+					and t.to_id = walked.node_id and t.kind = '`+TuplePartOf+`' and t.to_kind <> '`+KindValue+`'`) + `
+			) placed
+			where placed.asserted
+		)
+		select ` + nodeColumns + `
+		from walked
+		join graph_nodes held on held.kind = walked.node_kind and held.id = walked.node_id
+		where held.state <> $3 and not (held.kind = $1 and held.id = $2)
+		order by held.kind, held.id`
+
 // scanNodesOfKind reads every node row of kind a read of nodesOfKind answers.
 func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	defer rows.Close()
 	var nodes []Node
 	for rows.Next() {
-		node, err := scanNode(rows)
+		node, err := ScanNode(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -293,14 +377,16 @@ func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	return nodes, nil
 }
 
-// scanNode reads one node row, as ReadNode and NodesOfKind both take it. A null project_key is the
-// empty Project, and a null parties nil Parties.
-func scanNode(row pgx.Row) (Node, error) {
+// ScanNode reads one node row, as ReadNode, NodesOfKind and NodesBeneath take it: a row whose
+// first columns are nodeColumns, in their order, as a statement of another package selects them
+// through NodeColumnsOf, and whose columns after those, where it selects any, it reads into more.
+// A null project_key is the empty Project, and a null parties nil Parties.
+func ScanNode(row pgx.Row, more ...any) (Node, error) {
 	var node Node
 	var attributes, madeBy []byte
 	var project *string
-	if err := row.Scan(&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
-		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent, &project, &node.Parties); err != nil {
+	if err := row.Scan(append([]any{&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
+		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent, &project, &node.Parties}, more...)...); err != nil {
 		return Node{}, err
 	}
 	if project != nil {

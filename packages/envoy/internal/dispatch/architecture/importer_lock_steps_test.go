@@ -48,7 +48,7 @@ func TestTheImportTakesTheStoreLockOrder(t *testing.T) {
 	}, `select 1 from architecture_sources where project_key = 'CORE' for update`)
 	node := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "component CORE/api's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindComponent, ID: "CORE/api",
-		Statement: "with incoming as (",
+		Statement: "insert into graph_nodes (",
 		Unlocked:  []string{"component_depends", "component_facts", "events"},
 	}, `select 1 from graph_nodes where kind = 'component' and id = $1 for update`, "CORE/api")
 	row := lockstep.HoldRow(t, database, &lockstep.Hold{
@@ -60,7 +60,7 @@ func TestTheImportTakesTheStoreLockOrder(t *testing.T) {
 	// keys of the snapshot and the components rows, which take it `for key share`, do not wait on.
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "project CORE's row", Step: lockstep.StepEvent, Taken: true,
-		Statement: "select last_seq, pg_current_xact_id() from projects where key = $1 for no key update",
+		Statement: "select key, pg_current_xact_id() from projects where key = $1 for no key update",
 	}, `select 1 from projects where key = $1 for no key update`, "CORE")
 
 	done := make(chan error, 1)

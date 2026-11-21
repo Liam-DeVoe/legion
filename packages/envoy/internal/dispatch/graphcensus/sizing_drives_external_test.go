@@ -1,16 +1,12 @@
 package graphcensus_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -40,6 +36,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// with its spec, and the document of the block the erase takes, with that block.
 	var run, ask, edited, target, filedFrom, lens, chained, result, orphaned, refreshed, pinned string
 	var roomIssue, roomSpec, erasedDocument, erased string
+	// The token of the version refreshed.md's second upload replaces, read before its drive.
+	var refreshedBase map[string]string
 	return []graphcensus.StoreDrive{{
 		// alice's run of the command bar (recordGoingRequest), which records the run's node with
 		// her words, its ends_at, its project and her authored_by, which the term interaction
@@ -74,7 +72,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Sites: []string{"api/issue_patch.go#patchIssue"},
 		Ready: func(t *testing.T) { r.runWindowAhead(t, run) },
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, http.MethodPatch, "/api/v1/issues/"+r.issue, map[string]any{"labels": []string{"sized"}}, "alice", run, http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/issues/"+r.issue, map[string]any{"labels": []string{"sized"}}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindIssue),
 	}, {
@@ -88,8 +86,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.runWindowAhead(t, run)
 		},
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, http.MethodPatch, "/api/v1/asks/"+ask,
-				map[string]any{"question": "Which words did the run change?"}, "alice", run, http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+ask,
+				map[string]any{"question": "Which words did the run change?"}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindAsk),
 	}, {
@@ -103,8 +101,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.runWindowAhead(t, run)
 		},
 		Drive: func(t *testing.T) {
-			r.requestForRun(t, http.MethodPatch, "/api/v1/comments/"+edited,
-				map[string]any{"body": "A remark the run reworded."}, "alice", run, http.StatusOK)
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/comments/"+edited,
+				map[string]any{"body": "A remark the run reworded."}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindComment),
 	}, {
@@ -143,8 +141,9 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		},
 	}, {
 		// alice's pre-mortem on the spec, with one finding (writeReasoningNodes): the lens's node
-		// with its base attributes, its part_of the spec, its has_kind, its verdict and her
-		// authored_by, which the term lens counts, and the finding's block node with its base
+		// with its base attributes, its part_of the spec, its has_kind, its verdict, the artifact_id
+		// of the spec's row the store records beside that part_of (graphstore.AttributeArtifactID)
+		// and her authored_by, which the term lens counts, and the finding's block node with its base
 		// attributes, its part_of the lens, its text and her authored_by, which lens_finding
 		// counts, in one write.
 		Name: "api/reasoning_write.go#writeReasoningNodes, a lens with a finding", Database: r.database,
@@ -162,6 +161,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			{graphstore.KindLens, graphstore.TuplePartOf}:         {graphstore.KindLens},
 			{graphstore.KindLens, graphstore.TupleHasKind}:        {graphstore.KindLens},
 			{graphstore.KindLens, graphstore.AttributeVerdict}:    {graphstore.KindLens},
+			{graphstore.KindLens, graphstore.AttributeArtifactID}: {graphstore.KindLens},
 			{graphstore.KindLens, graphstore.TupleAuthoredBy}:     {graphstore.KindLens},
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}:  {"lens_finding"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:       {"lens_finding"},
@@ -265,9 +265,12 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Ready: func(t *testing.T) {
 			document := r.uploaded(t, "refreshed.md", "# Refreshed\n\nThe moon is up.\n")
 			refreshed = r.suggestion(t, document, "moon is up").ID
+			refreshedBase = r.uploadBase(t, document)
 		},
 		Drive: func(t *testing.T) {
-			r.uploaded(t, "refreshed.md", "# Refreshed\n\nStars come out.\n")
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+				"name": "refreshed.md", "content": "# Refreshed\n\nStars come out.\n", "precondition": refreshedBase,
+			}, "alice", http.StatusCreated)
 			r.awaitTrue(t, "the refresh orphaning the suggestion's anchor", `
 				select coalesce((anchor->>'orphaned')::boolean, false) from comments where id = $1::uuid
 			`, refreshed)
@@ -312,7 +315,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// edit of the spec of an issue of its own, born converted: the room's one index pass over
 		// the spec's new version, its facts caused by that version's event (causeRoomFacts) - the
 		// new paragraph's block with its values and alice's authored_by, as a block of an issue's
-		// room records its authors, and the version's node.
+		// room records its authors, and the version's node, a query version with its
+		// definition_version.
 		Name: "docs/block_index.go#causeRoomFacts, a settlement of an issue's room", Database: r.database,
 		Sites: []string{"docs/block_index.go#causeRoomFacts", "refs/blocks.go#Queue", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
@@ -347,7 +351,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)
 			`, roomSpec)
 		},
-		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, versionCounted),
+		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, versionCounted, queryVersionCounted),
 	}, {
 		// The erase of a paragraph inside a callout of a document of its own (grapherase.Erase):
 		// the one version that held it goes, its node stated gone (endErasedVersions), which the
@@ -392,7 +396,7 @@ var anchorBlockCounted = map[graphcensus.StoredKind][]string{
 }
 
 // changedByRunCounted is what a write made for a run appends out of the node of kind it changed:
-// its changed_by_run into the run, which the term interaction counts (graphstore.WithRun).
+// its changed_by_run into the run, which the term interaction counts (store.WithRun).
 func changedByRunCounted(kind string) map[graphcensus.StoredKind][]string {
 	return map[graphcensus.StoredKind][]string{{kind, graphstore.TupleChangedByRun}: {graphstore.KindInteraction}}
 }
@@ -477,26 +481,6 @@ func (r *writersRig) writeAnchoredIn(t *testing.T, comment, block string, assert
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the anchored_in's write: %v", err)
 	}
-}
-
-// requestForRun sends one request as the person login names made for the run of the command bar
-// run (contracts.GoingRunHeader), failing the test unless the answer is want, and answers the body.
-func (r *writersRig) requestForRun(t *testing.T, method, target string, body any, login, run string, want int) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encode %s %s: %v", method, target, err)
-	}
-	request := httptest.NewRequest(method, target, bytes.NewReader(encoded))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", login)
-	request.Header.Set(contracts.GoingRunHeader, run)
-	response := httptest.NewRecorder()
-	r.handler.ServeHTTP(response, request)
-	if response.Code != want {
-		t.Fatalf("%s %s for run %s: status=%d body=%s, want %d", method, target, run, response.Code, response.Body.String(), want)
-	}
-	return response.Body.Bytes()
 }
 
 // runWindowAhead moves the run's window an hour ahead, so a write made for it is accepted however

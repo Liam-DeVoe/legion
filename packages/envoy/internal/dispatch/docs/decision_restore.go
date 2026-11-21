@@ -153,7 +153,8 @@ const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.pro
 // not written at all, its address moving to that block; the id its block takes, the address it
 // moves from (from: for the second shape the address the finder read, and for the main shape the
 // address of a copy of the block the decisions document holds, "" where it holds none), the block
-// of a document of the issue it moves out of where that document still holds it (moved), the spec
+// of a document of the issue it moves out of where that document still holds it (moved), for the
+// main shape the block as the spec's last version holding it held it (held, removalOf), the spec
 // blocks it shaped, the readings it holds, and, for the main shape, what the restore read of the
 // version that left the block out (RestoredAsk.Read).
 type restoredBlock struct {
@@ -164,6 +165,7 @@ type restoredBlock struct {
 	id       string
 	from     string
 	moved    *pmdoc.Node
+	held     *pmdoc.Node
 	shaped   []string
 	readings []*pmdoc.Node
 	read     string
@@ -181,13 +183,7 @@ type declinedAsk struct {
 
 // address is the block's address in the spec once restored.
 func (r *restoredBlock) address(spec issueDocument) string {
-	return storeBlockAddress(spec.refKey, r.id)
-}
-
-// storeBlockAddress is the store's address of block id of the document whose ref_key is refKey,
-// as the block index keys it: a U+0000 reads as U+FFFD, as the rendering writes it.
-func storeBlockAddress(refKey, id string) string {
-	return refKey + "#" + strings.ReplaceAll(id, "\x00", "\uFFFD")
+	return refs.BlockAddress(spec.refKey, r.id)
 }
 
 // sectionFate is what becomes of one section of the decisions document.
@@ -283,9 +279,12 @@ type issueRestore struct {
 	// it, and decisionsHoldAsks whether it still holds an ask block then, in a section or outside
 	// every one: an ask block this pass does not move - one the document's block index does not
 	// hold yet, which planDocumentMoves reads the blocks it moves from - which keeps the document
-	// from its retirement (R6).
+	// from its retirement (R6). decisionsDropped is each block id this pass takes out of the
+	// decisions document (planSections), which a `shaped` pointer to it no longer reaches there
+	// (movedPointer).
 	sectionsLeft      int
 	decisionsHoldAsks bool
+	decisionsDropped  map[string]bool
 	// indexedVersion is the version of the decisions document its block index stands at, 0 where
 	// it owes one, and indexedBlocks each block that index holds (refs.BlockChanges): a section
 	// whose heading it holds stands in that version, which a decision leaving part of the section
@@ -293,12 +292,14 @@ type issueRestore struct {
 	indexedVersion int
 	indexedBlocks  map[string]refs.BlockChange
 	// pointerLine is the markdown of the pointer line the spec's write took out of its
-	// `## Decisions` part (blockMarkdown), "" for none, and shapedAdded each `shaped` pointer
-	// the pass's writes gave an answered ask block a document held already, by the document's id
-	// and then the block's: with the blocks the spec's write added, what each version's mark names
+	// `## Decisions` part (blockMarkdown), "" for none, headingAdded whether that write added the
+	// part's heading to a spec that held no such part, and shapedAdded each `shaped` pointer the
+	// pass's writes gave an answered ask block a document held already, by the document's id and
+	// then the block's: with the blocks the spec's write added, what each version's mark names
 	// (stepCasesFor).
-	pointerLine string
-	shapedAdded map[string]map[string][]string
+	pointerLine  string
+	headingAdded bool
+	shapedAdded  map[string]map[string][]string
 	// readingsWritten is the block id of each reading the pass's writes put in an ask block a
 	// document held already, by the document's id (writePresent): a section converted into a
 	// reading whose reading is not among them was written nowhere (refuseUnwrittenReadings).
@@ -354,10 +355,7 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 		return result, fmt.Errorf("issue %s holds no spec to restore its answered asks to", issue)
 	}
 	r.spec = spec
-	decisions, found, err := readIssueDocument(ctx, tx, `
-		select `+issueDocumentColumns+` from decisions_documents() d join artifacts a on a.id = d.id
-		where d.issue_key = $1 order by a.created_at, a.id limit 1
-	`, issue)
+	decisions, found, err := readIssueDocument(ctx, tx, `select `+issueDocumentColumns+` `+refs.DecisionsDocumentOf("$1"), issue)
 	if err != nil {
 		return result, fmt.Errorf("read the decisions document of %s: %w", issue, err)
 	}
@@ -578,7 +576,7 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 			if r.removed[item.Ask] {
 				continue
 			}
-			declined, read, err := r.removalOf(ctx, item.Ask, item.BlockID)
+			declined, read, held, err := r.removalOf(ctx, item.Ask, item.BlockID)
 			if err != nil {
 				return err
 			}
@@ -588,7 +586,7 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 				r.result.Declined = append(r.result.Declined, DeclinedAsk{Ask: item.Ask, Person: declined.person, Version: declined.version})
 				continue
 			}
-			restore.read = read
+			restore.read, restore.held = read, held
 		case graphcensus.RestoreMoves:
 			if r.decisions == nil || *row.BlockArtifactID != r.decisions.id {
 				continue
@@ -638,7 +636,7 @@ func (r *issueRestore) planDocumentMoves(ctx context.Context) error {
 		}}
 		if row, named := r.decisionsRow(id); named {
 			restore.row, restore.work.Ask = row, row.ID
-			restore.from = storeBlockAddress(r.decisions.refKey, id)
+			restore.from = refs.BlockAddress(r.decisions.refKey, id)
 			restore.work.Address = restore.from
 		} else {
 			restore.rowless = true
@@ -680,71 +678,132 @@ func (r *issueRestore) decisionsRow(id string) (model.Ask, bool) {
 	return model.Ask{}, false
 }
 
-// removalOf reads who took ask's block, blockID, out of the spec: the version that left it out,
-// the lowest above the newest whose stored tree holds an ask block with that id, read newest first
-// through the stored-version reader the approval carry reads (approvedVersion), a version it
-// cannot read holding none. Where that version is a person's (versionPerson) it answers the
-// decline, with the version's time and the event that recorded it (versionEventID). Otherwise it
-// answers what it read, and the ask is restored: that version's authors name no person and no
-// agent acting with the person scope, no version of the spec held the block, or that version
-// names no author. A version a person's own write wrote is the person's whatever other authors
-// it lists, and one a session wrote with no act of a person - every agent's drop the restore
-// exists to undo, the release before's bearer writes among them - is no person's.
+// removalOf reads who took ask's block, blockID, out of the spec (readSpecRemoval). Where that is a
+// person it answers the decline, with the version that left the block out, its time and the event
+// that recorded it (versionEventID), which the decline records on the ask's node. Otherwise it
+// answers what it read and the block as the newest version holding it held it, and the ask is
+// restored.
+func (r *issueRestore) removalOf(ctx context.Context, ask, blockID string) (*declinedAsk, string, *pmdoc.Node, error) {
+	removal, err := readSpecRemoval(ctx, r.tx, r.issue, r.spec.id, r.rows[ask], blockID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if removal.person == "" {
+		return nil, removal.read, removal.held, nil
+	}
+	event, err := versionEventID(ctx, r.tx, artifactOwner{IssueKey: &r.issue}, r.spec.id, removal.version)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return &declinedAsk{ask: ask, person: removal.person, version: removal.version, at: removal.at, event: event}, "", nil, nil
+}
+
+// specRemoval is who took an ask's block out of its spec, as readSpecRemoval reads it: the person
+// whose version left it out, that version and its time, person "" where no person did; and
+// otherwise what the read found (read, one of the restoreRead reasons) and the block as the newest
+// version holding it held it (held), nil where none did.
+type specRemoval struct {
+	person  string
+	version int
+	at      time.Time
+	read    string
+	held    *pmdoc.Node
+}
+
+// readSpecRemoval reads, through q, who took ask's block, blockID, out of the spec specID of
+// issue: the version that left it out, the lowest above the newest whose stored tree holds an ask
+// block with that id, read newest first through the stored-version reader the approval carry
+// reads (approvedVersion), a version it cannot read holding none. Where that version is a
+// person's (versionPerson) it names that person, the version and its time. Otherwise it names what
+// it read, and the ask is restored: that version's authors name no person and no agent acting
+// with the person scope, no version of the spec held the block, or that version names no author;
+// with the block as the newest version holding it held it, nil where none did, whose bytes the
+// restore writes back (restoredAskBlock). A version a person's own write wrote is the person's
+// whatever other authors it lists, and one a session wrote with no act of a person - every
+// agent's drop the restore exists to undo, the release before's bearer writes among them - is no
+// person's.
 //
 // The ask's answerer is no remover in the one version that first holds her answer: the version
 // written after the ask's answered_at whose previous version was written before it. The release
 // before wrote an answer into its block in the live document in the answerer's name, so the first
 // version after the answer credits her whatever else it holds, an agent's drop of the block among
-// it (answerersVersion). In every later version she counts as any person does.
-func (r *issueRestore) removalOf(ctx context.Context, ask, blockID string) (*declinedAsk, string, error) {
-	rows, err := r.tx.Query(ctx, `select number from artifact_versions where artifact_id = $1::uuid order by number desc`, r.spec.id)
+// it (answerersVersion). In every later version she counts as any person does. This build's own
+// settlement records a person's removal of an answered ask's block as the version is written
+// (holdSettledRemovals), so a version this build settled with the block gone, its answerer among
+// its authors, has its ask declined before this reads it (readState's removed).
+//
+// It is the one test of a person's removal, which the restore reads (removalOf) and the store
+// census's dangling counter reads its returning set by (ReturnDeclined). It writes nothing.
+func readSpecRemoval(ctx context.Context, q Queryer, issue, specID string, ask model.Ask, blockID string) (specRemoval, error) {
+	rows, err := q.Query(ctx, `select number from artifact_versions where artifact_id = $1::uuid order by number desc`, specID)
 	if err != nil {
-		return nil, "", fmt.Errorf("read the versions of the spec of %s: %w", r.issue, err)
+		return specRemoval{}, fmt.Errorf("read the versions of the spec of %s: %w", issue, err)
 	}
 	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
 	if err != nil {
-		return nil, "", fmt.Errorf("read the versions of the spec of %s: %w", r.issue, err)
+		return specRemoval{}, fmt.Errorf("read the versions of the spec of %s: %w", issue, err)
 	}
 	removing, holder := 0, 0
+	var held *pmdoc.Node
 	for _, number := range numbers {
-		tree, _, readable, err := approvedVersion(ctx, r.tx, r.spec.id, number)
+		tree, _, readable, err := approvedVersion(ctx, q, specID, number)
 		if err != nil {
-			return nil, "", err
+			return specRemoval{}, err
 		}
-		if readable && holdsAskBlock(tree, blockID) {
-			holder = number
-			break
+		if readable {
+			if held = askBlockIn(tree, blockID); held != nil {
+				holder = number
+				break
+			}
 		}
 		removing = number
 	}
 	switch {
 	case holder == 0:
-		return nil, restoreReadNeverHeld, nil
+		return specRemoval{read: restoreReadNeverHeld}, nil
 	case removing == 0:
 		// The newest version holds the block: no version left it out.
-		return nil, restoreReadNoPerson, nil
+		return specRemoval{read: restoreReadNoPerson, held: held}, nil
 	}
 	var authors []model.Actor
 	var at, previousAt time.Time
-	if err := r.tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select v.authors, v.created_at, previous.created_at
 		from artifact_versions v, artifact_versions previous
 		where v.artifact_id = $1::uuid and v.number = $2 and previous.artifact_id = $1::uuid and previous.number = $3
-	`, r.spec.id, removing, holder).Scan(&authors, &at, &previousAt); err != nil {
-		return nil, "", fmt.Errorf("read the authors of version %d of the spec of %s: %w", removing, r.issue, err)
+	`, specID, removing, holder).Scan(&authors, &at, &previousAt); err != nil {
+		return specRemoval{}, fmt.Errorf("read the authors of version %d of the spec of %s: %w", removing, issue, err)
 	}
 	if len(authors) == 0 {
-		return nil, restoreReadNoAuthors, nil
+		return specRemoval{read: restoreReadNoAuthors, held: held}, nil
 	}
-	person := versionPerson(authors, answerersVersion(r.rows[ask], at, previousAt))
+	person, _ := versionPerson(authors, answerersVersion(ask, at, previousAt))
 	if person == "" {
-		return nil, restoreReadNoPerson, nil
+		return specRemoval{read: restoreReadNoPerson, held: held}, nil
 	}
-	event, err := versionEventID(ctx, r.tx, artifactOwner{IssueKey: &r.issue}, r.spec.id, removing)
+	return specRemoval{person: person, version: removing, at: at}, nil
+}
+
+// ReturnDeclined answers whether the restore declines to write back the ask of work, a return of
+// the main shape (graphcensus.RestoreReturns): whether a person took its block out of the spec, as
+// the restore reads it before it writes one back (readSpecRemoval, removalOf). It reads the ask's
+// row and the spec work names through q and writes nothing, so the store census runs it in its
+// read-only snapshot (graphcensus.ReturnDeclined), and the dangling counter's returning set holds
+// only the asks the restore writes back.
+func ReturnDeclined(ctx context.Context, q graphstore.Queryer, work graphcensus.RestoreWork) (bool, error) {
+	var specID string
+	ask, err := ScanAsk(q.QueryRow(ctx, `
+		select `+AskColumns+`, spec.id::text from asks a
+		join artifacts spec on spec.ref_key = $2
+		where a.id = $1::uuid`, work.Ask, work.Spec), &specID)
 	if err != nil {
-		return nil, "", err
+		return false, fmt.Errorf("read the ask %s the restore returns to %s: %w", work.Ask, work.Spec, err)
 	}
-	return &declinedAsk{ask: ask, person: person, version: removing, at: at, event: event}, "", nil
+	removal, err := readSpecRemoval(ctx, q, work.Issue, specID, ask, work.BlockID)
+	if err != nil {
+		return false, err
+	}
+	return removal.person != "", nil
 }
 
 // answerersVersion is the login of ask's answerer where a version written at at, whose previous
@@ -757,31 +816,32 @@ func answerersVersion(ask model.Ask, at, previousAt time.Time) string {
 	return model.CanonicalLogin(ask.Answer.User)
 }
 
-// versionPerson is the person a version's authors name, "" where they name none: the first
-// author that is a person (kind user, a browser's person, or an agent acting for one through a
-// route that takes the person scope) or an agent whose recorded act holds the person scope (a
-// broker-issued token its person scoped), named as that author's person (personOf), other than
-// excluded, the answerer in the version that first holds her answer (answerersVersion).
-func versionPerson(authors []model.Actor, excluded string) string {
+// versionPerson is the person a version's authors name, "" where they name none, and the author
+// that names them: the first author that is a person (kind user, a browser's person, or an agent
+// acting for one through a route that takes the person scope) or an agent whose recorded act
+// holds the person scope (a broker-issued token its person scoped), named as that author's person
+// (personOf), other than excluded, the answerer in the version that first holds her answer
+// (answerersVersion).
+func versionPerson(authors []model.Actor, excluded string) (string, model.Actor) {
 	for _, author := range authors {
 		if author.Kind != "user" && (author.Act == nil || !slices.Contains(author.Act.Scopes, model.ScopePerson)) {
 			continue
 		}
 		if login := personOf(author); login != "" && login != excluded && graphstore.AddressFits(login) {
-			return login
+			return login, author
 		}
 	}
-	return ""
+	return "", model.Actor{}
 }
 
-// holdsAskBlock reports whether tree holds an ask block under id.
-func holdsAskBlock(tree *pmdoc.Node, id string) bool {
-	held := false
+// askBlockIn is the ask block tree holds under id, nil where it holds none.
+func askBlockIn(tree *pmdoc.Node, id string) *pmdoc.Node {
+	var held *pmdoc.Node
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if blockID, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" && blockID == id {
-			held = true
+			held = node
 		}
-		return !held
+		return held == nil
 	})
 	return held
 }
@@ -897,6 +957,7 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 		if drop, err = r.planSections(ctx, tree); err != nil {
 			return err
 		}
+		r.decisionsDropped = drop
 		left, _ := withoutBlocks(tree, dropped)
 		r.decisionsHoldAsks = pmdoc.HoldsAskBlock(left)
 		if len(drop) == 0 {
@@ -954,7 +1015,7 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 			// document holds under that ask's block id: either moves into the spec.
 			restore.moved = node
 			if restore.from == "" {
-				restore.from = storeBlockAddress(r.decisions.refKey, id)
+				restore.from = refs.BlockAddress(r.decisions.refKey, id)
 			}
 			movedBy[id] = restore
 			drop[id] = true
@@ -1576,19 +1637,36 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 // writeSpec writes into the spec what the pass restores and converts, in one live write and one
 // version: each restored ask block, in answer-time order, then each converted section's decision,
 // in the spec's `## Decisions` part, in place of its one pointer line to the decisions document -
-// the part's first paragraph that cites the document itself (citesDocument), every other
-// paragraph kept, one citing a section of the document among them - or after the part's last
-// block where it holds none, and under a `## Decisions` heading the write adds where the spec
-// holds no such part; and, in each answered ask block it holds already, the shaped pointers and
-// the readings the conversion gives it. It records the pointer line it took out (pointerLine),
-// which its version's mark names. On a fleet of one build - which the phase runs on alone - the
-// same write takes the server-owned attributes out of every ask block of the spec
-// (withoutStoredAskAttributes), as the first accepted write of the document does (R10). It
-// answers the event of the version it wrote, NoEvent where the spec did not change.
+// the part's first paragraph whose one content is the citation of the document itself
+// (isPointerLine), every other paragraph kept, one citing the document among other words or
+// citing a section of it among them - or after the part's last block where it holds none, and
+// under a `## Decisions` heading the write adds where the spec holds no such part; and, in each
+// answered ask block it holds already, the shaped pointers and the readings the conversion gives
+// it. It records the pointer line it took out (pointerLine) and whether it added the heading
+// (headingAdded), which its version's mark names. On a fleet of one build - which the phase runs
+// on alone - the same write cuts every ask block of the spec to the attributes a version keeps
+// (writePresent), as the first accepted write of the document does (R10), and gives each restored
+// answered ask's block those of its row (keptAskState). It answers the event of the version it
+// wrote, NoEvent where the spec did not change.
 func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
+	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return graphstore.NoEvent, err
+	}
+	// Once the fleet is one build, a restored ask's block keeps the state its node holds
+	// (keptAskState, onItsNode).
+	var nodes map[string]askNodeAnswer
+	if !twoBuilds {
+		var ids []string
+		for _, restore := range r.restores {
+			if !restore.joins && !restore.rowless {
+				ids = append(ids, restore.row.ID)
+			}
+		}
+		if nodes, err = askNodeAnswers(ctx, r.tx, ids); err != nil {
+			return graphstore.NoEvent, err
+		}
 	}
 	var added []*pmdoc.Node
 	for _, restore := range r.restores {
@@ -1598,9 +1676,9 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 		}
 		var block *pmdoc.Node
 		if restore.rowless {
-			block, err = movedBlockOf(restore, twoBuilds)
+			block, err = r.movedBlockOf(ctx, restore, twoBuilds)
 		} else {
-			block, err = r.restoredAskBlock(restore)
+			block, err = r.restoredAskBlock(ctx, restore, twoBuilds, nodes)
 		}
 		if err != nil {
 			return graphstore.NoEvent, err
@@ -1622,6 +1700,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 	}
 	var refused error
 	var pointerLine string
+	var headingAdded bool
 	err = r.service.applyLive(ctx, r.spec.id, DecisionStepActor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		if current.Node() == nil {
 			return fmt.Errorf("the spec of %s is outside the Proof schema, so the decisions step cannot write into it", r.issue)
@@ -1635,11 +1714,12 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 				}
 			}
 			changed := r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds)
-			pointerLine = ""
+			pointerLine, headingAdded = "", false
 			if len(added) > 0 {
+				headingAdded = !hasDecisionsPart(live)
 				var line *pmdoc.Node
 				live.Children, line = withDecisionsPartBlocks(live.Children, added, func(node *pmdoc.Node) bool {
-					return citesDocument(node, pointers, r.service.serverURL)
+					return isPointerLine(node, pointers, r.service.serverURL)
 				})
 				if line != nil {
 					markdown, err := blockMarkdown(line)
@@ -1664,7 +1744,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 	if err != nil {
 		return graphstore.NoEvent, err
 	}
-	r.pointerLine = pointerLine
+	r.pointerLine, r.headingAdded = pointerLine, headingAdded
 	r.creditSectionAuthors(ctx, r.spec.id)
 	return r.writeVersion(ctx, r.spec, &r.result.SpecVersion)
 }
@@ -1699,12 +1779,14 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 
 // writePresent writes edits - the shaped pointers and the readings the conversion gives the
 // answered ask blocks a document holds already - into live, the tree of document as its live
-// write holds it, and, on a fleet of one build (twoBuilds false), takes the server-owned
-// attributes out of every ask block of it (withoutStoredAskAttributes). It records each pointer it
-// gave a block that the block did not hold (shapedAdded), which the version's mark names, and each
-// reading it wrote (readingsWritten), and reports whether it changed the tree. It visits every ask
-// block of the tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit
-// answers true at an ask block too, and the blocks after the first are written as well.
+// write holds it, and, on a fleet of one build (twoBuilds false), takes the answer's words and
+// selection, which no version then holds, off every ask block of it (withoutUnkeptAskAttributes),
+// leaving the state, answerer, time and a copy's provenance settlement keeps in step with each ask.
+// It records each pointer it gave a block that
+// the block did not hold (shapedAdded), which the version's mark names, and each reading it wrote
+// (readingsWritten), and reports whether it changed the tree. It visits every ask block of the
+// tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit answers true
+// at an ask block too, and the blocks after the first are written as well.
 func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool) bool {
 	changed := false
 	added := map[string][]string{}
@@ -1738,7 +1820,7 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 				changed = true
 			}
 		}
-		if !twoBuilds && withoutStoredAskAttributes(node) {
+		if !twoBuilds && withoutUnkeptAskAttributes(node) {
 			changed = true
 		}
 		return true
@@ -1773,6 +1855,7 @@ func (r *issueRestore) refuseUnwrittenReadings() error {
 // conversion gives that block (writePresent), and its version, in document id order. R9 gives a
 // section's links and reading to the ask's present block wherever it stands in the issue.
 func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
+	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return err
@@ -1850,51 +1933,217 @@ func withDecisionsPartBlocks(children, blocks []*pmdoc.Node, pointer func(*pmdoc
 	return append(next, children[end:]...), replaced
 }
 
-// restoredAskBlock is the block restore writes into the spec, built from the ask's row - its
-// question and options as the row holds them, urgency and multiple - and its node, which holds
-// the answer: the block shows no answer (R6). It takes the spec blocks the sections that restate
-// it link as its `shaped` pointers, and holds the readings the block it moves held and the ones
-// the conversion writes. It reads back as the row's wording (askBlock.asks), or is refused.
-func (r *issueRestore) restoredAskBlock(restore *restoredBlock) (*pmdoc.Node, error) {
-	budget := pmdoc.NewWriteBudget()
+// restoredAskBlock is the block restore writes into the spec for an ask its row names. It is the
+// block it moves, byte for byte, with every link, code span and sub-list its question and options
+// hold - for the main shape the block as the spec's last version holding it held it (held), for
+// the second shape, or where the spec never held it, the block as the decisions document holds it
+// (moved) - where that block reads back as the wording the ask's row holds (askBlock.asks), so
+// the restore returns what the person read (R7); and otherwise the ask's question and options as
+// its row holds them. Either way it takes urgency and multiple from the row and shows no answer,
+// which its node holds (R6): on a fleet of one build (twoBuilds false) its opening line keeps the
+// row's state, answerer and time, as every version then keeps them for the release before's
+// readers (keptAskState), and none of the other server-owned attributes. Its `shaped` pointers are
+// the block's own and the spec blocks the sections that restate it link (restoredPointers), and it
+// holds the readings the block of the decisions document held and the ones the conversion writes.
+// It reads back as the row's wording, or is refused.
+func (r *issueRestore) restoredAskBlock(ctx context.Context, restore *restoredBlock, twoBuilds bool, nodes map[string]askNodeAnswer) (*pmdoc.Node, error) {
 	decided := model.NewAskEditPrevious(restore.row)
-	children, err := questionBlocks(normalizeAskQuestion(decided.Question), budget)
+	attrs := pmdoc.Attrs{pmdoc.BlockIDAttr: restore.id, "urgency": decided.Urgency, "multiple": decided.Multiple}
+	shaped, err := r.restoredPointers(ctx, restore)
+	if err != nil {
+		return nil, err
+	}
+	if len(shaped) > 0 {
+		attrs[shapedAttribute] = shaped
+	}
+	var readings []*pmdoc.Node
+	if restore.moved != nil {
+		_, readings = pmdoc.TypedContent(restore.moved)
+	}
+	readings = append(slices.Clone(readings), restore.readings...)
+	kept := func(block *pmdoc.Node) *pmdoc.Node {
+		if !twoBuilds {
+			// kept for one release: stored-ask-state
+			keptAskState(onItsNode(restore.row, nodes), "")(block)
+		}
+		return block
+	}
+	source := restore.held
+	if restore.work.Shape == graphcensus.RestoreMoves || source == nil {
+		source = restore.moved
+	}
+	if source != nil {
+		content, _ := pmdoc.TypedContent(source)
+		// A block whose bytes the parse refuses, or that asks other words than the row's, is
+		// built from the row below instead.
+		if block, asks, err := askBlockFrom(attrs, content, readings, decided); err == nil && asks {
+			return kept(block), nil
+		}
+	}
+	budget := pmdoc.NewWriteBudget()
+	content, err := questionBlocks(normalizeAskQuestion(decided.Question), budget)
 	if err != nil {
 		return nil, fmt.Errorf("write the question of ask %s: %w", restore.row.ID, err)
 	}
 	if list, err := editedOptionList(nil, normalizeAskOptions(decided.Options), budget); err != nil {
 		return nil, fmt.Errorf("write the options of ask %s: %w", restore.row.ID, err)
 	} else if list != nil {
-		children = append(children, list)
+		content = append(content, list)
 	}
-	if restore.moved != nil {
-		_, held := pmdoc.TypedContent(restore.moved)
-		children = append(children, held...)
-	}
-	children = append(children, restore.readings...)
-	attrs := pmdoc.Attrs{pmdoc.BlockIDAttr: restore.id, "urgency": decided.Urgency, "multiple": decided.Multiple}
-	if len(restore.shaped) > 0 {
-		attrs[shapedAttribute] = r.specPointers(restore.shaped)
-	}
-	block, err := parsedTypedBlock(&pmdoc.Node{Type: "ask", Attrs: attrs, Children: children}, "ask")
+	block, asks, err := askBlockFrom(attrs, content, readings, decided)
 	if err != nil {
 		return nil, fmt.Errorf("write the block of ask %s: %w", restore.row.ID, err)
 	}
-	read, err := parseAskBlock(block)
-	if err != nil || !read.asks(decided) {
+	if !asks {
 		return nil, fmt.Errorf("the restored block of ask %s does not read back as the wording its row holds", restore.row.ID)
 	}
-	return block, nil
+	return kept(block), nil
+}
+
+// askBlockFrom is the ask block of attrs holding content and then readings, as the document's own
+// markdown pipeline makes it (parsedTypedBlock), and whether it asks what decided does
+// (askBlock.asks).
+func askBlockFrom(attrs pmdoc.Attrs, content, readings []*pmdoc.Node, decided model.AskEditPrevious) (*pmdoc.Node, bool, error) {
+	children := append(slices.Clone(content), readings...)
+	block, err := parsedTypedBlock(&pmdoc.Node{Type: "ask", Attrs: maps.Clone(attrs), Children: children}, "ask")
+	if err != nil {
+		return nil, false, err
+	}
+	read, err := parseAskBlock(block)
+	return block, err == nil && read.asks(decided), nil
+}
+
+// restoredPointers is the `shaped` value of restore's block, R6's "its `shaped` tuples stay
+// intact": the pointers the block held - as the spec last held it (held) and as the decisions
+// document holds it (moved) - each as it reads once the pass is written (movedPointers), then the
+// spec blocks the sections that restate its ask link (specPointers), each once.
+func (r *issueRestore) restoredPointers(ctx context.Context, restore *restoredBlock) ([]string, error) {
+	var pointers []string
+	for _, block := range []*pmdoc.Node{restore.held, restore.moved} {
+		if block == nil {
+			continue
+		}
+		held, err := r.movedPointers(ctx, shapedPointersOf(block))
+		if err != nil {
+			return nil, err
+		}
+		pointers = appendUnique(pointers, held...)
+	}
+	return appendUnique(pointers, r.specPointers(restore.shaped)...), nil
+}
+
+// movedPointers is pointers, the `shaped` values of a block the restore moves, each as it reads
+// once the pass is written (movedPointer), without each that then names no block.
+func (r *issueRestore) movedPointers(ctx context.Context, pointers []string) ([]string, error) {
+	moved := make([]string, 0, len(pointers))
+	for _, pointer := range pointers {
+		to, stands, err := r.movedPointer(ctx, pointer)
+		if err != nil {
+			return nil, err
+		}
+		if stands {
+			moved = appendUnique(moved, to)
+		}
+	}
+	return moved, nil
+}
+
+// movedPointer is pointer, a `shaped` value of a block the restore moves, as it reads once the
+// pass is written, and whether it names a block then. A pointer to a block of the decisions
+// document that this pass moves names the block it moves to: the ask block the restore writes
+// into the spec, or the decision or the ask block a section it converts becomes, as writeFacts'
+// moved_to tuples state it (passMove). One to any other block this pass takes out of that
+// document names none, nor does one whose section's moved_to reaches an ask, which no `shaped`
+// value names. One to a block the document no longer holds names the block its moved_to tuples
+// reach (graphstore.MovedTo), and none where they reach no block. Every other pointer, one to a
+// block the decisions document still holds among them, reads as it is.
+func (r *issueRestore) movedPointer(ctx context.Context, pointer string) (string, bool, error) {
+	if r.decisions == nil {
+		return pointer, true, nil
+	}
+	cited := text.Extract(pointer, r.service.serverURL)
+	if len(cited) != 1 || cited[0].Kind != "block" {
+		return pointer, true, nil
+	}
+	address := text.TargetID(cited[0])
+	id, ofDecisions := strings.CutPrefix(address, r.decisions.refKey+"#")
+	if !ofDecisions {
+		return pointer, true, nil
+	}
+	if to, taken := r.passMove(address, id); taken {
+		return to, to != "", nil
+	}
+	reached, ok, err := graphstore.MovedTo(ctx, r.tx, address)
+	if err != nil || !ok || reached.Ask != "" {
+		return "", false, err
+	}
+	if reached.Address == address {
+		return pointer, true, nil
+	}
+	to, stands := r.blockPointer(reached.Address)
+	return to, stands, nil
+}
+
+// passMove is where this pass moves the block of the decisions document at address, the store's
+// address of its block id, named as a `shaped` value names it ("" for a section's heading whose
+// moved_to reaches an ask, or a block of a converted section that no moved_to leaves), and whether
+// this pass takes that block out of the document at all (decisionsDropped).
+func (r *issueRestore) passMove(address, id string) (string, bool) {
+	for _, restore := range r.restores {
+		if restore.from == address {
+			return refs.BlockRef(r.spec.address, restore.id), true
+		}
+	}
+	for _, converted := range r.sections {
+		if refs.BlockAddress(r.decisions.refKey, converted.section.headingID()) != address {
+			continue
+		}
+		switch converted.fate {
+		case fateDecision:
+			return refs.BlockRef(r.spec.address, converted.decisionID), true
+		case fateReading, fateDropped:
+			return refs.BlockRef(converted.askDocument.address, converted.askBlock), true
+		}
+	}
+	return "", r.decisionsDropped[id]
+}
+
+// blockPointer is the `shaped` value naming the block at address, a store address
+// (refs.BlockAddress), and whether address is one of a document of the issue that stands.
+func (r *issueRestore) blockPointer(address string) (string, bool) {
+	refKey, id, found := strings.Cut(address, "#")
+	if !found {
+		return "", false
+	}
+	for _, document := range r.documents {
+		if document.refKey == refKey {
+			return refs.BlockRef(document.address, id), true
+		}
+	}
+	return "", false
 }
 
 // movedBlockOf is the block the restore writes into the spec for restore, a block of the decisions
 // document no row names: the block as that document's live tree holds it, under the id it takes,
-// read back as the document's own markdown pipeline makes it, and, on a fleet of one build, without
-// the server-owned attributes (withoutStoredAskAttributes), as the spec's write takes them out of
-// every other ask block. No row holds its question to build it from, and none names it to rebind.
-func movedBlockOf(restore *restoredBlock, twoBuilds bool) (*pmdoc.Node, error) {
+// its `shaped` pointers each as it reads once the pass is written (movedPointers), read back as
+// the document's own markdown pipeline makes it, and, on a fleet of one build, without the
+// server-owned attributes (withoutStoredAskAttributes): no ask's state stands behind them, and the
+// settlement after the write opens its ask and writes that state. No row holds its question to
+// build it from, and none names it to rebind.
+func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock, twoBuilds bool) (*pmdoc.Node, error) {
 	node := &pmdoc.Node{Type: "ask", Attrs: maps.Clone(restore.moved.Attrs), Children: restore.moved.Children}
 	node.Attrs[pmdoc.BlockIDAttr] = restore.id
+	if held := shapedPointersOf(restore.moved); len(held) > 0 {
+		pointers, err := r.movedPointers(ctx, held)
+		if err != nil {
+			return nil, err
+		}
+		delete(node.Attrs, shapedAttribute)
+		if len(pointers) > 0 {
+			node.Attrs[shapedAttribute] = pointers
+		}
+	}
+	// kept for one release: roll-window-attributes
 	if !twoBuilds {
 		withoutStoredAskAttributes(node)
 	}
@@ -1938,15 +2187,16 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 
 // stepCasesFor is the mark of the version of document this pass writes (decisionStepCases): the
 // restore's phase, the conversion's where it converts, and what the pass added to document - for
-// the spec, the ask blocks the restore wrote, the decisions the conversion wrote and the pointer
-// line it took out; for any document, the `shaped` pointers it gave the answered ask blocks the
-// document held already. The restore's and the conversion's carry cases take out only those.
+// the spec, the ask blocks the restore wrote, the decisions the conversion wrote, the
+// `## Decisions` heading where it added one and the pointer line it took out; for any document,
+// the `shaped` pointers it gave the answered ask blocks the document held already. The restore's
+// and the conversion's carry cases take out only those.
 func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 	steps := decisionStepCases{restore: true, conversion: r.convert, shaped: r.shapedAdded[document]}
 	if document != r.spec.id {
 		return steps
 	}
-	steps.restored, steps.decisions = map[string]bool{}, map[string]bool{}
+	steps.restored, steps.decisions, steps.headingAdded = map[string]bool{}, map[string]bool{}, r.headingAdded
 	for _, restore := range r.restores {
 		if !restore.joins {
 			steps.restored[restore.id] = true
@@ -2021,10 +2271,10 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 	}
 	var keepRows []keepRow
 	for _, converted := range r.sections {
-		heading := storeBlockAddress(r.decisions.refKey, converted.section.headingID())
+		heading := refs.BlockAddress(r.decisions.refKey, converted.section.headingID())
 		switch converted.fate {
 		case fateDecision:
-			address := storeBlockAddress(r.spec.refKey, converted.decisionID)
+			address := refs.BlockAddress(r.spec.refKey, converted.decisionID)
 			moved(heading, address)
 			if converted.keep == nil || converted.keep.keptBy == "" {
 				continue
@@ -2050,7 +2300,7 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			}
 			keepRows = append(keepRows, keepRow{block: converted.decisionID, sum: keptSum, keptBy: login, keptAt: converted.keep.keptAt})
 		case fateReading, fateDropped:
-			moved(heading, storeBlockAddress(converted.askDocument.refKey, converted.askBlock))
+			moved(heading, refs.BlockAddress(converted.askDocument.refKey, converted.askBlock))
 		case fateRemovedAsk:
 			tuples = append(tuples, graphstore.Tuple{
 				FromKind: refs.BlockNodeKind, FromID: heading, Kind: graphstore.TupleMovedTo,

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import type { Actor, ArtifactBlock, Comment, Decision, IssueDecisions } from "../../../api/types";
+import type { Actor, ArtifactBlock, Comment, IssueDecisions } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -22,6 +22,7 @@ import {
   openAsk,
   READER,
   READER_ACTOR,
+  SPEC_DOCUMENT,
   shaped,
   specRef,
   statement,
@@ -81,34 +82,6 @@ async function entriesOf(
   return parts;
 }
 
-/** The decisions document's blocks as the blocks read answers them, in document order: each
- *  decision's heading, whose block is the decision's own (`Decision.block_id`), then one block
- *  for each paragraph of its words, each at the place it holds in the document's markdown. */
-function documentBlocks(made: readonly Decision[]): ArtifactBlock[] {
-  const blocks: ArtifactBlock[] = [];
-  let at = 0;
-  const add = (id: string, type: string, markdown: string) => {
-    blocks.push({
-      attributes: [],
-      from: at,
-      id,
-      references: { asks: 0, comments: 0 },
-      to: at + markdown.length,
-      token: id,
-      type,
-    });
-    // A blank line stands between two blocks of the markdown.
-    at += markdown.length + 2;
-  };
-  for (const one of made) {
-    add(one.block_id, "heading", `## ${one.heading}`);
-    one.text.split("\n\n").forEach((paragraph, index) => {
-      add(`${one.block_id}-${index + 1}`, "paragraph", paragraph);
-    });
-  }
-  return blocks;
-}
-
 /** The node ids of each part, in the order the part draws them. */
 function idsOf(parts: DecisionsParts): Record<keyof DecisionsParts, string[]> {
   const ids = (entries: readonly { readonly node: TreeNode }[]) =>
@@ -151,13 +124,14 @@ async function seamOf(quote: string) {
     decision("asked", { links: [shaped(specRef("s1"))], text: askedWords }),
     decision("minor"),
   ];
-  // The reader's Change on the second decision, made after both last changed, anchored on the
-  // block of the second decision that holds `quote`.
+  // The reader's Change on the second decision, made after both last changed, anchored in the
+  // spec on the second decision's own block, the lowest block holding `quote` that carries an
+  // id. The seam reads no document's blocks, so the Change is placed by its quote alone.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
-      artifact_id: DECISIONS_DOCUMENT.id,
-      block_id: "asked-1",
+      artifact_id: SPEC_DOCUMENT.id,
+      block_id: "asked",
       mark_id: "mark-asked",
       orphaned: false,
       quote,
@@ -184,13 +158,7 @@ async function seamOf(quote: string) {
     closing("a-late", { at: "2026-11-14T09:00:00Z", kind: "answered" }),
     closing("a-tie-mine", { at: tie, kind: "answered" }),
   ];
-  const parts = await entriesOf(
-    children,
-    decisionsRead(made),
-    asks,
-    [change],
-    documentBlocks(made)
-  );
+  const parts = await entriesOf(children, decisionsRead(made), asks, [change]);
   return { change, parts };
 }
 

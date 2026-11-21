@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -160,7 +161,7 @@ func writeMentionsVersion(t *testing.T, database *store.Store, document string, 
 // referencesKind is the census's line for the references a document makes.
 func referencesKind(t *testing.T, database *store.Store) graphcensus.KindReport {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		`, remark).Scan(&comment); err != nil {
 			return err
 		}
-		reader := refs.NewReader(ctx, tx, graphstore.KindComment, comment, mentionsServer)
+		reader := refs.NewReader(ctx, tx, model.Actor{Kind: "user", ID: "alice"}, graphstore.KindComment, comment, mentionsServer)
 		replacement, err := refs.PlanReplace(ctx, tx, graphstore.KindComment, comment, text.Refs(reader.Mentions(remark)), nil)
 		if err != nil {
 			return err
@@ -375,8 +376,12 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		t.Errorf("before the backfill the census reads %d row(s), %d unmarked, %d past the bound, and %d and %d differences (%+v %+v), want version 2's two, the release before's reference unmarked, the long one past the bound and none",
 			kind.Rows, kind.Unmarked, kind.PastBound, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}
-	if done := backfillReferences(t, database); done.Rows != 1 || done.Tuples != 1 || !done.Complete {
-		t.Errorf("the backfill reports %#v for the references, want the release before's one row and its tuple", done)
+	// The backfill's object pass names the document's node on its row and states, in the same
+	// transaction, the mention of the row it holds (graphcensus' nameArtifactNodes), since the arm
+	// over refs answers that row no more once the row names the node; so its pass over the
+	// references owes that row nothing, and the tuple stands as that pass would have stated it.
+	if done := backfillReferences(t, database); done.Rows != 0 || done.Tuples != 0 || !done.Complete {
+		t.Errorf("the backfill reports %#v for the references, want nothing owed: the object pass that names the document states its one row's mention", done)
 	}
 	backfilled := mentionsOf(t, database, notesRef)
 	if len(backfilled) != 1 || backfilled[0].toID != "ACME-5" || !backfilled[0].asserted || !backfilled[0].at.Equal(cited) ||

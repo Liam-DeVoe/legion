@@ -63,12 +63,14 @@ type heldRemoval struct {
 // own is refused for them (refuseDroppedAnsweredAsks). A person's own write is taken, and holds each
 // as that person's removal on the transaction's ledger, under the document holding the ask's block
 // (refs.AskBlockDocumentSQL), which the version the write leaves of that document states on the
-// ask's node (removalsOf). standing narrows the removals to the asks whose block the block index
-// holds as an ask block, for a write that replaces the document whole and so has no tree of its
-// own to say what the document held before it.
+// ask's node (removalsOf). standing narrows the removals, and the refusal, to the asks whose block
+// the block index holds as an ask block, for a write that replaces the document whole and so has
+// no tree of its own to say what the document held before it: an ask whose block an earlier write
+// took out - a person's removal, or an agent's drop the restore still owes - is lost to no write of
+// this one.
 func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, after *pmdoc.Node, lost func(blockID string) bool, by dropper, standing bool) error {
 	if !by.person {
-		return refuseDroppedAnsweredAsks(ctx, q, holder, after, lost)
+		return refuseDroppedAnsweredAsks(ctx, q, holder, after, lost, standing)
 	}
 	ledger := ledgerFrom(ctx)
 	if by.remover == "" || !graphstore.AddressFits(by.remover) || ledger == nil {
@@ -108,6 +110,30 @@ func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder,
 		ledger.removals[document][ask[0]] = heldRemoval{person: by.remover, actor: by.actor.Recorded(), at: at}
 	}
 	return nil
+}
+
+// holdSettledRemovals holds, for the version a settlement writes of artifactID from settled, the
+// removal of each answered ask whose block the document's block index held and settled does not
+// hold as an ask block, as the person the version's authors name (versionPerson). No writer but a
+// person's own editor takes an answered ask's block out of a document in the room: every other
+// write comes through a route that refuses it (refuseDroppedAnsweredAsks) and writes a version of
+// its own. So the browser's deletion is that person's removal, as the same deletion over HTTP is
+// at once (answerDroppedAnsweredAsks), and it stays taken: the version's index pass states it on
+// the ask's node (removalsOf), which the restore then declines (R6). An answer's own version names
+// its answerer too, since the answer writes the ask's state into its block in her name
+// (KeepAskBlockInStep), so a deletion settled into that version is hers as well, which the
+// restore's reading of the answerer's first version (answerersVersion) would otherwise excuse. A
+// version whose authors name no person holds none.
+func holdSettledRemovals(ctx context.Context, q Queryer, artifactID string, settled *pmdoc.Node, authors []model.Actor) error {
+	person, author := versionPerson(authors, "")
+	if person == "" {
+		return nil
+	}
+	held := openAskBlockIDs(settled)
+	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), settled, func(blockID string) bool {
+		_, kept := held[blockID]
+		return !kept
+	}, dropper{person: true, remover: person, actor: author}, true)
 }
 
 // removalsOf is what a version of artifactID states of the removals a person's own write of this
@@ -155,7 +181,10 @@ func queueRemovals(ctx context.Context, tx pgx.Tx, artifactID string) (graphstor
 	if len(removals.Nodes) == 0 && len(removals.Tuples) == 0 {
 		return graphstore.Uncaused{}, nil
 	}
-	if err := write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, removals) }); err != nil {
+	if err := write(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, removals)
+		return nil
+	}); err != nil {
 		return graphstore.Uncaused{}, fmt.Errorf("state the removals of the answered asks of %s: %w", artifactID, err)
 	}
 	return removals, nil

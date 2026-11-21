@@ -24,60 +24,40 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// typeMigrations are the files that write the type nodes, in the order the runner applies them:
-// the seed, then each migration that has changed a type since. The test runs them all a second
-// time, in that order and through the same path the migration runner runs each, to prove a second
-// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
-// the attributes it was written at, which every later type migration has moved on from.
-var typeMigrations = []string{
-	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
-	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
-	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
-	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
-	"../../internal/dispatch/store/migrations/20261116121500_issue_tree_query_supertags.up.sql",
-	// The lens_kind supertag and the attribute nodes of the types that declare no block type,
-	// each held to this file by requireStoreOnlyAttributesMatchTheirMigrations.
-	"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql",
-	"../../internal/dispatch/store/migrations/20261116163700_issue_tree_block_schema.up.sql",
-}
+// storeMigrations is the store's migrations directory, where each of store.TypeMigrations is read
+// from. The test runs them all a second time, in that order and through the same path the
+// migration runner runs each, to prove a second run leaves the same nodes (runTypeMigrationsAgain).
+// The seed alone would not do: run again, it puts back the version and the attributes it was
+// written at, which every later type migration has moved on from. A type migration written after
+// the store's backfill writes graph_tuples above the census limit, so it may write only bounded
+// writes under the migration census's bounded-write rule (typeMigrationShape), and the seed tuples
+// it inserts at source_event 0 fall under no unique key, so a second run would append them again.
+// Such a migration is listed in literalTypeMigrations too.
+const storeMigrations = "../../internal/dispatch/store/migrations"
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
 // pmdoc, so what the store holds is compared with the file itself.
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
-// closedSupertags is the root's closed list of types (R21 of the root's specification and R6 of the
-// store child's), twenty-nine names: the twenty-seven the store child seeds, and the
-// `query` and `query version` nodes R28's approval row points at, which this change seeds
-// (20261116121500_issue_tree_query_supertags). R21 closes the list at thirty; the thirtieth,
-// `lens_kind`, the child that moves lenses and lens kinds seeds, and it stands in
-// authorisedSupertags with its document. `proposed` is a value of a node's state and no type, and
-// the role is the agent, so neither is a supertag. The store holds one supertag node for each, and
-// beyond them only an entry an approved document of this tree creates (authorisedSupertags), so
-// this list is written here as the test's own copy: a seed that adds or drops a name has to be read
-// by a person before this test agrees with it.
+// closedSupertags is the root's closed list of types (R21 of the parent change's specification
+// and R6 of this change's): the twenty-seven this change creates, and the three of the later
+// changes this tree holds. `proposed` is a value of a node's state and no type, and the role is
+// the agent, so neither is a supertag. The store holds one supertag node for each and no other.
+// Each later change that creates a kind adds it to this list in its own pull request: the change
+// that moves lenses and lens kinds adds `lens_kind` (20261116123354_lens_catalogue), the change
+// that moves issues and their documents adds `query` and `query version`
+// (20261116121500_issue_tree_query_supertags), the change that moves handoffs adds `handoff`, and
+// the root adds `priority`, `step` and `plan`. The list is written here as the test's own copy, so
+// a seed that adds or drops a name has to be read by a person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
 	"plan_task", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
-	"query", "query version",
-}
-
-// authorisedSupertags is every supertag the closed list does not name that an approved document
-// of this tree creates, each with the reference of the document that creates it. A bare
-// prohibition would refuse a correct store: the root's own c-derived requires the entry below once
-// the child that moves lenses and lens kinds seeds it, so a test that allowed the closed list alone
-// would fail the build that requirement asks for. What the check is for is a supertag nobody
-// authorised, so an entry beyond the closed list passes only where this list names its document,
-// and the run prints
-// every one of them with that reference.
-//
-// The reference is written here rather than read: these checks run where no Dispatch is
-// reachable, so a test that called one could not run at all.
-var authorisedSupertags = map[string]string{
-	"lens_kind": "R7 of the specification of the child that moves lenses and lens kinds",
+	"lens_kind", "query", "query version",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -111,11 +91,9 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireAnUnknownKindIsSkipped(t, ctx, pool, file)
 }
 
-// requireClosedSupertagList holds the store to one supertag node per name of the closed list,
-// and beyond them only to an entry authorisedSupertags names with its document, each with the
-// base attributes every node of this store carries, as node columns and as tuples. Every entry
-// beyond the closed list is printed with the document that authorises it, and one with no
-// document fails.
+// requireClosedSupertagList holds the store to one supertag node per name of the closed list and
+// no other, each with the base attributes every node of this store carries, as node columns and
+// as tuples.
 func requireClosedSupertagList(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindSupertag)
@@ -134,20 +112,11 @@ func requireClosedSupertagList(t *testing.T, ctx context.Context, pool *store.Po
 	slices.Sort(want)
 	got := slices.Clone(names)
 	slices.Sort(got)
-	// Every supertag the closed list does not name, reported with the document that authorises
-	// it, and a failure for one nothing authorises.
 	for _, name := range missing(got, want) {
-		document, authorised := authorisedSupertags[name]
-		if !authorised {
-			t.Errorf("the store holds supertag node %q, which the closed list does not name and no approved document of this tree authorises", name)
-			continue
-		}
-		t.Logf("the store holds supertag %q beyond the closed list, created by %s", name, document)
-		want = append(want, name)
-		slices.Sort(want)
+		t.Errorf("the store holds supertag node %q, which the closed list does not name", name)
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("the store holds supertag nodes %v, want the closed list and the supertags this tree authorises %v\nonly in the store: %v\nonly in the list: %v",
+		t.Errorf("the store holds supertag nodes %v, want the closed list %v\nonly in the store: %v\nonly in the list: %v",
 			got, want, missing(got, want), missing(want, got))
 	}
 }
@@ -235,11 +204,11 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 			held, stated := tuples[name]
 			switch {
 			case !stated:
-				t.Errorf("type node %s/%s carries %s = %s on its row and no value tuple states it: a type migration appends a value tuple for each value it sets, as %s does",
-					kind, id, name, want, typeMigrationExample)
+				t.Errorf("type node %s/%s carries %s = %s on its row and no value tuple states it: a type migration appends a value tuple for each value it sets, and writes %s",
+					kind, id, name, want, typeMigrationShape)
 			case held != want:
-				t.Errorf("type node %s/%s carries %s = %s on its row, and its newest value tuple states %s: a type migration appends a value tuple for each value it moves, as %s does",
-					kind, id, name, want, held, typeMigrationExample)
+				t.Errorf("type node %s/%s carries %s = %s on its row, and its newest value tuple states %s: a type migration appends a value tuple for each value it moves, and writes %s",
+					kind, id, name, want, held, typeMigrationShape)
 			}
 			compared++
 		}
@@ -349,7 +318,7 @@ var storeOnlyAttribute = regexp.MustCompile(`\('([a-z_ ]+)', '([a-z_]+)', '([a-z
 // directions: each node's one tie is to the supertag its migration names it under, and it carries
 // the name, the store name (its own name, since none is a base attribute), the kind and the
 // position the migration gives it, and each attribute a migration declares is a node of the store.
-// A node no migration of typeMigrations declares fails, naming the node.
+// A node no migration of store.TypeMigrations declares fails, naming the node.
 func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeOnlyNode) {
 	t.Helper()
 	type declaration struct {
@@ -357,18 +326,18 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		position                        int
 	}
 	declared := map[string]declaration{}
-	for _, migration := range typeMigrations {
-		text, err := os.ReadFile(filepath.Clean(migration))
+	for _, name := range store.TypeMigrations {
+		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
 		if err != nil {
-			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
+			t.Fatalf("read the type migration %s: %v", name, err)
 		}
 		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(string(text), -1) {
 			position, err := strconv.Atoi(match[4])
 			if err != nil {
-				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], filepath.Base(migration), err)
+				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], name, err)
 			}
 			declared[match[1]+"/"+match[2]] = declaration{
-				supertag: match[1], name: match[2], kind: match[3], migration: filepath.Base(migration), position: position,
+				supertag: match[1], name: match[2], kind: match[3], migration: name, position: position,
 			}
 		}
 	}
@@ -381,7 +350,7 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		held[node.ID] = true
 		want, ok := declared[node.ID]
 		if !ok {
-			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of typeMigrations declares", node.ID)
+			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of store.TypeMigrations declares", node.ID)
 			continue
 		}
 		if tie := attribute.tie; tie.ToKind != schemanodes.KindSupertag || tie.ToID != want.supertag {
@@ -460,10 +429,19 @@ func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool
 	}
 }
 
-// typeMigrationExample is the type migration a failing run names as the shape of the one a change
-// to blocks.json needs: it writes the node of the attribute it adds, with its tuples, and moves
-// every block type to the new version.
-const typeMigrationExample = "20261113230000_graph_supertags_check_ci_check.up.sql"
+// typeMigrationShape is the shape a failing run names for the type migration a change to
+// blocks.json needs, written out in words because no migration of that shape exists yet to point
+// at. The type migrations written before the store's backfill (store.TypeMigrations but
+// literalTypeMigrations) write `with … insert … select … where not exists`, and two of them `on
+// conflict … do update`, which the migration census refuses once graph_tuples and graph_nodes are
+// above its limit, so none of them is the shape. A later one writes under the census's
+// bounded-write rule (pgmigrate.BoundedWriteRows): the node of each type or attribute it adds and
+// its tuples as literal rows, and each node it moves, every block type's supertag node to the new
+// version among them, by an update of the node's primary key for each value it sets.
+var typeMigrationShape = fmt.Sprintf("literal rows alone - `insert into graph_nodes (…) values (…)` and `insert into graph_tuples (…) values (…)`, "+
+	"at most %s rows a statement, each with no `on conflict` or with `on conflict … do nothing` - "+
+	"and, for a node it moves, `update graph_nodes set <column> = <literal> where (kind, id) in ((…))`, one statement for each value it sets",
+	pgmigrate.Thousands(pgmigrate.BoundedWriteRows))
 
 // schemaDrift is every type and attribute on which blocks.json and the store's type nodes
 // disagree, and the two schema versions where those differ, gathered while the checks above
@@ -540,26 +518,88 @@ func (d *schemaDrift) report(t *testing.T) {
 		versions = fmt.Sprintf(", and the file is at version %d where the store's nodes build version %d", d.fileVersion, d.storeVersion)
 	}
 	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
-		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
+		"A change to pmdoc/schema/blocks.json needs a store migration of its own: "+
 		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
-		"Write one for this change and add it to typeMigrations in this file.",
-		what, versions, typeMigrationExample)
+		"Written after the store's backfill, it writes under the migration census's bounded-write rule: %s. "+
+		"Write one for this change and add it to store.TypeMigrations (internal/dispatch/store/type_migrations.go) "+
+		"and to literalTypeMigrations in this file, whose rows the second run of the type migrations takes out before it writes them again.",
+		what, versions, typeMigrationShape)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
-// order, and holds every node row and every tuple to being the one the first run left.
+// literalTypeMigrations are the type migrations of store.TypeMigrations written after the store's
+// backfill, by file name, each with the writer its rows carry. Each runs where graph_nodes and
+// graph_tuples can be past pgmigrate.CensusTableLimit, on which the pre-deploy census admits only
+// an insert of literal rows and an update of literals by primary key, so it has no `not exists`
+// and no `on conflict` to skip what an earlier run wrote: run again over its own rows, its insert
+// into graph_nodes fails on the primary key, and its seed tuples at source_event 0 would be
+// appended again. The runner applies a version once, so no store runs one twice.
+var literalTypeMigrations = []struct{ name, writer string }{
+	{"20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
+}
+
+// shadowedTypeMigrations are the type migrations of store.TypeMigrations, by file name, each with
+// the writer its tuples carry, that append a value tuple only where the node holds no tuple of
+// that value (`where not exists`) and run after a literal type migration (literalTypeMigrations)
+// that states an older value under the same name. Run again, the literal one appends its older
+// value again as the newest tuple of that name, and the not-exists append, seeing its own tuple
+// held, appends nothing after it: 20261116082319 appends each block type's `version` 5 again
+// after 20261116163700's 6, and the row would carry a 6 its newest tuple does not state. So such
+// a migration's tuples are taken out before the run, and its nodes kept, and it appends each
+// again after the literal one's.
+var shadowedTypeMigrations = []struct{ name, writer string }{
+	{"20261116163700_issue_tree_block_schema.up.sql", `{"kind": "system", "id": "block-schema-issue-tree"}`},
+}
+
+// runTypeMigrationsAgain runs the named type migrations of store.TypeMigrations a second time, in
+// the order given, through the same path the migration runner runs each.
+//
+// A literal type migration among them (literalTypeMigrations) never runs over its own rows. A
+// second run of the type migrations before it puts back what it wrote, which each later migration
+// has moved on from: 20261116082319's settings of the `decision` and `reading` supertag nodes, of
+// `ask/invalid` and of the element versions. So the nodes each literal migration made and the
+// tuples it appended, each carrying its writer, are taken out first, and it runs again where the
+// runner orders it: its stamps are literals, so each row it writes is the one it wrote the first
+// time, and its updates move again what the type migrations before it put back. A shadowed type
+// migration among them (shadowedTypeMigrations) has its tuples taken out first too.
+func runTypeMigrationsAgain(t *testing.T, ctx context.Context, pool *store.Pool, names []string) {
+	t.Helper()
+	for _, migration := range literalTypeMigrations {
+		if !slices.Contains(names, migration.name) {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_tuples where who = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the tuples %s appended: %v", migration.name, err)
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_nodes where made_by = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the nodes %s made: %v", migration.name, err)
+		}
+	}
+	for _, migration := range shadowedTypeMigrations {
+		if !slices.Contains(names, migration.name) {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_tuples where who = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the tuples %s appended: %v", migration.name, err)
+		}
+	}
+	for _, name := range names {
+		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
+		if err != nil {
+			t.Fatalf("read the type migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(text)); err != nil {
+			t.Fatalf("run the type migration %s a second time: %v", name, err)
+		}
+	}
+}
+
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration of
+// store.TypeMigrations again, in order (runTypeMigrationsAgain), and holds every node row and
+// every tuple to being the one the first run left.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)
-	for _, migration := range typeMigrations {
-		text, err := os.ReadFile(filepath.Clean(migration))
-		if err != nil {
-			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
-		}
-		if _, err := pool.Exec(ctx, string(text)); err != nil {
-			t.Fatalf("run the type migration %s a second time: %v", filepath.Base(migration), err)
-		}
-	}
+	runTypeMigrationsAgain(t, ctx, pool, store.TypeMigrations)
 	after, afterTuples := schemaRows(t, ctx, pool)
 	if !slices.Equal(before, after) {
 		t.Errorf("a second run of the type migrations left different nodes\nbefore: %v\nafter:  %v", before, after)

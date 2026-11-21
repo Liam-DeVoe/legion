@@ -51,6 +51,11 @@ const codeDecisionsQuery = "DECISIONS_QUERY"
 // dispatch://INFRA-1253's plan).
 const codeNodeInOtherIssue = "NODE_IN_OTHER_ISSUE"
 
+// codeRequirementBelongsToAncestor refuses a document write that adds a requirement node to an
+// issue that is a view on its ancestor's spec, naming that ancestor (docs.ViewOf,
+// docs.ErrRequirementBelongsToAncestor).
+const codeRequirementBelongsToAncestor = "REQUIREMENT_BELONGS_TO_ANCESTOR"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.
@@ -85,10 +90,14 @@ func documentErrorCode(err error) string {
 }
 
 // editPreconditionCurrent is the `current` object of editPreconditionError: the document token
-// and the block tokens the write found, which a caller re-reads its precondition from.
+// and the block tokens the write found, which a caller re-reads its precondition from, and the
+// number of the version the document stands at, which a refusal whose caller read it beside the
+// write carries (an upload). An edit refuses without reading the version rows and names none,
+// which is what the omitted field says.
 type editPreconditionCurrent struct {
 	Blocks   []model.EditBlockPrecondition `json:"blocks"`
 	Document string                        `json:"document"`
+	Version  *int                          `json:"version,omitempty"`
 }
 
 // editPreconditionError is the 409 PRECONDITION_FAILED body every document write answers a
@@ -98,6 +107,28 @@ type editPreconditionError struct {
 	Current    editPreconditionCurrent          `json:"current"`
 	Error      string                           `json:"error"`
 	Mismatches []model.EditPreconditionMismatch `json:"mismatches"`
+}
+
+// editPreconditionBody reads that body off the refusal: the live document token, the block
+// tokens the write found, and the mismatches that named them. The version is the caller's to
+// fill in, since the write reads no version rows: an edit's refusal names none, and an upload's
+// names the number it read beside its write and adds the sentence saying where a current token
+// is printed (writeUploadDocumentError).
+func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
+	currentBlocks := make([]model.EditBlockPrecondition, 0)
+	for _, mismatch := range failed.Mismatches {
+		if mismatch.Scope == "block" && mismatch.Current != nil {
+			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
+				ID: mismatch.BlockID, Token: *mismatch.Current,
+			})
+		}
+	}
+	return editPreconditionError{
+		Code:       "PRECONDITION_FAILED",
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
+		Error:      failed.Error(),
+		Mismatches: failed.Mismatches,
+	}
 }
 
 // editLostError is the 409 EDIT_LOST_TO_CONCURRENT_CHANGE body a document write answers when a
@@ -170,23 +201,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 
 	var preconditionFailed *docs.ErrPreconditionFailed
 	if errors.As(err, &preconditionFailed) {
-		currentBlocks := make([]model.EditBlockPrecondition, 0)
-		for _, mismatch := range preconditionFailed.Mismatches {
-			if mismatch.Scope == "block" && mismatch.Current != nil {
-				currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
-					ID: mismatch.BlockID, Token: *mismatch.Current,
-				})
-			}
-		}
-		WriteJSON(w, http.StatusConflict, editPreconditionError{
-			Code: "PRECONDITION_FAILED",
-			Current: editPreconditionCurrent{
-				Blocks:   currentBlocks,
-				Document: preconditionFailed.CurrentDocument,
-			},
-			Error:      preconditionFailed.Error(),
-			Mismatches: preconditionFailed.Mismatches,
-		})
+		WriteJSON(w, http.StatusConflict, editPreconditionBody(preconditionFailed))
 		return
 	}
 	// A write whose text a concurrent browser change removed before the write could be versioned
@@ -221,6 +236,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, codeAnsweredAskKept, http.StatusConflict, answeredAskKept.Error())
 		return
 	}
+	var belongsToAncestor *docs.ErrRequirementBelongsToAncestor
+	if errors.As(err, &belongsToAncestor) {
+		writeError(w, codeRequirementBelongsToAncestor, http.StatusConflict, belongsToAncestor.Error())
+		return
+	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock
 	if errors.As(err, &invalidAskBlock) {
 		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
@@ -251,7 +271,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "VISIBILITY_NOT_ADMITTED", http.StatusBadRequest, message)
 		return
 	}
-	// A node of a type the store holds no supertag row of (graphstore's checkSupertags): the
+	// A node of a type the store holds no supertag row of (graphstore's queueSupertagCheck): the
 	// refusal's own words name each type, and nothing of the write was stored.
 	if message, refused := refusalWords[*graphstore.SupertagNotHeldError](err, graphstore.ErrSupertagNotHeld); refused {
 		writeError(w, "SUPERTAG_NOT_HELD", http.StatusConflict, message)
@@ -261,6 +281,12 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	// refusal's own words name the tuple kind, the far end's kind and the kinds the rule allows.
 	if message, refused := refusalWords[*graphstore.InvalidPointerError](err, graphstore.ErrInvalidPointer); refused {
 		writeError(w, codeInvalidPointer, http.StatusBadRequest, message)
+		return
+	}
+	// A node every reader may see placed under or on one reserved for its author (graphstore's
+	// pointerCheck): the words name both nodes by address, and nothing was stored.
+	if message, refused := widerThanParentWords(err); refused {
+		writeError(w, codeVisibilityWiderThanParent, http.StatusBadRequest, message)
 		return
 	}
 	// A second has_kind of a lens, or a pre-mortem's retargeted away from pre-mortem: one body

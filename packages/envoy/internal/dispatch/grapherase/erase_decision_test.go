@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,4 +202,60 @@ func TestTheCensusHoldsNoErasedPersonToTheRecordOfAnEraseBeforeTheirs(t *testing
 
 	requireErased(t, database, graphstore.KindPerson, deciderPerson)
 	requireCensusZero(t, database, "after the person's own erase")
+}
+
+// A person's Keep of a decision writes the keeper's node beside the kept_by it states (api's
+// keepDecisionNode, and the Keep docs' conversion carries onto a section's decision), and
+// decision_keeps projects it. A person whose only act is a Keep is held to that node by the
+// kept_by alone: erin keeps the agent's decision d1, and the census reads zero. The erase of d1
+// then lists and deletes its decision_keeps row beside its texts - the row's text_sha256 digests
+// the erased words beside erin's login - and records erin among the decision's writers, since the
+// kept_by it deletes was all that named her, so the census reads zero after it too, holding erin
+// off that record.
+func TestTheEraseOfAKeptDecisionTakesItsKeepAndRecordsItsKeeper(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedDecisions(t, database)
+	now := time.Now().UTC()
+	erin := model.Actor{Kind: "user", ID: "erin"}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin erin's Keep: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.PersonNode("erin", erin, now, graphstore.NoEvent)}, []graphstore.Tuple{{
+		FromKind: refs.BlockNodeKind, FromID: seeded.d1, Kind: refs.TupleKeptBy, ToKind: graphstore.KindPerson, ToID: "erin",
+		At: now, Who: erin, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}, {
+		FromKind: refs.BlockNodeKind, FromID: seeded.d1, Kind: refs.ValueKeptTextSum, ToKind: graphstore.KindValue, ToID: "sum-of-d1",
+		At: now, Who: erin, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}}); err != nil {
+		t.Fatalf("state erin's Keep of d1: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
+		values ($1::uuid, 'd1', 'sum-of-d1', 1, 'erin', $2)
+	`, seeded.document.artifactID, now); err != nil {
+		t.Fatalf("project erin's Keep of d1: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit erin's Keep: %v", err)
+	}
+	requireCensusZero(t, database, "with erin's Keep of d1")
+
+	requireErased(t, database, refs.BlockNodeKind, seeded.g1)
+	if listing := dryRun(t, database, refs.BlockNodeKind, seeded.d1); !listed(listing, "delete decision_keeps: 1 row(s) of "+seeded.d1) {
+		t.Errorf("the listing of the erase of d1 names no decision_keeps row to delete:\n%s", strings.Join(listing.Listing, "\n"))
+	}
+	requireErased(t, database, refs.BlockNodeKind, seeded.d1)
+	want := []ErasedWriter{{Kind: graphstore.KindPerson, ID: "erin"}, {Kind: graphstore.KindSession, ID: deciderSession}}
+	if writers := erasureWriters(t, database, refs.BlockNodeKind, seeded.d1); !slices.Equal(writers, want) {
+		t.Errorf("the erasure record of %s names the writers %+v, want the agent's session and its keeper %+v", seeded.d1, writers, want)
+	}
+	var keeps int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from decision_keeps where artifact_id = $1::uuid and block_id = 'd1'`,
+		seeded.document.artifactID).Scan(&keeps); err != nil || keeps != 0 {
+		t.Errorf("after the erase of d1 decision_keeps holds %d row(s) of it (%v), want none", keeps, err)
+	}
+	requireCensusZero(t, database, "after the kept decision's erase")
 }
