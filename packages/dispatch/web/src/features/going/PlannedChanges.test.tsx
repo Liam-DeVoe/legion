@@ -12,6 +12,7 @@ import { ConversationView } from "./ConversationView";
 import { resetGoingStore, setPlace, startRun } from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
 import { PlanCard } from "./PlanRows";
+import { argumentsOf } from "./plan-rows";
 import { useOpenPlan } from "./usePlan";
 
 // Where a planned change is drawn and how the person answers it (spec R4, plan.md settlement 7):
@@ -337,6 +338,98 @@ test("an approval of a plan that changed since it was read is refused, and the n
       )
     );
     expect(approve).toHaveBeenCalledTimes(2);
+  } finally {
+    restore();
+  }
+});
+
+// A row's edit box starts from the value of the plan it is drawn for: after the person revises a
+// plan, its rows keep their numbers in the plan that takes its place, and Edit opens with that
+// plan's value, not the earlier plan's or what the person typed into it and did not keep.
+test("after a revise, a row's Edit opens with the new plan's value", async () => {
+  const user = userEvent.setup();
+  const revised: GoingPlanAnswer = {
+    ...plan,
+    plan: 2,
+    rows: (plan.rows ?? []).map((planned) =>
+      planned.row === 0
+        ? { ...planned, arguments: { ...argumentsOf(planned), title: "The first half" } }
+        : planned
+    ),
+    summary: "Split CORE-1 in two, the new issue first.",
+    version: "77c3e1",
+  };
+  let reads = 0;
+  const { restore, send } = await openPlan("over", async () => {
+    reads += 1;
+    return reads === 1 ? plan : revised;
+  });
+  try {
+    renderWithQueries(<Card />);
+    const card = await screen.findByTestId("going-plan-card-rows");
+    // The person starts an edit of plan 1's title and leaves it without keeping it.
+    await user.click(within(card).getByRole("button", { name: "Edit title" }));
+    await user.type(within(card).getByRole("textbox", { name: "New title" }), " again{Escape}");
+
+    // They revise the plan in words, and the run proposes plan 2 in its place.
+    send("plan", { plan: 2, state: "waiting" });
+    await waitFor(() => expect(screen.getByTestId("going-plan")).toHaveAttribute("data-plan", "2"));
+    await user.click(
+      within(screen.getByTestId("going-plan-card-rows")).getByRole("button", {
+        name: "Edit title",
+      })
+    );
+    expect(screen.getByRole("textbox", { name: "New title" })).toHaveValue("The first half");
+  } finally {
+    restore();
+  }
+});
+
+// An upload over a document the owner already holds writes the document's next version: its row's
+// diff takes the document's text now out and puts the uploaded text in, word by word, so the person
+// sees what the upload replaces and not only what it writes.
+test("an upload row over a document shows that document's text taken out and the new text put in", async () => {
+  const user = userEvent.setup();
+  const upload: GoingPlanAnswer = {
+    ...plan,
+    rows: [
+      row(0, {
+        arguments: {
+          content: "The split moves CORE-3 under the new issue.\n",
+          issue: "CORE-1",
+          name: "design.md",
+          summary: "Say where CORE-3 goes.",
+        },
+        class: "create_text",
+        issue: "CORE-1",
+        item: "8c1f0a52-4d1e-4f7b-9a43-0d6c1b2e7f10",
+        now: {
+          content: "The split keeps CORE-3 where it is.\n",
+          id: "8c1f0a52-4d1e-4f7b-9a43-0d6c1b2e7f10",
+          name: "design.md",
+          version: 3,
+        },
+        tool: "dispatch_artifact",
+      }),
+    ],
+    summary: "Rewrite the design of the split.",
+  };
+  const { restore } = await openPlan("over", async () => upload);
+  try {
+    renderWithQueries(<Card />);
+    const card = await screen.findByTestId("going-plan-card-rows");
+    expect(within(card).getByTestId("going-plan-sentences")).toHaveTextContent(
+      "Say where CORE-3 goes."
+    );
+    await user.click(within(card).getByText("The diff"));
+    const piece = within(card).getByTestId("going-plan-diff-piece");
+    // The words both texts share are left unmarked; only what differs is taken out or put in.
+    expect([...piece.querySelectorAll("del")].map((part) => part.textContent).join(" ")).toBe(
+      "keeps where it is"
+    );
+    expect([...piece.querySelectorAll("ins")].map((part) => part.textContent).join(" ")).toBe(
+      "moves under the new issue"
+    );
   } finally {
     restore();
   }

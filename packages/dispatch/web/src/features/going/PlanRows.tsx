@@ -72,7 +72,9 @@ function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
 }
 
 /** One field a row writes: its name, the value now and the new value, which the person can edit
- *  where it is text and the row still waits. */
+ *  where it is text and the row still waits. Its edit box starts from the new value of the plan it
+ *  is drawn for, and its caller keys it to that plan, so a revised plan or a new run's never opens
+ *  with an earlier plan's value or the person's unsaved typing. */
 function FieldChange({
   editable,
   field,
@@ -201,7 +203,7 @@ export function PlanRowView({
           <FieldChange
             editable={waiting && change.editable}
             field={change.field}
-            key={change.field}
+            key={`${plan.run}:${plan.plan}:${change.field}`}
             next={change.next}
             now={change.now}
             onEdit={(value) => setDraft(editedDraft(draft, row.row, change.field, value))}
