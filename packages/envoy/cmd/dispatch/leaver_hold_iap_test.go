@@ -23,7 +23,7 @@ import (
 // passed its deadline (the 503 HOLD_UNCHECKABLE of hold.Reason's deadline words).
 const (
 	iapBrokerHeldWords     = "Google's Workspace Directory no longer confirms " + adaEmail + "; their credentials work again once it does"
-	iapBrokerDeadlineWords = "whether Dispatch holds " + adaEmail + " cannot be read: Dispatch's answer that they are not held has passed its deadline"
+	iapBrokerDeadlineWords = "whether Dispatch holds " + adaEmail + " cannot be read: Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
 )
 
 // iapReleaseBound is how long R4 gives a released person's credentials to serve again once

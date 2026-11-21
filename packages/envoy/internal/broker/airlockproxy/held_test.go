@@ -54,7 +54,7 @@ const (
 	adaDirectoryHeld = "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does"
 	adaUncheckable   = "whether Dispatch holds ada@example.com cannot be read: "
 	unkeptHeldAnswer = adaUncheckable + "the broker could not keep Dispatch's answer that holds them"
-	adaLapsed        = adaUncheckable + "Dispatch's answer that they are not held has passed its deadline"
+	adaLapsed        = adaUncheckable + "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
 	brokerRefused    = "Dispatch refused the broker's own account"
 )
 

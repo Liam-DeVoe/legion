@@ -1118,7 +1118,8 @@ Dispatch gave; and the three of the deadline below.
 person is not held (`not_held_until`, its last active Directory answer plus 24 hours). The broker
 keeps it with the answer (migration `0044`) and serves a not-held answer, fresh, cached or kept,
 only before it, by its own clock: at it, every new call is `503 HOLD_UNCHECKABLE` ("Dispatch's
-answer that they are not held has passed its deadline"), and the airlock cuts a call it carries.
+answer that they are not held has passed its deadline, or Dispatch has never confirmed them"), and
+the airlock cuts a call it carries.
 Dispatch answers a person it cannot confirm, with no active answer in 24 hours or no row at all,
 with `not_held_until` equal to the answer's own `as_of`, and the broker refuses that answer the
 same way whatever its own clock says, so a broker clock behind Dispatch's database serves no such

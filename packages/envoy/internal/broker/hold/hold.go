@@ -411,8 +411,11 @@ func (g *Gate) HeldWords(person string) string {
 // holds the person; a not-held answer past its deadline, a not-held answer naming no deadline where
 // the broker requires one, and no answer kept where the broker requires one while Dispatch cannot
 // be asked are each named; and otherwise Dispatch could not be asked while the broker could not read
-// the last answer Dispatch gave either. Every point that refuses 503 HOLD_UNCHECKABLE, or
-// server_error at the token endpoint, names one of them, and logs err itself.
+// the last answer Dispatch gave either. The words of a passed deadline also say Dispatch may never
+// have confirmed the person: an IAP Dispatch answers a person with no row as it answers one whose
+// last confirmation lapsed (not_held_until equal to as_of), and the broker cannot tell the two apart.
+// Every point that refuses 503 HOLD_UNCHECKABLE, or server_error at the token endpoint, names one
+// of them, and logs err itself.
 func Reason(err error) string {
 	switch {
 	case errors.Is(err, projectaccess.ErrBrokerRefused):
@@ -420,7 +423,7 @@ func Reason(err error) string {
 	case errors.Is(err, ErrHeld):
 		return "the broker could not keep Dispatch's answer that holds them"
 	case errors.Is(err, ErrDeadlinePassed):
-		return "Dispatch's answer that they are not held has passed its deadline"
+		return "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
 	case errors.Is(err, errNoDeadline):
 		return "Dispatch's answer that they are not held names no deadline, which this broker requires"
 	case errors.Is(err, errNoAnswer):

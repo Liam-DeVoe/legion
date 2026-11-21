@@ -16,9 +16,11 @@ import (
 
 // The fixed words hold.Reason gives each way a deadline decides nothing: a not-held answer past
 // its deadline, a not-held answer naming none where the broker requires one, and a person of whom
-// the broker keeps no answer, where it requires one, while Dispatch cannot be asked.
+// the broker keeps no answer, where it requires one, while Dispatch cannot be asked. The first are
+// true of Dispatch's unavailable answer too, which it gives as well for a person it never
+// confirmed, whose answer never had a deadline that could pass.
 const (
-	lapsedReason     = "Dispatch's answer that they are not held has passed its deadline"
+	lapsedReason     = "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
 	noDeadlineReason = "Dispatch's answer that they are not held names no deadline, which this broker requires"
 	noAnswerReason   = "the broker could not ask Dispatch, and keeps no answer Dispatch gave for them"
 )
