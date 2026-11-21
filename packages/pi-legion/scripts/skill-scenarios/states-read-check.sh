@@ -19,8 +19,12 @@
 #   4. the judgement of the two scores, which the second form also gives for scores saved before.
 # The check passes (exit 0) only when the judgement passes.
 #
-# The judgement reads the table of counts that each score ends with. It passes when each of these
-# rows holds:
+# The judgement reads the table of counts that each score ends with: for each row, its pass column
+# (passed/scored) and its rig errors (runs the rig could not score, which it leaves out of both
+# counts). It judges a row only when the row is complete: all five runs of the batch scored, and no
+# rig error. A row the score does not hold, or one that is not complete, reads UNKNOWN, since a rate
+# over fewer runs measures less than the check asks: one scored run beside four rig errors is no
+# control. The judgement passes when each of these rows is complete and holds:
 #   - head 5/5 on <scenario>:no-verdict-fail, for reviewer-own-head (the reviewer requests changes
 #     and names the check) and for architect-pass-and-fail (the architect sends the issue back and
 #     names the check). In that case the tester's fail is at the head, and the task names no verdict
@@ -29,9 +33,9 @@
 #     architect signs off). In that case a pass of each role is at the head;
 #   - ablate-states-read below head on <scenario>:no-verdict-fail, for each scenario: the check's
 #     negative control. That label cuts the sentences that send each role to the state line of its
-#     head and writes "Tester's verdict: pass." into each task.
-# A row that is missing, or that counts fewer than five runs, fails the judgement (the rig leaves
-# a run with a rig error unscored).
+#     head and writes "Tester's verdict: pass." into each task. The control is compared only when
+#     both rows of the case are complete, so both count the same five runs.
+# A complete row that does not hold reads FAIL, and decides the judgement even beside an UNKNOWN.
 #
 # A run writes everything into a new directory under TMPDIR, which it prints first. Its name is
 # random characters alone: each run's directory is under it, and a run's agent must not read the
@@ -42,7 +46,8 @@
 # The model route and the rig's other operator input (rig.sh's header) come from the caller's
 # environment. A short TMPDIR keeps the rig's socket paths under the kernel's limit.
 #
-# exit: 0 the check passes; 1 a step failed or the judgement does not pass; 2 a refused argument
+# exit: 0 the check passes; 1 a step failed, or a complete row does not hold; 2 a refused argument;
+# 3 no row fails but a row is UNKNOWN, so the check cannot be judged (run its batch again)
 set -euo pipefail
 
 me=states-read-check
@@ -61,54 +66,93 @@ fail() {
   exit 1
 }
 
-# count <score> <row> <label>: the pass column (passed/scored) of that row of the score's table of
-# counts. It fails when the table does not hold exactly one such row.
-count() {
-  awk -F'\t' -v row="$2" -v label="$3" '
+# read_row <score> <row> <label>: "complete <passed>" when that row of the score's table of counts
+# counts all $runs runs of the batch scored and no rig error, and otherwise "short <why>", why
+# saying what the score holds for the row.
+read_row() {
+  local found pass errors scored
+  read -r found pass errors <<<"$(awk -F'\t' -v row="$2" -v label="$3" '
     $0 == "scenario\tlabel\tpass\tpass+ref\trig errors\tflagged" { table = 1; next }
     table && $0 == "" { table = 0 }
-    table && $1 == row && $2 == label { print $3; found++ }
-    END { exit found == 1 ? 0 : 1 }
-  ' "$1"
+    table && $1 == row && $2 == label { line = $3 " " $5; found++ }
+    END { print found + 0, line }
+  ' "$1")"
+  if [ "$found" = 0 ]; then
+    echo "short the score holds no such row"
+  elif [ "$found" != 1 ]; then
+    echo "short the score holds $found such rows"
+  elif ! [[ $pass =~ ^[0-9]+/[0-9]+$ && $errors =~ ^[0-9]+$ ]]; then
+    echo "short its pass column '$pass' and rig errors '$errors' are no counts"
+  else
+    scored=${pass#*/}
+    if [ "$scored" = "$runs" ] && [ "$errors" = 0 ] && [ "${pass%/*}" -le "$runs" ]; then
+      echo "complete ${pass%/*}"
+    else
+      echo "short $pass with $errors rig error$([ "$errors" = 1 ] || echo s); the judgement needs all $runs runs of the batch scored and no rig error"
+    fi
+  fi
 }
 
 # judge <reviewer-own-head score> <architect-pass-and-fail score>: the judgement of the header.
+# Each row it reads prints one line, ok, FAIL or UNKNOWN; it returns 0, 1 or 3 as the header says.
 judge() {
-  local scenarios=(reviewer-own-head architect-pass-and-fail) scores=("$1" "$2") failed=0 i scenario
-  local score row passed head ablate head_passed head_scored ablate_passed ablate_scored
+  local scenarios=(reviewer-own-head architect-pass-and-fail) scores=("$1" "$2") failed=0 unknown=0
+  local i scenario score row state head_state ablate_state head_passed ablate_passed
   for i in 0 1; do
     scenario=${scenarios[i]} score=${scores[i]}
     for row in "$scenario:no-verdict-fail" "$scenario:no-verdict-pass"; do
-      if ! passed=$(count "$score" "$row" head); then
-        echo "FAIL $row head: $score holds no such row of counts" >&2
-        failed=1
-      elif [ "$passed" != "$runs/$runs" ]; then
-        echo "FAIL $row head: $passed, want $runs/$runs" >&2
-        failed=1
-      else
-        echo "ok $row head $passed"
-      fi
+      state=$(read_row "$score" "$row" head)
+      case $state in
+      complete\ *)
+        head_passed=${state#complete }
+        if [ "$head_passed" = "$runs" ]; then
+          echo "ok $row head $runs/$runs"
+        else
+          echo "FAIL $row head: $head_passed/$runs, want $runs/$runs" >&2
+          failed=1
+        fi
+        ;;
+      *)
+        echo "UNKNOWN $row head: ${state#short }" >&2
+        unknown=1
+        ;;
+      esac
     done
     row=$scenario:no-verdict-fail
-    if ! head=$(count "$score" "$row" head) || ! ablate=$(count "$score" "$row" ablate-states-read); then
-      echo "FAIL $row ablate-states-read: $score lacks the row of head or of ablate-states-read, so the control cannot be judged" >&2
-      failed=1
-      continue
-    fi
-    head_passed=${head%/*} head_scored=${head#*/} ablate_passed=${ablate%/*} ablate_scored=${ablate#*/}
-    if ! [[ $head_passed =~ ^[0-9]+$ && $head_scored =~ ^[1-9][0-9]*$ && $ablate_passed =~ ^[0-9]+$ && $ablate_scored =~ ^[1-9][0-9]*$ ]]; then
-      echo "FAIL $row ablate-states-read: $ablate against head's $head, a count that scores no run or is no count" >&2
-      failed=1
-    elif ((ablate_passed * head_scored < head_passed * ablate_scored)); then
-      echo "ok $row ablate-states-read $ablate, below head's $head"
-    else
-      echo "FAIL $row ablate-states-read: $ablate, not below head's $head, so the label does not show the rule decides" >&2
-      failed=1
-    fi
+    head_state=$(read_row "$score" "$row" head)
+    ablate_state=$(read_row "$score" "$row" ablate-states-read)
+    case $ablate_state in
+    short\ *)
+      echo "UNKNOWN $row ablate-states-read: ${ablate_state#short }" >&2
+      unknown=1
+      ;;
+    *)
+      ablate_passed=${ablate_state#complete }
+      case $head_state in
+      short\ *)
+        echo "UNKNOWN $row ablate-states-read: $ablate_passed/$runs, but head's row is not complete, so the control has no count to be below" >&2
+        unknown=1
+        ;;
+      *)
+        head_passed=${head_state#complete }
+        if ((ablate_passed < head_passed)); then
+          echo "ok $row ablate-states-read $ablate_passed/$runs, below head's $head_passed/$runs"
+        else
+          echo "FAIL $row ablate-states-read: $ablate_passed/$runs, not below head's $head_passed/$runs, so the label does not show the rule decides" >&2
+          failed=1
+        fi
+        ;;
+      esac
+      ;;
+    esac
   done
   if ((failed)); then
     echo "FAIL judgement: a row above does not hold" >&2
     return 1
+  fi
+  if ((unknown)); then
+    echo "UNKNOWN judgement: a row above is not complete, so the check cannot be judged; run its batch again" >&2
+    return 3
   fi
   echo "ok judgement"
 }
@@ -189,4 +233,6 @@ for scenario in reviewer-own-head architect-pass-and-fail; do
 done
 
 echo "== judgement"
-judge "$out/score-reviewer-own-head.txt" "$out/score-architect-pass-and-fail.txt" || exit 1
+status=0
+judge "$out/score-reviewer-own-head.txt" "$out/score-architect-pass-and-fail.txt" || status=$?
+exit "$status"
