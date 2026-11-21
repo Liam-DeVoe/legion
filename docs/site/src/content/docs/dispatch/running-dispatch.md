@@ -870,7 +870,11 @@ where not exists (select 1 from architecture_sources s where s.project_key = c.p
 The release that partitions `embeddings` by project (migrations `20261120105330` and
 `20261120105818`) rolls into the running one, and then copies the table in the background while
 it serves. Its migrations take about a second: the first builds the new table empty beside the old
-one, and the second makes every later write of `embeddings` write both tables. The server's
+one, and the second makes every later write of `embeddings` write both tables, except a write made
+as a replica (`session_replication_role = replica`, as a restore or a replication apply writes),
+which fires no trigger and is not carried over: make no such write of `embeddings` while it
+copies, since the swap catches one only where it leaves the two tables' row counts apart (below).
+The server's
 embeddings fill then copies the stored rows into the new table, in batches of 200, and swaps the
 two tables when it is done. On a bench of production's size (995,184 rows over 20 projects, 15.7
 GiB) the copy took 71 to 82 minutes and the swap held both tables for 247 to 341 ms, over five

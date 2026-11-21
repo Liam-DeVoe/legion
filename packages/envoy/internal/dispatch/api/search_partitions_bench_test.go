@@ -708,38 +708,47 @@ func TestExplainMeaningSearchOnBenchCorpus(t *testing.T) {
 			arguments := searchMeaningQueryArguments(
 				searchParameters{text: benchQueryText(i), limit: 20, who: alice}, queries[i], (&fakeEmbedder{}).Identity())
 			for round := range 2 {
-				tx, err := database.Pool.Begin(ctx)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, setting := range width.settings {
-					if _, err := tx.Exec(ctx, setting); err != nil {
-						t.Fatalf("%s: %v", setting, err)
-					}
-				}
-				plan, err := tx.Query(ctx, "explain (analyze, buffers) "+searchQueryMeaning, arguments...)
-				if err != nil {
-					t.Fatalf("explain query %d: %v", i, err)
-				}
-				var lines []string
-				for plan.Next() {
-					var line string
-					if err := plan.Scan(&line); err != nil {
-						t.Fatal(err)
-					}
-					lines = append(lines, line)
-				}
-				plan.Close()
-				if err := plan.Err(); err != nil {
-					t.Fatalf("explain query %d: %v", i, err)
-				}
-				_ = tx.Rollback(ctx)
+				lines := benchExplain(t, database, width.settings, i, arguments)
 				if round == 1 {
 					t.Logf("bench explain: width %s, query %d, %d plan lines:\n%s", width.name, i, len(lines), strings.Join(lines, "\n"))
 				}
 			}
 		}
 	}
+}
+
+// benchExplain is the plan, line by line, of EXPLAIN (ANALYZE, BUFFERS) of searchQueryMeaning
+// for query i with arguments, in a transaction holding settings.
+func benchExplain(t *testing.T, database *store.Store, settings []string, i int, arguments []any) []string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
+	}
+	plan, err := tx.Query(ctx, "explain (analyze, buffers) "+searchQueryMeaning, arguments...)
+	if err != nil {
+		t.Fatalf("explain query %d: %v", i, err)
+	}
+	var lines []string
+	for plan.Next() {
+		var line string
+		if err := plan.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, line)
+	}
+	plan.Close()
+	if err := plan.Err(); err != nil {
+		t.Fatalf("explain query %d: %v", i, err)
+	}
+	return lines
 }
 
 // benchQueryText is query i's text: words no row holds, so the keyword legs match nothing and the

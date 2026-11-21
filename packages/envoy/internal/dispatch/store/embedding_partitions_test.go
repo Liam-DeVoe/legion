@@ -116,6 +116,14 @@ func TestTheFillCopiesEveryRowIntoItsProjectsPartitionAndSwapsItIn(t *testing.T)
 	database, ownerless := openPartitionTestStore(t, EmbeddingPartitionCopyBatch+30)
 	before := embeddingsContent(t, database, "embeddings")
 	requirePartitioned(t, database, false)
+	// The mirror carried every row of the fixture over as it was written. PARTB's rows, more than
+	// a batch of them, and the row of no project are taken out of the table beside it again, so
+	// the copy itself carries them over, and PARTA's are left there for the copy to meet.
+	unmirrored, err := database.Pool.Exec(ctx, `delete from embeddings_partitioned where project_key = 'PARTB' or project_key is null`)
+	if err != nil || unmirrored.RowsAffected() != EmbeddingPartitionCopyBatch+30+1 {
+		t.Fatalf("took %d rows out of embeddings_partitioned (%v), want PARTB's %d and the row of no project",
+			unmirrored.RowsAffected(), err, EmbeddingPartitionCopyBatch+30)
+	}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 
@@ -157,10 +165,8 @@ func TestTheFillCopiesEveryRowIntoItsProjectsPartitionAndSwapsItIn(t *testing.T)
 	if rows := loggedAttr(t, finishedLine, "rows").Int64(); rows != int64(len(before)) {
 		t.Errorf("the copy finished reporting %d rows read, want the %d stored", rows, len(before))
 	}
-	// Every row was written after the mirror's migration, so the mirror carried each over and the
-	// copy inserted none of them; what it inserted is the rows the mirror had not reached.
-	if inserted := loggedAttr(t, finishedLine, "inserted").Int64(); inserted != 0 {
-		t.Errorf("the copy finished reporting %d rows inserted, want none: the mirror carried every row over", inserted)
+	if inserted := loggedAttr(t, finishedLine, "inserted").Int64(); inserted != unmirrored.RowsAffected() {
+		t.Errorf("the copy finished reporting %d rows inserted, want the %d the mirror had not carried over", inserted, unmirrored.RowsAffected())
 	}
 	oneLine(t, records, partitionSwappedLine)
 
@@ -374,6 +380,7 @@ func TestEveryProjectHasItsPartitionAndARowOfNoProjectThatExistsIsRefused(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('INTX', 'In a transaction', 'alice@d.example')`); err != nil {
 		t.Fatal(err)
 	}
