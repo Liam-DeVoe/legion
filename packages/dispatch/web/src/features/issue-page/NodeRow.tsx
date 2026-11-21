@@ -439,18 +439,20 @@ export function NodeRow({
 }
 
 /**
- * A deleted post's line where its row draws its words, whole or as its one line (INFRA-1523,
- * R3): the line every surface draws in a deleted post's place (`DeletedBody`), in its italic, with
- * who deleted it and when. The actor is named as the page names an author (`AgentText.author`),
- * the rule the row's own author and "Kept by" are named by, by INFRA-1196's decision 342: a
- * session nothing names reads as the page's word for an agent, and never as its short id. The
- * node's text is the same line as the model writes it (`tree-drafts.ts`'s `deletedPostLine`),
- * with the actor named as no registry knows it and the time as stored, so the row draws the line
- * from the delete and never from that text. The line's words are the page's own, marked as its
- * chrome and declared in `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name
- * and the time are not (INFRA-1523, R3).
+ * A deleted post's line where its row draws its words, whole or as its one line, and where the
+ * page draws its one line apart from its row - a filter's parent line (`ParentLink`), a crumb
+ * above a zoom (`IssueTree.tsx`'s `CrumbLine`) (INFRA-1523, R3): the line every surface draws in
+ * a deleted post's place (`DeletedBody`), in its italic, with who deleted it and when. The actor
+ * is named as the page names an author (`AgentText.author`), the rule the row's own author and
+ * "Kept by" are named by, by INFRA-1196's decision 342: a session nothing names reads as the
+ * page's word for an agent, and never as its short id. The node's text is the same line as the
+ * model writes it (`tree-drafts.ts`'s `deletedPostLine`), with the actor named as no registry
+ * knows it and the time as stored, so the row draws the line from the delete and never from that
+ * text. The line's words are the page's own, marked as its chrome and declared in
+ * `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name and the time are not
+ * (INFRA-1523, R3).
  */
-function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
+export function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
   const agentText = useAgentText();
   return (
     <DeletedBody
