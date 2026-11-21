@@ -211,8 +211,9 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 // comes machineLoginSettleAfter after the removal.
 //
 // Control: access.LockForAccessWrite taking no approval lock for the person a removal takes off,
-// the one lock the removal's path takes, and the removal answers while the approval is in flight,
-// named.
+// and the removal does not wait for the approval: the record's own try of that lock finds the
+// approval holding it, and the removal answers while the approval is in flight, named; with the
+// record's own lock dropped too, it answers 200 then, named.
 func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
