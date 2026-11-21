@@ -368,3 +368,58 @@ func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 			acker.acks.Load(), relays.frames[token] != nil, run.answered.Load())
 	}
 }
+
+// The session a reply names is the first token after the reply prefix, since a session id holds
+// no dot (bus.SessionConsumerName), and the rest is the token. So ses_two's own reply subject with
+// a token past its id, ses_two.x.<ses_two's frame token>, names ses_two and the token
+// x.<ses_two's frame token>, which no frame holds: it moves nothing and logs nothing, whatever its
+// word. The refusal line is still free for a reply that does name another session than its
+// frame's, which is the control: ses_three's done on ses_two's token, logged with ses_three as the
+// session the reply names.
+//
+// Read from the last dot, the same subject named session "ses_two.x" against ses_two's own frame
+// and took the refusal line, which writes one line a minute: any session could hold that line
+// with a token of its own, and a forgery in the same minute showed only as a count.
+func TestAReplyWithATokenPastItsSessionIDMovesNoFrameAndLogsNothing(t *testing.T) {
+	var logs bytes.Buffer
+	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.NewWithWriter("test", &logs)}
+	run := &relayRun{sessionID: "ses_two", outstanding: map[string]*relayFrame{}}
+	acker := &countingAcker{}
+	const token = "TOKENOFTHEFRAMEOFSESTWO234"
+	frame := &relayFrame{run: run, acker: acker, sentAt: time.Now(), delivered: 1}
+	relays.frames[token] = frame
+	run.outstanding[token] = frame
+
+	for _, word := range []string{relayReplyReceived, relayReplyProgress, relayReplyDone, relayReplyNak} {
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + "ses_two.x." + token, Data: []byte(word)})
+	}
+	if acker.acks.Load()+acker.inProgress.Load()+acker.naks.Load() != 0 {
+		t.Fatalf("replies on ses_two.x.<token> answered the server: %d acks, %d in progress, %d naks",
+			acker.acks.Load(), acker.inProgress.Load(), acker.naks.Load())
+	}
+	if relays.frames[token] != frame || run.outstanding[token] != frame || frame.answered || run.answered.Load() {
+		t.Fatal("replies on ses_two.x.<token> changed the frame: it is no longer awaited, or it is marked answered")
+	}
+	if strings.Contains(logs.String(), relayRefusedReplyLine) {
+		t.Fatalf("replies on ses_two.x.<token> took the refusal line:\n%s", logs.String())
+	}
+
+	relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + "ses_three." + token, Data: []byte(relayReplyDone)})
+	var refusals []string
+	for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, relayRefusedReplyLine) {
+			refusals = append(refusals, line)
+		}
+	}
+	if len(refusals) != 1 {
+		t.Fatalf("the relay logged %d refusals for ses_three's done on ses_two's token, want 1:\n%s", len(refusals), logs.String())
+	}
+	for _, field := range []string{`"session_id":"ses_two"`, `"reply_session_id":"ses_three"`, `"reply":"done"`, `"held":0`} {
+		if !strings.Contains(refusals[0], field) {
+			t.Fatalf("the refusal line carries no %s: %s", field, refusals[0])
+		}
+	}
+	if acker.acks.Load()+acker.inProgress.Load()+acker.naks.Load() != 0 || relays.frames[token] != frame {
+		t.Fatal("ses_three's done moved ses_two's frame")
+	}
+}

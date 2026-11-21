@@ -151,21 +151,24 @@ func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
 
-// SessionReplySubject is the reply subject of one request made of session sessionID: inbox, a
-// reply inbox of the requester's own (nats.NewInbox), then the session's id, then 128 random bits
-// (crypto/rand.Text). Every request a session answers carries one - the relay's frames
-// (cmd/listener's sessionRelays), the listener's connection probe and Dispatch's agent stream
-// replay (internal/dispatch/agentstream) - and a session's own grant, the one the NATS auth
-// service gives it (natsgrant.Session), admits replies under its id alone (SessionReplies). So a
-// session on that grant can neither answer a request made of another session nor guess the
-// subject of one: its grant reads no other session's relay or control subject, and the random
-// part is not derived from anything it can see. The relay also moves a frame only on a reply
-// whose subject names the session the frame was sent to (sessionRelays.onReply), so a session that
-// learned another's token cannot answer for it under its own reply prefix; the relay logs the
-// first such reply at WARN, then at most one a minute. A holder of the shared session user or of a
-// host user reads every session's relay subject and may publish to every _INBOX. subject, so the
-// grant does not hold against it, and the relay reads the session a reply subject names, not who
-// published the reply. sessionID is one subject token, as every session with a consumer's is
+// SessionReplySubject is the reply subject of one request made of session sessionID,
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
+// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// Every request a session answers carries one - the relay's frames (cmd/listener's
+// sessionRelays), the listener's connection probe and Dispatch's agent stream replay
+// (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
+// replies alone (SessionReplies) and the relay can refuse a reply that names another session
+// than its frame's; the token is random so that no session can guess the subject of a request
+// made of another, since it is derived from nothing a session can see, and a session's grant
+// reads no other session's relay or control subject. A session's own grant, the one the NATS auth
+// service gives it (natsgrant.Session), publishes SessionReplies in place of every _INBOX.
+// subject, so a session on that grant can neither answer a request made of another session nor
+// guess the subject of one. The relay moves a frame only on a reply whose subject names the
+// session the frame was sent to (sessionRelays.onReply), and logs the first reply that names
+// another at WARN, then at most one a minute. A holder of the shared session user or of a host
+// user reads every session's relay subject and may publish to every _INBOX. subject, so none of
+// this holds against it: the relay reads the session a reply subject names, not who published the
+// reply. sessionID is one subject token, as every session with a consumer's is
 // (SessionConsumerName).
 func SessionReplySubject(inbox, sessionID string) string {
 	return inbox + "." + sessionID + "." + rand.Text()
