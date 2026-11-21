@@ -1856,9 +1856,33 @@ if re.search(UNIT_TEST_PATTERN, f"/{BACKEND_COUNT_AGENT_SECRETS}"):
     raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step, "
                      f"whose `grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
                      f"that runs that package now and move the skip to it")
+
+# The four tests of cmd/dispatch that hold the leaver hold to bounds of real time: a refresh Google
+# answers slowly, the membership pass's schedule, the broker's cache, and the release a day later.
+# Each waits out its bound on the wall clock, about 245, 128, 64 and 40 seconds of a dev box, which
+# took cmd/dispatch past this step's 20-minute -timeout on CI's runner (job 136860339963 timed out
+# at 1200 s, where the same package took 642.9 s before they joined it, job 136853209152). The
+# leaver hold's step runs them in parallel with one another, each on a rig of its own, through
+# named-tests.sh, which fails unless each named test ran and passed: a -run that matches nothing is
+# a pass to go test, so a renamed test would otherwise leave that step green while it runs fewer
+# tests than it names. The unit step skips them by name. Both step texts are built from this one
+# list, and check-ci-filters.sh pins each step's whole script, so the -skip and the names the
+# script runs cannot come to differ.
+LEAVER_BOUND_PACKAGE = "cmd/dispatch"
+LEAVER_BOUND_TESTS = ["TestLeaverHoldBound", "TestLeaverHoldBoundByThePass", "TestLeaverHoldRelease",
+                      "TestIAPLeaverHoldThroughTheRealBroker"]
+LEAVER_BOUND_STEP = "Test the leaver hold's real-time bounds"
+NAMED_TESTS_SCRIPT = "packages/envoy/scripts/named-tests.sh"
+LEAVER_BOUND_TIMEOUT = "15m"
+LEAVER_BOUND_RUN = (f"{NAMED_TESTS_SCRIPT} --timeout {LEAVER_BOUND_TIMEOUT} ./{LEAVER_BOUND_PACKAGE}/ -- "
+                    + " ".join(sorted(LEAVER_BOUND_TESTS)))
+if re.search(UNIT_TEST_PATTERN, f"/{LEAVER_BOUND_PACKAGE}"):
+    raise ValueError(f"the leaver hold's tests of {LEAVER_BOUND_PACKAGE} are skipped by the unit step, whose "
+                     f"`grep -Ev` takes that package out, so the -skip below skips nothing; name the step that "
+                     f"runs that package now and move the skip to it")
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
                     f"xargs go test -count=1 -timeout {UNIT_TEST_TIMEOUT} "
-                    f"-skip {names_pattern(WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])}")
+                    f"-skip {names_pattern(WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS] + LEAVER_BOUND_TESTS)}")
 
 
 def hold_web_fixture_tests():
@@ -2634,6 +2658,7 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/worker-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
+        ("packages/envoy/scripts/named-tests.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
 ]
@@ -3296,9 +3321,19 @@ GATES = [
         # cmd/cipher out (BACKEND_COUNT_TESTS), which the count step runs in this same job
         # and environment. The tests stay compiled into this step's binary, which is what a
         # skipped test is.
+        # Its -skip also takes LEAVER_BOUND_TESTS out of this step: the leaver hold's step below
+        # runs them, in parallel with one another, and fails unless each ran and passed.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
+        ]),
+        # The leaver hold's four real-time tests of cmd/dispatch, which named-tests.sh runs from
+        # packages/envoy with `go test -json -run` of their names alone (LEAVER_BOUND_RUN). The -run
+        # moves no closure, so the Run is the plain go test of the package.
+        pinned_step("envoy-go", LEAVER_BOUND_STEP, ".", LEAVER_BOUND_RUN, [
+            (ENVOY, [f"./{LEAVER_BOUND_PACKAGE}/"],
+             f"{NAMED_TESTS_SCRIPT}'s go test -json -timeout {LEAVER_BOUND_TIMEOUT} -run of LEAVER_BOUND_TESTS "
+             f"in ./{LEAVER_BOUND_PACKAGE}/", {}),
         ]),
         # The counter's test: its controls run database-skips.sh on DATABASE_SKIPS_TEST_PKGS, one
         # at a time, from packages/envoy (and the API package once more from a temporary checkout
@@ -3339,6 +3374,7 @@ GATES = [
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
+        (NAMED_TESTS_SCRIPT, f"{at('envoy-go', LEAVER_BOUND_STEP)} runs it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
