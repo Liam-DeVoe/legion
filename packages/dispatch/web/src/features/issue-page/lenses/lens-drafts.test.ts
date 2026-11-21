@@ -17,6 +17,12 @@ import {
 import { chipWords } from "../node-row-chip";
 import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId, treeContext } from "../tree-drafts";
+import {
+  type TreeNodeExtra,
+  treeAnswer,
+  treeNode,
+  treeTuple as tuple,
+} from "../tree-read/tree-fixtures";
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { check } from "../verification-filter/verification-fixtures";
@@ -25,12 +31,12 @@ import { lensReadId } from "./lens-reads";
 
 /**
  * The rows of lenses, findings, risks and constraints, drafted from the tree read by
- * `lensDrafts` and `lensChips`. Each case writes the answer as the tree read's own cases write
- * it (`tree-read/tree-nodes.test.ts`), from the contract's prose: every node with its `parent`,
- * in the read's walk order, a typed block with the `document` it is written in, the catalogue's
- * nodes as context, and the tuples between them. The tree is built by `buildIssueTree`, as the
- * page builds it; a case that asks what was drafted reads the drafts `treeDraftsFrom` makes of
- * the same answer.
+ * `lensDrafts` and `lensChips`. Each case writes the answer as the route sends it
+ * (`tree-read/tree-fixtures.ts`), as the tree read's own cases write it
+ * (`tree-read/tree-nodes.test.ts`): every node with its `parent`, in the read's walk order, a
+ * typed block with the `document` it is written in, the catalogue's nodes as context, and the
+ * tuples between them. The tree is built by `buildIssueTree`, as the page builds it; a case that
+ * asks what was drafted reads the drafts `treeDraftsFrom` makes of the same answer.
  */
 
 const KEY = "CORE-1";
@@ -52,23 +58,10 @@ function node(
   id: string,
   supertag: string,
   parent: string | null,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   const text = `Words of ${id}.`;
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text,
-    text_tree: reading(text),
-    visibility: "project",
-    ...extra,
-  };
+  return treeNode(id, supertag, parent, { text, text_tree: reading(text), ...extra });
 }
 
 /** A typed block of one of the issue's documents, at `position` in it. */
@@ -78,7 +71,7 @@ function block(
   parent: string,
   document: Artifact,
   position: number,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   return node(id, supertag, parent, {
     document: { artifact_id: document.id, position, slug: document.slug },
@@ -92,7 +85,7 @@ function bare(
   id: string,
   supertag: string,
   parent: string | null,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   return node(id, supertag, parent, {
     author: [READER_ACTOR],
@@ -107,7 +100,7 @@ function lens(
   id: string,
   parent: string,
   madeAt = "2026-11-05T09:00:00Z",
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   return bare(id, "lens", parent, { made_at: madeAt, ...extra });
 }
@@ -118,7 +111,7 @@ function finding(
   parent: string,
   words: string,
   supertag = "block",
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   return node(id, supertag, parent, {
     author: [READER_ACTOR],
@@ -129,8 +122,8 @@ function finding(
 }
 
 /** A kind of the catalogue, which the read brings in as context for a `has_kind` tuple. */
-function lensKind(id: string, attributes: Record<string, unknown>, text = ""): TreeAnswerNode {
-  return bare(id, "lens_kind", null, { attributes, author: [], mark: "context", text });
+function lensKind(id: string, attributes: Record<string, string>, text = ""): TreeAnswerNode {
+  return bare(id, "lens_kind", null, { attributes, author: [], role: "context", text });
 }
 
 /** The words of the pre-mortem kind, longer than a chip holds. */
@@ -148,19 +141,11 @@ function answer(
   tuples: readonly TreeTuple[] = [],
   extra: Partial<TreeAnswer> = {}
 ): TreeAnswer {
-  return {
+  return treeAnswer([ISSUE, ...nodes], tuples, {
     converted: true,
-    cursor: null,
-    nodes: [ISSUE, ...nodes],
     tree: "artifact-tree",
-    tuples: [...tuples],
-    view_of: null,
     ...extra,
-  };
-}
-
-function tuple(kind: string, from: string, to: string): TreeTuple {
-  return { from, kind, to };
+  });
 }
 
 /** What `buildIssueTree` hands `treeDraftsFrom`, as the tree read's own cases build it. */
@@ -287,7 +272,11 @@ test("a lens is found by its parent's id on an unconverted issue", () => {
       TRADE_OFF,
     ],
     [tuple("has_kind", FIRST, TRADE_OFF.id)],
-    { converted: false, documents: { spec: SPEC.id }, tree: null }
+    {
+      converted: false,
+      documents: { plan: null, spec: SPEC.id, verification: null },
+      tree: null,
+    }
   );
   const { drafts, root } = drawn(tree);
 
@@ -484,7 +473,7 @@ test("a check's chip takes its words from its node", () => {
     preventedBy: [
       {
         address: checkRow.reference ?? "",
-        id: "c1",
+        id: `${KEY}/verification-md#c1`,
         state: "live",
         visibility: "project",
         words: chipWords(lineWords(checkRow)),
@@ -646,7 +635,7 @@ test("a catalogue constraint is no row and its chip has no link", () => {
             standard,
           },
           author: [],
-          mark: "context",
+          role: "context",
         }),
         PRE_MORTEM,
       ],
@@ -711,10 +700,18 @@ test("a lens row is reached by its ?node= id", () => {
   expect(path?.map((one) => one.id)).toEqual([KEY, blockNodeId("spec", "r1"), FIRST]);
   expect(path?.at(-1)?.reference).toBe(invoked.address);
   for (const [readId, chain] of [
-    ["r1", [KEY, blockNodeId("spec", "r1")]],
-    ["c1", [KEY, blockNodeId("spec", "r1"), blockNodeId("verification-md", "c1")]],
+    [`${KEY}/spec#r1`, [KEY, blockNodeId("spec", "r1")]],
+    [
+      `${KEY}/verification-md#c1`,
+      [KEY, blockNodeId("spec", "r1"), blockNodeId("verification-md", "c1")],
+    ],
   ] as const) {
-    const { target } = issueAddress({ key: KEY, kind: "issue" }, `?node=${readId}`, "", "spec");
+    const { target } = issueAddress(
+      { key: KEY, kind: "issue" },
+      `?node=${encodeURIComponent(readId)}`,
+      "",
+      "spec"
+    );
 
     expect(target).toEqual({ id: readId, kind: "node" });
     expect(pathToTarget(root, target)?.map((one) => one.id)).toEqual([...chain]);
@@ -773,7 +770,7 @@ test("a draft's lens facts reach the tree whole", () => {
     preventedBy: [
       {
         address: checkAddress,
-        id: "c1",
+        id: `${KEY}/verification-md#c1`,
         state: "live",
         visibility: "project",
         words: "Words of c1.",

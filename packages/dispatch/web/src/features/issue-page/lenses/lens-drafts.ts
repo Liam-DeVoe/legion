@@ -122,17 +122,17 @@ export function lensDrafts(
   if (parents === undefined) return undefined;
   const draft = blank(context.treeIdOf(node.id), type, 0);
   draft.parents = parents;
-  draft.at = node.made_at;
+  if (node.made_at !== null) draft.at = node.made_at;
   // The read lists every author of the node's first version, the one who made it first ahead of
-  // the rest, and a row draws the first.
-  const author = node.author[0];
+  // the rest, and a row draws the first; none where the list is empty or null.
+  const author = node.author?.[0];
   if (author !== undefined) draft.author = author;
   const address = addressOf(node, context);
   if (address !== undefined) draft.reference = address;
   const attributes = node.attributes;
   switch (type) {
     case "lens": {
-      draft.text = plainWords(stringOf(attributes.verdict));
+      draft.text = plainWords(attributes?.verdict ?? "");
       const kind = kindOf(node, context);
       draft.lens = kind === "" ? { ...NO_CHIPS } : { ...NO_CHIPS, kind };
       break;
@@ -143,9 +143,9 @@ export function lensDrafts(
       draft.lens = { ...NO_CHIPS };
       break;
     case "risk": {
-      draft.text = plainWords(stringOf(attributes.heading));
-      const earlyWarning = plainWords(stringOf(attributes.early_warning));
-      const prevention = plainWords(stringOf(attributes.prevention));
+      draft.text = plainWords(attributes?.heading ?? "");
+      const earlyWarning = plainWords(attributes?.early_warning ?? "");
+      const prevention = plainWords(attributes?.prevention ?? "");
       draft.lens = {
         ...NO_CHIPS,
         ...(earlyWarning === "" ? {} : { earlyWarning }),
@@ -156,9 +156,9 @@ export function lensDrafts(
     case "constraint": {
       draft.text = constraintWords(node);
       // A standard names its reference; a measurement says where it was taken.
-      const standard = stringOf(attributes.standard) !== "";
-      const reference = plainWords(stringOf(attributes.reference));
-      const takenWhere = plainWords(stringOf(attributes.taken_where));
+      const standard = (attributes?.standard ?? "") !== "";
+      const reference = plainWords(attributes?.reference ?? "");
+      const takenWhere = plainWords(attributes?.taken_where ?? "");
       draft.lens = standard
         ? { ...NO_CHIPS, ...(reference === "" ? {} : { reference }) }
         : { ...NO_CHIPS, ...(takenWhere === "" ? {} : { takenWhere }) };
@@ -241,7 +241,7 @@ function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): LensType |
       return node.supertag;
     case "block":
     case "lens_block":
-      return node.parent !== null && context.nodeOf(node.parent)?.supertag === "lens"
+      return node.parent !== null && context.nodeOf(node.parent.id)?.supertag === "lens"
         ? "finding"
         : undefined;
     default:
@@ -253,9 +253,9 @@ function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): LensType |
  *  the read brings in for a catalogue constraint a tuple names. */
 function issueConstraint(constraint: TreeAnswerNode, context: TreeDraftContext): boolean {
   return (
-    constraint.mark !== "context" &&
+    constraint.role !== "context" &&
     constraint.parent !== null &&
-    context.treeIdOf(constraint.parent) === context.key
+    context.treeIdOf(constraint.parent.id) === context.key
   );
 }
 
@@ -275,7 +275,7 @@ function addressOf(node: TreeAnswerNode, context: TreeDraftContext): string | un
   if (type === undefined) return undefined;
   if (type !== "finding") return `dispatch://${type}/${storeId(node.id, type)}`;
   const block = node.id.slice(node.id.lastIndexOf("#") + 1);
-  return `dispatch://lens/${storeId(node.parent ?? "", "lens")}#b-${block}`;
+  return `dispatch://lens/${storeId(node.parent?.id ?? "", "lens")}#b-${block}`;
 }
 
 /** `id` without the kind its store address starts with (`lens/`), where it carries one. */
@@ -290,8 +290,8 @@ function storeId(id: string, kind: string): string {
  * and nowhere else - undefined, so neither the node nor anything under it is drawn.
  */
 function parentsOf(node: TreeAnswerNode, context: TreeDraftContext): string[] | undefined {
-  const parent = node.parent;
-  if (parent === null) return undefined;
+  const parent = node.parent?.id;
+  if (parent === undefined) return undefined;
   if (context.treeIdOf(parent) === context.key) return [];
   if (context.drafted(parent)) return [context.treeIdOf(parent)];
   const item = itemAbove(parent, context);
@@ -310,7 +310,7 @@ function itemAbove(readId: string, context: TreeDraftContext): string | undefine
     if (node === undefined) return undefined;
     if (ITEMS[node.supertag] === true) return context.drafted(above) ? above : undefined;
     if (context.drafted(above) || context.treeIdOf(above) === context.key) return undefined;
-    above = node.parent;
+    above = node.parent?.id ?? null;
   }
   return undefined;
 }
@@ -319,9 +319,9 @@ function itemAbove(readId: string, context: TreeDraftContext): string | undefine
  *  them: its `words`, else its text; `""` where the read holds none. */
 function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string {
   for (const tuple of context.tuplesFrom(lens.id)) {
-    const kind = tuple.kind === "has_kind" ? context.nodeOf(tuple.to) : undefined;
+    const kind = tuple.kind === "has_kind" ? context.nodeOf(tuple.to.id) : undefined;
     if (kind === undefined) continue;
-    const words = stringOf(kind.attributes.words);
+    const words = kind.attributes?.words ?? "";
     return words === "" ? kind.text : words;
   }
   return "";
@@ -330,10 +330,10 @@ function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string {
 /** A constraint's words: a standard's `standard`, else a measurement's
  *  `<measurement>: <value>`, each stored string through `plainWords`. */
 function constraintWords(constraint: TreeAnswerNode): string {
-  const standard = stringOf(constraint.attributes.standard);
+  const standard = constraint.attributes?.standard ?? "";
   if (standard !== "") return plainWords(standard);
-  const measurement = plainWords(stringOf(constraint.attributes.measurement));
-  const value = plainWords(stringOf(constraint.attributes.value));
+  const measurement = plainWords(constraint.attributes?.measurement ?? "");
+  const value = plainWords(constraint.attributes?.value ?? "");
   return measurement === "" && value === "" ? "" : `${measurement}: ${value}`;
 }
 
@@ -344,7 +344,7 @@ function targetsOf(
   context: TreeDraftContext
 ): TreeAnswerNode[] {
   return context.tuplesFrom(node.id).flatMap((tuple) => {
-    const target = tuple.kind === kind ? context.nodeOf(tuple.to) : undefined;
+    const target = tuple.kind === kind ? context.nodeOf(tuple.to.id) : undefined;
     return target === undefined ? [] : [target];
   });
 }
@@ -394,11 +394,11 @@ function triggersOf(answer: TreeAnswer): ReadonlyMap<string, readonly string[]> 
   const held = triggerIndexes.get(answer);
   if (held !== undefined) return held;
   const index = new Map<string, string[]>();
-  for (const tuple of answer.tuples) {
+  for (const tuple of answer.tuples ?? []) {
     if (tuple.kind !== "triggered_by") continue;
-    const from = index.get(tuple.to);
-    if (from === undefined) index.set(tuple.to, [tuple.from]);
-    else from.push(tuple.from);
+    const from = index.get(tuple.to.id);
+    if (from === undefined) index.set(tuple.to.id, [tuple.from.id]);
+    else from.push(tuple.from.id);
   }
   triggerIndexes.set(answer, index);
   return index;
@@ -414,10 +414,10 @@ function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<
   const held = placeIndexes.get(context);
   if (held !== undefined) return held;
   const places = new Map<string, LensPlace>();
-  for (const lens of answer.nodes) {
+  for (const lens of answer.nodes ?? []) {
     const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
     if (address === undefined) continue;
-    const onLine = lens.parent === null ? undefined : context.lineOf(lens.parent);
+    const onLine = lens.parent === null ? undefined : context.lineOf(lens.parent.id);
     places.set(address, {
       ...(context.drafted(lens.id) ? { id: lens.id } : {}),
       kindWords: kindOf(lens, context),
@@ -426,9 +426,4 @@ function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<
   }
   placeIndexes.set(context, places);
   return places;
-}
-
-/** A stored attribute as a string, `""` where it is none. */
-function stringOf(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }

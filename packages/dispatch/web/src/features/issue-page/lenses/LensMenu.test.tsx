@@ -30,6 +30,11 @@ import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { TreeRows } from "../TreeRows";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
+import {
+  treeAnswer as routeAnswer,
+  type TreeNodeExtra,
+  treeNode,
+} from "../tree-read/tree-fixtures";
 import { type TreeAnswer, type TreeAnswerNode, useTreeRead, viewKey } from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
@@ -203,31 +208,17 @@ function readNode(
   id: string,
   supertag: string,
   parent: string | null,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-17T09:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...extra,
-  };
+  return treeNode(id, supertag, parent, { made_at: "2026-11-17T09:00:00Z", ...extra });
 }
 
 /** The issue's tree read once `lenses` lenses have been made on its one statement, a block of
  *  its spec: the issue, the statement, and each lens in the order it was made. */
 function treeAnswer(lenses: number): TreeAnswer {
   const words = "Store the notices for a day";
-  return {
-    converted: true,
-    cursor: null,
-    nodes: [
+  return routeAnswer(
+    [
       readNode(KEY, "issue", null, { text: ISSUE.title }),
       readNode("r1", "requirement", KEY, {
         document: { artifact_id: "artifact-spec", position: 0, slug: "spec" },
@@ -245,10 +236,9 @@ function treeAnswer(lenses: number): TreeAnswer {
         })
       ),
     ],
-    tree: "artifact-tree",
-    tuples: [],
-    view_of: null,
-  };
+    [],
+    { converted: true, tree: "artifact-tree" }
+  );
 }
 
 /** Answers every tree read of this issue, the first with its statement alone and each one after

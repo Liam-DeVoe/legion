@@ -202,6 +202,7 @@ export function useInvokeLens(
     inline: true,
     label: () => LENS_WORDS.menu_title,
     mutationKey,
+    method: "POST",
     write: (kind: string, bounds) =>
       api.send(
         writeRequest("post", "/api/v1/issues/{key}/lenses", { key: issueKey }, { kind, on }),
