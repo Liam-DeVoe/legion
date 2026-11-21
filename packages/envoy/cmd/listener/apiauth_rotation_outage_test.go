@@ -19,7 +19,7 @@ import (
 // as failed on a live token. A 401 here tells Dispatch the token was refused when it was never
 // judged.
 //
-// Found by t-e-14's acceptance at 8604c9582e: on the real listener binary, with the issuer's key
+// Found by this change's acceptance run at 8604c9582e: on the real listener binary, with the issuer's key
 // set answering 500 after the listener had read it once, a token signed with a newly published key
 // was answered 503 on the first call and 401 on the second and third, and Dispatch settles a 401
 // as failed (internal/dispatch/api, retryableDeliveryFailure).
