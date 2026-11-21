@@ -456,10 +456,10 @@ export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
  * a graph read quotes a block's text where it lists a block of the document (its `first_line`):
  * the delete takes that line off each such block, which stays listed, gives up every read of the
  * refusal's query from before the delete, and has it read again where a surface draws it, for
- * Dispatch to give the block's text as the delete left it (`correctRefusal`). A refusal the delete
- * writes, of the post or of such a block, is not dropped, so the list stays drawn: where its query
- * also holds an answer that gives the document's text, that answer alone goes, and the refusal
- * stays the query's error.
+ * Dispatch to give the block's text as the delete left it (`correctRefusal`). A refusal is not
+ * dropped, so the list stays drawn: where a query holding one also holds an answer that gives the
+ * document's text, whether or not the delete writes the refusal, that answer alone goes, and the
+ * query is read again with the refusal kept as its error.
  *
  * An edit writes its time (`edited_at`) on each of those copies that carries one, unless the copy
  * carries a later edit's already (`editedAfter`), and nothing else: an edit event's body can be
@@ -733,19 +733,20 @@ function corrected(query: Query, write: FamilyWrite, posts: readonly CorrectedPo
  * cache again, and is written. A pending insert's delete takes words out of its document's text,
  * which a refusal quotes where it lists a block of the document: where it writes a refusal, a read
  * of the query out beside an answer is given up too, and the query is read again, for Dispatch to
- * answer each block with its text as the delete left it. An answer the query holds beside that
- * refusal, from before the delete, can give the document's text (`answerGivesText`): it goes, and
- * the written refusal stays the query's error, where removing the query (`dropUnmarkedText`)
- * would take the refusal with it; it goes before the query is read again, so the state TanStack
- * puts back where that read is given up holds no answer either. An answer the correction writes
- * is put in beside the refusal (`setState`), which stays the query's error and its status, where
- * `setQueryData` would clear the refusal and draw the prefix as resolved; as `replaceQueryData`
- * does, a read of the query out is given up first and the query read again after the write, so
- * the state TanStack puts back where that read is given up is the written one. A read given up
- * is asked again where a surface draws the query (`invalidateQueries`, `refetchType: "active"`),
- * after the correction, and the written refusal is held beside that read, so the cache holds it
- * while the read is out, where a surface that draws a refusal while its read runs again reads it
- * (the issue page's outline, `useAddressFallback`).
+ * answer each block with its text as the delete left it. An answer the query holds beside a
+ * refusal, from before the delete, can give the document's text (`answerGivesText`): it goes,
+ * whether or not the delete changes the refusal, and the refusal stays the query's error, where
+ * removing the query (`dropUnmarkedText`) would take the refusal with it. A read out beside that
+ * answer is given up and the query read again, and the answer goes before that, so the state
+ * TanStack puts back where a read is given up holds no answer either. An answer the correction
+ * writes is put in beside the refusal (`setState`), which stays the query's error and its status,
+ * where `setQueryData` would clear the refusal and draw the prefix as resolved; as
+ * `replaceQueryData` does, a read of the query out is given up first and the query read again
+ * after the write, so the state TanStack puts back where that read is given up is the written
+ * one. A read given up is asked again where a surface draws the query (`invalidateQueries`,
+ * `refetchType: "active"`), after the correction, and the refusal kept is held beside that read,
+ * so the cache holds it while the read is out, where a surface that draws a refusal while its
+ * read runs again reads it (the issue page's outline, `useAddressFallback`).
  */
 function correctRefusal(
   queryClient: QueryClient,
@@ -761,17 +762,22 @@ function correctRefusal(
     void queryClient.cancelQueries({ exact: true, queryKey });
   }
   const refusal = correctedRefusal(query.state.error, write, [post]);
+  const answerGoes =
+    ambiguousItems(query.state.error) !== undefined && answerGivesText(query, post.insertDocument);
   const askAgain =
     emptied ||
+    answerGoes ||
     (refusal !== undefined && post.insertDocument !== undefined) ||
     (answer !== undefined && fetchStatus !== "idle");
   // A read given up above leaves none out; this gives up one out beside an answer.
   if (askAgain && query.state.fetchStatus !== "idle") {
     void queryClient.cancelQueries({ exact: true, queryKey });
   }
-  const answerGoes = refusal !== undefined && answerGivesText(query, post.insertDocument);
+  // The refusal the query holds once it is written: the written one, or, where the answer goes, the
+  // one it holds, which a read that starts on no answer empties (`fetchState`).
+  const kept = refusal ?? (answerGoes ? query.state.error : null);
   if (answerGoes) {
-    query.setState({ data: undefined, dataUpdatedAt: 0, error: refusal });
+    query.setState({ data: undefined, dataUpdatedAt: 0, error: kept });
   } else if (refusal !== undefined || answer !== undefined) {
     query.setState({
       ...(answer === undefined ? {} : { data: answer, dataUpdatedAt: Date.now() }),
@@ -783,8 +789,8 @@ function correctRefusal(
   }
   void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
   // A read that starts on no answer empties the query's error again (`fetchState`).
-  if (refusal !== undefined && query.state.error !== refusal) {
-    query.setState({ error: refusal });
+  if (kept !== null && query.state.error !== kept) {
+    query.setState({ error: kept });
   }
   return true;
 }

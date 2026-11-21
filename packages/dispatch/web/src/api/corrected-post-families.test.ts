@@ -1943,12 +1943,18 @@ test("a pending insert's delete takes the first line off each block of its docum
 
 /** What the cache holds once the pending insert's delete (`INSERT_DELETE`) reaches a read keyed
  *  `key` that holds `answer` beside `refusal`: a surface draws the read, which runs again on that
- *  answer and is refused, as TanStack keeps an answer beside a later read's error. Gives the keys
- *  whose answer holds the insert's words, before the delete and after it, the read's answer, the
- *  items of its refusal and the match list drawn from them (`ItemMatchList`), whether the read
- *  was asked again and is out, and the keys whose answer holds the words once a later correction
- *  gives that read up, which puts back the state TanStack held as it began. */
-async function deletedBesideRefusal(key: QueryKey, answer: unknown, refusal: ApiError) {
+ *  answer and is refused, as TanStack keeps an answer beside a later read's error; with `readOut`,
+ *  a read of it is out again as the delete arrives. Gives the keys whose answer holds the insert's
+ *  words, before the delete and after it, the read's answer, the items of its refusal and the
+ *  match list drawn from them (`ItemMatchList`), whether the read was asked again and is out, and
+ *  the keys whose answer holds the words once a later correction gives that read up, which puts
+ *  back the state TanStack held as it began. */
+async function deletedBesideRefusal(
+  key: QueryKey,
+  answer: unknown,
+  refusal: ApiError,
+  readOut = false
+) {
   const later = Promise.withResolvers<never>();
   let asked = 0;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -1963,6 +1969,10 @@ async function deletedBesideRefusal(key: QueryKey, answer: unknown, refusal: Api
   const unsubscribe = page.subscribe(() => {});
   try {
     await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    if (readOut) {
+      void page.refetch();
+      await waitFor(() => expect(asked).toBe(2));
+    }
     const before = cachedKeysHolding(client, INSERTED);
     markCorrectedPost(client, INSERT_DELETE);
     const state = client.getQueryState(key);
@@ -1980,7 +1990,7 @@ async function deletedBesideRefusal(key: QueryKey, answer: unknown, refusal: Api
     try {
       const after = {
         answer: state?.data,
-        askedAgain: asked === 2 && state?.fetchStatus === "fetching",
+        askedAgain: asked === (readOut ? 3 : 2) && state?.fetchStatus === "fetching",
         before,
         deletedLines: list.container.querySelectorAll("[data-post-deleted]").length,
         drawn: list.container.textContent ?? "",
@@ -2072,6 +2082,68 @@ test("a pending insert's delete takes off a comment prefix's answer that quotes 
       [OTHER, "Agreed.", undefined],
     ],
   });
+});
+
+// Census row C.10: the refusal a prefix read holds beside its answer lists nothing the delete
+// changes - neither the insert's comment nor a block of its document - while the answer quotes
+// the insert's words in an excerpt of a block of its document, and a read of the prefix is out as
+// the delete arrives. The answer goes all the same, whether or not the delete also marks a copy
+// of the post in it, and the refusal stays the read's error, as the read is given up and asked
+// again: no answer the cache holds keeps the words, then or once a later correction gives the read
+// asked again up.
+test("a pending insert's delete takes off a prefix read's answer that quotes its document beside a refusal the delete leaves as it is, with a read out, and keeps the refusal", async () => {
+  const third = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+  const item = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "comment",
+    ref: `dispatch://CORE-1/comment/${id}`,
+  });
+  const refusal = new ApiError(409, {
+    candidates: [item(OTHER, "Agreed."), item(third, "Ship it.")],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "5e6f7a8b" names 2 items; write more of the id',
+  });
+  const quoting = {
+    created_at: "2026-11-19T00:00:00Z",
+    direction: "in",
+    excerpt: { block_id: "p1", text: INSERTED },
+    kind: "mentions",
+    node: documentBlock("doc-1"),
+    source_seq: 9,
+  };
+  const kept = async (node: GraphNode) => {
+    const after = await deletedBesideRefusal(
+      PREFIX_READ,
+      { edges: [quoting], node },
+      refusal,
+      true
+    );
+    return {
+      answer: after.answer,
+      askedAgain: after.askedAgain,
+      before: after.before,
+      held: after.held,
+      heldOnceGivenUp: after.heldOnceGivenUp,
+      items: after.items?.map((listed) => [listed.id, listed.first_line]),
+    };
+  };
+  const expected = {
+    answer: undefined,
+    askedAgain: true,
+    before: [PREFIX_READ],
+    held: [],
+    heldOnceGivenUp: [],
+    items: [
+      [OTHER, "Agreed."],
+      [third, "Ship it."],
+    ],
+  };
+  expect({
+    namesAnother: await kept(graphNode({ id: OTHER, kind: "comment" })),
+    namesThePost: await kept(graphNode({ id: POST, kind: "comment", text: OLD_WORDS })),
+  }).toEqual({ namesAnother: expected, namesThePost: expected });
 });
 
 // The delete names its document by its id and its slug. A block of an issue's primary document is
