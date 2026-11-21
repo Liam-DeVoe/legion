@@ -447,12 +447,13 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
-// podLogs names write their refusals through here or through the same rule, so each passes the
-// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
-// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
-// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
-// query (pgx masks only the password). The operator's own commands (state, stop, status) print
+// newline to stderr. The daemon's own commands (start, probe-boot, config check), `legion
+// controller start`, `legion stop`'s loader refusal, and the commands podLogs names write their
+// refusals through here or through the same rule, so each passes the rule the daemon's log handler
+// applies to every record: an error can wrap a *url.Error, which keeps the URL's query and its user
+// name (Go's client masks only a password), pgx's ParseConfigError of a postgres_dsn it cannot
+// parse quotes the DSN with its user name and its query (pgx masks only the password), and the
+// loader names an unknown key as it is written. The operator's own commands (state, status) print
 // theirs on the operator's terminal without it.
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
@@ -502,10 +503,11 @@ func newStopCommand(stdout, stderr io.Writer) *cobra.Command {
 
 // stopLegion is `legion stop`: it stops the daemon registered for configPath's project.
 func stopLegion(configPath string, stdout, stderr io.Writer) int {
-	// The file names the team and nothing else here, so its App key commands do not run.
+	// The file names the team and nothing else here, so its App key commands do not run. A refusal
+	// is printed as `legion start`'s is (printRefusal), with URL userinfo cut from it.
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion stop: %v\n", err)
+		printRefusal(stderr, "legion stop", err)
 		return 1
 	}
 	entry, found, err := findLegion(cfg.Project)

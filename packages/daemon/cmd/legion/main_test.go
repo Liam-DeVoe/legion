@@ -1584,6 +1584,26 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 	}
 }
 
+// `legion stop` prints the loader's refusal as `legion start` does (printRefusal), through the URL
+// rule: a URL pasted where a key goes, made-up user name and password in its userinfo, is refused
+// as an unknown key, and the refusal names the key without its userinfo.
+func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	legionState(t)
+	const credential = "madeUpStopUser0123:madeUpStopPassword0123"
+	config, _ := workflowConfig(t, 13370, "https://"+credential+"@cache.example: 1\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
+	if want := "legion stop: unknown key https://cache.example\n"; code != 1 || errb.String() != want {
+		t.Fatalf("legion stop = %d, stderr %q, want 1 and %q", code, errb.String(), want)
+	}
+	for i := 0; i+10 <= len(credential); i++ {
+		if strings.Contains(errb.String(), credential[i:i+10]) {
+			t.Fatalf("stderr %q holds %q of the URL's userinfo", errb.String(), credential[i:i+10])
+		}
+	}
+}
+
 // An operator reading plain `legion state` during a Dispatch outage is told how many status writes
 // wait and why the oldest has not landed: the count, the oldest's issue, its attempts, its next
 // attempt and its last error, on one line. With none waiting the line says so.
