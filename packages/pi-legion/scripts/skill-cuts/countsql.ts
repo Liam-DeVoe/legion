@@ -21,10 +21,10 @@ import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
 import type { PullKey } from "./psql-rows";
 
 /** The SQL files of the runner, beside this file. */
-export type Template = "count.sql" | "models.sql" | "pull.sql" | "tasks.sql" | "sessions.sql";
+type Template = "count.sql" | "models.sql" | "pull.sql" | "tasks.sql" | "sessions.sql";
 
 /** The text of one of the runner's SQL files. */
-export function readTemplate(name: Template): string {
+function readTemplate(name: Template): string {
   return readFileSync(path.join(import.meta.dir, name), "utf8");
 }
 
@@ -36,7 +36,7 @@ export function sqlString(value: string): string {
 }
 
 /** A SQL text array holding `values`, each a string literal. */
-export function sqlTextArray(values: readonly string[]): string {
+function sqlTextArray(values: readonly string[]): string {
   return `ARRAY[${values.map(sqlString).join(", ")}]::text[]`;
 }
 
@@ -61,7 +61,7 @@ export function fillTemplate(template: string, values: Readonly<Record<string, s
 }
 
 /** The mtime range of one query, epoch milliseconds, start inclusive and end exclusive. */
-export interface MtimeRange {
+interface MtimeRange {
   readonly from: number;
   readonly to: number;
 }
@@ -94,7 +94,7 @@ function instant(text: string): string {
 
 /** count.sql filled for the store `store`, which the configuration must name, over `range`, with
  *  the configuration's window. */
-export function countSqlFor(config: SkillCutsConfig, store: string, range: MtimeRange): string {
+function countSqlFor(config: SkillCutsConfig, store: string, range: MtimeRange): string {
   const named = storeNamed(config, store);
   return fillTemplate(readTemplate("count.sql"), {
     store: sqlString(named.name),

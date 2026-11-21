@@ -309,24 +309,37 @@ import {
   readdirSync,
   readFileSync,
   readSync,
-  renameSync,
   rmSync,
   statSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
 import path from "node:path";
-import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
+import { mapLimit, outRefusal } from "../skill-scenarios/production-dispatch";
 import {
   readCalls,
+  readTargets,
   SessionEntry,
   SessionMessage,
+  skillFileHeader,
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { modelId, type Placer, placer, readCount, readR4, sessionModel } from "./attribute";
+import {
+  type InstallersRow,
+  type ManifestsRow,
+  modelId,
+  type Placer,
+  type PrefixTableRow,
+  placer,
+  type R4Output,
+  readCount,
+  readR4,
+  sessionModel,
+  type Via,
+  vias,
+} from "./attribute";
 import { armPromptBlocks } from "./capture";
 import {
   Case,
@@ -338,16 +351,26 @@ import {
   Thinking,
   textLines,
 } from "./cases";
-import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
+import { configFrom, json, parse, Refused, required, schemaFaults, writeWhole } from "./common";
+import { type SkillCutsConfig, storeNamed } from "./config";
 import {
+  BLOB_BATCH,
+  BLOB_BATCH_BYTES,
+  BlobBatch,
+  blobBatches,
+  blobQuery,
   CopyIndex,
   frontmatter,
   type Gh,
+  GitBlob,
+  graphqlArgs,
+  keepsEntry,
   type Manifest,
-  manifestKind,
+  parseJson,
   parseManifest,
-  parseTsv,
   prefixMatches,
+  repoPath,
+  repositoryFiles,
   resolveInstallers,
   type SkillCopy,
   skillFields,
@@ -356,17 +379,19 @@ import {
 } from "./copies";
 import { mtimeRange, PULL_PAGE, pullSql, sessionsSql, tasksSql } from "./countsql";
 import {
+  addModelSpend,
   BudgetSpent,
   createGateway,
   type Gateway,
-  type ModelSpend,
   type Spend,
-  type Spent,
+  usdOf,
 } from "./gateway";
 import {
   beforeText,
   blindOrder,
+  cut,
   MESSAGE_CHARS,
+  readsSkillUrl,
   renderMessage,
   skillReadResults,
   stepText,
@@ -385,6 +410,7 @@ import {
   TasksAnswer,
   type TasksInput,
 } from "./readers";
+import { isObject } from "./replay";
 
 /** Exit statuses: `stopped` at `--budget-usd`, `stoppedByCost` by the stop rule (`stopBy`). */
 export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3, stoppedByCost: 4 } as const;
@@ -563,9 +589,6 @@ export interface BuildIo {
   readonly gh: Gh;
 }
 
-/** A command's refusal of its arguments, before any store read or model call. */
-class Refused extends Error {}
-
 /** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
  *  session open, removed once the session is decided, and the directory once the build ends. A
  *  build that is killed leaves it for the next run of the same `--out`, which empties it. */
@@ -576,12 +599,14 @@ function spoolDir(out: string): string {
   return dir;
 }
 
-/** Writes `text` to `file` whole: into a fresh file beside it that is then renamed over it. */
-function writeWhole(file: string, text: string): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const fresh = `${file}.${process.pid}.tmp`;
-  writeFileSync(fresh, text);
-  renameSync(fresh, file);
+/** Refuses a build's `--out` inside a git or jj checkout (production-dispatch.ts's
+ *  `outRefusal`): it and its spool (`spoolDir`) hold real session text, which must stay out of a
+ *  checkout. */
+function refuseOutInCheckout(out: string): void {
+  for (const file of [out, `${out}.spool`]) {
+    const refusal = outRefusal(file);
+    if (refusal !== undefined) throw new Refused(refusal);
+  }
 }
 
 /** A file or directory a build reads, and the SHA-256 of what it read there. */
@@ -620,21 +645,9 @@ const SpendRecord = z.strictObject({
 
 /** The spend of two runs of one build: each model's calls, tokens and dollars summed. */
 function addSpend(a: Spend, b: Spend): Spend {
-  const models: Record<string, ModelSpend> = { ...a.models };
+  const models = { ...a.models };
   for (const [model, spend] of Object.entries(b.models)) {
-    const known = models[model];
-    models[model] =
-      known === undefined
-        ? spend
-        : {
-            calls: known.calls + spend.calls,
-            input: known.input + spend.input,
-            output: known.output + spend.output,
-            cacheRead: known.cacheRead + spend.cacheRead,
-            cacheWrite: known.cacheWrite + spend.cacheWrite,
-            reasoning: known.reasoning + spend.reasoning,
-            usd: known.usd + spend.usd,
-          };
+    models[model] = addModelSpend(models[model], spend);
   }
   return { models, usd: a.usd + b.usd };
 }
@@ -649,23 +662,6 @@ function readJson(file: string): unknown {
   } catch (error) {
     throw new Refused(`${file} cannot be read as JSON: ${messageFor(error)}`);
   }
-}
-
-/** A value that is an object, as a record of its fields. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** `text` cut to `max` characters, its start and end kept, with a note of what the cut left out. */
-function cut(text: string, max: number): string {
-  if (text.length <= max) return text;
-  const half = Math.floor(max / 2);
-  return `${text.slice(0, half)}\n[… ${text.length - 2 * half} characters left out …]\n${text.slice(-half)}`;
-}
-
-/** The dollars of `spent`, summed. */
-function usdOf(spent: readonly Spent[]): number {
-  return spent.reduce((sum, each) => sum + each.usd, 0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -767,7 +763,7 @@ export const SPOOL_CHUNK = 1 << 20;
 /** The entry of a transcript line whose JSON is `value`, the line's number `line`: a message's
  *  string `content` made one text block, as Oh My Pi reads it. Throws when it is no entry. */
 function entryOf(value: unknown, line: number): SessionEntry {
-  if (isRecord(value) && isRecord(value.message) && typeof value.message.content === "string") {
+  if (isObject(value) && isObject(value.message) && typeof value.message.content === "string") {
     value.message.content = [{ type: "text", text: value.message.content }];
   }
   const parsed = SessionEntry.safeParse(value);
@@ -981,7 +977,10 @@ function slimMessage(message: SessionMessage): SessionMessage {
     if (n !== 0 || message.role !== "toolResult") return [];
     const header = skillHeaderPath(block.text ?? "");
     return [
-      { type: block.type, ...(header === undefined ? {} : { text: `[Skill file: ${header}]\n` }) },
+      {
+        type: block.type,
+        ...(header === undefined ? {} : { text: `${skillFileHeader(header)}\n` }),
+      },
     ];
   });
   return {
@@ -1054,13 +1053,6 @@ export function readTranscript(spool: string, chunk = SPOOL_CHUNK): Transcript {
     return held === undefined ? light : whole(held.line);
   };
   return { entries, branch, items, message, entry: entryAt };
-}
-
-/** The read calls of `messages`, by call id: their target. */
-function readTargets(messages: readonly SessionMessage[]): Map<string, string> {
-  return new Map(
-    readCalls(messages.map((message) => ({ message }))).map((call) => [call.id, call.target])
-  );
 }
 
 /** The text of a message's text blocks, joined. */
@@ -1166,10 +1158,9 @@ function readByPath(
   skill: string,
   installedDirs: readonly string[]
 ): string | undefined {
-  const url = `skill://${skill}`;
   for (const [index, message] of messages.entries()) {
     for (const { target } of readCalls([{ message }])) {
-      if (target === url || target.startsWith(`${url}/`) || target.startsWith(`${url}:`)) {
+      if (readsSkillUrl(target, skill)) {
         if (skillReadFile(skill, target) === undefined) {
           return `message ${index} reads ${target}, with a selector`;
         }
@@ -1203,7 +1194,7 @@ function quotedText(line: string): string {
 function strings(value: unknown): string[] {
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.flatMap(strings);
-  if (isRecord(value)) return Object.values(value).flatMap(strings);
+  if (isObject(value)) return Object.values(value).flatMap(strings);
   return [];
 }
 
@@ -1332,7 +1323,7 @@ function messagesBefore(
     entry.preserveData !== undefined ||
     entry.providerReplayThroughEntryId !== undefined ||
     entry.method === "snapcompact" ||
-    (isRecord(entry.details) && entry.details.kind === "experimental-context-rollover")
+    (isObject(entry.details) && entry.details.kind === "experimental-context-rollover")
   ) {
     return {
       drop: "compaction-unsupported",
@@ -1585,7 +1576,7 @@ function scrubbed<T>(value: T): { value: T; removed: number } {
       return result.text;
     }
     if (Array.isArray(node)) return node.map(walk);
-    if (isRecord(node)) {
+    if (isObject(node)) {
       return Object.fromEntries(
         Object.entries(node).map(([key, each]) => [key, UNSCANNED.has(key) ? each : walk(each)])
       );
@@ -1604,86 +1595,17 @@ export interface Evidence {
   readonly source: string;
 }
 
-/** R4's output, as the profile reads it. */
+/** R4's output, as the profile reads it (`readR4`): its prefix rows, installer rows and
+ *  manifests, and each repository's default branch. */
 interface Copies {
-  readonly prefixes: Record<string, string>[];
-  readonly installers: Record<string, string>[];
-  readonly manifests: Record<string, string>[];
+  readonly prefixes: readonly PrefixTableRow[];
+  readonly installers: readonly InstallersRow[];
+  readonly manifests: readonly ManifestsRow[];
   readonly branches: Map<string, string>;
-}
-
-/** The columns each file of R4's output must have. */
-const COPIES_FILES = {
-  "prefix-table.tsv": ["prefix", "repository", "path", "name", "via"],
-  "installers.tsv": [
-    "manifest_repository",
-    "manifest_path",
-    "kind",
-    "action",
-    "unit",
-    "host",
-    "skill",
-    "copy_repository",
-    "copy_path",
-  ],
-  "manifests.tsv": ["repository", "path", "kind", "says"],
-  "repositories.tsv": ["repository", "branch", "commit"],
-} as const;
-
-/** R4's output under `dir`. Throws a refusal naming a file that is missing or lacks a column. */
-function readCopies(dir: string): Copies {
-  const tables = new Map<string, Record<string, string>[]>();
-  for (const [file, columns] of Object.entries(COPIES_FILES)) {
-    let text: string;
-    try {
-      text = readFileSync(path.join(dir, file), "utf8");
-    } catch (error) {
-      throw new Refused(`--copies ${dir} has no ${file}: ${messageFor(error)}`);
-    }
-    const header = (text.split("\n")[0] ?? "").split("\t");
-    const missing = columns.filter((column) => !header.includes(column));
-    if (missing.length > 0) {
-      throw new Refused(`--copies ${dir}: ${file} has no column ${missing.join(", ")}`);
-    }
-    tables.set(file, parseTsv(text));
-  }
-  const table = (file: keyof typeof COPIES_FILES) => tables.get(file) ?? [];
-  return {
-    prefixes: table("prefix-table.tsv"),
-    installers: table("installers.tsv"),
-    manifests: table("manifests.tsv"),
-    branches: new Map(
-      table("repositories.tsv").map((row) => [row.repository ?? "", row.branch ?? ""])
-    ),
-  };
-}
-
-/** A unit of a prefix row's `via`: `<unit> (<manifest repository>:<manifest path>)`. */
-interface Via {
-  readonly unit: string;
-  readonly repository: string;
-  readonly manifest: string;
-}
-
-function vias(via: string): Via[] {
-  return via.split("; ").flatMap((each) => {
-    const match = /^(.+) \(([^:()]+):(.+)\)$/.exec(each);
-    return match
-      ? [{ unit: match[1] ?? "", repository: match[2] ?? "", manifest: match[3] ?? "" }]
-      : [];
-  });
-}
-
-/** A repository path as R4 writes it, `.` for the root, as a path. */
-function repoPath(shown: string): string {
-  return shown === "." ? "" : shown;
 }
 
 /** The most GitHub reads of one repository's files in flight at once. */
 const GITHUB_JOBS = 6;
-/** The most blobs, and bytes of blobs, one GraphQL read asks for (copies.ts's bounds). */
-const BLOB_BATCH = 50;
-const BLOB_BATCH_BYTES = 2_000_000;
 
 // GitHub's answers, as copies.ts reads them: only the fields this file reads.
 const GitTree = z.looseObject({
@@ -1698,49 +1620,6 @@ const GitTree = z.looseObject({
   ),
   truncated: z.boolean().optional(),
 });
-const GitBlob = z.looseObject({ content: z.string(), encoding: z.string() });
-const BlobBatch = z.looseObject({
-  data: z.looseObject({
-    repository: z
-      .record(
-        z.string(),
-        z
-          .looseObject({
-            isBinary: z.boolean().nullable(),
-            isTruncated: z.boolean(),
-            text: z.string().nullable(),
-          })
-          .nullable()
-      )
-      .nullable(),
-  }),
-});
-
-/** `text` as JSON, or undefined when it is none. */
-function jsonOf(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
-/** `fn` of each of `items`, at most `limit` at once, in their order. */
-async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    for (let index = next++; index < items.length; index = next++) {
-      results[index] = await fn(items[index] as T);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
 
 /** What a repository holds at a commit, as copies.ts reads one: its skill copies, its manifest
  *  files parsed, and each file of those that could not be read or parsed, with why. */
@@ -1750,8 +1629,9 @@ interface RepositoryAt {
   readonly faults: readonly { readonly file: string; readonly why: string }[];
 }
 
-/** The GitHub reads the profile makes, each made once. */
-class GithubReads {
+/** The GitHub reads the profile makes, each made once. Exported for copies.test.ts, which checks
+ *  that it reads a repository's files as copies.ts does. */
+export class GithubReads {
   private readonly made = new Map<
     string,
     Promise<{ code: number; stdout: string; stderr: string }>
@@ -1842,7 +1722,7 @@ class GithubReads {
       const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
       throw new Error(`gh ${args.join(" ")} failed: ${line}`);
     }
-    const tree = GitTree.safeParse(jsonOf(result.stdout));
+    const tree = GitTree.safeParse(parseJson(result.stdout));
     if (!tree.success) throw new Error(`gh ${args.join(" ")} gave no git tree`);
     if (tree.data.truncated === true) {
       throw new Error(`GitHub cuts the tree of ${repo} at ${commit} short, so it is not read`);
@@ -1856,7 +1736,7 @@ class GithubReads {
     let text = this.blobs.get(sha);
     if (text === undefined) {
       text = this.ok(["api", `repos/${repo}/git/blobs/${sha}`]).then((answer) => {
-        const blob = GitBlob.safeParse(jsonOf(answer));
+        const blob = GitBlob.safeParse(parseJson(answer));
         if (!blob.success || blob.data.encoding !== "base64") {
           throw new Error(`gh api repos/${repo}/git/blobs/${sha} gave no base64 blob`);
         }
@@ -1868,54 +1748,21 @@ class GithubReads {
   }
 
   /** Reads the blobs `entries` of `repo` that are not read yet, in GraphQL batches of up to
-   *  BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes, one call a batch where each blob alone would
-   *  take one (copies.ts's `prefetch`, whose query this is: the owner and name go in as the
-   *  fields `owner` and `name`, by which the pod's gh picks the owner's token). A blob a batch
-   *  does not give whole (binary, cut short, missing, or in a batch that fails) is left to
+   *  BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes (copies.ts's `blobBatches` and `blobQuery`), one
+   *  call a batch where each blob alone would take one, with the owner and name as the fields
+   *  `owner` and `name` (`graphqlArgs`), by which the pod's gh picks the owner's token. A blob a
+   *  batch does not give whole (binary, cut short, missing, or in a batch that fails) is left to
    *  `blob`, which reads it alone. */
   private async prefetch(repo: string, entries: readonly TreeEntry[]): Promise<void> {
-    const [owner = "", name = ""] = repo.split("/");
     const wanted = new Map<string, TreeEntry>();
     for (const entry of entries) {
       if (!this.blobs.has(entry.sha) && /^[0-9a-f]{40}$/.test(entry.sha)) {
         wanted.set(entry.sha, entry);
       }
     }
-    const batches: TreeEntry[][] = [];
-    let bytes = 0;
-    for (const entry of wanted.values()) {
-      const last = batches.at(-1);
-      if (
-        last === undefined ||
-        last.length >= BLOB_BATCH ||
-        bytes + (entry.size ?? 0) > BLOB_BATCH_BYTES
-      ) {
-        batches.push([entry]);
-        bytes = entry.size ?? 0;
-      } else {
-        last.push(entry);
-        bytes += entry.size ?? 0;
-      }
-    }
-    for (const batch of batches) {
-      const fields = batch
-        .map(
-          (entry, index) =>
-            `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
-        )
-        .join(" ");
-      const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-      const result = await this.gh([
-        "api",
-        "graphql",
-        "-f",
-        `owner=${owner}`,
-        "-f",
-        `name=${name}`,
-        "-f",
-        `query=${query}`,
-      ]);
-      const parsed = BlobBatch.safeParse(result.code === 0 ? jsonOf(result.stdout) : undefined);
+    for (const batch of blobBatches([...wanted.values()], BLOB_BATCH, BLOB_BATCH_BYTES)) {
+      const result = await this.gh(graphqlArgs(repo, blobQuery(batch)));
+      const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) continue;
       for (const [index, entry] of batch.entries()) {
         const blob = parsed.data.data.repository?.[`b${index}`];
@@ -1927,8 +1774,9 @@ class GithubReads {
   }
 
   /** What `repo` holds at `commit`, read as copies.ts's `listCopies` reads a repository (its
-   *  steps 2 and 4): each `SKILL.md` outside `excludePaths` as a skill copy, and each manifest
-   *  file by its path (`manifestKind`), parsed (`parseManifest`). Read once for each commit. */
+   *  steps 2 and 4): the files its rules select (`repositoryFiles`, of the tree's entries it keeps,
+   *  `keepsEntry`), each `SKILL.md` as a skill copy and each manifest file parsed
+   *  (`parseManifest`). Read once for each commit. */
   at(
     repo: string,
     commit: string,
@@ -1954,28 +1802,12 @@ class GithubReads {
       const dir = path.posix.dirname(file);
       return dir === "." ? "" : dir;
     };
-    const skillEntries = entries.filter(
-      (entry) =>
-        entry.type === "blob" &&
-        path.posix.basename(entry.path) === "SKILL.md" &&
-        !excludePaths.some(
-          (exclude) =>
-            exclude.repo.toLowerCase() === repo.toLowerCase() &&
-            entry.path.startsWith(exclude.prefix)
-        )
+    // No fork is read here: the entries kept are those of a repository that is no fork.
+    const { skillFiles: skillEntries, manifests: candidates } = repositoryFiles(
+      repo,
+      entries.filter((entry) => keepsEntry(entry, false)),
+      excludePaths
     );
-    const withSkill = entries.some((entry) => path.posix.basename(entry.path) === "SKILL.md");
-    const insideSkill = (file: string) =>
-      skillEntries.some((entry) => {
-        const dir = dirOf(entry.path);
-        return dir === "" ? file === entry.path : file.startsWith(`${dir}/`);
-      });
-    const candidates = entries.flatMap((entry) => {
-      const kind = manifestKind(entry);
-      if (kind === undefined || (kind === "omp-package" && !withSkill)) return [];
-      if (kind !== "skill-link" && insideSkill(entry.path)) return [];
-      return [{ entry, kind }];
-    });
     await this.prefetch(repo, [...skillEntries, ...candidates.map(({ entry }) => entry)]);
     const copies = await mapLimit(skillEntries, GITHUB_JOBS, async (entry): Promise<SkillCopy> => {
       const dir = dirOf(entry.path);
@@ -2404,7 +2236,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const projectFile = file.path.slice("project:".length);
       const text = await github.text(file.repo, commit, projectFile);
       const fields = text === undefined ? undefined : (Bun.YAML.parse(text) as unknown);
-      const instructions = isRecord(fields) ? fields.instructions : undefined;
+      const instructions = isObject(fields) ? fields.instructions : undefined;
       if (typeof instructions !== "string" || instructions === "") {
         evidence.push({
           item: `left out: the instructions file of the project ${input.project}`,
@@ -2460,45 +2292,25 @@ const Candidate = z.strictObject({
 });
 type Candidate = z.infer<typeof Candidate>;
 
-/** Parses `argv` with `options`, strictly. Throws a refusal. */
-function parse<O extends NonNullable<Parameters<typeof parseArgs>[0]>["options"]>(
-  argv: readonly string[],
-  options: O,
-  usage: string
-) {
-  try {
-    return parseArgs({ args: [...argv], options, strict: true, allowPositionals: false }).values;
-  } catch (error) {
-    throw new Refused(`${messageFor(error)}. ${usage}`);
-  }
-}
-
-/** The value of each option `names` names, or a refusal naming the ones missing. */
-function required<K extends string>(
-  values: Partial<Record<K, unknown>>,
-  names: readonly K[],
-  usage: string
-): Record<K, string> {
-  const missing = names.filter((name) => typeof values[name] !== "string");
-  if (missing.length > 0) {
-    throw new Refused(`${missing.map((name) => `--${name}`).join(", ")} required. ${usage}`);
-  }
-  return values as Record<K, string>;
-}
-
-/** The configuration in `file`, or a refusal. */
-function configFrom(file: string): SkillCutsConfig {
-  try {
-    return loadConfig(file);
-  } catch (error) {
-    throw new Refused(messageFor(error));
-  }
-}
-
 /** A refusal unless `file` is a file. */
 function mustBeFile(file: string, what: string): void {
   if (!statSync(file, { throwIfNoEntry: false })?.isFile())
     throw new Refused(`${what} ${file} is not a file`);
+}
+
+/** The skill in `dir` as build-tasks reads it: its SKILL.md's frontmatter name (its directory's
+ *  name when it gives none) and description. Refuses a directory with no SKILL.md. */
+function taskSkill(dir: string): { name: string; description: string } {
+  const skillFile = path.join(dir, "SKILL.md");
+  mustBeFile(skillFile, "--skill's SKILL.md");
+  const fields = frontmatter(readFileSync(skillFile, "utf8")) ?? {};
+  return {
+    name:
+      typeof fields.name === "string" && fields.name !== ""
+        ? fields.name
+        : path.basename(path.resolve(dir)),
+    description: typeof fields.description === "string" ? fields.description : "",
+  };
 }
 
 /** The gateway of a builder's readers, which starts no call once its spend reaches `budgetUsd`,
@@ -2547,7 +2359,7 @@ function readCandidates(file: string, config: SkillCutsConfig): Candidate[] {
     const parsed = Candidate.safeParse(value);
     if (!parsed.success) {
       faults.push(
-        `${where} is not {"store", "hash", "path"?}: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "the line"}: ${issue.message}`).join("; ")}`
+        `${where} is not {"store", "hash", "path"?}: ${schemaFaults(parsed.error, "the line")}`
       );
       continue;
     }
@@ -3242,10 +3054,22 @@ function byModel(sessions: readonly SessionRecord[]): Record<string, ModelCounts
   return counts;
 }
 
-/** attribute.ts's placing of reads for the count under `countDir` and R4's output under
- *  `copiesDir`, the two attribute.ts made the sessions files from. Throws a refusal when either
- *  cannot be read as attribute.ts reads it, or the count holds no query of a configured store. */
-function readPlacer(config: SkillCutsConfig, countDir: string, copiesDir: string): Placer {
+/** R4's output under `copiesDir` as the profile reads it (attribute.ts's `readR4`, the one reader
+ *  of it), and attribute.ts's placing of reads for the count under `countDir` and that output, the
+ *  two attribute.ts made the sessions files from. Throws a refusal when R4's output cannot be read
+ *  as attribute.ts reads it, when the two do not place reads as attribute.ts does, or when the
+ *  count holds no query of a configured store. */
+function readCopiesAndPlacer(
+  config: SkillCutsConfig,
+  countDir: string,
+  copiesDir: string
+): { copies: Copies; placer: Placer } {
+  let r4: R4Output;
+  try {
+    r4 = readR4(copiesDir);
+  } catch (error) {
+    throw new Refused(`--copies ${copiesDir}: ${messageFor(error)}`);
+  }
   let placing: Placer;
   let outputs: number;
   try {
@@ -3254,7 +3078,7 @@ function readPlacer(config: SkillCutsConfig, countDir: string, copiesDir: string
       config.stores.map((store) => store.name)
     );
     outputs = count.outputs.length;
-    placing = placer(count.outputs, readR4(copiesDir));
+    placing = placer(count.outputs, r4);
   } catch (error) {
     throw new Refused(
       `--count ${countDir} and --copies ${copiesDir} do not place reads as attribute.ts does: ${messageFor(error)}`
@@ -3263,7 +3087,15 @@ function readPlacer(config: SkillCutsConfig, countDir: string, copiesDir: string
   if (outputs === 0) {
     throw new Refused(`--count ${countDir} holds no query output of a store of the configuration`);
   }
-  return placing;
+  return {
+    copies: {
+      prefixes: r4.prefixes,
+      installers: r4.installers,
+      manifests: r4.manifests,
+      branches: new Map(r4.repositories.map((row) => [row.repository, row.branch])),
+    },
+    placer: placing,
+  };
 }
 
 /** The evidence a case's context gives (caseOf), which comes before its profile's. */
@@ -3315,6 +3147,7 @@ async function reprofileCases(
   if (path.resolve(given.reprofile) === path.resolve(given.out)) {
     throw new Refused(`--out ${given.out} is the file --reprofile reads; give a new file`);
   }
+  refuseOutInCheckout(given.out);
   const config = configFrom(given.config);
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
   mustBeFile(given.reprofile, "--reprofile");
@@ -3324,12 +3157,12 @@ async function reprofileCases(
   } catch (error) {
     throw new Refused(`--reprofile ${given.reprofile}: ${messageFor(error)}`);
   }
-  const copies = readCopies(given.copies);
+  const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const run: ProfileRun = {
     config,
     copies,
     github: new GithubReads(io.gh, copies.branches),
-    placer: readPlacer(config, given.count, given.copies),
+    placer: placing,
   };
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
@@ -3404,18 +3237,14 @@ async function reprofileCases(
   const summaryFile = `${given.out}.summary.json`;
   writeWhole(
     summaryFile,
-    `${JSON.stringify(
-      {
-        command: "build-cases --reprofile",
-        from: given.reprofile,
-        casesRead: cases.length,
-        casesWritten: rebuilt.length,
-        cases: records,
-        leftOut,
-      },
-      null,
-      2
-    )}\n`
+    json({
+      command: "build-cases --reprofile",
+      from: given.reprofile,
+      casesRead: cases.length,
+      casesWritten: rebuilt.length,
+      cases: records,
+      leftOut,
+    })
   );
   // The file must load as the behaviour commands load it.
   if (rebuilt.length > 0) loadCases(given.out, given.old);
@@ -3557,7 +3386,7 @@ function priorBuild(out: string, summaryFile: string, inputs: CasesInputs): Prio
   const parsed = CasesSummary.safeParse(readJson(summaryFile));
   if (!parsed.success) {
     throw new Refused(
-      `${summaryFile} is no build-cases summary this build can go on from: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "the file"}: ${issue.message}`).join("; ")}`
+      `${summaryFile} is no build-cases summary this build can go on from: ${schemaFaults(parsed.error, "the file")}`
     );
   }
   const summary = parsed.data;
@@ -3620,36 +3449,37 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     ["config", "key-file", "cut", "skill", "old", "sessions", "seed", "copies", "count", "out"],
     BUILD_CASES_USAGE
   );
+  // The cases file and its spool hold real session text.
+  refuseOutInCheckout(given.out);
   if (!/^\d+$/.test(given.seed)) throw new Refused(`--seed ${given.seed} is not a whole number`);
   const max = values.max === undefined ? Number.POSITIVE_INFINITY : Number(values.max);
   if (values.max !== undefined && (!/^\d+$/.test(values.max) || max < 1)) {
     throw new Refused(`--max ${values.max} is not a whole number of 1 or more`);
   }
-  const budget = values["budget-usd"];
-  const budgetUsd = budget === undefined ? undefined : Number(budget);
-  if (budget !== undefined && (budget.trim() === "" || !(Number(budgetUsd) >= 0))) {
-    throw new Refused(`--budget-usd ${budget} is not a number of dollars of 0 or more`);
-  }
-  const concurrency =
-    values.concurrency === undefined ? BUILD_CONCURRENCY : Number(values.concurrency);
-  if (values.concurrency !== undefined && (!/^\d+$/.test(values.concurrency) || concurrency < 1)) {
-    throw new Refused(`--concurrency ${values.concurrency} is not a whole number of 1 or more`);
-  }
-  const dollars = (flag: string, text: string | undefined, otherwise: number): number => {
-    if (text === undefined) return otherwise;
+  /** The dollars `text` gives for `--<flag>`, or undefined when it is not given. Throws a refusal
+   *  on a text that is no number of dollars of 0 or more. */
+  const dollars = (flag: string, text: string | undefined): number | undefined => {
+    if (text === undefined) return undefined;
     const usd = Number(text);
     if (text.trim() === "" || !(usd >= 0)) {
       throw new Refused(`--${flag} ${text} is not a number of dollars of 0 or more`);
     }
     return usd;
   };
+  const budget = values["budget-usd"];
+  const budgetUsd = dollars("budget-usd", budget);
+  const concurrency =
+    values.concurrency === undefined ? BUILD_CONCURRENCY : Number(values.concurrency);
+  if (values.concurrency !== undefined && (!/^\d+$/.test(values.concurrency) || concurrency < 1)) {
+    throw new Refused(`--concurrency ${values.concurrency} is not a whole number of 1 or more`);
+  }
   const stopRule: StopRule = {
-    projectedUsd: dollars("stop-projected-usd", values["stop-projected-usd"], STOP_PROJECTED_USD),
+    projectedUsd: dollars("stop-projected-usd", values["stop-projected-usd"]) ?? STOP_PROJECTED_USD,
     afterSessions:
       values["stop-after-sessions"] === undefined
         ? STOP_AFTER_SESSIONS
         : Number(values["stop-after-sessions"]),
-    zeroCaseUsd: dollars("stop-zero-case-usd", values["stop-zero-case-usd"], STOP_ZERO_CASE_USD),
+    zeroCaseUsd: dollars("stop-zero-case-usd", values["stop-zero-case-usd"]) ?? STOP_ZERO_CASE_USD,
   };
   if (values["stop-after-sessions"] !== undefined && !/^\d+$/.test(values["stop-after-sessions"])) {
     throw new Refused(
@@ -3666,8 +3496,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
   mustBeFile(given["key-file"], "--key-file");
   const files = skillFiles(given.old);
-  const copies = readCopies(given.copies);
-  const placing = readPlacer(config, given.count, given.copies);
+  const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const candidates = readCandidates(given.sessions, config);
   const order = blindOrder(candidates, given.seed).map(({ item }) => item);
 
@@ -3782,47 +3611,43 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     }
     writeWhole(
       summaryFile,
-      `${JSON.stringify(
-        {
-          command: "build-cases",
-          cut: cut.id,
-          skill: given.skill,
-          seed: given.seed,
-          inputs,
-          order: order.map(({ store, hash }) => ({ store, hash })),
-          bounds: {
-            readerWindows: READER_WINDOWS,
-            readerMessages: READER_MESSAGES,
-            readerChars: READER_CHARS,
-            readerEarlierMessages: READER_EARLIER_MESSAGES,
-            readerEarlierChars: READER_EARLIER_CHARS,
-            restateChars: RESTATE_CHARS,
-            restateWindows: RESTATE_WINDOWS,
-            restatePartChars: RESTATE_PART_CHARS,
-            restateOverlap: RESTATE_OVERLAP,
-            messageChars: MESSAGE_CHARS,
-            pullPage: PULL_PAGE,
-            max: Number.isFinite(max) ? max : null,
-            budgetUsd: budgetUsd ?? null,
-            concurrency,
-            stopProjectedUsd: stopRule.projectedUsd,
-            stopAfterSessions: stopRule.afterSessions,
-            stopZeroCaseUsd: stopRule.zeroCaseUsd,
-          },
-          stopped: ruleStop ?? stopped ?? null,
-          sessionsTried: sessions.length,
-          casesBuilt,
-          drops,
-          byModel: byModel(sessions),
-          sessions,
-          cases: caseRecords,
-          sessionQueries,
-          pullCalls: pulls,
-          readerSpend: addSpend(priorSpend, run.gateway.spend()),
+      json({
+        command: "build-cases",
+        cut: cut.id,
+        skill: given.skill,
+        seed: given.seed,
+        inputs,
+        order: order.map(({ store, hash }) => ({ store, hash })),
+        bounds: {
+          readerWindows: READER_WINDOWS,
+          readerMessages: READER_MESSAGES,
+          readerChars: READER_CHARS,
+          readerEarlierMessages: READER_EARLIER_MESSAGES,
+          readerEarlierChars: READER_EARLIER_CHARS,
+          restateChars: RESTATE_CHARS,
+          restateWindows: RESTATE_WINDOWS,
+          restatePartChars: RESTATE_PART_CHARS,
+          restateOverlap: RESTATE_OVERLAP,
+          messageChars: MESSAGE_CHARS,
+          pullPage: PULL_PAGE,
+          max: Number.isFinite(max) ? max : null,
+          budgetUsd: budgetUsd ?? null,
+          concurrency,
+          stopProjectedUsd: stopRule.projectedUsd,
+          stopAfterSessions: stopRule.afterSessions,
+          stopZeroCaseUsd: stopRule.zeroCaseUsd,
         },
-        null,
-        2
-      )}\n`
+        stopped: ruleStop ?? stopped ?? null,
+        sessionsTried: sessions.length,
+        casesBuilt,
+        drops,
+        byModel: byModel(sessions),
+        sessions,
+        cases: caseRecords,
+        sessionQueries,
+        pullCalls: pulls,
+        readerSpend: addSpend(priorSpend, run.gateway.spend()),
+      })
     );
   };
   // A run that goes on leaves the earlier summary as it is until it decides a session: by then it
@@ -4202,7 +4027,7 @@ function profilesPlan(
   } else if (named !== undefined) {
     throw new Refused("--first-read writes no written task, so it takes no --context-session");
   }
-  const copies = readCopies(copiesDir);
+  const { copies, placer: placing } = readCopiesAndPlacer(config, countDir, copiesDir);
   return {
     dir,
     contextSession,
@@ -4210,7 +4035,7 @@ function profilesPlan(
       config,
       copies,
       github: new GithubReads(io.gh, copies.branches),
-      placer: readPlacer(config, countDir, copiesDir),
+      placer: placing,
     },
   };
 }
@@ -4361,7 +4186,7 @@ async function writeProfiles<T extends TaskLine>(
       continue;
     }
     const file = path.resolve(plan.dir, `${task.id}.json`);
-    writeWhole(file, `${JSON.stringify(built.profile, null, 2)}\n`);
+    writeWhole(file, json(built.profile));
     notes.push({
       task: task.id,
       from: task.source === "written" ? "context-session" : "session",
@@ -4549,16 +4374,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     }
   }
   mustBeFile(given["key-file"], "--key-file");
-  const skillFile = path.join(given.skill, "SKILL.md");
-  mustBeFile(skillFile, "--skill's SKILL.md");
-  const fields = frontmatter(readFileSync(skillFile, "utf8")) ?? {};
-  const skill = {
-    name:
-      typeof fields.name === "string" && fields.name !== ""
-        ? fields.name
-        : path.basename(path.resolve(given.skill)),
-    description: typeof fields.description === "string" ? fields.description : "",
-  };
+  const skill = taskSkill(given.skill);
   const plan = profilesPlan(values, config, io, true);
   // An earlier run of the same inputs at --out: its terms and every query it recorded are kept,
   // with the messages those queries found (`<out>.found.jsonl`), and the build goes on from the
@@ -4604,19 +4420,15 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   const progress = () =>
     writeWhole(
       summaryFile,
-      `${JSON.stringify(
-        {
-          command: "build-tasks",
-          skill: skill.name,
-          inputs,
-          done: false,
-          terms: terms ?? null,
-          queries,
-          readerSpend: spend(),
-        },
-        null,
-        2
-      )}\n`
+      json({
+        command: "build-tasks",
+        skill: skill.name,
+        inputs,
+        done: false,
+        terms: terms ?? null,
+        queries,
+        readerSpend: spend(),
+      })
     );
 
   if (terms === undefined) {
@@ -4729,57 +4541,53 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     lines.filter((task) => task.label === label && task.source === source).length;
   writeWhole(
     summaryFile,
-    `${JSON.stringify(
-      {
-        command: "build-tasks",
-        skill: skill.name,
-        inputs,
-        done: true,
-        stores,
-        window: { start: config.windowStart, end: config.windowEnd },
-        terms: searched,
-        queries,
-        messagesFound: found.length,
-        messagesDistinct: candidates.distinct,
-        messagesOffered: offered.length,
-        tasks: kept.map((task, n) => ({
-          id: `t${n + 1}`,
-          label: task.label,
-          source: task.from,
-          why: task.why,
-          ...(task.firstStep === undefined ? {} : { firstStep: task.firstStep }),
-        })),
-        droppedNeed: dropped.length,
-        dropped,
-        ...(plan === undefined
-          ? {}
-          : {
-              candidateDrops: {
-                counts: Object.fromEntries(
-                  [...new Set(candidates.drops.map((each) => each.reason))].map((reason) => [
-                    reason,
-                    candidates.drops.filter((each) => each.reason === reason).length,
-                  ])
-                ),
-                sessions: candidates.drops,
-                sessionQueries: candidates.queries,
-              },
-            }),
-        counts: {
-          need: { session: count("need", "session"), written: count("need", "written") },
-          "near-miss": {
-            session: count("near-miss", "session"),
-            written: count("near-miss", "written"),
-          },
+    json({
+      command: "build-tasks",
+      skill: skill.name,
+      inputs,
+      done: true,
+      stores,
+      window: { start: config.windowStart, end: config.windowEnd },
+      terms: searched,
+      queries,
+      messagesFound: found.length,
+      messagesDistinct: candidates.distinct,
+      messagesOffered: offered.length,
+      tasks: kept.map((task, n) => ({
+        id: `t${n + 1}`,
+        label: task.label,
+        source: task.from,
+        why: task.why,
+        ...(task.firstStep === undefined ? {} : { firstStep: task.firstStep }),
+      })),
+      droppedNeed: dropped.length,
+      dropped,
+      ...(plan === undefined
+        ? {}
+        : {
+            candidateDrops: {
+              counts: Object.fromEntries(
+                [...new Set(candidates.drops.map((each) => each.reason))].map((reason) => [
+                  reason,
+                  candidates.drops.filter((each) => each.reason === reason).length,
+                ])
+              ),
+              sessions: candidates.drops,
+              sessionQueries: candidates.queries,
+            },
+          }),
+      counts: {
+        need: { session: count("need", "session"), written: count("need", "written") },
+        "near-miss": {
+          session: count("near-miss", "session"),
+          written: count("near-miss", "written"),
         },
-        ...(plan === undefined || profiled === undefined
-          ? {}
-          : { profiles: profilesRecord(plan, context, profiled) }),
-        readerSpend: spend(),
       },
-      null,
-      2
-    )}\n`
+      ...(plan === undefined || profiled === undefined
+        ? {}
+        : { profiles: profilesRecord(plan, context, profiled) }),
+      readerSpend: spend(),
+    })
   );
   // The messages found are in the tasks file where a task names one; the rest are not kept.
   rmSync(foundFile, { force: true });
@@ -4882,16 +4690,7 @@ async function buildControlTasks(
   }
   const config = configFrom(given.config);
   mustBeFile(given["key-file"], "--key-file");
-  const skillFile = path.join(given.skill, "SKILL.md");
-  mustBeFile(skillFile, "--skill's SKILL.md");
-  const fields = frontmatter(readFileSync(skillFile, "utf8")) ?? {};
-  const skill = {
-    name:
-      typeof fields.name === "string" && fields.name !== ""
-        ? fields.name
-        : path.basename(path.resolve(given.skill)),
-    description: typeof fields.description === "string" ? fields.description : "",
-  };
+  const skill = taskSkill(given.skill);
   const plan = profilesPlan(values, config, io, false);
   const candidates = readCandidates(given.sessions, config);
   const order = blindOrder(candidates, given.seed).map(({ item }) => item);
@@ -4990,24 +4789,20 @@ async function buildControlTasks(
   const write = (done: boolean, extra: Record<string, unknown> = {}) =>
     writeWhole(
       summaryFile,
-      `${JSON.stringify(
-        {
-          command: "build-tasks",
-          mode: "first-read",
-          skill: skill.name,
-          inputs,
-          done,
-          order: order.map(({ store, hash }) => ({ store, hash })),
-          sessions,
-          judged: [...judged.values()],
-          sessionQueries,
-          pullCalls: sessions.reduce((total, each) => total + (each.pulls ?? 0), 0),
-          ...extra,
-          readerSpend: spend(),
-        },
-        null,
-        2
-      )}\n`
+      json({
+        command: "build-tasks",
+        mode: "first-read",
+        skill: skill.name,
+        inputs,
+        done,
+        order: order.map(({ store, hash }) => ({ store, hash })),
+        sessions,
+        judged: [...judged.values()],
+        sessionQueries,
+        pullCalls: sessions.reduce((total, each) => total + (each.pulls ?? 0), 0),
+        ...extra,
+        readerSpend: spend(),
+      })
     );
 
   /** The record of a session not tried yet, and its first request when it is a task. With

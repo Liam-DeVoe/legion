@@ -146,6 +146,13 @@ export function readCalls(entries: SessionEntry[]): { id: string; target: string
   return reads;
 }
 
+/** The `read` calls of `messages` (`readCalls`), by call id: the path or URL each one read. */
+export function readTargets(messages: readonly SessionMessage[]): Map<string, string> {
+  return new Map(
+    readCalls(messages.map((message) => ({ message }))).map((call) => [call.id, call.target])
+  );
+}
+
 /** The line the pinned Oh My Pi puts before the text of a file it read by a `skill://` URL,
  * `[Skill file: <absolute path>]`, then a newline. That line is not the file's. */
 export function skillFileHeader(file: string): string {

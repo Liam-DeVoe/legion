@@ -36,6 +36,7 @@ import { loadConfig, parseConfig } from "./config";
 import {
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
+  MANIFESTS_COLUMNS,
   PREFIX_TABLE_COLUMNS,
   parseTsv,
   REPOSITORIES_COLUMNS,
@@ -1031,6 +1032,7 @@ function r4Dir(root: string, world: R4Tables): string {
     "prefix-table.tsv": rows(PREFIX_TABLE_COLUMNS, world.prefixes),
     "installers.tsv": rows(INSTALLERS_COLUMNS, world.installers),
     "loaders.tsv": rows(LOADERS_COLUMNS, world.loaders),
+    "manifests.tsv": rows(MANIFESTS_COLUMNS, []),
     "repositories.tsv": rows(REPOSITORIES_COLUMNS, world.repositories),
   });
 }

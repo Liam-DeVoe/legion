@@ -48,7 +48,7 @@ export const GATEWAY_TRIES = 6;
  *  tokens (thinking and reasoning included), a cache write of the shorter lifetime and of the
  *  longer one (Anthropic's 5 minutes and 1 hour, OpenAI's 30 minutes and 12 hours), and a cache
  *  read. */
-export interface Rates {
+interface Rates {
   readonly input: number;
   readonly output: number;
   readonly cacheWriteShort: number;
@@ -172,7 +172,7 @@ export const PRICES: Readonly<Record<string, Price>> = {
 const Count = z.number().int().nonnegative();
 
 /** A reply's `usage`, as the Messages API reports it. Fields it does not name are kept. */
-export const Usage = z.looseObject({
+const Usage = z.looseObject({
   input_tokens: Count,
   output_tokens: Count,
   cache_creation_input_tokens: Count.nullish(),
@@ -185,13 +185,13 @@ export const Usage = z.looseObject({
     })
     .nullish(),
 });
-export type Usage = z.infer<typeof Usage>;
+type Usage = z.infer<typeof Usage>;
 
 /** A reply's `usage`, as OpenAI's Responses API reports it (F9): `input_tokens` counts every prompt
  *  token, the cache's reads (`cached_tokens`) and writes (`cache_write_tokens`, split by lifetime)
  *  among them, and `output_tokens` counts the reasoning tokens among it. Fields it does not name
  *  are kept (the gateway's own `cost` among them). */
-export const ResponsesUsage = z.looseObject({
+const ResponsesUsage = z.looseObject({
   input_tokens: Count,
   output_tokens: Count,
   input_tokens_details: z
@@ -205,7 +205,7 @@ export const ResponsesUsage = z.looseObject({
     .nullish(),
   output_tokens_details: z.looseObject({ reasoning_tokens: Count.nullish() }).nullish(),
 });
-export type ResponsesUsage = z.infer<typeof ResponsesUsage>;
+type ResponsesUsage = z.infer<typeof ResponsesUsage>;
 
 /** One block of a reply's content, kept whole so that a reply can be sent back as it came: a
  *  Messages reply's `text`, `thinking` (its signature included), `tool_use` and others, or a
@@ -283,15 +283,22 @@ export function toolCalls(content: readonly ContentBlock[]): ToolCall[] {
 
 /** What one reply used: the model that answered, its tokens, and their dollars at list price. A
  *  Responses reply also says how many of its output tokens were reasoning (`reasoning`); a
- *  Messages reply counts its thinking in `output` and says no more. */
-export interface Spent {
-  readonly model: string;
-  readonly input: number;
-  readonly output: number;
-  readonly cacheRead: number;
-  readonly cacheWrite: number;
-  readonly reasoning?: number;
-  readonly usd: number;
+ *  Messages reply counts its thinking in `output` and says no more. The schema reads one back
+ *  from a file the runner wrote. */
+export const SpentRecord = z.strictObject({
+  model: z.string(),
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+  reasoning: z.number().optional(),
+  usd: z.number(),
+});
+export type Spent = Readonly<z.infer<typeof SpentRecord>>;
+
+/** The dollars of `spent`, summed. */
+export function usdOf(spent: readonly Spent[]): number {
+  return spent.reduce((sum, each) => sum + each.usd, 0);
 }
 
 /** One model call's answer: the reply message, the gateway's request id when it sent one, how long
@@ -313,6 +320,20 @@ export interface ModelSpend {
   readonly cacheWrite: number;
   readonly reasoning: number;
   readonly usd: number;
+}
+
+/** Two spends of one model added field by field, `a`'s first; `b` itself when there is no `a`. */
+export function addModelSpend(a: ModelSpend | undefined, b: ModelSpend): ModelSpend {
+  if (a === undefined) return b;
+  return {
+    calls: a.calls + b.calls,
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+    reasoning: a.reasoning + b.reasoning,
+    usd: a.usd + b.usd,
+  };
 }
 
 /** Every reply counted so far: per model, and the dollars of all of them. */
@@ -390,7 +411,7 @@ export class BudgetSpent extends Error {
 
 /** A Messages reply's tokens: input not read from the cache, output, cache reads and cache
  *  writes. */
-export function tokensOf(usage: Usage): Omit<Spent, "model" | "usd"> {
+function tokensOf(usage: Usage): Omit<Spent, "model" | "usd"> {
   return {
     input: usage.input_tokens,
     output: usage.output_tokens,
@@ -626,9 +647,10 @@ const ResponsesReply = z.looseObject({
 
 /** A Responses API response as a ReplyMessage: its id and model, its output items as `content`,
  *  its stop reason the reason it is incomplete, else its status (`completed`), and its usage as
- *  sent. Its echo of the request (`instructions`, `tools`) is left out. Throws when it is no
- *  response, or one whose status is neither `completed` nor `incomplete`. */
-export function responseMessage(response: unknown): ReplyMessage {
+ *  sent. Its echo of the request (`instructions`, `tools`) is left out. Beside it, its usage as
+ *  ResponsesUsage reads it. Throws when it is no response, or one whose status is neither
+ *  `completed` nor `incomplete`. */
+function responseReply(response: unknown): { message: ReplyMessage; usage: ResponsesUsage } {
   const parsed = ResponsesReply.safeParse(response);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -640,13 +662,19 @@ export function responseMessage(response: unknown): ReplyMessage {
   if (status !== "completed" && status !== "incomplete") {
     throw new Error(`the response's status is ${status}, neither completed nor incomplete`);
   }
-  return ReplyMessage.parse({
+  const message = ReplyMessage.parse({
     ...(id === undefined ? {} : { id }),
     model,
     content: output,
     stop_reason: incomplete_details?.reason ?? status,
     usage,
   });
+  return { message, usage };
+}
+
+/** A Responses API response as a ReplyMessage (`responseReply`). */
+export function responseMessage(response: unknown): ReplyMessage {
+  return responseReply(response).message;
 }
 
 /** The gateway at `options.baseUrl`. Throws when an option is out of range. */
@@ -682,32 +710,31 @@ export function createGateway(options: GatewayOptions): Gateway {
   let running = 0;
   const waiting: (() => void)[] = [];
 
-  /** Counts `message`, the reply of API `responses` or Messages to a body whose model `bodyPrice`
-   *  prices. */
-  function count(message: ReplyMessage, bodyPrice: Price, responses: boolean): Spent {
+  /** Counts `message`, the reply to a body whose model `bodyPrice` prices: a Responses reply when
+   *  `responsesUsage` gives its usage, else a Messages reply. */
+  function count(
+    message: ReplyMessage,
+    bodyPrice: Price,
+    responsesUsage: ResponsesUsage | undefined
+  ): Spent {
     // The model that answered is the one charged; the body's price stands where the table lacks it.
     const price = prices[message.model] ?? bodyPrice;
-    let tokens: Omit<Spent, "model" | "usd">;
-    let usd: number;
-    if (responses) {
-      const usage = ResponsesUsage.parse(message.usage);
-      tokens = responsesTokensOf(usage);
-      usd = responsesCostUsd(usage, price);
-    } else {
-      tokens = tokensOf(message.usage);
-      usd = costUsd(message.usage, price);
-    }
+    const tokens =
+      responsesUsage === undefined ? tokensOf(message.usage) : responsesTokensOf(responsesUsage);
+    const usd =
+      responsesUsage === undefined
+        ? costUsd(message.usage, price)
+        : responsesCostUsd(responsesUsage, price);
     const spent: Spent = { model: message.model, ...tokens, usd };
-    const total = models[spent.model];
-    models[spent.model] = {
-      calls: (total?.calls ?? 0) + 1,
-      input: (total?.input ?? 0) + spent.input,
-      output: (total?.output ?? 0) + spent.output,
-      cacheRead: (total?.cacheRead ?? 0) + spent.cacheRead,
-      cacheWrite: (total?.cacheWrite ?? 0) + spent.cacheWrite,
-      reasoning: (total?.reasoning ?? 0) + (spent.reasoning ?? 0),
-      usd: (total?.usd ?? 0) + usd,
-    };
+    models[spent.model] = addModelSpend(models[spent.model], {
+      calls: 1,
+      input: spent.input,
+      output: spent.output,
+      cacheRead: spent.cacheRead,
+      cacheWrite: spent.cacheWrite,
+      reasoning: spent.reasoning ?? 0,
+      usd,
+    });
     totalUsd += usd;
     return spent;
   }
@@ -743,7 +770,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       // held, and a call the budget refuses makes none.
       const text = JSON.stringify(body);
       const started = performance.now();
-      const { message, requestId } = await postMessages({
+      const { message, usage, requestId } = await postMessages({
         url: baseUrl,
         ...(responses ? { path: "/v1/responses", auth: "bearer" as const } : {}),
         key,
@@ -754,14 +781,14 @@ export function createGateway(options: GatewayOptions): Gateway {
         tries: GATEWAY_TRIES,
         timeoutMs,
         accept: (reply, response) => ({
-          message: responses
-            ? responseMessage(streamed ? streamedResponse(reply) : JSON.parse(reply))
-            : replyMessage(reply, streamed),
+          ...(responses
+            ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
+            : { message: replyMessage(reply, streamed), usage: undefined }),
           requestId: response.headers.get("request-id") ?? undefined,
         }),
       });
       const durationMs = Math.round(performance.now() - started);
-      const spent = count(message, bodyPrice, responses);
+      const spent = count(message, bodyPrice, usage);
       return requestId === undefined
         ? { message, durationMs, spent }
         : { message, requestId, durationMs, spent };

@@ -19,7 +19,14 @@ import {
   sqlString,
   tasksSql,
 } from "./countsql";
-import { cutOffsets, lastTimestampMs, loadFixtures, storedPath, storeRefusal } from "./fixturedb";
+import {
+  cutOffsets,
+  main as fixturedbMain,
+  lastTimestampMs,
+  loadFixtures,
+  storedPath,
+  storeRefusal,
+} from "./fixturedb";
 import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 
 // R1's fixture proof of count.sql (plan, "The SQL is committed and proven on fixtures") and of
@@ -253,6 +260,39 @@ describe("fixturedb.ts loads a fixture as the store keeps a file", () => {
         "session store"
       );
       expect(storeRefusal("postgres://legion_test@127.0.0.1:5433/fixtures", env)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fixturedb.ts refuses, exit 2 and before any write, --parts under 2, a --line no line holds, and a session-store file it cannot read", async () => {
+    const dir = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "skill-cuts-fixturedb-"));
+    try {
+      // No database is reached: nothing listens on the DSN's port.
+      const dsn = "postgres://legion_test@127.0.0.1:1/fixtures";
+      const run = async (args: string[], env: Record<string, string> = {}) => {
+        const err: string[] = [];
+        const code = await fixturedbMain(args, env, {
+          out: () => {},
+          err: (text) => err.push(text),
+        });
+        return { code, err: err.join("\n") };
+      };
+      for (const parts of ["0", "1"]) {
+        expect(await run(["--dsn", dsn, "--parts", parts, F1_SESSION])).toEqual({
+          code: 2,
+          err: `fixturedb: --parts ${parts} is not 2 or more`,
+        });
+      }
+      const line = "a text no line of the fixture holds";
+      expect(await run(["--dsn", dsn, "--line", line, F1_SESSION])).toEqual({
+        code: 2,
+        err: `fixturedb: no line holds ${JSON.stringify(line)}`,
+      });
+      // The session store's file names a directory, which cannot be read as a file.
+      const unread = await run(["--dsn", dsn, F1_SESSION], { OMP_SESSION_SQL_DSN_FILE: dir });
+      expect(unread.code).toBe(2);
+      expect(unread.err).toContain("$OMP_SESSION_SQL_DSN_FILE cannot be read");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

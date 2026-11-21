@@ -55,7 +55,7 @@ export const MAX_SKILL_ROUNDS = 3;
 export const MAX_BREAKPOINTS = 4;
 
 /** True for a JSON object, as a body's parts are read. */
-function isObject(value: unknown): value is Record<string, unknown> {
+export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

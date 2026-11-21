@@ -27,7 +27,7 @@
 import { cpSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
-  readCalls,
+  readTargets,
   type SessionMessage,
   skillFileHeader,
   skillHeaderPath,
@@ -167,9 +167,7 @@ function minusDirectory(c: Case, dirs: ArmDirs, scratch: string): string {
  * old directory to `<scratch>/minus`, replacing one there. Throws naming the case when a
  * skillReads index is not a read of a `skill://<skill>` file. */
 export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string): Arm {
-  const targets = new Map(
-    readCalls(c.messages.map((message) => ({ message }))).map((call) => [call.id, call.target])
-  );
+  const targets = readTargets(c.messages);
   const reads = new Map(
     c.skillReads
       .toSorted((a, b) => a - b)

@@ -93,7 +93,8 @@ export function lastTimestampMs(text: string): number {
 export function storedPath(file: string): string {
   const absolute = path.resolve(file);
   const below = path.relative(TESTDATA, absolute);
-  return below.startsWith("..") || path.isAbsolute(below) ? absolute : below;
+  const outside = below === ".." || below.startsWith(`..${path.sep}`) || path.isAbsolute(below);
+  return outside ? absolute : below;
 }
 
 /** Why `dsn` must not be loaded into, or undefined: it is the URL the file
@@ -118,13 +119,18 @@ export interface LoadedFixture {
   readonly mtimeMs: number;
 }
 
-/** Makes the tables in the database `dsn` names when they are missing, and stores each file. */
-export async function loadFixtures(
-  dsn: string,
-  files: readonly string[],
-  options: SplitOptions
-): Promise<LoadedFixture[]> {
-  const prepared = files.map((file) => {
+/** One file read and cut (`cutOffsets`), ready to store. */
+interface PreparedFixture {
+  readonly path: string;
+  readonly bytes: number;
+  readonly mtimeMs: number;
+  readonly pieces: readonly { readonly offset: number; readonly content: string }[];
+}
+
+/** Each file of `files` read and cut as `options` says. Throws, before anything is written, on a
+ *  file that cannot be read or cut, that is not UTF-8, or that has no line with a timestamp. */
+function prepareFixtures(files: readonly string[], options: SplitOptions): PreparedFixture[] {
+  return files.map((file) => {
     const bytes = new Uint8Array(readFileSync(file));
     const cuts = cutOffsets(bytes, options);
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -136,6 +142,23 @@ export async function loadFixtures(
     }));
     return { path: storedPath(file), bytes: bytes.length, mtimeMs: lastTimestampMs(text), pieces };
   });
+}
+
+/** Makes the tables in the database `dsn` names when they are missing, and stores each file. */
+export async function loadFixtures(
+  dsn: string,
+  files: readonly string[],
+  options: SplitOptions
+): Promise<LoadedFixture[]> {
+  return storeFixtures(dsn, prepareFixtures(files, options));
+}
+
+/** Makes the tables in the database `dsn` names when they are missing, and stores each of the
+ *  files `prepared`. */
+async function storeFixtures(
+  dsn: string,
+  prepared: readonly PreparedFixture[]
+): Promise<LoadedFixture[]> {
   const sql = new SQL(dsn);
   try {
     await sql.begin(async (tx) => {
@@ -207,13 +230,26 @@ export async function main(
   if (values.parts !== undefined && !/^\d+$/.test(values.parts)) {
     return refuse(`--parts ${JSON.stringify(values.parts)} is not a number`);
   }
-  const refusal = storeRefusal(values.dsn, env);
-  if (refusal !== undefined) return refuse(refusal);
+  const parts = values.parts === undefined ? 2 : Number(values.parts);
+  if (parts < 2) return refuse(`--parts ${parts} is not 2 or more`);
+  let refusal: string | undefined;
   try {
-    const loaded = await loadFixtures(values.dsn, positionals, {
-      parts: values.parts === undefined ? 2 : Number(values.parts),
-      line: values.line,
-    });
+    refusal = storeRefusal(values.dsn, env);
+  } catch (error) {
+    return refuse(
+      `$OMP_SESSION_SQL_DSN_FILE cannot be read, so the DSN cannot be checked against the session store's: ${(error as Error).message}`
+    );
+  }
+  if (refusal !== undefined) return refuse(refusal);
+  // Every file is read and cut before anything is written: one that cannot be is refused.
+  let prepared: PreparedFixture[];
+  try {
+    prepared = prepareFixtures(positionals, { parts, line: values.line });
+  } catch (error) {
+    return refuse((error as Error).message);
+  }
+  try {
+    const loaded = await storeFixtures(values.dsn, prepared);
     for (const file of loaded) {
       io.out(
         `${file.path}: ${file.bytes} bytes in ${file.offsets.length} parts at byte offsets ${file.offsets.join(", ")}, mtime_ms ${file.mtimeMs} (${new Date(file.mtimeMs).toISOString()})`

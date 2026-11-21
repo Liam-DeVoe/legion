@@ -67,22 +67,14 @@
  */
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import type { Arm, ArmName } from "./arms";
 import type { Case } from "./cases";
+import { json, writeWhole } from "./common";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
@@ -124,11 +116,11 @@ function bodyToolNames(body: RequestBody): string[] {
 }
 
 /** The tools a body defines and the `xd://` devices its system prompt lists, the Legion and
- *  Envoy plugins' among them, and each plugin tool left out with why. */
+ *  Envoy plugins' among them, and each plugin tool left out with why. `role` is the Legion role
+ *  of the case's context, when it has one. */
 function pluginTools(
   body: RequestBody,
   context: ContextRecord,
-  pane: boolean,
   role: { readonly role: string } | undefined,
   stderr: string
 ): CaptureRecord["pluginTools"] {
@@ -141,7 +133,7 @@ function pluginTools(
     .map((plugin) => `${plugin.name}: its build failed: ${plugin.reason ?? ""}`);
   if (role?.role === "controller") {
     leftOut.push("legion: a controller session is not reproduced, so its tool is not defined");
-  } else if (pane && !tools.includes("legion")) {
+  } else if (role !== undefined && !tools.includes("legion")) {
     const said = stderr
       .split("\n")
       .filter((line) => line.startsWith("[legion]") || line.includes("Extension error"));
@@ -229,7 +221,9 @@ export type HintWriter = (
 /** The `anthropic-*` headers of a recorded request: the API version, and the betas the fields of
  *  Oh My Pi's body need (adaptive thinking's `block_binding`, `context_management` and
  *  `output_config.effort` are refused without theirs). */
-function anthropicHeaders(headers: Readonly<Record<string, string>>): Record<string, string> {
+export function anthropicHeaders(
+  headers: Readonly<Record<string, string>>
+): Record<string, string> {
   return Object.fromEntries(
     Object.entries(headers).filter(([name]) => name.startsWith("anthropic-"))
   );
@@ -249,8 +243,8 @@ export function gatewayHints(gateway: Gateway): HintWriter {
 }
 
 export interface CaptureOptions {
-  /** The Oh My Pi binary. */
-  readonly omp: string;
+  /** The Oh My Pi binary: needed only to make a capture, not to read one back. */
+  readonly omp?: string;
   /** Where each body and its record are saved. */
   readonly outDir: string;
   /** Where each case gets its scratch directory, left in place after its capture. */
@@ -260,8 +254,9 @@ export interface CaptureOptions {
   /** Where the context's repositories are read. */
   readonly source: RepoSource;
   /** A `models.yml` of the context's Oh My Pi. Its providers of the case's model and the hint
-   *  model are kept, each pointed at the recorder with a placeholder key. */
-  readonly models: string;
+   *  model are kept, each pointed at the recorder with a placeholder key. Needed only to make a
+   *  capture, not to read one back. */
+  readonly models?: string;
   /** Writes the hints the cache lacks. */
   readonly hints: HintWriter;
   /** The model that writes hints (the context's `smol` role), the case's model by default. */
@@ -558,14 +553,6 @@ function hintSkill(body: Record<string, unknown>): string | undefined {
   return /\nSkill: ([^\n]+)\nDescription: /.exec(text)?.[1];
 }
 
-/** Writes `text` to `file` whole: into a fresh file that is then renamed over it. */
-async function writeWhole(file: string, text: string): Promise<void> {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const fresh = `${file}.part-${process.pid}`;
-  await writeFile(fresh, text);
-  renameSync(fresh, file);
-}
-
 const versions = new Map<string, Promise<string>>();
 
 /** What `omp --version` prints for `binary`. */
@@ -694,6 +681,7 @@ export type CaptureCase = Pick<
 
 /**
  * Captures the request body of `c`'s arm `arm`, or reads back the capture saved already. Throws
+ * when no capture is saved and `options` gives no Oh My Pi binary or no `models.yml` to make one,
  * when Oh My Pi fails or sends no turn, when a hint cannot be written (the error `options.hints`
  * threw, as it is, the moment it throws: the gateway's BudgetSpent stays one), or when the body
  * does not list exactly the arm's installed skills under their hints.
@@ -710,10 +698,16 @@ export async function captureBody(
   const files = capturePaths(options.outDir, c.id, arm.name);
   const saved = savedCapture(files);
   if (saved !== undefined) return saved;
+  const { omp, models } = options;
+  if (omp === undefined || models === undefined) {
+    throw new Error(
+      `case ${c.id} arm ${arm.name}: no capture is saved in ${options.outDir}, and making one needs an Oh My Pi binary and a models.yml, which are not given`
+    );
+  }
   const started = performance.now();
   const model = qualified(c.model);
   const hintModel = qualified(options.hintModel ?? c.model);
-  const version = await ompVersion(options.omp);
+  const version = await ompVersion(omp);
   // One directory per case, whatever the arm, so every path Oh My Pi shows is the same in each.
   const root = path.join(options.scratchDir, cacheKey(c.id).slice(0, 16));
   const contextStarted = performance.now();
@@ -730,9 +724,9 @@ export async function captureBody(
   mkdirSync(agentDir, { recursive: true });
   // Hardlinks to the binary's one copy of its natives (omp-natives.ts), made again for each arm.
   rmSync(path.join(home, ".omp", "natives"), { recursive: true, force: true });
-  await linkOmpNatives(options.omp, home);
+  await linkOmpNatives(omp, home);
   const messagesFile = path.join(root, "messages.json");
-  await writeWhole(messagesFile, JSON.stringify(arm.messages));
+  writeWhole(messagesFile, JSON.stringify(arm.messages));
 
   // Each listed skill's hint, from the cache where it holds one. A hidden skill is not listed, so
   // Oh My Pi writes it no hint.
@@ -925,10 +919,11 @@ export async function captureBody(
   let sentToolNames = recordedTools;
   const toolsLeftOut: { readonly name: string; readonly reason: string }[] = [];
   let promptFile: string | undefined;
-  /** One Oh My Pi run. The hint run holds no pane environment: the skill listing does not depend
-   *  on it, and its role claim would end the run before the hints are written. It holds no
-   *  recorded prompt or tools either, so Oh My Pi lists, and asks a hint for, each skill. */
-  const runOmp = async (withPane: boolean): Promise<number> => {
+  /** One Oh My Pi run: the hint run (`hintRun`) or the capture run. The hint run holds no pane
+   *  environment: the skill listing does not depend on it, and its role claim would end the run
+   *  before the hints are written. It holds no recorded prompt or tools either, so Oh My Pi lists,
+   *  and asks a hint for, each skill. */
+  const runOmp = async (): Promise<number> => {
     const runStarted = performance.now();
     runs += 1;
     const tmp = path.join(root, "tmp");
@@ -942,7 +937,7 @@ export async function captureBody(
     rmSync(hookLog, { force: true });
     const child = Bun.spawn(
       [
-        options.omp,
+        omp,
         "--profile",
         PROFILE,
         "-p",
@@ -977,7 +972,7 @@ export async function captureBody(
           ...(options.configFiles === undefined || options.configFiles.length === 0
             ? {}
             : { PI_CONFIG_FILES: options.configFiles.join(":") }),
-          ...(withPane ? paneEnvironment : {}),
+          ...(hintRun ? {} : paneEnvironment),
           ...(promptFile === undefined || hintRun ? {} : { [SYSTEM_PROMPT_VARIABLE]: promptFile }),
         },
         stdin: "ignore",
@@ -1010,7 +1005,7 @@ export async function captureBody(
   try {
     writeProfile(agentDir, {
       url: recorder.url,
-      models: options.models,
+      models,
       model,
       hintModel,
       skillsDir: context.skillsDir,
@@ -1018,7 +1013,7 @@ export async function captureBody(
     let hintRunMs = 0;
     if (wanted.size > 0) {
       hintRun = true;
-      hintRunMs = await runOmp(false);
+      hintRunMs = await runOmp();
       hintRun = false;
       const db = new Database(database);
       let rows: { key: string; description: string }[];
@@ -1053,7 +1048,7 @@ export async function captureBody(
           model: reply.model,
           writtenAt: new Date().toISOString(),
         };
-        await writeWhole(entry.file, `${JSON.stringify(cached, null, 2)}\n`);
+        writeWhole(entry.file, json(cached));
         entry.cached = cached;
         entry.written = true;
       }
@@ -1069,7 +1064,7 @@ export async function captureBody(
           );
     if (recorded !== undefined) {
       promptFile = path.join(root, `system-prompt.${arm.name}.json`);
-      await writeWhole(promptFile, JSON.stringify(recorded.blocks));
+      writeWhole(promptFile, JSON.stringify(recorded.blocks));
     }
     // A Legion pane's run can end before its turn's request (its role claim exits the process
     // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all. A run Oh
@@ -1078,7 +1073,7 @@ export async function captureBody(
     let captureRunMs = 0;
     for (let attempt = 1; ; ) {
       try {
-        captureRunMs = await runOmp(true);
+        captureRunMs = await runOmp();
         break;
       } catch (error) {
         if (!(error instanceof RunEnded)) throw error;
@@ -1106,13 +1101,13 @@ export async function captureBody(
     const faults: string[] = [];
     if (recorded !== undefined) {
       const sent = systemTexts(body);
-      const wanted = isResponsesBody(body)
+      const blocks = isResponsesBody(body)
         ? [recorded.blocks.filter((block) => block.trim() !== "").join("\n\n")]
         : recorded.blocks;
-      if (sent.length !== wanted.length) {
-        faults.push(`it sends ${sent.length} system blocks, not the ${wanted.length} recorded`);
+      if (sent.length !== blocks.length) {
+        faults.push(`it sends ${sent.length} system blocks, not the ${blocks.length} recorded`);
       }
-      for (const [index, block] of wanted.entries()) {
+      for (const [index, block] of blocks.entries()) {
         if (sent[index] !== undefined && sent[index] !== block) {
           faults.push(`its system block ${index} is not the arm's recorded block`);
         }
@@ -1135,15 +1130,14 @@ export async function captureBody(
         `case ${c.id} arm ${arm.name}: the captured body is refused: ${faults.join("; ")}`
       );
     }
-    const sentTools = bodyToolNames(body);
-
-    const defined = pluginTools(body, context.record, pane !== undefined, role, stderr);
+    const defined = pluginTools(body, context.record, role, stderr);
+    const sentTools = defined.tools;
     const record: CaptureRecord = {
       case: c.id,
       arm: arm.name,
       skill: c.skill,
       capturedAt: new Date().toISOString(),
-      omp: { binary: options.omp, version },
+      omp: { binary: omp, version },
       model,
       thinking: c.thinking,
       hintModel,
@@ -1210,8 +1204,8 @@ export async function captureBody(
         totalMs: Math.round(performance.now() - started),
       },
     };
-    await writeWhole(files.body, turn.body);
-    await writeWhole(files.record, `${JSON.stringify(record, null, 2)}\n`);
+    writeWhole(files.body, turn.body);
+    writeWhole(files.record, json(record));
     return { body, record, bodyFile: files.body, recordFile: files.record, made: true };
   } finally {
     await recorder.close();

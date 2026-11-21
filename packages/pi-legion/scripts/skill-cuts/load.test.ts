@@ -9,6 +9,7 @@ import { skillHeaderPath } from "../skill-scenarios/transcript";
 import { armPromptBlocks, type CaptureRecord, renamedListingBlocks, skillListing } from "./capture";
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
+import { Stopped } from "./common";
 import { localSource } from "./context";
 import {
   ContentBlock,
@@ -24,7 +25,6 @@ import {
   type Host,
   LOAD_MODEL,
   LoadRun,
-  LoadStopped,
   loadCapturePaths,
   loadRunFile,
   renamedSkill,
@@ -1011,13 +1011,12 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
       source: localSource(dir),
       scratch: path.join(dir, "scratch"),
       cacheDir: path.join(dir, "cache"),
-      omp: "",
       configFiles: [],
       claude: "claude",
       requestLog: path.join(dir, "requests.jsonl"),
       memoryLimitBytes: 2 ** 20,
     }).catch((caught: unknown) => caught);
-    expect(stopped).toBeInstanceOf(LoadStopped);
+    expect(stopped).toBeInstanceOf(Stopped);
     expect(String(stopped)).toContain(
       "the runner's peak resident memory, 3 MiB, is above its limit of 1 MiB, so the test stops after task need-1"
     );

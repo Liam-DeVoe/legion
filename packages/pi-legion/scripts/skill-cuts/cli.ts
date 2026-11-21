@@ -117,13 +117,10 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
@@ -133,7 +130,17 @@ import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from 
 import { main as buildMain } from "./build";
 import { type Capture, captureBody, capturePaths, gatewayHints, savedCapture } from "./capture";
 import { type Case, loadCases, Thinking } from "./cases";
-import { loadConfig, type SkillCutsConfig } from "./config";
+import {
+  configFrom,
+  json,
+  parse,
+  Refused,
+  required,
+  Stopped,
+  schemaFaults,
+  writeWhole,
+} from "./common";
+import type { SkillCutsConfig } from "./config";
 import { ghSource, localSource, type RepoSource } from "./context";
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
@@ -144,7 +151,8 @@ import {
   PRICE_SOURCE,
   PRICES,
   type RequestBody,
-  type Spent,
+  SpentRecord,
+  usdOf,
 } from "./gateway";
 import {
   type ArmReply,
@@ -155,7 +163,7 @@ import {
   judgeControls,
   newSeed,
 } from "./judge";
-import { Host, LOAD_MODEL, LOAD_THINKING, LoadRefused, LoadStopped, runLoad } from "./load";
+import { Host, LOAD_MODEL, LOAD_THINKING, runLoad } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
   ATTACK_PLANTED_LINE,
@@ -190,22 +198,32 @@ import {
   STAGE_ARMS,
   STAGE_RUNS,
   Stage,
+  StageState,
   scoreSkill,
   screeningDone,
   servedScreeningRefusal,
+  skillVerdict,
   stageOutcome,
 } from "./score";
 
 /** The longest one try of a model call may take: a reply with a long thinking budget is slow. */
-export const CALL_TIMEOUT_MS = 600_000;
+const CALL_TIMEOUT_MS = 600_000;
 /** The model calls in flight at once, unless `--concurrency` says otherwise. */
-export const DEFAULT_CONCURRENCY = 8;
+const DEFAULT_CONCURRENCY = 8;
 /** The most the runner's peak resident memory may reach: a case that ends above it stops the run
  *  (plan, "Where things run"). */
-export const MEMORY_LIMIT_BYTES = 1024 ** 3;
+const MEMORY_LIMIT_BYTES = 1024 ** 3;
+/** The request log's name: `<out>/requests.jsonl` for `behaviour` and `load`, and the `--out`
+ *  file's path with `.requests.jsonl` added for `read` and `control`, unless `--request-log`
+ *  names one. */
+const REQUEST_LOG = "requests.jsonl";
+/** The directories under the system's temporary directory that `--scratch` and `--cache-dir`
+ *  name unless given. */
+const SCRATCH_DIR = "skill-cuts-scratch";
+const CACHE_DIR = "skill-cuts-cache";
 
 /** Exit statuses. */
-export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3 } as const;
+const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3 } as const;
 
 /** What the commands write to, and the process facts they read. */
 export interface CliIo {
@@ -219,32 +237,13 @@ export interface CliIo {
 
 /** The io of a real run. Where the kernel keeps no `VmHWM`, the resident memory is read every
  *  second from now on (memory.ts), so that the peak misses little between the ends of cases. */
-export function processIo(): CliIo {
+function processIo(): CliIo {
   startPeakRssSampling();
   return {
     out: (text) => process.stdout.write(text),
     err: (line) => process.stderr.write(`${line}\n`),
     peakRssBytes: procPeakRssBytes,
   };
-}
-
-/** A command's refusal of its arguments, before any model call. */
-class Refused extends Error {}
-
-/** A run that stops on its own rule: the budget is spent, or the memory passed its limit. */
-class Stopped extends Error {}
-
-/** Writes `text` to `file` whole: into a fresh file beside it that is then renamed over it. */
-export function writeWhole(file: string, text: string): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const fresh = `${file}.${process.pid}.tmp`;
-  writeFileSync(fresh, text);
-  renameSync(fresh, file);
-}
-
-/** `value` as JSON, two spaces deep, with a final newline. */
-function json(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 /** The JSON value the file `file` holds. Throws a refusal naming the file. */
@@ -260,22 +259,6 @@ function readJson(file: string, what: string): unknown {
   } catch (error) {
     throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
   }
-}
-
-/** The configuration in `file`. Throws a refusal naming why it is none. */
-function configFrom(file: string): SkillCutsConfig {
-  try {
-    return loadConfig(file);
-  } catch (error) {
-    throw new Refused(messageFor(error));
-  }
-}
-
-/** Each issue of a zod error as `<path>: <message>`, joined. */
-function issueText(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `${issue.path.join(".") || "the value"}: ${issue.message}`)
-    .join("; ");
 }
 
 /** Bytes as whole MiB. */
@@ -295,7 +278,7 @@ function field(value: unknown, key: string): unknown {
 /** The settings of a request body that the request log records: its model, thinking type and
  *  budget, max_tokens (a Responses body's `max_output_tokens`), temperature, effort (a Responses
  *  body's `reasoning.effort`), and whether it streams. Nothing else of the body. */
-export function requestSettings(body: RequestBody): Record<string, unknown> {
+function requestSettings(body: RequestBody): Record<string, unknown> {
   return {
     model: body.model,
     thinking: field(body.thinking, "type") ?? null,
@@ -311,7 +294,7 @@ export function requestSettings(body: RequestBody): Record<string, unknown> {
  *  `kind` (what the call is for), the body's settings (`requestSettings`), and the reply's model,
  *  request id, duration, stop reason, usage and dollars; or, for a call that failed, the error's
  *  name and HTTP status. Never the key, and never a message's text. */
-export function loggedGateway(gateway: Gateway, logFile: string, kind: string): Gateway {
+function loggedGateway(gateway: Gateway, logFile: string, kind: string): Gateway {
   mkdirSync(path.dirname(logFile), { recursive: true });
   const log = (line: Record<string, unknown>) =>
     appendFileSync(logFile, `${JSON.stringify(line)}\n`);
@@ -360,13 +343,13 @@ const GATEWAY_OPTIONS = {
 } as const;
 
 /** The gateway a command's options name: the configuration's address, the key file, the budget
- *  and the concurrency; and the budget. Throws a refusal on an option out of range. */
+ *  and the concurrency. Throws a refusal on an option out of range. */
 function openGateway(values: {
   config: SkillCutsConfig;
   keyFile: string;
   budgetUsd?: string;
   concurrency?: string;
-}): { gateway: Gateway; budgetUsd: number | undefined } {
+}): Gateway {
   const concurrency =
     values.concurrency === undefined ? DEFAULT_CONCURRENCY : Number(values.concurrency);
   if (!Number.isInteger(concurrency) || concurrency < 1) {
@@ -379,40 +362,13 @@ function openGateway(values: {
       throw new Refused(`--budget-usd ${values.budgetUsd} is not a number of dollars of 0 or more`);
     }
   }
-  const gateway = createGateway({
+  return createGateway({
     baseUrl: values.config.gatewayBaseUrl,
     keyFile: values.keyFile,
     concurrency,
     timeoutMs: CALL_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
   });
-  return { gateway, budgetUsd };
-}
-
-/** Parses `argv` with `options`, strictly, with no positional argument. Throws a refusal. */
-function parse<O extends NonNullable<Parameters<typeof parseArgs>[0]>["options"]>(
-  argv: readonly string[],
-  options: O,
-  usage: string
-) {
-  try {
-    return parseArgs({ args: [...argv], options, strict: true, allowPositionals: false }).values;
-  } catch (error) {
-    throw new Refused(`${messageFor(error)}. ${usage}`);
-  }
-}
-
-/** The value of each option `names` names, or a refusal naming the ones missing. */
-function required<K extends string>(
-  values: Partial<Record<K, unknown>>,
-  names: readonly K[],
-  usage: string
-): Record<K, string> {
-  const missing = names.filter((name) => typeof values[name] !== "string");
-  if (missing.length > 0) {
-    throw new Refused(`${missing.map((name) => `--${name}`).join(", ")} required. ${usage}`);
-  }
-  return values as Record<K, string>;
 }
 
 /** The Oh My Pi binary a capture runs, as an absolute path: `given` (`--omp`), else
@@ -446,11 +402,6 @@ function requiredOmp(given: string | undefined): string {
   );
 }
 
-/** The dollars of `spent`, summed. */
-function usdOf(spent: readonly Spent[]): number {
-  return spent.reduce((sum, each) => sum + each.usd, 0);
-}
-
 // `read`.
 
 const READ_USAGE =
@@ -478,12 +429,12 @@ async function readCommand(argv: readonly string[], io: CliIo): Promise<number> 
   const checked = READERS[name].input.safeParse(readJson(given.in, "the input"));
   if (!checked.success) {
     throw new Refused(
-      `the ${name} reader's input ${given.in} is refused: ${issueText(checked.error)}`
+      `the ${name} reader's input ${given.in} is refused: ${schemaFaults(checked.error)}`
     );
   }
   const config = configFrom(given.config);
   const settings = loadPrompt(name).settings;
-  const { gateway } = openGateway({
+  const gateway = openGateway({
     config,
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
@@ -491,7 +442,7 @@ async function readCommand(argv: readonly string[], io: CliIo): Promise<number> 
   });
   const logged = loggedGateway(
     gateway,
-    values["request-log"] ?? `${given.out}.requests.jsonl`,
+    values["request-log"] ?? `${given.out}.${REQUEST_LOG}`,
     `reader:${name}`
   );
   try {
@@ -542,7 +493,7 @@ function controlOf(
 ): Control {
   const checked = READERS[kind].input.safeParse(input);
   if (!checked.success) {
-    throw new Refused(`the ${kind} reader's input is refused: ${issueText(checked.error)}`);
+    throw new Refused(`the ${kind} reader's input is refused: ${schemaFaults(checked.error)}`);
   }
   switch (kind) {
     case "map": {
@@ -613,7 +564,7 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
     throw new Refused(`the ${kind} control cannot be planted: ${messageFor(error)}`);
   }
   const config = configFrom(given.config);
-  const { gateway } = openGateway({
+  const gateway = openGateway({
     config,
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
@@ -621,7 +572,7 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
   });
   const logged = loggedGateway(
     gateway,
-    values["request-log"] ?? `${given.out}.requests.jsonl`,
+    values["request-log"] ?? `${given.out}.${REQUEST_LOG}`,
     `control:${kind}`
   );
   try {
@@ -657,19 +608,8 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
 
 // `behaviour`: the results of a case.
 
-/** What one reply used, as gateway.ts's `Spent` gives it. */
-const SpentRecord = z.strictObject({
-  model: z.string(),
-  input: z.number(),
-  output: z.number(),
-  cacheRead: z.number(),
-  cacheWrite: z.number(),
-  reasoning: z.number().optional(),
-  usd: z.number(),
-});
-
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
-export const Run = z.strictObject({
+const Run = z.strictObject({
   ...RunRecord.shape,
   /** The run's number in its arm and stage, from 1. */
   run: z.int().positive(),
@@ -684,7 +624,7 @@ export const Run = z.strictObject({
   replaySpent: z.array(SpentRecord),
   judgeSpent: z.array(SpentRecord),
 });
-export type Run = z.infer<typeof Run>;
+type Run = z.infer<typeof Run>;
 
 /** The capture an arm's runs replay: its body file, below `--out`, and the two digests. */
 const CaptureNote = z.strictObject({
@@ -696,8 +636,8 @@ const CaptureNote = z.strictObject({
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
  *  left out in place of the case's (control only). `usd` is what its calls cost at list price. */
-export const StageResult = z.strictObject({
-  state: z.enum(["running", "counted", "unscreened"]),
+const StageResult = z.strictObject({
+  state: StageState,
   texts: z.strictObject({ old: z.string(), new: z.string() }),
   plantedLine: z.string().nullable(),
   captures: z.record(z.string(), CaptureNote),
@@ -705,7 +645,7 @@ export const StageResult = z.strictObject({
   runs: z.array(Run),
   usd: z.number(),
 });
-export type StageResult = z.infer<typeof StageResult>;
+type StageResult = z.infer<typeof StageResult>;
 
 const Judgement = z.strictObject({
   verdict: z.enum(["pass", "fail"]).nullable(),
@@ -806,7 +746,7 @@ function chanceAhead(runs: number, a: number, b: number, gap: number): number {
 }
 
 /** Pass rates of the three texts a case runs under: the old text, the cut's and no skill. */
-export interface PassRates {
+interface PassRates {
   readonly old: number;
   readonly cut: number;
   readonly none: number;
@@ -852,7 +792,7 @@ export function falseLossChance(passes: { old: number; new: number; none: number
 
 /** The report's sensitivity table: the old text's pass rates, the drops of the cut's text from
  *  them, and the no-skill pass rate. */
-export const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } as const;
+const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } as const;
 
 // `behaviour`: running the stages.
 
@@ -936,7 +876,7 @@ function readResult(b: Behaviour, caseId: string): CaseResult | undefined {
   if (!existsSync(file)) return undefined;
   const parsed = CaseResult.safeParse(readJson(file, "the case result"));
   if (!parsed.success) {
-    throw new Refused(`${file} is not a case result: ${issueText(parsed.error)}`);
+    throw new Refused(`${file} is not a case result: ${schemaFaults(parsed.error)}`);
   }
   return parsed.data;
 }
@@ -1010,15 +950,19 @@ function screened(
 }
 
 /** Why a skill whose screen is finished can get no verdict, whatever its confirm runs show, or
- *  undefined: too few informative cases, or a control whose runs are made and are no loss. */
+ *  undefined: too few informative cases, or a control whose runs are made and are no loss
+ *  (score.ts's `skillVerdict`, and its reason). */
 function noVerdict(score: SkillScore): string | undefined {
-  if (score.informative < MIN_INFORMATIVE_CASES) {
-    return `fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${score.informative}`;
-  }
   const control = score.control;
-  if (control?.state === "unscreened") return "control not a loss: its runs are unscreened";
-  if (control?.state === "counted" && !isControlLoss(control.passes)) return "control not a loss";
-  return undefined;
+  const controlLoss =
+    control === undefined ||
+    control.state === "running" ||
+    (control.state === "counted" && isControlLoss(control.passes));
+  const outcome = skillVerdict({ informative: score.informative, controlLoss, losses: 0 });
+  if (outcome.verdict !== null) return undefined;
+  return control?.state === "unscreened"
+    ? `${outcome.reason}: its runs are unscreened`
+    : outcome.reason;
 }
 
 /** The drop of a case whose model the gateway does not serve, as its drop begins and the report
@@ -1183,9 +1127,10 @@ async function runRound(
 
 /**
  * Runs `stage` of case `c` until score.ts's `stageOutcome` says its runs are counted or
- * unscreened, round by round, from the runs `result` holds already. Each round's runs are saved
- * when it ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's
- * time is counted in `phases`. Throws Stopped, after saving, when the budget refused a call.
+ * unscreened, round by round, from the runs `result` holds already (which each caller's
+ * `stageDone` has checked were made with this run's texts). Each round's runs are saved when it
+ * ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's time
+ * is counted in `phases`. Throws Stopped, after saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -1195,7 +1140,6 @@ async function runStage(
   phases: Phases
 ): Promise<CaseResult> {
   const existing = result.stages[stage];
-  if (existing !== undefined) checkSameTexts(r, c.id, stage, existing);
   let state: StageResult = existing ?? {
     state: "running",
     texts: r.texts,
@@ -1399,11 +1343,9 @@ async function confirmCommand(r: Runner): Promise<void> {
 async function controlStageCommand(r: Runner): Promise<void> {
   const phases = newPhases();
   const { results, score } = screened(r, (s) => [s.controlCase]);
-  if (score.informative < MIN_INFORMATIVE_CASES) {
-    say(
-      r,
-      `no control runs: the skill gets no verdict: fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${score.informative}`
-    );
+  const tooFew = skillVerdict({ informative: score.informative, controlLoss: true, losses: 0 });
+  if (tooFew.verdict === null) {
+    say(r, `no control runs: the skill gets no verdict: ${tooFew.reason}`);
     return;
   }
   const id = score.controlCase;
@@ -1672,7 +1614,7 @@ function readReadingModels(file: string): ModelCount {
   const parsed = ModelCountFile.safeParse(readJson(file, "the reading sessions by model"));
   if (!parsed.success) {
     throw new Refused(
-      `--reading-models ${file} is not a skill's reading sessions by model (attribute's <cut id>/models/<skill>.json): ${issueText(parsed.error)}`
+      `--reading-models ${file} is not a skill's reading sessions by model (attribute's <cut id>/models/<skill>.json): ${schemaFaults(parsed.error)}`
     );
   }
   return parsed.data;
@@ -1772,14 +1714,14 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   // capture is read back, and Oh My Pi does not run.
   const models = values.models;
   const omp = models === undefined ? undefined : requiredOmp(values.omp);
-  const { gateway } = openGateway({
+  const gateway = openGateway({
     config,
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
   });
-  const log = values["request-log"] ?? path.join(given.out, "requests.jsonl");
-  const scratch = values.scratch ?? path.join(tmpdir(), "skill-cuts-scratch");
+  const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
+  const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
   const plantedLine = values["planted-line"];
   const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
@@ -1815,7 +1757,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         omp,
         outDir,
         scratchDir: path.join(scratch, "captures"),
-        cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
+        cacheDir: values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR),
         source,
         models,
         hints,
@@ -1904,13 +1846,13 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     throw new Refused(`--skill ${given.skill} is not a directory`);
   }
   const config = configFrom(given.config);
-  const { gateway } = openGateway({
+  const gateway = openGateway({
     config,
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
   });
-  const log = values["request-log"] ?? path.join(given.out, "requests.jsonl");
+  const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const result = await runLoad({
     io,
     host: host.data,
@@ -1926,10 +1868,9 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     gateway: loggedGateway(gateway, log, "load"),
     hints: gatewayHints(loggedGateway(gateway, log, "hint")),
     source: values.repos === undefined ? ghSource() : localSource(values.repos),
-    scratch: values.scratch ?? path.join(tmpdir(), "skill-cuts-scratch"),
-    cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
-    // Undefined only where no capture of Oh My Pi is made: every one is read back.
-    omp: omp ?? "",
+    scratch: values.scratch ?? path.join(tmpdir(), SCRATCH_DIR),
+    cacheDir: values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR),
+    ...(omp === undefined ? {} : { omp }),
     ...(values.models === undefined ? {} : { models: values.models }),
     ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
     configFiles: values["omp-config"] ?? [],
@@ -1996,11 +1937,11 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }
   } catch (error) {
-    if (error instanceof Refused || error instanceof LoadRefused) {
+    if (error instanceof Refused) {
       io.err(`skill-cuts: ${error.message}`);
       return EXIT.refused;
     }
-    if (error instanceof Stopped || error instanceof LoadStopped || error instanceof BudgetSpent) {
+    if (error instanceof Stopped || error instanceof BudgetSpent) {
       io.err(`skill-cuts: stopped: ${error.message}`);
       return EXIT.stopped;
     }

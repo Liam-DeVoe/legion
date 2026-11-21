@@ -159,6 +159,7 @@ import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
+import { schemaFaults } from "./common";
 import { loadConfig, type SkillCutsConfig } from "./config";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 
@@ -233,27 +234,22 @@ export const READ_CALLS = 8;
 export const READ_CALLS_PER_REPOSITORY = 4;
 /** The most subtrees one GraphQL tree read asks for. */
 const TREE_BATCH = 50;
-/** The most blobs, and bytes of blobs, one GraphQL read asks for. */
-const BLOB_BATCH = 50;
-const BLOB_BATCH_BYTES = 2_000_000;
+/** The most blobs, and bytes of blobs, one GraphQL read asks for (build.ts's profile reads take
+ *  the same). */
+export const BLOB_BATCH = 50;
+export const BLOB_BATCH_BYTES = 2_000_000;
 
 function firstLine(text: string): string {
   return text.trim().split("\n")[0] ?? "";
 }
 
-function parseJson(text: string): unknown {
+/** `text` as JSON, or undefined when it is none. */
+export function parseJson(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch {
     return undefined;
   }
-}
-
-/** One line naming each fault of a value that is not of its schema. */
-function schemaFaults(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `${issue.path.join(".") || "the value"}: ${issue.message}`)
-    .join("; ");
 }
 
 // GitHub's answers, parsed at the boundary: only the fields this file reads.
@@ -280,7 +276,8 @@ const Commits = z.array(
 const TREE_JQ =
   "(.truncated // false | tostring), (.tree[] | [.path, .mode, .type, .sha, (.size // -1)] | @json)";
 const TreeLine = z.tuple([z.string(), z.string(), z.string(), z.string(), z.number()]);
-const GitBlob = z.looseObject({ content: z.string(), encoding: z.string() });
+/** A blob as `gh api repos/<r>/git/blobs/<sha>` gives it. */
+export const GitBlob = z.looseObject({ content: z.string(), encoding: z.string() });
 const ContentsFile = z.looseObject({ type: z.string(), sha: z.string() });
 const SearchAnswer = z.looseObject({
   total_count: z.number(),
@@ -293,7 +290,9 @@ const RateLimit = z.looseObject({
   resources: z.record(z.string(), z.looseObject({ reset: z.number() })),
 });
 const GithubUser = z.looseObject({ type: z.string() });
-const BlobBatch = z.looseObject({
+/** GitHub's answer to a GraphQL read of blobs by id (`blobQuery`): field `b<n>` the n-th blob,
+ *  null where GitHub gives none; a blob's text null when it is binary or cut short. */
+export const BlobBatch = z.looseObject({
   data: z.looseObject({
     repository: z
       .record(
@@ -643,35 +642,13 @@ class Github {
   ): Promise<void> {
     const bySha = new Map<string, TreeEntry[]>();
     for (const entry of entries) bySha.set(entry.sha, [...(bySha.get(entry.sha) ?? []), entry]);
-    const batches: TreeEntry[][] = [];
-    let bytes = 0;
-    for (const [first] of bySha.values()) {
-      if (first === undefined) continue;
-      const last = batches[batches.length - 1];
-      if (
-        last === undefined ||
-        last.length >= BLOB_BATCH ||
-        bytes + (first.size ?? 0) > BLOB_BATCH_BYTES
-      ) {
-        batches.push([first]);
-        bytes = first.size ?? 0;
-      } else {
-        last.push(first);
-        bytes += first.size ?? 0;
-      }
-    }
-    for (const batch of batches) {
-      const fields = batch
-        .filter((entry) => /^[0-9a-f]{40}$/.test(entry.sha))
-        .map(
-          (entry, index) =>
-            `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
-        );
+    const firsts = [...bySha.values()].flatMap(([first]) => (first === undefined ? [] : [first]));
+    for (const batch of blobBatches(firsts, BLOB_BATCH, BLOB_BATCH_BYTES)) {
       let given: z.infer<typeof BlobBatch>["data"]["repository"] | undefined;
-      if (fields.length === batch.length) {
-        const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields.join(" ")} } }`;
+      // A blob id that is not 40 hex characters goes in no query: its batch is read alone.
+      if (batch.every((entry) => /^[0-9a-f]{40}$/.test(entry.sha))) {
         const result = await this.inSlot(repository, () =>
-          this.call(graphqlArgs(repository, query))
+          this.call(graphqlArgs(repository, blobQuery(batch)))
         );
         const parsed = BlobBatch.safeParse(
           result.code === 0 ? parseJson(result.stdout) : undefined
@@ -779,9 +756,44 @@ class Github {
  *  fields `owner` and `name` (the query's variables): a `gh api graphql` call names no repository,
  *  and the pod's gh routes one by its `owner` field, so the call takes that owner's token (GH_REPO
  *  does not route it: gh reads GH_REPO only for a placeholder). */
-function graphqlArgs(repository: string, query: string): string[] {
+export function graphqlArgs(repository: string, query: string): string[] {
   const [owner = "", name = ""] = repository.split("/");
   return ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `query=${query}`];
+}
+
+/** `blobs` in batches, in their order: each of at most `maxCount` blobs and, by their sizes, at
+ *  most `maxBytes` bytes, but that a blob larger than that is a batch alone. Each caller checks
+ *  its blob ids itself: a query (`blobQuery`) takes only ids of 40 hex characters. */
+export function blobBatches<E extends Pick<TreeEntry, "sha" | "size">>(
+  blobs: readonly E[],
+  maxCount: number,
+  maxBytes: number
+): E[][] {
+  const batches: E[][] = [];
+  let bytes = 0;
+  for (const blob of blobs) {
+    const last = batches.at(-1);
+    if (last === undefined || last.length >= maxCount || bytes + (blob.size ?? 0) > maxBytes) {
+      batches.push([blob]);
+      bytes = blob.size ?? 0;
+    } else {
+      last.push(blob);
+      bytes += blob.size ?? 0;
+    }
+  }
+  return batches;
+}
+
+/** The GraphQL query that reads the blobs `batch` by their ids, the n-th as the field `b<n>`
+ *  (BlobBatch), over the repository the call's `owner` and `name` fields name (`graphqlArgs`). */
+export function blobQuery(batch: readonly Pick<TreeEntry, "sha">[]): string {
+  const fields = batch
+    .map(
+      (entry, index) =>
+        `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
+    )
+    .join(" ");
+  return `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -803,6 +815,11 @@ function dirOf(file: string): string {
 /** A repository path as the output writes it: `.` for the root. */
 function shown(dir: string): string {
   return dir === "" ? "." : dir;
+}
+
+/** A repository path as the output writes it (`shown`), as a path: `""` for the root. */
+export function repoPath(written: string): string {
+  return written === "." ? "" : written;
 }
 
 function unquote(text: string): string {
@@ -1153,25 +1170,31 @@ async function forkChanges(
   return { read: `changed files against ${parent.full_name}@${base}`, changed: changed.sort() };
 }
 
-/** What a run reads of one repository beside its tree: its SKILL.md files (and those left out by
- *  `excludePaths`), its manifest files, and, in a fork that holds a skill, the text files outside
- *  its skills that the fork scan reads (only those it changed, when `changed` gives them). */
-function repositoryReads(
-  repo: Repository,
+/** The files read of one repository (`repositoryFiles`). */
+export interface RepositoryFiles {
+  readonly skillFiles: TreeEntry[];
+  readonly excluded: TreeEntry[];
+  readonly manifests: { entry: TreeEntry; kind: ManifestKind }[];
+}
+
+/** The files read of the repository `repository` whose kept tree is `tree` (the entries
+ *  `keepsEntry` keeps): its SKILL.md files outside a configured `excludePaths` prefix of it
+ *  (`skillFiles`) and those in one (`excluded`), and its manifest files (`manifests`), each of a
+ *  manifest kind (`manifestKind`) outside a skill, a skill link wherever it is, a `package.json`
+ *  only in a repository that holds a SKILL.md, and an Oh My Pi extension only where a
+ *  skills-sources.json is. build.ts reads a repository at a commit by these rules too. */
+export function repositoryFiles(
+  repository: string,
+  tree: readonly TreeEntry[],
   excludePaths: SkillCutsConfig["excludePaths"]
-): {
-  skillFiles: TreeEntry[];
-  excluded: TreeEntry[];
-  manifests: { entry: TreeEntry; kind: ManifestKind }[];
-  forkFiles: TreeEntry[];
-} {
+): RepositoryFiles {
   const skillFiles: TreeEntry[] = [];
   const excluded: TreeEntry[] = [];
-  for (const entry of repo.tree) {
+  for (const entry of tree) {
     if (entry.type !== "blob" || path.posix.basename(entry.path) !== "SKILL.md") continue;
     const left = excludePaths.some(
       (exclude) =>
-        exclude.repo.toLowerCase() === repo.repository.toLowerCase() &&
+        exclude.repo.toLowerCase() === repository.toLowerCase() &&
         entry.path.startsWith(exclude.prefix)
     );
     (left ? excluded : skillFiles).push(entry);
@@ -1179,9 +1202,9 @@ function repositoryReads(
   const skills = skillFiles.map((entry) => ({ path: dirOf(entry.path), file: entry.path }));
   const withSkill = skillFiles.length + excluded.length > 0;
   // An extension is read only where a skills-sources.json is, which it may read.
-  const sources = repo.tree.some((entry) => path.posix.basename(entry.path) === SKILL_SOURCES);
+  const sources = tree.some((entry) => path.posix.basename(entry.path) === SKILL_SOURCES);
   const manifests: { entry: TreeEntry; kind: ManifestKind }[] = [];
-  for (const entry of repo.tree) {
+  for (const entry of tree) {
     const kind = manifestKind(entry);
     if (
       kind === undefined ||
@@ -1192,6 +1215,19 @@ function repositoryReads(
       continue;
     manifests.push({ entry, kind });
   }
+  return { skillFiles, excluded, manifests };
+}
+
+/** What a run reads of one repository beside its tree: its files (`repositoryFiles`), and, in a
+ *  fork that holds a skill, the text files outside its skills that the fork scan reads (only
+ *  those it changed, when `changed` gives them). */
+function repositoryReads(
+  repo: Repository,
+  excludePaths: SkillCutsConfig["excludePaths"]
+): RepositoryFiles & { readonly forkFiles: TreeEntry[] } {
+  const files = repositoryFiles(repo.repository, repo.tree, excludePaths);
+  const skills = files.skillFiles.map((entry) => ({ path: dirOf(entry.path), file: entry.path }));
+  const withSkill = files.skillFiles.length + files.excluded.length > 0;
   // A fork's scan reads its text files outside its skills, only those it changed when `changed`
   // gives them (`forkChanges`).
   const changed = repo.changed === undefined ? undefined : new Set(repo.changed);
@@ -1207,7 +1243,7 @@ function repositoryReads(
             (changed === undefined || changed.has(entry.path))
         )
       : [];
-  return { skillFiles, excluded, manifests, forkFiles };
+  return { ...files, forkFiles };
 }
 
 /** Whether the kept tree `tree` holds a `SKILL.md`. */

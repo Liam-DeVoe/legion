@@ -12,10 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { GithubReads } from "./build";
 import { parseConfig } from "./config";
 import {
   CopyIndex,
+  type Gh,
   type GhResult,
+  INSTALLERS_COLUMNS,
   keepsEntry,
   lenientFields,
   listCopies,
@@ -2617,4 +2620,115 @@ describe("the pure parts", () => {
       expect.stringContaining("copies: --config, --at and --out are required."),
     ]);
   });
+});
+
+describe("build.ts's profile reads of a repository", () => {
+  /** An installer row as installers.tsv writes it, its cells joined by tabs. */
+  const installerLine = (row: Record<string, string>) =>
+    INSTALLERS_COLUMNS.map((column) => row[column] ?? "").join("\t");
+
+  /** acme/drift, a made-up repository whose files copies.ts's rules leave unread: a directory
+   *  named SKILL.md (a tree entry, so no skill, and the repository holds none), the package.json
+   *  of an Oh My Pi plugin package (read only where a SKILL.md is), and an Oh My Pi extension
+   *  that names a skill and reads a skills-sources.json the repository does not hold (read only
+   *  where one is). */
+  const DRIFT = "acme/drift";
+  const DRIFT_FILES: MadeFile[] = [
+    { path: "docs/SKILL.md/notes.md", text: "# Notes kept in a directory named SKILL.md\n" },
+    {
+      path: "packages/acme-drift/package.json",
+      text: `${JSON.stringify({ name: "@acme/acme-drift", version: "1.0.0", omp: { skills: ["skills"] } }, null, 2)}\n`,
+    },
+    {
+      path: "omp/extensions/skill-pools.ts",
+      text: `// It feeds skill://alpha.\n${EXTENSION_TEXT}`,
+    },
+  ];
+  /** The world, with acme/drift among acme's repositories. */
+  const driftWorld = (): World => {
+    const w = world();
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      {
+        nameWithOwner: DRIFT,
+        isFork: false,
+        isArchived: false,
+        defaultBranchRef: { name: "main" },
+        parent: null,
+      },
+    ]);
+    w.addFiles(DRIFT_FILES);
+    w.addRepository(DRIFT, treeOf(DRIFT, DRIFT_FILES));
+    return w;
+  };
+
+  test("select the files copies.ts selects, so the installers they resolve are those installers.tsv holds", async () => {
+    const config = parseConfig(CONFIG);
+    const drift = treeOf(DRIFT, DRIFT_FILES);
+    expect(drift.find((entry) => entry.path === "docs/SKILL.md")?.type).toBe("tree");
+    expect(drift.some((entry) => manifestKind(entry) === "omp-extension")).toBe(true);
+    expect(drift.some((entry) => entry.path.endsWith("skills-sources.json"))).toBe(false);
+    for (const repository of ["cybermonklabs/legion", "acme/skills", DRIFT]) {
+      const listed = await run(driftWorld(), ["--only", repository, "--max-search-calls", "0"]);
+      const w = driftWorld();
+      const [head] = w.commits.get(repository) as {
+        sha: string;
+        commit: { tree: { sha: string } };
+      }[];
+      if (head === undefined) throw new Error(`the world has no commit of ${repository}`);
+      // build.ts reads a commit's tree as one JSON answer, with no --jq: the stand-in gives it
+      // from the world's recursive tree of that commit.
+      const gh: Gh = async (args) => {
+        const tree = /^repos\/(.+)\/git\/trees\/([0-9a-f]+)\?recursive=1$/.exec(args[1] ?? "");
+        if (args[0] !== "api" || tree === null || args.includes("--jq")) return w.gh(args);
+        if (tree[1] !== repository || tree[2] !== head.sha) return w.gh(args);
+        const found = w.trees.get(`${repository} ${head.commit.tree.sha} recursive`) as {
+          tree: TreeEntry[];
+        };
+        const answer = { sha: head.commit.tree.sha, tree: found.tree, truncated: false };
+        return { code: 0, stdout: JSON.stringify(answer), stderr: "" };
+      };
+      const at = await new GithubReads(gh, new Map()).at(repository, head.sha, config.excludePaths);
+      // The same skill files...
+      expect(at.copies.map((copy) => copy.file).sort()).toEqual(
+        listed
+          .table("skill-copies.tsv")
+          .filter((row) => row.repository === repository)
+          .map((row) => (row.path === "." ? "SKILL.md" : `${row.path}/SKILL.md`))
+          .sort()
+      );
+      // ...and the same manifests: manifests.tsv lists one of its kind, or of a kind it always
+      // lists (listCopies).
+      const shownKinds = MANIFEST_KINDS.filter((kind) => kind.listed === "always").map(
+        (kind) => kind.kind
+      );
+      const shown = at.manifests.filter(
+        (manifest) => manifest.ofKind || (shownKinds as string[]).includes(manifest.kind)
+      );
+      expect(shown.map((manifest) => `${manifest.path} ${manifest.kind}`).sort()).toEqual(
+        listed
+          .table("manifests.tsv")
+          .filter((row) => row.repository === repository && row.source === "tree")
+          .map((row) => `${row.path} ${row.kind}`)
+          .sort()
+      );
+      const resolved = resolveInstallers(at.manifests, new CopyIndex(at.copies)).rows.map((row) =>
+        installerLine({
+          manifest_repository: row.manifestRepository,
+          manifest_path: row.manifestPath,
+          kind: row.kind,
+          action: row.action,
+          unit: row.unit,
+          host: row.host,
+          skill: row.skill,
+          copy_repository: row.copyRepository,
+          copy_path: row.copyPath === undefined ? "" : row.copyPath === "" ? "." : row.copyPath,
+          note: row.note,
+        })
+      );
+      const written = listed.table("installers.tsv").map(installerLine);
+      if (repository !== DRIFT) expect(written.length).toBeGreaterThan(0);
+      expect(resolved.sort()).toEqual(written.sort());
+    }
+  }, 60_000);
 });

@@ -2003,6 +2003,42 @@ test("build-cases refuses an unknown cut and a sessions line whose path is not i
   expect(logLength()).toBe(logged);
 });
 
+test("build-cases refuses an --out inside a git or jj checkout, its own and --reprofile's, before any read", async () => {
+  const from = recorder.requests.length;
+  const logLength = () => (existsSync(psqlLog) ? readFileSync(psqlLog, "utf8").length : 0);
+  const logged = logLength();
+  const sessions = sessionsFile("checkout.jsonl", ["good"]);
+  for (const marker of [".git", ".jj"]) {
+    const checkout = path.join(scratch, `checkout${marker}`);
+    mkdirSync(path.join(checkout, marker), { recursive: true });
+    const out = path.join(checkout, "cases", "cases.jsonl");
+    const reprofile = [
+      "build-cases",
+      "--config",
+      config,
+      "--old",
+      old,
+      "--copies",
+      copiesDir,
+      "--count",
+      countDir,
+      "--reprofile",
+      sessions,
+      "--out",
+      out,
+    ];
+    for (const args of [buildArgs(sessions, out, "1"), reprofile]) {
+      const lines: string[] = [];
+      expect(await main(args, io(lines))).toBe(EXIT.refused);
+      expect(lines.join("\n")).toContain(`is inside the checkout ${checkout}`);
+      expect(existsSync(out)).toBe(false);
+      expect(existsSync(`${out}.spool`)).toBe(false);
+    }
+  }
+  expect(recorder.requests.length).toBe(from);
+  expect(logLength()).toBe(logged);
+});
+
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
   const skillDir = path.join(setupDir, "old", "alpha");
   const out = path.join(scratch, "tasks", "tasks.jsonl");

@@ -20,7 +20,8 @@
  *              <its stderr>`, a `FAILED ...` line for each query given up, and `END <time>` when
  *              the run ended.
  *   --copies   R4's output (copies.ts): skill-copies.tsv, prefix-table.tsv, installers.tsv,
- *              loaders.tsv and repositories.tsv, each with the columns copies.ts exports for it.
+ *              loaders.tsv, manifests.tsv and repositories.tsv, each with the columns copies.ts
+ *              exports for it.
  *   --spans    One JSON line per store: `{store, earliest_mtime_ms, files}`, the store's earliest
  *              file mtime (epoch milliseconds) and its number of files.
  *   --models   The models query's raw output (models.sql), in `--count`'s layout and with its own
@@ -124,10 +125,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { schemaFaults } from "./common";
 import { loadConfig, type SkillCutsConfig } from "./config";
 import {
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
+  MANIFESTS_COLUMNS,
   PREFIX_TABLE_COLUMNS,
   parseTsv,
   prefixRegExp,
@@ -189,36 +192,50 @@ export interface QueryOutput {
 
 const QUERY_FILE = /^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/;
 
-/** One line naming each fault of a value that does not fit its schema. */
-function faultsOf(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `${issue.path.join(".") || "the value"}: ${issue.message}`)
-    .join("; ");
+/** The rows and the summary of the psql output `text` of one query of the store `store`, each
+ *  row parsed by `schema` (`what` names the query's SQL file) and the summary kept apart; `check`
+ *  throws on a row the query's own rule refuses. Throws, naming the row, on a row of another shape
+ *  or store, a row after the summary or one `check` refuses, and when no summary ends it (the
+ *  query did not end). */
+function queryRows<Row extends { readonly row: string; readonly store: string }>(
+  store: string,
+  text: string,
+  schema: z.ZodType<Row>,
+  what: string,
+  check: (row: Exclude<Row, { row: "summary" }>, at: string) => void
+): { rows: Exclude<Row, { row: "summary" }>[]; summary: Extract<Row, { row: "summary" }> } {
+  const rows: Exclude<Row, { row: "summary" }>[] = [];
+  let summary: Extract<Row, { row: "summary" }> | undefined;
+  for (const [index, value] of psqlRows(text).entries()) {
+    const at = `row ${index + 1}`;
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) {
+      throw new Error(`${at} is not a ${what} row: ${schemaFaults(parsed.error)}`);
+    }
+    const row = parsed.data;
+    if (row.store !== store) throw new Error(`${at} is of the store ${JSON.stringify(row.store)}`);
+    if (summary !== undefined) throw new Error(`${at} comes after the summary row`);
+    if (row.row === "summary") {
+      summary = row as Extract<Row, { row: "summary" }>;
+      continue;
+    }
+    const kept = row as Exclude<Row, { row: "summary" }>;
+    check(kept, at);
+    rows.push(kept);
+  }
+  if (summary === undefined) throw new Error("no summary row: the query did not end");
+  return { rows, summary };
 }
 
 /** The output of the query `name` of the store `store`; throws when the text is not one whole
  *  count.sql result of that store: no psql table, a row of another shape or store, a row after the
  *  summary, hashes that do not match their counts, or no summary (the query did not end). */
 export function parseQueryOutput(store: string, name: string, text: string): QueryOutput {
-  const rows: CountRow[] = [];
-  let summary: SummaryRow | undefined;
-  for (const [index, value] of psqlRows(text).entries()) {
-    const at = `row ${index + 1}`;
-    const parsed = QueryRow.safeParse(value);
-    if (!parsed.success) throw new Error(`${at} is not a count.sql row: ${faultsOf(parsed.error)}`);
-    const row = parsed.data;
-    if (row.store !== store) throw new Error(`${at} is of the store ${JSON.stringify(row.store)}`);
-    if (summary !== undefined) throw new Error(`${at} comes after the summary row`);
-    if (row.row === "summary") {
-      summary = row;
-      continue;
-    }
+  const { rows, summary } = queryRows(store, text, QueryRow, "count.sql", (row, at) => {
     if (row.hashes.length !== row.files || row.unpaired_hashes.length !== row.unpaired) {
       throw new Error(`${at}: its hashes do not match its files or unpaired counts`);
     }
-    rows.push(row);
-  }
-  if (summary === undefined) throw new Error("no summary row: the query did not end");
+  });
   return { store, name, rows, summary };
 }
 
@@ -467,26 +484,11 @@ export interface ModelOutput {
  *  after the summary, a model with no source or a source with no model, a summary whose counts
  *  are not its rows', or no summary. */
 export function parseModelOutput(store: string, name: string, text: string): ModelOutput {
-  const rows: ModelRow[] = [];
-  let summary: ModelSummaryRow | undefined;
-  for (const [index, value] of psqlRows(text).entries()) {
-    const at = `row ${index + 1}`;
-    const parsed = ModelQueryRow.safeParse(value);
-    if (!parsed.success)
-      throw new Error(`${at} is not a models.sql row: ${faultsOf(parsed.error)}`);
-    const row = parsed.data;
-    if (row.store !== store) throw new Error(`${at} is of the store ${JSON.stringify(row.store)}`);
-    if (summary !== undefined) throw new Error(`${at} comes after the summary row`);
-    if (row.row === "summary") {
-      summary = row;
-      continue;
-    }
+  const { rows, summary } = queryRows(store, text, ModelQueryRow, "models.sql", (row, at) => {
     if ((row.model === null) !== (row.source === null)) {
       throw new Error(`${at}: a model needs its source, and a source its model`);
     }
-    rows.push(row);
-  }
-  if (summary === undefined) throw new Error("no summary row: the query did not end");
+  });
   const withModel = rows.filter((row) => row.model !== null).length;
   if (summary.files !== rows.length || summary.with_model !== withModel) {
     throw new Error(
@@ -583,7 +585,9 @@ export function parseSpans(text: string, source = "the spans file"): Span[] {
       throw new Error(`${source} line ${index + 1} is not JSON: ${(error as Error).message}`);
     }
     const parsed = Span.safeParse(value);
-    if (!parsed.success) throw new Error(`${source} line ${index + 1}: ${faultsOf(parsed.error)}`);
+    if (!parsed.success) {
+      throw new Error(`${source} line ${index + 1}: ${schemaFaults(parsed.error)}`);
+    }
     spans.push(parsed.data);
   }
   return spans;
@@ -595,6 +599,7 @@ export type PrefixTableRow = Columns<typeof PREFIX_TABLE_COLUMNS>;
 export type InstallersRow = Columns<typeof INSTALLERS_COLUMNS>;
 export type LoadersRow = Columns<typeof LOADERS_COLUMNS>;
 export type RepositoriesRow = Columns<typeof REPOSITORIES_COLUMNS>;
+export type ManifestsRow = Columns<typeof MANIFESTS_COLUMNS>;
 
 /** The tables of R4's output this file reads. */
 export interface R4Tables {
@@ -603,6 +608,12 @@ export interface R4Tables {
   readonly installers: readonly InstallersRow[];
   readonly loaders: readonly LoadersRow[];
   readonly repositories: readonly RepositoriesRow[];
+}
+
+/** R4's output as `readR4` reads it: the tables the attribution reads, and manifests.tsv, which
+ *  build.ts's profiles read. */
+export interface R4Output extends R4Tables {
+  readonly manifests: readonly ManifestsRow[];
 }
 
 /** The rows of the TSV `file` of `dir`; throws when its header row is not `columns`, in order. */
@@ -627,13 +638,14 @@ function readTable<C extends readonly string[]>(
   return parseTsv(text) as Columns<C>[];
 }
 
-/** R4's tables in its output directory `dir`. */
-export function readR4(dir: string): R4Tables {
+/** R4's output in its directory `dir`. */
+export function readR4(dir: string): R4Output {
   return {
     copies: readTable(dir, "skill-copies.tsv", SKILL_COPIES_COLUMNS),
     prefixes: readTable(dir, "prefix-table.tsv", PREFIX_TABLE_COLUMNS),
     installers: readTable(dir, "installers.tsv", INSTALLERS_COLUMNS),
     loaders: readTable(dir, "loaders.tsv", LOADERS_COLUMNS),
+    manifests: readTable(dir, "manifests.tsv", MANIFESTS_COLUMNS),
     repositories: readTable(dir, "repositories.tsv", REPOSITORIES_COLUMNS),
   };
 }
@@ -708,8 +720,15 @@ function unitLabel(key: string): string {
   return `${unit} (${repository}:${manifest})`;
 }
 
-/** The unit keys a prefix row's `via` names; throws on an item of another shape. */
-export function viaUnits(via: string): string[] {
+/** A unit of a prefix row's `via`: `<unit> (<manifest repository>:<manifest path>)`. */
+export interface Via {
+  readonly unit: string;
+  readonly repository: string;
+  readonly manifest: string;
+}
+
+/** The units a prefix row's `via` names, in order; throws on an item of another shape. */
+export function vias(via: string): Via[] {
   return via
     .split("; ")
     .filter((item) => item !== "")
@@ -720,8 +739,13 @@ export function viaUnits(via: string): string[] {
           `a via item that is not <unit> (<repository>:<manifest path>): ${JSON.stringify(item)}`
         );
       }
-      return unitKey(match[1] ?? "", match[2] ?? "", match[3] ?? "");
+      return { unit: match[1] ?? "", repository: match[2] ?? "", manifest: match[3] ?? "" };
     });
+}
+
+/** The unit keys a prefix row's `via` names (`vias`); throws on an item of another shape. */
+export function viaUnits(via: string): string[] {
+  return vias(via).map((each) => unitKey(each.unit, each.repository, each.manifest));
 }
 
 const copyKey = (repository: string, dir: string) => `${repository}\t${dir}`;
@@ -1087,16 +1111,20 @@ export function attribute(
 ): Attribution {
   const { place, storeUnits, members, installedInContext } = placer(outputs, r4);
 
-  const reads = new Map<string, Set<string>>();
-  const references = new Map<string, Set<string>>();
-  const unattributed = new Map<string, Set<string>>();
-  const unattributedReferences = new Map<string, Set<string>>();
+  // Each copy's sessions, and each skill name's sessions no copy got, by the row's kind.
+  const copySessions = {
+    read: new Map<string, Set<string>>(),
+    reference: new Map<string, Set<string>>(),
+  };
+  const unplaced = {
+    read: new Map<string, Set<string>>(),
+    reference: new Map<string, Set<string>>(),
+  };
   const unmapped = new Map<
     string,
     {
       skills: Set<string>;
-      read: Set<string>;
-      reference: Set<string>;
+      sessions: Record<CountRow["kind"], Set<string>>;
       outcomes: Map<string, Set<string>>;
     }
   >();
@@ -1148,8 +1176,7 @@ export function attribute(
       } else {
         const item = entry(unmapped, placed.prefix, () => ({
           skills: new Set<string>(),
-          read: new Set<string>(),
-          reference: new Set<string>(),
+          sessions: { read: new Set<string>(), reference: new Set<string>() },
           outcomes: new Map<string, Set<string>>(),
         }));
         item.skills.add(row.skill);
@@ -1159,18 +1186,14 @@ export function attribute(
           () => new Set<string>()
         );
         for (const session of sessions) {
-          (row.kind === "read" ? item.read : item.reference).add(session);
+          item.sessions[row.kind].add(session);
           went.add(session);
         }
       }
       const counted =
         copy === undefined
-          ? entry(
-              row.kind === "read" ? unattributed : unattributedReferences,
-              row.skill,
-              () => new Set<string>()
-            )
-          : entry(row.kind === "read" ? reads : references, copy, () => new Set<string>());
+          ? entry(unplaced[row.kind], row.skill, () => new Set<string>())
+          : entry(copySessions[row.kind], copy, () => new Set<string>());
       for (const session of sessions) counted.add(session);
     }
   }
@@ -1201,14 +1224,14 @@ export function attribute(
   for (const row of r4.copies) entry(byName, row.name, () => []).push(row);
   const counts = r4.copies.map((row): CopyCount => {
     const key = copyKey(row.repository, row.path);
-    const readSessions = reads.get(key) ?? new Set<string>();
+    const readSessions = copySessions.read.get(key) ?? new Set<string>();
     const sessions = readSessions.size;
-    const referenceSessions = references.get(key)?.size ?? 0;
-    const free = unattributed.get(row.name)?.size ?? 0;
+    const referenceSessions = copySessions.reference.get(key)?.size ?? 0;
+    const free = unplaced.read.get(row.name)?.size ?? 0;
     const ties = (byName.get(row.name) ?? [])
       .filter((other) => other !== row)
       .map((other) => copyKey(other.repository, other.path))
-      .filter((other) => Math.abs((reads.get(other)?.size ?? 0) - sessions) <= free)
+      .filter((other) => Math.abs((copySessions.read.get(other)?.size ?? 0) - sessions) <= free)
       .map(shown);
     const loaders = new Set([
       ...row.loaded_by.split("; ").filter((item) => item !== ""),
@@ -1220,14 +1243,7 @@ export function attribute(
     const ompInstalls =
       sessions + referenceSessions > 0 || installedInContext.has(key) || ompInstalled.has(key);
     const claudeInstalls = claudeInstalled.has(key);
-    const status: Status =
-      sessions > 0
-        ? "read"
-        : claudeInstalls && !ompInstalls
-          ? "not countable yet"
-          : claudeInstalls
-            ? "no Oh My Pi read; Claude Code not counted yet"
-            : "no read";
+    const status = copyStatus(sessions, ompInstalls, claudeInstalls);
     return {
       repository: row.repository,
       path: row.path,
@@ -1244,23 +1260,23 @@ export function attribute(
     };
   });
 
-  const namesWithoutCopy = [...new Set([...unattributed.keys(), ...unattributedReferences.keys()])]
+  const namesWithoutCopy = [...new Set([...unplaced.read.keys(), ...unplaced.reference.keys()])]
     .filter((name) => !byName.has(name))
     .sort()
     .map((name) => ({
       name,
-      sessions: unattributed.get(name)?.size ?? 0,
-      referenceSessions: unattributedReferences.get(name)?.size ?? 0,
+      sessions: unplaced.read.get(name)?.size ?? 0,
+      referenceSessions: unplaced.reference.get(name)?.size ?? 0,
     }));
-  const unattributedSessions = new Set([...unattributed.values()].flatMap((set) => [...set])).size;
+  const unattributedSessions = new Set([...unplaced.read.values()].flatMap((set) => [...set])).size;
   return {
     copies: counts,
     unmapped: [...unmapped]
       .map(([prefix, item]) => ({
         prefix,
         skills: [...item.skills].sort(),
-        sessions: item.read.size,
-        referenceSessions: item.reference.size,
+        sessions: item.sessions.read.size,
+        referenceSessions: item.sessions.reference.size,
         outcomes: [...item.outcomes]
           .map(([outcome, sessions]) => ({ outcome, sessions: sessions.size }))
           .sort((a, b) => b.sessions - a.sessions || a.outcome.localeCompare(b.outcome)),
@@ -1298,6 +1314,14 @@ export function attribute(
     readSessions: allReads.size,
     unattributedSessions,
   };
+}
+
+/** A copy's status (this file's header): `read` with a read session; else, with no Claude Code
+ *  installer, `no read`; else by whether Oh My Pi installs it too. */
+function copyStatus(sessions: number, ompInstalls: boolean, claudeInstalls: boolean): Status {
+  if (sessions > 0) return "read";
+  if (!claudeInstalls) return "no read";
+  return ompInstalls ? "no Oh My Pi read; Claude Code not counted yet" : "not countable yet";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1958,7 +1982,7 @@ export function readCountMarkdown(report: Report): string {
       .slice(0, 5)
       .map((row) => `${row.skill} (${row.sessions})`)
       .join(", ");
-    const { skipped } = sessionFiles(attribution, ranking);
+    const { skipped } = filedSkills(attribution, ranking);
     say(
       `- ${ranking.cut} (${ranking.repository}): ${ranking.rows.length} changed skills, in ${code(`${ranking.cut}/ranking.json`)}, with each one's reading sessions in ${code(`${ranking.cut}/sessions/<skill>.jsonl`)}; first: ${top || "none"}.` +
         (ranking.missing.length > 0
@@ -1992,7 +2016,10 @@ export interface Output {
 /** Whether `inner` is `outer` or a path inside it. */
 function inside(inner: string, outer: string): boolean {
   const relative = path.relative(path.resolve(outer), path.resolve(inner));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 /** The command. Returns the exit status: 0 (the count is written), 1 (an input could not be read

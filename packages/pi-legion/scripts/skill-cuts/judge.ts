@@ -39,16 +39,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import {
-  readCalls,
-  type SessionMessage,
-  skillHeaderPath,
-  stripSkillHeader,
-} from "../skill-scenarios/transcript";
+import { readCalls, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import type { ArmName } from "./arms";
 import type { Case } from "./cases";
 import { BudgetSpent, type Gateway, type MessagesBody, type Spent, toolCalls } from "./gateway";
-import { answerJson, ask, loadPrompt, parsedAnswer, promptBody } from "./readers";
+import { ask, loadPrompt, promptBody } from "./readers";
 
 /** How many times one reply is judged before its verdict is null. */
 export const JUDGE_TRIES = 3;
@@ -71,7 +66,7 @@ export const CONTROLS = {
 } as const satisfies Record<ControlName, { step: string; wanted: "pass" | "fail" }>;
 
 /** A judgement as the judge answers it. */
-export const Judgement = z.strictObject({
+const Judgement = z.strictObject({
   verdict: z.enum(["pass", "fail"]),
   reason: z.string().min(1),
 });
@@ -145,23 +140,23 @@ export function renderMessage(message: SessionMessage): string {
   const blocks = (message.content ?? []).flatMap((block) => {
     const text = blockText(block);
     if (text === undefined) return [];
-    return message.role === "toolResult" && skillHeaderPath(text) !== undefined
-      ? [stripSkillHeader(text)]
-      : [text];
+    return message.role === "toolResult" ? [stripSkillHeader(text)] : [text];
   });
   return [head, ...blocks].join("\n");
 }
 
-/** The indices in `messages` of the read results of a file of skill `skill`: each `read` of
- *  `skill://<skill>`, of a file under it, or of it with a selector. */
-export function skillReadResults(messages: readonly SessionMessage[], skill: string): Set<number> {
+/** Whether a read's `target` is a file of skill `skill`: `skill://<skill>`, a file under it, or
+ *  it with a selector. */
+export function readsSkillUrl(target: string, skill: string): boolean {
   const url = `skill://${skill}`;
+  return target === url || target.startsWith(`${url}/`) || target.startsWith(`${url}:`);
+}
+
+/** The indices in `messages` of the read results of a file of skill `skill` (`readsSkillUrl`). */
+export function skillReadResults(messages: readonly SessionMessage[], skill: string): Set<number> {
   const reads = new Set(
     readCalls(messages.map((message) => ({ message })))
-      .filter(
-        ({ target }) =>
-          target === url || target.startsWith(`${url}/`) || target.startsWith(`${url}:`)
-      )
+      .filter(({ target }) => readsSkillUrl(target, skill))
       .map(({ id }) => id)
   );
   const indices = new Set<number>();
@@ -172,7 +167,7 @@ export function skillReadResults(messages: readonly SessionMessage[], skill: str
 }
 
 /** `text` cut to `max` characters, its start and end kept, with a note of what the cut left out. */
-function cut(text: string, max: number): string {
+export function cut(text: string, max: number): string {
   if (text.length <= max) return text;
   const half = Math.floor(max / 2);
   return `${text.slice(0, half)}\n[… ${text.length - 2 * half} characters left out …]\n${text.slice(-half)}`;
@@ -206,7 +201,7 @@ export function beforeText(c: Pick<Case, "messages" | "skill" | "skillReads">): 
 
 /** What one judgement reads: the case's criterion and line, the messages before the step
  *  (`beforeText`) and the reply (`stepText`). */
-export interface JudgeInput {
+interface JudgeInput {
   readonly criterion: { readonly pass: string; readonly fail: string };
   readonly line: string;
   readonly before: string;
@@ -249,12 +244,7 @@ export interface Judged {
 /** The judgement that `body` asks for. A judgement that does not parse is asked for again,
  *  JUDGE_TRIES times in all, then gives the verdict null. Rejects when a send does. */
 async function askJudge(body: MessagesBody, gateway: Gateway): Promise<Judged> {
-  const asked = await ask(
-    body,
-    (text) => parsedAnswer(Judgement, answerJson(text)),
-    gateway,
-    JUDGE_TRIES
-  );
+  const asked = await ask(body, Judgement, gateway, JUDGE_TRIES);
   if (asked.answer === undefined) {
     return {
       verdict: null,

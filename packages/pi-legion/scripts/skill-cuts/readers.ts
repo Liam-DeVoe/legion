@@ -79,7 +79,7 @@ export const NAME_ONLY_REFUSAL = "says only that the job is not clear from the n
 
 /** The settings a prompt file's header pins. With thinking on, the Messages API takes temperature
  *  1 only, and a thinking budget of 1024 tokens or more, below `max_tokens`. */
-export const PromptSettings = z
+const PromptSettings = z
   .strictObject({
     model: z.string().min(1),
     thinking_budget: z.int().min(1024),
@@ -91,7 +91,7 @@ export const PromptSettings = z
     message: "is not below max_tokens",
     path: ["thinking_budget"],
   });
-export type PromptSettings = z.infer<typeof PromptSettings>;
+type PromptSettings = z.infer<typeof PromptSettings>;
 
 /** A prompt file: its name (the file's, less `.md`), the settings its header pins, and its text. */
 export interface Prompt {
@@ -165,7 +165,7 @@ export function loadPrompt(name: string): Prompt {
 
 /** One text block of a request's user message. `cache` marks it for the prompt cache: a part that
  *  every request of a batch shares, sent before the part that differs. */
-export interface UserPart {
+interface UserPart {
   readonly text: string;
   readonly cache?: boolean;
 }
@@ -196,7 +196,7 @@ export function promptBody(prompt: Prompt, parts: readonly UserPart[]): Messages
 }
 
 /** The text a reply's text blocks hold, joined; its thinking is no part of it. */
-export function answerText(message: ReplyMessage): string {
+function answerText(message: ReplyMessage): string {
   return message.content
     .flatMap((block) =>
       block.type === "text" && typeof block.text === "string" ? [block.text] : []
@@ -208,7 +208,7 @@ const FENCED = /^```(?:json)?[ \t]*\n([\s\S]*?)\n```$/;
 
 /** The JSON value an answer's text holds: the text whole, or the one fenced block it is. Throws
  *  when it holds none. */
-export function answerJson(text: string): unknown {
+function answerJson(text: string): unknown {
   const trimmed = text.trim();
   const json = FENCED.exec(trimmed)?.[1] ?? trimmed;
   try {
@@ -228,17 +228,18 @@ export function parsedAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
 
 /** What asking got: the first answer that parsed, or undefined when none did; why each reply before
  *  it was refused; and what each reply used, in the order sent. */
-export interface Asked<T> {
+interface Asked<T> {
   readonly answer: T | undefined;
   readonly refusals: readonly string[];
   readonly spent: readonly Spent[];
 }
 
-/** Sends `body` and reads the reply's answer with `parse`, sending it again while `parse` throws,
- *  `tries` times in all. A send that rejects (the gateway's BudgetSpent among them) rejects. */
+/** Sends `body` and reads the reply's answer as `schema` parses its JSON (`answerJson`,
+ *  `parsedAnswer`), sending it again while that throws, `tries` times in all. A send that rejects
+ *  (the gateway's BudgetSpent among them) rejects. */
 export async function ask<T>(
   body: MessagesBody,
-  parse: (text: string) => T,
+  schema: z.ZodType<T>,
   gateway: Gateway,
   tries: number
 ): Promise<Asked<T>> {
@@ -248,7 +249,11 @@ export async function ask<T>(
     const reply = await gateway.send(body);
     spent.push(reply.spent);
     try {
-      return { answer: parse(answerText(reply.message)), refusals, spent };
+      return {
+        answer: parsedAnswer(schema, answerJson(answerText(reply.message))),
+        refusals,
+        spent,
+      };
     } catch (error) {
       const why = messageFor(error);
       const stop = reply.message.stop_reason;
@@ -368,14 +373,17 @@ const WrittenStep = z
   .refine((step) => step.text.trim() !== "" || step.toolCalls.length > 0, {
     message: "holds no text and no tool call",
   });
+/** The messages before the step that state the line's instruction in other words, each with the
+ *  words quoted from it: the case reader's and the restatement reader's answer. */
+const Restatements = z.array(
+  z.strictObject({ messageIndex: z.int().nonnegative(), quote: z.string().min(1) })
+);
 const CaseProposal = z.strictObject({
   step: z.strictObject({ messageIndex: z.int().nonnegative(), what: z.string().min(1) }),
   line: z.strictObject({ file: z.string().min(1), text: OneLine }),
   criterion: z.strictObject({ pass: z.string().min(1), fail: z.string().min(1) }),
   violatingStep: WrittenStep,
-  restatements: z.array(
-    z.strictObject({ messageIndex: z.int().nonnegative(), quote: z.string().min(1) })
-  ),
+  restatements: Restatements,
 });
 const NoCase = z.strictObject({ step: z.null(), reason: z.string().min(1) });
 export const CaseAnswer = z.union([CaseProposal, NoCase]);
@@ -451,16 +459,12 @@ const caseReader: Reader<CaseInput, CaseAnswer> = {
 
 /** One window of the messages before a case's step. A message longer than a window comes in
  *  parts, each under the message's index, its text opening with a note of which part it is. */
-export const RestateInput = z.strictObject({
+const RestateInput = z.strictObject({
   line: OneLine,
   messages: z.array(TranscriptMessage).min(1),
 });
-export type RestateInput = z.infer<typeof RestateInput>;
-export const RestateAnswer = z.strictObject({
-  restatements: z.array(
-    z.strictObject({ messageIndex: z.int().nonnegative(), quote: z.string().min(1) })
-  ),
-});
+type RestateInput = z.infer<typeof RestateInput>;
+export const RestateAnswer = z.strictObject({ restatements: Restatements });
 export type RestateAnswer = z.infer<typeof RestateAnswer>;
 
 const restateReader: Reader<RestateInput, RestateAnswer> = {
@@ -495,14 +499,13 @@ const restateReader: Reader<RestateInput, RestateAnswer> = {
 
 /** A case's line, the messages before its step as the judge reads them (judge.ts, `beforeText`),
  *  and its real step (judge.ts, `stepText`). Never the case's criterion. */
-export const AuditInput = z.strictObject({
+const AuditInput = z.strictObject({
   line: OneLine,
   before: z.string(),
   step: z.string().min(1),
 });
-export type AuditInput = z.infer<typeof AuditInput>;
-export const AuditVerdict = z.enum(["follows", "breaks", "not-governed"]);
-export type AuditVerdict = z.infer<typeof AuditVerdict>;
+type AuditInput = z.infer<typeof AuditInput>;
+const AuditVerdict = z.enum(["follows", "breaks", "not-governed"]);
 export const AuditAnswer = z.strictObject({ verdict: AuditVerdict, reason: z.string().min(1) });
 export type AuditAnswer = z.infer<typeof AuditAnswer>;
 
@@ -528,7 +531,7 @@ export const MapInput = z.strictObject({
   audit: z.string().min(1).nullable(),
 });
 export type MapInput = z.infer<typeof MapInput>;
-export const RuleStatus = z.enum(["kept", "narrowed", "widened", "lost"]);
+const RuleStatus = z.enum(["kept", "narrowed", "widened", "lost"]);
 const MapRule = z
   .strictObject({
     file: z.string().min(1),
@@ -543,8 +546,8 @@ const MapRule = z
     message: "a lost rule has no place in the cut text, and every other rule has one",
     path: ["cut"],
   });
-export const MapAnswer = z.strictObject({ rules: z.array(MapRule).min(1) });
-export type MapAnswer = z.infer<typeof MapAnswer>;
+const MapAnswer = z.strictObject({ rules: z.array(MapRule).min(1) });
+type MapAnswer = z.infer<typeof MapAnswer>;
 
 const mapReader: Reader<MapInput, MapAnswer> = {
   input: MapInput,
@@ -575,8 +578,8 @@ export const AttackInput = z.strictObject({
   files: z.array(File).min(1),
 });
 export type AttackInput = z.infer<typeof AttackInput>;
-export const FindingKind = z.enum(["vague", "undefined-term", "uncheckable", "two-readings"]);
-export const AttackAnswer = z.strictObject({
+const FindingKind = z.enum(["vague", "undefined-term", "uncheckable", "two-readings"]);
+const AttackAnswer = z.strictObject({
   findings: z.array(
     z.strictObject({
       kind: FindingKind,
@@ -587,7 +590,7 @@ export const AttackAnswer = z.strictObject({
     })
   ),
 });
-export type AttackAnswer = z.infer<typeof AttackAnswer>;
+type AttackAnswer = z.infer<typeof AttackAnswer>;
 
 const attackReader: Reader<AttackInput, AttackAnswer> = {
   input: AttackInput,
@@ -618,10 +621,10 @@ export const SameJobInput = z
   })
   .superRefine((input, ctx) => uniqueIds(input.skills, ctx, "skills"));
 export type SameJobInput = z.infer<typeof SameJobInput>;
-export const SameJobAnswer = z.strictObject({
+const SameJobAnswer = z.strictObject({
   pairs: z.array(z.strictObject({ a: Id, b: Id, task: z.string().min(1), why: z.string().min(1) })),
 });
-export type SameJobAnswer = z.infer<typeof SameJobAnswer>;
+type SameJobAnswer = z.infer<typeof SameJobAnswer>;
 
 const sameJobReader: Reader<SameJobInput, SameJobAnswer> = {
   input: SameJobInput,
@@ -661,10 +664,10 @@ export const SentenceInput = z
   })
   .superRefine((input, ctx) => uniqueIds(input.skills, ctx, "skills"));
 export type SentenceInput = z.infer<typeof SentenceInput>;
-export const SentenceAnswer = z.strictObject({
+const SentenceAnswer = z.strictObject({
   found: z.array(z.strictObject({ id: Id, line: z.int().positive(), quote: z.string().min(1) })),
 });
-export type SentenceAnswer = z.infer<typeof SentenceAnswer>;
+type SentenceAnswer = z.infer<typeof SentenceAnswer>;
 
 const sentenceReader: Reader<SentenceInput, SentenceAnswer> = {
   input: SentenceInput,
@@ -727,7 +730,7 @@ export function nameOnlyReason(text: string, name: string): boolean {
   return words.every((word) => NAME_ONLY_WORDS.has(word));
 }
 
-export const NamesInput = z
+const NamesInput = z
   .strictObject({
     skills: z
       .array(
@@ -745,11 +748,11 @@ export const NamesInput = z
     namesTaken: z.array(z.string().min(1)),
   })
   .superRefine((input, ctx) => uniqueIds(input.skills, ctx, "skills"));
-export type NamesInput = z.infer<typeof NamesInput>;
+type NamesInput = z.infer<typeof NamesInput>;
 const SkillName = z
   .string()
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "is not lowercase words joined by -");
-export const NamesAnswer = z.strictObject({
+const NamesAnswer = z.strictObject({
   skills: z.array(
     z.discriminatedUnion("nominated", [
       z.strictObject({ id: Id, nominated: z.literal(false) }),
@@ -764,7 +767,7 @@ export const NamesAnswer = z.strictObject({
     ])
   ),
 });
-export type NamesAnswer = z.infer<typeof NamesAnswer>;
+type NamesAnswer = z.infer<typeof NamesAnswer>;
 
 const namesReader: Reader<NamesInput, NamesAnswer> = {
   input: NamesInput,
@@ -842,8 +845,7 @@ export const TasksInput = z
 export type TasksInput = z.infer<typeof TasksInput>;
 /** Whether a task's first step is one the skill governs (an agent doing the task would read the
  *  skill at once, before any other act), and why. */
-export const FirstStep = z.strictObject({ governed: z.boolean(), reason: z.string().min(1) });
-export type FirstStep = z.infer<typeof FirstStep>;
+const FirstStep = z.strictObject({ governed: z.boolean(), reason: z.string().min(1) });
 const TaskAnswerFields = {
   label: TaskLabel,
   why: z.string().min(1),
@@ -943,7 +945,7 @@ export type ReaderName = keyof typeof READERS;
 export const READER_NAMES = Object.keys(READERS) as ReaderName[];
 
 /** A reader's answer, the refusals of the replies before it, and what each reply used. */
-export interface ReaderResult {
+interface ReaderResult {
   readonly answer: unknown;
   readonly refusals: readonly string[];
   readonly spent: readonly Spent[];
@@ -982,12 +984,7 @@ export async function runReader(
   if (!given.success)
     throw new Error(`the ${name} reader's input is refused: ${issues(given.error)}`);
   const schema = reader.answer(given.data);
-  const asked = await ask(
-    readerBody(name, given.data),
-    (text) => parsedAnswer(schema, answerJson(text)),
-    gateway,
-    READER_TRIES
-  );
+  const asked = await ask(readerBody(name, given.data), schema, gateway, READER_TRIES);
   if (asked.answer === undefined) throw new ReaderFailed(name, asked.refusals, asked.spent);
   return { answer: asked.answer, refusals: asked.refusals, spent: asked.spent };
 }
@@ -1041,7 +1038,7 @@ export interface Held {
 }
 
 /** A control's planted input, and its check of the reader's answer. */
-export interface Planted {
+interface Planted {
   readonly input: unknown;
   held(answer: unknown): Held;
 }

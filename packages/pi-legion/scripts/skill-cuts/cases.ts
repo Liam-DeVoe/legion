@@ -16,7 +16,8 @@ import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { readCalls, SessionMessage } from "../skill-scenarios/transcript";
+import { readTargets, SessionMessage } from "../skill-scenarios/transcript";
+import { schemaFaults } from "./common";
 
 /** A file of a repository at a commit: the repository (`owner/name`), the commit, and the path
  * inside it. */
@@ -173,9 +174,7 @@ function refusal(
   if (!c.profile.skills.some((skill) => skill.name === c.skill)) {
     return `its profile does not install the skill ${c.skill}`;
   }
-  const targets = new Map(
-    readCalls(c.messages.map((message) => ({ message }))).map((call) => [call.id, call.target])
-  );
+  const targets = readTargets(c.messages);
   for (const index of c.skillReads) {
     const message = c.messages[index];
     if (message?.role !== "toolResult" || message.toolName !== "read") {
@@ -280,10 +279,7 @@ export function loadCases(file: string, baseDir: string): Case[] {
     }
     const parsed = Case.safeParse(raw);
     if (!parsed.success) {
-      const issues = parsed.error.issues.map(
-        (issue) => `${issue.path.join(".") || "the case"}: ${issue.message}`
-      );
-      refusals.push(`${name} is not a case: ${issues.join("; ")}`);
+      refusals.push(`${name} is not a case: ${schemaFaults(parsed.error, "the case")}`);
       continue;
     }
     const why = refusal(parsed.data, baseDir, linesOf(parsed.data.baseFile));

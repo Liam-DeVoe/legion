@@ -83,7 +83,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -93,6 +92,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import type { Arm } from "./arms";
 import {
+  anthropicHeaders,
   type Capture,
   type CaptureCase,
   type CaptureRecord,
@@ -103,6 +103,7 @@ import {
   savedCapture,
 } from "./capture";
 import { Case, Profile, type ProfileSkill, type Thinking } from "./cases";
+import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
   buildContext,
   type ContextRecord,
@@ -119,6 +120,7 @@ import {
   PRICES,
   type Reply,
   type RequestBody,
+  SpentRecord,
   type ToolCall,
   toolCalls,
 } from "./gateway";
@@ -136,7 +138,7 @@ import {
 export const Host = z.enum(["omp", "claude"]);
 export type Host = z.infer<typeof Host>;
 /** A thinking level, as `omp --thinking` takes it (cases.ts's `Thinking`). */
-export type ThinkingLevel = z.infer<typeof Thinking>;
+type ThinkingLevel = z.infer<typeof Thinking>;
 
 /** The model a load test runs unless `--model` says otherwise: the one the pinned hosts' fixture
  *  runs used (testdata/CAPTURE.md, F1 to F3). */
@@ -146,7 +148,7 @@ export const LOAD_MODEL = "anthropic/claude-sonnet-5-5";
 export const LOAD_THINKING: Readonly<Record<Host, ThinkingLevel>> = { omp: "off", claude: "auto" };
 /** R6's smallest test: this many tasks of each label. A smaller test still gets its verdict, with
  *  a note that says so. */
-export const MIN_TASKS_PER_LABEL = 5;
+const MIN_TASKS_PER_LABEL = 5;
 
 /** The longest one Claude Code run may take, by default. */
 const RUN_TIMEOUT_MS = 600_000;
@@ -165,17 +167,12 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 /** The levels `claude --effort` takes. */
 const CLAUDE_EFFORTS: readonly ThinkingLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** A refusal of the load test's inputs, before any model call. */
-export class LoadRefused extends Error {}
-/** A load test that stops on its own rule: the budget is spent, or the memory passed its limit. */
-export class LoadStopped extends Error {}
-
 const Name = z.string().regex(NAME, { error: "a name of letters, digits, '.', '_' and '-'" });
 /** A SHA-256 in hex. */
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/, { error: "a SHA-256 in hex" });
 
 /** Where a task comes from. */
-export const TaskSource = z.enum(["session", "written"]);
+const TaskSource = z.enum(["session", "written"]);
 
 const TaskFields = {
   id: z.string().min(1),
@@ -201,31 +198,19 @@ export type Task = z.infer<typeof Task>;
 /** Where Claude Code installs the skills: a local marketplace named `marketplace` whose `plugins`
  *  each hold the profile's skills they name, and `skillPlugin`, the plugin the tested skill goes
  *  in (one of `plugins`, or a plugin of its own). */
-export const ClaudeLayout = z.strictObject({
+const ClaudeLayout = z.strictObject({
   marketplace: Name,
   plugins: z.array(z.strictObject({ name: Name, skills: z.array(Name) })),
   skillPlugin: Name,
 });
-export type ClaudeLayout = z.infer<typeof ClaudeLayout>;
 
 /** A load test's profile: what the host installs beside the tested skill, and the context it runs
  *  in (a case's; `devbox` unless it names one). */
-export const LoadProfile = Profile.extend({
+const LoadProfile = Profile.extend({
   context: Case.shape.context.default("devbox"),
   claude: ClaudeLayout.optional(),
 });
-export type LoadProfile = z.infer<typeof LoadProfile>;
-
-/** What one reply used: gateway.ts's `Spent`. */
-const SpentRecord = z.strictObject({
-  model: z.string(),
-  input: z.number(),
-  output: z.number(),
-  cacheRead: z.number(),
-  cacheWrite: z.number(),
-  reasoning: z.number().optional(),
-  usd: z.number(),
-});
+type LoadProfile = z.infer<typeof LoadProfile>;
 
 /** One run of one task: whether the first assistant message the gateway gave for the task's body
  *  loaded the skill and by which call, the names of its tool calls in order, its stop reason, the
@@ -259,7 +244,7 @@ export interface TestedSkill {
 
 /** What the first assistant message of a run did: whether it loaded the skill, the call that did
  *  (`read skill://…`, `Skill <plugin>:<name>`, `Read <path>`), and its tool calls' names. */
-export interface FirstMessage {
+interface FirstMessage {
   readonly loaded: boolean;
   readonly loadedBy: string | null;
   readonly toolCalls: readonly string[];
@@ -268,7 +253,7 @@ export interface FirstMessage {
 /** One task's runs so far: how many were made, how many loaded the skill and which, whether it
  *  has the runs the test asks for, and its verdict (score.ts's `taskFault`), null until it has
  *  them or when they are not LOAD_RUNS. */
-export interface TaskOutcome {
+interface TaskOutcome {
   readonly made: number;
   readonly loads: number;
   readonly loadedRuns: readonly number[];
@@ -278,39 +263,19 @@ export interface TaskOutcome {
 
 /** The skill's verdict: a description fault (score.ts's `descriptionFault`), none, or no verdict
  *  yet (null); and the reason in words. */
-export interface LoadVerdict {
+interface LoadVerdict {
   readonly descriptionFault: boolean | null;
   readonly reason: string;
 }
 
-/** Writes `text` to `file` whole: into a fresh file beside it that is then renamed over it. */
-function writeWhole(file: string, text: string): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const fresh = `${file}.${process.pid}.tmp`;
-  writeFileSync(fresh, text);
-  renameSync(fresh, file);
-}
-
-/** `value` as JSON, two spaces deep, with a final newline. */
-function json(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-/** Each issue of a zod error as `<path>: <message>`, joined. */
-function issueText(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `${issue.path.join(".") || "the value"}: ${issue.message}`)
-    .join("; ");
-}
-
-/** The tasks of `file`. Throws one LoadRefused that names each line it refuses and why (a line
+/** The tasks of `file`. Throws one refusal that names each line it refuses and why (a line
  *  that is not a task, or an id given twice), or that the file holds no task. */
-export function loadTasks(file: string): Task[] {
+function loadTasks(file: string): Task[] {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (error) {
-    throw new LoadRefused(`cannot read the tasks file ${file}: ${messageFor(error)}`);
+    throw new Refused(`cannot read the tasks file ${file}: ${messageFor(error)}`);
   }
   const tasks: Task[] = [];
   const refusals: string[] = [];
@@ -326,7 +291,7 @@ export function loadTasks(file: string): Task[] {
     }
     const parsed = Task.safeParse(raw);
     if (!parsed.success) {
-      refusals.push(`${where} is not a task: ${issueText(parsed.error)}`);
+      refusals.push(`${where} is not a task: ${schemaFaults(parsed.error)}`);
       continue;
     }
     if (tasks.some((task) => task.id === parsed.data.id)) {
@@ -335,38 +300,38 @@ export function loadTasks(file: string): Task[] {
     }
     tasks.push(parsed.data);
   }
-  if (refusals.length > 0) throw new LoadRefused(`refused tasks:\n${refusals.join("\n")}`);
-  if (tasks.length === 0) throw new LoadRefused(`the tasks file ${file} holds no task`);
+  if (refusals.length > 0) throw new Refused(`refused tasks:\n${refusals.join("\n")}`);
+  if (tasks.length === 0) throw new Refused(`the tasks file ${file} holds no task`);
   return tasks;
 }
 
 /** A profile file as a load test read it: its absolute path, the SHA-256 of its bytes, its
  *  profile, and the skill the test looks for under it (for Claude Code, in the plugin its layout
  *  puts the tested skill in). */
-export interface TaskProfile {
+interface TaskProfile {
   readonly file: string;
   readonly digest: string;
   readonly profile: LoadProfile;
   readonly tested: TestedSkill;
 }
 
-/** The profile of `file`, checked for a test of the skill `name` in `host`. Throws a LoadRefused
+/** The profile of `file`, checked for a test of the skill `name` in `host`. Throws a refusal
  *  naming each fault: a file that is not a profile; a profile skill named `name` (the tested skill
  *  is not one of the other skills) or a name given twice; and for Claude Code a profile with no
  *  plugin layout, or one that puts a profile skill in no plugin or in two, names a skill the
  *  profile does not install, or names a plugin twice. */
-export function loadProfile(file: string, host: Host, name: string): TaskProfile {
+function loadProfile(file: string, host: Host, name: string): TaskProfile {
   let bytes: Uint8Array;
   let raw: unknown;
   try {
     bytes = readFileSync(file);
     raw = JSON.parse(new TextDecoder().decode(bytes));
   } catch (error) {
-    throw new LoadRefused(`cannot read the profile ${file} as JSON: ${messageFor(error)}`);
+    throw new Refused(`cannot read the profile ${file} as JSON: ${messageFor(error)}`);
   }
   const parsed = LoadProfile.safeParse(raw);
   if (!parsed.success) {
-    throw new LoadRefused(`the profile ${file} is refused: ${issueText(parsed.error)}`);
+    throw new Refused(`the profile ${file} is refused: ${schemaFaults(parsed.error)}`);
   }
   const profile = parsed.data;
   const faults: string[] = [];
@@ -396,7 +361,7 @@ export function loadProfile(file: string, host: Host, name: string): TaskProfile
     }
   }
   if (faults.length > 0) {
-    throw new LoadRefused(`the profile ${file} is refused: ${faults.join("; ")}`);
+    throw new Refused(`the profile ${file} is refused: ${faults.join("; ")}`);
   }
   const plugin = host === "claude" ? layout?.skillPlugin : undefined;
   return {
@@ -415,7 +380,7 @@ interface ProfiledTask {
 
 /** Each task of `tasks` in order, with its profile: the file the task names (absolute, or
  *  relative to the tasks file's directory), else `o.profileFile` (`--profile`); each file read
- *  once (`loadProfile`). Throws a LoadRefused naming each task that names no profile when no
+ *  once (`loadProfile`). Throws a refusal naming each task that names no profile when no
  *  `--profile` is given, or a profile's refusal. */
 function taskProfiles(
   tasks: readonly Task[],
@@ -442,7 +407,7 @@ function taskProfiles(
   }
   if (lacking.length > 0) {
     const one = lacking.length === 1;
-    throw new LoadRefused(
+    throw new Refused(
       `${one ? "task" : "tasks"} ${lacking.join(", ")} of ${o.tasksFile} ${one ? "names" : "name"} no profile, and no --profile is given for a task that names none`
     );
   }
@@ -461,7 +426,7 @@ export function skillName(dir: string): string {
  * A copy of the skill in `dir` under the name `name`, at `<scratch>/<name>`, replacing one there:
  * the same files byte for byte, but for its SKILL.md's frontmatter `name` line, which becomes
  * `name: <name>` (added at the frontmatter's top when it has none). Nothing else that names the
- * skill changes: its own text, its references, and every file outside it. Throws a LoadRefused
+ * skill changes: its own text, its references, and every file outside it. Throws a refusal
  * when the SKILL.md has no frontmatter.
  */
 export function renamedSkill(dir: string, name: string, scratch: string): string {
@@ -470,7 +435,7 @@ export function renamedSkill(dir: string, name: string, scratch: string): string
   const open = /^---\r?\n/.exec(text)?.[0];
   const block = FRONTMATTER.exec(text)?.[1];
   if (open === undefined || block === undefined) {
-    throw new LoadRefused(`${file} has no frontmatter, so it has no name to change`);
+    throw new Refused(`${file} has no frontmatter, so it has no name to change`);
   }
   const named = /^name:.*$/m.test(block)
     ? block.replace(/^name:.*$/m, `name: ${name}`)
@@ -656,7 +621,7 @@ export function loadRunFile(out: string, taskId: string): string {
 }
 
 /** What a Claude Code capture used and saw. */
-export interface ClaudeCaptureRecord {
+interface ClaudeCaptureRecord {
   readonly task: string;
   readonly capturedAt: string;
   readonly claude: { readonly binary: string; readonly version: string };
@@ -722,7 +687,7 @@ interface TaskRuns {
 }
 
 /** What a load test reads and writes beside its inputs. */
-export interface LoadIo {
+interface LoadIo {
   /** Writes `text` to standard output as it is. */
   out(text: string): void;
   /** Writes one line to standard error. */
@@ -731,7 +696,7 @@ export interface LoadIo {
   peakRssBytes(): number;
 }
 
-export interface LoadOptions {
+interface LoadOptions {
   readonly io: LoadIo;
   readonly host: Host;
   /** The skill's directory as written. */
@@ -757,9 +722,10 @@ export interface LoadOptions {
   /** The scratch directory, and the cache of context.ts's builds and of the hints. */
   readonly scratch: string;
   readonly cacheDir: string;
-  /** Oh My Pi: its binary; the `models.yml` a capture needs (a missing capture fails without it);
-   *  the model that writes hints; settings files laid over the scratch profile's. */
-  readonly omp: string;
+  /** Oh My Pi: its binary (only where a capture is made: none is given when every one is read
+   *  back); the `models.yml` a capture needs (a missing capture fails without it); the model that
+   *  writes hints; settings files laid over the scratch profile's. */
+  readonly omp?: string;
   readonly models?: string;
   readonly hintModel?: string;
   readonly configFiles: readonly string[];
@@ -769,12 +735,10 @@ export interface LoadOptions {
   readonly requestLog: string;
   /** The most the peak resident memory may reach: a task that ends above it stops the test. */
   readonly memoryLimitBytes: number;
-  /** The longest one host run may take. */
-  readonly timeoutMs?: number;
 }
 
 /** What the test came to: each task or run that failed. */
-export interface LoadResult {
+interface LoadResult {
   readonly failures: readonly string[];
 }
 
@@ -912,7 +876,6 @@ class LoadTest {
         hints: this.o.hints,
         ...(this.o.hintModel === undefined ? {} : { hintModel: this.o.hintModel }),
         configFiles: this.o.configFiles,
-        ...(this.o.timeoutMs === undefined ? {} : { timeoutMs: this.o.timeoutMs }),
       });
     }
     if (capture === undefined) {
@@ -1082,8 +1045,7 @@ class LoadTest {
           stderr: Bun.file(stderrFile),
         }
       );
-      const timeoutMs = this.o.timeoutMs ?? RUN_TIMEOUT_MS;
-      const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+      const timer = setTimeout(() => child.kill("SIGKILL"), RUN_TIMEOUT_MS);
       const code = await child.exited;
       clearTimeout(timer);
       if (code !== 0) {
@@ -1120,9 +1082,7 @@ class LoadTest {
       profile: profile.file,
       profileDigest: profile.digest,
       requestPath: turn.path,
-      requestHeaders: Object.fromEntries(
-        Object.entries(turn.headers).filter(([name]) => name.startsWith("anthropic-"))
-      ),
+      requestHeaders: anthropicHeaders(turn.headers),
       listed,
       listing: [...listing].map(([name, description]) => ({ name, description })),
       otherRequests: requests
@@ -1141,7 +1101,7 @@ class LoadTest {
     };
   }
 
-  /** The runs task `id` has saved. Throws a LoadRefused when its file holds a line that is not
+  /** The runs task `id` has saved. Throws a refusal when its file holds a line that is not
    *  its next run, or a run made under a profile of other bytes than `profile`. */
   savedRuns(id: string, profile: TaskProfile): LoadRun[] {
     const file = loadRunFile(this.o.out, id);
@@ -1157,11 +1117,11 @@ class LoadTest {
       }
       const parsed = LoadRun.safeParse(raw);
       if (!parsed.success || parsed.data.task !== id || parsed.data.run !== runs.length + 1) {
-        throw new LoadRefused(`${file}:${index + 1} is not run ${runs.length + 1} of task ${id}`);
+        throw new Refused(`${file}:${index + 1} is not run ${runs.length + 1} of task ${id}`);
       }
       const run = parsed.data;
       if (run.profileDigest !== profile.digest) {
-        throw new LoadRefused(
+        throw new Refused(
           `${file}:${index + 1}: run ${run.run} of task ${id} ran under the profile ${run.profile} (SHA-256 ${run.profileDigest}), not ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
       }
@@ -1261,47 +1221,47 @@ function verdictWords(task: Task, outcome: TaskOutcome, wanted: number): string 
     : `a fault: a near-miss task loads it in more than ${NEAR_MISS_MAX_LOADS} of ${LOAD_RUNS} runs`;
 }
 
-/** Runs the load test `o` names (see the file's header). Throws a LoadRefused before any model
- *  call when an input is refused, and a LoadStopped, after saving, when the budget is spent or the
+/** Runs the load test `o` names (see the file's header). Throws a refusal before any model call
+ *  when an input is refused, and a Stopped, after saving, when the budget is spent or the
  *  peak memory passes `o.memoryLimitBytes`. */
 export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const given = path.resolve(o.skillDir);
   if (!statSync(path.join(given, "SKILL.md"), { throwIfNoEntry: false })?.isFile()) {
-    throw new LoadRefused(`--skill ${o.skillDir} holds no SKILL.md`);
+    throw new Refused(`--skill ${o.skillDir} holds no SKILL.md`);
   }
   const own = skillName(given);
   const name = o.name ?? own;
   if (!NAME.test(name)) {
-    throw new LoadRefused(`${JSON.stringify(name)} is not a name a skill can be listed under`);
+    throw new Refused(`${JSON.stringify(name)} is not a name a skill can be listed under`);
   }
   if (skillFrontmatter(given).hidden) {
-    throw new LoadRefused(
+    throw new Refused(
       `${o.skillDir} sets hide or disable-model-invocation, so no host lists it for its agent to load`
     );
   }
   if (!Number.isInteger(o.runs) || o.runs < 1) {
-    throw new LoadRefused(`--runs ${o.runs} is not a whole number of 1 or more`);
+    throw new Refused(`--runs ${o.runs} is not a whole number of 1 or more`);
   }
   const slash = o.model.indexOf("/");
   const provider = slash < 0 ? "anthropic" : o.model.slice(0, slash);
   const modelId = o.model.slice(slash + 1);
   if (provider !== "anthropic" && provider !== "openai") {
-    throw new LoadRefused(
+    throw new Refused(
       `--model ${o.model}: the runs go to the gateway's Anthropic Messages route (anthropic/<id>) or its OpenAI Responses route (openai/<id>)`
     );
   }
   if (provider === "openai" && o.host === "claude") {
-    throw new LoadRefused(
+    throw new Refused(
       `--model ${o.model}: Claude Code calls the Anthropic Messages API only, so its model is anthropic/<id>`
     );
   }
   if (PRICES[modelId] === undefined) {
-    throw new LoadRefused(
+    throw new Refused(
       `gateway.ts has no list price for ${modelId}, so the runs' dollars could not be counted`
     );
   }
   if (o.host === "claude" && o.thinking === "minimal") {
-    throw new LoadRefused(
+    throw new Refused(
       `Claude Code has no thinking level minimal: it takes off, auto, or ${CLAUDE_EFFORTS.join(", ")} (--effort)`
     );
   }
@@ -1318,7 +1278,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       return existsSync(files.body) && existsSync(files.record);
     })
   ) {
-    throw new LoadRefused(
+    throw new Refused(
       `--model ${o.model} is given with no --hint-model, so the hint model is ${o.model}, and Oh My Pi's hints are written on the Anthropic Messages route only: each task's capture would fail. Give --hint-model anthropic/<id>`
     );
   }
@@ -1342,16 +1302,16 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       raw = undefined;
     }
     const saved = SavedSummary.safeParse(raw);
-    if (!saved.success) throw new LoadRefused(`${summaryFile} is not a load test's summary`);
+    if (!saved.success) throw new Refused(`${summaryFile} is not a load test's summary`);
     if (JSON.stringify(saved.data.settings) !== JSON.stringify(settings)) {
-      throw new LoadRefused(
+      throw new Refused(
         `${o.out} holds a load test of other settings (${JSON.stringify(saved.data.settings)}) than this one's (${JSON.stringify(settings)}): use another --out`
       );
     }
     for (const { task, profile } of profiled) {
       const before = saved.data.tasks.find((each) => each.id === task.id);
       if (before !== undefined && before.text !== task.text) {
-        throw new LoadRefused(
+        throw new Refused(
           `${o.out} holds runs of a task ${task.id} with another text: give the new text another id, or use another --out`
         );
       }
@@ -1360,12 +1320,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         existsSync(loadCapturePaths(o.out, o.host, task.id).body) ||
         existsSync(loadRunFile(o.out, task.id));
       if (made && before === undefined) {
-        throw new LoadRefused(
+        throw new Refused(
           `${o.out} holds a capture or runs of task ${task.id}, which its summary does not list, so the text and the profile they were made for cannot be checked: give the task another id, or use another --out`
         );
       }
       if (made && before !== undefined && before.profileDigest !== profile.digest) {
-        throw new LoadRefused(
+        throw new Refused(
           `${o.out} holds task ${task.id} made under a profile of other bytes (SHA-256 ${before.profileDigest ?? "not recorded"}) than ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
       }
@@ -1382,10 +1342,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const runsOf = new Map(
     profiled.map(({ task, profile }) => [task.id, test.savedRuns(task.id, profile)])
   );
-  const outcomes = new Map(
-    tasks.map((task) => [task.id, taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs)])
-  );
-  const outcomeOf = (task: Task): TaskOutcome => outcomes.get(task.id) as TaskOutcome;
+  /** A task's outcome from the runs it has so far. */
+  const outcomeOf = (task: Task): TaskOutcome =>
+    taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs);
   let peak = 0;
   // Each task's hint dollars, from its capture's record: read at the start, and again when the
   // task has run, since its capture may have been made then.
@@ -1476,13 +1435,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     try {
       ran = await test.runTask(task, saved, profile);
     } catch (error) {
-      if (error instanceof LoadRefused) throw error;
       // The budget refused a hint call of the task's capture: the test stops as it does when it
       // refuses a run.
       if (error instanceof BudgetSpent) {
         peak = Math.max(peak, o.io.peakRssBytes());
         writeSummary();
-        throw new LoadStopped(
+        throw new Stopped(
           `the budget is spent, so no new model call starts, and task ${task.id} has no capture; the runs so far are saved under ${o.out}`
         );
       }
@@ -1491,8 +1449,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       continue;
     }
     runsOf.set(task.id, ran.runs);
-    const outcome = taskOutcome(task.label, ran.runs, o.runs);
-    outcomes.set(task.id, outcome);
+    const outcome = outcomeOf(task);
     readHintDollars(task);
     peak = Math.max(peak, o.io.peakRssBytes());
     const summaryStarted = performance.now();
@@ -1516,12 +1473,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       o.io.err(`load: ${failure}`);
     }
     if (ran.budgetSpent) {
-      throw new LoadStopped(
+      throw new Stopped(
         `the budget is spent, so no new model call starts; the runs so far are saved under ${o.out}`
       );
     }
     if (peak > o.memoryLimitBytes) {
-      throw new LoadStopped(
+      throw new Stopped(
         `the runner's peak resident memory, ${Math.round(peak / 2 ** 20)} MiB, is above its limit of ${Math.round(o.memoryLimitBytes / 2 ** 20)} MiB, so the test stops after task ${task.id}; its runs are saved under ${o.out}`
       );
     }

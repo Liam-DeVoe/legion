@@ -50,6 +50,9 @@ export const Arm = z.enum(["old", "new", "none", "minus"]);
 export type Arm = z.infer<typeof Arm>;
 export const Stage = z.enum(["screen", "confirm", "control"]);
 export type Stage = z.infer<typeof Stage>;
+/** Where a case stands in a stage (StageOutcome's `state`). */
+export const StageState = z.enum(["running", "counted", "unscreened"]);
+export type StageState = z.infer<typeof StageState>;
 /** One run of one arm of a case: its judge's verdict, or null for a run that errored, timed out or
  *  whose judgement did not parse, and the judge's reason or what went wrong. */
 export const RunRecord = z.strictObject({
@@ -250,7 +253,7 @@ export function scoreSkill(records: readonly RunRecord[]): SkillScore {
     controlCase: chosen,
     control,
   };
-  const waiting = (outcome: { state: string } | undefined) => outcome?.state === "running";
+  const waiting = (outcome: { state: StageState } | undefined) => outcome?.state === "running";
   if (cases.some((c) => waiting(c.screen))) return { ...score, outcome: undefined };
   if (informative >= MIN_INFORMATIVE_CASES && waiting(control))
     return { ...score, outcome: undefined };
