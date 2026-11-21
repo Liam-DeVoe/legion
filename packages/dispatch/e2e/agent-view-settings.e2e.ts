@@ -29,8 +29,8 @@ import { asUser } from "./users";
  *
  * The frames are spelt here as the wire carries them, never imported from the SPA or the
  * contracts, so each row fails on its own assertion against a server from before the change. The
- * requests a row sends itself take their route's URL and answer from the generated contract
- * (`routePath` and `Refusal`), as every row's do.
+ * requests these rows send themselves take their route's URL and answer from the generated
+ * contract (`routePath` and `Refusal`).
  */
 
 /** The phone layout runs on Chromium (the `iphone` project) and on WebKit (`webkit-iphone`). */

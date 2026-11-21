@@ -13,8 +13,8 @@
 // Comparing a tree against another is what it is for: run it on this head and on another
 // checkout, and read the two lines it prints for the queued writer. It reads its route's URL and
 // answers from the generated contract (`routePath`, `Result` and `Refusal` in
-// web/src/api/paths.ts), as every row does, so the other checkout must hold them too: a tree from
-// before they came cannot load this file.
+// web/src/api/paths.ts), so the other checkout must hold them too: a tree from before they came
+// cannot load this file.
 
 import { type Refusal, type Result, routePath } from "../web/src/api/paths";
 import {
