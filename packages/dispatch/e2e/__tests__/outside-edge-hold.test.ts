@@ -10,13 +10,18 @@
  *  OUTSIDE_EDGE_STATE alone. Each way a hold ends is a row, and so is each refusal: a hold time
  *  outside 60 to 3600 s, a listener that refuses the registration, a listener that closes the held
  *  socket, an unregister that fails, no hold to release, a holder that ignores SIGTERM, and a held
- *  pid whose process started at another time, which release does not signal. The rows start no
+ *  pid whose process started at another time, which release does not signal. So is each way a
+ *  hold ends before it holds anything: a flush the listener never answers, which fails at its
+ *  bound; and a SIGTERM while the socket opens, while the flush waits, and while the listener
+ *  answers the registration, after which no registration stands. For the first three a mute
+ *  listener (`startMuteListener`) takes the socket and answers nothing on it. The rows start no
  *  browser and no stack, so they run wherever `e2e/__tests__` runs; they read `/proc`, as `hold`
  *  and `release` do. */
 
 import { describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +39,10 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import {
   type BoundedRun,
+  beforeDeadline,
+  bounds,
   eventually,
+  pastDeadline,
   rowLimit,
   runBounded,
   watch,
@@ -54,8 +62,11 @@ interface HoldEdge {
 
 /** Starts the edge: the relay socket stand-in, which trades and serves the socket, with the
  *  device login's two grants, approved at once, the registration and its end. `registration`
- *  and `unregister` are the statuses those two answer, 200 where unset. */
-function startHoldEdge(answers: { registration?: number; unregister?: number } = {}): HoldEdge {
+ *  and `unregister` are the statuses those two answer, 200 where unset; with `answerAfter`, the
+ *  registration is answered only once that settles. */
+function startHoldEdge(
+  answers: { registration?: number; unregister?: number; answerAfter?: Promise<unknown> } = {}
+): HoldEdge {
   const registrations: string[] = [];
   const unregisters: string[] = [];
   const pair = () =>
@@ -94,6 +105,7 @@ function startHoldEdge(answers: { registration?: number; unregister?: number } =
         const session =
           typeof body === "object" && body !== null ? String(Reflect.get(body, "session_id")) : "";
         registrations.push(session);
+        await answers.answerAfter;
         const status = answers.registration ?? 200;
         if (status !== 200) {
           return Response.json(
@@ -142,24 +154,189 @@ async function keptState(edge: HoldEdge): Promise<{ state: string; session: stri
   return { state, session };
 }
 
-/** `hold`, with the variables a check gives it and these beside them. */
-function hold(edge: HoldEdge, state: string, extra: Record<string, string> = {}) {
+/** The variables a check gives `hold`: the edge's two URLs, the project and the state. */
+function holdEnv(broker: string, listener: string, state: string): Record<string, string> {
+  return {
+    PATH: process.env.PATH ?? "",
+    HOME: process.env.HOME ?? "",
+    OUTSIDE_EDGE_ALLOW_HTTP: "1",
+    OUTSIDE_PROJECT: "OWN",
+    OUTSIDE_BROKER_URL: broker,
+    OUTSIDE_LISTENER_URL: listener,
+    OUTSIDE_EDGE_STATE: state,
+  };
+}
+
+/** `hold`, with the variables a check gives it and these beside them; its listener the edge's
+ *  own unless `listener` names another. */
+function hold(
+  edge: HoldEdge,
+  state: string,
+  extra: Record<string, string> = {},
+  listener = edge.relay.url
+) {
   return runBounded({
     argv: ["bun", driver, "hold"],
     bound: "outsideEdgeHold",
     cwd: dispatchPackage,
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: process.env.HOME ?? "",
-      OUTSIDE_EDGE_ALLOW_HTTP: "1",
-      OUTSIDE_PROJECT: "OWN",
-      OUTSIDE_BROKER_URL: edge.relay.url,
-      OUTSIDE_LISTENER_URL: edge.relay.url,
-      OUTSIDE_EDGE_STATE: state,
-      ...extra,
-    },
+    env: { ...holdEnv(edge.relay.url, listener, state), ...extra },
     from: import.meta.url,
   });
+}
+
+/** `hold` as a process the row drives rather than waits for: the row signals it, so it needs its
+ *  pid, and reads what it printed as it comes. `ended` waits for its exit for the hold's bound at
+ *  most; `kill` ends one still running, which the row's `finally` calls. */
+interface DrivenHold {
+  readonly pid: number;
+  stdout(): string;
+  stderr(): string;
+  ended(): Promise<number>;
+  kill(): void;
+}
+
+function driveHold(broker: string, listener: string, state: string): DrivenHold {
+  const child = Bun.spawn(["bun", driver, "hold"], {
+    cwd: dispatchPackage,
+    env: holdEnv(broker, listener, state),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  let out = "";
+  let err = "";
+  const read = async (stream: ReadableStream<Uint8Array>, add: (text: string) => void) => {
+    const decoder = new TextDecoder();
+    const reader = stream.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      add(decoder.decode(value, { stream: true }));
+    }
+  };
+  const reads = Promise.all([
+    read(child.stdout, (text) => {
+      out += text;
+    }),
+    read(child.stderr, (text) => {
+      err += text;
+    }),
+  ]);
+  return {
+    pid: child.pid,
+    stdout: () => out,
+    stderr: () => err,
+    async ended() {
+      const code = await beforeDeadline(child.exited, performance.now() + bounds.outsideEdgeHold);
+      if (code === pastDeadline) {
+        throw new Error(`the hold did not end within ${bounds.outsideEdgeHold} ms:\n${out}${err}`);
+      }
+      await reads;
+      return code;
+    },
+    kill() {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    },
+  };
+}
+
+/** A listener that answers nothing on the relay socket: it takes the upgrade (unless `upgrade` is
+ *  false, when the socket never opens) and then reads the client's frames and answers none, so a
+ *  flush's ping gets no pong. Any other request is answered 404. It records each request line,
+ *  and the opcode of each frame the client sent on an upgraded socket (RFC 6455 section 5.2). */
+interface MuteListener {
+  readonly url: string;
+  readonly requests: string[];
+  readonly opcodes: number[];
+  stop(): void;
+}
+
+/** The opcode of each whole frame at the head of `buffer`, pushed onto `opcodes`; answers what is
+ *  left of it, a frame not yet whole. */
+function framesRead(buffer: Buffer, opcodes: number[]): Buffer {
+  let at = buffer;
+  for (;;) {
+    if (at.length < 2) return at;
+    const short = at.readUInt8(1) & 0x7f;
+    const masked = (at.readUInt8(1) & 0x80) !== 0;
+    let head = 2;
+    let length = short;
+    if (short === 126) {
+      if (at.length < 4) return at;
+      head = 4;
+      length = at.readUInt16BE(2);
+    } else if (short === 127) {
+      if (at.length < 10) return at;
+      head = 10;
+      length = Number(at.readBigUInt64BE(2));
+    }
+    const whole = head + (masked ? 4 : 0) + length;
+    if (at.length < whole) return at;
+    opcodes.push(at.readUInt8(0) & 0x0f);
+    at = at.subarray(whole);
+  }
+}
+
+async function startMuteListener(upgrade: boolean): Promise<MuteListener> {
+  const requests: string[] = [];
+  const opcodes: number[] = [];
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => undefined);
+    let head = Buffer.alloc(0);
+    let frames: Buffer | undefined;
+    socket.on("data", (chunk: Buffer) => {
+      if (frames !== undefined) {
+        frames = framesRead(Buffer.concat([frames, chunk]), opcodes);
+        return;
+      }
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const lines = head.subarray(0, end).toString("latin1").split("\r\n");
+      requests.push(lines[0] ?? "");
+      const key = lines
+        .find((line) => /^sec-websocket-key:/i.test(line))
+        ?.slice("sec-websocket-key:".length)
+        .trim();
+      if (key === undefined) {
+        socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      if (!upgrade) return;
+      const accept = createHash("sha1")
+        .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+        .digest("base64");
+      socket.write(
+        [
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${accept}`,
+          "Sec-WebSocket-Protocol: envoy-relay.v1",
+          "",
+          "",
+        ].join("\r\n")
+      );
+      frames = framesRead(head.subarray(end + 4), opcodes);
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", () => listening.resolve());
+  await listening.promise;
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("the mute listener bound no port");
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    requests,
+    opcodes,
+    stop() {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
 }
 
 /** `release`, with OUTSIDE_EDGE_STATE alone. */
@@ -498,5 +675,125 @@ describe("hold and release, against an edge stand-in", () => {
       }
     },
     rowLimit("short", "short", "short")
+  );
+
+  test(
+    "a flush the listener never answers fails at its bound, naming it, and sends no registration",
+    async () => {
+      const edge = startHoldEdge();
+      const mute = await startMuteListener(true);
+      const { state, session } = await keptState(edge);
+      try {
+        const ran = await hold(edge, state, {}, mute.url);
+        expect(ran.stdout, ran.stderr).toBe(
+          `UNKNOWN: the listener did not register ${session}: the relay socket's flush got no answer within 10 s, so no registration was sent\n`
+        );
+        expect(ran.code).toBe(2);
+        expect(existsSync(join(state, "held"))).toBe(false);
+        // The flush's ping reached the listener, and nothing but the upgrade did: no
+        // registration, so no unregister either.
+        expect(mute.opcodes).toContain(0x9);
+        expect(mute.requests).toHaveLength(1);
+        expect(mute.requests[0]).toStartWith(`GET /v1/sessions/${session}/relay `);
+      } finally {
+        mute.stop();
+        edge.relay.stop();
+        rmSync(state, { force: true, recursive: true });
+      }
+    },
+    rowLimit("outsideEdgeHold")
+  );
+
+  test(
+    "a SIGTERM while the relay socket opens ends the hold, which sends no registration and holds nothing",
+    async () => {
+      const edge = startHoldEdge();
+      const mute = await startMuteListener(false);
+      const { state, session } = await keptState(edge);
+      const holding = driveHold(edge.relay.url, mute.url, state);
+      try {
+        await eventually(
+          "the relay socket's upgrade at the listener",
+          () => mute.requests.length > 0
+        );
+        process.kill(holding.pid, "SIGTERM");
+        const code = await holding.ended();
+        expect(holding.stdout(), holding.stderr()).toBe(
+          `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
+        );
+        expect(code).toBe(2);
+        expect(existsSync(join(state, "held"))).toBe(false);
+        for (const line of mute.requests) {
+          expect(line).toStartWith(`GET /v1/sessions/${session}/relay `);
+        }
+        expect(edge.registrations).toEqual([]);
+      } finally {
+        holding.kill();
+        mute.stop();
+        edge.relay.stop();
+        rmSync(state, { force: true, recursive: true });
+      }
+    },
+    rowLimit("short", "outsideEdgeHold")
+  );
+
+  test(
+    "a SIGTERM while the flush waits for its pong ends the hold, which sends no registration",
+    async () => {
+      const edge = startHoldEdge();
+      const mute = await startMuteListener(true);
+      const { state, session } = await keptState(edge);
+      const holding = driveHold(edge.relay.url, mute.url, state);
+      try {
+        await eventually("the flush's ping at the listener", () => mute.opcodes.includes(0x9));
+        process.kill(holding.pid, "SIGTERM");
+        const code = await holding.ended();
+        expect(holding.stdout(), holding.stderr()).toBe(
+          `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
+        );
+        expect(code).toBe(2);
+        expect(existsSync(join(state, "held"))).toBe(false);
+        expect(mute.requests).toHaveLength(1);
+        expect(mute.requests[0]).toStartWith(`GET /v1/sessions/${session}/relay `);
+      } finally {
+        holding.kill();
+        mute.stop();
+        edge.relay.stop();
+        rmSync(state, { force: true, recursive: true });
+      }
+    },
+    rowLimit("short", "outsideEdgeHold")
+  );
+
+  test(
+    "a SIGTERM while the listener answers the registration leaves no session held and none registered",
+    async () => {
+      const answer = Promise.withResolvers<void>();
+      const edge = startHoldEdge({ answerAfter: answer.promise });
+      const { state, session } = await keptState(edge);
+      const holding = driveHold(edge.relay.url, edge.relay.url, state);
+      try {
+        await eventually("the registration at the listener", () => edge.registrations.length > 0);
+        process.kill(holding.pid, "SIGTERM");
+        // The listener answers once the hold has taken the SIGTERM, which it says on stderr; a
+        // hold that never says so is answered at the short bound, and is judged by what it did.
+        await whether(() => holding.stderr().includes("outside-edge: hold got SIGTERM\n"));
+        answer.resolve();
+        const code = await holding.ended();
+        expect(holding.stdout(), holding.stderr()).toBe(
+          `UNKNOWN: no session held: SIGTERM came while the listener answered the registration of ${session}; unregistered\n`
+        );
+        expect(code).toBe(2);
+        expect(existsSync(join(state, "held"))).toBe(false);
+        expect(edge.registrations).toEqual([session]);
+        expect(edge.unregisters).toEqual([session]);
+      } finally {
+        answer.resolve();
+        holding.kill();
+        edge.relay.stop();
+        rmSync(state, { force: true, recursive: true });
+      }
+    },
+    rowLimit("short", "short", "outsideEdgeHold")
   );
 });

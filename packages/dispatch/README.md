@@ -881,8 +881,11 @@ that acts as the person's session: it reads `OUTSIDE_EDGE_STATE`, `OUTSIDE_PROJE
 registration, and holds until SIGTERM or
 `OUTSIDE_EDGE_HOLD_SECONDS` (1200, from 60 to 3600). Then it unregisters the session, writes
 `released` (`unregistered`, or why not) and prints `RELEASED <session>`, exiting 2 where the
-unregister failed. A registration the listener refused is `UNKNOWN` with no `held`, and a held
-socket the listener closed is printed with its close code and not registered again, exit 2.
+unregister failed. A registration the listener refused is `UNKNOWN` with no `held`, as is a flush
+before it that got no answer within 10 s, which sends none; a held socket the listener closed is
+printed with its close code and not registered again, exit 2. A SIGTERM before `held` is written
+holds nothing: before the registration is sent, none is sent; while the listener answers it, the
+session is unregistered once answered; either way `UNKNOWN: no session held: …`, exit 2.
 `release`, with `OUTSIDE_EDGE_STATE` alone, sends the holder SIGTERM, waits up to 15 s, and prints
 `RELEASED <session>` only when `released` says `unregistered`; a holder still running then is
 sent SIGKILL, exit 2. A pid whose process did not start when `held` says is not signalled:
@@ -898,8 +901,10 @@ relay client's socket. Those that start Chromium skip where Playwright's Chromiu
 installed. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against envoy-client's
 relay socket stand-in with a device login the real broker client made: held then released,
 held until its 60 s, a hold time out of range, a refused registration, a closed held socket, a
-failed unregister, nothing to release, a holder that ignores SIGTERM, and a held pid whose process
-started at another time, which is not signalled. The stack rows start one
+failed unregister, nothing to release, a holder that ignores SIGTERM, a held pid whose process
+started at another time, which is not signalled, a flush the listener never answers, and a
+SIGTERM while the socket opens, while the flush waits and while the listener answers the
+registration, each against a listener that answers late or not at all. The stack rows start one
 stack of the harness under `DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`),
 with an edge stand-in that serves the broker's device grant and the listener on envoy-client's
 relay socket stand-in (`e2e/__tests__/outside-edge-stand-in.ts`), and run the driver once per

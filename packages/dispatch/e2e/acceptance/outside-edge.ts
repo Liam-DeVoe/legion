@@ -87,8 +87,11 @@
  *  OUTSIDE_EDGE_HOLD_SECONDS have passed (1200 when unset; 60 to 3600), then unregisters the
  *  session, writes `released` (`unregistered`, or why not) and prints `RELEASED <session>`: 0, or
  *  2 where the unregister failed. A registration the listener did not take is
- *  `UNKNOWN: <why>` (2) with no `held`; a held socket the listener closed is printed with its
- *  close code, the session is not registered again, and the exit is 2.
+ *  `UNKNOWN: <why>` (2) with no `held`, and so is a flush before it that got no answer within
+ *  10 s, which sends none; a held socket the listener closed is printed with its close code, the
+ *  session is not registered again, and the exit is 2. A SIGTERM before `held` is written holds
+ *  nothing: before the registration is sent, none is sent; while the listener answers it, the
+ *  session is unregistered once answered; either way `UNKNOWN: no session held: …` (2).
  *
  *  `release` ends that hold, reading OUTSIDE_EDGE_STATE alone: SIGTERM to the pid `held` names,
  *  up to 15 s for it to end, then `RELEASED <session>` (0) when `released` says `unregistered`,
@@ -748,27 +751,82 @@ function sessionDelivery(
   });
 }
 
+/** How long the relay socket's flush before a registration may take: one round trip, which the
+ *  listener answers once it has read the subscription sent before it. The flush waits for an open
+ *  socket first, which for one that closes as it opens is a wait with no end of its own. */
+const FLUSH_MS = 10_000;
+
+/** A registration that was never sent, so the listener holds nothing of it: its flush failed or
+ *  got no answer within FLUSH_MS, or `stop` ended the wait first (`byStop`). */
+class NothingSent extends Error {
+  constructor(
+    message: string,
+    readonly byStop: boolean,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+  }
+}
+
+/** Rejects with `signal`'s reason once it aborts. */
+function aborted(signal: AbortSignal): Promise<never> {
+  const { promise, reject } = Promise.withResolvers<never>();
+  if (signal.aborted) reject(signal.reason);
+  else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  return promise;
+}
+
 /** Registers `session` at the listener as a session host does: its relay subject held on its
  *  open socket first, then the registration, which names the session's own agent subject alone
- *  and asks for consumer delivery. Throws where the listener did not take it. */
+ *  and asks for consumer delivery. Throws where the listener did not take it: `NothingSent` where
+ *  no registration went out, because the flush failed or got no answer within FLUSH_MS, or
+ *  because `stop` aborted first, while the flush waited or before the registration was sent. */
 async function registerSession(
   session: string,
   socket: ListenerRelay,
   client: EnvoyClient,
-  delivery: ConsumerDelivery
+  delivery: ConsumerDelivery,
+  stop?: AbortSignal
 ): Promise<void> {
   const subscription = socket.subscribe(delivery.subject);
   void (async () => {
     for await (const message of subscription) delivery.receive(message);
   })();
-  await socket.flush();
+  const bound = AbortSignal.timeout(FLUSH_MS);
+  const flushed = socket.flush();
+  // The flush a bound or a stop left rejects once the socket closes, and nothing reads that.
+  flushed.catch(() => undefined);
+  try {
+    await Promise.race([
+      flushed,
+      aborted(stop === undefined ? bound : AbortSignal.any([bound, stop])),
+    ]);
+  } catch (error) {
+    // What ended the wait: `stop`, whose reason the combined signal carries, or the flush.
+    if (stop !== undefined && error === stop.reason) {
+      throw new NothingSent("stopped while the flush waited", true, { cause: error });
+    }
+    throw new NothingSent(
+      bound.aborted
+        ? `the relay socket's flush got no answer within ${FLUSH_MS / 1000} s, so no registration was sent`
+        : `${messageOf(error)}, so no registration was sent`,
+      false,
+      { cause: error }
+    );
+  }
   await registerWithRelay({
     relay: delivery,
     ownAgentSubject: legacyAgentSubject(session),
     followed: () => [],
     outage,
-    send: (topics, request) =>
-      client.subscribe({
+    send: async (topics, request) => {
+      // A resend after a refusal, which left nothing registered, is not sent after a stop either.
+      if (stop?.aborted === true) {
+        throw new NothingSent("stopped before the registration was sent", true, {
+          cause: stop.reason,
+        });
+      }
+      return client.subscribe({
         sessionID: session,
         directory: "/outside-edge-e2e",
         topics,
@@ -777,7 +835,8 @@ async function registerSession(
         driving: false,
         delivery: request,
         plugin: { name: "outside-edge-e2e", version: "1" },
-      }),
+      });
+    },
     answered: (result) => delivery.answered(result.delivery),
     // The session follows no topic, so a project refusal has nothing of it to drop: one that
     // names only its own agent subject fails the registration.
@@ -1454,12 +1513,23 @@ type HoldEnd = { readonly by: "SIGTERM" | "time" } | { readonly by: "close"; rea
  * `RELEASED <session>`: 0, or 2 where the unregister failed. A socket the listener closes ends the
  * hold too, and the session is not registered again: it prints the close with its code, writes
  * `released` naming the close, and exits 2.
+ *
+ * A SIGTERM before the session is held holds nothing, so a holder its caller gives up on ends
+ * before its caller sends SIGKILL: while the socket opens or its flush waits, the hold sends no
+ * registration and exits 2 at once; while the listener answers one, the hold waits for that
+ * answer (the client's bound), unregisters the session (UNREGISTER_MS) and exits 2. Neither
+ * writes `held`.
  */
 async function hold(env: NodeJS.ProcessEnv): Promise<number> {
-  // Taken from the start: a SIGTERM before the registration was answered ends the hold as soon
-  // as it is.
+  // Taken from the start: a SIGTERM before the session is held stops the hold before it sends a
+  // registration, or ends the registration it sent.
   const ended = Promise.withResolvers<HoldEnd>();
-  const terminated = () => ended.resolve({ by: "SIGTERM" });
+  const stop = new AbortController();
+  const terminated = () => {
+    log("hold got SIGTERM");
+    stop.abort(new Error("SIGTERM"));
+    ended.resolve({ by: "SIGTERM" });
+  };
   process.on("SIGTERM", terminated);
   try {
     let inputs: HoldInputs;
@@ -1491,14 +1561,21 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
       const closed = CLOSED_LINE.exec(line);
       if (closed?.[1] !== undefined) closedWith = closed[1];
     };
+    const notSent = `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent`;
+    // The open ends at OPEN_MS, or at a SIGTERM, whose reason the combined signal then carries.
+    const opening = AbortSignal.any([AbortSignal.timeout(OPEN_MS), stop.signal]);
     let socket: ListenerRelay;
     try {
       socket = await connectListenerRelay(
         { url: inputs.listener, session, credential, outage, log: logClose },
-        AbortSignal.timeout(OPEN_MS)
+        opening
       );
     } catch (error) {
-      console.log(`UNKNOWN: the relay socket of ${session} did not open: ${messageOf(error)}`);
+      console.log(
+        opening.aborted && opening.reason === stop.signal.reason
+          ? notSent
+          : `UNKNOWN: the relay socket of ${session} did not open: ${messageOf(error)}`
+      );
       return 2;
     }
     const statuses = socket.status();
@@ -1515,10 +1592,30 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     // The held session reads nothing itself: each frame is taken, so none waits on it.
     const delivery = sessionDelivery(session, socket, (frame) => frame.done());
     try {
-      await registerSession(session, socket, client, delivery);
+      await registerSession(session, socket, client, delivery, stop.signal);
     } catch (error) {
-      await close(delivery, socket, client, session);
-      console.log(`UNKNOWN: the listener did not register ${session}: ${messageOf(error)}`);
+      if (error instanceof NothingSent) {
+        // Nothing was sent, so there is nothing to unregister.
+        delivery.close();
+        await socket.close();
+      } else {
+        await close(delivery, socket, client, session);
+      }
+      console.log(
+        error instanceof NothingSent && error.byStop
+          ? notSent
+          : `UNKNOWN: the listener did not register ${session}: ${messageOf(error)}`
+      );
+      return 2;
+    }
+    if (stop.signal.aborted) {
+      // The SIGTERM came while the listener answered: the session it took is ended at once.
+      delivery.close();
+      const unregistered = await unregister(client, session);
+      await socket.close();
+      console.log(
+        `UNKNOWN: no session held: SIGTERM came while the listener answered the registration of ${session}; ${unregistered}`
+      );
       return 2;
     }
     keep(state, "held", `${process.pid} ${holder}`);
