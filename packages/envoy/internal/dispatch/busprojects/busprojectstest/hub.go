@@ -97,7 +97,6 @@ func StartHub(t testing.TB, tagged bool) *Hub {
 	return h
 }
 
-// config is the hub's configuration, with the server tag when tagged.
 func (h *Hub) config(tagged bool) string {
 	config := testnats.CalloutConfig(h.keys)
 	if tagged {
@@ -153,8 +152,6 @@ func (h *Hub) awaitService(t testing.TB) {
 	}
 }
 
-// answer is the stand-in's answer to one authorization request: opened with the callout's curve
-// key, decided by the rules Hub states, signed by the callout's issuer and sealed to the server.
 func (h *Hub) answer(t testing.TB, curve, issuer nkeys.KeyPair, m *natsgo.Msg) {
 	opened, err := curve.Open(m.Data, m.Header.Get("Nats-Server-Xkey"))
 	if err != nil {

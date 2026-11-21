@@ -91,8 +91,6 @@ func (a *HubAdmission) ReportHandler() http.Handler {
 	})
 }
 
-// unproven is the report before any proof under targets has ended: every hub unknown, and one
-// unknown line per listener workload, whose replicas no proof has found yet.
 func (a *HubAdmission) unproven(targets []ListenerTarget) Report {
 	report := Report{Hubs: make([]HubReport, len(a.hubs)), Listeners: make([]ReplicaReport, len(targets))}
 	for i, h := range a.hubs {

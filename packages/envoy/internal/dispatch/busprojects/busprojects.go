@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,7 +53,6 @@ type HubAdmission struct {
 	hubs   []hub
 	period time.Duration
 	lookup func(ctx context.Context, host string) ([]string, error)
-	now    func() time.Time
 	// wake asks Run for a proof now: a connection event of a hub's client, or a new inventory.
 	wake chan struct{}
 	// proofs numbers each proof as it starts, so a proof's result is kept only when no proof that
@@ -64,16 +64,13 @@ type HubAdmission struct {
 	client    *http.Client
 	// kept is the number of the proof whose result ready and report hold; SetListeners raises it
 	// to the last number given, so no proof started under an older inventory is kept.
-	kept   uint64
-	ready  bool
-	report Report
-	// logged is the outcome Run last logged, and loggedOnce whether it has logged one.
+	kept       uint64
+	ready      bool
+	report     Report
 	logged     string
 	loggedOnce bool
 }
 
-// hub is one hub of DISPATCH_PRIVATE_HUBS: the client whose credential and servers each proof
-// dials with, and its servers as the report and the errors name them.
 type hub struct {
 	client *bus.Client
 	url    string
@@ -95,7 +92,6 @@ func NewHubAdmission(conns []*bus.Client) *HubAdmission {
 	a := &HubAdmission{
 		period: proofPeriod,
 		lookup: net.DefaultResolver.LookupHost,
-		now:    time.Now,
 		wake:   make(chan struct{}, 1),
 	}
 	for _, c := range conns {
@@ -176,17 +172,11 @@ func (a *HubAdmission) Prove(ctx context.Context) error {
 		errs = append(errs, ErrNoListenerInventory)
 		replicas = []ReplicaReport{}
 	}
-	for _, err := range append(hubErrs, replicaErrs...) {
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	err := errors.Join(errs...)
-	a.keep(number, Report{ProvedAt: a.now().UTC(), Hubs: hubs, Listeners: replicas}, err == nil)
+	err := errors.Join(slices.Concat(errs, hubErrs, replicaErrs)...)
+	a.keep(number, Report{ProvedAt: time.Now().UTC(), Hubs: hubs, Listeners: replicas}, err == nil)
 	return err
 }
 
-// proveHub is one hub's part of a proof: a new connection, admitted or not.
 func proveHub(ctx context.Context, h hub) (HubReport, error) {
 	if err := h.client.ProveAdmission(ctx); err != nil {
 		return HubReport{URL: h.url, Admission: AdmissionRefused, Error: err.Error()},
@@ -234,7 +224,6 @@ func (a *HubAdmission) Run(ctx context.Context) {
 	}
 }
 
-// follow wakes Run at each connection event of c until ctx is done.
 func (a *HubAdmission) follow(ctx context.Context, c *bus.Client) {
 	for {
 		changed := c.ConnectionChanged()
@@ -247,7 +236,6 @@ func (a *HubAdmission) follow(ctx context.Context, c *bus.Client) {
 	}
 }
 
-// signal asks Run for a proof now; one asked for and not yet taken covers any number of asks.
 func (a *HubAdmission) signal() {
 	select {
 	case a.wake <- struct{}{}:
@@ -255,7 +243,6 @@ func (a *HubAdmission) signal() {
 	}
 }
 
-// logOutcome logs Run's proof when its outcome differs from the last one Run logged.
 func (a *HubAdmission) logOutcome(err error) {
 	outcome := ""
 	if err != nil {

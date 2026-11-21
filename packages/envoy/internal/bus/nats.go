@@ -2427,7 +2427,8 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 	opts.ConnectedCB, opts.ReconnectedCB, opts.ClosedCB = nil, nil, nil
 	opts.DisconnectedErrCB, opts.ReconnectErrCB, opts.AsyncErrorCB = nil, nil, nil
 	bound := opts.Timeout
-	if deadline, ok := ctx.Deadline(); ok {
+	deadline, hasDeadline := ctx.Deadline()
+	if hasDeadline {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return fmt.Errorf("bus: admission proof: %w", context.DeadlineExceeded)
@@ -2465,11 +2466,13 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 		return fmt.Errorf("bus: admission proof: %w", ctx.Err())
 	}
 	defer conn.Close()
-	flush := func() error { return conn.FlushTimeout(bound) }
-	if _, ok := ctx.Deadline(); ok {
-		flush = func() error { return conn.FlushWithContext(ctx) }
+	var err error
+	if hasDeadline {
+		err = conn.FlushWithContext(ctx)
+	} else {
+		err = conn.FlushTimeout(bound)
 	}
-	if err := flush(); err != nil {
+	if err != nil {
 		return fmt.Errorf("bus: admission proof: the admitted connection did not answer a round trip: %w", err)
 	}
 	return nil

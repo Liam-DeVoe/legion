@@ -20,12 +20,6 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// The tests in this file run the proof against nats-server in this process with an auth callout
-// (busprojectstest.StartHub), whose stand-in auth service admits Dispatch's hub-admission proof
-// only on a hub that carries the private-projects server tag, as the auth service's private-hub
-// admission does. The switch to private that calls Prove, and answers 409 on its error, is
-// Dispatch's visibility route; its own tests run the same hubs.
-
 // TestAPrivateSwitchNeedsEveryHubsAdmission: the proof passes only while both hubs carry the
 // server tag. With the second hub restarted without it, the proof answers that hub's refusal, and
 // its auth service refused because the request carried no tag.

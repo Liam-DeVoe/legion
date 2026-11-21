@@ -48,12 +48,10 @@ func ReadyListener(t testing.TB) ([]busprojects.ListenerTarget, *http.Client) {
 	return []busprojects.ListenerTarget{target}, client
 }
 
-// roundTripper is a transport that answers every request itself.
 type roundTripper func(*http.Request) (*http.Response, error)
 
 func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// answer is a response to r with status and body.
 func answer(r *http.Request, status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,

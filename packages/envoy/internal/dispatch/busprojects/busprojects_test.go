@@ -31,8 +31,6 @@ const (
 	replicaHealthy3 = "10.0.0.3"
 )
 
-// replicaAnswer is how one stand-in replica answers the privacy-readiness read: a status and body,
-// or no answer at all.
 type replicaAnswer struct {
 	status   int
 	body     string
@@ -43,9 +41,6 @@ func answered(instance string) replicaAnswer {
 	return replicaAnswer{status: http.StatusOK, body: `{"instance":"` + instance + `","required":true,"source":"` + workloadSource + `","read":"answered"}`}
 }
 
-// threeReplicas is the stand-in workload: its inventory entry, and a client whose transport
-// answers each replica's address as answers say, and a request that is not the replica's
-// privacy-readiness read with the workload's Host 404.
 func threeReplicas(answers map[string]replicaAnswer) ([]busprojects.ListenerTarget, *http.Client) {
 	target := busprojects.ListenerTarget{Name: workload, Source: workloadSource, Host: workloadHost, Instances: workloadName + ":9020"}
 	client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
@@ -78,14 +73,10 @@ func resolveWorkload(_ context.Context, host string) ([]string, error) {
 	return nil, nil
 }
 
-// proofToken is Dispatch's hub-admission proof token.
 func proofToken() string {
 	return busprojectstest.ProofToken(busprojectstest.DispatchAccount, natsgrant.HubAdmissionAudience)
 }
 
-// admissionOver is the admission over one proof client per hub, as cmd/dispatch builds it, with
-// the stand-in resolver. A tagged hub's client is awaited until it has connected, so the hub
-// admits Dispatch before the test proves.
 func admissionOver(t *testing.T, hubs ...*busprojectstest.Hub) (*busprojects.HubAdmission, []*bus.Client) {
 	t.Helper()
 	clients := make([]*bus.Client, len(hubs))
@@ -98,7 +89,6 @@ func admissionOver(t *testing.T, hubs ...*busprojectstest.Hub) (*busprojects.Hub
 	return a, clients
 }
 
-// awaitConnected waits, within 30 s, until client's own connection is up.
 func awaitConnected(t *testing.T, client *bus.Client) {
 	t.Helper()
 	require.Eventually(t, client.Connected, 30*time.Second, 20*time.Millisecond, "the hub-admission client never connected")
@@ -304,7 +294,6 @@ func TestTheGoLiveReportIsPublishedBeforeAnyProjectIsPrivate(t *testing.T) {
 	}
 }
 
-// jsonKeys is every object key of a decoded JSON value, at any depth.
 func jsonKeys(value any) []string {
 	var keys []string
 	switch v := value.(type) {

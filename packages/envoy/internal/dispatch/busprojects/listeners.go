@@ -48,7 +48,6 @@ type readiness struct {
 	Read     string `json:"read"`
 }
 
-// replicaSlot is one replica to read: its workload and the address its instances resolved to.
 type replicaSlot struct {
 	target  ListenerTarget
 	address string
@@ -110,7 +109,6 @@ func readListeners(ctx context.Context, lookup func(context.Context, string) ([]
 	return reports, errs
 }
 
-// resolve is host's addresses: host itself when it is an IP literal, else lookup's answer.
 func resolve(ctx context.Context, lookup func(context.Context, string) ([]string, error), host string) ([]string, error) {
 	if net.ParseIP(host) != nil {
 		return []string{host}, nil
@@ -118,7 +116,6 @@ func resolve(ctx context.Context, lookup func(context.Context, string) ([]string
 	return lookup(ctx, host)
 }
 
-// unknownWorkload is the entry of a workload whose replicas could not be found.
 func unknownWorkload(target ListenerTarget, why string) replicaEntry {
 	return replicaEntry{
 		report: ReplicaReport{Workload: target.Name, Read: ReadUnknown, Error: why},
@@ -173,6 +170,6 @@ func readReplica(ctx context.Context, client *http.Client, slot replicaSlot) (Re
 	case answer.Read != ReadAnswered:
 		return fail("answered read %q, not %q", answer.Read, ReadAnswered)
 	}
-	report.Read, report.Error = ReadAnswered, ""
+	report.Read = ReadAnswered
 	return report, nil
 }
