@@ -69,14 +69,20 @@ func leaveOut(ctx context.Context, members ...string) {
 	if answer == nil {
 		return
 	}
-	answer.mu.Lock()
-	decided := answer.decided
+	answer.leave(members)
+}
+
+// leave takes members into the members the answer leaves out (leaveOut). A member named after
+// the answer's status went out is a programming error (misnamedAbsent): the header is written.
+func (a *pastAnswer) leave(members []string) {
+	a.mu.Lock()
+	decided := a.decided
 	if !decided {
-		answer.members = append(answer.members, members...)
+		a.members = append(a.members, members...)
 	}
-	answer.mu.Unlock()
+	a.mu.Unlock()
 	if decided {
-		misnamedAbsent(answer.route, "it leaves out "+strings.Join(members, ", ")+" after it wrote the answer's status")
+		misnamedAbsent(a.route, "it leaves out "+strings.Join(members, ", ")+" after it wrote the answer's status")
 	}
 }
 
