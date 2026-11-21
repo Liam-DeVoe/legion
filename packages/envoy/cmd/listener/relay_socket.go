@@ -207,10 +207,15 @@ func relaySocketCheckInterval() time.Duration {
 // sockets' own, so a socket's slow consumer, which nats.go records as its connection's last error,
 // never reaches the listener's main connection, whose publishes read that error.
 type relaySockets struct {
-	client   *bus.Client
-	brokers  *brokerTokens
-	logger   *logging.Logger
-	upgrader websocket.Upgrader
+	client  *bus.Client
+	brokers *brokerTokens
+	logger  *logging.Logger
+	// repositories is the edge listener's repository reader (edge_repositories.go), which the
+	// GitHub frames a socket forwards are held to (relaySocket.forward); main sets it where it
+	// sets the relay's, one reader for the whole listener, and it is nil until then and on every
+	// other listener.
+	repositories *edgeRepositories
+	upgrader     websocket.Upgrader
 	// relaySocketCheckEvery is how often an open socket pings its client and asks the broker
 	// about its token: relaySocketCheckDefault, which only a test lowers.
 	relaySocketCheckEvery time.Duration
@@ -266,15 +271,16 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 }
 
 // relaySocketRoute is the handler of relaySocketPattern: the sockets' own on an edge listener, and
-// on every other listener the 404 /v1 answers a path it serves nothing at. repositories is the
-// listener's repository reader, which the GitHub frames a socket forwards are held to.
-func relaySocketRoute(sockets *relaySockets, repositories *edgeRepositories) http.Handler {
+// on every other listener the 404 /v1 answers a path it serves nothing at. The GitHub frames a
+// socket forwards are held to the listener's repository reader (relaySockets.repositories), set
+// once where main builds both.
+func relaySocketRoute(sockets *relaySockets) http.Handler {
 	if sockets == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeJSONError(w, http.StatusNotFound, "not found")
 		})
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { sockets.serve(w, r, repositories) })
+	return http.HandlerFunc(sockets.serve)
 }
 
 // serve opens one socket. The token was verified by apiAuth with its proof, as every /v1 request's
@@ -284,7 +290,7 @@ func relaySocketRoute(sockets *relaySockets, repositories *edgeRepositories) htt
 // the token's session, and the upgrade is refused 400 without the subprotocol, 429 past
 // relaySocketMaxPerSession or relaySocketMaxPerCaller, and 503 past the replica's cap of sockets or
 // once the listener is stopping (admit).
-func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request, repositories *edgeRepositories) {
+func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -320,7 +326,7 @@ func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request, repositorie
 		admitted:     caller,
 		expires:      expires,
 		check:        r.Clone(context.Background()),
-		repositories: repositories,
+		repositories: s.repositories,
 		subs:         map[int64]*nats.Subscription{},
 		replies:      map[string]time.Time{},
 		done:         make(chan struct{}),

@@ -1634,6 +1634,7 @@ func main() {
 	if len(cfg.EdgeProjects) > 0 {
 		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
 		relays.repositories = repositories
+		sockets.repositories = repositories
 		// The first read of every project's answer is made before /v1 serves, so a relay socket
 		// this replica opens judges a GitHub frame by a fresh answer from its first frame, rather
 		// than waiting for the refresh loop, which starts only after the durable binding. A read
