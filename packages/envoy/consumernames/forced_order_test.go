@@ -4,27 +4,24 @@ package consumernames
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
-	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/internal/forcedorder"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // The held-write collision through the protocol itself, on the hooked server
-// (scripts/forced-order.sh): a family of this file's own (jsFamily, KVStore) whose consumer's state
-// write is held while Names replaces it, or deletes it and creates it again. The package has no
-// build before this one to run the rows against, so each row's control is that build's order run
-// raw on the same server first: a delete and a create of one name under the same held write, which
-// must lose the acknowledged state's messages.
+// (scripts/forced-order.sh), on each of the plan's topologies (forcedorder.Topologies): a family of
+// this file's own (jsFamily, KVStore) whose consumer's state write is held while Names replaces it,
+// or deletes it and creates it again. The package has no build before this one to run the rows
+// against, so each row's control is that build's order run raw on the same servers first: a delete
+// and a create of one name under the same held write, which must lose the acknowledged state's
+// messages.
 
 const (
 	protocolMessages = 30
@@ -32,21 +29,18 @@ const (
 	protocolWindow   = 8 * time.Second
 )
 
-// protocolRig is a lone hooked server with testStream and the selection bucket.
+// protocolRig is hooked servers in a topology with testStream and the selection bucket.
 type protocolRig struct {
-	srv   *testnats.Server
-	uri   string
-	hooks *testnats.Hooks
-	live  *liveStore
+	*forcedorder.Servers
+	live *liveStore
 }
 
-func newProtocolRig(t *testing.T) *protocolRig {
+func newProtocolRig(t *testing.T, topo forcedorder.Topology) *protocolRig {
 	t.Helper()
-	srv, uri := testnats.Start(t)
+	servers := forcedorder.Start(t, topo)
 	// No boundary: a boundary would start each first create no later than it, before the row's own
 	// messages.
-	live := newLiveStore(t, uri, &StoreState{Cutover: CutoverDone})
-	return &protocolRig{srv: srv, uri: uri, hooks: testnats.Hook(t), live: live}
+	return &protocolRig{Servers: servers, live: newLiveStoreAt(t, servers.URL, &StoreState{Cutover: CutoverDone}, topo.Replicas)}
 }
 
 func (r *protocolRig) publish(t *testing.T, subject string) []uint64 {
@@ -62,26 +56,9 @@ func (r *protocolRig) publish(t *testing.T, subject string) []uint64 {
 	return seqs
 }
 
-func (r *protocolRig) storedFloor(t *testing.T, name string) uint64 {
-	t.Helper()
-	buf, err := os.ReadFile(filepath.Join(r.srv.StoreDir(), "jetstream", "$G", "streams", testStream, "obs", name, "o.dat"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err := natsserver.MeasureDecodeConsumerState(buf)
-	if err != nil {
-		return 0
-	}
-	return state.AckFloor.Stream
-}
-
 // heldConsumer fetches every message of consumer name, acks the first protocolAcked, waits for its
-// o.dat to hold that floor, and holds, before its I/O, the write of the next ack. It answers the
-// store's generation and the hold.
-func (r *protocolRig) heldConsumer(t *testing.T, name string, seqs []uint64) (uint64, *testnats.Hold) {
+// o.dat to hold that floor on every host, and holds, before its I/O, the write of the next ack.
+func (r *protocolRig) heldConsumer(t *testing.T, name string, seqs []uint64) forcedorder.Held {
 	t.Helper()
 	ctx := context.Background()
 	consumer, err := r.live.js.Consumer(ctx, testStream, name)
@@ -104,58 +81,43 @@ func (r *protocolRig) heldConsumer(t *testing.T, name string, seqs []uint64) (ui
 			t.Fatal(err)
 		}
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for r.storedFloor(t, name) != seqs[protocolAcked-1] {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's o.dat did not reach ack floor %d", name, seqs[protocolAcked-1])
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	events := r.hooks.Events(testnats.Point("store.loaded"), testnats.OnServer(r.srv), testnats.Consumer(name))
-	if len(events) == 0 {
-		t.Fatalf("the hooked server reported no store of %s", name)
-	}
-	gen := events[len(events)-1].Gen
-	hold := r.hooks.Hold(testnats.WritePreIO, testnats.OnServer(r.srv), testnats.Consumer(name),
-		testnats.Where(fmt.Sprintf("store %d's write of ack floor %d", gen, seqs[protocolAcked]), func(e testnats.Event) bool {
-			return e.Gen == gen && e.State != nil && e.State.AckFloor.Stream == seqs[protocolAcked]
-		}))
+	r.AwaitStoredFloor(t, r.live.conn, testStream, name, seqs[protocolAcked-1])
+	held := r.HoldWrites(t, r.live.conn, testnats.WritePreIO, testStream, name, seqs[protocolAcked])
 	if err := msgs[protocolAcked].DoubleAck(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("held %s", hold.Reached(t))
-	return gen, hold
+	held.Reached(t)
+	return held
 }
 
-// releaseAndRestart waits for the replacement's own first state write (a store newer than gen),
-// releases hold, waits for the held write to finish, and restarts the server on its store.
-func (r *protocolRig) releaseAndRestart(t *testing.T, mark int, hold *testnats.Hold, gen uint64) {
+// releaseAndRestart waits for the replacement's own first state write on every host, releases the
+// held writes, waits for each to finish, restarts the servers, and goes on with a new store
+// connection, since the restart closed the old one and it does not reconnect.
+func (r *protocolRig) releaseAndRestart(t *testing.T, mark int, held forcedorder.Held) {
 	t.Helper()
-	r.hooks.Await(t, testnats.Point("write.done"), testnats.OnServer(r.srv), testnats.Stream(testStream), testnats.After(mark),
-		testnats.Where(fmt.Sprintf("a store newer than %d", gen), func(e testnats.Event) bool { return e.Gen > gen && e.Err == "" }))
-	released := r.hooks.Mark()
-	hold.Release()
-	r.hooks.Await(t, testnats.Point("write.done"), testnats.OnServer(r.srv), testnats.After(released),
-		testnats.Where(fmt.Sprintf("store %d", gen), func(e testnats.Event) bool { return e.Gen == gen }))
-	r.srv.Stop(t)
-	r.srv.Start(t)
+	r.AwaitNewerWrites(t, mark, testStream, held.Stores)
+	r.ReleaseAndLand(t, held)
+	r.Restart(t, testStream)
+	r.live = reconnectLiveStore(t, r.URL)
 }
 
-// deliveredAfterRestart reads consumer name on a fresh connection for protocolWindow, acking each,
+// delivered reads consumer name for protocolWindow, acking each, until it has every one of until,
 // and answers the stream sequences, sorted and once each.
-func (r *protocolRig) deliveredAfterRestart(t *testing.T, name string) []uint64 {
+func (r *protocolRig) delivered(t *testing.T, name string, until []uint64) []uint64 {
 	t.Helper()
-	conn := testnats.Connect(t, r.uri)
-	t.Cleanup(conn.Close)
-	js, err := jetstream.New(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), protocolWindow)
 	defer cancel()
 	var seqs []uint64
-	for ctx.Err() == nil {
-		consumer, err := js.Consumer(ctx, testStream, name)
+	complete := func() bool {
+		for _, seq := range until {
+			if !slices.Contains(seqs, seq) {
+				return false
+			}
+		}
+		return true
+	}
+	for ctx.Err() == nil && !complete() {
+		consumer, err := r.live.js.Consumer(ctx, testStream, name)
 		if err != nil {
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -189,8 +151,8 @@ func (r *protocolRig) sameNameControl(t *testing.T) {
 	if _, err := r.live.js.CreateConsumer(ctx, testStream, config); err != nil {
 		t.Fatal(err)
 	}
-	gen, hold := r.heldConsumer(t, name, seqs)
-	mark := r.hooks.Mark()
+	held := r.heldConsumer(t, name, seqs)
+	mark := r.Hooks.Mark()
 	if err := r.live.js.DeleteConsumer(ctx, testStream, name); err != nil {
 		t.Fatal(err)
 	}
@@ -198,17 +160,15 @@ func (r *protocolRig) sameNameControl(t *testing.T) {
 	if _, err := r.live.js.CreateConsumer(ctx, testStream, config); err != nil {
 		t.Fatal(err)
 	}
-	r.releaseAndRestart(t, mark, hold, gen)
-	got := r.deliveredAfterRestart(t, name)
+	r.releaseAndRestart(t, mark, held)
+	got := r.delivered(t, name, seqs[protocolAcked+1:])
 	if slices.Contains(got, seqs[protocolAcked+1]) {
-		t.Fatalf("control: the same-name re-creation delivered %v after the restart: the held write did not reach it, so this server does not reproduce the collision", got)
+		t.Fatalf("control: the same-name re-creation delivered %v after the restart: the held write did not reach it, so this topology does not reproduce the collision", got)
 	}
 	t.Logf("control: the same-name re-creation delivered %v after the restart, none of %d..%d", got, seqs[protocolAcked+1], seqs[protocolMessages-1])
-	// The restart closed the store's connection, which does not reconnect: the row goes on with a new one.
-	r.live = reconnectLiveStore(t, r.uri)
 }
 
-// reconnectLiveStore is a liveStore on a new connection to a server that already holds the stream
+// reconnectLiveStore is a liveStore on a new connection to servers that already hold the stream
 // and the bucket.
 func reconnectLiveStore(t *testing.T, uri string) *liveStore {
 	t.Helper()
@@ -234,51 +194,61 @@ func requireEvery(t *testing.T, got, want []uint64, what string) {
 // Replace through the protocol under the predecessor's held write: the replacement, a name never
 // made before, delivers every message after the predecessor's floor.
 func TestForcedOrderAReplacementThroughTheProtocolUnderAHeldWriteDeliversEveryMessage(t *testing.T) {
-	r := newProtocolRig(t)
-	r.sameNameControl(t)
-	ctx := context.Background()
-	seqs := r.publish(t, "names.replace")
-	names := r.live.names("p1")
-	sel, _, err := names.Ensure(ctx, "ses-replace", CreateRequest{Create: r.live.family.create("ses-replace"), First: first(seqs[0])})
-	if err != nil {
-		t.Fatal(err)
+	for _, topo := range forcedorder.Topologies {
+		t.Run(topo.Name, func(t *testing.T) {
+			r := newProtocolRig(t, topo)
+			r.sameNameControl(t)
+			ctx := context.Background()
+			seqs := r.publish(t, "names.replace")
+			names := r.live.names("p1")
+			sel, _, err := names.Ensure(ctx, "ses-replace", CreateRequest{Create: r.live.family.create("ses-replace"), First: first(seqs[0])})
+			if err != nil {
+				t.Fatal(err)
+			}
+			held := r.heldConsumer(t, sel.Record.Current, seqs)
+			sel, err = names.Select(ctx, "ses-replace", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mark := r.Hooks.Mark()
+			replaced, err := names.Replace(ctx, sel, seqs[protocolAcked+1], r.live.family.create("ses-replace"))
+			if err != nil {
+				t.Fatalf("Replace: %v", err)
+			}
+			r.releaseAndRestart(t, mark, held)
+			want := seqs[protocolAcked+1:]
+			requireEvery(t, r.delivered(t, replaced.Record.Current, want), want, "the replacement")
+		})
 	}
-	gen, hold := r.heldConsumer(t, sel.Record.Current, seqs)
-	sel, err = names.Select(ctx, "ses-replace", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mark := r.hooks.Mark()
-	replaced, err := names.Replace(ctx, sel, seqs[protocolAcked+1], r.live.family.create("ses-replace"))
-	if err != nil {
-		t.Fatalf("Replace: %v", err)
-	}
-	r.releaseAndRestart(t, mark, hold, gen)
-	requireEvery(t, r.deliveredAfterRestart(t, replaced.Record.Current), seqs[protocolAcked+1:], "the replacement")
 }
 
 // Delete through the protocol, then Ensure, under the deleted consumer's held write: the consumer
 // created again at the start the delete saved delivers every message after the floor.
 func TestForcedOrderADeleteThenEnsureThroughTheProtocolUnderAHeldWriteDeliversEveryMessage(t *testing.T) {
-	r := newProtocolRig(t)
-	r.sameNameControl(t)
-	ctx := context.Background()
-	seqs := r.publish(t, "names.delete")
-	names := r.live.names("p1")
-	sel, _, err := names.Ensure(ctx, "ses-delete", CreateRequest{Create: r.live.family.create("ses-delete"), First: first(seqs[0])})
-	if err != nil {
-		t.Fatal(err)
+	for _, topo := range forcedorder.Topologies {
+		t.Run(topo.Name, func(t *testing.T) {
+			r := newProtocolRig(t, topo)
+			r.sameNameControl(t)
+			ctx := context.Background()
+			seqs := r.publish(t, "names.delete")
+			names := r.live.names("p1")
+			sel, _, err := names.Ensure(ctx, "ses-delete", CreateRequest{Create: r.live.family.create("ses-delete"), First: first(seqs[0])})
+			if err != nil {
+				t.Fatal(err)
+			}
+			held := r.heldConsumer(t, sel.Record.Current, seqs)
+			floor, err := names.Delete(ctx, "ses-delete", nil)
+			if err != nil || floor != seqs[protocolAcked] {
+				t.Fatalf("Delete = %d, %v; want the floor %d", floor, err, seqs[protocolAcked])
+			}
+			mark := r.Hooks.Mark()
+			again, _, err := names.Ensure(ctx, "ses-delete", CreateRequest{Create: r.live.family.create("ses-delete"), First: first(seqs[0])})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.releaseAndRestart(t, mark, held)
+			want := seqs[protocolAcked+1:]
+			requireEvery(t, r.delivered(t, again.Record.Current, want), want, "the consumer created again")
+		})
 	}
-	gen, hold := r.heldConsumer(t, sel.Record.Current, seqs)
-	floor, err := names.Delete(ctx, "ses-delete", nil)
-	if err != nil || floor != seqs[protocolAcked] {
-		t.Fatalf("Delete = %d, %v; want the floor %d", floor, err, seqs[protocolAcked])
-	}
-	mark := r.hooks.Mark()
-	again, _, err := names.Ensure(ctx, "ses-delete", CreateRequest{Create: r.live.family.create("ses-delete"), First: first(seqs[0])})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.releaseAndRestart(t, mark, hold, gen)
-	requireEvery(t, r.deliveredAfterRestart(t, again.Record.Current), seqs[protocolAcked+1:], "the consumer created again")
 }

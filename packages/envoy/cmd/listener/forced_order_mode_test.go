@@ -15,14 +15,14 @@ import (
 // The steps of the listener's forced-order rows that name the consumer naming mode, swapped for the
 // fixed build's own to run the race regressions at the build before this one.
 
-// forcedListenerClient is the listener's client in the fresh mode on uri, over a selection bucket
-// conn makes as the operator's create-bucket does.
-func forcedListenerClient(t *testing.T, uri string, conn *natsgo.Conn) *bus.Client {
+// forcedListenerClient is the listener's client in the fresh mode on urls, the stream at replicas
+// copies, over a selection bucket conn makes as the operator's create-bucket does.
+func forcedListenerClient(t *testing.T, urls []string, conn *natsgo.Conn, replicas int) *bus.Client {
 	t.Helper()
-	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, replicas, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
 		t.Fatalf("create the selection bucket: %v", err)
 	}
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConsumerNames(consumernames.ModeFresh))
+	client, err := bus.ConnectOwningStream(urls, bus.WithReplicas(replicas), bus.WithConsumerNames(consumernames.ModeFresh))
 	if err != nil {
 		t.Fatalf("connect the listener's client: %v", err)
 	}

@@ -16,21 +16,22 @@ import (
 // and run against the fixed build with these swapped for its own (the race regressions' run at the
 // base: SessionConsumers in the fixed mode, the fixed name, Pull by session id, the bucket made raw).
 
-// forcedSessionConsumers is SessionConsumers in the fresh mode on uri, over a selection bucket
-// conn makes as the operator's create-bucket does, its sentinel saying the cutover is done.
-func forcedSessionConsumers(t *testing.T, uri string, conn *natsgo.Conn) *SessionConsumers {
+// forcedSessionConsumers is SessionConsumers in the fresh mode on urls, over a selection bucket at
+// replicas copies conn makes as the operator's create-bucket does, its sentinel saying the cutover
+// is done.
+func forcedSessionConsumers(t *testing.T, urls []string, conn *natsgo.Conn, replicas int) *SessionConsumers {
 	t.Helper()
-	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+	if _, err := consumernames.CreateSessionBucket(context.Background(), conn, replicas, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
 		t.Fatalf("create the selection bucket: %v", err)
 	}
-	return forcedProcess(t, uri)
+	return forcedProcess(t, urls)
 }
 
 // forcedProcess is another process's SessionConsumers on uri, in the build's mode, over the bucket
 // the rig made.
-func forcedProcess(t *testing.T, uri string) *SessionConsumers {
+func forcedProcess(t *testing.T, urls []string) *SessionConsumers {
 	t.Helper()
-	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil, WithConsumerNames(consumernames.ModeFresh))
+	consumers, err := ConnectSessionConsumers(urls, 0, nil, WithConsumerNames(consumernames.ModeFresh))
 	if err != nil {
 		t.Fatalf("connect session consumers in the fresh mode: %v", err)
 	}
