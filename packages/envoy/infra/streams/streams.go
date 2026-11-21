@@ -83,7 +83,8 @@ type Report struct {
 	// clean.
 	Unknown []string
 	// Left are what the run left as it was on purpose, each named with why: a consumer of a family
-	// whose store is gone (CensusInput.GoneNames). They are neither a change nor a failure.
+	// whose store is gone (the gone names CensusInput.RecordedFreshNames reads). They are neither a
+	// change nor a failure.
 	Left []Finding
 }
 
