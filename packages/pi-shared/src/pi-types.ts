@@ -156,9 +156,7 @@ export interface SessionContext {
    * Oh My Pi's Anthropic conversion sends an extension's custom message as a user message
    * (`ai/src/providers/anthropic.ts:6255`). Undefined where the session has no model.
    */
-  readonly model?: {
-    readonly provider: string;
-    readonly id: string;
+  readonly model?: HostModel & {
     readonly compat?: { readonly supportsMidConversationSystem?: boolean };
   };
   /**

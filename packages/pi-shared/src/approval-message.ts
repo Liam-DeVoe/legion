@@ -179,12 +179,9 @@ export function branchPosition(
   if (typeof last !== "object" || last === null || !("timestamp" in last) || !("role" in last)) {
     return { at: "absent" };
   }
-  const dropped = new Set(
-    entries.flatMap((entry) => {
-      const message = entryMessage(entry);
-      return message === undefined ? [] : failedCalls(message);
-    })
-  );
+  /** The tool call ids of the branch's failed or aborted replies, read the first time the walk
+   *  meets a tool result: most requests end at the branch's last message and never need them. */
+  let dropped: Set<string> | undefined;
   let later = false;
   let tip: string | undefined;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -195,13 +192,62 @@ export function branchPosition(
     if (message.role === last.role && message.timestamp === last.timestamp) {
       return later ? { at: "before" } : { at: "last", tip };
     }
+    if (message.role === "toolResult" && dropped === undefined) {
+      dropped = new Set(
+        entries.flatMap((candidate) => {
+          const written = entryMessage(candidate);
+          return written === undefined ? [] : failedCalls(written);
+        })
+      );
+    }
     const failed =
       (message.role === "assistant" &&
         (message.stopReason === "error" || message.stopReason === "aborted")) ||
-      (message.role === "toolResult" && dropped.has(String(message.toolCallId)));
+      (message.role === "toolResult" && dropped?.has(String(message.toolCallId)) === true);
     if (!failed) later = true;
   }
   return { at: "absent" };
+}
+
+/** A session's last conversion, as each plugin keeps it in a store of its own: a remote
+ *  compaction's cut (`"cut"`), or a request with its key (undefined unless it ended at the branch's
+ *  last message) and whether it came right after a cut. */
+export type Conversion = "cut" | { readonly key: string | undefined; readonly afterCut: boolean };
+
+/**
+ * What one request is among its session's conversions (`nextConversion`): a conversion of the
+ * conversation up to a remote compaction's cut (`cut`), the request right after one (`afterCut`),
+ * a repeat of the conversion before it over the same branch (`repeat`), or none of these (`new`).
+ */
+export type ConversionKind = "cut" | "afterCut" | "repeat" | "new";
+
+/**
+ * The session's conversion after a request of `messages` on the branch `entries`, given the
+ * session's last one (`previous`), and what the request is among them. Oh My Pi's Anthropic remote
+ * compaction converts the conversation up to its cut, which ends at a message the branch holds a
+ * later one after (`branchPosition`), and then the whole conversation. One that keeps no tail
+ * converts the same messages twice, both ending at the branch's last message, so the second is a
+ * `repeat` of the first: the same key, which is the branch's last message and each message's role
+ * and timestamp (`messageKey`). A repeat is a compaction's own only while the session compacts
+ * (`sessionCompacting`), which each caller asks. The request right after a cut is `afterCut`,
+ * never a repeat, and each plugin reads it its own way. Both plugins read this: pi-envoy adds no
+ * answers message to a compaction's own conversion, and pi-legion places no approval message
+ * there. Each keeps its own store of conversions.
+ */
+export function nextConversion(
+  previous: Conversion | undefined,
+  messages: readonly unknown[],
+  entries: readonly unknown[]
+): { readonly conversion: Conversion; readonly kind: ConversionKind } {
+  const position = branchPosition(messages, entries);
+  if (position.at === "before") return { conversion: "cut", kind: "cut" };
+  const key =
+    position.at === "last" ? [position.tip, ...messages.map(messageKey)].join("\n") : undefined;
+  const conversion: Conversion = { key, afterCut: previous === "cut" };
+  if (previous === "cut") return { conversion, kind: "afterCut" };
+  const repeat =
+    key !== undefined && typeof previous === "object" && previous.key === key && !previous.afterCut;
+  return { conversion, kind: repeat ? "repeat" : "new" };
 }
 
 /** The first line of Oh My Pi's side-turn notice (`side-channel-no-tools.md`): the `developer`

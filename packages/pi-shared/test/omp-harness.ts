@@ -397,6 +397,16 @@ export interface Rpc {
   readonly exited: Promise<number>;
 }
 
+/** Whether an RPC frame ends a run: its terminal `agent_end`. A continuation the host scheduled
+ *  (the follow-up) ends its turn with an `agent_end` that is not terminal, under the same run. */
+export function isTerminalEnd(frame: object): boolean {
+  return (
+    "type" in frame &&
+    frame.type === "agent_end" &&
+    !("isTerminal" in frame && frame.isTerminal === false)
+  );
+}
+
 /**
  * Starts `omp --mode rpc` in `workspace` with only `extensions` loaded — absolute paths, since this
  * module lives in another package than its callers (pass `path.join(import.meta.dir, …)`) — no
@@ -859,6 +869,13 @@ export function ompNatsGuard(): OmpNatsGuard {
   };
 }
 
+/** This checkout's two plugin entries, which a Legion pane loads, the Envoy entry first, unless a
+ *  case names others (`LegionPaneOptions.plugins`). */
+export const CHECKOUT_PLUGINS = {
+  envoy: path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
+  legion: path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
+} as const;
+
 /** Which Legion pane `runLegionPane` runs, and what its stand-in answers beyond the runner's routes. */
 export interface LegionPaneOptions {
   /**
@@ -908,9 +925,9 @@ export interface LegionPaneOptions {
    * `base` to another (`answer` forwards them).
    */
   readonly profile?: (agent: string, base: string) => Promise<void>;
-  /** The plugin entries the pane loads, in order, as absolute paths: this checkout's Envoy entry,
-   * then its Legion entry, by default, the sandbox launch's order. A case runs other builds of the
-   * two plugins, or the other order, here. */
+  /** The plugin entries the pane loads, in order, as absolute paths: `CHECKOUT_PLUGINS`' Envoy
+   * entry, then its Legion entry, by default, the sandbox launch's order. A case runs other builds
+   * of the two plugins, or the other order, here. */
   readonly plugins?: readonly string[];
   /** Extensions the pane loads after the Envoy and Legion entries, in order, as absolute paths:
    * a case's own recorder of what those two hand the host. None by default. */
@@ -918,15 +935,14 @@ export interface LegionPaneOptions {
   /** Arguments on omp's command line in every life, after the runner's own flags and before a
    * resume's: the model a case runs (`--model`), a system prompt it appends. None by default. */
   readonly args?: readonly string[];
-  /** Sees every request the stand-in serves, with its headers, before it is answered: a case
-   * that records what the host sent beside the body. */
-  readonly onRequest?: (url: URL, body: Record<string, unknown>, headers: Headers) => void;
-  /** Tried first for every request the stand-in serves; `undefined` falls through to the runner's
-   * own routes (the gateway, the daemon's claim and grant routes, the Envoy listener). An answer
-   * may be a promise, which the stand-in awaits before it replies. */
+  /** Tried first for every request the stand-in serves, with the request's headers for a case
+   * that records or forwards what the host sent beside the body; `undefined` falls through to the
+   * runner's own routes (the gateway, the daemon's claim and grant routes, the Envoy listener). An
+   * answer may be a promise, which the stand-in awaits before it replies. */
   readonly answer?: (
     url: URL,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
+    headers: Headers
   ) => Response | Promise<Response> | undefined;
   /** Runs once the scratch root, `bin` (first on the pane's PATH) and `state` exist, before the
    * profile is written and omp is spawned: what the pane's workspace must hold. */
@@ -1038,8 +1054,7 @@ export async function runLegionPane(
       served += 1;
       lastAnsweredAt = Date.now();
     }
-    options.onRequest?.(url, body, headers);
-    const own = options.answer?.(url, body);
+    const own = options.answer?.(url, body, headers);
     if (own !== undefined) return own;
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
@@ -1136,10 +1151,7 @@ export async function runLegionPane(
         extensions: [
           // The Envoy entry is the sibling plugin's: a Legion pane loads both, and the Legion
           // entry refuses to run without it.
-          ...(options.plugins ?? [
-            path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
-            path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
-          ]),
+          ...(options.plugins ?? [CHECKOUT_PLUGINS.envoy, CHECKOUT_PLUGINS.legion]),
           ...(options.extensions ?? []),
         ],
         home,
@@ -1167,13 +1179,7 @@ export async function runLegionPane(
         },
         onFrame: (frame) => {
           options.onFrame?.(frame);
-          if (
-            "type" in frame &&
-            frame.type === "agent_end" &&
-            !("isTerminal" in frame && frame.isTerminal === false)
-          ) {
-            settled.resolve();
-          }
+          if (isTerminalEnd(frame)) settled.resolve();
         },
       },
       cleanup

@@ -1,7 +1,6 @@
 import { afterEach, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
@@ -9,15 +8,20 @@ import {
   type Block,
   type Cleanup,
   call,
-  isSelfCheck,
-  isSummarization,
+  isTerminalEnd,
   messageStream,
   type Request,
   type Rpc,
   runLegionPane,
-  sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
-import { connect, headers as natsHeaders, StringCodec } from "nats";
+import {
+  dispatchStandin,
+  type PaneLife,
+  paneDriver,
+  personAnswer,
+  requestKind,
+  rewriteReminderDates,
+} from "./approval-message-capture";
 
 // Fixture F1 of the approval message's plan: what the pinned Oh My Pi hands a `context` handler,
 // and the wire body it sends, for each kind of model request a root architect's pane makes, as
@@ -64,9 +68,6 @@ const APPROVAL_TEXT =
   "way to keep the goal and the spec whole. A change to what the spec delivers goes to the " +
   "person as one decision before any work on it, and a requirement the work missed goes back " +
   "to the work.";
-
-/** How the host's handoff prompt begins (`handoff-document.md`). */
-const HANDOFF_PROMPT = "Write a handoff document for another instance of yourself.";
 
 /** What a placeholder in a fixture stands for: each local path and address, written over, and
  *  the two references `deduplicated` writes. */
@@ -164,54 +165,6 @@ function text(words: string): Block {
   return { type: "text", text: words };
 }
 
-/** The text of a request's last message: its string content, or its text blocks joined. */
-function lastText(request: Request): string {
-  const messages: unknown[] = Array.isArray(request.body.messages) ? request.body.messages : [];
-  const last = messages.at(-1);
-  if (typeof last !== "object" || last === null || !("content" in last)) return "";
-  const { content } = last;
-  if (typeof content === "string") return content;
-  return (Array.isArray(content) ? content : [])
-    .map((block: unknown) =>
-      typeof block === "object" &&
-      block !== null &&
-      "text" in block &&
-      typeof block.text === "string"
-        ? block.text
-        : ""
-    )
-    .join("");
-}
-
-/** A request that offers no tool: one of the host's side calls (a label, a side turn). */
-function offersNoTool(request: Request): boolean {
-  return !Array.isArray(request.body.tools) || request.body.tools.length === 0;
-}
-
-/** A person's answer to the session's ask, as Dispatch's answers route lists one. */
-function personAnswer(id: string, words: string): Record<string, unknown> {
-  return {
-    kind: "answer",
-    relation: "answered_your_ask",
-    id,
-    at: new Date(Date.now() - 60_000).toISOString(),
-    author: { kind: "user", id: "person@example.com" },
-    text: words,
-    selected: ["The second way"],
-    ask: { id, question: "Which way should the fix go?" },
-    owner: { issue: { key: ISSUE, title: "The work" } },
-    ref: `dispatch://${ISSUE}/ask/${id}`,
-    href: `/issues/${ISSUE}#ask-${id}`,
-  };
-}
-
-/** The calendar day before `day` (YYYY-MM-DD). */
-function dayBefore(day: string): string {
-  const date = new Date(`${day}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() - 1);
-  return date.toISOString().slice(0, 10);
-}
-
 /** F2's `response`: what the gateway answered, as the stand-in answers it again. */
 function remoteResponse(fixture: unknown): {
   readonly status: number;
@@ -235,29 +188,6 @@ function remoteResponse(fixture: unknown): {
     throw new Error(`${REMOTE_RESPONSE} holds no response {status, contentType, body}`);
   }
   return { status: response.status, contentType: response.contentType, body: response.body };
-}
-
-/** What a case does with its pane while it is up. */
-interface Life {
-  /** Sends one RPC prompt and resolves once the run it started has ended (a terminal agent_end). */
-  readonly prompt: (message: string) => Promise<void>;
-  /** Relays one Envoy card on the pane's role lane. With `wait`, resolves once the run it started
-   *  has ended; without, once the session took the frame. */
-  readonly card: (summary: string, wait?: boolean) => Promise<void>;
-  /** Sends one RPC command and resolves with its `response` frame. */
-  readonly command: (
-    type: string,
-    fields?: Record<string, unknown>
-  ) => Promise<Record<string, unknown>>;
-  /** Resolves once an RPC frame that comes after this call satisfies `holds`. */
-  readonly frame: (
-    holds: (frame: Record<string, unknown>) => boolean,
-    label: string
-  ) => Promise<void>;
-  /** Resolves once the stand-in has served no model request for `ms`. */
-  readonly quiet: (ms: number) => Promise<void>;
-  /** Sends one RPC command and waits for nothing. */
-  readonly send: (command: Record<string, unknown>) => void;
 }
 
 /** What the people's answers route lists; the date-reminder case changes it between lives. */
@@ -287,11 +217,11 @@ interface CaseOptions {
    *  undefined for `Answer <turn>.`; `turn` counts them from 1, this one included. */
   readonly turn?: (turn: number, request: Request) => Response | undefined;
   /** The pane's first life. */
-  readonly first: (life: Life) => Promise<void>;
+  readonly first: (life: PaneLife) => Promise<void>;
   /** A second life over the same session (`--resume`), with no prompt, after `between`. */
   readonly second?: {
     readonly between: (pane: Between) => Promise<void>;
-    readonly life: (life: Life) => Promise<void>;
+    readonly life: (life: PaneLife) => Promise<void>;
   };
 }
 
@@ -327,18 +257,22 @@ async function capturePane(shape: string, how: string, options: CaseOptions): Pr
   let sessionID = "";
   let root = "";
   let base = "";
-  let terminalEnds = 0;
-  const frames: Record<string, unknown>[] = [];
-  const checks = new Set<() => void>();
-  const poke = (): void => {
-    for (const check of [...checks]) check();
-  };
+  // Every step a case takes goes into the timeline: each RPC command it sends, and each card.
+  const driver = paneDriver({
+    nats,
+    cleanup,
+    lane: ROLE_LANE,
+    session: () => sessionID,
+    stepMs: 120_000,
+    onStep: (step, fields) => note(step, fields),
+  });
 
   const answerMessages = (request: Request): Response => {
     served += 1;
     const id = `msg_${served}`;
-    if (isSummarization(request)) return reply([text("SUMMARY-OF-THE-EARLIER-TURNS")], id);
-    if ("compaction" in request.body || request.body.context_management !== undefined) {
+    const kind = requestKind(request);
+    if (kind === "summary") return reply([text("SUMMARY-OF-THE-EARLIER-TURNS")], id);
+    if ("compaction" in request.body) {
       if (remote !== undefined) {
         return new Response(remote.body, {
           status: remote.status,
@@ -348,103 +282,25 @@ async function capturePane(shape: string, how: string, options: CaseOptions): Pr
       // Before F2 is captured: a reply with no compaction block, which fails the remote method.
       return reply([text("No compaction block: F2 is not captured yet.")], id);
     }
-    if (lastText(request).includes(HANDOFF_PROMPT)) {
+    if (kind === "handoff") {
       return reply([text("HANDOFF-DOCUMENT: the plan is drafted; next, review it.")], id);
     }
-    if (isSelfCheck(request)) return reply([text("PROCEEDING")], id);
-    if (offersNoTool(request)) return reply([text("Label.")], id);
+    if (kind === "side") return reply([text("PROCEEDING")], id);
+    if (kind === "tool-less") return reply([text("Label.")], id);
     turns += 1;
     return options.turn?.(turns, request) ?? reply([text(`Answer ${turns}.`)], id);
   };
 
-  /** The case's view of one life of the pane. */
-  const lifeOf = async (rpc: Rpc): Promise<Life> => {
-    const nc = await connect({ servers: nats });
-    cleanup.push(() => nc.close());
-    const codec = StringCodec();
-    let seq = 0;
-    const until = (holds: () => boolean, label: string): Promise<void> => {
-      if (holds()) return Promise.resolve();
-      const { promise, resolve, reject } = Promise.withResolvers<void>();
-      // A bound only on a host that never does what is waited for: one that does settles the
-      // wait at the frame or request that says so.
-      const timer = setTimeout(() => {
-        checks.delete(check);
-        const seen = frames
-          .slice(-40)
-          .map(
-            (frame) => `${String(frame.type)}${frame.command ? `:${String(frame.command)}` : ""}`
-          );
-        reject(
-          new Error(`${shape}: ${label} did not happen within 120 s; the last frames: ${seen}`)
-        );
-      }, 120_000);
-      const check = (): void => {
-        if (!holds()) return;
-        checks.delete(check);
-        clearTimeout(timer);
-        resolve();
-      };
-      checks.add(check);
-      return Promise.race([promise, rpc.closed]);
-    };
-    const send = (command: Record<string, unknown>): void => {
-      note("rpc", { command });
-      rpc.send(command);
-    };
-    return {
-      send,
-      prompt: async (message) => {
-        const ended = terminalEnds;
-        send({ type: "prompt", message });
-        await until(() => terminalEnds > ended, `the run of the prompt ${JSON.stringify(message)}`);
-      },
-      card: async (summary, wait = true) => {
-        await until(() => sessionID !== "", "the session's registration");
-        const ended = terminalEnds;
-        const key = `card-${randomUUID()}`;
-        seq += 1;
-        note("card", { summary, topic: ROLE_LANE });
-        await sendRelayFrame({
-          connection: nc,
-          newHeaders: natsHeaders,
-          sessionID,
-          subject: `notifications.agent.${sessionID}`,
-          seq,
-          payload: codec.encode(
-            JSON.stringify({
-              event_id: `evt-${key}`,
-              source: "envoy",
-              source_event_id: `source-${key}`,
-              topic: ROLE_LANE,
-              dedupe_key: `envoy.role.forward.publish.${createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
-              issued_at: Date.now(),
-              payload_summary: summary,
-              trace_id: `trace-${key}`,
-            })
-          ),
-        });
-        if (wait) await until(() => terminalEnds > ended, `the run of the card ${summary}`);
-      },
-      command: async (type, fields = {}) => {
-        const from = frames.length;
-        send({ type, ...fields });
-        const answered = (): Record<string, unknown> | undefined =>
-          frames.slice(from).find((frame) => frame.type === "response" && frame.command === type);
-        await until(() => answered() !== undefined, `the response to ${type}`);
-        return answered() ?? {};
-      },
-      frame: (holds, label) => {
-        const from = frames.length;
-        return until(() => frames.slice(from).some(holds), label);
-      },
-      quiet: async (ms) => {
-        // A real clock, deliberately: what is waited for is that the real host sends nothing
-        // more, and a host that sends nothing emits no signal to await.
-        while (Date.now() - lastServedAt < ms) await Bun.sleep(100);
-      },
-    };
-  };
+  /** The case's view of one life of the pane: the shared driver's, whose `quiet` here waits for
+   *  the stand-in to serve no model request for `ms`. */
+  const lifeOf = async (rpc: Rpc): Promise<PaneLife> => ({
+    ...(await driver.life(rpc)),
+    quiet: async (ms) => {
+      // A real clock, deliberately: what is waited for is that the real host sends nothing
+      // more, and a host that sends nothing emits no signal to await.
+      while (Date.now() - lastServedAt < ms) await Bun.sleep(100);
+    },
+  });
 
   const pane = await runLegionPane(
     binary,
@@ -472,55 +328,40 @@ async function capturePane(shape: string, how: string, options: CaseOptions): Pr
         root = path.dirname(workspace);
       },
       onFrame: (frame) => {
+        driver.onFrame(frame);
         const record = frame as Record<string, unknown>;
-        frames.push(record);
-        if (record.type === "agent_end" && record.isTerminal !== false) terminalEnds += 1;
         if (SETTLING_FRAMES[String(record.type)] === true) {
           const { messages: _messages, ...kept } = record;
           timeline.push({ at: Date.now(), source: "rpc", frame: kept });
         }
-        poke();
       },
-      onRequest: (url, body, headers) => {
+      answer: (url, body, headers) => {
         if (base === "") base = url.origin;
-        if (url.pathname !== "/anthropic/v1/messages") return;
-        lastServedAt = Date.now();
-        const kept: Record<string, string> = {};
-        const withheld: string[] = [];
-        for (const [header, value] of headers) {
-          if (CREDENTIAL_HEADER.test(header)) withheld.push(header);
-          else kept[header] = value;
+        if (url.pathname === "/anthropic/v1/messages") {
+          lastServedAt = Date.now();
+          const kept: Record<string, string> = {};
+          const withheld: string[] = [];
+          for (const [header, value] of headers) {
+            if (CREDENTIAL_HEADER.test(header)) withheld.push(header);
+            else kept[header] = value;
+          }
+          timeline.push({
+            at: lastServedAt,
+            source: "standin",
+            path: url.pathname,
+            query: url.search,
+            headers: kept,
+            // A credential header is named, never written: F2 sends the gateway's own in its
+            // place.
+            withheldHeaders: withheld,
+            body,
+          });
         }
-        timeline.push({
-          at: lastServedAt,
-          source: "standin",
-          path: url.pathname,
-          query: url.search,
-          headers: kept,
-          // A credential header is named, never written: F2 sends the gateway's own in its place.
-          withheldHeaders: withheld,
-          body,
-        });
-        poke();
-      },
-      answer: (url, body) => {
         if (url.pathname === "/v1/interests/subscribe" && typeof body.session_id === "string") {
           sessionID = body.session_id;
         }
-        // An unavailable open-asks read arms no run-end self-check, so every model request is
-        // the case's own or one of the host's.
-        if (url.pathname === "/api/v1/asks/open") {
-          return new Response("unavailable", { status: 503 });
-        }
-        const listed = /^\/api\/v1\/agents\/([^/]+)\/answers$/.exec(url.pathname);
-        if (listed !== null) {
-          return Response.json({
-            session_id: decodeURIComponent(listed[1] ?? ""),
-            since: new Date(Date.now() - 72 * 3_600_000).toISOString(),
-            total: answers.items.length,
-            items: answers.items,
-          });
-        }
+        const dispatch = dispatchStandin(url, answers.items);
+        if (dispatch !== undefined) return dispatch;
         if (url.pathname !== "/anthropic/v1/messages") return undefined;
         return answerMessages({ path: url.pathname, body });
       },
@@ -673,11 +514,6 @@ function deduplicated(items: readonly Record<string, unknown>[]): {
   return { timeline: bodies.map(named), shared };
 }
 
-/** The run of a prompt, with its terminal agent_end. */
-function terminal(frame: Record<string, unknown>): boolean {
-  return frame.type === "agent_end" && frame.isTerminal !== false;
-}
-
 const CASE_MS = 300_000;
 
 test.skipIf(!capture)(
@@ -736,10 +572,10 @@ test.skipIf(!capture)(
             (frame) => frame.type === "tool_execution_start",
             "the tool call's start"
           );
-          const ended = life.frame(terminal, "the run's end");
+          const ended = life.frame(isTerminalEnd, "the run's end");
           life.send({ type: "prompt", message: "ACME-1: check the build." });
           await started;
-          await life.card("ACME-1: CI finished on the pull request.", false);
+          await life.card("ACME-1: CI finished on the pull request.", undefined, false);
           await ended;
           await life.quiet(1_500);
         },
@@ -1124,33 +960,10 @@ test.skipIf(!capture)(
         },
         second: {
           between: async ({ sessions, answers, place, note }) => {
-            const files = (await readdir(sessions, { recursive: true }))
-              .filter((file) => file.endsWith(".jsonl"))
-              .map((file) => path.join(sessions, file));
-            for (const file of files) {
-              let rewritten = 0;
-              const lines = (await readFile(file, "utf8")).split("\n").map((line) => {
-                if (line === "") return line;
-                const entry = JSON.parse(line) as Record<string, unknown>;
-                const data = entry.data as Record<string, unknown> | undefined;
-                if (
-                  entry.customType !== "date-cwd-reminder" ||
-                  typeof data?.reminder !== "string"
-                ) {
-                  return line;
-                }
-                const day = /Today: (\d{4}-\d{2}-\d{2});/.exec(data.reminder)?.[1];
-                if (day === undefined) return line;
-                rewritten += 1;
-                note("journal entry rewritten", { from: day, to: dayBefore(day) });
-                return JSON.stringify({
-                  ...entry,
-                  data: { ...data, reminder: data.reminder.replace(day, dayBefore(day)) },
-                });
-              });
-              if (rewritten > 0) await writeFile(file, lines.join("\n"));
-            }
-            answers.items = [personAnswer("ask_1", "Go the second way, and keep the retry at 3.")];
+            await rewriteReminderDates(sessions, (from, to) => {
+              note("journal entry rewritten", { from, to });
+            });
+            answers.items = [personAnswer(ISSUE)];
             note("answers route lists one answer", { items: answers.items });
             await place(APPROVAL_TEXT);
             note("the recorder places the approval message", { text: APPROVAL_TEXT });

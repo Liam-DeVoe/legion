@@ -8,10 +8,10 @@
 # (packages/pi-legion/test/approval-context-recorder.ts) whose `before_provider_request` handler
 # writes each request body Oh My Pi sends. Each session runs on the pod's own models.yml and
 # operator overlay, so its turns are real model calls through the pod's model gateway, some tens of
-# short requests to claude-opus-5-5 and as many to claude-sonnet-5, through a recording proxy that
-# records each request body, which is how a compaction's own request is read. The daemon is a stand-in whose
-# approval route answers that no approval stands until a case's entry is sent, and the approved
-# version from then on, in the daemon's own words.
+# short requests to the model the overlay puts on `default` and as many to claude-sonnet-5, through
+# a recording proxy that records each request body, which is how a compaction's own request is
+# read. The daemon is a stand-in whose approval route answers that no approval stands until a
+# case's entry is sent, and the approved version from then on, in the daemon's own words.
 #
 # The cases are the check's: the entry of each of the six paths as the daemon renders it, to an
 # idle session and to a session in a turn after a tool result, the carried-gate-opened notice among
@@ -24,20 +24,25 @@
 # packages/pi-legion/test/approval-message-omp.test.ts runs the same driver in CI on a stand-in
 # model. Each case prints `== <case>`, what it observed and `ok <case>` or `FAIL <case>: <why>`; a
 # failed case does not stop the run, and the run ends with `approval message capture: PASS` or
-# names the first case that failed.
+# names the first case that failed, or the failure that stopped the driver before its cases.
 #
 # Run it in a Legion pod, from a checkout after `bun install`, as
 #   bash scripts/e2e/approval-message.sh
-# It needs bash, bun, go (for the NATS server it builds and the daemon's words), curl and tar.
+# It needs bash, bun, go (for the NATS server it builds and the daemon's words), curl, tar, and jq
+# and flock (for lib/pack-plugin.sh); git too with APPROVAL_MESSAGE_PLUGINS_REF.
 # APPROVAL_MESSAGE_PLUGINS_REF=<git revision> packs both plugins from that revision instead
 # (`git archive` and `bun install` in the run's work directory), and also checks that no request of
 # the run holds an approval message: APPROVAL_MESSAGE_PLUGINS_REF=origin/main is the negative
-# control, whose cases fail. The other inputs and their defaults:
+# control, whose placing cases fail, and which exits 0 exactly when the run sent requests and none
+# of them holds an approval message. The other inputs and their defaults:
 #   APPROVAL_MESSAGE_MODELS     the pod's models.yml ($PI_CODING_AGENT_DIR/models.yml), whose
 #                               anthropic provider the driver reads in its own process, its base
-#                               URL and key printed nowhere, and routes through its recording proxy
+#                               URL and key printed nowhere, checks that it offers claude-sonnet-5
+#                               and the overlay's default model, and routes through its recording
+#                               proxy
 #   APPROVAL_MESSAGE_OVERLAY    the pod's operator overlay (the overlay.yml PI_CONFIG_FILES names),
-#                               which each session reads through PI_CONFIG_FILES as the pod's do
+#                               which each session reads through PI_CONFIG_FILES as the pod's do,
+#                               and whose modelRoles.default every case but the second pass runs
 #   APPROVAL_MESSAGE_ENTRIES    each-path: the first entry file of each path; every: all of them
 #   APPROVAL_MESSAGE_OMP_ROOT   where the pinned build is installed ($TMPDIR/omp-pin); a build
 #                               already there at .omp-pin's version is used again
@@ -50,7 +55,7 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 started=$SECONDS
 check=setup
 check_started=$SECONDS
-# Set once the driver runs: its own last line then ends the run, PASS or the first failed case.
+# Set once the driver runs: its own last line, its verdict, then ends the run.
 driver_ran=
 
 begin() {
@@ -80,9 +85,9 @@ timeout_hook=
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# cleanup stops the NATS server this run started and removes the work directory (natsd, the packed
-# plugins, a revision's tree); the sessions are the driver's own children, which it stops itself.
-# The evidence directory and the installed build stay.
+# cleanup stops the NATS server this run started and removes the work directory (its store, the
+# packed plugins, a revision's tree); the sessions are the driver's own children, which it stops
+# itself. The evidence directory, the installed build and the built natsd stay.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
@@ -98,20 +103,23 @@ trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
 begin prerequisites
-for tool in bun go curl tar git; do
+ref=${APPROVAL_MESSAGE_PLUGINS_REF:-}
+# bun runs the driver and packs, go builds natsd and prints the daemon's words, curl and tar fetch
+# and unpack the pinned build, and lib/pack-plugin.sh rewrites the manifest with jq under a flock;
+# git takes a revision's tree.
+tools=(bun go curl tar jq flock)
+[ -z "$ref" ] || tools+=(git)
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 driver=$root/packages/pi-legion/test/approval-message-capture.ts
 [ -f "$driver" ] || fail "$driver is missing"
 [ -d "$root/packages/pi-legion/node_modules/@legion/pi-shared" ] ||
   fail "packages/pi-legion/node_modules holds no @legion/pi-shared: run bun install in this checkout"
+# The driver reads the file's anthropic provider and checks the models the cases run before its
+# first case; nothing here prints a line of it.
 models=${APPROVAL_MESSAGE_MODELS:-${PI_CODING_AGENT_DIR:-}/models.yml}
 [ -r "$models" ] || fail "no readable models.yml at '$models': set APPROVAL_MESSAGE_MODELS to the pod's own"
-# The route the cases need, read without printing a line of the file: the anthropic provider with
-# the two models the cases run.
-for id in claude-opus-5-5 claude-sonnet-5; do
-  grep -qE "id: *${id}[,} ]" "$models" || fail "$models offers no model $id"
-done
 overlay=${APPROVAL_MESSAGE_OVERLAY:-}
 if [ -z "$overlay" ]; then
   IFS=: read -r -a configs <<<"${PI_CONFIG_FILES:-}"
@@ -127,7 +135,6 @@ case "$entry_files" in
 each-path | every) ;;
 *) fail "APPROVAL_MESSAGE_ENTRIES is '$entry_files'; it is each-path or every" ;;
 esac
-ref=${APPROVAL_MESSAGE_PLUGINS_REF:-}
 note "model route: $models and the overlay $overlay"
 note "entries: $entry_files; plugins: ${ref:-this checkout}"
 note "evidence directory $evidence"
@@ -172,10 +179,12 @@ pass
 begin nats
 # A session whose Envoy plugin reaches no NATS server is given no consumer, and its claim boot then
 # ends it, so the run starts a server of its own on a port the kernel picks (`-p -1`),
-# read back from the line it logs once it listens.
-go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
+# read back from the line it logs once it listens. natsd is installed under TMPDIR, where it stays
+# for the next run: `go install` links it again only when what it is built from changed.
+natsd_bin=${TMPDIR:-/tmp}/legion-e2e-natsd
+GOBIN=$natsd_bin go -C "$root/packages/envoy" install -buildvcs=false ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
-start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
+start_process nats "$natsd_bin/natsd" -p -1 -store_dir "$work/nats-store"
 await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_port=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
   fail "natsd logged no client port; see $evidence/logs/nats.log"
@@ -209,16 +218,13 @@ for package in pi-envoy pi-legion; do
 done
 pass
 
-# The driver prints a section per case of its own and the run's last line, so this check names the
-# run rather than opening a section.
-check=capture
+# The driver prints a section per case of its own and the run's last line, its verdict, also for a
+# failure before its first case.
 driver_ran=1
-status=0
 args=(
   --omp "$omp" --nats "$nats_url"
   --envoy "$work/plugins/pi-envoy/package" --legion "$work/plugins/pi-legion/package"
   --models "$models" --overlay "$overlay" --entries "$entry_files" --evidence "$evidence/records"
 )
 [ -z "$ref" ] || args+=(--negative-control)
-bun "$driver" "${args[@]}" || status=$?
-[ "$status" -eq 0 ] || exit "$status"
+bun "$driver" "${args[@]}"

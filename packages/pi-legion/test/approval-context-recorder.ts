@@ -22,6 +22,7 @@ import {
   messageKey,
 } from "@legion/pi-shared/approval-message";
 import * as host from "@oh-my-pi/pi-coding-agent";
+import { perCall, roleOf, timestampOf } from "../src/approval-message";
 
 /** What the recorder reads of a handler's context. */
 interface RecorderContext {
@@ -46,18 +47,6 @@ interface RecorderApi {
   ): void;
 }
 
-/** The description of the host's per-call Symbol (`ai/src/utils/block-symbols.ts`). */
-const PER_CALL = "agent.message.perCallContext";
-
-/** Whether the host marked `message` per-call: built for this request alone. */
-function perCall(message: unknown): boolean {
-  if (typeof message !== "object" || message === null) return false;
-  const marked = message as Record<symbol, unknown>;
-  return Object.getOwnPropertySymbols(message).some(
-    (symbol) => symbol.description === PER_CALL && marked[symbol] === true
-  );
-}
-
 function record(file: string, event: string, fields: Record<string, unknown>): void {
   appendFileSync(file, `${JSON.stringify({ at: Date.now(), event, ...fields })}\n`);
 }
@@ -71,21 +60,6 @@ function liveState(session: string): Record<string, unknown> {
     isCompacting: "isCompacting" in live ? live.isCompacting : undefined,
     compactionSpeculation: "compactionSpeculation" in live ? live.compactionSpeculation : undefined,
   };
-}
-
-function timestampOf(message: unknown): number | undefined {
-  return typeof message === "object" &&
-    message !== null &&
-    "timestamp" in message &&
-    typeof message.timestamp === "number"
-    ? message.timestamp
-    : undefined;
-}
-
-function roleOf(message: unknown): unknown {
-  return typeof message === "object" && message !== null && "role" in message
-    ? message.role
-    : undefined;
 }
 
 export default function recorder(pi: RecorderApi): void {

@@ -52,6 +52,22 @@ function daemon(respond: (url: URL) => Response): {
   return { fetch: stub, requests };
 }
 
+/** A daemon that never answers: each request waits until its signal aborts, then fails with the
+ *  signal's reason. `handed` holds the signal each request was handed. */
+function hungDaemon(): {
+  readonly fetch: typeof fetch;
+  readonly handed: (AbortSignal | null | undefined)[];
+} {
+  const handed: (AbortSignal | null | undefined)[] = [];
+  const stub = (async (_input, init) => {
+    handed.push(init?.signal);
+    const { promise, reject } = Promise.withResolvers<Response>();
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    return promise;
+  }) as typeof fetch;
+  return { fetch: stub, handed };
+}
+
 /** The contract the build under test speaks. Every request states it, and the refusal cases
  * below set the contract the daemon states against it. */
 const CONTRACT = 60;
@@ -306,13 +322,7 @@ test("the approval is read by a POST carrying the claim, through its caller's si
 
   // The plugin reads under a deadline of its own: the signal reaches fetch, and its abort ends a
   // read the daemon never answers.
-  const handed: (AbortSignal | null | undefined)[] = [];
-  const hung = (async (_input, init) => {
-    handed.push(init?.signal);
-    const { promise, reject } = Promise.withResolvers<Response>();
-    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    return promise;
-  }) as typeof fetch;
+  const { fetch: hung, handed } = hungDaemon();
   const controller = new AbortController();
   const late = new Error("the deadline passed");
   const pending = createLegionDaemonClient("http://daemon.test", {
@@ -405,13 +415,7 @@ test("a state from a daemon a release ahead parses without its unknown top-level
 });
 
 test("a state read hands fetch its caller's signal, and an abort ends a read the daemon never answers", async () => {
-  const handed: (AbortSignal | null | undefined)[] = [];
-  const hung = (async (_input, init) => {
-    handed.push(init?.signal);
-    const { promise, reject } = Promise.withResolvers<Response>();
-    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    return promise;
-  }) as typeof fetch;
+  const { fetch: hung, handed } = hungDaemon();
   const controller = new AbortController();
   const late = new Error("the reader stopped waiting");
 

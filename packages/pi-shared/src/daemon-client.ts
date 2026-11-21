@@ -597,13 +597,15 @@ export function createLegionDaemonClient(
     return parsed.value;
   };
 
-  /** Parses the request before it leaves the pane, then reads the route's success body. */
+  /** Parses the request before it leaves the pane, then reads the route's success body; `signal`
+   *  aborts the request, its answer's body included. */
   const post = <Input, Output>(
     path: string,
     request: z.ZodType<Input>,
     response: z.ZodType<Output>,
-    body: Input
-  ): Promise<Output> => read("POST", path, response, request.parse(body) as object);
+    body: Input,
+    signal?: AbortSignal
+  ): Promise<Output> => read("POST", path, response, request.parse(body) as object, signal);
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
@@ -674,11 +676,11 @@ export function createLegionDaemonClient(
         input
       ),
     approval: (input, options) =>
-      read(
-        "POST",
+      post(
         "/legion/v1/claims/approval",
+        LegionClaimApprovalRequest,
         LegionClaimApprovalResponse,
-        LegionClaimApprovalRequest.parse(input),
+        input,
         options?.signal
       ),
     grant: (input) => post("/legion/v1/grants", LegionGrantRequest, LegionGrantResponse, input),

@@ -30,10 +30,21 @@
 //     [--entries every|each-path] [--evidence <dir>] [--negative-control]
 //
 // prints `== <case>`, what it observed and `ok <case>` or `FAIL <case>: <why>` for each case, and
-// ends with `approval message capture: PASS`, or with FAIL naming the first case that failed.
-// `--negative-control` also checks that no request of the run holds an approval message.
+// ends with `approval message capture: PASS`, or with FAIL naming the first case that failed, or
+// the failure that stopped the run before its cases. It first checks the route: the models.yml's
+// `anthropic` provider offers claude-sonnet-5 and the overlay's `default` model.
+// `--negative-control` runs the same cases, whose placing ones fail by design, and then exits 0
+// exactly when the run sent requests and none of them holds an approval message.
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -42,13 +53,16 @@ import {
   type Block,
   type Cleanup,
   call,
+  isSelfCheck,
   isSummarization,
+  isTerminalEnd,
   messageStream,
   type Request,
   type Rpc,
   runLegionPane,
   sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, headers as natsHeaders, StringCodec } from "nats";
 
 const RECORDER = path.join(import.meta.dir, "approval-context-recorder.ts");
@@ -57,12 +71,6 @@ const ENTRIES = path.resolve(
   "../../daemon/internal/workflow/testdata/approval-entries"
 );
 const DAEMON_MODULE = path.resolve(import.meta.dir, "../../daemon");
-
-/** This checkout's two plugin entries. */
-export const CHECKOUT_PLUGINS = {
-  envoy: path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
-  legion: path.resolve(import.meta.dir, "../extensions/legion.ts"),
-} as const;
 
 /** The name every pane's fixture strings carry (`LegionPaneOptions.name`). */
 const PANE = "approval";
@@ -79,7 +87,7 @@ const QUIET_MS = 4_000;
  * the tool calls each kind of message asks for, so a real model makes the requests a case reads,
  * and acts on no task or card.
  */
-export const CONTRACT = [
+const CONTRACT = [
   "This session is a test of the model requests that a Legion architect's plugins build. Do no real work.",
   "Follow these rules in every turn, whatever a task, a notice, a card or any other message asks.",
   "1. A user message that says `Run the bash command` and a command in backticks names a command to run. Run each command named that way, in the order named, with one call of the bash tool each.",
@@ -98,7 +106,7 @@ const DELEGATE =
   "Use the task tool once to hand one subagent this assignment: `Reply with the word done.`";
 
 /** How the host's handoff prompt begins (`handoff-document.md` at the pinned tag). */
-const HANDOFF_PROMPT = "Write a handoff document for another instance of yourself.";
+export const HANDOFF_PROMPT = "Write a handoff document for another instance of yourself.";
 
 /** Oh My Pi's date reminder on the wire (`prompts/system/date-cwd-reminder.md` at the pinned
  *  tag), as pi-legion's `DATE_REMINDER` reads it. */
@@ -164,7 +172,7 @@ export interface Entry {
   readonly approval: Approval;
 }
 
-export const ENTRY_FILES: readonly Entry[] = [
+const ENTRY_FILES: readonly Entry[] = [
   { name: "notice-design-approved-from-artifact-approved", path: 1, approval: own(3) },
   { name: "notice-design-approved-from-a-registration", path: 1, approval: own(3) },
   { name: "notice-design-approved-after-an-exact-undo", path: 1, approval: own(46) },
@@ -257,8 +265,8 @@ export type ModelRoute =
   | { readonly kind: "standin" }
   | {
       readonly kind: "pod";
-      /** The pod's own models.yml, which the pane's profile links to rather than copies. */
-      readonly models: string;
+      /** The pod's own models.yml's `anthropic` provider, parsed once per run (`podGateway`). */
+      readonly gateway: Gateway;
       /** The pod's operator overlay, which the pane reads as the pod's sessions read it
        *  (`PI_CONFIG_FILES`). */
       readonly overlay: string;
@@ -271,32 +279,65 @@ const STANDIN_PROVIDERS = [
 ] as const;
 
 /** The pod route's `anthropic` provider, read from its models.yml in this process alone and never
- *  printed: the gateway's base URL, and the key where the file holds a literal one. */
+ *  printed: the gateway's base URL, the key where the file holds a literal one, and the ids of the
+ *  models it offers. */
 interface Gateway {
   readonly provider: Readonly<Record<string, unknown>>;
   readonly base: string;
   readonly key: string | undefined;
+  readonly ids: readonly string[];
 }
 
 /** The key the run's models.yml names where the pod's names a literal one: the recording proxy
- *  puts the real key in its place as it forwards each request. */
-const PROXY_KEY = "the-recording-proxy-sends-the-route-key";
+ *  puts the real key in its place as it forwards each request. Random, as a real key is. */
+const PROXY_KEY = fixtureSecret("proxy");
 
 function podGateway(models: string): Gateway {
   const parsed = Bun.YAML.parse(readFileSync(models, "utf8")) as {
     readonly providers?: Readonly<Record<string, unknown>>;
-  };
-  const provider = parsed.providers?.anthropic;
+  } | null;
+  const provider = parsed?.providers?.anthropic;
   if (typeof provider !== "object" || provider === null) {
     fail(`${models} names no anthropic provider`);
   }
-  const { baseUrl, apiKey } = provider as Record<string, unknown>;
+  const { baseUrl, apiKey, models: offered } = provider as Record<string, unknown>;
   if (typeof baseUrl !== "string") fail(`${models} names no baseUrl for the anthropic provider`);
   return {
     provider: provider as Record<string, unknown>,
     base: baseUrl.replace(/\/+$/, ""),
     key: typeof apiKey === "string" && !apiKey.startsWith("!") ? apiKey : undefined,
+    ids: (Array.isArray(offered) ? offered : []).flatMap((model: unknown) =>
+      typeof model === "object" && model !== null && "id" in model && typeof model.id === "string"
+        ? [model.id]
+        : []
+    ),
   };
+}
+
+/**
+ * The model the pod's overlay puts on `default`, which every case but the second pass's runs
+ * (`--model @default`, as the sandbox launch runs it), checked before any case runs: the run's
+ * models.yml holds the pod's `anthropic` provider alone, so that provider must offer it, and
+ * claude-sonnet-5, which the second pass names. The cases on the default read each placement as
+ * `system`, so that model must take a system message inside the conversation.
+ */
+function overlayDefault(overlay: string, gateway: Gateway, models: string): string {
+  if (!gateway.ids.includes("claude-sonnet-5")) {
+    fail(`${models}'s anthropic provider offers no model claude-sonnet-5`);
+  }
+  const parsed = Bun.YAML.parse(readFileSync(overlay, "utf8")) as {
+    readonly modelRoles?: Readonly<Record<string, unknown>>;
+  } | null;
+  const selector = parsed?.modelRoles?.default;
+  if (typeof selector !== "string") fail(`${overlay} puts no model on modelRoles.default`);
+  // `anthropic/<id>`, the provider's name and a thinking level after a colon each optional.
+  const id = selector.replace(/^anthropic\//, "").replace(/:[^/:]*$/, "");
+  if (!gateway.ids.includes(id)) {
+    fail(
+      `${overlay} puts ${selector} on modelRoles.default, which ${models}'s anthropic provider does not offer`
+    );
+  }
+  return selector;
 }
 
 /** The run's models.yml, as JSON, which is YAML: the pod's `anthropic` provider alone, its base
@@ -376,14 +417,29 @@ interface WireMessage {
   readonly content?: unknown;
 }
 
+/** What a Messages request is, as its body shows: the conversation's own (`main`), one of a
+ *  compaction's summary requests (`summary`, `isSummarization`), the host's handoff prompt
+ *  (`handoff`), a side turn (`side`, `isSelfCheck`), or one of the host's other side calls, which
+ *  offer no tool (`tool-less`). */
+export type RequestKind = "main" | "summary" | "handoff" | "side" | "tool-less";
+
+/** What `request` is (`RequestKind`): how a stand-in model answers it, and how a case reads it. */
+export function requestKind(request: Request): RequestKind {
+  if (isSummarization(request)) return "summary";
+  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
+  if (textOf(messages.at(-1)).includes(HANDOFF_PROMPT)) return "handoff";
+  if (isSelfCheck(request)) return "side";
+  const { tools } = request.body;
+  return Array.isArray(tools) && tools.length > 0 ? "main" : "tool-less";
+}
+
 /** One request body Oh My Pi sent, as the recorder wrote it. */
 export interface Sent {
   /** Its order among the pane's requests, from 0. */
   readonly index: number;
   readonly pane: string;
-  /** The conversation's own (`main`), a task subagent's (`sub`), a side turn (`side`), the
-   *  handoff prompt (`handoff`), or one of the host's side calls that offer no tool. */
-  readonly kind: "main" | "sub" | "side" | "handoff" | "tool-less";
+  /** What the request is (`requestKind`), or a task subagent's (`sub`). */
+  readonly kind: RequestKind | "sub";
   readonly messages: readonly WireMessage[];
   readonly perCall: readonly boolean[];
 }
@@ -432,32 +488,48 @@ function describe(message: unknown): string {
   return `${role} ${JSON.stringify(text.length > 80 ? `${text.slice(0, 80)}…` : text)}`;
 }
 
-/** The requests the recorder wrote to `file`, in order. */
-function recorded(file: string, pane: string): Sent[] {
-  if (!existsSync(file)) return [];
+/**
+ * The requests the recorder writes to `file`, read as it grows. Each call reads only what was
+ * written since the last and parses only its complete lines, so a line the recorder is still
+ * appending waits for the next call, and no line that is no `before_provider_request` event is
+ * parsed. Answers every request read so far, in order.
+ */
+function recordReader(file: string, pane: string): () => readonly Sent[] {
   const sent: Sent[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (line === "") continue;
-    const event = JSON.parse(line) as Record<string, unknown>;
-    if (event.event !== "before_provider_request") continue;
-    const payload = (event.payload ?? {}) as Record<string, unknown>;
-    const messages = (Array.isArray(payload.messages) ? payload.messages : []) as WireMessage[];
-    const agent = event.agent as { readonly kind?: unknown } | undefined;
-    const last = textOf(messages.at(-1));
-    let kind: Sent["kind"] = "main";
-    if (agent?.kind === "sub") kind = "sub";
-    else if (last.includes("<btw>")) kind = "side";
-    else if (last.includes(HANDOFF_PROMPT)) kind = "handoff";
-    else if (!Array.isArray(payload.tools) || payload.tools.length === 0) kind = "tool-less";
-    sent.push({
-      index: sent.length,
-      pane,
-      kind,
-      messages,
-      perCall: (Array.isArray(event.perCall) ? event.perCall : []).map((flag) => flag === true),
-    });
-  }
-  return sent;
+  let offset = 0;
+  return () => {
+    const size = statSync(file, { throwIfNoEntry: false })?.size ?? 0;
+    if (size <= offset) return sent;
+    const chunk = Buffer.alloc(size - offset);
+    const fd = openSync(file, "r");
+    let read: number;
+    try {
+      read = readSync(fd, chunk, 0, chunk.length, offset);
+    } finally {
+      closeSync(fd);
+    }
+    const complete = chunk.subarray(0, read).lastIndexOf(0x0a) + 1;
+    if (complete === 0) return sent;
+    offset += complete;
+    for (const line of chunk.subarray(0, complete).toString("utf8").split("\n")) {
+      if (!line.includes('"event":"before_provider_request"')) continue;
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.event !== "before_provider_request") continue;
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      const agent = event.agent as { readonly kind?: unknown } | undefined;
+      sent.push({
+        index: sent.length,
+        pane,
+        kind:
+          agent?.kind === "sub"
+            ? "sub"
+            : requestKind({ path: "/anthropic/v1/messages", body: payload }),
+        messages: (Array.isArray(payload.messages) ? payload.messages : []) as WireMessage[],
+        perCall: (Array.isArray(event.perCall) ? event.perCall : []).map((flag) => flag === true),
+      });
+    }
+    return sent;
+  };
 }
 
 function fail(why: string): never {
@@ -594,32 +666,16 @@ interface PaneState {
   answers: Record<string, unknown>[];
 }
 
-/** What a case does with its pane while it is up. */
-interface Life {
+/** What a case does with one life of its pane: the steps of `PaneLife`, each prompt and card
+ *  answering the mark before it, the number of requests the pane had sent then. */
+interface Life extends Omit<PaneLife, "prompt" | "card"> {
   readonly state: PaneState;
   /** Every request the pane sent so far, in every life. */
-  readonly sent: () => Sent[];
-  /** Sends one RPC prompt and resolves once its run has ended. Answers the mark before it. */
+  readonly sent: () => readonly Sent[];
+  /** `PaneLife.prompt`. Answers the mark before it. */
   readonly prompt: (message: string) => Promise<number>;
-  /** Relays one Envoy card on the pane's role lane, built as the listener builds the envelope of
-   *  the daemon's publish of `message` and `payload`. With `wait`, resolves once the run it
-   *  starts has ended; without, once the session took the frame. Answers the mark before it. */
+  /** `PaneLife.card`. Answers the mark before it. */
   readonly card: (message: string, payload?: string, wait?: boolean) => Promise<number>;
-  /** Sends one RPC command and resolves with its `response` frame. */
-  readonly command: (
-    type: string,
-    fields?: Record<string, unknown>
-  ) => Promise<Record<string, unknown>>;
-  /** Resolves once an RPC frame that comes after this call satisfies `holds`. */
-  readonly frame: (
-    holds: (frame: Record<string, unknown>) => boolean,
-    label: string
-  ) => Promise<void>;
-  /** Resolves once `holds` is true, checked at each frame and every quarter second. */
-  readonly until: (holds: () => boolean, label: string) => Promise<void>;
-  /** Resolves once Oh My Pi has printed no RPC frame for `ms`. */
-  readonly quiet: (ms: number) => Promise<void>;
-  readonly send: (command: Record<string, unknown>) => void;
 }
 
 interface PaneSpec {
@@ -639,7 +695,7 @@ interface PaneSpec {
 }
 
 interface Pane {
-  readonly sent: () => Sent[];
+  readonly sent: () => readonly Sent[];
   /** Every model request the stand-in served: the stand-in model's, or, on the pod's route, those
    *  it recorded and forwarded to the gateway. Each holds its body alone, never a header. */
   readonly modelRequests: () => readonly Request[];
@@ -649,17 +705,177 @@ interface Pane {
   readonly relaunch: (life: (life: Life) => Promise<void>) => Promise<void>;
 }
 
-/** The run of a prompt, with its terminal agent_end. */
-function terminal(frame: Record<string, unknown>): boolean {
-  return frame.type === "agent_end" && frame.isTerminal !== false;
-}
-
 /** The listener's summary of a message: its first non-empty line, cut to 160 runes
  *  (`contracts.OneLineSummary`, packages/envoy/internal/contracts/normalize.go). */
 function oneLineSummary(message: string): string {
   const line = message.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
   const runes = [...line];
   return runes.length <= 160 ? line : `${runes.slice(0, 159).join("")}…`;
+}
+
+/** One life of a pane, as a case drives it over that life's RPC. */
+export interface PaneLife {
+  /** Sends one RPC command and waits for nothing. */
+  readonly send: (command: Record<string, unknown>) => void;
+  /** Resolves once `holds` is true, checked at each frame and every quarter second. */
+  readonly until: (holds: () => boolean, label: string) => Promise<void>;
+  /** Sends one RPC command and resolves with its `response` frame. */
+  readonly command: (
+    type: string,
+    fields?: Record<string, unknown>
+  ) => Promise<Record<string, unknown>>;
+  /** Resolves once an RPC frame that comes after this call satisfies `holds`. */
+  readonly frame: (
+    holds: (frame: Record<string, unknown>) => boolean,
+    label: string
+  ) => Promise<void>;
+  /** Sends one RPC prompt and resolves once its run has ended. */
+  readonly prompt: (message: string) => Promise<void>;
+  /** Relays one Envoy card on the pane's role lane once the session has registered, built as the
+   *  listener builds the envelope of the daemon's publish of `message` and `payload`. With
+   *  `wait`, resolves once the run it starts has ended; without, once the session took the
+   *  frame. */
+  readonly card: (message: string, payload?: string, wait?: boolean) => Promise<void>;
+  /** Resolves once Oh My Pi has printed no RPC frame for `ms`. */
+  readonly quiet: (ms: number) => Promise<void>;
+}
+
+/** What drives one pane across its lives: `onFrame` goes to `runLegionPane`, and each life's RPC
+ *  to `life`. */
+export interface PaneDriver {
+  /** Keeps each RPC frame omp prints, counts the runs that ended, and looks at each wait again. */
+  readonly onFrame: (frame: object) => void;
+  /** The steps a case takes in one life, over a NATS connection of their own that the cleanup
+   *  closes. */
+  readonly life: (rpc: Rpc) => Promise<PaneLife>;
+}
+
+/** The driver of one pane, which this file's cases and the F1 capture
+ *  (approval-context-capture.omp.test.ts) both run their panes with. */
+export function paneDriver(options: {
+  /** The NATS server each card is relayed through. */
+  readonly nats: string;
+  readonly cleanup: Cleanup;
+  /** The pane's role lane, the topic of every card. */
+  readonly lane: string;
+  /** The session's id once it registered with the listener, empty before. */
+  readonly session: () => string;
+  /** How long one step may take before it fails, naming the step and the last frames: a bound
+   *  only on a host that never does what is waited for, since one that does settles the wait at
+   *  the frame, or the record, that says so. */
+  readonly stepMs: number;
+  /** Told each RPC command sent and each card relayed, as it goes. */
+  readonly onStep?: (step: "rpc" | "card", fields: Record<string, unknown>) => void;
+}): PaneDriver {
+  const frames: Record<string, unknown>[] = [];
+  const checks = new Set<() => void>();
+  let terminalEnds = 0;
+  let lastFrameAt = Date.now();
+  return {
+    onFrame: (frame) => {
+      const record = frame as Record<string, unknown>;
+      frames.push(record);
+      lastFrameAt = Date.now();
+      if (isTerminalEnd(record)) terminalEnds += 1;
+      for (const check of [...checks]) check();
+    },
+    life: async (rpc) => {
+      const nc = await connect({ servers: options.nats });
+      options.cleanup.push(() => nc.close());
+      const codec = StringCodec();
+      let seq = 0;
+      const until = (holds: () => boolean, label: string): Promise<void> => {
+        if (holds()) return Promise.resolve();
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        const check = (): void => {
+          if (holds()) resolve();
+        };
+        // The record and the clock change with no frame, so the wait looks again on a ticker too.
+        const ticker = setInterval(check, 250);
+        const timer = setTimeout(() => {
+          const seen = frames
+            .slice(-30)
+            .map(
+              (frame) => `${String(frame.type)}${frame.command ? `:${String(frame.command)}` : ""}`
+            );
+          reject(
+            new Error(
+              `${label} did not happen within ${options.stepMs} ms; the last frames: ${seen}`
+            )
+          );
+        }, options.stepMs);
+        checks.add(check);
+        // Whatever settles the wait, omp's exit among them, ends its ticker and its bound.
+        return Promise.race([promise, rpc.closed]).finally(() => {
+          checks.delete(check);
+          clearInterval(ticker);
+          clearTimeout(timer);
+        });
+      };
+      const send = (command: Record<string, unknown>): void => {
+        options.onStep?.("rpc", { command });
+        rpc.send(command);
+      };
+      return {
+        send,
+        until,
+        command: async (type, fields = {}) => {
+          const from = frames.length;
+          send({ type, ...fields });
+          const answered = (): Record<string, unknown> | undefined =>
+            frames.slice(from).find((frame) => frame.type === "response" && frame.command === type);
+          await until(() => answered() !== undefined, `the response to ${type}`);
+          return answered() ?? {};
+        },
+        frame: (holds, label) => {
+          const from = frames.length;
+          return until(() => frames.slice(from).some(holds), label);
+        },
+        prompt: async (message) => {
+          const ended = terminalEnds;
+          send({ type: "prompt", message });
+          await until(
+            () => terminalEnds > ended,
+            `the run of the prompt ${JSON.stringify(message)}`
+          );
+        },
+        card: async (message, payload, wait = true) => {
+          await until(() => options.session() !== "", "the session's registration");
+          const sessionID = options.session();
+          const ended = terminalEnds;
+          const key = `card-${randomUUID()}`;
+          seq += 1;
+          const summary = oneLineSummary(message);
+          // The listener's MessageEnvelope of the daemon's publish: the payload as the publish
+          // gave it, or else the whole message where the summary is not all of it.
+          const body = payload ?? (summary === message ? undefined : message);
+          options.onStep?.("card", { summary, topic: options.lane });
+          await sendRelayFrame({
+            connection: nc,
+            newHeaders: natsHeaders,
+            sessionID,
+            subject: `notifications.agent.${sessionID}`,
+            seq,
+            payload: codec.encode(
+              JSON.stringify({
+                event_id: `evt-${key}`,
+                source: "agent",
+                source_event_id: `source-${key}`,
+                topic: options.lane,
+                dedupe_key: `envoy.role.forward.publish.${createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
+                issued_at: Date.now(),
+                payload_summary: summary,
+                ...(body === undefined ? {} : { payload: body }),
+                trace_id: `trace-${key}`,
+              })
+            ),
+          });
+          if (wait) await until(() => terminalEnds > ended, `the run of the card ${summary}`);
+        },
+        quiet: (ms) => until(() => Date.now() - lastFrameAt >= ms, `${ms} ms with no frame`),
+      };
+    },
+  };
 }
 
 function blocksOf(message: WireMessage | undefined): unknown[] {
@@ -678,15 +894,18 @@ function standinReply(request: Request): readonly Block[] {
   const messages = (
     Array.isArray(request.body.messages) ? request.body.messages : []
   ) as WireMessage[];
-  const last = textOf(messages.at(-1));
   const done: readonly Block[] = [{ type: "text", text: "Done." }];
-  if (isSummarization(request)) return [{ type: "text", text: "SUMMARY-OF-THE-EARLIER-TURNS" }];
-  if (last.includes(HANDOFF_PROMPT)) {
-    return [{ type: "text", text: "HANDOFF-DOCUMENT: the checks ran; nothing is left to do." }];
-  }
-  if (last.includes("<btw>")) return [{ type: "text", text: "Nothing is left to do." }];
-  if (!Array.isArray(request.body.tools) || request.body.tools.length === 0) {
-    return [{ type: "text", text: "Label." }];
+  switch (requestKind(request)) {
+    case "summary":
+      return [{ type: "text", text: "SUMMARY-OF-THE-EARLIER-TURNS" }];
+    case "handoff":
+      return [{ type: "text", text: "HANDOFF-DOCUMENT: the checks ran; nothing is left to do." }];
+    case "side":
+      return [{ type: "text", text: "Nothing is left to do." }];
+    case "tool-less":
+      return [{ type: "text", text: "Label." }];
+    case "main":
+      break;
   }
   // The run so far: every message after the last assistant message that called no tool.
   let start = messages.length;
@@ -726,7 +945,7 @@ function standinReply(request: Request): readonly Block[] {
 }
 
 /** A person's answer to the session's ask, as Dispatch's answers route lists one. */
-function personAnswer(tree: string): Record<string, unknown> {
+export function personAnswer(tree: string): Record<string, unknown> {
   return {
     kind: "answer",
     relation: "answered_your_ask",
@@ -743,9 +962,29 @@ function personAnswer(tree: string): Record<string, unknown> {
 }
 
 /**
+ * Dispatch's routes a pane reads, as a stand-in answers them: the session's people's answers,
+ * `answers`, and the open-asks read, unavailable, which arms no run-end self-check, so every side
+ * turn is a case's own. Undefined for any other route.
+ */
+export function dispatchStandin(
+  url: URL,
+  answers: readonly Record<string, unknown>[]
+): Response | undefined {
+  if (url.pathname === "/api/v1/asks/open") return new Response("unavailable", { status: 503 });
+  const listed = /^\/api\/v1\/agents\/([^/]+)\/answers$/.exec(url.pathname);
+  if (listed === null) return undefined;
+  return Response.json({
+    session_id: decodeURIComponent(listed[1] ?? ""),
+    since: new Date(Date.now() - 72 * 3_600_000).toISOString(),
+    total: answers.length,
+    items: answers,
+  });
+}
+
+/**
  * Runs one root architect's pane: its first life `first`, then each `relaunch` over the same
- * session (`--resume`). The pane's record is read again at every `sent()`; when the pane ends it
- * is copied into the evidence directory and its requests are added to `setup.sent`.
+ * session (`--resume`). The pane's record is read as it grows, at every `sent()`; when the pane
+ * ends it is copied into the evidence directory and its requests are added to `setup.sent`.
  */
 async function openPane(
   setup: CaptureSetup,
@@ -757,7 +996,7 @@ async function openPane(
   const recordFile = path.join(scratch, "record.jsonl");
   const contractFile = path.join(scratch, "contract.md");
   await writeFile(contractFile, `${CONTRACT}\n`);
-  const sent = (): Sent[] => recorded(recordFile, spec.name);
+  const sent = recordReader(recordFile, spec.name);
   setup.cleanup.push(async () => {
     setup.sent.push(...sent());
     if (setup.evidence !== undefined && existsSync(recordFile)) {
@@ -773,113 +1012,33 @@ async function openPane(
 
   let root = "";
   let sessionID = "";
-  let terminalEnds = 0;
-  let lastFrameAt = Date.now();
-  const frames: Record<string, unknown>[] = [];
   const modelRequests: Request[] = [];
-  const gateway = route.kind === "pod" ? podGateway(route.models) : undefined;
-  /** The headers of the request the stand-in is answering, which `forward` sends on. */
-  let headers = new Headers();
-  const checks = new Set<() => void>();
-  const poke = (): void => {
-    for (const check of [...checks]) check();
-  };
+  const gateway = route.kind === "pod" ? route.gateway : undefined;
+  const driver = paneDriver({
+    nats: setup.nats,
+    cleanup: setup.cleanup,
+    lane,
+    session: () => sessionID,
+    stepMs: STEP_MS,
+  });
 
   const lifeOf = async (rpc: Rpc): Promise<Life> => {
-    const nc = await connect({ servers: setup.nats });
-    setup.cleanup.push(() => nc.close());
-    const codec = StringCodec();
-    let seq = 0;
-    const until = (holds: () => boolean, label: string): Promise<void> => {
-      if (holds()) return Promise.resolve();
-      const { promise, resolve, reject } = Promise.withResolvers<void>();
-      // The record and the clock change with no frame, so the wait looks again on a ticker too.
-      const ticker = setInterval(poke, 250);
-      // A bound only on a host that never does what is waited for: one that does settles the
-      // wait at the frame, or the record, that says so.
-      const timer = setTimeout(() => {
-        checks.delete(check);
-        clearInterval(ticker);
-        const seen = frames
-          .slice(-30)
-          .map(
-            (frame) => `${String(frame.type)}${frame.command ? `:${String(frame.command)}` : ""}`
-          );
-        reject(new Error(`${label} did not happen within ${STEP_MS} ms; the last frames: ${seen}`));
-      }, STEP_MS);
-      const check = (): void => {
-        if (!holds()) return;
-        checks.delete(check);
-        clearTimeout(timer);
-        clearInterval(ticker);
-        resolve();
-      };
-      checks.add(check);
-      return Promise.race([promise, rpc.closed]);
-    };
-    const command = async (
-      type: string,
-      fields: Record<string, unknown> = {}
-    ): Promise<Record<string, unknown>> => {
-      const from = frames.length;
-      rpc.send({ type, ...fields });
-      const answered = (): Record<string, unknown> | undefined =>
-        frames.slice(from).find((frame) => frame.type === "response" && frame.command === type);
-      await until(() => answered() !== undefined, `the response to ${type}`);
-      return answered() ?? {};
-    };
-    const prompt = async (message: string): Promise<number> => {
-      const mark = sent().length;
-      const ended = terminalEnds;
-      rpc.send({ type: "prompt", message });
-      await until(() => terminalEnds > ended, `the run of the prompt ${JSON.stringify(message)}`);
-      return mark;
-    };
+    const life = await driver.life(rpc);
     return {
+      ...life,
       state,
       sent,
-      send: (frame) => rpc.send(frame),
-      until,
-      command,
-      prompt,
-      card: async (message, payload, wait = true) => {
-        await until(() => sessionID !== "", "the session's registration");
+      prompt: async (message) => {
         const mark = sent().length;
-        const ended = terminalEnds;
-        const key = `card-${randomUUID()}`;
-        seq += 1;
-        const summary = oneLineSummary(message);
-        // The listener's MessageEnvelope of the daemon's publish: the payload as the publish gave
-        // it, or else the whole message where the summary is not all of it.
-        const body = payload ?? (summary === message ? undefined : message);
-        await sendRelayFrame({
-          connection: nc,
-          newHeaders: natsHeaders,
-          sessionID,
-          subject: `notifications.agent.${sessionID}`,
-          seq,
-          payload: codec.encode(
-            JSON.stringify({
-              event_id: `evt-${key}`,
-              source: "agent",
-              source_event_id: `source-${key}`,
-              topic: lane,
-              dedupe_key: `envoy.role.forward.publish.${createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
-              issued_at: Date.now(),
-              payload_summary: summary,
-              ...(body === undefined ? {} : { payload: body }),
-              trace_id: `trace-${key}`,
-            })
-          ),
-        });
-        if (wait) await until(() => terminalEnds > ended, `the run of the card ${summary}`);
+        await life.prompt(message);
         return mark;
       },
-      frame: (holds, label) => {
-        const from = frames.length;
-        return until(() => frames.slice(from).some(holds), label);
+      card: async (message, payload, wait) => {
+        await life.until(() => sessionID !== "", "the session's registration");
+        const mark = sent().length;
+        await life.card(message, payload, wait);
+        return mark;
       },
-      quiet: (ms) => until(() => Date.now() - lastFrameAt >= ms, `${ms} ms with no frame`),
     };
   };
 
@@ -900,7 +1059,7 @@ async function openPane(
       extensions: [RECORDER],
       args: [
         "--model",
-        // The pod's overlay puts claude-opus-5-5 on `default`, which the sandbox launch runs.
+        // The pod's route runs the model its overlay puts on `default`, as the sandbox launch does.
         setup.model === "sonnet"
           ? "anthropic/claude-sonnet-5"
           : route.kind === "pod"
@@ -929,20 +1088,11 @@ async function openPane(
       prepare: async ({ workspace }) => {
         root = path.dirname(workspace);
       },
-      onFrame: (frame) => {
-        const record = frame as Record<string, unknown>;
-        frames.push(record);
-        lastFrameAt = Date.now();
-        if (terminal(record)) terminalEnds += 1;
-        poke();
-      },
-      onRequest: (url, body, sent) => {
+      onFrame: driver.onFrame,
+      answer: (url, body, headers) => {
         if (url.pathname === "/anthropic/v1/messages") {
           modelRequests.push({ path: url.pathname, body });
         }
-        headers = sent;
-      },
-      answer: (url, body) => {
         if (url.pathname === "/v1/interests/subscribe" && typeof body.session_id === "string") {
           sessionID = body.session_id;
         }
@@ -956,20 +1106,8 @@ async function openPane(
         if (url.pathname === "/legion/v1/claims/turn-outcome") {
           return Response.json({ refusedRun: 0, failed: false });
         }
-        // An unavailable open-asks read arms no run-end self-check, so every side turn is a
-        // case's own.
-        if (url.pathname === "/api/v1/asks/open") {
-          return new Response("unavailable", { status: 503 });
-        }
-        const listed = /^\/api\/v1\/agents\/([^/]+)\/answers$/.exec(url.pathname);
-        if (listed !== null) {
-          return Response.json({
-            session_id: decodeURIComponent(listed[1] ?? ""),
-            since: new Date(Date.now() - 72 * 3_600_000).toISOString(),
-            total: state.answers.length,
-            items: state.answers,
-          });
-        }
+        const dispatch = dispatchStandin(url, state.answers);
+        if (dispatch !== undefined) return dispatch;
         if (gateway !== undefined && url.pathname.startsWith("/anthropic/")) {
           return forward(gateway, url, body, headers);
         }
@@ -1030,7 +1168,7 @@ async function sendEntry(
   const text = readFileSync(path.join(ENTRIES, `${file.name}.txt`), "utf8");
   if (file.name.startsWith("task-")) {
     if (inTurn) {
-      const ended = life.frame(terminal, "the end of the turn that refused the task");
+      const ended = life.frame(isTerminalEnd, "the end of the turn that refused the task");
       const refused = await life.command("prompt", { message: text });
       if (refused.success !== false || !String(refused.error).includes("already processing")) {
         fail(`the session in a turn answered the task ${JSON.stringify(refused)}, not busy`);
@@ -1090,7 +1228,7 @@ function entryCase(file: Entry, inTurn: boolean): CaptureCase {
               (frame) => frame.type === "tool_execution_start",
               "the slow tool call's start"
             );
-            const ended = life.frame(terminal, "the end of the turn");
+            const ended = life.frame(isTerminalEnd, "the end of the turn");
             life.send({ type: "prompt", message: IN_TURN });
             await started;
             mark = await sendEntry(life, file, answer, true);
@@ -1267,8 +1405,12 @@ function compactionCase(summarizes: boolean): CaptureCase {
         holdsCount([conversation], 1, setup.words, "the compaction's own request");
         kept(conversation, placement, "the compaction's own request");
       });
+      // A route whose compaction makes no remote request (its method order compacts with a
+      // summary, `soft`) exercises no remote compaction's own request, and the run says so.
       setup.note(
-        `the compaction's own requests: ${remote} remote, each holding the copy at its place, and ${own.length - remote} summary requests, holding no approval message`
+        remote > 0
+          ? `the compaction's own requests: ${remote} remote, each holding the copy at its place, and ${own.length - remote} summary requests, holding no approval message`
+          : `the compaction made no remote request, so a remote compaction's own request was not exercised on this route; its ${own.length} summary requests hold no approval message`
       );
     },
   };
@@ -1474,6 +1616,44 @@ function dayBefore(day: string): string {
 }
 
 /**
+ * Rewrites each journaled date-cwd-reminder entry of the transcripts under `sessions` to name the
+ * day before the one it names, as a session resumed the next day holds it, and tells `rewritten`
+ * each date it moved. A transcript that holds no such entry is left as it is. Answers how many
+ * entries it rewrote.
+ */
+export async function rewriteReminderDates(
+  sessions: string,
+  rewritten?: (from: string, to: string) => void
+): Promise<number> {
+  let count = 0;
+  for (const file of (await readdir(sessions, { recursive: true }))
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => path.join(sessions, name))) {
+    let changed = 0;
+    const lines = (await readFile(file, "utf8")).split("\n").map((line) => {
+      if (line === "") return line;
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      const data = entry.data as Record<string, unknown> | undefined;
+      if (entry.customType !== "date-cwd-reminder" || typeof data?.reminder !== "string") {
+        return line;
+      }
+      const day = /Today: (\d{4}-\d{2}-\d{2});/.exec(data.reminder)?.[1];
+      if (day === undefined) return line;
+      const before = dayBefore(day);
+      changed += 1;
+      rewritten?.(day, before);
+      return JSON.stringify({
+        ...entry,
+        data: { ...data, reminder: data.reminder.replace(day, before) },
+      });
+    });
+    if (changed > 0) await writeFile(file, lines.join("\n"));
+    count += changed;
+  }
+  return count;
+}
+
+/**
  * The date-reminder case: a card to a session resumed with a journaled date-cwd-reminder entry
  * that names another date, with a new people's-answers message in the same request.
  */
@@ -1483,31 +1663,12 @@ const dateReminder: CaptureCase = {
     const notice = entryFile("notice-design-approved-from-artifact-approved");
     const answer = answerFor(setup, notice.approval);
     let mark = 0;
-    let rewritten = 0;
     const pane = await openPane(setup, { name: "date-reminder", tree: OWN_ROOT }, async (life) => {
       await life.prompt(WARM_UP);
     });
-    for (const file of (await readdir(pane.sessions, { recursive: true }))
-      .filter((name) => name.endsWith(".jsonl"))
-      .map((name) => path.join(pane.sessions, name))) {
-      const lines = (await readFile(file, "utf8")).split("\n").map((line) => {
-        if (line === "") return line;
-        const entry = JSON.parse(line) as Record<string, unknown>;
-        const data = entry.data as Record<string, unknown> | undefined;
-        if (entry.customType !== "date-cwd-reminder" || typeof data?.reminder !== "string") {
-          return line;
-        }
-        const day = /Today: (\d{4}-\d{2}-\d{2});/.exec(data.reminder)?.[1];
-        if (day === undefined) return line;
-        rewritten += 1;
-        return JSON.stringify({
-          ...entry,
-          data: { ...data, reminder: data.reminder.replace(day, dayBefore(day)) },
-        });
-      });
-      await writeFile(file, lines.join("\n"));
+    if ((await rewriteReminderDates(pane.sessions)) === 0) {
+      fail("the transcript holds no date-cwd-reminder entry to rewrite");
     }
-    if (rewritten === 0) fail("the transcript holds no date-cwd-reminder entry to rewrite");
     await pane.relaunch(async (life) => {
       life.state.answers = [personAnswer(OWN_ROOT)];
       mark = await sendEntry(life, notice, answer, false);
@@ -1627,8 +1788,12 @@ function flag(args: readonly string[], name: string): string | undefined {
   return at < 0 ? undefined : args[at + 1];
 }
 
-/** The script's run: every case on the pod's own model route, then every case again on
- *  claude-sonnet-5. */
+/**
+ * The script's run: the route's check, every case on the pod's own model route, then every case
+ * again on claude-sonnet-5. Answers the exit status: 0 when every case passed, or under
+ * `--negative-control` when the run sent requests and none of them holds an approval message,
+ * and 1 otherwise.
+ */
 async function main(args: readonly string[]): Promise<number> {
   const required = (name: string): string =>
     flag(args, name) ?? fail(`--${name} is required (see the head of this file)`);
@@ -1637,11 +1802,18 @@ async function main(args: readonly string[]): Promise<number> {
     fail(`--entries ${entries}: want every or each-path`);
   }
   const negative = args.includes("--negative-control");
+  const models = required("models");
+  const overlay = required("overlay");
+  const gateway = podGateway(models);
+  const model = overlayDefault(overlay, gateway, models);
+  console.log(
+    `   the route: ${models}'s anthropic provider; the cases run the overlay's default ${model}, then claude-sonnet-5`
+  );
   const sent: Sent[] = [];
   const base = {
     binary: required("omp"),
     nats: required("nats"),
-    route: { kind: "pod", models: required("models"), overlay: required("overlay") },
+    route: { kind: "pod", gateway, overlay },
     plugins: { envoy: required("envoy"), legion: required("legion") },
     reverse: false,
     words: await approvalWords(),
@@ -1670,22 +1842,30 @@ async function main(args: readonly string[]): Promise<number> {
       }
     }
   }
-  if (negative) {
-    console.log("== negative control: no request holds the approval message");
-    const holding = sent.filter((request) => approvalsIn(request.messages, base.words).length > 0);
-    if (holding.length > 0) {
-      failed.unshift(
-        `negative control: ${holding.length} of ${sent.length} requests hold an approval message, the first #${holding[0]?.index} of ${holding[0]?.pane}`
-      );
-      console.log(`FAIL ${failed[0]}`);
-    } else {
-      console.log(`   none of the run's ${sent.length} requests holds an approval message`);
-      console.log("ok negative control");
-    }
-  }
   console.log(
     `${failed.length} of the cases failed; the run took ${Math.round((Date.now() - started) / 1000)}s and its sessions sent ${sent.length} requests`
   );
+  if (negative) {
+    // The negative control's verdict is its own check alone: its placing cases fail by design, at
+    // their first placement.
+    console.log("== negative control: no request holds the approval message");
+    const holding = sent.filter((request) => approvalsIn(request.messages, base.words).length > 0);
+    const why =
+      sent.length === 0
+        ? "the run's sessions sent no request"
+        : holding.length > 0
+          ? `${holding.length} of ${sent.length} requests hold an approval message, the first #${holding[0]?.index} of ${holding[0]?.pane}`
+          : undefined;
+    if (why !== undefined) {
+      console.log(`FAIL negative control: ${why}`);
+      console.log(`approval message capture: negative control FAIL: ${why}`);
+      return 1;
+    }
+    console.log(`   none of the run's ${sent.length} requests holds an approval message`);
+    console.log("ok negative control");
+    console.log("approval message capture: negative control PASS");
+    return 0;
+  }
   if (failed.length === 0) {
     console.log("approval message capture: PASS");
     return 0;
@@ -1695,5 +1875,13 @@ async function main(args: readonly string[]): Promise<number> {
 }
 
 if (import.meta.main) {
-  process.exit(await main(process.argv.slice(2)));
+  // A failure before the cases, a route that offers no model the cases run among them, still ends
+  // the run with its verdict line.
+  const status = await main(process.argv.slice(2)).catch((error: unknown) => {
+    console.log(
+      `approval message capture: FAIL: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return 1;
+  });
+  process.exit(status);
 }

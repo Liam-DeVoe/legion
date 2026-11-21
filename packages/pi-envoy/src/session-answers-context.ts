@@ -5,11 +5,12 @@ import {
   sessionAnswersChanged,
 } from "@legion/envoy-client/session-answers";
 import {
-  branchPosition,
+  type Conversion,
   isHandoffPrompt,
   isSideTurn,
   leadingText,
   messageKey,
+  nextConversion,
   splitTrailingApproval,
 } from "@legion/pi-shared/approval-message";
 import { customEntries } from "@legion/pi-shared/custom-entry";
@@ -38,13 +39,9 @@ function endsWithSessionAnswers(messages: readonly unknown[]): boolean {
   return text !== undefined && isSessionAnswersText(text);
 }
 
-/** A session's last decided conversion: a remote compaction's cut (`"cut"`), or a request with its
- *  key (undefined unless it ended at the branch's last message) and whether it came right after a
- *  cut. */
-type Conversion = "cut" | { readonly key: string | undefined; readonly afterCut: boolean };
-
-/** Each session's last decided conversion, by the session's `sessionManager`. It lives on
- *  `globalThis` as `decided` does, since only the copy that decides a request records it. */
+/** Each session's last decided conversion (`nextConversion`), by the session's `sessionManager`.
+ *  It lives on `globalThis` as `decided` does, since only the copy that decides a request records
+ *  it. */
 const CONVERSIONS_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers-conversions.v1");
 const conversionsGlobal = globalThis as typeof globalThis & {
   [CONVERSIONS_KEY]?: WeakMap<object, Conversion>;
@@ -586,28 +583,11 @@ function withAnswers(
   if (endsWithSessionAnswers(messages)) return placedLegacy(messages, request);
   if (isSideTurn(messages) || isHandoffPrompt(messages)) return undefined;
   const entries = request.branch() ?? [];
-  const position = branchPosition(messages, entries);
-  const previous = conversions.get(request.session);
-  if (position.at === "before") {
-    conversions.set(request.session, "cut");
-    return undefined;
-  }
-  // What the request converted, for telling a repeat of it apart: the branch's last message and
-  // each message's role and timestamp.
-  const key =
-    position.at === "last" ? [position.tip, ...messages.map(messageKey)].join("\n") : undefined;
-  conversions.set(request.session, { key, afterCut: previous === "cut" });
-  if (
-    key !== undefined &&
-    typeof previous === "object" &&
-    previous.key === key &&
-    !previous.afterCut &&
-    request.compacting()
-  ) {
-    return undefined;
-  }
+  const { conversion, kind } = nextConversion(conversions.get(request.session), messages, entries);
+  conversions.set(request.session, conversion);
+  if (kind === "cut" || (kind === "repeat" && request.compacting())) return undefined;
   const earlier = deciding.get(request.session);
-  const decision = decidedInTurn(messages, entries, earlier, previous, request);
+  const decision = decidedInTurn(messages, entries, earlier, kind === "afterCut", request);
   deciding.set(
     request.session,
     decision.then(
@@ -625,19 +605,19 @@ function withAnswers(
  * read again then; with `entries`, the branch as the request began, when the second read gives
  * undefined because the host is on another session. A read that throws still waits on `earlier`
  * before this decision fails with its error, so the request after it never decides ahead of the
- * one before it. `previous` is the session's conversion before this request (`conversions`):
- * right after a remote compaction's cut, the request goes through the compaction path.
+ * one before it. `afterCut` says the request came right after a remote compaction's cut
+ * (`nextConversion`): it goes through the compaction path.
  */
 async function decidedInTurn(
   messages: readonly unknown[],
   entries: readonly unknown[],
   earlier: Promise<void> | undefined,
-  previous: Conversion | undefined,
+  afterCut: boolean,
   request: SessionAnswersRequest
 ): Promise<unknown[] | undefined> {
   const [read] = await Promise.allSettled([request.read(), earlier]);
   if (read.status === "rejected") throw read.reason;
-  const compacting = previous === "cut" || request.compacting();
+  const compacting = afterCut || request.compacting();
   return decide(messages, () => request.branch() ?? entries, read.value, request, compacting);
 }
 

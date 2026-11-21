@@ -61,6 +61,37 @@ const reply = {
   timestamp: 4,
 };
 
+// What the pinned Oh My Pi adds after the conversation for a side turn (`runEphemeralTurn`) and for
+// the handoff, as the binary builds them.
+const sideTurnNotice = {
+  role: "developer",
+  content: [
+    {
+      type: "text",
+      text: "<system-reminder>\nEphemeral side-channel turn; reuses current conversation context.\nTool catalog attached only to keep prompt cache warm; tools NOT available this turn.\nDo NOT emit tool calls; reply plain text only. Tool calls discarded without execution.\n</system-reminder>\n",
+    },
+  ],
+  attribution: "agent",
+  timestamp: 10,
+};
+const sidePrompt = {
+  role: "user",
+  content: [{ type: "text", text: "<btw>\nQuestion:\nWhat is up?\n</btw>" }],
+  attribution: "agent",
+  timestamp: 11,
+};
+const handoffPrompt = {
+  role: "user",
+  content: [
+    {
+      type: "text",
+      text: "<critical>\nWrite a handoff document for another instance of yourself.\nThe handoff MUST be sufficient for seamless continuation without access to this conversation.\n</critical>",
+    },
+  ],
+  attribution: "agent",
+  timestamp: 12,
+};
+
 // The message pi-legion places in a request while a person's approval of the spec stands, as the
 // host hands it to a `context` handler: a custom message of the type both plugins read
 // (`APPROVAL_MESSAGE_TYPE`), text only, attribution `agent`, stamped with the time it was placed.
@@ -1373,6 +1404,41 @@ test("a list quoted earlier in the conversation does not switch the list off", a
     ...messages,
     list,
   ]);
+});
+
+test("a side turn keeps its prompt last and is not read for", async () => {
+  const { read, calls } = reading(LIST);
+  const conversation = [skill, ask, reply];
+  const branch = branchOf(ask, reply);
+  expect(
+    await withSessionAnswers([...conversation, sideTurnNotice, sidePrompt], requestOf(read, branch))
+  ).toBeUndefined();
+  // A /btw follow-up: the earlier question and answer sit between the notice and the prompt.
+  const earlier = { ...sidePrompt, timestamp: 8 };
+  const earlierAnswer = { ...reply, content: [{ type: "text", text: "Not much." }], timestamp: 9 };
+  expect(
+    await withSessionAnswers(
+      [...conversation, sideTurnNotice, earlier, earlierAnswer, sidePrompt],
+      requestOf(read, branch)
+    )
+  ).toBeUndefined();
+  expect(calls()).toBe(0);
+});
+
+test("the handoff prompt stays last and is not read for", async () => {
+  const { read, calls } = reading(LIST);
+  expect(
+    await withSessionAnswers(
+      [skill, ask, reply, handoffPrompt],
+      requestOf(read, branchOf(ask, reply))
+    )
+  ).toBeUndefined();
+  expect(calls()).toBe(0);
+  // The same words from the person are their prompt.
+  const typed = { ...handoffPrompt, attribution: "user" };
+  expect(
+    await withSessionAnswers([skill, ask, reply, typed], requestOf(read, branchOf(ask, reply)))
+  ).toEqual([skill, ask, reply, typed, list]);
 });
 
 // Anthropic remote compaction converts the conversation up to its cut, counts it, and keeps that

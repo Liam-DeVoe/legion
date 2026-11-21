@@ -1,12 +1,13 @@
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   APPROVAL_MESSAGE_TYPE,
-  branchPosition,
+  type Conversion,
   type HostAgentRegistry,
   isApprovalMessage,
   isHandoffPrompt,
   isSideTurn,
   messageKey,
+  nextConversion,
   sessionCompacting,
 } from "@legion/pi-shared/approval-message";
 import { customEntries } from "@legion/pi-shared/custom-entry";
@@ -118,11 +119,6 @@ interface Pending {
   readonly timestamp: number;
 }
 
-/** A session's last conversion, as pi-envoy keeps it: a remote compaction's cut (`"cut"`), or a
- *  request with its key (undefined unless it ended at the branch's last message) and whether it
- *  came right after a cut. */
-type Conversion = "cut" | { readonly key: string | undefined; readonly afterCut: boolean };
-
 /** The description of the host's per-call mark (`kPerCallContextMessage`,
  *  `ai/src/utils/block-symbols.ts:170` at the pinned tag): a `Symbol()`, not a `Symbol.for`, so a
  *  plugin reads it by its description. Oh My Pi copies it onto each wire message it converts from
@@ -147,13 +143,15 @@ function approvalMessage(text: string, timestamp: number): Record<string, unknow
   };
 }
 
-function roleOf(message: unknown): unknown {
+/** A message's role, or undefined where it has none. */
+export function roleOf(message: unknown): unknown {
   return typeof message === "object" && message !== null && "role" in message
     ? message.role
     : undefined;
 }
 
-function timestampOf(message: unknown): number | undefined {
+/** A message's numeric timestamp, or undefined where it has none. */
+export function timestampOf(message: unknown): number | undefined {
   return typeof message === "object" &&
     message !== null &&
     "timestamp" in message &&
@@ -198,7 +196,8 @@ function isApprovalSent(data: unknown): data is ApprovalSent {
   );
 }
 
-function perCall(message: unknown): boolean {
+/** Whether the host marked `message` per-call (`PER_CALL`): built for one request alone. */
+export function perCall(message: unknown): boolean {
   if (typeof message !== "object" || message === null) return false;
   const marks = message as Record<symbol, unknown>;
   return Object.getOwnPropertySymbols(message).some(
@@ -307,16 +306,14 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
   };
 
   /**
-   * Whether the request is no request of the conversation's own loop: a side turn, Oh My Pi's
-   * handoff prompt, or a compaction's own. A remote compaction (`buildLiveProviderContext`)
-   * converts the conversation up to its cut, which ends at a message the branch holds a later one
-   * after (`branchPosition`), then the whole conversation right after it. A remote compaction that
-   * keeps no tail converts the same messages twice while the session compacts, and the second is
-   * a repeat of the first. A main-loop request while a speculative compaction runs is none of
-   * these, so it places as any other does. A request with no turn in it (only a compaction
-   * summary) is none of the loop's either.
+   * Whether the request is outside the conversation's own loop: a side turn, Oh My Pi's handoff
+   * prompt, or a compaction's own. A remote compaction converts the conversation up to its cut,
+   * then the whole conversation right after it, and one that keeps no tail converts the same
+   * messages twice while the session compacts (`nextConversion`). A main-loop request while a
+   * speculative compaction runs is none of these, so it places as any other does. A request with
+   * no turn in it (only a compaction summary) is outside the loop too.
    */
-  const ownRequest = (
+  const outsideLoop = (
     messages: readonly unknown[],
     branch: readonly unknown[],
     session: string
@@ -329,22 +326,12 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       return true;
     }
     if (isSideTurn(messages) || isHandoffPrompt(messages)) return true;
-    const position = branchPosition(messages, branch);
-    const previous = conversions.get(session);
-    if (position.at === "before") {
-      conversions.set(session, "cut");
-      return true;
-    }
-    const key =
-      position.at === "last" ? [position.tip, ...messages.map(messageKey)].join("\n") : undefined;
-    conversions.set(session, { key, afterCut: previous === "cut" });
-    if (previous === "cut") return true;
+    const { conversion, kind } = nextConversion(conversions.get(session), messages, branch);
+    conversions.set(session, conversion);
     return (
-      key !== undefined &&
-      typeof previous === "object" &&
-      previous.key === key &&
-      !previous.afterCut &&
-      sessionCompacting(deps.registry, session)
+      kind === "cut" ||
+      kind === "afterCut" ||
+      (kind === "repeat" && sessionCompacting(deps.registry, session))
     );
   };
 
@@ -381,11 +368,15 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     return answer === undefined ? undefined : record(waiting, answer);
   };
 
-  /** Puts each copy `present` records right before its answer, in the order recorded. */
-  const rebuild = (messages: unknown[], present: readonly ApprovalSent[]): void => {
+  /** Puts each copy `present` records right before its answer, in the order recorded. `keys` are
+   *  the `messageKey`s of `messages`, kept in step with each copy put in. */
+  const rebuild = (messages: unknown[], keys: string[], present: readonly ApprovalSent[]): void => {
     for (const sent of present) {
-      const at = messages.findIndex((message) => messageKey(message) === sent.answer);
-      if (at >= 0) messages.splice(at, 0, approvalMessage(sent.text, sent.timestamp));
+      const at = keys.indexOf(sent.answer);
+      if (at < 0) continue;
+      const copy = approvalMessage(sent.text, sent.timestamp);
+      messages.splice(at, 0, copy);
+      keys.splice(at, 0, messageKey(copy));
     }
   };
 
@@ -449,27 +440,32 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       if (claim === undefined) return false;
       const session = context.sessionManager.getSessionId();
       const before = context.sessionManager.getBranch?.() ?? [];
-      const own = ownRequest(messages, before, session);
-      if (!own && readDue(messages)) await read(claim);
+      const outside = outsideLoop(messages, before, session);
+      const reads = !outside && readDue(messages);
+      if (reads) await read(claim);
       // The host can move to another session while the read waits: the request is the session's
       // it was built from, decided from that session's branch as it began, with nothing new.
-      const moved = context.sessionManager.getSessionId() !== session;
-      const branch = moved ? before : (context.sessionManager.getBranch?.() ?? []);
+      // Without a read nothing came between, so the branch read first is the branch.
+      const moved = reads && context.sessionManager.getSessionId() !== session;
+      const branch = reads && !moved ? (context.sessionManager.getBranch?.() ?? []) : before;
       const settled = moved ? undefined : settle(messages, session);
-      const keys = new Set(messages.map(messageKey));
-      const seen = new Set<string>();
-      const present: ApprovalSent[] = [];
-      for (const sent of [
+      const records = [
         ...customEntries(branch, APPROVAL_SENT_ENTRY).filter(isApprovalSent),
         ...(settled === undefined ? [] : [settled]),
-      ]) {
-        const copy = `${sent.timestamp}\n${sent.answer}`;
-        if (!keys.has(sent.answer) || seen.has(copy)) continue;
-        seen.add(copy);
-        present.push(sent);
+      ];
+      const present: ApprovalSent[] = [];
+      if (records.length > 0) {
+        const keys = messages.map(messageKey);
+        const seen = new Set<string>();
+        for (const sent of records) {
+          const copy = `${sent.timestamp}\n${sent.answer}`;
+          if (!keys.includes(sent.answer) || seen.has(copy)) continue;
+          seen.add(copy);
+          present.push(sent);
+        }
+        rebuild(messages, keys, present);
       }
-      rebuild(messages, present);
-      const placed = !own && !moved && place(messages, session, present);
+      const placed = !outside && !moved && place(messages, session, present);
       if (present.length > 0 || placed) tellUserRole(context, session);
       return present.length > 0 || placed;
     },

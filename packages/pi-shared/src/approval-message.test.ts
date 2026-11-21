@@ -35,7 +35,7 @@ const grepResult = {
   timestamp: 6,
 };
 
-// What Oh My Pi 18.12.2 adds after the conversation for a side turn (`runEphemeralTurn`) and for
+// What the pinned Oh My Pi adds after the conversation for a side turn (`runEphemeralTurn`) and for
 // the handoff, as the binary builds them.
 const sideTurnNotice = {
   role: "developer",

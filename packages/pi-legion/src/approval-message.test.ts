@@ -2,10 +2,16 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { LegionClaimApproval } from "@legion/contracts/legion-api";
-import { APPROVAL_MESSAGE_TYPE, type HostAgentRegistry } from "@legion/pi-shared/approval-message";
+import {
+  APPROVAL_MESSAGE_TYPE,
+  type HostAgentRegistry,
+  isApprovalMessage,
+  messageKey,
+} from "@legion/pi-shared/approval-message";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { withSessionAnswers } from "../../pi-envoy/src/session-answers-context";
 import { APPROVAL_SENT_ENTRY, type ApprovalSent, createApprovalMessage } from "./approval-message";
 
@@ -148,7 +154,6 @@ const GOLDEN: LegionClaimApproval = JSON.parse(
   readFileSync(path.join(DAEMON_FIXTURES, "claim-approval.json"), "utf8")
 );
 const GOLDEN_TEXT = GOLDEN.approval?.message ?? "";
-const V24 = GOLDEN;
 const V26: LegionClaimApproval = {
   approval: {
     document: "dispatch://ACME-2694/spec",
@@ -253,7 +258,7 @@ function pane(options: {
           tree: "ACME-1",
           issue: "ACME-1",
           role: "architect",
-          secret: "claim-secret",
+          secret: fixtureSecret("claim"),
           claimToken: "legion-capture-acme-1-architect",
           generation: 1,
         }
@@ -367,19 +372,10 @@ function sessionOf(name: string): string {
   return String(timeline(name).find((item) => item.event === "context")?.session);
 }
 
-/** The key Oh My Pi's messages are matched by (`messageKey`): the role and the timestamp. */
-function keyOf(message: unknown): string {
-  return isRecord(message) ? `${String(message.role)}@${String(message.timestamp)}` : "";
-}
-
-function isApproval(message: unknown): boolean {
-  return (
-    isRecord(message) && message.role === "custom" && message.customType === APPROVAL_MESSAGE_TYPE
-  );
-}
-
 function approvalsIn(messages: readonly unknown[]): Record<string, unknown>[] {
-  return messages.filter(isApproval).map((message) => record(message, "an approval message"));
+  return messages
+    .filter(isApprovalMessage)
+    .map((message) => record(message, "an approval message"));
 }
 
 function textOf(message: unknown): string {
@@ -389,18 +385,18 @@ function textOf(message: unknown): string {
 
 /** The answer the fixture's `message_end` at `index` recorded, by its key. */
 function answerKey(name: string, index: number): string {
-  return keyOf(recorded(name, index, "message_end").message);
+  return messageKey(recorded(name, index, "message_end").message);
 }
 
 /** Whether `messages` hold the approval message `copy` right before the message keyed `answer`,
  *  byte for byte. */
 function copyBefore(messages: readonly unknown[], answer: string, copy: unknown): boolean {
-  const at = messages.findIndex((message) => keyOf(message) === answer);
+  const at = messages.findIndex((message) => messageKey(message) === answer);
   return at > 0 && JSON.stringify(messages[at - 1]) === JSON.stringify(copy);
 }
 
 test("S1: the first request with no record has the message last, and nothing is recorded yet", async () => {
-  const p = pane({ session: sessionOf("task-prompt"), route: { answer: V24 } });
+  const p = pane({ session: sessionOf("task-prompt"), route: { answer: GOLDEN } });
   await p.start();
 
   const first = await p.request("task-prompt", 4);
@@ -419,7 +415,7 @@ test("S1: the first request with no record has the message last, and nothing is 
 });
 
 test("S2: once the answer to the first request is saved, the next request has the message right before that answer, with the same bytes", async () => {
-  const p = pane({ session: sessionOf("task-prompt"), route: { answer: V24 } });
+  const p = pane({ session: sessionOf("task-prompt"), route: { answer: GOLDEN } });
   await p.start();
   const first = await p.request("task-prompt", 4);
   const placed = first.messages.at(-1);
@@ -441,7 +437,7 @@ test("S2: once the answer to the first request is saved, the next request has th
 });
 
 test("S3: an answer Oh My Pi's transform drops (an error turn with thinking alone) records nothing, and the message is last again", async () => {
-  const p = pane({ session: sessionOf("retried-request"), route: { answer: V24 } });
+  const p = pane({ session: sessionOf("retried-request"), route: { answer: GOLDEN } });
   await p.start();
   await p.request("retried-request", 4);
 
@@ -449,14 +445,14 @@ test("S3: an answer Oh My Pi's transform drops (an error turn with thinking alon
   expect(p.records()).toEqual([]);
 
   const retried = await p.request("retried-request", 13);
-  expect(isApproval(retried.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(retried.messages.at(-1))).toBe(true);
   expect(textOf(retried.messages.at(-1))).toBe(GOLDEN_TEXT);
   expect(approvalsIn(retried.messages)).toHaveLength(1);
   expect(p.records()).toEqual([]);
 });
 
 test("S4: a retried request, with new messages and no answer yet, has the message last, with the bytes of the first attempt", async () => {
-  const p = pane({ session: sessionOf("retried-request"), route: { answer: V24 } });
+  const p = pane({ session: sessionOf("retried-request"), route: { answer: GOLDEN } });
   await p.start();
   const first = await p.request("retried-request", 4);
 
@@ -469,7 +465,7 @@ test("S4: a retried request, with new messages and no answer yet, has the messag
 });
 
 test("S5: a request that holds pi-envoy's new answers message when pi-legion's handler runs has the answers, then the approval last", async () => {
-  const p = pane({ session: sessionOf("date-reminder-resume"), route: { answer: V24 } });
+  const p = pane({ session: sessionOf("date-reminder-resume"), route: { answer: GOLDEN } });
   await p.start();
 
   // pi-envoy's handler ran first: its new people's-answers message ends the request.
@@ -478,21 +474,21 @@ test("S5: a request that holds pi-envoy's new answers message when pi-legion's h
   const answers = request.original.at(-1);
   expect(textOf(answers)).toStartWith("[Dispatch: what people wrote to this session");
   expect(request.messages.at(-2)).toEqual(answers);
-  expect(isApproval(request.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(request.messages.at(-1))).toBe(true);
   expect(textOf(request.messages.at(-1))).toBe(GOLDEN_TEXT);
 });
 
 test("S6: when pi-legion's handler runs first and pi-envoy's after it, the answers go before the trailing approval, which stays last", async () => {
   const name = "date-reminder-resume";
   const session = sessionOf(name);
-  const p = pane({ session, route: { answer: V24 } });
+  const p = pane({ session, route: { answer: GOLDEN } });
   await p.start();
   const answers = recorded(name, 17, "context");
   const answersText = textOf(list(answers.messages, "the messages").at(-1));
 
   // The request as pi-legion sees it when it runs first: pi-envoy has added no answers yet.
   const first = await p.request(name, 17, { edit: (messages) => messages.slice(0, -1) });
-  expect(isApproval(first.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(first.messages.at(-1))).toBe(true);
   const placed = first.messages.at(-1);
 
   // Then pi-envoy's handler, over the branch before it recorded the answers it sent.
@@ -518,7 +514,7 @@ test("S6: when pi-legion's handler runs first and pi-envoy's after it, the answe
 
 test("S7: after a soft compaction that summarized the answer, the message is last again, and a new record follows its answer", async () => {
   const name = "compaction-soft";
-  const p = pane({ session: sessionOf(name), route: { answer: V24 } });
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
   await p.start();
   const first = await p.request(name, 4);
   p.end(name, 8);
@@ -531,10 +527,10 @@ test("S7: after a soft compaction that summarized the answer, the message is las
 
   const after = await p.request(name, 39);
 
-  expect(after.original.some((message) => keyOf(message) === answerKey(name, 8))).toBe(false);
+  expect(after.original.some((message) => messageKey(message) === answerKey(name, 8))).toBe(false);
   expect(approvalsIn(after.messages)).toHaveLength(1);
   const again = after.messages.at(-1);
-  expect(isApproval(again)).toBe(true);
+  expect(isApprovalMessage(again)).toBe(true);
   expect(textOf(again)).toBe(GOLDEN_TEXT);
   expect(record(again, "the new placement").timestamp).not.toBe(
     record(placed, "the first placement").timestamp
@@ -552,10 +548,10 @@ test("S8: after a compaction that kept the answer, the copy stays before its ans
   p.end(name, 8);
   await p.request(name, 13);
   p.end(name, 17);
-  route.answer = V24;
+  route.answer = GOLDEN;
   const third = await p.request(name, 22);
   const placed = third.messages.at(-1);
-  expect(isApproval(placed)).toBe(true);
+  expect(isApprovalMessage(placed)).toBe(true);
   p.end(name, 26);
   p.compact(name, 33);
 
@@ -568,7 +564,7 @@ test("S8: after a compaction that kept the answer, the copy stays before its ans
 
 test("S9: after a remote compaction that summarized the answer, the message is last, newer than the compaction block F2 answered", async () => {
   const name = "compaction-remote";
-  const p = pane({ session: sessionOf(name), route: { answer: V24 } });
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
   await p.start();
   await p.request(name, 4);
   p.end(name, 8);
@@ -601,9 +597,9 @@ test("S9: after a remote compaction that summarized the answer, the message is l
   // Oh My Pi pushes a compaction's file list before the first message newer than the compaction
   // (`anthropic.ts:6303-6321`): the message, stamped at its placement, is newer than every
   // message of the request, the summary included, so it stays after the list and last.
-  expect(after.original.some((message) => keyOf(message) === answerKey(name, 8))).toBe(false);
+  expect(after.original.some((message) => messageKey(message) === answerKey(name, 8))).toBe(false);
   const placed = after.messages.at(-1);
-  expect(isApproval(placed)).toBe(true);
+  expect(isApprovalMessage(placed)).toBe(true);
   expect(approvalsIn(after.messages)).toHaveLength(1);
   const newest = Math.max(
     ...after.original.map((message) => Number(record(message, "a message").timestamp))
@@ -612,25 +608,25 @@ test("S9: after a remote compaction that summarized the answer, the message is l
 });
 
 test("S10: a fresh session's first request, and a new process's first request in a session holding no copy, have the message last", async () => {
-  const fresh = pane({ session: sessionOf("idle-card"), route: { answer: V24 } });
+  const fresh = pane({ session: sessionOf("idle-card"), route: { answer: GOLDEN } });
   await fresh.start();
   const card = await fresh.request("idle-card", 4);
   expect(card.messages.slice(0, -1)).toEqual([...card.original]);
-  expect(isApproval(card.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(card.messages.at(-1))).toBe(true);
 
   // Life 2 of the date-reminder case: a new process resumed the session, whose branch holds no
   // copy; it reads the route at its session_start.
-  const resumed = pane({ session: sessionOf("date-reminder-resume"), route: { answer: V24 } });
+  const resumed = pane({ session: sessionOf("date-reminder-resume"), route: { answer: GOLDEN } });
   await resumed.start();
   expect(resumed.reads()).toBe(1);
   const request = await resumed.request("date-reminder-resume", 17);
   expect(request.messages.slice(0, -1)).toEqual([...request.original]);
-  expect(isApproval(request.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(request.messages.at(-1))).toBe(true);
 });
 
 test("S11: a v24 copy with its answer stays before that answer when the approval is now v26, and a v26 copy is last", async () => {
   const name = "task-prompt";
-  const route: Route = { answer: V24 };
+  const route: Route = { answer: GOLDEN };
   const p = pane({ session: sessionOf(name), route });
   await p.start();
   const first = await p.request(name, 4);
@@ -641,14 +637,14 @@ test("S11: a v24 copy with its answer stays before that answer when the approval
   const next = await p.request(name, 13);
 
   expect(copyBefore(next.messages, answerKey(name, 8), v24)).toBe(true);
-  expect(isApproval(next.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(next.messages.at(-1))).toBe(true);
   expect(textOf(next.messages.at(-1))).toBe(V26_TEXT);
   expect(approvalsIn(next.messages).map(textOf)).toEqual([GOLDEN_TEXT, V26_TEXT]);
 });
 
 test("S12: a v24 copy with its answer stays after a changes request, nothing new is placed, and after a compaction that summarizes it nothing is left", async () => {
   const name = "compaction-soft";
-  const route: Route = { answer: V24 };
+  const route: Route = { answer: GOLDEN };
   const p = pane({ session: sessionOf(name), route });
   await p.start();
   const first = await p.request(name, 4);
@@ -672,7 +668,7 @@ test("S12: a v24 copy with its answer stays after a changes request, nothing new
 
 test("S13: a failed read leaves the request decided on the last answer, and the next request reads again", async () => {
   const name = "retried-request";
-  const route: Route = { answer: V24 };
+  const route: Route = { answer: GOLDEN };
   const p = pane({ session: sessionOf(name), route });
   await p.start();
   expect(p.reads()).toBe(1);
@@ -681,7 +677,7 @@ test("S13: a failed read leaves the request decided on the last answer, and the 
   // The task prompt entered after the session_start read, so this request reads, and fails.
   const first = await p.request(name, 4);
   expect(p.reads()).toBe(2);
-  expect(isApproval(first.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(first.messages.at(-1))).toBe(true);
   expect(textOf(first.messages.at(-1))).toBe(GOLDEN_TEXT);
   p.end(name, 10);
 
@@ -704,7 +700,6 @@ test("S14: a placed message is the route's text byte for byte", async () => {
   const next = await p.request(name, 13);
 
   expect(textOf(first.messages.at(-1))).toBe(GOLDEN_TEXT);
-  expect(Buffer.from(textOf(first.messages.at(-1)))).toEqual(Buffer.from(GOLDEN_TEXT));
   expect(approvalsIn(next.messages).map(textOf)).toEqual([GOLDEN_TEXT]);
 });
 
@@ -712,7 +707,7 @@ test("S15: a side turn, the handoff prompt and a compaction's own requests rebui
   // A side turn (`/btw`), with v26 newly standing.
   {
     const name = "side-turn";
-    const route: Route = { answer: V24 };
+    const route: Route = { answer: GOLDEN };
     const p = pane({ session: sessionOf(name), route });
     await p.start();
     const placed = (await p.request(name, 4)).messages.at(-1);
@@ -729,7 +724,7 @@ test("S15: a side turn, the handoff prompt and a compaction's own requests rebui
   // The handoff prompt, with v26 newly standing.
   {
     const name = "handoff-prompt";
-    const route: Route = { answer: V24 };
+    const route: Route = { answer: GOLDEN };
     const p = pane({ session: sessionOf(name), route });
     await p.start();
     const placed = (await p.request(name, 4)).messages.at(-1);
@@ -745,7 +740,7 @@ test("S15: a side turn, the handoff prompt and a compaction's own requests rebui
   // A remote compaction's two conversions: up to its cut, then the whole conversation.
   {
     const name = "compaction-remote";
-    const route: Route = { answer: V24 };
+    const route: Route = { answer: GOLDEN };
     const p = pane({ session: sessionOf(name), route });
     await p.start();
     const placed = (await p.request(name, 4)).messages.at(-1);
@@ -764,8 +759,8 @@ test("S15: a side turn, the handoff prompt and a compaction's own requests rebui
     }
     // The compaction keeps as many messages of the whole conversion as the cut's holds
     // (`agent-session.ts:3556-3567`): exactly the cut's messages, the rebuilt copy among them.
-    expect(whole.messages.slice(0, cut.messages.length).map(keyOf)).toEqual(
-      cut.messages.map(keyOf)
+    expect(whole.messages.slice(0, cut.messages.length).map(messageKey)).toEqual(
+      cut.messages.map(messageKey)
     );
   }
 });
@@ -776,7 +771,7 @@ test("S15: a side turn, the handoff prompt and a compaction's own requests rebui
 // background is placed as any other.
 test("a request of the loop made while a speculative compaction runs still gets its placement", async () => {
   const name = "compaction-remote";
-  const route: Route = { answer: V24 };
+  const route: Route = { answer: GOLDEN };
   const p = pane({ session: sessionOf(name), route });
   await p.start();
   const placed = (await p.request(name, 4)).messages.at(-1);
@@ -793,7 +788,7 @@ test("a request of the loop made while a speculative compaction runs still gets 
 
 test("S16: on a model whose flag is off the message is placed, and one log line names the session's model, with no second line", async () => {
   const name = "task-prompt";
-  const p = pane({ session: sessionOf(name), route: { answer: V24 } });
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
   await p.start();
   const sonnet: Model = {
     provider: "anthropic",
@@ -802,7 +797,7 @@ test("S16: on a model whose flag is off the message is placed, and one log line 
   };
 
   const first = await p.request(name, 4, { model: sonnet });
-  expect(isApproval(first.messages.at(-1))).toBe(true);
+  expect(isApprovalMessage(first.messages.at(-1))).toBe(true);
   p.end(name, 8);
   const next = await p.request(name, 13, { model: sonnet });
   expect(approvalsIn(next.messages)).toHaveLength(1);
@@ -816,7 +811,7 @@ test("S17: a task subagent's request is returned unchanged", async () => {
   const name = "task-subagent";
   const sub = String(recorded(name, 32, "context").session);
   // Even where a claim answered for the subagent's session, its `agent.kind` is `sub`.
-  const p = pane({ session: sessionOf(name), route: { answer: V24 }, alsoClaimed: [sub] });
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN }, alsoClaimed: [sub] });
   await p.start();
   const reads = p.reads();
 
@@ -843,11 +838,11 @@ async function compactionRun(
   let placed: unknown;
   let answer = "";
   for (const step of steps) {
-    if (step.request === from) route.answer = V24;
+    if (step.request === from) route.answer = GOLDEN;
     const request = await p.request(name, step.request);
     if (step.request === from) {
       placed = request.messages.at(-1);
-      expect(isApproval(placed)).toBe(true);
+      expect(isApprovalMessage(placed)).toBe(true);
     }
     if (step.answer !== undefined) {
       if (step.request === from) answer = answerKey(name, step.answer);
@@ -867,10 +862,10 @@ test("S18: after a snapcompact, the message is last again where it summarized th
     { request: 31, answer: 35 },
   ];
   const summarized = await compactionRun(name, steps, 4, 39, 45);
-  expect(summarized.after.original.some((message) => keyOf(message) === summarized.answer)).toBe(
-    false
-  );
-  expect(isApproval(summarized.after.messages.at(-1))).toBe(true);
+  expect(
+    summarized.after.original.some((message) => messageKey(message) === summarized.answer)
+  ).toBe(false);
+  expect(isApprovalMessage(summarized.after.messages.at(-1))).toBe(true);
   expect(approvalsIn(summarized.after.messages)).toHaveLength(1);
 
   const kept = await compactionRun(name, steps, 31, 39, 45);
@@ -883,10 +878,10 @@ test("S18: after a handoff compaction, the message is last again where it summar
   // The handoff's own request (19) rebuilds the copies and places nothing.
   const steps = [{ request: 4, answer: 8 }, { request: 13, answer: 17 }, { request: 19 }];
   const summarized = await compactionRun(name, steps, 4, 22, 28);
-  expect(summarized.after.original.some((message) => keyOf(message) === summarized.answer)).toBe(
-    false
-  );
-  expect(isApproval(summarized.after.messages.at(-1))).toBe(true);
+  expect(
+    summarized.after.original.some((message) => messageKey(message) === summarized.answer)
+  ).toBe(false);
+  expect(isApprovalMessage(summarized.after.messages.at(-1))).toBe(true);
   expect(approvalsIn(summarized.after.messages)).toHaveLength(1);
 
   const kept = await compactionRun(name, steps, 13, 22, 28);
@@ -979,7 +974,7 @@ test("S21: a body whose last two messages are not a new placement and the remind
   // A side turn while a placement waits for its answer.
   {
     const side = "side-turn";
-    const p = pane({ session: sessionOf(side), route: { answer: V24 } });
+    const p = pane({ session: sessionOf(side), route: { answer: GOLDEN } });
     await p.start();
     await p.request(side, 4);
     expect(p.wire(side, 14, wireBody(side, 14))).toBeUndefined();
@@ -990,7 +985,7 @@ test("S22: a relaunch after a changes request, and after a later approval, rebui
   const name = "date-reminder-resume";
   const session = sessionOf(name);
   // Life 1 placed v24 and saved its answer.
-  const life1 = pane({ session, route: { answer: V24 } });
+  const life1 = pane({ session, route: { answer: GOLDEN } });
   await life1.start();
   const placed = (await life1.request(name, 4)).messages.at(-1);
   life1.end(name, 8);
@@ -1017,12 +1012,12 @@ test("S22: a relaunch after a changes request, and after a later approval, rebui
 test("S23: a relaunch into a session that holds a copy of the standing version with its answer rebuilds it at its place and places nothing new", async () => {
   const name = "date-reminder-resume";
   const session = sessionOf(name);
-  const life1 = pane({ session, route: { answer: V24 } });
+  const life1 = pane({ session, route: { answer: GOLDEN } });
   await life1.start();
   const placed = (await life1.request(name, 4)).messages.at(-1);
   life1.end(name, 8);
 
-  const relaunched = pane({ session, route: { answer: V24 }, inherited: life1.entries });
+  const relaunched = pane({ session, route: { answer: GOLDEN }, inherited: life1.entries });
   await relaunched.start();
   const request = await relaunched.request(name, 17);
 

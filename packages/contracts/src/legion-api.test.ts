@@ -2964,10 +2964,6 @@ test("an issue the work hold holds says why, in a word the reader before contrac
   expect(refused.error?.issues[0]?.path).toEqual(["state"]);
 
   // Every other word still parses at this contract, and the reason is never empty.
-  const why = state.issues["LEGION-214"]?.why;
-  for (const word of ["claim_stopped", "waiting", "blocked", "unlisted"]) {
-    expect(whyBefore210.safeParse({ ...why, state: word }).success).toBeTrue();
-  }
   const { issues, ...rest } = fixtureBody("state-work-hold.json");
   if (!isJsonObject(issues)) {
     throw new Error("state-work-hold fixture lacks its issues");
@@ -2975,6 +2971,14 @@ test("an issue the work hold holds says why, in a word the reader before contrac
   const held = issues["LEGION-214"];
   if (!isJsonObject(held)) {
     throw new Error("state-work-hold fixture lacks its held issue");
+  }
+  const reason = state.issues["LEGION-214"]?.why?.reason ?? "";
+  for (const word of ["claim_stopped", "waiting", "blocked", "unlisted"]) {
+    const parsed = LegionStateResponse.safeParse({
+      ...rest,
+      issues: { "LEGION-214": { ...held, why: { state: word, reason } } },
+    });
+    expect(parsed.error?.issues ?? [], word).toEqual([]);
   }
   expect(
     LegionStateResponse.safeParse({
