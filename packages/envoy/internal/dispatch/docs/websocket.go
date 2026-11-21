@@ -69,28 +69,27 @@ type commentMarksContextKey struct{}
 // caller whose joined transaction holds the document owner's lock (store.LockOwner) and decided
 // under it that the comment is written, or that the body its author wrote there is that author's
 // to replace or to withdraw. A closed issue still takes a comment, and takes its author's
-// correction of it, so its document still takes that comment's anchor writes: the comment mark
-// MarkQuote places and VerifyMark reads, the version SnapshotVersion pins the anchor to, the
-// margin record ProjectMark writes, and the SuggestionKind read a projection makes - of the thread
-// root a reply projects, and of the comment's own mark where an edit projects it. Each of those,
-// and only those, runs owner-verified under this context (commentMarkOperation). Its callers are
-// the comment create (api/comment_create.go), the edit (api/comment_actions.go, editComment) and
-// the delete (api/comment_delete.go).
+// correction of it, so its document still takes the writes that comment makes there. Every
+// operation that takes its context through commentMarkOperation runs owner-verified under this
+// context. For a comment's anchor that is the comment mark MarkQuote places and VerifyMark reads,
+// the version SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
+// SuggestionKind read a projection makes - of the thread root a reply projects, and of the
+// comment's own mark where an edit projects it.
 //
-// One operation more runs the same way, under the same context its caller marked: the reject of
-// the pending suggestion of a comment its author is deleting (RejectDeletedCommentSuggestion),
-// which the delete calls with the context it marked here, holding the owner lock under which it
-// decided that the comment is deleted. A closed issue still takes that delete, so its document
-// takes that one reject, which carries the suggestion's text out of it with the comment's body.
-// Every other way a suggestion's mark is placed or settled, and a content edit, a named version
-// or a rebuild made under this context, is still refused on a closed issue.
+// For the delete of a comment it is also the reject of the comment's pending suggestion
+// (RejectDeletedCommentSuggestion), the read of the document by which the anchors that reject took
+// text from are written again (RewriteTakenAnchors), and the version that settles the document
+// without an insert's words (SettleVersion). A closed issue still takes that delete, so its
+// document takes that reject, which carries the suggestion's text out of it with the comment's
+// body, and that version, which holds the document without it. Every other way a suggestion's mark
+// is placed or settled, and a content edit, a named version or a rebuild made under this context,
+// is still refused on a closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
 
-// commentMarkOperation is ctx for one of the comment anchor operations WithCommentMarks names,
-// and for the reject of a deleting author's suggestion (RejectDeletedCommentSuggestion):
-// owner-verified when the caller marked ctx, unchanged otherwise.
+// commentMarkOperation is ctx for an operation WithCommentMarks says runs owner-verified under the
+// caller's mark: owner-verified when the caller marked ctx, unchanged otherwise.
 func commentMarkOperation(ctx context.Context) context.Context {
 	if commentMarks(ctx) {
 		return withOwnerVerified(ctx)
@@ -106,13 +105,12 @@ func commentMarks(ctx context.Context) bool {
 	return marked
 }
 
-// commentMarkAnchor is whether ctx is one of the comment anchor operations WithCommentMarks
-// names, or the reject of a deleting author's suggestion (RejectDeletedCommentSuggestion),
-// inside the operation that made it owner-verified (commentMarkOperation): the reads and
-// writes a closed issue's document takes for a comment, and no other caller's. It is the one
-// test of that, which the three decisions a closed issue turns share - the fork a comment's mark
-// is written on (closedIssueCommentMark), the tree its mark_id is verified against and the
-// version its anchor is pinned to (closedIssueCommentAnchor).
+// commentMarkAnchor is whether ctx is inside an operation commentMarkOperation made owner-verified
+// under the caller's mark (WithCommentMarks): the reads and writes a closed issue's document takes
+// for a comment, and no other caller's. It is the one test of that, which the three decisions a
+// closed issue turns share - the fork a comment's mark is written on (closedIssueCommentMark), the
+// tree its mark_id is verified against and the version its anchor is pinned to
+// (closedIssueCommentAnchor).
 func commentMarkAnchor(ctx context.Context) bool {
 	return commentMarks(ctx) && isOwnerVerified(ctx)
 }

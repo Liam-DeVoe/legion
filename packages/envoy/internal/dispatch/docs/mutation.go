@@ -1484,22 +1484,23 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 // person where it stores byte for byte the text that person was asked about (MoveApprovalAsk's
 // bySettlement); on a closed issue it moves no request and carries no approval
 // (versionWrite.closedIssue); and it opens, moves or deletes the edit notice as a settlement's
-// version does (settledEditNotice). Its one caller is the comment delete that rejects a pending
-// insert suggestion (api/comment_delete.go, deleteComment), so every store built from the latest
-// version - the block index and its block texts, the mentions' excerpts, and document_search and
-// the issue's search vector, which the version's insert triggers - holds the document without the
-// insert's words when the delete commits, where the settlement the reject arms would write the
-// same version a settle delay later.
+// version does (settledEditNotice). Under a context its caller marked as a comment's writes
+// (WithCommentMarks) it runs owner-verified, so a closed issue's document takes it. It writes the
+// version in the caller's transaction, after that transaction's own writes to the document, so
+// every store built from the latest version - the block index and its block texts, the mentions'
+// excerpts, and document_search and the issue's search vector, which the version's insert
+// triggers - holds the document as those writes leave it when the transaction commits, where the
+// settlement those writes arm would write the same version a settle delay later.
 //
 // It is that same version. The settlement versions the document when an update since the latest
 // version changed its content and the rendering differs from it; a snapshot when the rendering
 // differs and an update changed the content or the latest version does not read as it
-// (snapshotVersion). For a transaction that changed the content itself, as the reject does, both
-// rules come to the rendering differing. It names no version, and keeps no editor of a closed
-// issue's (versionWrite.keptEditor): the version credits this transaction's writer, whose change
-// it holds, so its credit is never only a kept editor (settlementVersionCredit.kept). Its approval
-// move and carry are the ones the settlement's version of the same text would make. The settlement
-// the reject armed still runs: it finds no content changed since this version
+// (snapshotVersion). For a transaction that changed the content itself, both rules come to the
+// rendering differing. It names no version, and keeps no editor of a closed issue's
+// (versionWrite.keptEditor): the version credits this transaction's writer, whose change it holds,
+// so its credit is never only a kept editor (settlementVersionCredit.kept). Its approval move and
+// carry are the ones the settlement's version of the same text would make. The settlement
+// the transaction's writes armed still runs: it finds no content changed since this version
 // (contentChangedSinceVersion) and writes none, and it keeps what this leaves to it - the block-id
 // stamp, the ask blocks' repairs and the document's pending-settlement row, with the editor a
 // closed issue keeps past it (clearSettlementPending).

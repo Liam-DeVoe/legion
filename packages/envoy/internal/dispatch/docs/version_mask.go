@@ -67,10 +67,9 @@ func MaskedVersionText(ctx context.Context, q Queryer, artifactID, markdown stri
 // suggestion no accept made document text, by its id, with the text a read of that block at the
 // version answers: its text in the version's tree rendered without those words, found by the one
 // lookup MaskedVersionText masks the version's whole text by (versionMask). insertTree is the
-// version's artifact_versions.insert_tree. A block that holds no such words is absent, and its
-// caller answers the text the block index recorded of it (refs.BlockTextAt), as it answers the
-// blocks of a version that stores no tree: a pinned block reference's text and the first lines of
-// a pinned short block id's candidates (api's blockReferenceNode and wholeID).
+// version's artifact_versions.insert_tree. A block that holds no such words is absent: its text at
+// the version is the one the block index recorded of it (refs.BlockTextAt), as every block of a
+// version that stores no tree is.
 //
 // A block is named in the tree by its id attribute (pmdoc.BlockIDAttr), and its text is the
 // markdown its byte range in the render holds (pmdoc.RenderWithBlockOffsets): the range the block

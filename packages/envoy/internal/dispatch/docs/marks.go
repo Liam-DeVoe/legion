@@ -284,18 +284,16 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 
 // RejectDeletedCommentSuggestion rejects the pending suggestion of a comment its author is
 // deleting: the mark goes and an insert suggestion's text goes with it, as RejectSuggestion
-// does. Its one caller is the comment delete (api/comment_delete.go, deleteComment), whose
-// transaction holds the document owner's lock (api/comment_actions.go,
-// lockedCommentForCorrection through lockOwnerOfComment) and has decided under that lock that
-// the comment is its author's to delete - the same standing a comment's own anchor writes have,
-// and the delete marks the context it passes here as theirs (WithCommentMarks). So this reject
-// runs as those writes run, owner-verified under the caller's mark (commentMarkOperation), and a
-// closed issue's document takes it: a closed issue still takes the delete of its comment, and
-// the suggestion's replacement text is the comment's text too, so it leaves the document with
-// the body. Owner-verified, the write meets no closed refusal (allowInject); a comment's mark
-// write, it forks the stored document cold (closedIssueCommentMark, readFork says why). The
-// accept and the reject routes keep RejectSuggestion, which a closed issue refuses as it always
-// did, and so does this reject under a context no caller marked.
+// does. Its caller's joined transaction holds the document owner's lock and has decided under that
+// lock that the comment is its author's to delete - the same standing a comment's own anchor
+// writes have - and the caller marks the context it passes here as theirs (WithCommentMarks). So
+// this reject runs as those writes run, owner-verified under the caller's mark
+// (commentMarkOperation), and a closed issue's document takes it: a closed issue still takes the
+// delete of its comment, and the suggestion's replacement text is the comment's text too, so it
+// leaves the document with the body. Owner-verified, the write meets no closed refusal
+// (allowInject); a comment's mark write, it forks the stored document cold (closedIssueCommentMark,
+// readFork says why). RejectSuggestion is refused on a closed issue as it always was, and so is
+// this reject under a context no caller marked.
 //
 // It answers the kind the suggestion's mark recorded: "insert", "replace" or "delete"
 // (suggestionKind). Only an insert's mark wraps text the suggestion itself put in the document,

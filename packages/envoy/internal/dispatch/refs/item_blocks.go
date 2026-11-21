@@ -268,10 +268,9 @@ func itemBodySource(kind ItemKind, body string, located []text.Located, carried 
 }
 
 // TombstoneItem queues, on a write phase's batch, what the delete of comment or message itemID
-// writes to the tables of its blocks besides the index of its cleared body (api's deleteComment
-// and deleteMessage, through clearDeletedPostBody, the only callers). The caller holds the item's
-// owner lock, as every writer of the item does (LockItemOwner), and has queued before this the
-// update that clears the item's own body column and the index of that empty body.
+// writes to the tables of its blocks besides the index of its cleared body. The caller holds the
+// item's owner lock, as every writer of the item does (LockItemOwner), and has queued before this
+// the update that clears the item's own body column and the index of that empty body.
 //
 // The body has four copies beside that column, and the delete takes it out of each in its one
 // transaction:

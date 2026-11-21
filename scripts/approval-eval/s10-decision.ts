@@ -36,10 +36,10 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * never calls: the `--draw` and `--inputs` path options of `runDigestOf` and the file options of
  * `s10_judge.py`, the two sha256s `readCorpus` records, `pageEventLog`'s `after` and the new
  * `readBytes`, and `claimRunOf`'s rule for a start reply its author deleted with the optional
- * `CommentReply.deleted_at` it reads (dispatch://INFRA-1523; `claimRunOf` is called by
- * `build-corpus.ts` alone). So the pinned closure is the 651db8d5 decision, and any later change
- * to a pinned file fails this check until a reviewed pull request moves the pin. The pinned files
- * are checked again right before the children are spawned (`Decision.confirm`).
+ * `CommentReply.deleted_at` it reads (dispatch://INFRA-1523). So the pinned closure is the
+ * 651db8d5 decision, and any later change to a pinned file fails this check until a reviewed pull
+ * request moves the pin. The pinned files are checked again right before the children are spawned
+ * (`Decision.confirm`).
  *
  * The children. Each ask is decided by a child process (`spawnDecision`) run with neither
  * `APPROVAL_EVAL_RESERVE` nor `APPROVAL_EVAL_CLAIM_RUN` in its environment, so outside the claim's
