@@ -46,24 +46,31 @@ func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
 	access := projectaccesstest.NewServer(t,
 		map[string]projectaccesstest.Row{"ACC": {Visibility: "private", Owner: "alice", Listed: []string{accessErin}}},
 		map[string]string{accessErin: projectaccess.MemberRestricted, accessCarol: projectaccess.MemberFull})
-	broker := brokertest.NewRig(t, brokertest.WithProjectAccess(projectaccess.New(access.URL, access.Account, nil)))
+	return newRestrictedTokenRigWith(t, projectaccess.New(access.URL, access.Account, nil), testServerOptions{})
+}
+
+// newRestrictedTokenRigWith is the rig with the broker's project check asking access, and Dispatch
+// built with options beside what the rig sets itself: outside sign-in on, its broker tokens checked
+// at the rig's broker, and that broker as its secrets broker.
+func newRestrictedTokenRigWith(t *testing.T, access projectaccess.Access, options testServerOptions) restrictedTokenRig {
+	t.Helper()
+	broker := brokertest.NewRig(t, brokertest.WithProjectAccess(access))
 	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
 	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
 	dispatchAccount := accountTokenFile(t, broker.UIToken)
-	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
-		signInOutside: true,
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			verifier, err := brokertoken.New(brokertoken.Options{
-				BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origin: testServerURL,
-				Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
-			})
-			if err != nil {
-				t.Fatalf("build the broker token verifier: %v", err)
-			}
-			return verifier
-		},
-		agentSecretsURL: broker.URL, agentSecretsTokenFile: dispatchAccount,
-	})
+	options.signInOutside = true
+	options.brokerTokens = func(database *store.Store) *brokertoken.Verifier {
+		verifier, err := brokertoken.New(brokertoken.Options{
+			BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origin: testServerURL,
+			Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
+		})
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return verifier
+	}
+	options.agentSecretsURL, options.agentSecretsTokenFile = broker.URL, dispatchAccount
+	served, database, registered := newRegisteredAccessServer(t, options)
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}

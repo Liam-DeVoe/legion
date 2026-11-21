@@ -413,7 +413,7 @@ func (s *server) restrictedDecisionAllowed(w http.ResponseWriter, r *http.Reques
 		s.writeHandlerError(w, err)
 		return false
 	}
-	_, ok = ownMachineLogin(w, r, client, actor.ID, lookup, r.PathValue("id"))
+	_, ok = ownMachineLogin(w, r, client, model.CanonicalLogin(actor.ID), lookup, r.PathValue("id"))
 	return ok
 }
 
@@ -463,7 +463,7 @@ func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if restricted {
-		if own, ok := ownMachineLogin(w, r, client, actor.ID, relayBody, ""); ok {
+		if own, ok := ownMachineLogin(w, r, client, model.CanonicalLogin(actor.ID), relayBody, ""); ok {
 			relayBrokerResponse(w, own, nil)
 		}
 		return
