@@ -438,7 +438,7 @@ func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	go func() {
-		_, err := client.RequestCore(ctx, subject, nats.Header{"Envoy-Probe": []string{"held-handshake"}})
+		_, err := client.RequestCore(ctx, subject, conn.NewInbox(), nats.Header{"Envoy-Probe": []string{"held-handshake"}})
 		answers <- answer{what: "RequestCore", err: err, at: time.Now()}
 	}()
 	go func() {
@@ -843,7 +843,7 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	go func() {
-		reply, err := client.RequestCore(ctx, subject, nats.Header{"Envoy-Probe": []string{"held-handshake"}})
+		reply, err := client.RequestCore(ctx, subject, conn.NewInbox(), nats.Header{"Envoy-Probe": []string{"held-handshake"}})
 		answers <- answer{what: "RequestCore", reply: reply, err: err}
 	}()
 	go func() {

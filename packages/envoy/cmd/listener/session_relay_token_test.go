@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
+	"crypto/rand"
+	"encoding/base32"
 	"math/big"
 	"strings"
 	"sync/atomic"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -41,15 +41,17 @@ func counterStep(prev, next string) bool {
 }
 
 // A session reads the reply subject of every frame it is sent, and the relay acknowledges a
-// session's message on a done published to that frame's reply subject, which names the frame by
-// its token alone: NATS gives the relay no sender to check (onReply). So no token may tell a
-// session the token of another frame. Each token is 128 bits from crypto/rand, in hex: across
-// 1,000 frames to two sessions no token is one counter step after the token before it, as the
-// listener's shared counter made them, and at least 120 of the 128 bit positions take both
-// values. A done on a subject no open frame holds acknowledges nothing: a random token, the
-// counter's next value after the session's own frame, the other session's token with one digit
-// changed, a finished frame's token, and the right token with one more subject token after it.
-// The right token acknowledges its frame once and ends it.
+// session's message on a done published to that frame's reply subject, which names the session
+// and then the frame's token: NATS gives the relay no sender to check (onReply), and a sender whose
+// grant publishes every _INBOX. subject may name any session. So no token may tell a session the
+// token of another frame. Each token is 128 random bits from crypto/rand (bus.SessionReplySubject:
+// crypto/rand.Text, 26 base32 characters): across 1,000 frames to two sessions no token is one
+// counter step after the token before it, as the listener's shared counter made them, and at least
+// 120 of the first 128 bit positions take both values. A done under the other session's own reply
+// prefix on a token no open frame holds acknowledges nothing: a random token, the counter's next
+// value after the session's own frame, the other session's token with its last character changed,
+// a finished frame's token, and the right token with one more subject token after it. The right
+// token acknowledges its frame once and ends it.
 func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	// The rig does not hold the durable binding, so no relay runs: every frame is one this test
 	// publishes through publishFrame, as a relay's pull loop does.
@@ -68,7 +70,8 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	}
 	var seq uint64
 	// publish relays one message to sessions[i] as a frame answered through acker and returns the
-	// token of the frame's reply subject, as the session reads it.
+	// token of the frame's reply subject, the subject token after the session's id, as the session
+	// reads it.
 	publish := func(i int, acker bus.SessionAcker) string {
 		t.Helper()
 		seq++
@@ -92,9 +95,9 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 		if frame.Subject != bus.DeliverSubject(sessions[i]) {
 			t.Fatalf("frame %d went to %s, want %s", seq, frame.Subject, bus.DeliverSubject(sessions[i]))
 		}
-		token, ok := strings.CutPrefix(frame.Reply, relays.replyPrefix)
+		token, ok := strings.CutPrefix(frame.Reply, relays.replyPrefix+sessions[i]+".")
 		if !ok || token == "" || strings.Contains(token, ".") {
-			t.Fatalf("frame %d's reply subject %q is not one token under the listener's reply inbox %q", seq, frame.Reply, relays.replyPrefix)
+			t.Fatalf("frame %d's reply subject %q is not one token under %s's prefix in the listener's reply inbox %q", seq, frame.Reply, sessions[i], relays.replyPrefix)
 		}
 		return token
 	}
@@ -112,9 +115,9 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	}
 	var ones [128]int
 	for i, token := range tokens {
-		bits, err := hex.DecodeString(token)
+		bits, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(token)
 		if err != nil || len(bits) != 16 {
-			t.Fatalf("frame %d's token %q is not 128 bits in hex: %d bytes decoded, error %v", i+1, token, len(bits), err)
+			t.Fatalf("frame %d's token %q is not 128 bits in base32: %d bytes decoded, error %v", i+1, token, len(bits), err)
 		}
 		for bit := range ones {
 			if bits[bit/8]&(1<<(bit%8)) != 0 {
@@ -141,6 +144,9 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	finished := publish(1, finishedAcker)
 	forger := testnats.Connect(t, rig.url)
 	t.Cleanup(forger.Close)
+	// victimReply is the reply subject of the victim's frame whose token is token: the victim's own
+	// reply prefix, which a forger may publish to while its grant publishes every _INBOX. subject.
+	victimReply := func(token string) string { return relays.replyPrefix + sessions[1] + "." + token }
 	done := func(subject string) {
 		t.Helper()
 		if err := forger.Publish(subject, []byte(relayReplyDone)); err != nil {
@@ -157,7 +163,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	barrier := func() {
 		t.Helper()
 		acker := &tokenRowAcker{}
-		done(relays.replyPrefix + publish(1, acker))
+		done(victimReply(publish(1, acker)))
 		if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return acker.acks.Load() == 1 }) {
 			t.Fatalf("the relay did not acknowledge the barrier frame's done within 5s")
 		}
@@ -167,7 +173,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 		defer relays.framesMu.Unlock()
 		return relays.frames[token] != nil || runs[0].outstanding[token] != nil || runs[1].outstanding[token] != nil
 	}
-	done(relays.replyPrefix + finished)
+	done(victimReply(finished))
 	barrier()
 	if got := finishedAcker.acks.Load(); got != 1 || open(finished) {
 		t.Fatalf("the finished frame's done acknowledged it %d times and left it open %t, want once and ended", got, open(finished))
@@ -177,21 +183,21 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	if !ok {
 		t.Fatalf("the reader's token %q does not read as a number in base 36", own)
 	}
-	changed := victim[:len(victim)-1] + "0"
-	if strings.HasSuffix(victim, "0") {
-		changed = victim[:len(victim)-1] + "1"
+	changed := victim[:len(victim)-1] + "A"
+	if strings.HasSuffix(victim, "A") {
+		changed = victim[:len(victim)-1] + "B"
 	}
 	for _, guess := range []struct{ name, token string }{
-		{"a random token", id.New()},
+		{"a random token", rand.Text()},
 		{"the counter's next value after the reader's own frame", next.Add(next, big.NewInt(1)).Text(36)},
-		{"the victim's token with its last digit changed", changed},
+		{"the victim's token with its last character changed", changed},
 		{"a finished frame's token", finished},
 		{"the victim's token with one more subject token after it", victim + ".x"},
 	} {
 		if open(guess.token) {
 			t.Fatalf("%s, %q, is the token of an open frame", guess.name, guess.token)
 		}
-		done(relays.replyPrefix + guess.token)
+		done(victimReply(guess.token))
 		barrier()
 		if got := victimAcker.answers(); got != 0 || !open(victim) {
 			t.Fatalf("a done on %s answered the victim's frame %d times and left it open %t, want no answer and open", guess.name, got, open(victim))
@@ -205,8 +211,8 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	}
 
 	// The right token, twice: the second done names a frame that has ended.
-	done(relays.replyPrefix + victim)
-	done(relays.replyPrefix + victim)
+	done(victimReply(victim))
+	done(victimReply(victim))
 	barrier()
 	if acks, answers := victimAcker.acks.Load(), victimAcker.answers(); acks != 1 || answers != 1 {
 		t.Fatalf("the victim's frame was acknowledged %d times and answered %d times, want one acknowledgement and nothing else", acks, answers)
