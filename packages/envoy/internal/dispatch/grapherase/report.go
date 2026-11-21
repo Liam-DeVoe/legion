@@ -135,6 +135,17 @@ type Erasure struct {
 	// order Write prints them. It is not recorded: its last section names other nodes' rows, and
 	// the record of an erase is of what it removed.
 	Listing []string `json:"-"`
+	// LeftAfterCommit are the rows the search after the commit found that hold the erased bytes
+	// and derive from another node, and that the search before the locks did not list
+	// (searchLeftAfterCommit): rows written after that search, which the run left as it leaves
+	// every row it lists. Each is a line as the listing's section of rows left gives it. The
+	// digest does not cover them: the listing was confirmed before they were found. Like Listing
+	// it is not recorded - the record of an erase in graph_erasures holds no listing - so these
+	// rows reach the report alone, as the rows the listing leaves do.
+	LeftAfterCommit []string `json:"-"`
+	// searchedAfterCommit is whether the search after the commit ended, and so whether
+	// LeftAfterCommit is every row it found: a search that failed found none the report can name.
+	searchedAfterCommit bool
 	// Confirmed is the digest --confirm named, and empty for a run without it.
 	Confirmed string `json:"-"`
 	// Blockers are the rows of other nodes that state something about this node: a reply that
@@ -200,9 +211,14 @@ func countedRows(counted []ErasedRows, table string, rows int64) []ErasedRows {
 	return append(counted, ErasedRows{Table: table, Rows: rows})
 }
 
+// leftAfterCommitHead is the head of the report's section of the rows the search after the commit
+// found (Erasure.LeftAfterCommit), in the words of the listing's section of rows left.
+const leftAfterCommitHead = "rows that hold the erased bytes and derive from another node, written after the search and found after the commit, left as they are"
+
 // Write prints the listing with its digest, so an operator reads every row before confirming
 // it, and then what a confirmed run read and did: each document whose live state it loaded, and
-// once Applied every table it emptied or rewrote.
+// once Applied every table it emptied or rewrote and every row its search after the commit found
+// that its listing does not name.
 func (e *Erasure) Write(w io.Writer) {
 	verb := "would remove"
 	switch {
@@ -263,6 +279,14 @@ func (e *Erasure) Write(w io.Writer) {
 		fmt.Fprintf(w, "  term statistics of %s not counted again after the commit (%s): they hold none of the erased "+
 			"words, and lack the counts of the words taken out that other items still hold until the next refresh "+
 			"pass, which counts %s in full\n", failed.Project, failed.Error, failed.Project)
+	}
+	if e.searchedAfterCommit {
+		fmt.Fprintf(w, "  %s: %d\n", leftAfterCommitHead, len(e.LeftAfterCommit))
+		for _, line := range e.LeftAfterCommit {
+			fmt.Fprintln(w, "    "+line)
+		}
+	} else {
+		fmt.Fprintf(w, "  %s: not known, the search after the commit failed\n", leftAfterCommitHead)
 	}
 	fmt.Fprintf(w, "  text_trees swept after the commit: %d\n", e.Swept)
 }
