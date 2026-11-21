@@ -213,6 +213,7 @@ The repository answer is the list of the repositories a project's issues resolve
 It is read live on each request from `refs.ProjectRepositoriesSQL`, the one rule of which repositories a project owns, which the GitHub proxy (`/api/github/rest/...`, under Routes) and Delivery read too, so the answer lists a repository exactly when that rule counts the project as its owner:
 issues are a repository's only owners, so a repository mapping gives the project nothing, and no recorded rename is read.
 An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list: its unread ancestors may name a repository the list would leave out.
+That refusal reaches only the secrets broker, so Dispatch also logs it at WARN, `dispatch: the repository answer is unresolved`, with `project` and `issue`, for the operator who must repair the chain.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme

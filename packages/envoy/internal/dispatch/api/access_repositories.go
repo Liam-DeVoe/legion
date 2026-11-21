@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -30,7 +31,9 @@ const codeRepositoriesUnresolved = "REPOSITORIES_UNRESOLVED"
 
 // getAccessProjectRepositories answers project {key}'s repositories, read live on each request:
 // 404 PROJECT_NOT_FOUND for an unknown key, and 503 REPOSITORIES_UNRESOLVED naming the issue whose
-// chain the walk could not finish, rather than a shorter list.
+// chain the walk could not finish, rather than a shorter list. That refusal reaches only the secrets
+// broker, which relays no repository of the project while it stands, so it is also logged at WARN
+// with the project and the issue for the operator who must repair the chain.
 func (s *server) getAccessProjectRepositories(w http.ResponseWriter, r *http.Request) {
 	pool, err := s.readyPool()
 	if err != nil {
@@ -40,6 +43,7 @@ func (s *server) getAccessProjectRepositories(w http.ResponseWriter, r *http.Req
 	project := r.PathValue("key")
 	repositories, err := refs.ProjectRepositories(r.Context(), pool, project)
 	if unresolved := (*refs.UnresolvedChainError)(nil); errors.As(err, &unresolved) {
+		slog.Warn("dispatch: the repository answer is unresolved", "project", unresolved.Project, "issue", unresolved.Issue)
 		writeError(w, codeRepositoriesUnresolved, http.StatusServiceUnavailable, unresolved.Error()+
 			", so no list is answered rather than one that leaves out a repository its ancestors may name")
 		return

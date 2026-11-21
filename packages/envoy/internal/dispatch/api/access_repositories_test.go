@@ -126,9 +126,11 @@ func TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts(t *testing.T) {
 // since the chain's unread ancestors may name a repository the list would leave out. The chain's
 // root names acme/deeproot and the project's default is acme/deepdefault. With DEEP-34 deleted,
 // DEEP-33, 32 links below the root, resolves, and the answer is 200 with acme/deeproot alone, so
-// the refusal is the cap's own boundary and not a fixture that fails for every issue. Control:
-// drop refs.ProjectRepositories' refusal of the unresolved issue, and the answer is 200 with the
-// list of the others and the test fails.
+// the refusal is the cap's own boundary and not a fixture that fails for every issue. The refusal
+// also logs one WARN line naming the project and the issue, since the 503 reaches only the secrets
+// broker, and the 200 logs none. Controls: drop refs.ProjectRepositories' refusal of the unresolved
+// issue, and the answer is 200 with the list of the others and the test fails; drop the WARN line,
+// and the test fails naming the line it wants.
 func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
@@ -148,12 +150,18 @@ func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 	}
 	bearer := issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience))
 	path := projectRepositoriesPath("DEEP")
+	logged := captureLog(t)
+	unresolvedMessage := `level=WARN msg="dispatch: the repository answer is unresolved"`
+	unresolvedLine := unresolvedMessage + ` project=DEEP issue=DEEP-34`
 
 	response := agentRequest(t, handler, http.MethodGet, path, nil, bearer)
 	body := response.Body.String()
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"REPOSITORIES_UNRESOLVED"`) ||
 		!strings.Contains(body, "DEEP-34") || strings.Contains(body, "acme/") || strings.Contains(body, `"repositories"`) {
 		t.Fatalf("GET %s over a chain of 33 links = %d %s, want 503 REPOSITORIES_UNRESOLVED naming DEEP-34 and no repository", path, response.Code, body)
+	}
+	if got := strings.Count(logged.String(), unresolvedLine); got != 1 {
+		t.Fatalf("the 503 logged %d lines %q, want 1 in:\n%s", got, unresolvedLine, logged.String())
 	}
 
 	if _, err := database.Pool.Exec(ctx, `delete from issues where key = 'DEEP-34'`); err != nil {
@@ -162,6 +170,9 @@ func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 	if response := agentRequest(t, handler, http.MethodGet, path, nil, bearer); response.Code != http.StatusOK ||
 		response.Body.String() != `{"project":"DEEP","repositories":["acme/deeproot"]}`+"\n" {
 		t.Fatalf("GET %s over a chain of 32 links = %d %s, want 200 with acme/deeproot alone", path, response.Code, response.Body.String())
+	}
+	if got := strings.Count(logged.String(), unresolvedMessage); got != 1 {
+		t.Fatalf("after the 200 the log holds %d lines %q, want the 503's one alone:\n%s", got, unresolvedMessage, logged.String())
 	}
 }
 

@@ -1404,7 +1404,7 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 	if len(args.OidcAccounts) > 0 {
 		for i, account := range args.AccessAccounts {
 			if !slices.Contains(args.OidcAccounts, account) {
-				return fmt.Errorf("accessAccounts[%d] %q is not among oidcAccounts: an account that reads the membership answer must be one the deployment admits", i, account)
+				return fmt.Errorf("accessAccounts[%d] %q is not among oidcAccounts: an account that reads the membership answer and the repository answer must be one the deployment admits", i, account)
 			}
 		}
 	}
@@ -1693,11 +1693,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	}
 	// The service-account verifier is one required input, one override and two allow-lists, not
 	// a group: the audience turns it on, the issuer defaults to the cluster's own, and the two
-	// lists narrow which accounts it admits and which of them read the membership answer, so any
-	// of the three sent without an audience would configure nothing and is refused rather than
-	// dropped. Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which
-	// is why the component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not
-	// at all.
+	// lists narrow which accounts it admits and which of them read the membership answer and the
+	// repository answer, so any of the three sent without an audience would configure nothing and
+	// is refused rather than dropped. Dispatch itself refuses half the issuer-audience pair
+	// (oidc.ConfigFromEnv), which is why the component renders DISPATCH_OIDC_ISSUER and
+	// DISPATCH_OIDC_AUDIENCE together or not at all.
 	if args.OidcAudience == "" {
 		if err := refuseDispatchInputsWithout("oidcAudience", "the audience turns on Dispatch's service-account verifier, which oidcIssuer, oidcAccounts and accessAccounts only configure", []dispatchInput{
 			{"oidcIssuer", args.OidcIssuer != ""},
