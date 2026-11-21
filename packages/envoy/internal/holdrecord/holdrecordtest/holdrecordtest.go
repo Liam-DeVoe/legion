@@ -47,6 +47,8 @@ type Broker struct {
 
 	deps         api.Deps
 	routes       atomic.Pointer[http.ServeMux]
+	replica      *http.ServeMux
+	onReplica    atomic.Bool
 	hook         atomic.Pointer[func(http.ResponseWriter, *http.Request) bool]
 	recordWrites atomic.Int64
 }
@@ -83,11 +85,17 @@ func Start(t testing.TB) *Broker {
 		},
 	}}
 	b.Restart()
+	b.replica = http.NewServeMux()
+	api.Register(b.replica, b.deps)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/nats-hold/records" {
 			b.recordWrites.Add(1)
 		}
 		if hook := b.hook.Load(); hook != nil && (*hook)(w, req) {
+			return
+		}
+		if b.onReplica.Load() {
+			b.replica.ServeHTTP(w, req)
 			return
 		}
 		b.routes.Load().ServeHTTP(w, req)
@@ -105,6 +113,12 @@ func (b *Broker) Restart() {
 	api.Register(mux, b.deps)
 	b.routes.Store(mux)
 }
+
+// UseReplica sends every later request to b's second replica when on, and to the first when not.
+// Start mounts both on the same tables, as production runs two broker processes on one database:
+// each keeps what it keeps in memory, each record's floor among it, so what one replica learns only
+// from the database, the other's writes and deletes, is tested there. Restart restarts the first.
+func (b *Broker) UseReplica(on bool) { b.onReplica.Store(on) }
 
 // verifyOperatorToken is the routes' platform-token verifier: OperatorToken is the operator
 // entry's account, issued now and living ten minutes, and any other token is refused.

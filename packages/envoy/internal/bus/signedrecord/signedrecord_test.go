@@ -32,9 +32,10 @@ func sign(t *testing.T, key ed25519.PrivateKey, lines []string) string {
 
 // Each forgery a writer of the broker's tables could make is refused, naming the reason: a record
 // with no signature, one signed by another key, a genuine record copied onto another key, a
-// genuine older record read after a newer gen was accepted, and a value changed after signing.
-// A genuine record verifies, so the refusals are the verifier's and not a reader that refuses
-// everything.
+// genuine older record read after a newer gen was accepted, another genuine record at the gen
+// already accepted, and a value changed after signing. A genuine record verifies, and the record
+// accepted reads again at its gen, so the refusals are the verifier's and not a reader that refuses
+// everything. The fork row fails on a floor that keeps the gen alone, as it did at bb2b623923.
 func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 	operator, operatorKey := newKey(t)
 	_, otherKey := newKey(t)
@@ -49,8 +50,11 @@ func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 	older := signedrecord.Record("hold-1", "done", "hold", 1, value)
 	olderSig := sign(t, operatorKey, older)
 	floor := &signedrecord.Floor{}
-	if err := floor.Accept(2); err != nil {
+	if err := floor.Accept(2, genuine); err != nil {
 		t.Fatalf("the floor refuses the first gen it reads: %v", err)
+	}
+	if err := floor.Accept(2, genuine); err != nil {
+		t.Fatalf("the floor refuses the record it accepted, read again at its gen: %v", err)
 	}
 
 	for _, forgery := range []struct {
@@ -81,9 +85,20 @@ func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
 				if err := signedrecord.Verify(keys, olderSig, older); err != nil {
 					return err
 				}
-				return floor.Accept(1)
+				return floor.Accept(1, older)
 			},
 			want: signedrecord.ErrReplay,
+		},
+		{
+			name: "another genuine record at the gen already accepted",
+			read: func() error {
+				other := signedrecord.Record("hold-1", "done", "hold", 2, []byte(`{"workflow":"cutover","ops":[],"complete":true}`))
+				if err := signedrecord.Verify(keys, sign(t, operatorKey, other), other); err != nil {
+					return err
+				}
+				return floor.Accept(2, other)
+			},
+			want: signedrecord.ErrFork,
 		},
 		{
 			name: "a value changed after signing",
@@ -220,5 +235,19 @@ func TestParsePublicKeysReadsTheSettingsList(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "EXAMPLE_KEYS "+place) || strings.Contains(err.Error(), secret) {
 			t.Errorf("ParsePublicKeys(%q) = %v, want a refusal naming EXAMPLE_KEYS %s and not the entry", raw, err, place)
 		}
+	}
+}
+
+// A record value that is not JSON is refused ErrBadField, naming the byte where it stops being
+// JSON and no character of it: the value is a record's, and json's message for a syntax error
+// quotes the character it stopped at. Run by hand, the control is Canonical at bb2b623923, whose
+// error ends `invalid character 'Q' looking for beginning of value`.
+func TestAValueThatIsNotJSONIsRefusedNamingNoPartOfIt(t *testing.T) {
+	_, err := signedrecord.Canonical([]byte(`{"a":Q7canary}`))
+	if !errors.Is(err, signedrecord.ErrBadField) {
+		t.Fatalf("Canonical of a value that is not JSON = %v, want ErrBadField", err)
+	}
+	if text := err.Error(); strings.Contains(text, "Q") || strings.Contains(text, "canary") || !strings.Contains(text, "byte 6") {
+		t.Errorf("Canonical's error is %q: it holds part of the value, or names no byte", text)
 	}
 }

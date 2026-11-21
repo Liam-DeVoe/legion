@@ -36,6 +36,10 @@ var (
 	ErrBadSignature = errors.New("signedrecord: the signature does not verify")
 	// ErrReplay is a verified record whose gen is below the highest one already accepted (Floor).
 	ErrReplay = errors.New("signedrecord: a gen below the one already accepted")
+	// ErrFork is a verified record at the gen already accepted (Floor) whose lines differ from the
+	// record accepted there: two records the operator signed at one gen, one of them put in the
+	// other's place.
+	ErrFork = errors.New("signedrecord: a record at the gen already accepted that is not the one accepted")
 	// ErrBadField is a field holding a line feed, or a value that is not JSON.
 	ErrBadField = errors.New("signedrecord: a field that cannot be signed")
 )
@@ -93,13 +97,19 @@ func RecordsManifest(manifest []byte) []string {
 // Canonical is value's canonical JSON: decoded, then encoded with its object keys sorted, no
 // whitespace, no HTML escaping, and each number as the text it was written in. jsonb keeps the
 // meaning of a value and its number text for every integer, so a value written and the value
-// Postgres gives back have one canonical form.
+// Postgres gives back have one canonical form. Its error says where the value stops being JSON,
+// never what it holds: json's message for a syntax error holds a character of the input, and the
+// value is a record's.
 func Canonical(value []byte) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(value))
 	decoder.UseNumber()
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("%w: the value is not JSON: %v", ErrBadField, err)
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) {
+			return nil, fmt.Errorf("%w: the value is not JSON: a syntax error at byte %d", ErrBadField, syntax.Offset)
+		}
+		return nil, fmt.Errorf("%w: the value is not JSON", ErrBadField)
 	}
 	if decoder.More() {
 		return nil, fmt.Errorf("%w: the value holds more than one JSON value", ErrBadField)
@@ -108,7 +118,7 @@ func Canonical(value []byte) ([]byte, error) {
 	encoder := json.NewEncoder(&out)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(decoded); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBadField, err)
+		return nil, fmt.Errorf("%w: the value does not encode again", ErrBadField)
 	}
 	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
 }
@@ -194,23 +204,37 @@ func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 	return keys, nil
 }
 
-// Floor is the highest gen a reader has accepted of one record, so an older signed copy that a
-// database writer puts back reads as a replay. It lives as long as its reader's process: a reader
-// that starts again starts with no floor, which is the residual the hold's design states. The zero
-// Floor is at gen 0, below which no gen lies, so it accepts any gen; it is safe for concurrent use.
+// Floor is the highest gen a reader has accepted of one record, with the digest of the record it
+// accepted there, so an older signed copy that a database writer puts back reads as a replay, and a
+// different signed record at the gen already accepted reads as a fork: the operator can be led to
+// sign a second record at a gen it signed before (a writer who puts an older row back has the
+// operator's next move signed at the gen the older row names), and either one verifies. It lives as
+// long as its reader's process: a reader that starts again starts with no floor, which is the
+// residual the hold's design states. The zero Floor has accepted nothing, so it accepts any gen; it
+// is safe for concurrent use.
 type Floor struct {
-	mu  sync.Mutex
-	gen uint64
+	mu       sync.Mutex
+	gen      uint64
+	digest   [sha256.Size]byte
+	accepted bool
 }
 
-// Accept records gen when it is at or above the floor and returns nil, or returns ErrReplay naming
-// both gens and leaves the floor where it was.
-func (f *Floor) Accept(gen uint64) error {
+// Accept records gen and the digest of lines, the record's signed lines, when gen is above the
+// floor, or at it with the same lines, and returns nil. It returns ErrReplay for a gen below the
+// floor, and ErrFork for other lines at the floor's gen, naming the gens, and leaves the floor where
+// it was.
+func (f *Floor) Accept(gen uint64, lines []string) error {
+	digest := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if gen < f.gen {
+	switch {
+	case !f.accepted || gen > f.gen:
+		f.gen, f.digest, f.accepted = gen, digest, true
+		return nil
+	case gen < f.gen:
 		return fmt.Errorf("%w: gen %d, after gen %d", ErrReplay, gen, f.gen)
+	case digest != f.digest:
+		return fmt.Errorf("%w: gen %d", ErrFork, gen)
 	}
-	f.gen = gen
 	return nil
 }

@@ -49,6 +49,22 @@ create table nats_hold_records (
   primary key (hold_id, kind, key)
 );
 
+-- nats_hold_record_deletes is each record the routes deleted, the cohort that hold abort from
+-- prepare deletes, one row per kind and key: the gen it was deleted at, when, and the operator's
+-- signature over the delete (signedrecord.RecordDelete), the one its request carried. The delete
+-- writes it in the delete's own statement, and every broker replica reads it beside the records,
+-- so each reads a record whose delete verifies as the routes' delete, and a record that is gone
+-- with no such row as a database writer's.
+create table nats_hold_record_deletes (
+  hold_id text not null,
+  kind text not null check (kind in ('cohort', 'convert', 'done', 'selection')),
+  key text not null,
+  gen bigint not null check (gen >= 1),
+  deleted_at timestamptz not null,
+  sig text not null,
+  primary key (hold_id, kind, key)
+);
+
 -- nats_cutover is one row per family (session, dispatch, or daemon/<project key>), keyed by the
 -- family and not by a hold: done once the hold's conversion converted it, rolled_back once a
 -- rollback restored it, with the hold and the hold row's gen it was written under.

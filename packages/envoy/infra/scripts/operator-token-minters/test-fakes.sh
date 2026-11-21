@@ -83,15 +83,22 @@ case "${words[*]}" in
     ;;
   "container clusters describe "*)
     # A cluster of the project's own list, or a GKE member of the fleet (its `groups`, Google Groups
-    # for RBAC, from fleet.json), as GKE describes it: authenticatorGroupsConfig when it is set.
+    # for RBAC, and its `settings`, from fleet.json), as GKE describes it: authenticatorGroupsConfig
+    # when it is set.
     cluster="${words[3]}"
     [ ! -e "$world/refuse-describe-$cluster" ] ||
       refuse container.clusters.describe "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."
     jq -e --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" --slurpfile fleet "$world/fleet.json" '
       first((if $p == $project then .[] | select(.name == $c and .location == $l) else empty end),
-            ($fleet[0].memberships[] | select(.gke == {project: $p, location: $l, cluster: $c}) | {name: $c, location: $l} + (if .groups then {authenticatorGroupsConfig: .groups} else {} end)))
+            ($fleet[0].memberships[] | select(.gke == {project: $p, location: $l, cluster: $c})
+             | {name: $c, location: $l} + (if .groups then {authenticatorGroupsConfig: .groups} else {} end) + (.settings // {})))
       // error("no such cluster")' "$world/clusters.json" ||
       { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
+    ;;
+  "container fleet scopes list")
+    # The fleet's scopes: the world's scopes.json, or none.
+    [ ! -e "$world/refuse-scopes" ] || refuse container.fleet.scopes.list "Permission 'gkehub.scopes.list' denied on 'projects/${flag[project]:-}/locations/global/scopes'"
+    if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi
     ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
@@ -223,16 +230,17 @@ case "${args[*]}" in
       echo "<html>502 Bad Gateway</html>"
       exit 0
     fi
-    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))}]}' "$dir/serviceaccounts.json"
+    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
     ;;
   "get clusterrolebindings,rolebindings --all-namespaces -o json")
-    # The built-in cluster-admin binding, and one binding of each grant, naming its subject.
+    # The built-in cluster-admin binding (unless the world drops it), and one binding of each grant,
+    # naming its subject.
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
-    jq '{apiVersion: "v1", kind: "List", items: (
+    jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
         metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
-        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]}]
+        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]} | select($boot == "on")]
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),
@@ -264,6 +272,19 @@ case "${args[*]}" in
     if [ -e "$dir/refuse-api-resources" ]; then
       echo "error: unable to retrieve the complete list of server APIs: agents.x-k8s.io/v1alpha1: the server is currently unable to handle the request" >&2
       exit 1
+    fi
+    ;;
+  "api-resources --api-group=admissionregistration.k8s.io -o name")
+    # The admission resources a GKE cluster of 1.30 or later serves, or the world's admission-resources.
+    if [ -e "$dir/refuse-admission-resources" ]; then
+      echo "error: unable to retrieve the complete list of server APIs: admissionregistration.k8s.io/v1: the server is currently unable to handle the request" >&2
+      exit 1
+    fi
+    if [ -e "$dir/admission-resources" ]; then
+      cat "$dir/admission-resources"
+    else
+      printf '%s.admissionregistration.k8s.io\n' mutatingwebhookconfigurations validatingadmissionpolicies \
+        validatingadmissionpolicybindings validatingwebhookconfigurations
     fi
     ;;
   *)

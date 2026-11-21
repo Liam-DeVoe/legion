@@ -12,9 +12,9 @@
 #        page, whose cluster lets a ServiceAccount make a namespace, exits 1 naming the member (the
 #        control is the script before this step, which misses it); a GKE member in another project
 #        holding the namespace envoy-operator exits 1 naming the cluster; a fleet the API answers
-#        empty exits 0 and says so; a listing with an unreachable location, a refused listing, a
-#        member whose credentials are refused, and a project's cluster list gcloud says is
-#        incomplete each exit 2 with UNKNOWN; --pool-project naming another pool cannot read clean;
+#        empty, a listing with an unreachable location, a refused listing, a member whose
+#        credentials are refused, and a project's cluster list gcloud says is incomplete each exit 2
+#        with UNKNOWN; --pool-project naming another pool cannot read clean;
 #   (s)  a binding subject on a fleet member: grade-ci, a Google service account, bound to
 #        cluster-admin on a GKE member in another project exits 1 naming grade-ci and create
 #        namespaces; a person's email bound the same way, and a Group bound the same way while the
@@ -28,15 +28,23 @@
 #   (aa) a second cluster of the project named operator-cluster, in us-east1, holding the namespace
 #        envoy-operator, is a finding with --location us-central1, and UNKNOWN without it;
 #   (an) each escalation right alone, given to ci/runner on another cluster of the pool (impersonate
-#        users, groups and serviceaccounts, escalate and bind clusterroles, create and patch
-#        clusterrolebindings cluster-wide; bind and escalate roles and create and patch rolebindings
-#        in envoy-operator), exits 1 naming it;
+#        users, groups and serviceaccounts, escalate and bind clusterroles, create, patch and update
+#        clusterrolebindings cluster-wide; bind and escalate roles and create, patch and update
+#        rolebindings in envoy-operator), exits 1 naming it;
 #   (as) on a GKE fleet member in another project, apps/deployer given alone impersonate groups,
 #        create clusterrolebindings, bind clusterroles, create or get nodes/proxy, or create pods in
 #        kube-system (where namespace-controller may create namespaces) exits 1 naming it;
 #   (az) with --pool-project example-pool, that project's own cluster holding the namespace
 #        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
-#        UNKNOWN.
+#        UNKNOWN;
+#   (bm) a fleet scope, whose namespaces and RBAC role bindings reach its bound members, and a
+#        refused scope listing each read UNKNOWN; a fleet with no scope says so;
+#   (bp) legacy ABAC on the operator's cluster, the identity service on another cluster of the
+#        project, and legacy ABAC on a GKE fleet member in another project (from its describe) each
+#        read UNKNOWN on that cluster's step;
+#   (bt) on a GKE fleet member in another project, apps/deployer that may impersonate, by name,
+#        dev@example.com, who holds roles/container.admin on that member's project alone, exits 1
+#        naming the user and the member's cluster.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -106,7 +114,7 @@ if row r; then
   add_member "$(jq -nc --arg p "$project" '{id: "other", location: "global", gke: {project: $p, location: "us-east1", cluster: "other-cluster"}}')"
   run
   want_status 0 "a fleet member that is one of the project's clusters"
-  want_line "PASS $fleet_step: 2 membership(s) listed, every location reached: 1 the operator's cluster, 1 read above as clusters of the project, 0 read here" \
+  want_line "PASS $fleet_step: 2 membership(s) listed, every location reached: 1 the operator's cluster, 1 read above as clusters of the project, 0 read here, and the fleet holds no scope" \
     "a fleet member that is one of the project's clusters"
   passed "(r) a fleet member that is one of the project's clusters is read once, by the project's step"
 
@@ -114,9 +122,9 @@ if row r; then
   base_world
   edit "$world/fleet.json" '.memberships = []'
   run
-  want_status 0 "an empty fleet"
-  want_line "PASS $fleet_step: the GKE Hub API lists no membership in the fleet, and no location it could not reach" "an empty fleet"
-  passed "(r) a fleet the API answers with no membership exits 0 and says so"
+  want_status 2 "an empty fleet"
+  want_line "UNKNOWN $fleet_step: the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none" "an empty fleet"
+  passed "(r) a fleet the API answers with no membership reads UNKNOWN"
 
   # A listing that could not reach a location.
   base_world
@@ -296,10 +304,12 @@ escalation_rights=(
   "bind|rbac.authorization.k8s.io|clusterroles|=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
   "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
   "patch|rbac.authorization.k8s.io|clusterrolebindings|=patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "update|rbac.authorization.k8s.io|clusterrolebindings|=update clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
   "bind|rbac.authorization.k8s.io|roles|envoy-operator=bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "escalate|rbac.authorization.k8s.io|roles|envoy-operator=escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "create|rbac.authorization.k8s.io|rolebindings|envoy-operator=create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "patch|rbac.authorization.k8s.io|rolebindings|envoy-operator=patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "update|rbac.authorization.k8s.io|rolebindings|envoy-operator=update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "create||nodes/proxy|=create nodes/proxy cluster-wide"
   "get||nodes/proxy|=get nodes/proxy cluster-wide"
 )
@@ -376,4 +386,81 @@ pool_row() {
 if row az; then
   each pool_row holds refused
   passed "(az) the pool project's own cluster holding envoy-operator exits 1, and a pool project whose clusters cannot be listed reads UNKNOWN"
+fi
+
+# --- (bm) The fleet's scopes. A scope's namespaces and RBAC role bindings reach every member cluster
+# bound to it, and this check does not analyse them, so a scope reads UNKNOWN. ---
+scope_row() {
+  base_world
+  case "$1" in
+    present)
+      jq -n --arg p "$project" '[{name: "projects/\($p)/locations/global/scopes/team-a", uid: "uid-team-a"}]' >"$world/scopes.json"
+      run
+      want_status 2 "a fleet scope"
+      want_line "UNKNOWN $fleet_step: the fleet holds the scope projects/$project/locations/global/scopes/team-a, whose namespaces and RBAC role bindings reach every member cluster bound to it, which this check does not analyse" \
+        "a fleet scope"
+      ;;
+    refused)
+      : >"$world/refuse-scopes"
+      run
+      want_status 2 "a refused scope listing"
+      want_text "UNKNOWN $fleet_step: gcloud container fleet scopes list --project $project was refused (it needs gkehub.scopes.list)" "a refused scope listing"
+      ;;
+    none)
+      run
+      want_status 0 "a fleet with no scope"
+      want_text "PASS $fleet_step: 1 membership(s) listed, every location reached" "a fleet with no scope"
+      want_text ", and the fleet holds no scope" "a fleet with no scope"
+      ;;
+  esac
+}
+if row bm; then
+  each scope_row present refused none
+  passed "(bm) a fleet scope, or a scope listing that is refused, reads UNKNOWN; a fleet with none says so"
+fi
+
+# --- (bp) Cluster settings that authorize or authenticate outside RBAC and Google: legacy ABAC
+# authorizes requests by its own policies, and the identity service for GKE takes users and groups
+# from an outside provider, so neither is seen by a review. ---
+settings_row() {
+  local want
+  base_world
+  case "$1" in
+    operator-abac)
+      edit "$world/clusters.json" 'map(if .name == "operator-cluster" then . + {legacyAbac: {enabled: true}} else . end)'
+      want="UNKNOWN live: RBAC on operator-cluster: legacy ABAC is on, so the cluster authorizes requests by its ABAC policies beside RBAC, which no review here sees"
+      ;;
+    other-identity)
+      add_cluster other-cluster us-east1
+      edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {identityServiceConfig: {enabled: true}} else . end)'
+      want="UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the identity service for GKE is on, so the cluster takes users and groups from an outside identity provider, whose members this check cannot list"
+      ;;
+    member-abac)
+      grade_member
+      edit "$world/fleet.json" '.memberships |= map(if .id == "grade" then . + {settings: {legacyAbac: {enabled: true}}} else . end)'
+      want="UNKNOWN $grade_step: legacy ABAC is on, so the cluster authorizes requests by its ABAC policies beside RBAC, which no review here sees"
+      ;;
+  esac
+  run
+  want_status 2 "a cluster setting outside RBAC ($1)"
+  want_line "$want" "a cluster setting outside RBAC ($1)"
+}
+if row bp; then
+  each settings_row operator-abac other-identity member-abac
+  passed "(bp) legacy ABAC or the identity service on the operator's cluster, another of the project, or a GKE fleet member reads UNKNOWN"
+fi
+
+# --- (bt) Impersonating, by name, a user whose power is the member project's IAM: GKE's IAM authorizer
+# on the member judges an impersonated user by that project's IAM, so the member's own project's
+# holders are asked by name on its cluster, as --project's are on every cluster. ---
+if row bt; then
+  base_world
+  grade_member
+  iam "$grade_res" roles/container.admin user:dev@example.com
+  subject_grant grade-cluster "$(sa_subject apps deployer)" impersonate "" users "" "" dev@example.com
+  run
+  want_status 1 "apps/deployer may impersonate dev@example.com by name on the fleet member"
+  want_line "FINDING system:serviceaccount:apps:deployer: impersonate users dev@example.com cluster-wide on cluster example-grade/us-east1/grade-cluster" \
+    "apps/deployer may impersonate dev@example.com by name on the fleet member"
+  passed "(bt) who may impersonate, by name, a holder of a fleet member project's GKE IAM permissions on that member exits 1 naming the user"
 fi

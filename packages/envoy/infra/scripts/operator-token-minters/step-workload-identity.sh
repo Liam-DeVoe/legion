@@ -8,15 +8,18 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE GROUPS: on the cluster KUBE names, no guarded pair's
-# namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
-# cluster's system namespaces, none of Kubernetes' own groups, and no binding subject may hold a
-# right of GUARD_RIGHTS (each a finding, its right followed by WHERE); every binding of
-# system:masters but the bootstrap one is a finding, and its other Group subjects are judged by
-# GROUPS, where the cluster takes its groups from (groups_verdict). The reviews carry the witness.
-# PASS when it recorded neither a finding nor an UNKNOWN.
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS [PROJECT]]: on the cluster KUBE names, no
+# guarded pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no
+# ServiceAccount outside the cluster's system namespaces, none of Kubernetes' own groups, and no
+# binding subject may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the
+# cluster's discovery, or a name-limited right (each a finding, its right followed by WHERE); every
+# binding of system:masters but the bootstrap one is a finding, and its other Group subjects are
+# judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
+# settings_verdict. PROJECT, a project other than --project the cluster is in, adds that project's
+# IAM holders to the users the named rights impersonate. The reviews carry the witness. PASS when it
+# recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" groups_mode="$4" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" iam_project="${6:-}" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -54,10 +57,12 @@ read_other_cluster() {
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
   namespace_groups
   groups_verdict "$cstep" "$groups_mode"
+  settings_verdict "$cstep" "$settings"
   masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
-  named_rights
-  guard_rights="$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$NAMED_RIGHTS")"
+  admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
+  named_rights "$iam_project"
+  guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$NAMED_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
   [ "$accounts" -gt 0 ] ||
@@ -69,7 +74,7 @@ read_other_cluster() {
   elif judge_reviews "$cstep" "$where" "$principal"; then
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
-      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, or hold an escalation right"
+      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
   fi
 }
 
@@ -99,7 +104,8 @@ else
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
-    read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+    read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
+      "${CLUSTER_SETTINGS["$label"]:-}"
   done 5<"$WORK/clusters.tsv"
 fi
 
@@ -108,7 +114,8 @@ fi
 declare -A OTHER_PROJECTS=()
 
 # The pool project's own clusters, when --pool-project names another project (live: clusters of the
-# pool project): each uses the pool, as the project's other clusters do.
+# pool project): each uses the pool, as the project's other clusters do. The pool project's own IAM
+# is read first, so each cluster asks who may impersonate its holders by name.
 while IFS=$'\t' read -r -u 5 cluster location _; do
   OTHER_PROJECTS[$POOL_PROJECT]=1
   label="$POOL_PROJECT/$location/$cluster"
@@ -117,7 +124,9 @@ while IFS=$'\t' read -r -u 5 cluster location _; do
     unknown "$cstep" "$KUBE_ERROR"
     continue
   fi
-  read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+  member_project_iam "$POOL_PROJECT"
+  read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
+    "${CLUSTER_SETTINGS["$label"]:-}" "$POOL_PROJECT"
 done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
@@ -173,69 +182,98 @@ fleet_memberships() {
   fi
 }
 
+# fleet_scopes: the pool project's fleet scopes (`gcloud container fleet scopes list`). A scope's
+# namespaces and RBAC role bindings reach every member cluster bound to it, the operator's namespace
+# and Workload Identity member included, and this check does not analyse them: each scope is
+# UNKNOWN, and so is a refused listing. Sets SCOPES to how many it listed.
+fleet_scopes() {
+  local scope
+  SCOPES=0
+  if ! gcloud container fleet scopes list --project="$POOL_PROJECT" --format=json --quiet >"$WORK/scopes.json" 2>"$WORK/scopes.err"; then
+    unknown "$step" "gcloud container fleet scopes list --project $POOL_PROJECT was refused (it needs gkehub.scopes.list), so a scope whose namespaces and RBAC role bindings reach the members is not seen: $(first_line "$WORK/scopes.err")"
+    return
+  fi
+  if ! jq -r '.[] | .name' "$WORK/scopes.json" >"$WORK/scopes.list" 2>"$WORK/scopes.err"; then
+    unknown "$step" "gcloud container fleet scopes list --project $POOL_PROJECT answered no JSON list: $(first_line "$WORK/scopes.err")"
+    return
+  fi
+  while IFS= read -r scope; do
+    SCOPES=$((SCOPES + 1))
+    unknown "$step" "the fleet holds the scope $scope, whose namespaces and RBAC role bindings reach every member cluster bound to it, which this check does not analyse"
+  done <"$WORK/scopes.list"
+}
+
 # The pool project's fleet: every member cluster shares the workload pool, so a ServiceAccount
 # envoy-operator/envoy-operator there is the operator's member too. The operator's own cluster,
-# and a cluster the project's list held, are read above.
+# and a cluster the project's list held, are read above. A listing that holds no membership cannot
+# be told from one that saw nothing, so it is UNKNOWN; the fleet's scopes are read beside it.
 step="live: Workload Identity: the fleet of $pool_name"
 if [ -z "$POOL_PROJECT" ]; then
   unknown "$step" "no --project or --pool-project: the workload pool's project is not named"
 elif ! have gcloud; then
   unknown "$step" "gcloud is not on PATH"
-elif ! fleet_memberships; then
-  unknown "$step" "$FLEET_ERROR"
 else
   fleet_f="${#FINDINGS[@]}" fleet_u="${#UNKNOWNS[@]}" members=0 own=0 above=0 here=0
-  # A GKE member read here in a project other than --project adds to OTHER_PROJECTS.
-  while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
-    if [ "$what" = unreachable ]; then
-      unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
-      continue
-    fi
-    members=$((members + 1))
-    if [ -n "$gke_cluster" ]; then
-      # The operator's cluster is --cluster in the operator's location, never by name alone; a member
-      # of that name in the project, while the operator's location is unknown, cannot be told from it.
-      if [ "$gke_project" = "$PROJECT" ] && [ "$gke_cluster" = "$CLUSTER" ]; then
-        if [ -z "$OPERATOR_LOCATION" ]; then
-          unknown "live: Workload Identity on fleet member $id (cluster $gke_project/$gke_location/$gke_cluster)" \
-            "it has --cluster's name, and the operator's cluster's location is unknown (live: clusters), so it is not read"
+  if ! fleet_memberships; then
+    unknown "$step" "$FLEET_ERROR"
+  else
+    # A GKE member read here in a project other than --project adds to OTHER_PROJECTS.
+    while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
+      if [ "$what" = unreachable ]; then
+        unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
+        continue
+      fi
+      members=$((members + 1))
+      if [ -n "$gke_cluster" ]; then
+        # The operator's cluster is --cluster in the operator's location, never by name alone; a
+        # member of that name in the project, while the operator's location is unknown, cannot be
+        # told from it.
+        if [ "$gke_project" = "$PROJECT" ] && [ "$gke_cluster" = "$CLUSTER" ]; then
+          if [ -z "$OPERATOR_LOCATION" ]; then
+            unknown "live: Workload Identity on fleet member $id (cluster $gke_project/$gke_location/$gke_cluster)" \
+              "it has --cluster's name, and the operator's cluster's location is unknown (live: clusters), so it is not read"
+            continue
+          fi
+          if [ "$gke_location" = "$OPERATOR_LOCATION" ]; then
+            own=$((own + 1))
+            continue
+          fi
+        fi
+        if [ -n "${PROJECT_CLUSTERS["$gke_project/$gke_location/$gke_cluster"]:-}" ]; then
+          above=$((above + 1))
           continue
         fi
-        if [ "$gke_location" = "$OPERATOR_LOCATION" ]; then
-          own=$((own + 1))
+        here=$((here + 1))
+        member_project=""
+        if [ "$gke_project" != "$PROJECT" ]; then
+          OTHER_PROJECTS[$gke_project]=1 member_project="$gke_project"
+        fi
+        label="$gke_project/$gke_location/$gke_cluster"
+        cstep="live: Workload Identity on fleet member $id (cluster $label)"
+        if ! kube_for "$gke_cluster" "$gke_location" "$gke_project"; then
+          unknown "$cstep" "$KUBE_ERROR"
           continue
         fi
+        groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
+        # The member's own project's IAM first, so its cluster asks who may impersonate its holders.
+        [ -z "$member_project" ] || member_project_iam "$member_project"
+        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}" "$member_project"
+      else
+        here=$((here + 1))
+        label="$POOL_PROJECT/$location/$id"
+        cstep="live: Workload Identity on fleet member $id"
+        if ! kube_for_membership "$id" "$location"; then
+          unknown "$cstep" "$KUBE_ERROR"
+          continue
+        fi
+        read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
       fi
-      if [ -n "${PROJECT_CLUSTERS["$gke_project/$gke_location/$gke_cluster"]:-}" ]; then
-        above=$((above + 1))
-        continue
-      fi
-      here=$((here + 1))
-      [ "$gke_project" = "$PROJECT" ] || OTHER_PROJECTS[$gke_project]=1
-      label="$gke_project/$gke_location/$gke_cluster"
-      cstep="live: Workload Identity on fleet member $id (cluster $label)"
-      if ! kube_for "$gke_cluster" "$gke_location" "$gke_project"; then
-        unknown "$cstep" "$KUBE_ERROR"
-        continue
-      fi
-      groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
-      read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE"
-    else
-      here=$((here + 1))
-      label="$POOL_PROJECT/$location/$id"
-      cstep="live: Workload Identity on fleet member $id"
-      if ! kube_for_membership "$id" "$location"; then
-        unknown "$cstep" "$KUBE_ERROR"
-        continue
-      fi
-      read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
-    fi
-  done 6<"$WORK/fleet.rec"
+    done 6<"$WORK/fleet.rec"
+    [ "$members" -gt 0 ] ||
+      unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none"
+  fi
+  fleet_scopes
   if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
-    if [ "$members" -eq 0 ]; then
-      pass "$step" "the GKE Hub API lists no membership in the fleet, and no location it could not reach"
-    else
-      pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here"
-    fi
+    pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
   fi
 fi

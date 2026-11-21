@@ -162,12 +162,21 @@ func (a holdAnswer) num(name string) int64 {
 // do sends method path with token as its bearer and body as its JSON, and answers what came back.
 func (r *holdRig) do(method, path, token string, body any) holdAnswer {
 	r.t.Helper()
-	var payload io.Reader
+	var raw []byte
 	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if raw, err = json.Marshal(body); err != nil {
 			r.t.Fatal(err)
 		}
+	}
+	return r.doRaw(method, path, token, raw)
+}
+
+// doRaw is do with raw as the body's bytes, none when raw is nil.
+func (r *holdRig) doRaw(method, path, token string, raw []byte) holdAnswer {
+	r.t.Helper()
+	var payload io.Reader
+	if raw != nil {
 		payload = bytes.NewReader(raw)
 	}
 	request, err := http.NewRequest(method, r.url+path, payload)
@@ -183,14 +192,14 @@ func (r *holdRig) do(method, path, token string, body any) holdAnswer {
 		r.t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(response.Body)
+	answered, err := io.ReadAll(response.Body)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	answer := holdAnswer{status: response.StatusCode, body: raw}
-	if len(bytes.TrimSpace(raw)) > 0 {
-		if err := json.Unmarshal(raw, &answer.fields); err != nil {
-			r.t.Fatalf("%s %s answered %d with a body that is no JSON object: %s", method, path, response.StatusCode, raw)
+	answer := holdAnswer{status: response.StatusCode, body: answered}
+	if len(bytes.TrimSpace(answered)) > 0 {
+		if err := json.Unmarshal(answered, &answer.fields); err != nil {
+			r.t.Fatalf("%s %s answered %d with a body that is no JSON object: %s", method, path, response.StatusCode, answered)
 		}
 	}
 	return answer
@@ -425,8 +434,9 @@ func TestThePrepareOperatorWritesTheCohort(t *testing.T) {
 }
 
 // A record moves only from the gen it names, a second insert of one is 409 gen_mismatch, and the
-// cohort's delete, hold abort's, deletes the cohort alone, while the journal stays; a delete naming
-// another hold id, or another kind, deletes nothing.
+// cohort's delete, hold abort's, deletes the cohort alone, while the journal stays, and keeps its
+// signed delete in nats_hold_record_deletes; a delete naming another hold id, or another kind,
+// deletes nothing and keeps nothing.
 func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 	rig := newHoldRig(t)
 	rig.bootstrap()
@@ -448,10 +458,25 @@ func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 		require(t, "a cohort delete naming another hold id", http.StatusConflict, "hold_mismatch")
 	rig.do(http.MethodDelete, rig.signedDelete("hold-a", "done", "hold", 2), op, nil).
 		require(t, "a delete of the journal", http.StatusBadRequest, "bad_request")
-	rig.do(http.MethodDelete, rig.signedDelete("hold-a", "cohort", "cohort", 1), op, nil).require(t, "the cohort's delete", http.StatusNoContent, "")
+	deleteCohort := rig.signedDelete("hold-a", "cohort", "cohort", 1)
+	rig.do(http.MethodDelete, deleteCohort, op, nil).require(t, "the cohort's delete", http.StatusNoContent, "")
 	if cohorts, journals := rig.count(`select count(*) from nats_hold_records where kind = 'cohort'`),
 		rig.count(`select count(*) from nats_hold_records where kind = 'done'`); cohorts != 0 || journals != 1 {
 		t.Fatalf("after the cohort's delete %d cohort and %d journal records remain, want 0 and 1", cohorts, journals)
+	}
+	// The delete keeps the request's own signature, over the gen it deleted, for every replica's read.
+	deleted, err := url.Parse(deleteCohort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gen int64
+	var sig string
+	if err := rig.pool.QueryRow(context.Background(), `select gen, sig from nats_hold_record_deletes where hold_id = 'hold-a' and kind = 'cohort' and key = 'cohort'`).Scan(&gen, &sig); err != nil ||
+		gen != 1 || sig != deleted.Query().Get("sig") {
+		t.Fatalf("the cohort's delete kept gen %d and sig %q (%v), want gen 1 and the request's sig", gen, sig, err)
+	}
+	if kept := rig.count(`select count(*) from nats_hold_record_deletes`); kept != 1 {
+		t.Fatalf("the refused deletes and the cohort's delete kept %d delete rows, want 1", kept)
 	}
 }
 
@@ -608,12 +633,12 @@ func TestASeenRecordDeletedOutsideTheRoutesReadsAsUnknown(t *testing.T) {
 	}
 }
 
-// holdTables is every row of the hold's four tables, as text, for a test that requires a refused
+// holdTables is every row of the hold's five tables, as text, for a test that requires a refused
 // call to change none.
 func (r *holdRig) holdTables() string {
 	r.t.Helper()
 	var out strings.Builder
-	for _, table := range []string{"nats_hold", "nats_hold_log", "nats_hold_records", "nats_cutover"} {
+	for _, table := range []string{"nats_hold", "nats_hold_log", "nats_hold_records", "nats_hold_record_deletes", "nats_cutover"} {
 		rows, err := r.pool.Query(context.Background(), `select t::text from `+table+` t order by 1`)
 		if err != nil {
 			r.t.Fatal(err)
@@ -773,6 +798,14 @@ func TestTheHoldRoutesCarryTheirSignatures(t *testing.T) {
 	if refused.num("restore_gen") != int64(want) {
 		t.Fatalf("the restore's refusal names restore_gen %d (%s), want %d, one above the log's highest", refused.num("restore_gen"), refused.body, want)
 	}
+	// The log's latest entry is held, so a released restore, even signed at restore_gen, would free
+	// every client mid-hold: it is refused and writes nothing.
+	before := rig.holdTables()
+	rig.do(http.MethodPost, "/v1/nats-hold/restore", op, rig.restoreBody(uint64(refused.num("restore_gen")), "released", "")).
+		require(t, "a released restore at restore_gen after a held entry", http.StatusBadRequest, "bad_transition")
+	if after := rig.holdTables(); after != before {
+		t.Fatalf("the refused released restore changed the hold's tables:\n%s\nwant\n%s", after, before)
+	}
 	again := rig.do(http.MethodPost, "/v1/nats-hold/restore", op, rig.restoreBody(uint64(refused.num("restore_gen")), "held", "hold-s")).
 		require(t, "the restore signed afresh at restore_gen", http.StatusOK, "")
 	againAt, err := time.Parse(time.RFC3339Nano, again.str("signed_at"))
@@ -780,4 +813,36 @@ func TestTheHoldRoutesCarryTheirSignatures(t *testing.T) {
 		t.Errorf("the restore answers signed_at %q, which is no RFC 3339 time: %v", again.str("signed_at"), err)
 	}
 	rig.requireSigned("the restored row", again.fields, signedrecord.HoldRow(uint64(again.num("gen")), again.str("phase"), again.str("hold_id"), againAt))
+}
+
+// A hold route's refusal of a body that does not decode names the field and the kind of failure,
+// never the value: a records PUT whose expected_gen is a number out of range, and one whose body
+// is not JSON, are each 400 bad_request, and the message holds no part of the value, which the
+// operator's commands copy into their own errors. The routes store nothing.
+//
+// Run by hand, the control is the routes at bb2b623923, which echo json's message: `body must be
+// one valid JSON object: json: cannot unmarshal number 1844674407370955161600123456789 into Go
+// struct field holdRecordBody.expected_gen of type int64`.
+func TestAHoldBodyRefusalNamesNoValue(t *testing.T) {
+	rig := newHoldRig(t)
+	op := rig.operator()
+	rig.bootstrap()
+	rig.move(1, "prepare", "hold-v")
+	before := rig.holdTables()
+	const canary = "1844674407370955161600123456789"
+	body := rig.recordBody("hold-v", "cohort", "cohort", 0, `{"sessions":[]}`)
+	body["expected_gen"] = json.Number(canary)
+	refused := rig.do(http.MethodPut, "/v1/nats-hold/records", op, body).
+		require(t, "a records PUT whose expected_gen is out of range", http.StatusBadRequest, "bad_request")
+	if message := refused.str("message"); strings.Contains(message, canary) || !strings.Contains(message, `"expected_gen"`) {
+		t.Errorf("the refusal's message is %q: it holds the value, or names no field", message)
+	}
+	notJSON := rig.doRaw(http.MethodPut, "/v1/nats-hold/records", op, []byte(`{"hold_id":"hold-v","kind":CANARY-BARE-4f1c}`)).
+		require(t, "a records PUT that is not JSON", http.StatusBadRequest, "bad_request")
+	if message := notJSON.str("message"); strings.Contains(message, "CANARY") || strings.Contains(message, "'C'") || !strings.Contains(message, "byte") {
+		t.Errorf("the refusal's message is %q: it holds part of the value, or names no byte", message)
+	}
+	if after := rig.holdTables(); after != before {
+		t.Fatalf("a refused body changed the hold's tables:\nbefore %s\nafter %s", before, after)
+	}
 }

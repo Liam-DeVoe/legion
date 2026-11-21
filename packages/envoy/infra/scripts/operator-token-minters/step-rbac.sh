@@ -19,10 +19,20 @@ elif ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json
 else
   mark
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
-  # list one, the full list's label stays.
+  # list one, the full list's label stays; and the custom resources' and the admission resources'
+  # rights, from this cluster's discovery.
   rights="$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")"
   custom_rights "$KUBE" plain || unknown "$step" "$CUSTOM_ERROR"
   rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
+  admission_rights "$KUBE" || unknown "$step" "$ADMISSION_ERROR"
+  rights="$(with_rights "$rights" "$ADMISSION_RIGHTS")"
+  # Each token Secret a guarded pair's ServiceAccount lists (its `secrets`), by name: a review that
+  # names no Secret is refused for a get limited to the name, and the Secret holds the pair's token.
+  rights="$(with_rights "$rights" "$(jq -c '[.items[]?
+      | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
+      | .metadata.namespace as $ns | (.secrets // [])[] | .name as $n
+      | {verb: "get", group: "", resource: "secrets", sub: "", ns: $ns, name: $n, label: "get secrets \($n) in \($ns)"}
+      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}")")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
@@ -66,9 +76,11 @@ else
   # Groups that are not Kubernetes' own, judged by where this cluster takes its groups from, and
   # every binding of system:masters but the bootstrap one.
   groups_verdict "$step" "${GROUPS_CONFIG["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+  settings_verdict "$step" "${CLUSTER_SETTINGS["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}"
   masters_bindings "$step" "" "cluster:$CLUSTER"
   # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
-  # and user by name, and escalate, bind, update or patch each role bound to a reviewed principal.
+  # and user by name, bind and escalate every binding's role and patch and update every binding by
+  # name, and update or patch each role bound to a reviewed principal.
   named_rights
   rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system

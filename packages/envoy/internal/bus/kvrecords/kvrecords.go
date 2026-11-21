@@ -15,6 +15,9 @@
 // The copy is signed with the operator's hold key (signedrecord.RecordsManifest): the manifest
 // names the records file's SHA-256, and the signature covers the manifest, so a copy that anyone
 // who can write its directory rewrites, all three files agreeing with each other, does not read.
+// An older copy the operator signed verifies as well, so a copy is read only under its name, the
+// manifest's SHA-256 (Manifest.ManifestSHA256), which its writer records where the operator signs
+// (the hold's selection record), and a copy put in another's place does not read.
 //
 // Every stored message is in the copy, whatever its key: the sentinel envoy.bucket, each hold's
 // hold.barrier.<hold id>, each listener durable's record durable.<name>, and any other key. A
@@ -160,6 +163,11 @@ type Manifest struct {
 	// stopped on it would let that grant block every copy. It is [] when there is none, and the
 	// manifest's signature covers it.
 	Foreign []ForeignMessage `json:"foreign"`
+	// ManifestSHA256 is the hex SHA-256 of manifest.json's bytes, the copy's name: it is in no
+	// file of the copy. Write gives it, its caller records it beside the copy where the operator
+	// signs (the hold's selection record), and Read reads a copy only under it, since an older copy
+	// the operator signed verifies as well as the newest does.
+	ManifestSHA256 string `json:"-"`
 }
 
 // ForeignMessage is a stored message of the bucket's stream whose subject is no key of the bucket.
@@ -225,11 +233,12 @@ var lineFields = []string{"seq", "subject", "key", "time", "headers", "data"}
 // decodeLine is the record raw, one line of records.jsonl, holds, its time and data decoded and
 // nothing else checked. It refuses a line that leaves out one of lineFields, or gives it as null,
 // naming the field: decoded into line alone, such a line would read as the field's zero, a line
-// with no data as an empty value.
+// with no data as an empty value. Its errors name the field and the kind of failure, never the
+// value (jsonFault).
 func decodeLine(raw []byte) (Record, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return Record{}, err
+		return Record{}, fmt.Errorf("it %s", jsonFault(err))
 	}
 	for _, name := range lineFields {
 		if value, ok := fields[name]; !ok || string(value) == "null" {
@@ -238,18 +247,45 @@ func decodeLine(raw []byte) (Record, error) {
 	}
 	var entry line
 	if err := json.Unmarshal(raw, &entry); err != nil {
-		return Record{}, err
+		if errors.Is(err, errBadHeaders) {
+			return Record{}, err
+		}
+		return Record{}, fmt.Errorf("it %s", jsonFault(err))
 	}
 	stored, err := time.Parse(time.RFC3339Nano, entry.Time)
 	if err != nil {
-		return Record{}, fmt.Errorf("its time: %w", err)
+		return Record{}, fmt.Errorf("its %q is not an RFC 3339 time", "time")
 	}
 	payload, err := base64.StdEncoding.DecodeString(entry.Data)
 	if err != nil {
-		return Record{}, fmt.Errorf("its data is not base64: %w", err)
+		return Record{}, fmt.Errorf("its %q is not base64: %w", "data", err)
 	}
 	return Record{Seq: entry.Seq, Subject: entry.Subject, Key: entry.Key, Time: stored, Headers: entry.Headers, Data: payload}, nil
 }
+
+// jsonFault is err, a JSON decoder's, as the kind of failure alone: a syntax error at its byte, a
+// field whose value does not decode to its Go type, or JSON that is not an object. It never holds
+// the value: json's message for a number out of range holds the number's digits, and its message
+// for a syntax error a character of the input, and a records line, a manifest and a server's
+// answer are each a record's data or describe it.
+func jsonFault(err error) string {
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntax):
+		return fmt.Sprintf("is not JSON: a syntax error at byte %d", syntax.Offset)
+	case errors.As(err, &typed) && typed.Field != "":
+		return fmt.Sprintf("holds a %q that does not decode to Go %s", typed.Field, typed.Type)
+	case errors.As(err, &typed):
+		return "is not a JSON object"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "is not JSON: it ends early"
+	}
+	return "does not decode as JSON"
+}
+
+// errBadHeaders is a records line whose headers are not an object of names to lists of strings.
+var errBadHeaders = errors.New(`its "headers" do not decode`)
 
 // MarshalJSON writes the headers as an object of name to values, in their order.
 func (h Headers) MarshalJSON() ([]byte, error) {
@@ -272,32 +308,33 @@ func (h Headers) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON reads the headers object, keeping its order, and refuses a name given twice or a
-// value list that is not a list of strings.
+// value list that is not a list of strings. Its errors (errBadHeaders) name the header, never its
+// values.
 func (h *Headers) UnmarshalJSON(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		return errors.New("the headers are not a JSON object")
+		return fmt.Errorf("%w: they are not a JSON object", errBadHeaders)
 	}
 	headers := Headers{}
 	seen := map[string]bool{}
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: they are not a JSON object of names to lists of strings", errBadHeaders)
 		}
 		name, _ := token.(string)
 		if seen[name] {
-			return fmt.Errorf("the header %q is given twice", name)
+			return fmt.Errorf("%w: the header %q is given twice", errBadHeaders, name)
 		}
 		seen[name] = true
 		var values []string
 		if err := decoder.Decode(&values); err != nil {
-			return fmt.Errorf("the header %q's values are not a list of strings: %w", name, err)
+			return fmt.Errorf("%w: the header %q's values are not a list of strings", errBadHeaders, name)
 		}
 		headers = append(headers, Header{Name: name, Values: values})
 	}
 	if _, err := decoder.Token(); err != nil {
-		return err
+		return fmt.Errorf("%w: they are not a JSON object of names to lists of strings", errBadHeaders)
 	}
 	*h = headers
 	return nil
@@ -321,7 +358,8 @@ func (h Headers) Block() []byte {
 }
 
 // parseBlock reads a stored message's header block: its version line, then each "name: value"
-// line, its names kept as written and grouped in the order each first appears.
+// line, its names kept as written and grouped in the order each first appears. Its errors name
+// the line, never its text, which holds a header's value.
 func parseBlock(block []byte) (Headers, error) {
 	headers := Headers{}
 	if len(block) == 0 {
@@ -329,16 +367,16 @@ func parseBlock(block []byte) (Headers, error) {
 	}
 	lines := strings.Split(string(block), "\r\n")
 	if !strings.HasPrefix(lines[0], "NATS/1.0") {
-		return nil, fmt.Errorf("the header block opens %q, not NATS/1.0", lines[0])
+		return nil, errors.New("the header block opens with no NATS/1.0 version line")
 	}
 	index := map[string]int{}
-	for _, line := range lines[1:] {
+	for number, line := range lines[1:] {
 		if line == "" {
 			continue
 		}
 		name, value, ok := strings.Cut(line, ":")
 		if !ok || name == "" {
-			return nil, fmt.Errorf("the header line %q holds no name", line)
+			return nil, fmt.Errorf("the header block's line %d holds no header name", number+2)
 		}
 		value = strings.TrimSpace(value)
 		if at, seen := index[name]; seen {
@@ -371,13 +409,13 @@ func request(ctx context.Context, nc *nats.Conn, subject string, body []byte, ou
 		Error *apiError `json:"error"`
 	}
 	if err := json.Unmarshal(msg.Data, &answer); err != nil {
-		return nil, fmt.Errorf("kvrecords: %s answered no JSON: %w", subject, err)
+		return nil, fmt.Errorf("kvrecords: %s's answer %s", subject, jsonFault(err))
 	}
 	if answer.Error != nil {
 		return answer.Error, nil
 	}
 	if err := json.Unmarshal(msg.Data, out); err != nil {
-		return nil, fmt.Errorf("kvrecords: %s: %w", subject, err)
+		return nil, fmt.Errorf("kvrecords: %s's answer %s", subject, jsonFault(err))
 	}
 	return nil, nil
 }
@@ -405,9 +443,13 @@ func streamState(ctx context.Context, nc *nats.Conn, stream string) (first, last
 // every sequence from first_seq to last_seq in order, then reads the info again and walks on to
 // the new last_seq, until a pass ends at the last_seq it began with, within the walk's bounds. A
 // sequence answered 10037, no message found, is left out, and a message whose subject is no key of
-// the bucket is listed in the manifest's Foreign and has no record; any other error, or a walk past
-// its bounds, stops the walk, and nothing is written. The files are written into a directory of
-// their own beside dir and moved to dir whole.
+// the bucket is listed in the manifest's Foreign and has no record; any other error, a last_seq that
+// fell during the walk (the stream made again), or a walk past its bounds, stops the walk, and
+// nothing is written. A writer that keeps last_seq moving, which any grant holding a JetStream
+// request can do by naming a key of the bucket as a request's reply, so makes the walk fail at its
+// bound: it fails closed, with no copy, and the copy is taken again or under a hold. The files are
+// written into a directory of their own beside dir and moved to dir whole. The manifest it answers
+// names the copy by its ManifestSHA256, which a reader passes to Read.
 func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.PrivateKey) (Manifest, error) {
 	if len(key) != ed25519.PrivateKeySize {
 		return Manifest{}, fmt.Errorf("kvrecords: the signing key holds %d bytes, not an Ed25519 private key's %d", len(key), ed25519.PrivateKeySize)
@@ -434,7 +476,8 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.P
 	}
 	manifestJSON = append(manifestJSON, '\n')
 	manifestSum := sha256.Sum256(manifestJSON)
-	sums := fmt.Sprintf("%s  %s\n%s  %s\n", hex.EncodeToString(manifestSum[:]), ManifestFile, manifest.RecordsSHA256, RecordsFile)
+	manifest.ManifestSHA256 = hex.EncodeToString(manifestSum[:])
+	sums := fmt.Sprintf("%s  %s\n%s  %s\n", manifest.ManifestSHA256, ManifestFile, manifest.RecordsSHA256, RecordsFile)
 	sig, err := signedrecord.Sign(key, signedrecord.RecordsManifest(manifestJSON))
 	if err != nil {
 		return Manifest{}, fmt.Errorf("kvrecords: sign the manifest: %w", err)
@@ -519,7 +562,11 @@ func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if last <= manifest.LastSeq {
+		switch {
+		case last < manifest.LastSeq:
+			return nil, fmt.Errorf("kvrecords: %s's last_seq fell from %d to %d during the walk: the stream was made again or lost messages, so the walk is of no one stream",
+				stream, manifest.LastSeq, last)
+		case last == manifest.LastSeq:
 			return records.Bytes(), nil
 		}
 		if pass == 1 {
@@ -537,14 +584,17 @@ func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error
 	}
 }
 
-// Read reads and checks the copy in dir against keys, the operator's public hold keys, refusing,
-// naming what failed: a missing file; a SHA256SUMS line that does not match its file; a signature
-// no key of keys verifies over the manifest; a format other than Format; a stream other than the
-// bucket's, KV_<bucket>; a record count or records sum the manifest gives that disagrees with
-// records.jsonl; a sequence that does not increase or falls outside first_seq..last_seq; a subject
-// that is not one of the manifest's bucket's keys, or whose key disagrees with the record's key; an
-// empty key; and data that is not base64.
-func Read(dir string, keys []ed25519.PublicKey) (Manifest, []Record, error) {
+// Read reads and checks the copy in dir, the one named manifestSHA256, of bucket, against keys, the
+// operator's public hold keys, refusing, naming what failed: a missing file; a SHA256SUMS line that
+// does not match its file; a manifest.json other than the one named, an older copy the operator
+// signed among them, or no name at all; a signature no key of keys verifies over the manifest; a
+// format other than Format; a copy of another bucket than bucket; a stream other than the bucket's,
+// KV_<bucket>; a record count or records sum the manifest gives that disagrees with records.jsonl;
+// a sequence that does not increase or falls outside first_seq..last_seq; a subject that is not one
+// of the manifest's bucket's keys, or whose key disagrees with the record's key; an empty key; a
+// field missing; and data that is not base64. An error names the file and its line, the record's
+// sequence, subject or key, and the field, never a value the copy holds.
+func Read(dir, bucket string, keys []ed25519.PublicKey, manifestSHA256 string) (Manifest, []Record, error) {
 	files := map[string][]byte{}
 	for _, name := range []string{SumsFile, ManifestFile, RecordsFile, SignatureFile} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -556,23 +606,34 @@ func Read(dir string, keys []ed25519.PublicKey) (Manifest, []Record, error) {
 	if err := checkSums(files); err != nil {
 		return Manifest{}, nil, err
 	}
+	manifestSum := sha256.Sum256(files[ManifestFile])
+	switch {
+	case manifestSHA256 == "":
+		return Manifest{}, nil, fmt.Errorf("kvrecords: the caller names no %s SHA-256, so no copy is the one it means", ManifestFile)
+	case hex.EncodeToString(manifestSum[:]) != manifestSHA256:
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s is not the copy the caller names: its SHA-256 is not the one recorded, as an older copy's is not", ManifestFile)
+	}
 	sig := strings.TrimSuffix(string(files[SignatureFile]), "\n")
 	if err := signedrecord.Verify(keys, sig, signedrecord.RecordsManifest(files[ManifestFile])); err != nil {
 		return Manifest{}, nil, fmt.Errorf("kvrecords: %s does not verify %s with any of the %d operator keys: %w", SignatureFile, ManifestFile, len(keys), err)
 	}
 	var manifest Manifest
 	if err := json.Unmarshal(files[ManifestFile], &manifest); err != nil {
-		return Manifest{}, nil, fmt.Errorf("kvrecords: %s: %w", ManifestFile, err)
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s %s", ManifestFile, jsonFault(err))
 	}
+	manifest.ManifestSHA256 = manifestSHA256
 	if manifest.Format != Format {
-		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names the format %q, not %q", ManifestFile, manifest.Format, Format)
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names a format other than %q", ManifestFile, Format)
 	}
-	if manifest.Bucket == "" || manifest.Stream != "KV_"+manifest.Bucket {
-		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names the stream %q, not %q, the stream of the bucket %q", ManifestFile, manifest.Stream, "KV_"+manifest.Bucket, manifest.Bucket)
+	if manifest.Bucket != bucket {
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s is a copy of another bucket than %q", ManifestFile, bucket)
+	}
+	if manifest.Stream != "KV_"+manifest.Bucket {
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names a stream other than its bucket's, KV_<bucket>", ManifestFile)
 	}
 	recordsSum := sha256.Sum256(files[RecordsFile])
-	if got := hex.EncodeToString(recordsSum[:]); got != manifest.RecordsSHA256 {
-		return Manifest{}, nil, fmt.Errorf("kvrecords: %s gives records_sha256 %s, and %s's sum is %s", ManifestFile, manifest.RecordsSHA256, RecordsFile, got)
+	if hex.EncodeToString(recordsSum[:]) != manifest.RecordsSHA256 {
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s gives a records_sha256 that is not %s's sum", ManifestFile, RecordsFile)
 	}
 	records, err := readRecords(files[RecordsFile], manifest)
 	if err != nil {
@@ -585,7 +646,7 @@ func Read(dir string, keys []ed25519.PublicKey) (Manifest, []Record, error) {
 }
 
 // checkSums holds SHA256SUMS to its two lines, manifest.json's then records.jsonl's, each naming
-// its file's sum.
+// its file's sum. Its errors name the line, never its text.
 func checkSums(files map[string][]byte) error {
 	lines := strings.Split(strings.TrimSuffix(string(files[SumsFile]), "\n"), "\n")
 	want := []string{ManifestFile, RecordsFile}
@@ -595,11 +656,11 @@ func checkSums(files map[string][]byte) error {
 	for index, line := range lines {
 		sum, name, ok := strings.Cut(line, "  ")
 		if !ok || name != want[index] {
-			return fmt.Errorf("kvrecords: %s line %d is %q, not the sum of %s", SumsFile, index+1, line, want[index])
+			return fmt.Errorf("kvrecords: %s line %d is not the sum of %s", SumsFile, index+1, want[index])
 		}
 		got := sha256.Sum256(files[name])
 		if hex.EncodeToString(got[:]) != sum {
-			return fmt.Errorf("kvrecords: %s names %s for %s, whose sum is %s", SumsFile, sum, name, hex.EncodeToString(got[:]))
+			return fmt.Errorf("kvrecords: %s names a sum for %s that is not its sum", SumsFile, name)
 		}
 	}
 	return nil
