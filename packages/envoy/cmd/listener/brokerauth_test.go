@@ -139,10 +139,10 @@ func readOnlyAnswer(session, service, jkt string) ciphertoken.Introspection {
 	}
 }
 
-// resultsAnswer is the broker's answer about a token a result entry minted for one CI run, the one
-// token Dispatch's results route takes: the one scope results, the project scope results, a
-// person, one project, and the whole run (internal/cipher/oauth,
-// TestAResultEntrysRunIntrospectsWithItsRun). The listener's verifier is built without the switch
+// resultsAnswer is the broker's answer about a results token it minted for one CI run's result
+// grant, the one token Dispatch's results route takes: the one scope results, the project scope
+// results, a person, one project, and the whole run (internal/cipher/oauth,
+// TestAResultGrantHoldsItsRun). The listener's verifier is built without the switch
 // that serves one (ciphertoken.Options.ServesResults), so such a token is no session's credential
 // here.
 func resultsAnswer(session, jkt string) ciphertoken.Introspection {

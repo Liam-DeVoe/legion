@@ -86,6 +86,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AIRLOCK_TEST_NO_KIND":         givesNone("a test-only switch"),
 	"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY": givesNone("a test-only host"),
 	"BROKER_JUDGE_TEST_SKIP_CHECKS":       givesNone("a test-only switch"),
+	"BROKER_RESULT_GRANT_TEST_SECONDS":    givesNone("a test-only lifetime"),
 
 	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
 	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),

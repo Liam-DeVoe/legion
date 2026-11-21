@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sjawhar/envoy/internal/cipher/resultgrant"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -31,9 +30,7 @@ import (
 )
 
 type Deps struct {
-	// ResultGrants holds the CI capability and its DPoP key in this pod, not the command.
-	ResultGrants *resultgrant.Manager
-	PublicURL    string
+	PublicURL string
 	// APIAccounts is the Kubernetes half of BROKER_API_ACCOUNTS: the ServiceAccount subject of
 	// each listed caller of the routes accountAuth authenticates, answering that caller — its
 	// name and the powers its name carries (AccountFor, which is the only way to build one). A

@@ -288,7 +288,15 @@ export async function startCIResultsStack(options: {
     writeFileSync(
       rulesFile,
       JSON.stringify({
-        secrets: [{ name: "DISPATCH_RESULTS_TOKEN", kind: "dpop", hosts: [tls.host] }],
+        secrets: [
+          {
+            name: "DISPATCH_RESULTS_TOKEN",
+            kind: "dpop",
+            hosts: [tls.host],
+            headers: ["Authorization"],
+            allow: [{ method: "POST", pathPrefix: "/api/v1/projects/" }],
+          },
+        ],
       })
     );
     const brokerLog = path.join(work, "broker.log");

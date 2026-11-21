@@ -18,7 +18,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/sjawhar/envoy/cipheraddr"
 	"io"
 	"log/slog"
 	"maps"
@@ -53,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -61,7 +61,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/reread"
-	"github.com/sjawhar/envoy/internal/cipher/resultgrant"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -228,6 +227,12 @@ func main() {
 	// operator believes are in force. The file is read once; a change to it rolls the pods.
 	rules, err := readAirlockRules(cfg.AirlockRulesFile)
 	fatal(err)
+	// A broker with result entries starts only with the rules entry their grants are held to
+	// (config.ResultEntryRules): without it a run's placeholder would open nothing, or every route
+	// of Dispatch's host.
+	if len(cfg.ExchangeResultWorkflows) > 0 {
+		fatal(config.ResultEntryRules(rules))
+	}
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name the rules hold back hands
@@ -594,6 +599,7 @@ func main() {
 		RefreshLifetime: credentialLifetime, VerificationURL: cfg.MachineLoginURL,
 		ProofSkew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		Exchange:  exchangeConfig,
+		Airlock:   resultAirlock(cfg, rules, airlockCACertificate),
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
@@ -678,11 +684,6 @@ func main() {
 	if discovered.GoogleIdentities != nil {
 		googleCallers = api.GoogleTokens{Verifier: discovered.GoogleIdentities}
 	}
-	var resultGrants *resultgrant.Manager
-	if rules.Bound(resultgrant.Name) != nil {
-		resultGrants, err = resultgrant.New(resultgrant.Options{BrokerURL: cipheraddr.New(cfg.PublicURL), ProxyURL: cfg.AirlockProxyURL, CACertificate: airlockCACertificate, Rules: rules, Fallback: reqMachine, Introspect: provider.Introspect})
-		fatal(err)
-	}
 	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
 	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
 	detached := &api.Detached{}
@@ -691,8 +692,7 @@ func main() {
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
-		ResultGrants: resultGrants,
-		OAuth:        provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
+		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
 		SecretsKMSKey:          cfg.SecretsKMSKey,
@@ -730,13 +730,9 @@ func main() {
 	// its AirlockConnection and AirlockValues - and the authority built at the top of main.
 	var proxyServer *proxy.Server
 	if started.AirlockListener != nil {
-		var grantSource proxy.GrantSource = reqMachine
-		if resultGrants != nil {
-			grantSource = resultGrants
-		}
 		proxyServer = proxy.New(proxy.Options{
 			Rules:  rules,
-			Grants: grantSource,
+			Grants: reqMachine,
 			CA:     airlockCA,
 			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
 			Log:    slog.Default(),
@@ -983,10 +979,11 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
-// a local run, as the port-0 refusal above does and for the same reason: each of them points
-// the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
-// a check the airlock or the judge is made of, so one reaching a real deployment must fail
+// settings, the airlock's eight, the result grant's one and the judge's one, unless
+// BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and for the
+// same reason: each of them points the broker at a stand-in, lets it dial an address no
+// production proxy may dial, shortens a grant below what production gives it, or turns off a
+// check the airlock or the judge is made of, so one reaching a real deployment must fail
 // loudly at boot rather than quietly serve a broker that is not the one the operator
 // configured. The refusal names the variable it found, since an operator reads which of its
 // settings it has to take out. Extracted from main so a test can drive it directly instead of
@@ -1007,6 +1004,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
+		{"BROKER_RESULT_GRANT_TEST_SECONDS", cfg.ResultGrantTestSeconds != 0},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -1014,6 +1012,22 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		}
 	}
 	return nil
+}
+
+// resultAirlock is what the token endpoint hands a result entry's run beside its placeholder
+// (oauth.AirlockSettings): the proxy's URL, the authority's certificate, the hosts the rules entry
+// DISPATCH_RESULTS_TOKEN binds, and the local stack's BROKER_RESULT_GRANT_TEST_SECONDS. nil when
+// the rules bind no such entry, so the provider grants no run a placeholder.
+func resultAirlock(cfg config.Config, rules proxyrules.Rules, caCertificate string) *oauth.AirlockSettings {
+	entry := rules.Bound(oauthwire.AirlockResultsName)
+	if entry == nil {
+		return nil
+	}
+	return &oauth.AirlockSettings{
+		ProxyURL: cfg.AirlockProxyURL, CACertificatePEM: caCertificate,
+		ResultHosts:   slices.Clone(entry.Hosts),
+		GrantLifetime: time.Duration(cfg.ResultGrantTestSeconds) * time.Second,
+	}
 }
 
 // readAirlockTestUpstreamRoots is the trust store the proxy verifies a service's certificate

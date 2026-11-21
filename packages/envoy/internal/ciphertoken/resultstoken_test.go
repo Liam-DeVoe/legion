@@ -13,11 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
-// resultsToken is the answer a token a result entry minted gets
+// resultsToken is the answer a results token the broker minted for a result entry's grant gets
 // (BROKER_EXCHANGE_RESULT_WORKFLOWS): the one scope results, the project scope results, the
-// entry's person and project, the session of its workflow, and the run it was minted for. It is
-// the answer the broker's own test holds an exchanged results token to (internal/cipher/oauth,
-// TestAResultEntrysRunIntrospectsWithItsRun).
+// entry's person and project, the session of its workflow, and the run it was granted for. They
+// are the claims the broker's own test holds a result grant to (internal/cipher/oauth,
+// TestAResultGrantHoldsItsRun).
 func resultsToken(jkt string, life time.Duration) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
 		Active:       true,

@@ -32,10 +32,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -723,25 +726,36 @@ type Config struct {
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_EXCHANGE_RESULT_WORKFLOWS: the GitHub workflows whose runs exchange their token for
-	// one that writes only the results of their project's spec checks, whitespace-separated
-	// <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, such as
+	// an airlock placeholder through which they write only the results of their project's spec
+	// checks, whitespace-separated <repository>=<workflow path>=<ref pattern>=<project>=<person>
+	// entries, such as
 	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com.
 	// The repository and the path are compared exactly, and the ref pattern is matched as
 	// path.Match reads one, a "*" standing for one segment of the ref and never a "/", so
 	// refs/heads/* takes every branch with no "/" in its name and refs/heads/*/* every branch with
-	// one. Its first two segments are literal: refs/ and a kind of ref, such as refs/heads/. The
-	// token minted for a run holds only the OAuth scope results and the project scope results,
-	// acts for that person, writes under the session ci-results:<repository>/<workflow path>,
-	// and carries the run its GitHub token names: its commit, its event, its run and attempt,
-	// its runner, and the check run of its job, which every such token must carry. Dispatch
-	// serves it on the routes its results list names, and every other service that reads the
-	// broker's tokens, the Envoy listener among them, refuses it. One workflow may be listed
-	// under several patterns, and a run whose ref two of them match is refused; a workflow
-	// listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are refused.
-	// Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its
-	// runs present. A broker of a build older than this setting does not read it, so it mints
-	// those runs no token at all. Unset, no run exchanges for a results token.
+	// one. Its first two segments are literal: refs/ and a kind of ref, such as refs/heads/. Such a
+	// run asks for requested_token_type urn:envoy:params:oauth:token-type:airlock-placeholder and is
+	// granted a placeholder and a result grant, never an access token: the grant holds only the
+	// OAuth scope results and the project scope results, acts for that person, writes under the
+	// session ci-results:<repository>/<workflow path>, and carries the run its GitHub token names:
+	// its commit, its event, its run and attempt, its runner, and the check run of its job, which
+	// every such grant must carry. The airlock proxy puts a results token the broker mints from the
+	// grant, and a DPoP proof of the broker's own key, into each write the rules entry
+	// DISPATCH_RESULTS_TOKEN allows, so no process of the job holds a Dispatch credential.
+	// Dispatch serves that token on the routes its results list names, and every other service
+	// that reads the broker's tokens, the Envoy listener among them, refuses it. One workflow may
+	// be listed under several patterns, and a run whose ref two of them match is refused; a
+	// workflow listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are
+	// refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens
+	// its runs present, and BROKER_AIRLOCK_RULES_FILE, whose DISPATCH_RESULTS_TOKEN entry the start
+	// checks (ResultEntryRules). Unset, no run is granted a placeholder.
 	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
+	// BROKER_RESULT_GRANT_TEST_SECONDS: how long a result grant lasts, 1 to 900 seconds, in place
+	// of the production lifetime (fifteen minutes, or BROKER_ACCESS_TOKEN_SECONDS when that is
+	// shorter), so a local stack can watch a grant end. Unset, it is 0 and the production lifetime
+	// holds. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	ResultGrantTestSeconds int
 	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
 	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
 	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
@@ -1907,6 +1921,31 @@ func parseExchangeResultWorkflows(setting, value string) ([]exchange.ResultWorkf
 	return entries, nil
 }
 
+// ResultEntryRules checks the airlock rules a broker with BROKER_EXCHANGE_RESULT_WORKFLOWS starts
+// with: they hold the entry DISPATCH_RESULTS_TOKEN, which binds a host, is of kind dpop, has a
+// non-empty allow list and is carried in the Authorization header alone (an entry naming no
+// headers carries the default, Authorization). Without that entry a result entry's run would be
+// granted a placeholder that no proxy honours, or one that opens every route of Dispatch's host.
+// The refusal names the entry and what it lacks. The caller reads the rules file; Load reads none.
+func ResultEntryRules(rules proxyrules.Rules) error {
+	name := oauthwire.AirlockResultsName
+	entry := rules.Lookup(name)
+	switch {
+	case entry == nil:
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s, and BROKER_AIRLOCK_RULES_FILE holds no entry of that name", name)
+	case len(entry.Hosts) == 0:
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to bind Dispatch's host, and it binds no host", name)
+	case entry.Kind != proxyrules.KindDPoP:
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s of kind %s, a capability the broker mints and holds, and its kind is %q", name, proxyrules.KindDPoP, entry.Kind)
+	case len(entry.Allow) == 0:
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to have a non-empty allow list naming the results routes, and it has none", name)
+	}
+	if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s carried in the Authorization header alone, and it names the headers %q", name, headers)
+	}
+	return nil
+}
+
 // databasePasswordPlaceholder is the removed BROKER_DATABASE_PASSWORD's placeholder. Load refuses a
 // BROKER_DATABASE_URL that names it, as it refuses the variable, rather than sign in with it as a
 // literal password.
@@ -2460,6 +2499,13 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
+	// A result entry's run is granted a placeholder that only the airlock's rules entry
+	// DISPATCH_RESULTS_TOKEN makes worth anything, so a broker with result workflows and no rules
+	// file would grant placeholders no proxy honours. The entry itself is checked where the file is
+	// read (ResultEntryRules), since Load reads no file.
+	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.AirlockRulesFile == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_AIRLOCK_RULES_FILE: a result entry's run is granted an airlock placeholder, which the rules entry %s of kind %s makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.KindDPoP)
+	}
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
 	}
@@ -2521,6 +2567,7 @@ func Load(getenv func(string) string) (Config, error) {
 		{"BROKER_DRAIN_SECONDS", &cfg.DrainSeconds, 5, 0, 120},
 		{"BROKER_AIRLOCK_IDLE_SECONDS", &cfg.AirlockIdleSeconds, 300, 10, 3600},
 		{"BROKER_SIGNIN_SESSION_SECONDS", &sessionSeconds, 86400, 1, 86400},
+		{"BROKER_RESULT_GRANT_TEST_SECONDS", &cfg.ResultGrantTestSeconds, 0, 1, 900},
 	}
 	for _, i := range ints {
 		raw := getenv(i.name)

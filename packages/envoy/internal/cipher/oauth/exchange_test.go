@@ -449,63 +449,66 @@ func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 	}
 }
 
-// TestAResultEntrysRunIntrospectsWithItsRun: a run of the result entry's workflow is answered a
-// token that introspects as the scope results and the project scope results, the session and the
-// person the entry gives and its one project, and the run the token was minted for: its
-// repository, workflow, ref and commit, its event, its run and attempt, its runner and the check
-// run of its job.
-func TestAResultEntrysRunIntrospectsWithItsRun(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {})
-	key := newKey(t)
-	answer := f.introspected(t, f.exchanged(t, f.resultRunForm(t, "7"), key))
-	run := oauthwire.CIRun{
+// TestAResultGrantHoldsItsRun: a run of the result entry's workflow that asks for the airlock
+// placeholder is granted a row that holds the scope results and the project scope results, the
+// session and the person the entry gives and its one project, and the run its GitHub token names:
+// its repository, workflow, ref and commit, its event, its run and attempt, its runner and the
+// check run of its job. A results token the broker mints for the grant carries these claims.
+func TestAResultGrantHoldsItsRun(t *testing.T) {
+	f := newResultsFixture(t, func(*oauth.Config) {})
+	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), newKey(t)))
+	want := oauthwire.CIRun{
 		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
-	if answer.CI == nil || *answer.CI != run {
-		t.Fatalf("Introspect answered the run %+v, want %+v", answer.CI, run)
+	raw, err := json.Marshal(grant.Extra[oauth.ClaimCI])
+	if err != nil {
+		t.Fatal(err)
 	}
-	answer.CI = nil
-	want := oauthwire.Introspection{Active: true, Scope: "results", ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: resultsSession, Person: person, ProjectScope: "results", Projects: []string{project}, ExpiresAt: answer.ExpiresAt}
-	if !reflect.DeepEqual(answer, want) {
-		t.Errorf("Introspect = %+v, want %+v", answer, want)
+	var run oauthwire.CIRun
+	if err := json.Unmarshal(raw, &run); err != nil || run != want {
+		t.Fatalf("the grant holds the run %s (%v), want %+v", raw, err, want)
+	}
+	if grant.Session != resultsSession || !reflect.DeepEqual(grant.Scopes, []string{oauthwire.ScopeResults}) ||
+		grant.Extra[oauth.ClaimSession] != resultsSession || grant.Extra[oauth.ClaimPerson] != person ||
+		grant.Extra[oauth.ClaimProjectScope] != oauthwire.ProjectScopeResults || grant.Extra[oauth.ClaimProjects] != project {
+		t.Errorf("the grant = %+v, want session %s, the scope results, person %s, the project scope results and the project %s", grant, resultsSession, person, project)
 	}
 }
 
-// TestAResultsTokenIsNoSubjectTokenForAnotherExchange: a results token presented back to the
-// exchange as an access token, the subject type a dev box's machine login trades under, is
-// refused, and nothing is minted from it. Every token the exchange mints is issued to the
-// exchange client, and the library refuses a client the exchange of its own token
-// (rfc8693.validateExchangeTokenPolicy) with invalid_grant and the hint that says so, before any
-// decision of the broker's runs: the refusal is that one, and no later refusal of the broker's
-// (Set.Machine's invalid_request for a token that names no machine credential id) is reached. The
-// request asks under a session name of its own, so the claim on the results token's own session,
-// which another principal holds, is not what refuses it.
-func TestAResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {})
+// TestAResultPlaceholderIsNoSubjectToken: the placeholder a result entry's run is granted,
+// presented back to the exchange as an access token, is refused, and nothing is minted or granted
+// from it: the placeholder is no token the broker knows.
+func TestAResultPlaceholderIsNoSubjectToken(t *testing.T) {
+	f := newResultsFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
-	results := f.exchanged(t, f.resultRunForm(t, "7"), key)
-	before := f.count(t, "oauth_access_tokens")
-	status, body := f.exchange(t, exchangeForm(results, oauthwire.SubjectTokenTypeAccessToken, "a-session-of-its-own"), key)
-	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
-		t.Fatalf("an exchange of a results token = %d %v, want 400 invalid_grant and no access token", status, body)
+	held := f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), key)
+	tokens, grants := f.count(t, "oauth_access_tokens"), f.count(t, "result_grants")
+	for _, form := range []url.Values{
+		exchangeForm(held, oauthwire.SubjectTokenTypeAccessToken, "a-session-of-its-own"),
+		askingForThePlaceholder(exchangeForm(held, oauthwire.SubjectTokenTypeAccessToken, "a-session-of-its-own")),
+	} {
+		status, body := f.exchange(t, form, key)
+		if status != http.StatusBadRequest || body["access_token"] != nil {
+			t.Fatalf("an exchange of the placeholder asking for %q = %d %v, want 400 and nothing answered", form.Get("requested_token_type"), status, body)
+		}
 	}
-	const ownToken = "Clients are not allowed to perform a token exchange on their own tokens."
-	if hint, _ := body["error_description"].(string); !strings.Contains(hint, ownToken) {
-		t.Errorf("the refusal reads %q, which is not the library's refusal of a client's own token %q", hint, ownToken)
+	if after := f.count(t, "oauth_access_tokens"); after != tokens {
+		t.Errorf("access tokens after the refused exchanges = %d, want the %d there were", after, tokens)
 	}
-	if after := f.count(t, "oauth_access_tokens"); after != before {
-		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	if after := f.count(t, "result_grants"); after != grants {
+		t.Errorf("result grants after the refused exchanges = %d, want the %d there were", after, grants)
 	}
 }
 
 // TestARequestNamingTheResultsScopeIsRefusedUnderEveryEntry: the exchange client is not
 // registered for the scope results either, so the library refuses a request that names it
 // invalid_scope before the exchange decides anything, under a named entry, the read entry and the
-// result entry alike, and stores no token. The same request naming no scope is then answered, so
-// what refused it was the scope: the result entry grants results without being asked.
+// result entry asking for its placeholder alike, and stores no token. The same request naming no
+// scope is then answered, so what refused it was the scope: the result entry grants results
+// without being asked.
 func TestARequestNamingTheResultsScopeIsRefusedUnderEveryEntry(t *testing.T) {
-	f := newExchangeFixture(t, func(*oauth.Config) {})
+	f := newResultsFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	runs := 0
@@ -519,7 +522,7 @@ func TestARequestNamingTheResultsScopeIsRefusedUnderEveryEntry(t *testing.T) {
 		{name: "the read entry", form: f.readPodForm},
 		{name: "the result entry", form: func(t *testing.T) url.Values {
 			runs++
-			return f.resultRunForm(t, strconv.Itoa(runs))
+			return askingForThePlaceholder(f.resultRunForm(t, strconv.Itoa(runs)))
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1705,19 +1708,19 @@ func TestASignInTradeAsksNoMemberKind(t *testing.T) {
 
 // TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject: an operator's entry maps a token
 // to one project and one person, and the exchange holds that pairing to Dispatch at every trade,
-// for each of the three settings that write a named entry and for a result entry, whose results
-// token names its one project the same way.
+// for each of the three settings that write a named entry and for a result entry, whose grant
+// names its one project the same way.
 func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T) {
 	access := newFakeAccess()
 	access.sees[person] = []string{"PRIV"}
-	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	f := newResultsFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 	status, body = f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
-	status, body = f.exchange(t, f.resultRunForm(t, "8"), key)
+	status, body = f.exchange(t, askingForThePlaceholder(f.resultRunForm(t, "8")), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 
 	machines := newSignInFixtureWith(t, func(c *oauth.Config) {
@@ -1731,7 +1734,9 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
 	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
-	f.introspectsProjects(t, f.exchanged(t, f.resultRunForm(t, "9"), key), oauthwire.ProjectScopeResults, []string{project})
+	if grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "9")), key)); grant.Extra[oauth.ClaimProjectScope] != oauthwire.ProjectScopeResults || grant.Extra[oauth.ClaimProjects] != project {
+		t.Errorf("the result grant's project scope and projects = %v and %v, want %s and %s", grant.Extra[oauth.ClaimProjectScope], grant.Extra[oauth.ClaimProjects], oauthwire.ProjectScopeResults, project)
+	}
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
 

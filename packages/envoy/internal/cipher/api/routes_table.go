@@ -278,9 +278,6 @@ func routes() []apiRoute {
 		// Exchange an approved device code, or a refresh token, for a DPoP-bound token pair naming the
 		// machine login's launcher credential; mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/token", public((*server).oauthToken)},
-		// Trade a signed CI job identity for a short-lived results-only airlock placeholder.
-		// The broker retains the token and signing key; no enrollment or launcher credential is made.
-		{http.MethodPost, "/v1/oauth/result-grants", public((*server).createResultGrant)},
 		// Read one of the broker's access tokens back (RFC 7662): whether it is live and, when it
 		// is, the session, the person and the projects it carries, and the key it is bound to.
 		// Mounted only when the broker runs its OAuth provider.

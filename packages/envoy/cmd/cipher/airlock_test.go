@@ -17,7 +17,7 @@ import (
 )
 
 // testAirlockPlaceholder is one placeholder in the broker's own shape: its prefix and 32
-// characters of the alphabet requests.mintPlaceholder draws from.
+// characters of the alphabet placeholder.Mint draws from.
 const testAirlockPlaceholder = "agent-secrets-placeholder-aBcD1234aBcD1234aBcD1234aBcD1234"
 
 // testAirlockCertificate is the PEM the release carries as the proxy's certificate authority.

@@ -99,9 +99,9 @@ agent-secrets result-grant -- dispatch result --project ACME \
   --observed 'the command or evidence the job actually ran'
 ```
 
-The Go producer reads the job's signed GitHub identity and asks the broker for a short-lived results capability. The broker performs the existing OAuth exchange under a key generated inside its own process. It verifies that the resulting credential is results-only and bound to that key before it releases anything. The child receives `DISPATCH_RESULTS_TOKEN`, an airlock placeholder, and the normal proxy and certificate settings. It receives neither the Dispatch access token nor the DPoP private key.
+The Go producer reads the job's signed GitHub identity and trades it at the broker's token endpoint for an airlock placeholder (`requested_token_type=urn:envoy:params:oauth:token-type:airlock-placeholder`). The broker answers a result entry's run a placeholder and a result grant, which it keeps in its database, and never an access token: the same run asking for an access token is refused, and no other identity is granted a placeholder. The child receives `DISPATCH_RESULTS_TOKEN`, the placeholder, and the normal proxy and certificate settings. It receives neither a Dispatch access token nor a DPoP private key.
 
-The real airlock proxy substitutes the held token only at the configured Dispatch host and adds a fresh DPoP proof for the actual method and destination. A command-supplied proof or another access token cannot make it sign a different credential. A refused, expired or lost grant does not fall back to ordinary secret release or another identity. Grants belong to the issuing pod and last no longer than the token, introspection expiry or ten minutes, whichever ends first. A restarted or different pod refuses the old capability rather than silently changing its key.
+The real airlock proxy substitutes the held token only at the configured Dispatch host and adds a fresh DPoP proof for the actual method and destination. A command-supplied proof or another access token cannot make it sign a different credential. A refused, expired or lost grant does not fall back to ordinary secret release or another identity. A grant lives in the broker's database and lasts fifteen minutes, or the broker's access-token lifetime when that is shorter.
 
 ## Job and broker configuration
 
@@ -114,17 +114,18 @@ The job needs `id-token: write` and the GitHub runner's `ACTIONS_ID_TOKEN_REQUES
 
 A job whose runner writes its signed identity to a file can instead set `AGENT_SECRETS_MACHINE_TOKEN_FILE`. The Go identity source rereads it; no TypeScript metadata client trades this identity. Do not put a bearer, signing key or session login in the command's arguments. A personal `DISPATCH_TOKEN` is not a results credential and cannot replace the placeholder.
 
-The broker needs its result-workflow entry, the existing airlock proxy and certificate configuration, and a rule for the actual Dispatch host:
+The broker needs its result-workflow entry, the existing airlock proxy and certificate configuration, and a rule for the actual Dispatch host that allows the results write:
 
 ```json
 {
   "secrets": [
-    {"name": "DISPATCH_RESULTS_TOKEN", "kind": "dpop", "hosts": ["dispatch.example.com"]}
+    {"name": "DISPATCH_RESULTS_TOKEN", "kind": "dpop", "hosts": ["dispatch.example.com"],
+     "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}
   ]
 }
 ```
 
-The rule carries the placeholder only in `Authorization`. It does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a results capability through this endpoint. Use HTTPS outside the isolated loopback test environment.
+The rule carries the placeholder only in `Authorization`, and the proxy sends only the requests its allow list names. The broker refuses to start with a result-workflow entry and no such rule: of kind `dpop`, binding a host, with a non-empty allow list and `Authorization` as its one header. The rule does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a placeholder through this endpoint. Use HTTPS outside the isolated loopback test environment.
 
 A failure to prove the job, trade its token or obtain the required scope runs no child command. The producer prints one safe diagnostic. A failure after the child sends its result follows the normal keyed-write rules: matching successful answers settle the call, a committed write with a lost answer is a landing, and an uncertain write must be read back before a new command uses another key.
 

@@ -2296,7 +2296,7 @@ func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 		t.Fatalf("ExchangeResultWorkflows = %v, want nil when BROKER_EXCHANGE_RESULT_WORKFLOWS is unset", cfg.ExchangeResultWorkflows)
 	}
 	withGitHub := func() map[string]string {
-		e := validEnv()
+		e := withResultsAirlock(validEnv())
 		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
 		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
 		return e

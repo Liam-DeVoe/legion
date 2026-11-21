@@ -9,10 +9,6 @@ package requests
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -68,48 +65,6 @@ const (
 	SlotAzureAccessPrefix  = "azure-access:"
 )
 
-// PlaceholderPrefix opens every placeholder, so a value that leaks into a log or a bug report is
-// recognizable for what it is: a string that stands for a secret rather than a secret.
-const PlaceholderPrefix = "agent-secrets-placeholder-"
-
-// PlaceholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
-// about 190 bits, which nobody guesses and no birthday collision reaches. The broker's log mask
-// reads a placeholder as the prefix and at most PlaceholderLength characters of PlaceholderAlphabet
-// after it.
-const (
-	PlaceholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	PlaceholderLength   = 32
-)
-
-// mintPlaceholder draws one placeholder from crypto/rand.
-//
-// Each character takes its own uniform 64-bit draw reduced modulo 62. 62 does not divide 2^64, so
-// the first 2^64 mod 62 characters of the alphabet are favoured by about one part in 2^58 — a
-// difference nothing can observe — where the obvious byte-per-character reduction would favour
-// the first eight characters by one part in four. Reducing a wide draw rejects nothing and so
-// always costs one read of the random source, where redrawing a byte until it falls below 248
-// loops an unbounded number of times.
-func mintPlaceholder() (string, error) {
-	draws := make([]byte, 8*PlaceholderLength)
-	if _, err := rand.Read(draws); err != nil {
-		return "", fmt.Errorf("mint an airlock placeholder: %w", err)
-	}
-	out := make([]byte, 0, len(PlaceholderPrefix)+PlaceholderLength)
-	out = append(out, PlaceholderPrefix...)
-	for i := range PlaceholderLength {
-		out = append(out, PlaceholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(PlaceholderAlphabet))])
-	}
-	return string(out), nil
-}
-
-// placeholderHash is a placeholder's SHA-256 in hex: the key airlock_placeholders holds it under,
-// and the only form of it any query carries, so the plaintext a command holds never reaches a
-// statement log, pg_stat_statements or a database error.
-func placeholderHash(placeholder string) string {
-	sum := sha256.Sum256([]byte(placeholder))
-	return hex.EncodeToString(sum[:])
-}
-
 // placeholdersOf reads every placeholder grant grantID holds, keyed by name and then by slot. It
 // is one indexed read: grant_id leads the unique constraint's index.
 func placeholdersOf(ctx context.Context, q querier, grantID string) (map[string]map[string]string, error) {
@@ -151,12 +106,12 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 			if _, minted := held[name][slot]; minted {
 				continue
 			}
-			placeholder, err := mintPlaceholder()
+			text, err := placeholder.Mint(placeholder.Prefix)
 			if err != nil {
 				return nil, err
 			}
 			names, slots = append(names, name), append(slots, slot)
-			texts, hashes = append(texts, placeholder), append(hashes, placeholderHash(placeholder))
+			texts, hashes = append(texts, text), append(hashes, placeholder.Hash(text))
 		}
 	}
 	if len(names) == 0 {
@@ -549,7 +504,7 @@ type AirlockGrantName struct {
 // policy snapshot already in memory, which costs no query. The checks a release makes besides —
 // the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
 // AirlockValues's, once per grant per pod.
-func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
+func (m *Machine) AirlockConnection(ctx context.Context, presented string) (AirlockConnection, error) {
 	var conn AirlockConnection
 	var reason string
 	var live bool
@@ -563,7 +518,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
-		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
+		where p.placeholder_sha256 = $1`, placeholder.Hash(presented)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
 			&conn.RuntimeID, &conn.SessionID, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
