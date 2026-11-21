@@ -80,11 +80,15 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	}
 
-	// The held token is still live, so the caller keeps writing while the broker is down.
+	// The held token is still live, so the caller keeps writing while the broker is down: Token
+	// trades, gets no answer, and answers the token in hand.
 	pastRenewal(client, time.Now().Add(30*time.Second))
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is down = %v, %v; want the token in hand, which is still live", held, err)
+	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Fatalf("the broker saw %d trades by Token's renewal, want 2: the first, and the renewal it answered 503", trades)
 	}
 
 	// Once it has run out there is no identity to write with, and the client says so rather
