@@ -5,30 +5,32 @@ import {
   GLYPH_BOX,
   GLYPH_SHAPES,
   GLYPH_VIEW_BOX,
+  type GlyphShape,
   type StatusGlyphText,
   statusGlyph,
   statusGlyphClassName,
 } from "./status-glyph";
 
-/** Each mark's shapes with their attributes by the names React takes them by: `stroke-width` as
- *  `strokeWidth`. */
-const REACT_SHAPES = Object.fromEntries(
-  Object.entries(GLYPH_SHAPES).map(([glyph, shapes]) => [
+/** A shape's attributes by the names React takes them by: `stroke-width` as `strokeWidth`. */
+function reactShapes(shapes: readonly GlyphShape[]): readonly GlyphShape[] {
+  return shapes.map(({ attributes, tag }) => ({
+    attributes: Object.fromEntries(
+      Object.entries(attributes).map(([name, value]) => [
+        name.replace(/-([a-z])/gu, (_, letter: string) => letter.toUpperCase()),
+        value,
+      ])
+    ),
+    tag,
+  }));
+}
+
+/** Each mark's shapes as React draws them, read once. */
+const REACT_SHAPES = new Map<StatusGlyphText, readonly GlyphShape[]>(
+  (Object.keys(GLYPH_SHAPES) as StatusGlyphText[]).map((glyph) => [
     glyph,
-    shapes.map(({ attributes, tag }) => ({
-      attributes: Object.fromEntries(
-        Object.entries(attributes).map(([name, value]) => [
-          name.replace(/-([a-z])/gu, (_, letter: string) => letter.toUpperCase()),
-          value,
-        ])
-      ),
-      tag,
-    })),
+    reactShapes(GLYPH_SHAPES[glyph]),
   ])
-) as Record<
-  StatusGlyphText,
-  readonly { attributes: Record<string, string>; tag: "circle" | "path" }[]
->;
+);
 
 /** A status's shape (`status-glyph.ts`), one em square. Given a `status`, the mark a reference to
  *  an issue draws: its group's shape in its group's colour, an image named by the status's words,
@@ -40,7 +42,7 @@ export function StatusGlyph(
   props: { readonly status: string } | { readonly glyph: StatusGlyphText }
 ): ReactNode {
   const glyph = "glyph" in props ? props.glyph : statusGlyph(props.status);
-  const shapes = REACT_SHAPES[glyph].map(({ attributes, tag: Shape }) => (
+  const shapes = (REACT_SHAPES.get(glyph) ?? []).map(({ attributes, tag: Shape }) => (
     <Shape key={Shape} {...attributes} />
   ));
   return "glyph" in props ? (
