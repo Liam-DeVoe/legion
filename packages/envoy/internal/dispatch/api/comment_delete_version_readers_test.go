@@ -439,6 +439,42 @@ func TestGoingStreamOverADocumentHoldingAPendingInsertIsWithdrawnByItsDelete(t *
 	}
 }
 
+// V.13's issue hit: an issue's text holds its primary document's latest version (goingItemText's
+// issue arm, issue_embedding_spec), so an answer run given the issue while alice's insert
+// suggestion stood in its spec reads the insert's words, and the run is recorded with the
+// suggestion's comment from the insert tree of that same version. The run searches a word of the
+// issue's title, which neither the spec nor the comment holds, so it is given the issue alone and
+// no hit whose own arm records the comment: only the issue's arm can, and the comment's delete then
+// withdraws the run.
+func TestGoingStreamOverAnIssueWhoseSpecHoldsAPendingInsertIsWithdrawnByItsDelete(t *testing.T) {
+	f := newGoingOverAnInsert(t)
+	nameVersion(t, f.rig.handler, f.artifactID, "With the insert pending")
+	run := askQuotingPostFound(t, f.rig, f.answerer, "GWI", "answer", "issue", f.issueKey, insertedWords)
+	// The control: the run was given no hit of the spec document or of a comment, whose own arms
+	// would record the run whatever the issue's arm reads.
+	_, hits, _ := f.answerer.read()
+	for _, hit := range hits {
+		if hit.Kind == "document" || hit.Kind == "comment" {
+			t.Fatalf("the run was given %+v beside the issue, which records it with the comment by an arm of its own: hits %v", hit, hits)
+		}
+	}
+	// The positive control: while the insert stands, the run streams its frames, the words among
+	// them.
+	want := quotingStream("issue", f.issueKey, insertedWords)
+	if before := f.rig.readStream(t, run.ID, ""); before != want {
+		t.Fatalf("before the delete the stream wrote\n%q\nwant\n%q", before, want)
+	}
+
+	deleteThreadComment(t, f.rig.handler, f.insert.ID, "alice")
+	after := f.rig.readStream(t, run.ID, "")
+	if after != withdrawnGoingStream(3) {
+		t.Errorf("after the insert's delete the stream wrote\n%q\nwant the withdrawal alone\n%q", after, withdrawnGoingStream(3))
+	}
+	if strings.Contains(after, insertedWords) {
+		t.Errorf("after the delete the stream carries the insert's words: %q", after)
+	}
+}
+
 // The answer-run half of the row after V.22: a run given the spec while bob's comment and alice's
 // insert stood in one text run of it is recorded with the insert's comment alone (goingItemText), so
 // bob's delete leaves the run's stream as it was, and the insert's delete then withdraws it.

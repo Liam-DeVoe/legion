@@ -426,11 +426,10 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		fromMain(t, pair, pair.read(t, issue, "the first read"))
 	})
 
-	// D26's sixteenth row, which keeps the name it was given at c94c31d8. The first read of a check
-	// CI proves (ciCheckAtLearnedHead): that read's read-through learns pull request 5, headed at
-	// k1's commit, and the same answer names that head as k1's basis, so it derives c1 from the run
-	// at that head rather than answering that Dispatch holds no head.
-	t.Run("15 a check CI proves: the first read derives it at the head that read's read-through learns", func(t *testing.T) {
+	// The first read of a check CI proves (ciCheckAtLearnedHead): that read's read-through learns
+	// pull request 5, headed at k1's commit, and the same answer names that head as k1's basis, so
+	// it derives c1 from the run at that head rather than answering that Dispatch holds no head.
+	t.Run("16 a check CI proves: the first read derives it at the head that read's read-through learns", func(t *testing.T) {
 		pair, issue, atHead := ciCheckAtLearnedHead(t, appKey, "ROL")
 
 		first := pair.read(t, issue, "the first read")
@@ -554,6 +553,47 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 				t.Errorf("%s: the writer's read after the read-only read left\n%s\nwant what a writer's read with none before it left\n%s",
 					state.row, got, want)
 			}
+		}
+	})
+
+	t.Run("21 a pull request stored at one result's commit, which the other result's read-through names at a third commit", func(t *testing.T) {
+		pair := newParityPair(t, appKey)
+		issue := pair.issue(t, "ROQ", siblingChecks)
+		// Pull request 71 is another issue's, stored headed at headCommit, where k3's result is, with
+		// an updated_at older than GitHub's answer below. It is no basis of the issue's checks, so
+		// only a stored head can hold k3's result off GitHub.
+		var other string
+		pair.each(func(stack *parityStack) {
+			response := dispatchRequest(t, stack.rig.handler, http.MethodPost, "/api/v1/issues",
+				map[string]any{"project": "ROQ", "title": "Another issue's work", "spec": "A spec\n"}, "alice")
+			if response.Code != http.StatusCreated {
+				t.Fatalf("create the other issue on the stack of %s: status=%d body=%s", stack.who, response.Code, response.Body.String())
+			}
+			key := decodeBody[model.Issue](t, response).Key
+			if other != "" && key != other {
+				t.Fatalf("the stack of %s made the other issue %s, want %s", stack.who, key, other)
+			}
+			other = key
+			storeParityHead(t, stack.rig.database, 71, headCommit, other, time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC))
+		})
+		pair.record(t, issue, "k1", behindHeadCommit)
+		pair.record(t, issue, "k3", headCommit)
+		// From here GitHub names pull request 71 for every commit, headed at newHeadCommit and
+		// titled after the other issue.
+		pair.github.answersPulls(func(string) string { return parityOpenPull(71, newHeadCommit, other) })
+
+		read := pair.read(t, issue, "the first read")
+		// k1's result is read through first. The writer stores 71 at newHeadCommit, which moves the
+		// row off headCommit, so no stored pull request heads k3's commit and the writer reads it
+		// through too. The read-only read must ask the same: a read of the stored heads at
+		// headCommit that lays on only the answers headed there still finds 71 at it (plan D33).
+		read.calls(t, parityPulls, 2)
+		for index, check := range []string{"k1", "k3"} {
+			standsAt(t, read.writer, check, pair.writer.ids[index], "the writer's result of "+check, model.CommitOtherCommit, false)
+		}
+		want := map[string]bool{fmt.Sprintf("pull request head %s#71 at %s, base main, open, issue %s", parityRepo, newHeadCommit, other): true}
+		if held := parityRows(t, pair.writer.rig.database); !maps.Equal(held, want) {
+			t.Errorf("the writer's read left the rows %v, want %v", slices.Sorted(maps.Keys(held)), slices.Sorted(maps.Keys(want)))
 		}
 	})
 }

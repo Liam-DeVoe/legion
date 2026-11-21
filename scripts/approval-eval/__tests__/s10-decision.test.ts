@@ -34,7 +34,7 @@ const ENDED = "dispatch://ACME-1/comment/claim-result";
 const HERE = join(import.meta.dir, "..");
 
 /** The digest of the pinned closure at this head, as `sha256sum` over its six files prints it. */
-const PINNED_DIGEST = "11a3aab4efced89798c6b6a8e4ecb0d988bc336a48906a5c7bea38531e7950b8";
+const PINNED_DIGEST = "39d0c7e29e765a1751009adb17a4ad3821949d9dc97500fbd5f19b2dd6ccfe9c";
 
 let scratch: string | undefined;
 
@@ -132,7 +132,7 @@ describe("the decision's pin", () => {
     await expect(decision.confirm()).resolves.toBeUndefined();
   });
 
-  test("refuses a claim.ts whose RESERVE_ENDED is set, under which the decision keeps every ask", async () => {
+  test("refuses the decision when the RESERVE_ENDED handed in is set, under which it keeps every ask", async () => {
     const entry = join(await closureCopy(), "reserve-ask.ts");
     await expect(reserveAskDecision(entry, ENDED)).rejects.toThrow(DecisionError);
     await expect(reserveAskDecision(entry, ENDED)).rejects.toThrow(

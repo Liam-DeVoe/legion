@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { ID_AMBIGUOUS } from "@legion/contracts";
 import {
   QueryClient,
   QueryClientProvider,
@@ -8,7 +9,7 @@ import {
   QueryObserver,
   useQuery,
 } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -16,13 +17,15 @@ import { cachedKeysHolding } from "../__tests__/cached-keys-holding";
 import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/correction-feed";
 import { type GraphNode, graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { ItemMatchList } from "../features/issue/ItemMatchList";
 import { useMarginItems } from "../features/margin/useMarginItems";
 import { replyRow } from "../features/threads/replies-fixture";
-import { ApiError, api } from "./client";
+import { ApiError, ambiguousItems, api } from "./client";
 import {
   CORRECTED_POST_FAMILIES,
   markCorrectedPost,
   NO_POST_FAMILIES,
+  REFUSAL_FAMILIES,
   UNMARKED_TEXT_FAMILIES,
 } from "./corrected-post";
 import { useEventFeed } from "./event-feed";
@@ -32,6 +35,8 @@ import type {
   Artifact,
   CommentWithTrees,
   DispatchEvent,
+  GraphReferences,
+  IDCandidate,
   MessageRead,
   MessageWithTrees,
 } from "./types";
@@ -948,6 +953,22 @@ test("every family a correction writes has a row that proves the write", () => {
   }
 });
 
+// A family whose refusal a correction writes (`REFUSAL_FAMILIES`) is one whose answers it writes
+// too, and its refusal's write is proved below by tests named after it (`<family>: …`); every
+// family those tests name is in the table.
+test("every family whose refusal a correction writes has its answers written too, and tests here of the refusal's write", () => {
+  const named = new Set(
+    [...readFileSync(import.meta.path, "utf8").matchAll(/^test\("([a-z -]+): /gmu)].map(
+      (match) => match[1]
+    )
+  );
+  const refused = Object.keys(REFUSAL_FAMILIES);
+  expect({
+    answersUnwritten: refused.filter((family) => !Object.hasOwn(CORRECTED_POST_FAMILIES, family)),
+    tested: [...named].sort(),
+  }).toEqual({ answersUnwritten: [], tested: [...refused].sort() });
+});
+
 for (const row of ROWS) {
   test(`a delete writes its mark into ${row.family} (${JSON.stringify(row.key)}), and keeps none of the post's words in any field`, () => {
     const client = new QueryClient();
@@ -971,6 +992,190 @@ for (const row of ROWS) {
     expect(JSON.stringify(answer)).toContain(OLD_WORDS);
   });
 }
+
+// The architect's ruling of 2026-11-21 03:47Z on census rows 7.13 and 8.54: Dispatch refuses the
+// graph read of an id written short that names several items (`ID_AMBIGUOUS`), listing each with
+// its first line, and the page holds that refusal as the query's error, not as its answer. The
+// family's writer writes a correction into it as into an answer (`REFUSAL_FAMILIES`): the post's
+// item carries the edit's time, or loses its first line beside the delete's mark, and the refusal
+// stays a refusal, its other items as they were, so the list the reader chooses from stays drawn.
+const PREFIX_READ = ["references", "to", "dispatch://CORE-1/comment/5e6f7a8b"];
+
+/** Dispatch's refusal of the prefix read: the post and another comment, each with its first line,
+ *  as the prefix layer lists them (`refs.Candidate`). */
+function prefixRefusal(): ApiError {
+  const item = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "comment",
+    ref: `dispatch://CORE-1/comment/${id}`,
+  });
+  return new ApiError(409, {
+    candidates: [item(POST, OLD_WORDS), item(OTHER, "Agreed.")],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "5e6f7a8b" names 2 items; write more of the id',
+  });
+}
+
+/** The items of the refusal the prefix read holds as its error, where it holds one. */
+function refusedItems(client: QueryClient): readonly IDCandidate[] | undefined {
+  return ambiguousItems(client.getQueryState(PREFIX_READ)?.error);
+}
+
+test("references to: an edit writes its time, and a delete its mark, into a refusal of an id written short that lists the post, which stays a refusal and keeps none of the post's first line", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await client
+    .fetchQuery({ queryFn: () => Promise.reject(prefixRefusal()), queryKey: PREFIX_READ })
+    .catch(() => undefined);
+  const other = refusedItems(client)?.[1];
+
+  markCorrectedPost(client, correction("comment", POST, true));
+  expect(refusedItems(client)?.[0]).toMatchObject({ edited_at: EDITED_AT, first_line: OLD_WORDS });
+
+  markCorrectedPost(client, correction("comment", POST, false));
+  const state = client.getQueryState(PREFIX_READ);
+  const items = refusedItems(client);
+  expect({
+    code: state?.error instanceof ApiError ? state.error.code : undefined,
+    data: state?.data,
+    item: items?.[0],
+    other: items?.[1] === other,
+    status: state?.status,
+  }).toEqual({
+    code: ID_AMBIGUOUS,
+    data: undefined,
+    item: {
+      ...DELETION,
+      edited_at: EDITED_AT,
+      id: POST,
+      issue_key: "CORE-1",
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${POST}`,
+    },
+    other: true,
+    status: "error",
+  });
+  expect(JSON.stringify(items)).not.toContain(OLD_WORDS);
+  client.clear();
+});
+
+// A read of the prefix out as the delete arrives, with no refusal before it, was asked before the
+// delete: the refusal it lands can list the post as it stood, so the delete is kept for that read
+// and written into the refusal as it lands, as into an answer such a read lands.
+test("references to: a refusal a read out at the delete lands takes the delete's mark", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held = Promise.withResolvers<never>();
+  const out = client
+    .fetchQuery({ queryFn: () => held.promise, queryKey: PREFIX_READ })
+    .catch(() => undefined);
+  markCorrectedPost(client, correction("comment", POST, false));
+  held.reject(prefixRefusal());
+  await out;
+  expect(refusedItems(client)?.[0]?.deleted_at).toBe(DELETION.deleted_at);
+  expect(JSON.stringify(refusedItems(client))).not.toContain(OLD_WORDS);
+  client.clear();
+});
+
+// TanStack empties a query's error while a read of it that holds no answer is out (`fetchState`),
+// so while a refused prefix is read again the cache holds no refusal, and the outline draws the
+// list it last drew (census row 8.54). A delete that arrives then gives that read up, which puts
+// the refusal back, writes its mark there, and reads the prefix again, holding the written refusal
+// beside the read asked again: the cache holds the list as the delete left it while that read is
+// out.
+test("references to: a delete that arrives while a refused prefix is read again marks the refusal, which the cache holds while the read it asks again is out", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // How each read of the prefix asked so far is refused, in the order they were asked.
+  const refusals: ((reason: unknown) => void)[] = [];
+  const observer = new QueryObserver(client, {
+    queryFn: () => {
+      const { promise, reject } = Promise.withResolvers<never>();
+      refusals.push(reject);
+      return promise;
+    },
+    queryKey: PREFIX_READ,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await waitFor(() => expect(refusals.length).toBe(1));
+    refusals[0]?.(prefixRefusal());
+    await waitFor(() => expect(client.getQueryState(PREFIX_READ)?.status).toBe("error"));
+    void observer.refetch();
+    await waitFor(() => expect(refusals.length).toBe(2));
+    expect(client.getQueryState(PREFIX_READ)?.error, "TanStack kept the refusal").toBeNull();
+
+    markCorrectedPost(client, correction("comment", POST, false));
+    await waitFor(() => expect(refusals.length).toBe(3));
+    expect(client.getQueryState(PREFIX_READ)?.fetchStatus).toBe("fetching");
+    expect(refusedItems(client)?.[0]?.deleted_at).toBe(DELETION.deleted_at);
+    expect(JSON.stringify(refusedItems(client))).not.toContain(OLD_WORDS);
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
+
+// A prefix read can hold an answer beside a refusal: the id written short named the post once,
+// and a later read was refused (`ID_AMBIGUOUS`), listing the post among others; TanStack keeps the
+// answer and holds the refusal as the read's error, so the page lists the matches. The post's
+// delete writes its mark into both, as a read out at it is given up and the prefix asked again:
+// the refusal stays the read's error and its status, so the page still lists the matches, with the
+// post's line marked deleted, and does not take the prefix as resolved to the post, as writing the
+// answer by `setQueryData` would (it clears the error). Giving up the read asked again puts back
+// the written state, not the one from before the delete.
+test("references to: a delete writes its mark into an answer a refused prefix read holds beside its refusal, which stays the read's error", async () => {
+  const answer = { edges: [], node: graphNode({ id: POST, kind: "comment", text: OLD_WORDS }) };
+  const later = Promise.withResolvers<never>();
+  let asked = 0;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(PREFIX_READ, answer);
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? Promise.reject(prefixRefusal()) : later.promise;
+    },
+    queryKey: PREFIX_READ,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  /** What the read holds and how the page reads it. */
+  const held = () => {
+    const state = client.getQueryState(PREFIX_READ);
+    const node = (state?.data as GraphReferences | undefined)?.node;
+    return {
+      isError: page.getCurrentResult().isError,
+      items: refusedItems(client)?.map((item) => [item.id, item.first_line, item.deleted_at]),
+      node: [node?.deleted_at, node?.text],
+      status: state?.status,
+      words: JSON.stringify([state?.data, state?.error]).includes(OLD_WORDS),
+    };
+  };
+  const written = {
+    isError: true,
+    items: [
+      [POST, undefined, DELETION.deleted_at],
+      [OTHER, "Agreed.", undefined],
+    ],
+    node: [DELETION.deleted_at, ""],
+    status: "error" as const,
+    words: false,
+  };
+  try {
+    await waitFor(() => expect(client.getQueryState(PREFIX_READ)?.status).toBe("error"));
+    // A read of the prefix is out beside the answer and the refusal as the delete arrives.
+    void page.refetch();
+    await waitFor(() => expect(asked).toBe(2));
+    markCorrectedPost(client, correction("comment", POST, false));
+    const atDelete = { ...held(), askedAgain: asked === 3 };
+    await client.cancelQueries({ exact: true, queryKey: PREFIX_READ });
+    expect({ atDelete, givenUp: held() }).toEqual({
+      atDelete: { ...written, askedAgain: true },
+      givenUp: written,
+    });
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
 
 // The architect's ruling of 2026-11-20 07:52Z: an answer composed before a correction cannot take
 // the correction's mark out. A read already out when the delete arrives was asked before it, so
@@ -1651,6 +1856,293 @@ test("a part_of read out at a pending insert's delete is given up and asked agai
     unsubscribe();
     client.clear();
   }
+});
+
+// The architect's ruling of 2026-11-21 03:47Z carried to the words a pending insert put in its
+// document. A refusal of a block written short lists each block the prefix names with its first
+// line, which holds the insert's words where the block held them, and carries no mark that tells
+// them from the document's own. The insert's delete takes the first line off each block of its
+// document the refusal lists, keeps the block listed and the refusal a refusal - not dropped, as a
+// read that gives the document's text is - and reads the prefix again with the refusal held beside
+// that read, for Dispatch to give each block's text as the delete left it. A block of another
+// document keeps its line. The list drawn from the refusal (`ItemMatchList`) names the document's
+// blocks by their ids then, and draws none of the insert's words.
+test("a pending insert's delete takes the first line off each block of its document a cached refusal lists, keeps the refusal and another document's line, and asks the prefix again", async () => {
+  const key = ["references", "to", "dispatch://CORE-1/artifact/notes#b-p"];
+  const block = (document: string, id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "block",
+    ref: `dispatch://CORE-1/artifact/${document}#b-${id}`,
+  });
+  const refusal = new ApiError(409, {
+    candidates: [
+      block("notes", "p1", INSERTED),
+      block("notes", "p2", "Hold the deploy."),
+      block("plan", "p3", OTHER_TEXT),
+    ],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "p" names 3 items; write more of the id',
+  });
+  const afterDelete = Promise.withResolvers<never>();
+  let asked = 0;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The read of the prefix a surface draws the list from.
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? Promise.reject(refusal) : afterDelete.promise;
+    },
+    queryKey: key,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  try {
+    await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    markCorrectedPost(client, INSERT_DELETE);
+    const state = client.getQueryState(key);
+    const items = ambiguousItems(state?.error);
+    const list = render(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(ItemMatchList, {
+          candidates: items ?? [],
+          route: { id: "p", key: "CORE-1", kind: "comment" },
+        })
+      )
+    );
+    try {
+      expect({
+        asked,
+        drawn: [INSERTED, "Hold the deploy.", OTHER_TEXT].filter((words) =>
+          list.container.textContent?.includes(words)
+        ),
+        fetching: state?.fetchStatus,
+        lines: items?.map((item) => [item.id, item.first_line]),
+      }).toEqual({
+        asked: 2,
+        drawn: [OTHER_TEXT],
+        fetching: "fetching",
+        lines: [
+          ["p1", undefined],
+          ["p2", undefined],
+          ["p3", OTHER_TEXT],
+        ],
+      });
+      expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
+    } finally {
+      list.unmount();
+    }
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
+
+/** What the cache holds once the pending insert's delete (`INSERT_DELETE`) reaches a read keyed
+ *  `key` that holds `answer` beside `refusal`: a surface draws the read, which runs again on that
+ *  answer and is refused, as TanStack keeps an answer beside a later read's error; with `readOut`,
+ *  a read of it is out again as the delete arrives. Gives the keys whose answer holds the insert's
+ *  words, before the delete and after it, the read's answer, the items of its refusal and the
+ *  match list drawn from them (`ItemMatchList`), whether the read was asked again and is out, and
+ *  the keys whose answer holds the words once a later correction gives that read up, which puts
+ *  back the state TanStack held as it began. */
+async function deletedBesideRefusal(
+  key: QueryKey,
+  answer: unknown,
+  refusal: ApiError,
+  readOut = false
+) {
+  const later = Promise.withResolvers<never>();
+  let asked = 0;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(key, answer);
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? Promise.reject(refusal) : later.promise;
+    },
+    queryKey: key,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  try {
+    await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    if (readOut) {
+      void page.refetch();
+      await waitFor(() => expect(asked).toBe(2));
+    }
+    const before = cachedKeysHolding(client, INSERTED);
+    markCorrectedPost(client, INSERT_DELETE);
+    const state = client.getQueryState(key);
+    const items = ambiguousItems(state?.error);
+    const list = render(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(ItemMatchList, {
+          candidates: items ?? [],
+          route: { id: "p", key: "CORE-1", kind: "comment" },
+        })
+      )
+    );
+    try {
+      const after = {
+        answer: state?.data,
+        askedAgain: asked === (readOut ? 3 : 2) && state?.fetchStatus === "fetching",
+        before,
+        deletedLines: list.container.querySelectorAll("[data-post-deleted]").length,
+        drawn: list.container.textContent ?? "",
+        held: cachedKeysHolding(client, INSERTED),
+        items,
+      };
+      markCorrectedPost(client, correction("comment", OTHER, true));
+      return { ...after, heldOnceGivenUp: cachedKeysHolding(client, INSERTED) };
+    } finally {
+      list.unmount();
+    }
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+}
+
+// A prefix read can hold an answer beside a refusal: an id written short named one item once, and
+// a later read of it was refused (`ID_AMBIGUOUS`), which TanStack holds beside the answer it
+// keeps. Where that answer gives the text a pending insert's delete took words out of, the delete
+// takes the answer off and keeps the read, its refusal written as its error, asked again: no
+// answer the cache holds keeps the words, and the list drawn from the refusal stays. First a block
+// written short of the document, whose answer gives the block's text with the insert's words, and
+// whose refusal lists the document's blocks with their first lines.
+test("a pending insert's delete takes off a prefix read's answer that gives its document's text, and keeps the refusal the read holds", async () => {
+  const block = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "block",
+    ref: `dispatch://CORE-1/artifact/notes#b-${id}`,
+  });
+  const after = await deletedBesideRefusal(
+    ["references", "to", "dispatch://CORE-1/artifact/notes#b-p"],
+    blockRead("doc-1", "dispatch://CORE-1/artifact/notes#b-p1", INSERTED),
+    new ApiError(409, {
+      candidates: [block("p1", INSERTED), block("p2", "Hold the deploy.")],
+      code: ID_AMBIGUOUS,
+      error: 'the id prefix "p" names 2 items; write more of the id',
+    })
+  );
+  expect({ ...after, drawn: after.drawn.includes(INSERTED), items: after.items?.length }).toEqual({
+    answer: undefined,
+    askedAgain: true,
+    before: [["references", "to", "dispatch://CORE-1/artifact/notes#b-p"]],
+    deletedLines: 0,
+    drawn: false,
+    held: [],
+    heldOnceGivenUp: [],
+    items: 2,
+  });
+});
+
+// Then a comment written short (census rows 7.13 and 8.54): the prefix named one comment once,
+// and the answer that keeps it lists a mention from a block of the insert's document, with an
+// excerpt that holds the insert's words. Its refusal lists the insert's comment, which the delete
+// marks deleted. The answer goes, and the refusal stays the read's error, so the list drawn from
+// the cache - the outline reads the same one while the read is out (`useAddressFallback`) - draws
+// the deleted line in place of the comment's first line.
+test("a pending insert's delete takes off a comment prefix's answer that quotes its document, and keeps the refusal the read holds with the insert's comment marked deleted", async () => {
+  const answer = {
+    edges: [
+      {
+        created_at: "2026-11-19T00:00:00Z",
+        direction: "in",
+        excerpt: { block_id: "p1", text: INSERTED },
+        kind: "mentions",
+        node: documentBlock("doc-1"),
+        source_seq: 9,
+      },
+    ],
+    node: graphNode({ id: OTHER, kind: "comment" }),
+  };
+  const after = await deletedBesideRefusal(PREFIX_READ, answer, prefixRefusal());
+  expect({
+    ...after,
+    drawn: [INSERTED, OLD_WORDS, "Agreed."].filter((words) => after.drawn.includes(words)),
+    items: after.items?.map((item) => [item.id, item.first_line, item.deleted_at]),
+  }).toEqual({
+    answer: undefined,
+    askedAgain: true,
+    before: [PREFIX_READ],
+    deletedLines: 1,
+    drawn: ["Agreed."],
+    held: [],
+    heldOnceGivenUp: [],
+    items: [
+      [POST, undefined, DELETION.deleted_at],
+      [OTHER, "Agreed.", undefined],
+    ],
+  });
+});
+
+// Census row C.10: the refusal a prefix read holds beside its answer lists nothing the delete
+// changes - neither the insert's comment nor a block of its document - while the answer quotes
+// the insert's words in an excerpt of a block of its document, and a read of the prefix is out as
+// the delete arrives. The answer goes all the same, whether or not the delete also marks a copy
+// of the post in it, and the refusal stays the read's error, as the read is given up and asked
+// again: no answer the cache holds keeps the words, then or once a later correction gives the read
+// asked again up.
+test("a pending insert's delete takes off a prefix read's answer that quotes its document beside a refusal the delete leaves as it is, with a read out, and keeps the refusal", async () => {
+  const third = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+  const item = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "comment",
+    ref: `dispatch://CORE-1/comment/${id}`,
+  });
+  const refusal = new ApiError(409, {
+    candidates: [item(OTHER, "Agreed."), item(third, "Ship it.")],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "5e6f7a8b" names 2 items; write more of the id',
+  });
+  const quoting = {
+    created_at: "2026-11-19T00:00:00Z",
+    direction: "in",
+    excerpt: { block_id: "p1", text: INSERTED },
+    kind: "mentions",
+    node: documentBlock("doc-1"),
+    source_seq: 9,
+  };
+  const kept = async (node: GraphNode) => {
+    const after = await deletedBesideRefusal(
+      PREFIX_READ,
+      { edges: [quoting], node },
+      refusal,
+      true
+    );
+    return {
+      answer: after.answer,
+      askedAgain: after.askedAgain,
+      before: after.before,
+      held: after.held,
+      heldOnceGivenUp: after.heldOnceGivenUp,
+      items: after.items?.map((listed) => [listed.id, listed.first_line]),
+    };
+  };
+  const expected = {
+    answer: undefined,
+    askedAgain: true,
+    before: [PREFIX_READ],
+    held: [],
+    heldOnceGivenUp: [],
+    items: [
+      [OTHER, "Agreed."],
+      [third, "Ship it."],
+    ],
+  };
+  expect({
+    namesAnother: await kept(graphNode({ id: OTHER, kind: "comment" })),
+    namesThePost: await kept(graphNode({ id: POST, kind: "comment", text: OLD_WORDS })),
+  }).toEqual({ namesAnother: expected, namesThePost: expected });
 });
 
 // The delete names its document by its id and its slug. A block of an issue's primary document is

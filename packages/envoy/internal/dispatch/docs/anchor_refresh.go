@@ -315,13 +315,13 @@ func takenAnchorRowsQuery(target anchorTarget) string {
 
 // RewriteTakenAnchors writes the anchor of every ask and comment row on artifactID, open or
 // closed, anchored on a mark the reject of an insert suggestion took text from (TakenAnchorMarks),
-// so that no read of the row gives a word the insert put in the document. Its one caller is the
-// delete of a comment whose insert no accept made document text (api/comment_delete.go,
-// deleteComment): the words were only ever that comment's, and the delete withdraws them. It
-// writes in the caller's joined transaction, under the document owner's lock the delete holds, as
-// an anchor refresh writes (writeChangedAnchors), and each row it changes is announced in its
-// comment.anchor_refreshed or ask.anchor_refreshed as a refresh's is. An anchor is a field the
-// document derives, which every refresh rewrites as the document changes, so this edits no post.
+// so that no read of the row gives a word the insert put in the document: an insert's words that
+// no accept made document text were only ever its comment's, and that comment's delete withdraws
+// them. It writes in the caller's joined transaction, under the document owner's lock the caller
+// holds, as an anchor refresh writes (writeChangedAnchors), and each row it changes is announced
+// in its comment.anchor_refreshed or ask.anchor_refreshed as a refresh's is. An anchor is a field
+// the document derives, which every refresh rewrites as the document changes, so this edits no
+// post.
 //
 //   - A row on a mark the removal took out whole (taken.Removed) quoted those words alone: its quote
 //     is emptied, and it stands orphaned, whatever its state.

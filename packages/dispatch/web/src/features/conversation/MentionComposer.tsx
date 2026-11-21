@@ -465,6 +465,13 @@ interface MentionComposerProps {
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
+  /** When the compose this composer writes in took the words it is about, where the compose
+   *  outlives its composer: the margin's compose on a document, which stays open while the reader
+   *  is away from the document (`DocumentCompose.open`), and whose composer mounts again as they
+   *  come back. The composer takes it as the time it took its words where its field takes no
+   *  draft that keeps an earlier one (`MountDraft.anchoredAt`), so a composer that mounts again
+   *  with an empty field keeps the compose's time rather than its mount's. */
+  readonly openedAt?: number;
   readonly owner: ComposerOwner;
   /** How many times the reader has moved this composer's address with a control its host draws
    *  for it - an Agents row's issue picker - counted by the host in the press that makes the
@@ -527,6 +534,7 @@ export function MentionComposer({
   onClose,
   onKindChange,
   onSent,
+  openedAt,
   owner,
   ownMoves = 0,
   replyParent,
@@ -566,12 +574,13 @@ export function MentionComposer({
   // later one says they left (`useQuoteInDocument`), and a draft it keeps for them keeps this time
   // (`AwayDraft.anchoredAt`). The margin mounts a composer of its own for each compose, with its
   // words (`MarginSheet`), and a kind switch moves it to another mark over the same words, so the
-  // mount is when it took them - unless the field took a draft written for those words, a held
-  // send's or one kept for them, whose compose took them before: a composer that mounts again at
-  // its words, as one does when the reader comes back to the document, goes on with that
-  // compose's words, and keeps its time (`MountDraft.anchoredAt`).
+  // compose took them when it opened (`openedAt`), and a composer with no such compose took them
+  // at its mount - unless the field took a draft written for those words, a held send's or one
+  // kept for them, whose compose took them before: a composer that mounts again at its words, as
+  // one does when the reader comes back to the document, goes on with that compose's words, and
+  // keeps its time (`MountDraft.anchoredAt`).
   const [anchoredAt] = useState(() =>
-    anchor === undefined ? undefined : (initial.anchoredAt ?? Date.now())
+    anchor === undefined ? undefined : (initial.anchoredAt ?? openedAt ?? Date.now())
   );
   const textarea = useRef<HTMLTextAreaElement>(null);
   const replacementTextarea = useRef<HTMLTextAreaElement>(null);

@@ -57,7 +57,14 @@ func quotingStream(kind, id, phrase string) string {
 // below withdraw is an answer that read the post.
 func askQuotingPost(t *testing.T, rig goingRoutesRig, answerer *fakeAnswerer, project, kind, id, phrase string) askedRun {
 	t.Helper()
-	answerer.searches = phrase
+	return askQuotingPostFound(t, rig, answerer, project, phrase, kind, id, phrase)
+}
+
+// askQuotingPostFound is askQuotingPost for a run that searches for searches rather than for
+// phrase: the post kind id must still be among its hits, with phrase in its text.
+func askQuotingPostFound(t *testing.T, rig goingRoutesRig, answerer *fakeAnswerer, project, searches, kind, id, phrase string) askedRun {
+	t.Helper()
+	answerer.searches = searches
 	answerer.frames = quotingFrames(kind, id, phrase)
 	response := rig.ask(t, "alice", map[string]any{"words": "what does the note say about " + phrase + "?", "project": project})
 	if response.Code != http.StatusCreated {

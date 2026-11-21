@@ -2,10 +2,12 @@ import { expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { correction, DELETION } from "../../__tests__/correction-feed";
+import { marginClient, RegisterDocument } from "../../__tests__/draft-matrix-fixture";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
 import type { ArtifactText, Comment } from "../../api/types";
@@ -21,8 +23,16 @@ import {
 } from "../conversation/unsent-drafts";
 import { composerNameOf, giveWay, type OfferedDraft } from "../conversation/useKeptDrafts";
 import { liveTextQueryOptions } from "../doc/live-text-query";
+import { buildIssuePath } from "../refs/routes";
 import { MarginKeptDrafts } from "./CommentsTab";
-import { marginComposeKeptKey, marginComposeSendKey } from "./margin-context";
+import { Margin } from "./Margin";
+import {
+  MarginProvider,
+  marginComposeKeptKey,
+  marginComposeSendKey,
+  useMargin,
+} from "./margin-context";
+import { issue, specArtifact } from "./margin-fixture";
 
 // Census row 11.9 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 17:41Z: a
 // reader selects words to comment on inside another comment's pending insert suggestion, so the
@@ -35,10 +45,11 @@ import { marginComposeKeptKey, marginComposeSendKey } from "./margin-context";
 //
 // No keystroke and no collaborator's update reads the text again, so the page's read can be older
 // than words the reader has just typed and selected. Only a read newer than the time the draft's
-// compose took the words says they left (`useQuoteInDocument`): the open composer's mount, or the
-// time the compose whose draft it took for its words took them (`MountDraft.anchoredAt`), the
-// time a kept draft keeps from its compose (`AwayDraft.anchoredAt`), and for a draft an older
-// release kept with no time, before every read.
+// compose took the words says they left (`useQuoteInDocument`): for the open composer, the time
+// the compose whose draft its field took for those words took them (`MountDraft.anchoredAt`),
+// else when its compose opened (`openedAt`), or its mount where no compose outlives it; the time
+// a kept draft keeps from its compose (`AwayDraft.anchoredAt`); and for a draft an older release
+// kept with no time, before every read.
 //
 // The architect's ruling of 2026-11-20 20:55Z, approved at 21:57Z: before that time gate, a fact
 // the page holds decides alone, whatever the age of its read of the text. The selection bar keeps
@@ -490,8 +501,15 @@ test("a composer that mounts again after the delete, while the page's next read 
     await user.paste("Which review is this?");
     setSystemTime(start + 1_000);
     act(() => land(client, textRead(AFTER)));
-    // The positive control: before it mounts again, the composer says the words are gone.
-    expect(timesDrawn(first.container, QUOTE)).toBe(0);
+    // The positive control: before it mounts again, the composer says the words are gone, and
+    // draws none of them.
+    expect({
+      drawn: timesDrawn(first.container, QUOTE),
+      gone:
+        within(first.container).queryByText(
+          "The words this draft was for are no longer in the document."
+        ) !== null,
+    }).toEqual({ drawn: 0, gone: true });
   } finally {
     first.unmount();
   }
@@ -888,6 +906,133 @@ test("words that name no list of inserts are gone on every surface once the page
     expect(drawnQuotes(view.container)).toEqual(GONE);
   } finally {
     view.unmount();
+    client.clear();
+  }
+});
+
+// The time gate's other side, for words that name the inserts they lie in (census rows 11.9 and
+// RM.1): the gate weighs a read's time against the compose's only for words that name such a
+// list, an empty one too, and the rows above whose read is newer than the compose name none.
+// Here the words lie in a pending insert no comment list the page holds names, so no fact decides
+// first, and the composer and the two drafts took them a second before a read of the document's
+// text lands that lacks them: newer than each compose, it says they left, and each surface draws
+// none of them.
+test("words that name a list of inserts are gone on every surface once a read of the document newer than each compose that took them lacks them", () => {
+  const start = Date.now();
+  setSystemTime(start);
+  const { client, view } = renderSurfaces(QUOTE, textRead(BEFORE), {
+    awayAt: start - 1_000,
+    insertMarks: [INSERT_MARK],
+    offeredAt: start - 1_000,
+    readAt: start - 60_000,
+  });
+  try {
+    const held = drawnQuotes(view.container);
+    setSystemTime(start + 1_000);
+    act(() => land(client, textRead(AFTER)));
+    expect({ gone: drawnQuotes(view.container), held }).toEqual({ gone: GONE, held: DRAWN });
+  } finally {
+    setSystemTime();
+    view.unmount();
+    client.clear();
+  }
+});
+
+/** The words of the margin fixture's spec the selection bar names, which lie in the pending insert
+ *  `INSERT_MARK`. */
+const SPEC_WORDS: ComposerAnchor = {
+  artifact: specArtifact.id,
+  insertMarks: [INSERT_MARK],
+  mark_id: "mark-open",
+  quote: QUOTE,
+};
+
+/** The selection bar's compose at `SPEC_WORDS`, on a press. */
+function ComposeOnWords(): ReactNode {
+  const { composeForMark } = useMargin();
+  return (
+    <button
+      onClick={() => {
+        void composeForMark({ anchor: SPEC_WORDS, kind: "comment" }).catch(noop);
+      }}
+      type="button"
+    >
+      Compose on the selection
+    </button>
+  );
+}
+
+/** The issue's page over `client` with its margin, as the document page draws it, and the
+ *  selection bar's compose; `away` takes the document and its margin off the page, as leaving the
+ *  document does, while the provider keeps the compose open for the reader's return. */
+function issuePageAwayOrBack(client: QueryClient, away: boolean) {
+  return (
+    <MemoryRouter
+      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
+      initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}
+    >
+      <QueryClientProvider client={client}>
+        <MarginProvider>
+          <ComposeOnWords />
+          {away ? null : (
+            <>
+              <RegisterDocument />
+              <Margin />
+            </>
+          )}
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// Census rows 11.9 and RM.1 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21
+// 03:47Z: a composer that mounts again on a compose still open takes the compose's own time, when
+// it opened, not its mount's. The reader opens the margin's compose at words in a pending insert,
+// types nothing and leaves the document, so the composer keeps no draft and takes no time from
+// one. The insert's comment is deleted, which no comment list the page holds names, and the read
+// of the document's text after the delete lands, lacking the words. The reader comes back, and
+// the composer mounts again: that read is newer than the compose, though older than the mount, so
+// it says the words left, and the composer draws none of them.
+test("a margin composer that mounts again with an empty field on its open compose keeps the compose's time, and draws none of the words a read since the compose lacks", async () => {
+  const user = userEvent.setup();
+  const start = Date.now();
+  setSystemTime(start);
+  const client = marginClient([]);
+  const textKey = liveTextQueryOptions(specArtifact.id).queryKey;
+  client.setQueryData(textKey, textRead(BEFORE), { updatedAt: start - 60_000 });
+  const reads = [
+    spyOn(api, "getIssue").mockResolvedValue(issue),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "getInbox").mockResolvedValue([]),
+  ];
+  const view = render(issuePageAwayOrBack(client, false));
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose on the selection" }));
+    await screen.findByRole("form", { name: "Comment composer" });
+    const opened = timesDrawn(view.container, QUOTE);
+
+    setSystemTime(start + 1_000);
+    view.rerender(issuePageAwayOrBack(client, true));
+    setSystemTime(start + 2_000);
+    act(() => client.setQueryData(textKey, textRead(AFTER)));
+
+    setSystemTime(start + 5_000);
+    view.rerender(issuePageAwayOrBack(client, false));
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    expect({
+      drawn: timesDrawn(view.container, QUOTE),
+      field: within(composer).getByLabelText<HTMLTextAreaElement>("Comment").value,
+      gone:
+        within(composer).queryByText(
+          "The words this draft was for are no longer in the document."
+        ) !== null,
+      opened,
+    }).toEqual({ drawn: 0, field: "", gone: true, opened: 1 });
+  } finally {
+    setSystemTime();
+    view.unmount();
+    for (const read of reads) read.mockRestore();
     client.clear();
   }
 });

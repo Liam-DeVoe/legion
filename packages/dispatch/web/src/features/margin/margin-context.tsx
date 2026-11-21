@@ -172,12 +172,19 @@ interface MarkComposeRequest {
   kind: ComposerKind;
 }
 
+/** A mark compose as the margin holds it open: the request, and when the margin opened it, which
+ *  is when the compose took its words; a kind switch keeps it. Its composer takes it as its own
+ *  time (`MentionComposer`'s `openedAt`). */
+interface TimedMarkCompose extends MarkComposeRequest {
+  readonly openedAt: number;
+}
+
 /** The compose of one document (`MarginContextValue.composes`): the number the newest compose on
  *  it opened under, and that compose while the reader has it open and has not sent it. The number
  *  is kept past that compose's Send and its cancel: a held send's composer is the compose that
  *  sent it, by that number (`MarginSheet` keys the composer by it). */
 export interface DocumentCompose {
-  readonly open: MarkComposeRequest | undefined;
+  readonly open: TimedMarkCompose | undefined;
   readonly seq: number;
 }
 
@@ -222,9 +229,9 @@ export function marginReplySendKey(key: string): MutationKey {
   return [...MARGIN_REPLY_SEND_KEY, key];
 }
 
-/** A mark compose the reader has open on one document: what it is about, and the editor's
- *  promise it settles. */
-interface OpenCompose extends MarkComposeRequest {
+/** A mark compose the reader has open on one document: what it is about, when it opened, and the
+ *  editor's promise it settles. */
+interface OpenCompose extends TimedMarkCompose {
   reject(reason: Error): void;
   resolve(): void;
 }
@@ -601,7 +608,10 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
           open.reject(new Error("replaced by a newer composer"));
         }
         sequence.current += 1;
-        publishCompose(artifact, { open: { ...request, reject, resolve }, seq: sequence.current });
+        publishCompose(artifact, {
+          open: { ...request, openedAt: Date.now(), reject, resolve },
+          seq: sequence.current,
+        });
         show(artifact, false);
       }),
     [publishCompose, removeMarkOf, show, store, unsent]

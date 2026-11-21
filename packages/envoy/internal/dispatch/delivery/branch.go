@@ -140,8 +140,11 @@ type repoBranch struct {
 // default branch its own read of a repository found, where a writer's read puts it in the cache,
 // and the repository-and-branch pairs a compare read of its own was refused as unseen, where a
 // writer's read holds them. Its later reads read them where a writer's later reads read what
-// that writer's read wrote, so the two make the same GitHub calls in one request. The request's
-// reader makes one and drops it with the request. Its zero value carries nothing.
+// that writer's read wrote, so the two make the same GitHub calls in one request. Each method of
+// Branches that reads or writes the cache or the holds takes it as carry, nil for a writer's read,
+// and decides inside which of the two it reads and writes (get, put, isDefaultBranch, unseenHeld,
+// markUnseen, markSeen). The request's reader makes one and drops it with the request. Its zero
+// value carries nothing.
 type BranchCarry struct {
 	known  map[string]cachedBranch
 	unseen map[repoBranch]bool
@@ -298,9 +301,9 @@ func (c *Branches) ReadDefaultBranchOf(
 // names a branch is recognised as naming no default branch and spends the compare read it
 // always did.
 //
-// It is readCommitOnBranch, which reads all of the above and writes nothing, then the write of
+// It is readCommitOnBranch, which reads all of the above and writes no row, then the write of
 // the answer a compare read earned to branch_commits. ReadCommitOnBranch is the same read for a
-// read-only caller, which writes nothing.
+// read-only caller, which writes no row.
 func (c *Branches) CommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
@@ -321,7 +324,8 @@ func (c *Branches) CommitOnBranch(
 // and keeps nothing after its request (api/results_comparison.go, comparisonReader.onBranch). It
 // reads the stored row, the repository's readability, the unseen holds and the default-branch
 // cache exactly as CommitOnBranch does, asks GitHub where CommitOnBranch would, and answers what
-// CommitOnBranch would answer, and it writes nothing:
+// CommitOnBranch would answer. It writes no branch_commits row, puts no default branch in the
+// cache and holds or marks no pair:
 //
 //   - answers is what that caller's request learned from GitHub and stored nowhere (HeadAnswers).
 //     A merged pull request among them is its merge commit on its base branch, the yes a writer's
@@ -335,8 +339,10 @@ func (c *Branches) CommitOnBranch(
 //
 // A compare read's answer is written nowhere: the caller answers it for the rest of its request
 // (api's comparisonReader.onBranch memo), where a writer's later read in the same request reads
-// the row its own read wrote. The tidying these reads do of the holds (unseenHeld,
-// isDefaultBranch) stays, since it changes no answer and no call.
+// the row its own read wrote. Two things of the process change as they do for a writer's read,
+// since neither changes an answer or a call: the GitHub client's token cache fills as its reads
+// mint installation tokens (githubapp.Client.RepositoryToken), and the lapsed holds it reads are
+// deleted (unseenHeld, isDefaultBranch).
 func (c *Branches) ReadCommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
@@ -415,7 +421,7 @@ func (c *Branches) readCommitOnBranch(
 	// caller reached it. It is read once, before the call goes out, so the refusal below is
 	// held on the same terms the hold above was read on.
 	holdable := !c.isDefaultBranch(carry, pair)
-	if holdable && (carry.holdsUnseen(pair) || c.unseenHeld(pair, now)) {
+	if holdable && c.unseenHeld(carry, pair, now) {
 		return branchRead{answer: BranchUnseen}
 	}
 	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
@@ -424,17 +430,13 @@ func (c *Branches) readCommitOnBranch(
 			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
 			return branchRead{answer: BranchUnknown}
 		}
-		switch {
-		case !holdable:
-		case carry != nil:
-			c.carryUnseen(carry, pair, now)
-		default:
-			c.markUnseen(pair, now)
+		if holdable {
+			c.markUnseen(carry, pair, now)
 		}
 		return branchRead{answer: BranchUnseen}
 	}
-	if holdable && carry == nil {
-		c.markSeen(pair, now)
+	if holdable {
+		c.markSeen(carry, pair, now)
 	}
 	return branchRead{answer: branchAnswerOf(answer), asked: true, branch: branch, onBranch: answer}
 }
@@ -569,17 +571,22 @@ func (c *Branches) isDefaultBranch(carry *BranchCarry, pair repoBranch) bool {
 // BranchCommitStaleAfter of now, the span every other answer here is believed for. The refusal
 // is held against the pair and not against the commit that happened to be asked about, because
 // that is what it is about: a branch GitHub cannot compare against answers for no commit, and
-// the next result commit of the same branch would spend the same refused call.
+// the next result commit of the same branch would spend the same refused call. A pair the
+// request's carry holds as unseen (markUnseen) is held for the rest of that request, before this
+// process's holds are read.
 //
 // An entry nothing about which still stands is deleted as it is read: the hold has run out, and
 // the pair was last answered longer ago than that same span, so no compare read still in flight
 // can have begun before that answer — one request of this client lives at most
 // githubapp.RequestTimeout, which is far inside BranchCommitStaleAfter. That is what keeps a
 // branch deleted once from costing an entry for the life of the process, which only a pair
-// nothing reads again now does.
-func (c *Branches) unseenHeld(pair repoBranch, now time.Time) bool {
+// nothing reads again now does. A read-only read deletes it as a writer's read does.
+func (c *Branches) unseenHeld(carry *BranchCarry, pair repoBranch, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if carry != nil && carry.unseen[pair] {
+		return true
+	}
 	held, found := c.compares[pair]
 	if !found {
 		return false
@@ -607,41 +614,29 @@ func (c *Branches) unseenHeld(pair repoBranch, now time.Time) bool {
 // asked; the few milliseconds in it only ever lose a hold that was nearly beaten anyway, which
 // is the side to be wrong on. It dates the hold too, so a hold runs out a hair early rather
 // than a hair late.
-func (c *Branches) markUnseen(pair repoBranch, readAt time.Time) {
+//
+// A read-only read's hold, on those same terms, is carried in carry for the rest of its request
+// (unseenHeld), and this process holds nothing, so its request's later steps are answered unseen
+// where a writer's are answered from its hold.
+func (c *Branches) markUnseen(carry *BranchCarry, pair repoBranch, readAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.compares[pair].answeredAt.After(readAt) {
+		return
+	}
+	if carry != nil {
+		if carry.unseen == nil {
+			carry.unseen = map[repoBranch]bool{}
+		}
+		carry.unseen[pair] = true
+		return
+	}
 	if c.compares == nil {
 		c.compares = map[repoBranch]compareHold{}
 	}
 	held := c.compares[pair]
-	if held.answeredAt.After(readAt) {
-		return
-	}
 	held.unseenAt = readAt
 	c.compares[pair] = held
-}
-
-// carryUnseen is markUnseen for a read-only read: it carries pair as unseen in carry, for the
-// rest of that read's request, on the terms markUnseen holds a pair on, and holds nothing in this
-// process, so its request's later steps are answered unseen where a writer's are answered from
-// its hold.
-func (c *Branches) carryUnseen(carry *BranchCarry, pair repoBranch, readAt time.Time) {
-	c.mu.Lock()
-	answered := c.compares[pair].answeredAt.After(readAt)
-	c.mu.Unlock()
-	if answered {
-		return
-	}
-	if carry.unseen == nil {
-		carry.unseen = map[repoBranch]bool{}
-	}
-	carry.unseen[pair] = true
-}
-
-// holdsUnseen is whether carry carries pair as unseen (carryUnseen). A nil carry, a writer's
-// read's, carries nothing.
-func (carry *BranchCarry) holdsUnseen(pair repoBranch) bool {
-	return carry != nil && carry.unseen[pair]
 }
 
 // markSeen records that a compare read of pair begun at readAt was answered, which drops
@@ -650,8 +645,12 @@ func (carry *BranchCarry) holdsUnseen(pair repoBranch) bool {
 // still in flight that fails loses to (markUnseen); an older moment never replaces a newer one,
 // so two reads answered out of order leave the newer standing. A pair no refusal may hold
 // reaches neither this nor markUnseen, so the repository's own default branch leaves no entry
-// in the map at all (CommitOnBranch, isDefaultBranch).
-func (c *Branches) markSeen(pair repoBranch, readAt time.Time) {
+// in the map at all (CommitOnBranch, isDefaultBranch). A read-only read, whose carry is not nil,
+// marks nothing, since it keeps nothing in this process after its request (plan D32).
+func (c *Branches) markSeen(carry *BranchCarry, pair repoBranch, readAt time.Time) {
+	if carry != nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.compares == nil {

@@ -1,7 +1,6 @@
 package textversions
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestTheFillReadsAgainThePostEventsItPassed holds the fill to the events that rules version 1
@@ -37,7 +37,7 @@ func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
 	messageDelete := changePost(t, database, broker, "message", "message.deleted", message, "")
 	passed := []int64{edit, commentDelete, messageDelete}
 
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	if err := testFiller(database, events.NewHorizon(database.Pool), &logs).toHorizon(t.Context()); err != nil {
 		t.Fatalf("the first fill: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
 	}
 
 	later := commitComment(t, database, broker, textversionstest.Issue)
-	var rereadLogs bytes.Buffer
+	var rereadLogs logtest.Buffer
 	if err := testFiller(database, events.NewHorizon(database.Pool), &rereadLogs).toHorizon(t.Context()); err != nil {
 		t.Fatalf("the fill that reads again: %v", err)
 	}
@@ -178,7 +178,7 @@ func changePost(t *testing.T, database *store.Store, broker *events.Broker, kind
 }
 
 // loggedMessage reports whether logs, a JSON handler's output, holds a line whose message is msg.
-func loggedMessage(t *testing.T, logs *bytes.Buffer, msg string) bool {
+func loggedMessage(t *testing.T, logs *logtest.Buffer, msg string) bool {
 	t.Helper()
 	for _, line := range logLines(t, logs) {
 		if line.Msg == msg {

@@ -3,6 +3,7 @@ package textversions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds runs the fill as two serving
@@ -39,6 +41,8 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 
 	var holders cursorHolders
 	var ids []int64
+	// The comments are written 300 ms apart while both fills run, and the hold is read at each: the
+	// loop writes on a tick rather than waiting for something to hold, so it keeps its own sleep.
 	for range 10 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 		first.Wake()
@@ -293,16 +297,12 @@ func liveHolder(t *testing.T, database *store.Store) string {
 // awaitLiveHolder waits until the fill's hold names a live holder, and answers it.
 func awaitLiveHolder(t *testing.T, database *store.Store, within time.Duration) string {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		if holder := liveHolder(t, database); holder != "" {
-			return holder
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no fill took the hold within %v", within)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	var holder string
+	testwait.WithinPolling(t, within, 20*time.Millisecond, fmt.Sprintf("a fill to take the hold within %v", within), func() bool {
+		holder = liveHolder(t, database)
+		return holder != ""
+	})
+	return holder
 }
 
 // cursorHolders is the cursor row's holder as the test read it.

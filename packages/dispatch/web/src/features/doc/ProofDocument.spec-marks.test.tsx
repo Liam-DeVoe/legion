@@ -304,12 +304,14 @@ test("a read of the read mark asked before the mark landed does not bring back t
   }
 });
 
-// N2 of test round 46 on dispatch://INFRA-1523 (census row V.32), and the architect's ruling (c)
-// of 2026-11-20 22:18Z. A pending insert put words in the spec's Rollout heading, and the line
-// names that section by its heading's excerpt in the spec's `part_of` read. The insert's comment is
-// deleted, which takes the words out of the document; the read the page holds still gives them,
-// with no mark to tell them by, and here every read the page asks again fails. The delete's
-// correction drops the read and the spec's blocks, so the page draws no line rather than the words.
+// Census row V.32 of dispatch://INFRA-1523, and the architect's ruling (c) of 2026-11-20 22:18Z:
+// the Spec tab's line of what changed since the reader's last read names no word a deleted
+// pending insert put in the spec, even while every read the page asks again fails. A pending
+// insert put words in the spec's Rollout heading, and the line names that section by its
+// heading's excerpt in the spec's `part_of` read. The insert's comment is deleted, which takes the
+// words out of the document; the read the page holds still gives them, with no mark to tell them
+// by, and here every read the page asks again fails. The delete's correction drops the read and
+// the spec's blocks, so the page draws no line rather than the words.
 test("after a pending insert's delete whose reads fail again, the Spec tab's line names none of its words", async () => {
   const inserted = "cleared by the security review";
   const reads = stubReads(2);

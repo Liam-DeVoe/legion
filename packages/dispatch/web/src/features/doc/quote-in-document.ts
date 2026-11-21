@@ -138,9 +138,10 @@ function listedWords(
  * name one. A draft with no such time - one an older release kept - counts as taken before every
  * read. Words that name no list of inserts - a draft or held send an older build kept, or a
  * selection the editor held no document for - are judged by the read's words alone, however old
- * it is: they may lie in an insert whose comment is deleted, and a composer that mounts at them
- * with an empty field takes its mount as their time, later than a read that lacks them. Gone
- * only where the page holds such a read of the document's text and it does not hold the words.
+ * it is: they may lie in an insert whose comment is deleted, and the time a composer at them with
+ * an empty field takes - its open compose's (`MentionComposer`'s `openedAt`), or its mount where
+ * no compose outlives it - can be later than a read that lacks them. Gone only where the page
+ * holds such a read of the document's text and it does not hold the words.
  *
  * Until then the words are drawn only once the page holds an answer that can check them: that
  * text read, or the comment list the margin of the draft's `owner` reads (`useMarginItems`),

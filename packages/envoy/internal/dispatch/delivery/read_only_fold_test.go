@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // resultsHeadsRead is one entry of resultsHeadsReads: one read of pull_request_heads on the
@@ -32,6 +33,9 @@ type resultsHeadsRead struct {
 	// statement text: the text after its WITH list. function must reach it through the package's
 	// own functions and values, and no other exported function may reach it but through function.
 	statement string
+	// text is that constant or variable's value: the one statement the read sends, given a
+	// request's answers or none, ends with it.
+	text string
 }
 
 // resultsHeadsReads is the registry of the reads of pull_request_heads on the results path: the
@@ -39,11 +43,11 @@ type resultsHeadsRead struct {
 // TestEachHeadsReadOnTheResultsPathIsOneStatement holds the package to it, and
 // TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its questions (foldQuestions).
 var resultsHeadsReads = []resultsHeadsRead{
-	{read: "headsAttributedQuery", function: "HeadsAttributedTo", statement: "headsAttributedQuery"},
-	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery"},
-	{read: "BaseBranchMergedFor", function: "BaseBranchMergedFor", statement: "baseBranchMergedForQuery"},
-	{read: "baseBranchMergedInQuery", function: "BaseBranchMergedIn", statement: "baseBranchMergedInQuery"},
-	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery"},
+	{read: "headsAttributedQuery", function: "HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
+	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: headStoredAtQuery},
+	{read: "BaseBranchMergedFor", function: "BaseBranchMergedFor", statement: "baseBranchMergedForQuery", text: baseBranchMergedForQuery},
+	{read: "baseBranchMergedInQuery", function: "BaseBranchMergedIn", statement: "baseBranchMergedInQuery", text: baseBranchMergedInQuery},
+	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's
@@ -70,6 +74,17 @@ const requestAnswers = "HeadAnswers"
 // read them.
 var answerShapes = []string{"HeadAnswers", "BranchCarry", "CommitPulls"}
 
+// processHolds is each type of the package that the server holds for the process and that a
+// results read reads (api's server.branches and server.commitPulls), with the fields it holds:
+// what a writer's read writes there, the default branches and the compare holds, and the claims
+// and the settles. A read-only read reads them and writes none of them (plan D32). Any other field
+// keeps something across requests whatever type it is, such as a memory of the branch answers
+// read-only reads learned, so the inventory fails on it until this list names it.
+var processHolds = map[string][]string{
+	"Branches":        {"mu", "known", "compares"},
+	"CommitPullReads": {"mu", "notBefore"},
+}
+
 // TestEachHeadsReadOnTheResultsPathIsOneStatement is plan D30's inventory of the reads of
 // pull_request_heads on the results path, and plan D32's rule that a read-only read keeps nothing
 // after its request. It parses the package's non-test files, as go build selects them, and fails
@@ -77,11 +92,19 @@ var answerShapes = []string{"HeadAnswers", "BranchCarry", "CommitPulls"}
 //
 //   - a type that keeps answers past the request that read them (answerShapes), and every function
 //     or method that takes one, as a parameter or as its receiver;
+//   - a field of a type the server holds for the process that processHolds does not name, and a
+//     field it names that the type does not hold;
 //   - a function or method that takes the request's answers (requestAnswers) and that the registry
 //     does not name (resultsHeadsReads, answeredReads);
 //   - a name in the registry that the package does not declare;
 //   - a read whose statement is not a constant or variable of the package, or is not reached from
 //     the read's function, or is reached from another exported function: a second entry point.
+//
+// Then, on a database of its own (a subtest, which skips where none is set), it runs each read on
+// a traced pool (storetest.Traced) with a request's answers, as foldQuestions asks the read, and
+// fails where the read sends more than one statement, or one that does not end with the read's
+// registered text (resultsHeadsRead.text): a statement only a read-only read sends, before or
+// beside its one, fails here.
 func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 	source := parsePackageSource(t)
 
@@ -90,6 +113,39 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 		t.Errorf("%s: the type %s holds %s, so it keeps answers past the request that read them. "+
 			"A read-only results read keeps nothing after its request (plan D32): pass the answers to that request's reads alone",
 			source.positions.Position(source.types[name].Pos()), name, keeping[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(processHolds)) {
+		spec, declared := source.types[name]
+		if !declared {
+			t.Errorf("processHolds names %s, which is no type of the package", name)
+			continue
+		}
+		structure, isStruct := spec.Type.(*ast.StructType)
+		if !isStruct {
+			t.Errorf("%s: processHolds names %s, which is no struct", source.positions.Position(spec.Pos()), name)
+			continue
+		}
+		named := map[string]bool{}
+		for _, field := range processHolds[name] {
+			named[field] = true
+		}
+		held := map[string]bool{}
+		for _, field := range structure.Fields.List {
+			for _, fieldName := range fieldNames(field) {
+				held[fieldName] = true
+				if !named[fieldName] {
+					t.Errorf("%s: %s holds %s, which processHolds does not name: the server holds a %s for the process, so the field "+
+						"keeps what it holds across requests. A read-only results read keeps nothing after its request (plan D32): "+
+						"carry what it learns for that request alone (HeadAnswers, BranchCarry)",
+						source.positions.Position(field.Pos()), name, fieldName, name)
+				}
+			}
+		}
+		for _, field := range processHolds[name] {
+			if !held[field] {
+				t.Errorf("processHolds names %s.%s, which %s does not hold", name, field, name)
+			}
+		}
 	}
 	registered := map[string]bool{}
 	for _, name := range answeredReads {
@@ -144,6 +200,65 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 					source.positions.Position(function.decl.Pos()), function.key, read.statement, read.read, read.function)
 			}
 		}
+	}
+
+	t.Run("each read sends its one statement given a request's answers", func(t *testing.T) {
+		pool, ctx := deliveryTestPool(t)
+		seedFoldIssues(t, ctx, pool)
+		steps := statementTraceSteps()
+		var answers HeadAnswers
+		for _, step := range steps {
+			if step.writer == foldAnswered {
+				answers.Add(step.pulls)
+				continue
+			}
+			foldWrite(t, ctx, pool, step)
+		}
+		recorder := &storetest.StatementRecorder{}
+		traced := storetest.Traced(t, pool, recorder, nil)
+		reads := map[string]resultsHeadsRead{}
+		for _, read := range resultsHeadsReads {
+			reads[read.read] = read
+		}
+		for _, question := range foldQuestions(t, steps) {
+			before := len(recorder.Statements())
+			if _, err := foldRead(ctx, traced, answers, question); err != nil {
+				t.Errorf("%s, given the request's answers: %v", question, err)
+				continue
+			}
+			read := reads[question.read]
+			if sent := recorder.Statements()[before:]; len(sent) != 1 || !strings.HasSuffix(sent[0], read.text) {
+				t.Errorf("%s, given the request's answers, sent %d statements:\n\t%s\nwant one, the read's own, which ends with %s (resultsHeadsReads): "+
+					"both callers of a read run its one statement, and nothing beside it",
+					question, len(sent), strings.Join(sent, "\n\t"), read.statement)
+			}
+		}
+	})
+}
+
+// statementTraceSteps is the history TestEachHeadsReadOnTheResultsPathIsOneStatement asks each
+// read about: a delivery's row of deliveryRepo's pull request 5, and a request's answers that lay
+// on it the pull request's merge, credited to foldIssue, beside an open pull request with no row
+// and an answer of a read asked under the name gadgetsRepo was renamed away from.
+func statementTraceSteps() []foldStep {
+	issue, linking := foldIssue, foldLinkingIssue
+	learned := time.Date(2026, 11, 20, 9, 20, 0, 0, time.UTC)
+	stored := foldHead(deliveryRepo, 5, strings.Repeat("1", 40))
+	stored.IssueKey, stored.AttributionSource = &issue, "title"
+	merged := foldHead(deliveryRepo, 5, strings.Repeat("2", 40))
+	merged.IssueKey, merged.AttributionSource = &issue, "title"
+	merged.State, merged.BaseRef, merged.MergeCommitSHA = "merged", "release", strings.Repeat("m", 40)
+	merged.EventAt, merged.CheckedAt = &learned, &learned
+	opened := foldHead(deliveryRepo, 6, strings.Repeat("6", 40))
+	opened.IssueKey, opened.AttributionSource = &issue, "title"
+	opened.EventAt, opened.CheckedAt = &learned, &learned
+	renamed := foldHead(gadgetsRepo, 9, strings.Repeat("8", 40))
+	renamed.IssueKey, renamed.AttributionSource = &linking, "title"
+	renamed.EventAt, renamed.CheckedAt = &learned, &learned
+	return []foldStep{
+		{writer: foldDelivery, pulls: CommitPulls{Heads: []PullRequestHead{stored}, storedUnder: deliveryRepo}},
+		{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{merged, opened}, storedUnder: deliveryRepo}},
+		{writer: foldAnswered, pulls: CommitPulls{Heads: []PullRequestHead{renamed}, storedUnder: gadgetsOldRepo}},
 	}
 }
 
@@ -348,6 +463,26 @@ func receiverName(expr ast.Expr) string {
 	return ""
 }
 
+// fieldNames is the names a struct field declares: its names, or for an embedded field the name
+// of its type.
+func fieldNames(field *ast.Field) []string {
+	if len(field.Names) > 0 {
+		names := make([]string, len(field.Names))
+		for index, name := range field.Names {
+			names[index] = name.Name
+		}
+		return names
+	}
+	embedded := field.Type
+	if pointer, isPointer := embedded.(*ast.StarExpr); isPointer {
+		embedded = pointer.X
+	}
+	if selector, isSelector := embedded.(*ast.SelectorExpr); isSelector {
+		return []string{selector.Sel.Name}
+	}
+	return []string{receiverName(embedded)}
+}
+
 // foldIssue is the issue of deliveryRepo the fold histories attribute pull requests to, and
 // foldLinkingIssue an issue of gadgetsRepo that links deliveryRepo's pull request 5, so its
 // linked arm reads that pull request's row in every history (linkedPullRequestTerms).
@@ -392,7 +527,8 @@ func (q foldQuestion) String() string {
 // oracle is the writer's own path (foldOracle): the request's answers stored on the rows the
 // writers left, as a writer's read-throughs store them, in a transaction rolled back once the
 // writer's read has run in it. The read-only form runs on the rows the writers left, with the
-// request's answers, and must give the oracle's answer to every question (foldQuestions).
+// request's answers, and must give the oracle's answer to every question (foldQuestions). The
+// request must hold one answer for each run of equal answers (foldAnswerRuns, plan D33).
 func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 	at := func(minute int) time.Time { return time.Date(2026, 11, 20, 9, minute, 0, 0, time.UTC) }
 	read := func(minute int) *time.Time { moment := at(minute); return &moment }
@@ -431,6 +567,53 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 	answered := func(head PullRequestHead) foldStep {
 		return answeredUnder(head.Repo, head)
 	}
+
+	// manyAnswers is a request whose read-throughs name gadgetsRepo's pull request 9 again and
+	// again, over the row kept under the name gadgetsRepo was renamed away from and the row a
+	// delivery stored under the canonical name: runs of answers equal in every column but
+	// checked_at, each run unlike the one before it in the name the read was asked under, the
+	// head, the state, the attribution or the event time, which moves forward and back.
+	manyAnswers := []foldStep{
+		delivered(timed(credited(foldHead(gadgetsOldRepo, 9, sha("7")), foldLinkingIssue), at(1), read(2))),
+		delivered(timed(foldHead(gadgetsRepo, 9, sha("1")), at(3), read(4))),
+	}
+	readMinute := 30
+	// run adds count answers equal to answer, each of a read asked under the name under: a
+	// complete one read at the next minute, and an incomplete one unstamped, as ReadCommitPulls
+	// answers them.
+	run := func(count int, under string, answer PullRequestHead) {
+		for range count {
+			readMinute++
+			answer.CheckedAt = nil
+			if answer.AttributionComplete {
+				answer.CheckedAt = read(readMinute)
+			}
+			manyAnswers = append(manyAnswers, answeredUnder(under, answer))
+		}
+	}
+	pull9 := func(commit string) PullRequestHead {
+		return credited(foldHead(gadgetsRepo, 9, commit), foldLinkingIssue)
+	}
+	closed := pull9(sha("3"))
+	closed.State = "closed"
+	run(5, gadgetsRepo, timed(pull9(sha("1")), at(5), nil))
+	run(4, gadgetsOldRepo, timed(pull9(sha("1")), at(5), nil))
+	run(3, gadgetsRepo, timed(pull9(sha("1")), at(5), nil))
+	run(6, gadgetsRepo, timed(pull9(sha("2")), at(6), nil))
+	// Older than the event the row holds: the guard refuses each.
+	run(4, gadgetsRepo, timed(pull9(sha("3")), at(4), nil))
+	run(5, gadgetsRepo, timed(incomplete(pull9(sha("3"))), at(7), nil))
+	run(4, gadgetsRepo, timed(closed, at(8), nil))
+	// Credited to nobody by a read of every source.
+	run(5, gadgetsRepo, timed(foldHead(gadgetsRepo, 9, sha("4")), at(9), nil))
+	run(3, gadgetsRepo, timed(pull9(sha("2")), at(8), nil))
+	// The event the row holds: the guard lets each through.
+	run(4, gadgetsRepo, timed(pull9(sha("4")), at(9), nil))
+	// No event time: the row keeps its own.
+	run(5, gadgetsRepo, pull9(sha("5")))
+	run(6, gadgetsRepo, timed(merged(pull9(sha("5")), "release", sha("m")), at(10), nil))
+	run(4, gadgetsOldRepo, timed(merged(pull9(sha("5")), "release", sha("m")), at(10), nil))
+	run(3, gadgetsRepo, timed(pull9(sha("6")), at(9), nil))
 
 	for _, history := range []struct {
 		name  string
@@ -487,16 +670,26 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 			answered(timed(credited(head(5, sha("1")), foldIssue), at(3), read(20))),
 			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(25))),
 		}},
+		// 61 answers in 14 runs (manyAnswers).
+		{"many answers for one pull request", manyAnswers},
+		// Pull request 5 is stored at sha 1, and the request's read-through of another commit,
+		// sha 0, names it at sha 2. The writer's upsert of that answer moves the row off sha 1,
+		// so sha 1 heads no stored pull request: a HeadStoredAt given only the answers headed at
+		// sha 1 would answer yes (plan D33).
+		{"the moved head", []foldStep{
+			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), read(20))),
+		}},
 	} {
 		t.Run(history.name, func(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
 			seedFoldIssues(t, ctx, pool)
-			var request foldRequest
+			var answers HeadAnswers
 			answering := false
 			for index, step := range history.steps {
 				if step.writer == foldAnswered {
 					answering = true
-					foldAnswer(&request, step)
+					answers.Add(step.pulls)
 					continue
 				}
 				if answering {
@@ -505,10 +698,14 @@ func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 				}
 				foldWrite(t, ctx, pool, step)
 			}
+			if held, runs := len(answers.columns.repo), foldAnswerRuns(history.steps); held != runs {
+				t.Errorf("the request holds %d answers, want %d, one for each run of its answers for one pull request equal in every column "+
+					"but checked_at: the writer's upserts of a run leave the row as the upsert of its last answer alone does (plan D33)", held, runs)
+			}
 			questions := foldQuestions(t, history.steps)
 			want := foldOracle(t, ctx, pool, history.steps, questions)
 			for _, question := range questions {
-				got, err := foldRead(ctx, pool, request.answers, question)
+				got, err := foldRead(ctx, pool, answers, question)
 				if err != nil {
 					t.Errorf("%s, the read-only read: %v", question, err)
 					continue
@@ -644,20 +841,40 @@ func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, steps []fol
 	return answers
 }
 
-// The fold test reaches the reads, the read-only one and the writer's one its oracle runs, through
-// foldRequest, foldAnswer and foldRead alone, so the histories can be run against another form of
-// the reads by changing these and nothing else.
-
-// foldRequest is the answers one read-only request learned, as the fold test hands them to the
-// reads.
-type foldRequest struct {
-	answers HeadAnswers
+// foldAnswerRuns is how many answers a request that read the answers of steps holds: one for each
+// run of its answers for one pull request equal in every column of HeadAnswers but checked_at,
+// renamed_from among them. The writer's upserts of such a run leave the row as the upsert of its
+// last answer alone does, so HeadAnswers.Add lays the run on as that one answer (plan D33).
+func foldAnswerRuns(steps []foldStep) int {
+	runs := 0
+	last := map[string]string{}
+	for _, step := range steps {
+		if step.writer != foldAnswered {
+			continue
+		}
+		for _, head := range step.pulls.Heads {
+			renamedFrom := "-"
+			if !strings.EqualFold(step.pulls.storedUnder, head.Repo) {
+				renamedFrom = step.pulls.storedUnder
+			}
+			pull := fmt.Sprintf("%s#%d", head.Repo, head.Number)
+			answer := fmt.Sprintf("%s %s %s %s %t %s %s", head.HeadSHA, head.BaseRef, head.State,
+				foldColumn(head.IssueKey), head.AttributionComplete, foldColumn(head.EventAt), renamedFrom)
+			if answer != last[pull] {
+				runs++
+			}
+			last[pull] = answer
+		}
+	}
+	return runs
 }
 
-// foldAnswer adds step, an answer the request learned from GitHub, to request, in the order the
-// request read it.
-func foldAnswer(request *foldRequest, step foldStep) {
-	request.answers.Add(step.pulls)
+// foldColumn is a column's value as text, and "-" for null.
+func foldColumn[T any](value *T) string {
+	if value == nil {
+		return "-"
+	}
+	return fmt.Sprint(*value)
 }
 
 // foldRead asks question of its read on q, with answers: the pool and the request's answers for

@@ -18,10 +18,12 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
 import type {
@@ -11648,6 +11650,78 @@ test("a Retry whose read answers that the id names several items leaves the focu
         "the list of matches, drawn in place of the Retry the reader pressed, left the focus on the page's body"
       ).toBe(list)
     );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// Census row 8.54 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// list of an id's matches stays drawn while its read runs again (`Following.settled`), and what it
+// draws then is the refusal the cache holds, which every correction is written into
+// (`markCorrectedPost`), never a list kept from before one. A match deleted while the list is
+// drawn is drawn deleted, with none of its first line, while a later read is out; and so is one
+// deleted while that read is out, which TanStack holds no refusal for: the delete gives the read
+// up, writes its mark into the refusal that puts back, and holds it beside the read it asks again.
+test("a match deleted after the list of an id's matches was drawn is drawn deleted while the list's read runs again", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const short = GONE_COMMENT.slice(0, 8);
+  const other = `${short}-0000-4000-8000-000000000002`;
+  const third = `${short}-0000-4000-8000-000000000003`;
+  const match = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: KEY,
+    kind: "comment",
+    ref: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+  });
+  const read = spyOn(api, "getReferences").mockRejectedValueOnce(
+    new ApiError(409, {
+      candidates: [
+        match(GONE_COMMENT, "The first note"),
+        match(other, "The other note"),
+        match(third, "The third note"),
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${short}" names 3 items; write more of the id`,
+    })
+  );
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: short, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const { container } = body.view;
+    const drawn = () => ({
+      deleted: container.querySelectorAll("[data-post-deleted]").length,
+      list: container.textContent?.includes("Several items match that link"),
+      words: ["The first note", "The other note", "The third note"].filter((words) =>
+        container.textContent?.includes(words)
+      ),
+    });
+    await waitFor(() => expect(container.textContent).toContain("The first note"));
+
+    act(() => markCorrectedPost(body.client, correction("comment", GONE_COMMENT, false)));
+    await waitFor(() => expect(container.textContent).not.toContain("The first note"));
+    // The read runs again, as window focus reads a read in error again, and stays out.
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise as never);
+    act(() => {
+      void body.client.refetchQueries({ queryKey: ["references", "to"] });
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const whileOut = drawn();
+
+    const asked = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(asked.promise as never);
+    act(() => markCorrectedPost(body.client, correction("comment", other, false)));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(container.textContent).not.toContain("The other note"));
+    expect({ whileOut, deletedWhileOut: drawn() }).toEqual({
+      whileOut: { deleted: 1, list: true, words: ["The other note", "The third note"] },
+      deletedWhileOut: { deleted: 2, list: true, words: ["The third note"] },
+    });
   } finally {
     names.mockRestore();
     read.mockRestore();

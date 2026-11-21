@@ -1,7 +1,6 @@
 package textversions
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestThePauseFollowsTheAnswersReadsThisProcessServes holds the fill's pause to each state the
@@ -90,7 +90,7 @@ func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
 			rig.latency = sessionanswers.NewLatency(rig.clock)
 			rig.run(row.before)
 
-			var logs bytes.Buffer
+			var logs logtest.Buffer
 			fill := testFiller(database, events.NewHorizon(database.Pool), &logs)
 			fill.maxEvents = 1
 			pause := newPauser(rig.latency, fill.logger)

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keywordItem is one item of the keyword table: its kind and its id, an issue's key or a post's or
@@ -93,19 +94,15 @@ func (h *keywordHistory) keepInside(step string, backend int32) {
 // time inside their window when open names any.
 func (h *keywordHistory) keepAt(step string, open []int32) {
 	h.t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		kept, quiet := h.read(open)
-		if quiet {
-			kept.step, kept.inside = step, len(open) > 0
-			h.kept = append(h.kept, kept)
-			return
-		}
-		if time.Now().After(deadline) {
-			h.t.Fatalf("after %s, no moment in 30 s had no other transaction of the database open", step)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	var kept keptTime
+	testwait.WithinPolling(h.t, 30*time.Second, 20*time.Millisecond,
+		fmt.Sprintf("a moment within 30 s after %s at which no other transaction of the database is open", step), func() bool {
+			var quiet bool
+			kept, quiet = h.read(open)
+			return quiet
+		})
+	kept.step, kept.inside = step, len(open) > 0
+	h.kept = append(h.kept, kept)
 }
 
 // keywordBusyQuery answers how many events are committed, and whether another client backend of
@@ -423,20 +420,17 @@ func (h *keywordHistory) requireVersion(step string, key keywordItem, want func(
 // the test reads the relation at.
 func keywordAwaitReach(t *testing.T, database *store.Store, at time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		reach, reached, err := database.TextVersionsReach(t.Context())
-		if err != nil {
+	var reach time.Time
+	var reached bool
+	if !testwait.Holds(30*time.Second, 100*time.Millisecond, func() bool {
+		var err error
+		if reach, reached, err = database.TextVersionsReach(t.Context()); err != nil {
 			t.Fatalf("read the keyword table's reach: %v", err)
 		}
-		if reached && !reach.Before(at.Truncate(time.Microsecond)) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the keyword table's reach is %s (reached %v) 30 s on; the last kept time is %s",
-				reach.Format(time.RFC3339Nano), reached, at.Format(time.RFC3339Nano))
-		}
-		time.Sleep(100 * time.Millisecond)
+		return reached && !reach.Before(at.Truncate(time.Microsecond))
+	}) {
+		t.Fatalf("the keyword table's reach is %s (reached %v) 30 s on; the last kept time is %s",
+			reach.Format(time.RFC3339Nano), reached, at.Format(time.RFC3339Nano))
 	}
 }
 

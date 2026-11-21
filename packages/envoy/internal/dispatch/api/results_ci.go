@@ -19,20 +19,9 @@ import (
 // results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
 // role records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it
 // either: each read takes the newest pull request head of the issue
-// (comparisonReader.newestPullRequestHead), reads that commit's check runs from GitHub once, and
-// derives the check's one result from the run its `ci_check` names. The derived result goes
-// through the same comparisonReader a recorded result does, so one rule judges where both kinds
-// stand.
-
-// newestPullRequestHead is the newest pull request head of issueKey that a check CI proves is
-// derived at (delivery.NewestPullRequestHead). It is read after learn, so a writer's read finds
-// the row its own read-through stored, and a read-only caller's read finds the head its own
-// read-through learned, through the request's answers it passes as every other read of the heads
-// here does. A reader that named a commit learns nothing, so its answers are empty and it reads
-// the stored rows alone, whoever reads.
-func (c *comparisonReader) newestPullRequestHead(ctx context.Context, issueKey string) (delivery.NewestHead, bool, error) {
-	return delivery.NewestPullRequestHead(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
-}
+// (delivery.NewestPullRequestHead), reads that commit's check runs from GitHub once, and derives
+// the check's one result from the run its `ci_check` names. The derived result goes through the
+// same comparisonReader a recorded result does, so one rule judges where both kinds stand.
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together: the route is read inside a role's turn and inside the reviewer's gate, and a read
@@ -101,7 +90,7 @@ type ciRun struct {
 // holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
 // issue, whose Verification document holds the checks and whose pull request heads they are read
 // at. It runs after reader has learned the heads GitHub names (comparisonReader.learn) and reads
-// the newest head through it (comparisonReader.newestPullRequestHead), so a head this read's
+// the newest head with reader's answers (delivery.NewestPullRequestHead), so a head this read's
 // read-through learned is the head a check CI proves is derived at. Only a failed read of
 // Dispatch's own database is an error; whatever GitHub answers is a case of the answer.
 func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) error {
@@ -123,7 +112,12 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	if err != nil {
 		return err
 	}
-	head, found, err := reader.newestPullRequestHead(ctx, issueKey)
+	// The newest head is read after learn, so a writer's read finds the row its own read-through
+	// stored, and a read-only caller's read finds the head its own read-through learned, through
+	// the request's answers it passes as every other read of the heads does. A reader that named a
+	// commit learns nothing, so its answers are empty and it reads the stored rows alone, whoever
+	// reads.
+	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil {
 		return err
 	}
@@ -215,10 +209,10 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 }
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
-// the read's error, worded by gitHubErrorText: the error's text ends with GitHub's whole body
-// where GitHub refused or rate-limited the read, up to the 16 MiB a page of check runs may take,
-// and that body gives way to GitHub's `message`, so the status stays. The sentence is then cut
-// to ciUnreadDetailRunes.
+// the read's error, worded by gitHubErrorText: where GitHub refused or rate-limited the read, the
+// error's text ends with GitHub's body as githubapp.ShownBody shows it, its first 512 characters
+// of a page of check runs that may take 16 MiB, and that gives way to GitHub's `message`, read
+// from the whole body, so the status stays. The sentence is then cut to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
 	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
 		head.Repo, head.HeadSHA, gitHubErrorText(err)), ciUnreadDetailRunes)
@@ -226,15 +220,16 @@ func ciUnreadDetail(head delivery.NewestHead, err error) string {
 
 // gitHubErrorText is the text of err, a GitHub read's error. Where GitHub refused the read
 // (githubapp.StatusError) or rate-limited it (githubapp.RateLimitError), the body the error's
-// text ends with is replaced by the `message` GitHub writes in the JSON it refuses a request
-// with, and left out where it holds none (withGitHubMessage). Any other error keeps its text.
+// text ends with, as githubapp.ShownBody shows it, is replaced by the `message` GitHub writes in
+// the JSON it refuses a request with, read from the whole body, and left out where the body holds
+// none (withGitHubMessage). Any other error keeps its text.
 func gitHubErrorText(err error) string {
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
-		return withGitHubMessage(err.Error(), refused.Body, refused.Message())
+		return withGitHubMessage(err.Error(), githubapp.ShownBody(refused.Body), refused.Message())
 	}
 	if limited, ok := githubapp.AsRateLimit(err); ok {
-		return withGitHubMessage(err.Error(), limited.Body, limited.Message())
+		return withGitHubMessage(err.Error(), githubapp.ShownBody(limited.Body), limited.Message())
 	}
 	return err.Error()
 }
@@ -242,8 +237,10 @@ func gitHubErrorText(err error) string {
 // gitHubReason is err's text as a refusal sentence carries it: gitHubErrorText, cut to its first
 // gitHubReasonBytes at a whole character (text.HeadBytes) where it is longer, saying so. The cut
 // is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error (linkedReadRefusal,
-// getAppInstallation), since an error GitHub answered with a page that is no JSON carries that
-// whole page, up to the megabyte githubapp reads of an answer.
+// getAppInstallation) on the whole reason: an error GitHub answered with a page that is no JSON
+// carries the page as githubapp.ShownBody shows it, its first 512 characters, which may take
+// 2,048 bytes, and its size, after the request's own text, and an error of any other package
+// carries whatever text it holds.
 func gitHubReason(err error) string {
 	reason := gitHubErrorText(err)
 	head, cut := text.HeadBytes(reason, gitHubReasonBytes)

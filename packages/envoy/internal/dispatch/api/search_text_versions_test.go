@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestTheKeywordTableHoldsEachVersionOfEachItem writes, through the API, every kind of item the
@@ -352,13 +353,9 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	held := make(chan *httptest.ResponseRecorder, 1)
 	go func() { held <- dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice") }()
 	waitForDatabaseLocks(t, holder, 1)
-	slowDeadline := time.Now().Add(5 * time.Second)
-	for !server.latency.Slow(time.Now()) {
-		if time.Now().After(slowDeadline) {
-			t.Fatal("the answers read held by the lock was no slow read 5 s after it began")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the answers read held by the lock to turn slow within 5 s", func() bool {
+		return server.latency.Slow(time.Now())
+	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
 	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
@@ -378,7 +375,9 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		t.Fatalf("the fill paused with its cursor at %d, the backlog's last event %d: it was not catching up", paused, last)
 	}
 
-	// The lock holds 20 s while events are written, and the cursor stands.
+	// The lock holds 20 s while events are written, and the cursor stands. The loop reads the
+	// cursor for the whole 20 s and writes on a tick, rather than waiting for something to hold,
+	// so it keeps its own clock.
 	writes := 0
 	releaseAt := time.Now().Add(20 * time.Second)
 	for time.Now().Before(releaseAt) {
@@ -409,7 +408,9 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	}
 
 	// For the 10 s after the slow read ended, reads answer within 800 ms, and the cursor stands:
-	// the slow read ended after the release, so nothing may move before released + 10 s.
+	// the slow read ended after the release, so nothing may move before released + 10 s. Like the
+	// loop above, it checks for the whole span rather than stopping at a first success, so it keeps
+	// its own clock.
 	for time.Since(released) < sessionanswers.SlowWithin+time.Second {
 		began := time.Now()
 		if response := dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice"); response.Code != http.StatusOK {
@@ -429,13 +430,10 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 
 	// Then the fill continues: the cursor moves, and every event gets its rows.
 	fill.AwaitLine(t, keywordContinuesLine, 20*time.Second)
-	moveDeadline := time.Now().Add(20 * time.Second)
-	for textversionstest.Cursor(t, server.database) == paused {
-		if time.Now().After(moveDeadline) {
-			t.Fatalf("the cursor stood at %d 20 s after the fill said it continues", paused)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, 20*time.Second, 100*time.Millisecond,
+		fmt.Sprintf("the cursor to move from %d within 20 s of the fill saying it continues", paused), func() bool {
+			return textversionstest.Cursor(t, server.database) != paused
+		})
 	keywordAwaitCursor(t, server.database, lastEventID(t, server.database), 2*time.Minute, fill.Wake)
 	textversionstest.RequireRowsOf(t, server.database, backlog)
 	var underLock int
@@ -552,13 +550,15 @@ const (
 // keywordAwaitCursor waits until the fill's cursor reaches id, waking the fill each second.
 func keywordAwaitCursor(t *testing.T, database *store.Store, id int64, within time.Duration, wake func()) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for textversionstest.Cursor(t, database) < id {
-		if time.Now().After(deadline) {
-			t.Fatalf("the fill's cursor is %d %v on; want event %d", textversionstest.Cursor(t, database), within, id)
+	var cursor int64
+	if !testwait.Holds(within, time.Second, func() bool {
+		if cursor = textversionstest.Cursor(t, database); cursor >= id {
+			return true
 		}
 		wake()
-		time.Sleep(time.Second)
+		return false
+	}) {
+		t.Fatalf("the fill's cursor is %d %v on; want event %d", cursor, within, id)
 	}
 }
 

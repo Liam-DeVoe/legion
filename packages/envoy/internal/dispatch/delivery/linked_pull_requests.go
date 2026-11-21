@@ -149,7 +149,7 @@ var baseBranchMergedInQuery = `
 	limit 1`
 
 // baseBranchMergedInRead is baseBranchMergedInQuery whole, for both callers.
-var baseBranchMergedInRead = newHeadsStatement(baseBranchMergedInQuery, true, 2)
+var baseBranchMergedInRead = newHeadsStatement(baseBranchMergedInQuery, true, 2, "")
 
 // BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
 // branch the merged pull request that the issue's external links name in repoFull merged into

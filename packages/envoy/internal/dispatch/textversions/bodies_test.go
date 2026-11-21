@@ -1,14 +1,12 @@
 package textversions
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestACutCommentBodyIsRebuiltFromItsFirstRevision writes a comment longer than an event carries,
@@ -47,7 +47,7 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 	edited := "A new opening paragraph, written before the others once the rotation was planned.\n\n" + first
 	edit := editComment(t, database, broker, comment.id, edited)
 
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, edit))
 
 	created := startedBy(t, got, comment.event)
@@ -115,7 +115,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		indexComment(t, database, comment.id, long)
 		edit := editComment(t, database, broker, comment.id, "The plan moved to the issue's spec.\n\n"+long)
 
-		var logs bytes.Buffer
+		var logs logtest.Buffer
 		got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, edit))
 		requireKeptEventText(t, database, got, &logs, comment.id, comment.event, long)
 	})
@@ -128,7 +128,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		// A batch bound to 1 byte decides the comment.created alone and leaves the cut edit to
 		// the next batch, which is the one that warns of it.
 		batch := readLoggedEvents(t, database, comment.event, firstEdit, secondEdit)
-		var logs bytes.Buffer
+		var logs logtest.Buffer
 		if bounded, err := decideBoundTo1Byte(t, database, &logs, batch); err != nil || bounded != 1 {
 			t.Fatalf("the batch bound to 1 byte decided %d of the comment's events (%v), want its comment.created alone", bounded, err)
 		}
@@ -151,7 +151,7 @@ func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
 	broker := events.NewBroker()
 	long := longCommentBody()
 	comment := writeComment(t, database, broker, long, true)
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	first := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event))
 	if created := startedBy(t, first, comment.event); created.BodyFrom != bodyFromRow || created.Body != long {
 		t.Fatalf("the comment.created version holds %d bytes from %q, want the comment's %d from %q",
@@ -242,7 +242,7 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 					t.Fatalf("event %d (%s) is read as owned by %s, want the comment's owner, %s", e.ID, e.Type, read, test.owner)
 				}
 			}
-			var logs bytes.Buffer
+			var logs logtest.Buffer
 			got := decideAndWrite(t, database, &logs, batch)
 			aCut, _ := model.EventBody(aBody)
 			bCut, _ := model.EventBody(bBody)
@@ -306,10 +306,24 @@ func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) 
 	for _, kind := range slices.Sorted(maps.Keys(presentBodyReads)) {
 		read := presentBodyReads[kind]
 		t.Run(kind, func(t *testing.T) {
+			ctx := t.Context()
 			database := storetest.Open(t)
 			textversionstest.SeedIssue(t, database)
+			connection, err := database.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection for the plans: %v", err)
+			}
+			defer connection.Release()
 			if len(read.laterTypes) == 0 {
-				relations := genericPlan(t, database, read.sql).relations()
+				// The statement's one parameter is text, the type Postgres infers for it when the
+				// statement is prepared with none, as the fill's pgx connection prepares it, and
+				// any canonical uuid is its literal.
+				plan := explaintest.GenericPlan(t, ctx, connection, "present_row", read.sql,
+					[]string{"text"}, []string{"'7c9e6679-7425-40de-944b-e07fc1f90ae7'"})
+				var relations []string
+				for _, scan := range explaintest.Scans(t, plan) {
+					relations = append(relations, scan.Relation)
+				}
 				if len(relations) == 0 || slices.Contains(relations, "events") {
 					t.Fatalf("the generic plan of the %s statement reads relations %v; want its rows' table and no events", kind, relations)
 				}
@@ -318,14 +332,26 @@ func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) 
 			const later = 3000
 			id, e := writePostWithLaterEvents(t, database, events.NewBroker(), kind, later)
 
-			plan := analyzedGenericPlan(t, database, read, e, id)
-			if plan.ActualRows != 1 {
-				t.Fatalf("the %s statement answered %v rows; want the %s's row, which no later event changes", kind, plan.ActualRows, kind)
+			// EXECUTE takes the statement's arguments as presentBody passes them (arguments), as
+			// literals Postgres quotes, and the statement is prepared with the parameter types
+			// Postgres infers for it when it is prepared with none, as the fill's pgx connection
+			// prepares it.
+			var literals []string
+			if err := database.Pool.QueryRow(ctx,
+				`select array[format('%L', $1::text), format('%L', $2::text), format('%L', $3::text), format('%s', $4::integer), format('%L', $5::text[])]`,
+				read.arguments(e, id)...).Scan(&literals); err != nil {
+				t.Fatalf("write the statement's arguments: %v", err)
 			}
-			buffers := plan.SharedHit + plan.SharedRead
-			t.Logf("the %s statement read %d buffers past %d later events of another type", kind, buffers, later)
+			plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, "present_body", read.sql,
+				[]string{"text", "text", "uuid", "integer", "text[]"}, literals)
+			root := explaintest.Nodes(t, plan)[0]
+			if root.Rows != 1 {
+				t.Fatalf("the %s statement answered %v rows; want the %s's row, which no later event changes", kind, root.Rows, kind)
+			}
+			buffers := root.SharedHitBlocks + root.SharedReadBlocks
+			t.Logf("the %s statement read %.0f buffers past %d later events of another type", kind, buffers, later)
 			if buffers >= later/2 {
-				t.Fatalf("the %s statement read %d buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
+				t.Fatalf("the %s statement read %.0f buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
 					kind, buffers, later, later/2)
 			}
 		})
@@ -348,8 +374,14 @@ func TestEachKindsPresentBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) 
 func TestEachKindsHistoryBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) {
 	for _, kind := range slices.Sorted(maps.Keys(historyBodyQueries)) {
 		t.Run(kind, func(t *testing.T) {
+			ctx := t.Context()
 			database := storetest.Open(t)
 			textversionstest.SeedIssue(t, database)
+			connection, err := database.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection for the plans: %v", err)
+			}
+			defer connection.Release()
 			const later = 3000
 			id, e := writePostWithLaterEvents(t, database, events.NewBroker(), kind, later)
 			edit := kind + ".edited"
@@ -357,7 +389,6 @@ func TestEachKindsHistoryBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) 
 			if !slices.Contains(laterTypes, edit) {
 				t.Fatalf("the history of a %s is read by %v, which lack its edit %s", kind, laterTypes, edit)
 			}
-			ctx := t.Context()
 			if _, err := database.Pool.Exec(ctx, `
 				insert into events (issue_key, seq, type, actor, payload, notify)
 				values ($1, $2, $3, '{"kind":"user","id":"alice"}',
@@ -376,15 +407,26 @@ func TestEachKindsHistoryBodyStatementReadsNoPayloadItNeedNotRead(t *testing.T) 
 			if err != nil || !found || body != writtenPostBody {
 				t.Fatalf("historyBody of the %s answered %q, %v, %v; want the body its edit replaced, %q", kind, body, found, err, writtenPostBody)
 			}
-			plan := analyzedGenericPlanOf(t, database, historyBodyQueries[kind], "%s, %L, %L", "$1::bigint, $2::text[], $3::text",
-				e.ID, laterTypes, id)
-			if plan.ActualRows != 1 {
-				t.Fatalf("the %s's history statement answered %v rows; want the history row its edit wrote", kind, plan.ActualRows)
+			// EXECUTE takes the statement's arguments as historyBody passes them, as literals
+			// Postgres quotes, and the statement is prepared with the parameter types Postgres
+			// infers for it when it is prepared with none, as the fill's pgx connection prepares
+			// it: the event's id, the types, and the post's id as text, its first use.
+			var literals []string
+			if err := database.Pool.QueryRow(ctx,
+				`select array[format('%s', $1::bigint), format('%L', $2::text[]), format('%L', $3::text)]`,
+				e.ID, laterTypes, id).Scan(&literals); err != nil {
+				t.Fatalf("write the statement's arguments: %v", err)
 			}
-			buffers := plan.SharedHit + plan.SharedRead
-			t.Logf("the %s's history statement read %d buffers past %d later events of another type", kind, buffers, later)
+			plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, "history_body", historyBodyQueries[kind],
+				[]string{"bigint", "text[]", "text"}, literals)
+			root := explaintest.Nodes(t, plan)[0]
+			if root.Rows != 1 {
+				t.Fatalf("the %s's history statement answered %v rows; want the history row its edit wrote", kind, root.Rows)
+			}
+			buffers := root.SharedHitBlocks + root.SharedReadBlocks
+			t.Logf("the %s's history statement read %.0f buffers past %d later events of another type", kind, buffers, later)
 			if buffers >= later/2 {
-				t.Fatalf("the %s's history statement read %d buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
+				t.Fatalf("the %s's history statement read %.0f buffers past %d later events of another type; want fewer than %d, one for each 2 of them, as reading their types alone reads",
 					kind, buffers, later, later/2)
 			}
 		})
@@ -557,7 +599,7 @@ func TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce(t *testing.T) {
 // requireKeptEventText holds the version event starts of comment id, whose body was body when
 // the event was written, to the event's cut text: body_from cut, as decided and as written, one
 // cut body in the batch, and one warning, naming the comment and the event.
-func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs *bytes.Buffer, id string, event int64, body string) {
+func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs *logtest.Buffer, id string, event int64, body string) {
 	t.Helper()
 	cut, truncated := model.EventBody(body)
 	if !truncated {
@@ -598,7 +640,7 @@ func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs
 // warning, with every attribute as its text.
 func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []event, message, issue string, event int64) (decided, map[string]string) {
 	t.Helper()
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	decidedEvents, err := decideBoundTo1Byte(t, database, &logs, batch)
 	if err != nil || decidedEvents != 1 {
 		t.Fatalf("the batch bound to 1 byte decided %d of its %d events (%v), want the first alone", decidedEvents, len(batch), err)
@@ -623,7 +665,7 @@ func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []ev
 // decideBoundTo1Byte decides the versions of batch as a batch bound to 1 byte decides them, with
 // the warnings logged to logs, in a transaction it rolls back, and answers how many of batch's
 // events it decided.
-func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) (int, error) {
+func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *logtest.Buffer, batch []event) (int, error) {
 	t.Helper()
 	tx, _ := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = tx.Rollback(context.Background()) }()
@@ -866,7 +908,7 @@ func readBatch(t *testing.T, database *store.Store, after, through int64) []even
 
 // decideAndWrite decides the versions of a batch of events and writes them, in one transaction,
 // as the fill's batch does, with the warnings logged to logs.
-func decideAndWrite(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) decided {
+func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, batch []event) decided {
 	t.Helper()
 	ctx := t.Context()
 	var got decided
@@ -896,124 +938,24 @@ func startedBy(t *testing.T, got decided, event int64) version {
 }
 
 // loggedWarnings is each WARN record of logs, a JSON handler's output, with every attribute as
-// its text.
-func loggedWarnings(t *testing.T, logs *bytes.Buffer) []map[string]string {
+// its text. JSONLines decodes a number to a float64, which is written back without an exponent,
+// so an event id reads as the log wrote it.
+func loggedWarnings(t *testing.T, logs *logtest.Buffer) []map[string]string {
 	t.Helper()
 	var warnings []map[string]string
-	lines := bufio.NewScanner(bytes.NewReader(logs.Bytes()))
-	lines.Buffer(nil, 1<<20)
-	for lines.Scan() {
-		var record map[string]any
-		decoder := json.NewDecoder(bytes.NewReader(lines.Bytes()))
-		decoder.UseNumber()
-		if err := decoder.Decode(&record); err != nil {
-			t.Fatalf("read a log record: %v: %q", err, lines.Text())
-		}
+	for _, record := range logtest.JSONLines(t, logs.String()) {
 		if record["level"] != "WARN" {
 			continue
 		}
 		attributes := make(map[string]string, len(record))
 		for key, value := range record {
-			attributes[key] = fmt.Sprint(value)
+			if number, ok := value.(float64); ok {
+				attributes[key] = strconv.FormatFloat(number, 'f', -1, 64)
+			} else {
+				attributes[key] = fmt.Sprint(value)
+			}
 		}
 		warnings = append(warnings, attributes)
 	}
-	if err := lines.Err(); err != nil {
-		t.Fatalf("read the log: %v", err)
-	}
 	return warnings
-}
-
-// planNode is what the tests read of a node of a plan that explain (format json) answers: the
-// relation it reads, the buffers it and the nodes below it hit and read and the rows it answered
-// (with analyze and buffers), and the nodes below it, its subplans among them.
-type planNode struct {
-	Relation   string     `json:"Relation Name"`
-	SharedHit  int        `json:"Shared Hit Blocks"`
-	SharedRead int        `json:"Shared Read Blocks"`
-	ActualRows float64    `json:"Actual Rows"`
-	Plans      []planNode `json:"Plans"`
-}
-
-// relations is each relation p and the nodes below it read, in the plan's order.
-func (p planNode) relations() []string {
-	var relations []string
-	if p.Relation != "" {
-		relations = append(relations, p.Relation)
-	}
-	for _, below := range p.Plans {
-		relations = append(relations, below.relations()...)
-	}
-	return relations
-}
-
-// readPlan reads the plan of explained, what explain (format json) answers.
-func readPlan(t *testing.T, explained []byte) planNode {
-	t.Helper()
-	var plans []struct {
-		Plan planNode `json:"Plan"`
-	}
-	if err := json.Unmarshal(explained, &plans); err != nil || len(plans) != 1 {
-		t.Fatalf("read the plan %s: %v", explained, err)
-	}
-	return plans[0].Plan
-}
-
-// genericPlan is the generic plan of statement, the plan Postgres may keep for any arguments
-// once a connection caches the statement: explain (generic_plan), which takes the statement's
-// parameters with no values, so it is sent with no arguments, in the simple protocol.
-func genericPlan(t *testing.T, database *store.Store, statement string) planNode {
-	t.Helper()
-	connection, err := database.Pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatalf("acquire a connection: %v", err)
-	}
-	defer connection.Release()
-	results, err := connection.Conn().PgConn().Exec(t.Context(), "explain (generic_plan, format json) "+statement).ReadAll()
-	if err != nil || len(results) != 1 || len(results[0].Rows) != 1 {
-		t.Fatalf("explain the generic plan of %s: %v", statement, err)
-	}
-	return readPlan(t, results[0].Rows[0][0])
-}
-
-// analyzedGenericPlan runs read's statement for post id, whose event e cut its body, as
-// presentBody runs it (presentBodyRead.arguments) under a generic plan (analyzedGenericPlanOf).
-// The statement must read the later events, whose five arguments it formats.
-func analyzedGenericPlan(t *testing.T, database *store.Store, read presentBodyRead, e event, id string) planNode {
-	t.Helper()
-	return analyzedGenericPlanOf(t, database, read.sql, "%L, %L, %L, %s, %L", "$1::text, $2::text, $3::text, $4::integer, $5::text[]",
-		read.arguments(e, id)...)
-}
-
-// analyzedGenericPlanOf runs statement with arguments under a generic plan, the plan the fill's
-// connection may keep once it caches the statement: prepared and executed under plan_cache_mode
-// force_generic_plan, with explain (analyze, buffers, format json). It answers the plan. execute
-// takes its arguments as literals, which format writes: directives is format's directive of each
-// argument (%L, or %s for a number) and casts each argument as a parameter of its type, in the
-// statement's order, such as "%L, %s" and "$1::text, $2::integer".
-func analyzedGenericPlanOf(t *testing.T, database *store.Store, statement, directives, casts string, arguments ...any) planNode {
-	t.Helper()
-	ctx := t.Context()
-	tx, _ := textversionstest.BeginTransaction(t, database)
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_generic_plan`); err != nil {
-		t.Fatalf("force generic plans: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `prepare explained as `+statement); err != nil {
-		t.Fatalf("prepare the statement: %v", err)
-	}
-	var execute string
-	if err := tx.QueryRow(ctx,
-		`select format('explain (analyze, buffers, format json) execute explained(`+directives+`)', `+casts+`)`,
-		arguments...).Scan(&execute); err != nil {
-		t.Fatalf("write the statement's arguments: %v", err)
-	}
-	var explained []byte
-	if err := tx.QueryRow(ctx, execute).Scan(&explained); err != nil {
-		t.Fatalf("explain the statement: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `deallocate explained`); err != nil {
-		t.Fatalf("deallocate the statement: %v", err)
-	}
-	return readPlan(t, explained)
 }

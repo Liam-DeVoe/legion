@@ -21,11 +21,15 @@ import (
 //
 // A read-only caller's read (model.Credential.ReadOnly) asks GitHub what a writer's read made at
 // the same moment asks and answers what it answers, and stores nothing: no pull_request_heads or
-// branch_commits row and no event, and no claim, hold, seen mark or cache entry in this process,
-// so it keeps nothing after its request (plan D32). It reads the writer's claims and settles of a
-// commit (server.commitPulls.Refuses) without taking one, and what GitHub answered its own
-// read-throughs it passes to the rest of its own request: each read of the stored heads runs the
-// writer's own statement over the stored rows with that request's answers laid on
+// branch_commits row and no event, and no claim, hold, seen mark or default branch in this
+// process's caches, so it keeps nothing it learned after its request (plan D32). Two things of the
+// process change as they do for any read, since neither changes an answer or a GitHub call: the
+// GitHub client's token cache fills as its calls mint installation tokens
+// (githubapp.Client.RepositoryToken), and a lapsed hold it reads is deleted, as a writer's read
+// deletes it (delivery.Branches' unseenHeld and isDefaultBranch). It reads the writer's claims and
+// settles of a commit (server.commitPulls.Refuses) without taking one, and what GitHub answered
+// its own read-throughs it passes to the rest of its own request: each read of the stored heads
+// runs the writer's own statement over the stored rows with that request's answers laid on
 // (comparisonReader.answers), and its branch reads carry the default branch and the pairs refused
 // as unseen that its own reads found (comparisonReader.carried), at each place a writer's read
 // reads a row or an entry its own read stored, in the writer's order and before the same exits,
@@ -465,7 +469,7 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // list of heads: a head one check's result taught Dispatch is a basis the sibling check is
 // read against too, whichever came first in the document. It runs before any check CI proves
 // is derived, too (deriveCIResults), which reads the issue's newest pull request head after it
-// (newestPullRequestHead): a head learned here is the head such a check is derived at, as it
+// (delivery.NewestPullRequestHead): a head learned here is the head such a check is derived at, as it
 // is another check's basis. The checks' results it reads are the recorded ones, since a derived
 // result is at that newest head and has nothing left to learn.
 //
@@ -827,8 +831,10 @@ func (c *comparisonReader) measuredBranches(
 //
 //   - The commit heads an open or merged pull request Dispatch holds (headStoredAt), whatever
 //     issue that row is attributed to and whether it is attributed at all. Such a commit is one
-//     Dispatch's own passes keep reading — the reconcile re-reads an open row every five minutes
-//     and offers a merged one once per attribution rule (delivery.ListStalePullRequestHeads) —
+//     Dispatch's own passes keep reading — the reconcile re-reads an open row at every pass of
+//     one process, each starting at most five minutes after the one before it ended
+//     (delivery.PullRequestHeadStaleAfter), and offers a merged one once per attribution rule
+//     (delivery.ListStalePullRequestHeads) —
 //     so a read from here repairs nothing. This is a child's result on its parent's tab: the row
 //     is the child's own pull request, attributed to the child, and no answer of GitHub's puts
 //     that commit among the parent's heads, since the issue a result was recorded on counts for
