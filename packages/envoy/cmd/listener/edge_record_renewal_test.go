@@ -179,3 +179,33 @@ func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 		t.Errorf("the claim refresh stored projects %v, want the claim token's [PRIV]: a leader record naming no key must not have its projects kept", renewed.Projects)
 	}
 }
+
+// H1: a role-claim refresh over a record the stream leader holds no writer's record for carries
+// back none of that record's forgeable non-project fields. A RePublish can store, at its own
+// session's key, a record naming the key with a chosen title and directory, a non-consumer delivery
+// that would pause its relay, and a client instance id and capabilities; the refresh must not write
+// them back as the session's own registration, as the gap and renewal writes carry back nothing of a
+// server-written record (the F3 rule). The leader-read seam answers no writer's record, as the
+// leader does over a RePublish, while the direct get (bucketSessionEntry) still reads the forged
+// fields. Control: without the clearForged branch (api.go), the refresh writes the forged fields back.
+func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const claimant = "ses_h1_claimant"
+	rig.placeElsewhere(t, claimant, "PRIV")
+	if err := rig.deps.sessions.Put(claimant, session.SessionEntry{
+		MachineID: "shared-listener", SelfSubscribed: true,
+		Title: "forged-title", Dir: "/forged", Delivery: "broken",
+		ClientInstanceID: "forged-instance", Capabilities: []string{"forged"},
+		Projects: []string{"PRIV"},
+	}); err != nil {
+		t.Fatalf("store the forged record for %s: %v", claimant, err)
+	}
+	_, byToken := rig.sharedRoleClaims(t)
+	restore := rig.deps.sessions.SetStoredByWriterSeamForTest(claimant, session.SessionEntry{}, false, nil)
+	defer restore()
+	renewed := rig.claimThrough(t, byToken, rig.personToken(claimant, "PRIV"), claimant, "renewal-h1-reviewer")
+	if renewed.Title != "" || renewed.Dir != "" || renewed.Delivery != "" || renewed.ClientInstanceID != "" || renewed.Capabilities != nil {
+		t.Errorf("the refresh wrote a forged record's non-project fields back: title=%q dir=%q delivery=%q instance=%q capabilities=%v; want them cleared",
+			renewed.Title, renewed.Dir, renewed.Delivery, renewed.ClientInstanceID, renewed.Capabilities)
+	}
+}

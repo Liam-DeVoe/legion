@@ -1628,20 +1628,24 @@ func writeUnshownSession(ctx context.Context, w http.ResponseWriter, scope *edge
 //     project on.
 //
 // The error is the confirmation read that did not answer, which the caller answers as the
-// bus-unavailable 503, so a hiccup never wipes a session's projects.
-func claimRefreshProjects(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) ([]string, error) {
+// bus-unavailable 503, so a hiccup never wipes a session's projects. clearForged is true when the
+// cached entry names sessionID but the stream leader holds no writer's record for it (the RePublish
+// case above): its non-project fields may be a RePublish's too, so the caller carries back none of
+// them.
+func claimRefreshProjects(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) (projects []string, clearForged bool, err error) {
 	if entry.SessionID == sessionID {
 		readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
-		confirmed, ok, err := sessions.StoredByWriter(readCtx, sessionID)
+		confirmed, ok, readErr := sessions.StoredByWriter(readCtx, sessionID)
 		cancel()
-		if err != nil {
-			return nil, fmt.Errorf("confirm role claimant registration: %w", err)
+		if readErr != nil {
+			return nil, false, fmt.Errorf("confirm role claimant registration: %w", readErr)
 		}
 		if ok && confirmed.SessionID == sessionID {
-			return confirmed.Projects, nil
+			return confirmed.Projects, false, nil
 		}
+		return registeringProjects(r), true, nil
 	}
-	return registeringProjects(r), nil
+	return registeringProjects(r), false, nil
 }
 
 // sessionEntryHandler answers GET /v1/registry/<session_id>, the one question a caller holding a
@@ -2137,12 +2141,22 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// projects (registeringProjects) otherwise, so a forged record's projects are never written
 		// back as this session's own. A confirmation read that did not answer is the bus-unavailable
 		// 503, so a hiccup never wipes a session's projects.
-		projects, projectsErr := claimRefreshProjects(ctx, d.sessions, r, body.SessionID, entry)
+		projects, clearForged, projectsErr := claimRefreshProjects(ctx, d.sessions, r, body.SessionID, entry)
 		if projectsErr != nil {
 			writeStoreError(ctx, w, projectsErr, http.StatusServiceUnavailable)
 			return
 		}
 		entry.Projects = projects
+		if clearForged {
+			// The stream leader holds no writer's record for the key the cached entry names, so its
+			// non-project fields may be a RePublish's; the refresh carries back none of them, as the
+			// gap and renewal writes carry back nothing of a server-written record (the F3 rule). A
+			// RePublish could otherwise set its own session's title or a non-consumer delivery that
+			// pauses its relay until the session's next registration writes a record the leader
+			// confirms.
+			entry.Title, entry.Dir, entry.Delivery, entry.Epoch, entry.ClientInstanceID, entry.RepositoryGap = "", "", "", "", "", ""
+			entry.Capabilities = nil
+		}
 		// The refresh names this machine as the session's relay, so a claim made through
 		// another edge replica than the one the session registered through moves the relay
 		// here. An edge relay holds the session's frames to the projects of the token this
