@@ -30,7 +30,7 @@ import (
 // Settings are the deployment's settings a declared stream's configuration takes, which every
 // program of one deployment reads alike.
 type Settings struct {
-	// Replicas is ENVOY_NATS_REPLICAS, the copies of every stream but MeasureStream; 0 is 1.
+	// Replicas is ENVOY_NATS_REPLICAS, the copies of every stream; 0 is 1.
 	Replicas int
 	// StreamMaxBytes is ENVOY_STREAM_MAX_BYTES, the notification stream's byte limit; 0 sets none.
 	StreamMaxBytes int64
@@ -41,10 +41,11 @@ type Settings struct {
 
 func (s Settings) replicas() int { return max(s.Replicas, 1) }
 
-// MeasureStream is the measurement job's test stream, on subjects of its own
-// (natsgrant.Measure's envoy-measure.>). It is the one stream that is not protected: nothing reads
-// it, and the job drops its copies below the deployment's count on purpose, so its copies are not
-// held to it.
+// MeasureStream is ENVOY_MEASURE, a stream on subjects of its own, envoy-measure.>, which no
+// grant publishes on. The operator makes it outside a hold (envoy-infra streams ensure), and no
+// other client makes, changes or removes it: its configuration would be the caller's choosing. It
+// is the one stream that is not protected, and its copies are held to the deployment's count like
+// every other stream's (Drift).
 const MeasureStream = "ENVOY_MEASURE"
 
 // measureMaxBytes is MeasureStream's byte limit: it stores nothing, and an account may require one.
@@ -236,13 +237,12 @@ func (d Difference) String() string {
 }
 
 // Drift is every setting in which info, the deployed stream's info, differs from s, its
-// declared stream: the copies against the deployment's count (s.Config.Replicas), never for
-// MeasureStream, whose copies the measurement job drops on purpose; any source, mirror,
-// republish or subject transform, through which a stream reads another; a sealed stream, and a
-// per-message TTL or message schedule, which nats-server cannot turn off; the storage and
-// retention; and the settings the build fixes for its kind. A deployed setting above the build's
-// where the build only raises (copies, the notification stream's subjects, byte limit and consumer
-// cap) is no difference. A transient stream has no configuration to drift from.
+// declared stream: the copies against the deployment's count (s.Config.Replicas), for every
+// stream; any source, mirror, republish or subject transform, through which a stream reads another;
+// a sealed stream, and a per-message TTL or message schedule, which nats-server cannot turn off; the
+// storage and retention; and the settings the build fixes for its kind. A deployed setting above the
+// build's where the build only raises (copies, the notification stream's subjects, byte limit and
+// consumer cap) is no difference. A transient stream has no configuration to drift from.
 func Drift(s Stream, info Info) []Difference {
 	if s.Transient {
 		return nil
@@ -252,7 +252,7 @@ func Drift(s Stream, info Info) []Difference {
 	add := func(setting string, raise bool, wantValue, gotValue any) {
 		drift = append(drift, Difference{Setting: setting, Want: fmt.Sprint(wantValue), Got: fmt.Sprint(gotValue), Raise: raise})
 	}
-	if s.Name != MeasureStream && got.Replicas < want.Replicas {
+	if got.Replicas < want.Replicas {
 		add("num_replicas", true, want.Replicas, got.Replicas)
 	}
 	if len(got.Sources) > 0 {

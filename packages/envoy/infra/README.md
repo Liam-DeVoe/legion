@@ -3176,7 +3176,9 @@ The declared set is built from the code's own names, never written as a list:
 `ENVOY_NOTIFICATIONS`, each listener bucket, the webhook redelivery bucket, `ENVOY_MEASURE` and the
 writer hold's barrier stream, each with the configuration the program that owns it makes it with.
 Every stream but `ENVOY_MEASURE` is protected: only the operator, under a hold, makes or changes
-one.
+one. `ENVOY_MEASURE` too is the operator's alone, made by `ensure` outside a hold: the measurement
+user's grant holds no stream create, update or delete, since a create carries a configuration of
+the caller's choosing. Its copies are held to the deployment's count like every other stream's.
 
 ```text
 envoy-infra streams check  --nats-url <urls> (--token-file <file> | --nkey-seed-file <file>) [settings]

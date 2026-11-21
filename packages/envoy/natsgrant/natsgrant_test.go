@@ -83,9 +83,10 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }
 
-// Measure is the measurement job's grant as the deployment repository deploys it today
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there
-// goes when the job moves to the auth service, and this test with it.
+// Measure is the measurement job's grant as the deployment repository deploys it
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe, once the measurement user
+// configures no stream): eight JetStream reads and its own cutover inbox. The copy there goes when
+// the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
 	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
@@ -406,9 +407,9 @@ func TestOnlyTheOperatorCreatesOrChangesAStream(t *testing.T) {
 }
 
 // ForCallout removes the stream configuration calls and nothing else, and returns lists of its
-// own: a bucket's writer keeps its reads, its key writes and its watchers' calls, and the
-// measurement job keeps its stream infos and its publishes, losing its stream create, update and
-// delete. An entry the calls contain goes; a wildcard that reaches them and other subjects too
+// own: a bucket's writer keeps its reads, its key writes and its watchers' calls, losing its stream
+// create and update, and the measurement job's grant, which holds no stream call, is answered as it
+// is. An entry the calls contain goes; a wildcard that reaches them and other subjects too
 // stays, beside a deny of each call it reaches, so it still allows every other subject.
 func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 	for name, grant := range grantTable(t) {
@@ -431,20 +432,7 @@ func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 		"$JS.FC.KV_b.>",
 	}, natsgrant.ForCallout(natsgrant.Permissions{Publish: natsgrant.KVWrite("b")}).Publish)
 
-	require.Equal(t, natsgrant.Permissions{
-		Publish: []string{
-			"$JS.API.INFO",
-			"$JS.API.STREAM.NAMES",
-			"$JS.API.STREAM.LIST",
-			"$JS.API.STREAM.INFO.*",
-			"$JS.API.CONSUMER.NAMES.*",
-			"$JS.API.CONSUMER.LIST.*",
-			"$JS.API.CONSUMER.INFO.*.*",
-			"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.>",
-			"envoy-measure.>",
-		},
-		Subscribe: []string{"_INBOX_envoy_measure.>"},
-	}, natsgrant.ForCallout(natsgrant.Measure()))
+	require.Equal(t, natsgrant.Measure(), natsgrant.ForCallout(natsgrant.Measure()), "the measurement job's grant holds a stream call to remove")
 
 	wide := natsgrant.Permissions{
 		Publish:     []string{"$JS.API.>", "$JS.API.STREAM.*.X", "$JS.API.STREAM.INFO.X", ">", "$JS.API.STREAM.RESTORE.X"},

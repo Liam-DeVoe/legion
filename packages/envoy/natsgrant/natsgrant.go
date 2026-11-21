@@ -350,10 +350,14 @@ func Host(machineID string) Permissions {
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
-// _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
-// deliveries and request replies arrive, so it reads no message of another client.
+// reads the account's JetStream state and the listener's lease keys in KV_envoy_listener, and
+// publishes on its own cutover inbox, _INBOX_envoy_measure.cutover.>, under which a probe sends a
+// numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
+// changes and removes no stream: a create or an update carries a configuration of the caller's
+// choosing, and a source or a republish in it would read every stream of the account, so
+// ENVOY_MEASURE is the operator's to make (envoy-infra streams ensure). It subscribes only its own
+// inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push
+// consumer deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -365,14 +369,14 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
-			jsAPI + "STREAM.CREATE.ENVOY_MEASURE",
-			jsAPI + "STREAM.UPDATE.ENVOY_MEASURE",
-			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",
-			"envoy-measure.>",
+			measureInbox + ".cutover.>",
 		},
-		Subscribe: []string{"_INBOX_envoy_measure.>"},
+		Subscribe: []string{measureInbox + ".>"},
 	}
 }
+
+// measureInbox is the measurement job's own inbox prefix.
+const measureInbox = "_INBOX_envoy_measure"
 
 // streamConfigurationCalls are the JetStream API calls that make a stream, change its
 // configuration or remove it: a create, an update, a delete, and a restore, which makes the stream
@@ -400,10 +404,10 @@ var streamConfigurationCalls = []string{
 //
 // A bucket's writer (KVWrite) keeps its stream info, its direct and stream gets, its key writes,
 // its watchers' consumer calls and their flow-control replies; the listener's grant keeps the
-// notification stream's info and stored-message get; Measure keeps its stream infos and its
-// publishes to envoy-measure.>. No grant of this package holds a wildcard that reaches one of the
-// calls, so none of them is answered with a deny. The static sets stay as they are: a hub that
-// runs no auth service renders them, and its programs make their own streams.
+// notification stream's info and stored-message get. Measure holds no stream call to remove. No
+// grant of this package holds a wildcard that reaches one of the calls, so none of them is answered
+// with a deny. The static sets stay as they are: a hub that runs no auth service renders them, and
+// its programs make their own streams.
 func ForCallout(p Permissions) Permissions {
 	var publish []string
 	if p.Publish != nil {
