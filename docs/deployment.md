@@ -353,7 +353,7 @@ runs every command but a `jj git push` through that `jj` unchanged.
 Before a `jj git push`, it runs the push step, and every jj command of the step runs with
 `--ignore-working-copy`.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
-role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 202).
+role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 209).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
 first `Legion-Role` trailer of each of those commits.
 Where a commit's author is not the identity that the table gives the trailer's role, the step
@@ -831,10 +831,9 @@ provider_keys:
   every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
   lines every pane's commits carry, so a squash landing that branch carries the issue key in its
   message. A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
-  A pane stamps the commit when its launch's repository is one of the names, whatever Dispatch
-  maps to the project (Settings → Repositories → Projects).
-  Boot checks each name against that mapping alone and says once, naming the name and the
-  project, that the mapping does not hold it, which catches a typo.
+  A pane stamps the commit when its launch's repository is one of the names.
+  The daemon compares the list with nothing at boot, so a misspelled name stamps no commit and no
+  line says so: compare the list with the repositories `legion state` lists.
   A pane of a repository the key does not name is told no key and its commits carry the session
   and role lines alone, as does a commit the pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so a spec, a `pane_env` and a
