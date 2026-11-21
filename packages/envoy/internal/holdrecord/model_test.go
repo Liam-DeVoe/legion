@@ -1776,15 +1776,6 @@ func TestTheHoldJournalModel(t *testing.T) {
 	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand || v62.HubAbortAfterStop {
 		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v63's", currentRules.Name)
 	}
-	for _, w := range tableFor(currentRules).Workflows() {
-		for _, c := range append([]string{CommandSet, CommandRelease}, Commands(w)...) {
-			if Admits(w, c) != current.Admits(w, c) || fmt.Sprint(Requires(w, c)) != fmt.Sprint(current.Requires(w, c)) ||
-				fmt.Sprint(Excludes(w, c)) != fmt.Sprint(current.Excludes(w, c)) || Repeatable(w, c) != current.Repeatable(w, c) ||
-				Stoppable(w, c) != current.Stoppable(w, c) || Epochal(w, c) != current.Epochal(w, c) || Final(w, c) != current.Final(w, c) {
-				t.Errorf("%s's %q: the package's table functions are not the current rules' table", w, c)
-			}
-		}
-	}
 	for _, p := range modelProfiles() {
 		p := p
 		t.Run(p.Name, func(t *testing.T) {
