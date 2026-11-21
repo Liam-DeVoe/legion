@@ -8,14 +8,12 @@
 // Both sources are read off the label's own source by marker, as daemon-pane.ts's `labelShapes`
 // reads the daemon's, so a person-scoped route main adds is declared at the label that has it. A
 // marker this cannot find refuses, naming the file and the marker, and is never read as a label
-// whose Dispatch refuses nothing.
+// whose Dispatch refuses nothing. Their paths live in daemon-pane.ts (SCOPES_GO, CLIENT_TS), whose
+// LABEL_SOURCES holds them, so that a boot, which loads daemon-pane.ts, does not load this module.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { CLIENT_TS, SCOPES_GO } from "./daemon-pane";
 
-/** Dispatch's table of the scopes each route needs, under a checkout's root. */
-const SCOPES_GO = "packages/envoy/internal/dispatch/api/routes_table.go";
-/** The agents' client of Dispatch, which every `dispatch` command sends its requests through. */
-const CLIENT_TS = "packages/envoy-client/src/dispatch-http.ts";
 /** The sources `labelPersonRoutes` reads, under a checkout's root: daemon-pane.ts's
  * `recordedCheckout` rebuilds them out of a run's commit beside the daemon's. */
 export const PERSON_ROUTE_SOURCES = [SCOPES_GO, CLIENT_TS];

@@ -1354,7 +1354,10 @@ describe("health: rule 16, Dispatch's 403 to the person-scoped routes a label's 
     client: ((text: string) => string) | null
   ): string {
     const dir = copies();
-    for (const [file, edit] of [[SCOPES, scopes], [CLIENT, client]] as const) {
+    for (const [file, edit] of [
+      [SCOPES, scopes],
+      [CLIENT, client],
+    ] as const) {
       if (edit === null) continue;
       mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
       writeFileSync(path.join(dir, file), edit(readFileSync(path.join(CHECKOUT, file), "utf8")));

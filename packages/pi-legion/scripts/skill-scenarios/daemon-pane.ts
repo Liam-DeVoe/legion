@@ -49,7 +49,6 @@ import {
   RECORD_ROUTES,
 } from "./completion-answers";
 import { type GhSelectors, type GhTable, selectorsOf, tableOf } from "./gh-selectors";
-import { PERSON_ROUTE_SOURCES } from "./person-routes";
 import { Refused } from "./run-records";
 import {
   DEFAULT_STEPS,
@@ -292,13 +291,22 @@ export function labelCheckout(runDir: string): string {
   return checkout;
 }
 
+/** Dispatch's table of the scopes each route needs, under a checkout's root, which
+ * person-routes.ts's `labelPersonRoutes` reads. It lives here, not there, so a boot that loads
+ * this module loads no reader of Dispatch's routes. */
+export const SCOPES_GO = "packages/envoy/internal/dispatch/api/routes_table.go";
+/** The agents' client of Dispatch, which every `dispatch` command sends its requests through,
+ * under a checkout's root, which person-routes.ts's `labelPersonRoutes` reads; here as SCOPES_GO
+ * is. */
+export const CLIENT_TS = "packages/envoy-client/src/dispatch-http.ts";
 /** The sources a reader reads of a run's label, under the checkout's root: the daemon's
  * (`labelRoutes`, `labelDaemon`), and its Dispatch's table of the scopes each route needs and its
- * agents' client (person-routes.ts's PERSON_ROUTE_SOURCES, `labelPersonRoutes`). */
+ * agents' client (SCOPES_GO and CLIENT_TS, which person-routes.ts's `labelPersonRoutes` reads). */
 export const LABEL_SOURCES = [
   "packages/daemon/internal/api",
   "packages/daemon/internal/workflow/engine.go",
-  ...PERSON_ROUTE_SOURCES,
+  SCOPES_GO,
+  CLIENT_TS,
 ];
 /** The directory each built-from commit's label sources were rebuilt into in this process. */
 const rebuilt = new Map<string, string>();
