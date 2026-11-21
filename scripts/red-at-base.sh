@@ -85,13 +85,18 @@
 #        nothing else. The command runs with no input and with TMPDIR set to an empty directory of
 #        its own under the tool's, removed with the worktree, so that what it writes there (a work
 #        directory a script defaults under TMPDIR, say) starts fresh for each line and is gone
-#        after. An exit of 0 is GREEN; any other exit is RED, the run's last lines quoted. A command
-#        that never starts is BUILD-FAILED: <dir> is no directory of the base, the command's first
-#        word is no file exec can run there (a path that is no executable file, or a name PATH
-#        does not hold), or the command is bash or sh with a script that the base does not hold.
-#        A cmd line reads no NO-TEST, so a command that cannot tell the base from the change, such
-#        as one that fails for want of its own setup, reads RED there: such a line proves something
-#        only when its command fails at the base for the change's reason.
+#        after. The command starts through a small bash boundary (launch, below) that enters <dir>
+#        and execs the command's words, and the tool predicts nothing about the command: the line
+#        is BUILD-FAILED, a command that never started, only when the boundary never reached its
+#        exec (<dir> is no directory of the base) or when the exec itself returned (the first word
+#        is no command PATH holds, no executable file, or a script whose interpreter is not there).
+#        Every other run is the command's own: an exit of 0 is GREEN, and any other exit, 127
+#        included, is RED, the run's last lines quoted. So `bash missing.sh` started, since bash
+#        ran, and reads RED with bash's own words: a cmd line names among its files each script of
+#        the change its command runs, or the base's copy runs, or none does. A cmd line reads no
+#        NO-TEST, so a command that cannot tell the base from the change, such as one that fails for
+#        want of its own setup, reads RED there: such a line proves something only when its command
+#        fails at the base for the change's reason.
 #
 # What a run reads. Each run gets the tool's own environment, so a database URL, GOCACHE, GOTMPDIR
 # and GOFLAGS reach the test as the caller set them. The tool needs no network: go runs with
@@ -797,29 +802,6 @@ e2e_verdict() {
     }' "$log"
 }
 
-# script_of <command>...: the script a bash or sh command runs, as bash reads its own arguments, or
-# nothing when it runs none (bash -c <string>, or bash reading its input).
-script_of() {
-  shift
-  while (($# > 0)); do
-    case $1 in
-    --)
-      (($# < 2)) || printf '%s' "$2"
-      return 0
-      ;;
-    --rcfile | --init-file | -o | +o | -O | +O) shift 2 || return 0 ;;
-    --*) shift ;;
-    # A bundle of short options that holds c (a command string) or s (commands on its input).
-    -*c* | -*s*) return 0 ;;
-    -* | +*) shift ;;
-    *)
-      printf '%s' "$1"
-      return 0
-      ;;
-    esac
-  done
-}
-
 # remove_tree <directory>: the directory and all it holds, made writable first, since a command may
 # leave a directory it made read-only, as go does its module cache.
 remove_tree() {
@@ -829,14 +811,29 @@ remove_tree() {
 }
 
 readonly command_tmp="${tmp}/cmd-tmp"
+readonly start_mark="${tmp}/cmd-start"
+# The boundary a cmd line's command starts through, which decides "never started" from the exec
+# itself and predicts nothing. It is a bash of its own, since a subshell of the tool ends at an exec
+# that fails, whatever execfail says, while this bash, with execfail, returns from it. It enters the
+# command's directory, marks that it reached the exec, and execs the command's words; only when that
+# exec returns, which it does only when the command did not start, does it mark the exec's status.
+# shellcheck disable=SC2016 # the boundary's own expansions, run by its bash
+readonly launch='shopt -s execfail
+mark=$1
+cd -- "$2" || exit 127
+: >"$mark.reached"
+shift 2
+exec "$@"
+printf "%s\n" "$?" >"$mark.failed"
+exit 127'
 start_failure=''
-# run_command <directory> <command>...: the command of a cmd line, as the header says, its output in
-# the run's log and its exit status in status. When it never starts, start_failure says why; the
-# log then holds what bash printed, if anything.
+# run_command <directory> <command>...: the command of a cmd line, through the boundary above, its
+# output in the run's log and its exit status in status. When it never started, start_failure says
+# so; the log then holds what the boundary's bash printed.
 run_command() {
-  local directory=$1 marker="${tmp}/never-started" script=''
+  local directory=$1
   shift
-  rm -f -- "$marker"
+  rm -f -- "${start_mark}.reached" "${start_mark}.failed"
   remove_tree "$command_tmp"
   mkdir -- "$command_tmp"
   {
@@ -844,34 +841,15 @@ run_command() {
     printf ' %q' "$@"
     echo
   } >&2
-  case ${1##*/} in
-  bash | sh) script="$(script_of "$@")" ;;
-  esac
   status=0
-  (
-    cd -- "$directory" 2>/dev/null || {
-      printf '%s is no directory of the base\n' "${directory#"${wt}"/}" >"$marker"
-      exit 127
-    }
-    if [[ -n $script && ! -f $script ]]; then
-      printf 'the script %s that %s runs is no file of the base\n' "$script" "$1" >"$marker"
-      exit 127
-    fi
-    # A subshell ends at an exec that fails, whatever execfail says, with the exit status a command
-    # of its own could give. So the command is looked up first, as exec looks it up: a word with a /
-    # is a path, and any other word a file on PATH (exec runs no builtin).
-    case $1 in
-    */*) [[ -f $1 && -x $1 ]] ;;
-    *) [[ -n $(type -P -- "$1") ]] ;;
-    esac || {
-      printf '%s is no command the base can start\n' "$1" >"$marker"
-      exit 127
-    }
-    export TMPDIR="$command_tmp"
-    exec "$@"
-  ) </dev/null >"$log" 2>&1 || status=$?
+  TMPDIR="$command_tmp" "$BASH" -c "$launch" red-at-base-launch "$start_mark" "$directory" "$@" \
+    </dev/null >"$log" 2>&1 || status=$?
   start_failure=''
-  [[ ! -f $marker ]] || start_failure="$(<"$marker")"
+  if [[ ! -e ${start_mark}.reached ]]; then
+    start_failure="it never reached its exec"
+  elif [[ -e ${start_mark}.failed ]]; then
+    start_failure="the exec of $1 failed (status $(<"${start_mark}.failed"))"
+  fi
   cat -- "$log" >&2
   echo "   exit $status" >&2
 }

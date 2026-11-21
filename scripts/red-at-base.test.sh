@@ -18,8 +18,10 @@
 #   fails, two files in one line), e2e (a case that fails in the worktree and would pass in the
 #   checkout, a case that passes, a case the script does not have, two cases in one line, a case
 #   that skips, one that prints its start and no result, one that dies after its start) and cmd (a
-#   script that reads the base and exits non-zero, a command that exits 0, a command, a script and
-#   a directory the base lacks, the line's own TMPDIR, a bash command string);
+#   script that reads the base and exits non-zero, a command that exits 0, a command and a
+#   directory the base lacks, a script the line does not copy, an interpreter that is not there, a
+#   command that exits 127 itself, a script bash finds on PATH, the line's own TMPDIR, a bash
+#   command string);
 # - each test that must read red at the base passes in the checkout first, so the base is what
 #   fails;
 # - a list whose every line is red, a BUILD-FAILED among them, exits 0;
@@ -126,6 +128,16 @@ func TestLiveIsReady(t *testing.T) {
 		t.Fatal("not ready")
 	}
 }'
+# Three programs of the base a cmd line runs: a script bash finds on PATH and runs to a pass, an
+# executable whose interpreter is not there, so its exec fails, and one that starts and exits 127
+# itself, the status a shell gives a command it cannot start.
+write bin/pass-on-path.sh 'echo "pass-on-path ran"'
+write bin/bad-interpreter '#!/no/such/interpreter
+echo "the interpreter ran"'
+write bin/exits-127 '#!/usr/bin/env bash
+echo "about to exit 127"
+exit 127'
+chmod +x "${repo}/bin/bad-interpreter" "${repo}/bin/exits-127"
 write version.txt '1'
 scratch_git add -A
 scratch_git commit -q -m 'the base'
@@ -655,21 +667,41 @@ run_tool "$(list cmd \
   'cmd web in-its-directory web/src/count.test.ts -- test -f src/count.test.ts' \
   'cmd fresh no-directory-at-base -- true' \
   'cmd . own-tmpdir scripts/tmp-check.sh -- bash scripts/tmp-check.sh' \
-  'cmd . a-command-string -- bash -c true')"
+  'cmd . a-command-string -- bash -c true' \
+  'cmd . bad-interpreter -- ./bin/bad-interpreter' \
+  'cmd . exits-127 -- ./bin/exits-127')"
 expect_status 1
-expect_lines 8
+expect_lines 10
 # Red only when the script reads the base's version.txt, which holds 1; the checkout's holds 2.
 expect_verdict 1 RED 'exit 4 from bash scripts/version-check.sh: reading version.txt | version.txt holds 1 | want 2'
 expect_verdict 2 GREEN 'exit 0 from test -f version.txt'
-expect_verdict 3 BUILD-FAILED 'the command never started: no-such-command-anywhere is no command the base can start'
-# The script is the change's, and only a line that lists it copies it to the base.
-expect_verdict 4 BUILD-FAILED 'the script scripts/version-check.sh that bash runs is no file of the base'
+# The exec itself returned: nothing of the command ran.
+expect_verdict 3 BUILD-FAILED 'the command never started: the exec of no-such-command-anywhere failed (status 127)'
+# The script is the change's, and only a line that lists it copies it to the base. Bash started and
+# found no script, so the run is bash's own, a RED: a line that proves nothing of the change, which
+# is why a cmd line lists each script of the change its command runs.
+expect_verdict 4 RED 'exit 127 from bash scripts/version-check.sh: bash: scripts/version-check.sh: No such file or directory'
 expect_verdict 5 GREEN 'exit 0 from test -f src/count.test.ts'
-# fresh is the change's directory, and the line copies nothing into it.
-expect_verdict 6 BUILD-FAILED 'fresh is no directory of the base'
+# fresh is the change's directory, and the line copies nothing into it: the boundary never reached
+# its exec.
+expect_verdict 6 BUILD-FAILED 'the command never started: it never reached its exec'
+[[ $output == *'fresh: No such file or directory'* ]] || fail 'expected line 6 to quote why the directory could not be entered'
 expect_verdict 7 GREEN "TMPDIR is the line's own, and empty"
-# bash -c runs a command string and no script, so there is no script to look for.
 expect_verdict 8 GREEN 'exit 0 from bash -c true'
+# The file is there and executable, and the exec of it fails, since its interpreter is not there.
+expect_verdict 9 BUILD-FAILED 'the command never started: the exec of ./bin/bad-interpreter failed (status 127)'
+[[ $output == *'cannot execute: required file not found'* ]] || fail 'expected line 9 to quote why the exec failed'
+# It started and exited 127 itself, the status of a command that cannot start: its own run, a RED.
+expect_verdict 10 RED 'exit 127 from ./bin/exits-127: about to exit 127'
+expect_nothing_left
+
+case_name='cmd: a script bash finds on PATH runs at the base'
+# PATH holds bin, relative to the line's directory, the top of the worktree; bash, given a script
+# name with no slash that is no file of that directory, searches PATH for it.
+run_tool "$(list path 'cmd . path-script -- bash pass-on-path.sh')" PATH="bin:${PATH}"
+expect_status 1
+expect_lines 1
+expect_verdict 1 GREEN 'exit 0 from bash pass-on-path.sh: pass-on-path ran'
 expect_nothing_left
 
 case_name='e2e: each verdict of an e2e line'
