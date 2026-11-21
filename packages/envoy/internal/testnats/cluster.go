@@ -44,6 +44,15 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
+	cluster := startCluster(t, n, "127.0.0.1", config)
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// startCluster starts the n members StartClusterConfig describes, each member's relay and client
+// port listening on host (startOn), and returns without waiting for JetStream.
+func startCluster(t testing.TB, n int, host, config string) *Cluster {
+	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
 	}
@@ -69,12 +78,11 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	cluster := &Cluster{Servers: make([]*Server, n)}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes)+config, []string{"-js"})
+		server := startOn(t, host, clusterConfig(i, routes)+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}
-	cluster.AwaitReady(t)
 	return cluster
 }
 
@@ -149,13 +157,26 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
-	// listening is when AwaitReady began listening for the members: its call, or its last restart.
+	c.awaitMeta(t)
+	for _, server := range c.Servers {
+		if server.running() {
+			Connect(t, server.URL()).Close()
+		}
+	}
+}
+
+// awaitMeta is AwaitReady's wait for the meta group alone, restarting a mute member as AwaitReady
+// says, without the account info request on each member, which a client with no credential
+// cannot send to a member with an auth callout (StartClusterWithCallout).
+func (c *Cluster) awaitMeta(t testing.TB) {
+	t.Helper()
+	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
 	for {
 		err := c.metaReady()
 		if err == nil {
-			break
+			return
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -171,11 +192,6 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v", connectTimeout, restarts, err)
 		}
 		time.Sleep(retryInterval)
-	}
-	for _, server := range c.Servers {
-		if server.running() {
-			Connect(t, server.URL()).Close()
-		}
 	}
 }
 
