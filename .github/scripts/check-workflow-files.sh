@@ -15,14 +15,16 @@
 #   2. a file above 500,000 bytes, GitHub's own cap, which is the same fault with the consequence
 #      named, because such a file starts no run whatever this check says;
 #   3. a file that is not valid YAML, which GitHub reads no further than either;
-#   4. two keys of one mapping that are equal after upper-casing, a key written again as an alias
-#      of itself among them. GitHub's parsers refuse both a repeated key and a key differing only
-#      in case (actions/languageservices workflow-parser/src/templates/template-reader.ts:212 and
-#      :359, actions/runner TemplateReader.cs with StringComparer.OrdinalIgnoreCase), and the
-#      first (@actions/workflow-parser 0.3.61) refuses any mapping key written as an alias, while
-#      the YAML layer passes them through on purpose (yaml-object-reader.ts parses with
-#      uniqueKeys: false). A load cannot find it — yaml.safe_load keeps the last of a repeated key
-#      and reports nothing — so this walks the composed nodes instead;
+#   4. two keys of one mapping that are equal after upper-casing, and a mapping key written as an
+#      alias, repeating a key or not. GitHub's parsers refuse both a repeated key and a key
+#      differing only in case (actions/languageservices workflow-parser/src/templates/
+#      template-reader.ts:212 and :359, actions/runner TemplateReader.cs with
+#      StringComparer.OrdinalIgnoreCase), and the first (@actions/workflow-parser 0.3.61, measured
+#      on 2026-11-21: "Unexpected value 'undefined'") refuses any mapping key written as an alias,
+#      while the YAML layer passes them through on purpose (yaml-object-reader.ts parses with
+#      uniqueKeys: false). A load cannot find either — yaml.safe_load keeps the last of a repeated
+#      key and reads an alias as the key its anchor names — so this walks the composed nodes
+#      instead;
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
@@ -147,8 +149,11 @@ def mapping_get(node: object, key: str) -> object:
 
 def check_folded_keys(path: Path, root: object) -> None:
     """Every mapping reachable from the document, sequences included: two keys equal after
-    upper-casing are two keys GitHub's parser reads as one, and it refuses the file. Each node is
-    visited once, so a mapping an alias repeats is reported once and a recursive alias ends."""
+    upper-casing are two keys GitHub's parser reads as one, and it refuses the file; and a key
+    written as an alias, repeating a key or not, which it refuses too. Each node is visited once,
+    so a mapping an alias repeats is reported once and a recursive alias ends. Each offending key
+    is reported once, at the line it is written on (KeyMarkLoader's record: a key written as an
+    alias is the node its anchor composed, which carries only the anchor's line)."""
     stack = [root]
     seen: set[int] = set()
     while stack:
@@ -157,30 +162,35 @@ def check_folded_keys(path: Path, root: object) -> None:
             continue
         seen.add(id(node))
         if isinstance(node, yaml.MappingNode):
-            for first, repeat in repeated_keys(node, lambda key: key.value.upper()):
-                name, first_name = node.value[repeat][0], node.value[first][0]
-                # A key written as an alias is the node its anchor composed, which carries only
-                # the anchor's line; KeyMarkLoader kept the line each key is written on.
-                (mark, alias), (first_mark, _) = key_mark(node, repeat), key_mark(node, first)
-                line = mark.line + 1
-                if alias is not None:
+            first_of = {repeat: first for first, repeat in repeated_keys(node, lambda key: key.value.upper())}
+            for position, (name, _) in enumerate(node.value):
+                mark, alias = key_mark(node, position)
+                first = first_of.get(position)
+                if alias is None and first is None:
+                    continue
+                key = f"the mapping key '{name.value}'" if isinstance(name, yaml.ScalarNode) else "a mapping key"
+                if first is not None:
+                    again = f"'{node.value[first][0].value}' of line {key_mark(node, first)[0].line + 1} again"
+                if alias is not None and first is not None:
                     said = (
-                        f"the mapping key '{name.value}', written as the alias *{alias}, is the "
-                        f"key '{first_name.value}' of line {first_mark.line + 1} again. GitHub's "
-                        f"workflow parser refuses a mapping key written as an alias"
+                        f"{key}, written as the alias *{alias}, is the key {again}. GitHub's workflow "
+                        f"parser refuses a mapping key written as an alias, while YAML keeps the last "
+                        f"of the two and reports nothing."
+                    )
+                elif alias is not None:
+                    said = (
+                        f"{key} is written as the alias *{alias}. GitHub's workflow parser refuses a "
+                        f"mapping key written as an alias, while YAML reads it as the key its anchor "
+                        f"names."
                     )
                 else:
                     said = (
-                        f"the mapping key '{name.value}' is the key '{first_name.value}' of line "
-                        f"{first_mark.line + 1} again after upper-casing. GitHub's workflow "
-                        f"parser compares keys without regard to case and refuses the file"
+                        f"{key} is the key {again} after upper-casing. GitHub's workflow parser "
+                        f"compares keys without regard to case and refuses the file, while YAML keeps "
+                        f"the last of the two and reports nothing."
                     )
-                problem(
-                    path,
-                    f"{path}:{line}: {said}, while YAML keeps the last of the two and reports "
-                    f"nothing." + limits(path),
-                    line=line,
-                )
+                line = mark.line + 1
+                problem(path, f"{path}:{line}: {said}" + limits(path), line=line)
             for name, value in node.value:
                 if not isinstance(name, yaml.ScalarNode):
                     stack.append(name)
@@ -291,7 +301,8 @@ if problems:
 
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
-    f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, and call "
+    f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, write no "
+    f"mapping key as an alias, and call "
     f"at most {CALL_LIMIT} unique reusable workflows"
 )
 PY

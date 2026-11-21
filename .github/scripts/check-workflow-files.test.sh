@@ -263,6 +263,29 @@ check "names the alias's own line and the plain key's, not the anchor's" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=6::.github/workflows/ci.yaml:6: the mapping key 'HTTP_PROXY', written as the alias \*key, is the key 'HTTP_PROXY' of line 5 again\. ")"
 check "reports it once" "$(is "$(errors "$out")" 1)"
 
+echo "case: a key written as an alias that repeats no key"
+# GitHub's published workflow parser (@actions/workflow-parser 0.3.61) refuses a mapping key
+# written as an alias whether or not it repeats one ("Unexpected value 'undefined'"); YAML reads
+# it as the key its anchor names.
+root=$(fixture aliased-key-once)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  NAME: &key HTTP_PROXY
+  *key : http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the key, its line and the alias it is written as" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is written as the alias \*key\. GitHub's workflow parser refuses a mapping key written as an alias, ")"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
 echo "case: a key holding a newline and a workflow command, and its upper-case twin"
 # The message repeats both keys, and the runner reads each line of a step's output as a command
 # of its own: unescaped, the newline in each key would start a ::warning the file never asked for.
