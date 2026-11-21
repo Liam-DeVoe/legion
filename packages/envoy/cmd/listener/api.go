@@ -845,13 +845,16 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// The message's project, as KC1 chooses it: the body's, else the sender's one listed
 		// project, else the target's one, else no project's. In the required mode both the
 		// caller and the target must see it (project_privacy.go), and the stored subject names it.
+		// The target's projects, for the choice and for whether it sees the project, are read
+		// only from a record that names its key (session.SessionEntry.RequiredScope): a target
+		// whose record does not counts as no project's, as visibility counts it.
 		if d.privacy.isRequired() {
 			decision := record.decision
-			project := sendProject(requestedProject, decision.scope.listed, target.Projects)
+			targetProjects, targetRestricted := target.RequiredScope(targetSession)
+			project := sendProject(requestedProject, decision.scope.listed, targetProjects)
 			sees, err := decision.sees(project)
 			targetSees := sees
 			if err == nil && sees {
-				targetProjects, targetRestricted := target.RequiredScope(targetSession)
 				targetSees, err = roles.Sees(ctx, decision.privateOf, targetProjects, targetRestricted, project)
 			}
 			switch {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestATokenListingPUBSeesNothingOfPRIV: in the required mode with PRIV private, a session whose
@@ -264,5 +267,70 @@ func TestARequiredRelayReadsNoScopeFromAForgedRecord(t *testing.T) {
 		}
 		next, _ := rig.storeEvent(t, privIssueSubject)
 		expectOnly(t, eStandIn, "E after its heartbeat, past "+form.name, next)
+	}
+}
+
+// unbindRecord rewrites sessionID's record without its session_id, as a build that wrote the
+// projects before the record named its key did (session.SessionEntry.BoundTo), and waits until
+// the listener's registry reads it so.
+func unbindRecord(t *testing.T, rig *privacyRig, sessionID string) {
+	t.Helper()
+	entry, err := rig.deps.sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's record: %v", sessionID, err)
+	}
+	entry.SessionID = ""
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("encode %s's record without its key: %v", sessionID, err)
+	}
+	kv, err := rig.harness.client.JS().KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	if _, err := kv.Put(sessionID, raw); err != nil {
+		t.Fatalf("store %s's record without its key: %v", sessionID, err)
+	}
+	testwait.Eventually(t, sessionID+"'s record read without its key", func() bool {
+		read, _ := rig.deps.sessions.Lookup(sessionID)
+		return read.SessionID == "" && read.MachineID != ""
+	})
+}
+
+// TestASendToAnUnboundTargetIsNoProjects: in the required mode the send route reads the target's
+// projects only from a record that names its key, for the project KC1 chooses as for whether the
+// target sees it. A full member's session that lists no project sends with no project to T, whose
+// record lists the public PUB but does not name its key: the message is of no project, accepted and
+// stored on T's subject of no project, and T receives it. Beside it, the same send to T2, whose own
+// record lists PUB, is of PUB, stored on T2's PUB subject. Control (a mutant, run apart): the
+// project chosen from the record's raw list makes the send to T one of PUB, which T's unbound
+// record (no project's, restricted) does not see, and the route answers 403 project_not_listed
+// naming T.
+func TestASendToAnUnboundTargetIsNoProjects(t *testing.T) {
+	rig := newPrivacyRig(t, true)
+	rig.source.answer(privacyListingPRIV)
+	const sender, unbound, bound = "ses_send_sender", "ses_send_unbound", "ses_send_bound"
+	senderToken := rig.memberToken(sender, false)
+	requireStatus(t, rig.subscribe(t, senderToken, sender), http.StatusOK, "the sender's registration")
+	unboundStandIn := rig.session(t, unbound, false, []string{"PUB"})
+	boundStandIn := rig.session(t, bound, false, []string{"PUB"})
+	unbindRecord(t, rig, unbound)
+
+	for _, target := range []struct {
+		id      string
+		standIn *sessionStandIn
+		subject string
+	}{
+		{unbound, unboundStandIn, contracts.LegacyAgentSubject(unbound)},
+		{bound, boundStandIn, contracts.AgentSubject("PUB", bound)},
+	} {
+		answer := rig.call(t, http.MethodPost, senderToken, "/v1/messages/send", `{"target_session":"`+target.id+`","message":"hello"}`)
+		if answer.Code >= 300 {
+			t.Fatalf("the send to %s answered %d %s, want it accepted", target.id, answer.Code, answer.Body.String())
+		}
+		frames := target.standIn.collect(t, 1, 30*time.Second)
+		if len(frames) != 1 || frames[0].item.Topic != target.subject {
+			t.Fatalf("the send to %s reached it on %v, want %s", target.id, frames, target.subject)
+		}
 	}
 }
