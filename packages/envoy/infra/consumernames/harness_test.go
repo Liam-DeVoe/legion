@@ -116,8 +116,12 @@ func newStack(t *testing.T) *stack {
 var commonArgs = []string{"--broker-url", "https://broker.consumernames-test", "--token-file", "/dev/null",
 	"--verify-keys", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "--nats", "nats://consumernames-test:4222"}
 
-// writingArgs are the flags every command but status takes beside commonArgs.
-var writingArgs = []string{"--signing-key-secret", "projects/consumernames-test/secrets/operator-only-envoy-hold-signing"}
+// writingArgs are the flags every command but status takes beside commonArgs, the hold probe's
+// token among them: restore --finish requires it (options.usageProblem), and every command takes
+// it as one of the hold's flags (writerhold.HubFlags). The stack's env probes with the stack's own
+// credential (newStack's Operator.Probe), whatever file it names.
+var writingArgs = []string{"--signing-key-secret", "projects/consumernames-test/secrets/operator-only-envoy-hold-signing",
+	"--probe-token-file", "/dev/null"}
 
 // run runs `envoy-infra consumer-names <args>` in the stack, with the common flags, and returns its
 // exit code and output. Before a held command (every word but status and prepare) it closes every

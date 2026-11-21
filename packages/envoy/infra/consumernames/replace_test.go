@@ -136,10 +136,13 @@ func replaceNamesOf(t *testing.T, nc *nats.Conn, durable string) []string {
 
 // replaceRequireReplaced asserts the state one replace of durable leaves, whatever runs crashed
 // before it, read on a new operator connection: the record selects a fresh name of durable at
-// start, holds no open operation and retires every name in gone, which the server holds none of;
-// that fresh name is the one consumer of durable on the stream, by start sequence at start, with
-// no idle heartbeat, ack explicit, durable's logical name and filters, delivering to a new reply
-// inbox; and the name it answers.
+// start and holds no open operation; the server holds none of the names in gone; that fresh name
+// is the one consumer of durable on the stream, by start sequence at start, with no idle
+// heartbeat, ack explicit, durable's logical name and filters, delivering to a new reply inbox;
+// and the name it answers. Whether a gone name is still listed as retired is the selection
+// library's: a predecessor whose delete the server confirmed is dropped from the retired names,
+// and one whose delete failed stays for the cleanup (consumernames.Names.publish), which the
+// main row asserts of its own predecessor.
 func (h *stack) replaceRequireReplaced(durable string, start uint64, gone ...string) string {
 	t := h.t
 	t.Helper()
@@ -150,8 +153,7 @@ func (h *stack) replaceRequireReplaced(durable string, start uint64, gone ...str
 	require.Equal(t, start, record.Start, "the record keeps the start %s's current was created at", durable)
 	for _, name := range gone {
 		require.NotEqual(t, name, record.Current)
-		require.Contains(t, record.Retired, name, "%s is retired in %s's record", name, durable)
-		require.Nil(t, replaceInfo(t, nc, name), "retired %s is deleted", name)
+		require.Nil(t, replaceInfo(t, nc, name), "gone %s is deleted", name)
 	}
 	require.Equal(t, []string{record.Current}, replaceNamesOf(t, nc, durable), "the stream holds %s's current alone", durable)
 	info := replaceInfo(t, nc, record.Current)
@@ -274,6 +276,8 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	code, stdout, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-main")
 	require.Equal(t, 0, code)
 	replaced := h.replaceRequireReplaced(durable("replace-main"), acked+1, main)
+	mainRecord, _ := replaceRecord(t, func() selection.Store { _, s := h.replaceOp(); return s }(), durable("replace-main"))
+	require.NotContains(t, mainRecord.Retired, main, "a predecessor whose delete the server confirmed is dropped from the retired names")
 	require.Contains(t, stdout, main+" replaced by "+replaced+" at stream sequence 5")
 	nc, _ = h.replaceOp()
 	require.NotEqual(t, mainDeliver, replaceInfo(t, nc, replaced).Config.DeliverSubject, "the fresh name delivers to a new inbox")
@@ -286,8 +290,9 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 		require.Equal(t, 0, code)
 		_, store := h.replaceOp()
 		record, _ := replaceRecord(t, store, durable("replace-crash-reserve"))
-		require.Len(t, record.Retired, 2, "the crashed run's candidate, never created, and the old name are retired")
-		h.replaceRequireReplaced(durable("replace-crash-reserve"), acked+1, record.Retired...)
+		require.Len(t, record.Retired, 1, "the crashed run's candidate, never created, stays retired")
+		require.NotContains(t, record.Retired, reserved, "the old name, whose delete the server confirmed, is dropped from the retired names")
+		h.replaceRequireReplaced(durable("replace-crash-reserve"), acked+1, append([]string{reserved}, record.Retired...)...)
 	})
 	t.Run("a rerun after a crash after the create", func(t *testing.T) {
 		code, _, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-crash-create")
