@@ -28,7 +28,11 @@ func TestMigrationWorkspaceBundleWorkingCopiesKeepsARowOfTheReleaseBefore(t *tes
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	read, take, err := st.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-that-replaces-it", at.Add(time.Minute))
+	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('INFRA-945', 'INFRA-945', 'INFRA', 'root', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatalf("record INFRA-945: %v", err)
+	}
+	read, take, err := st.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-that-replaces-it", at.Add(time.Minute))
 	if err != nil || take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the take answered %v (%v), want the bundle sent", take, err)
 	}

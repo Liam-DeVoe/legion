@@ -95,7 +95,12 @@ func TestARestoreThroughTheStorePutsBackEachWorkingCopyTheSaveNamed(t *testing.T
 			if err := st.PutWorkspaceBundle(ctx, bundleIssue, bundleRelease, saved); err != nil {
 				t.Fatalf("save the released workspace's bundle: %v", err)
 			}
-			taken, take, err := st.TakeWorkspaceBundleForRestore(ctx, bundleIssue, "pod-that-replaces-it", time.Now().Add(time.Minute))
+			// A bundle is a project's to take only where the project records its issue.
+			if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+				values ($1, $1, 'INFRA', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, bundleIssue); err != nil {
+				t.Fatalf("record %s: %v", bundleIssue, err)
+			}
+			taken, take, err := st.TakeWorkspaceBundleForRestore(ctx, "infra", bundleIssue, "pod-that-replaces-it", time.Now().Add(time.Minute))
 			if err != nil || take != runtime.WorkspaceBundleSend {
 				t.Fatalf("the replacement pod's take answered %v (%v), want the bundle sent", take, err)
 			}

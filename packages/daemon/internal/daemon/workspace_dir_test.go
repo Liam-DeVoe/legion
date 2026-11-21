@@ -41,7 +41,7 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 			if got := dir(issue, "legion/LEGION-208"); got != own {
 				t.Fatalf("the engine's workspace of %s = %q, want the runtime's %q", issue.Key, got, own)
 			}
-			if got, want := string(workflow.WorkingCopy(issue, dir)), " Working copy: branch legion/LEGION-208, directory "+own+"."; got != want {
+			if got, want := workflow.WorkingCopy(issue, dir).String(), " Working copy: branch legion/LEGION-208, directory "+own+"."; got != want {
 				t.Fatalf("the working copy line = %q, want %q", got, want)
 			}
 			for branch, working := range map[string]string{"legion/LEGION-208.b": "LEGION-208.b", "legion/LEGION-208.b.2": "LEGION-208.b.2"} {
@@ -54,17 +54,9 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 			}
 			unparsed := issue
 			unparsed.Repo = "not a repository"
-			if got, want := string(workflow.WorkingCopy(unparsed, dir)), " Working copy: branch legion/LEGION-208."; got != want {
+			if got, want := workflow.WorkingCopy(unparsed, dir).String(), " Working copy: branch legion/LEGION-208."; got != want {
 				t.Fatalf("the working copy line of a repository that does not parse = %q, want %q", got, want)
 			}
 		})
 	}
-}
-
-// rigWorkingCopy is the working copy line the engine of a whole daemon booted on cfg writes into
-// each task of issue (engineConfig's WorkspaceDir): the directory the runtime cfg configures starts
-// the issue's agents in. A whole-daemon test builds the task it expects with it; a test whose
-// engine it builds itself, with no WorkspaceDir, expects workflow.WorkingCopy(issue, nil).
-func rigWorkingCopy(cfg config.Config, issue record.Issue) workflow.Standing {
-	return workflow.WorkingCopy(issue, engineWorkspaceDir(cfg))
 }

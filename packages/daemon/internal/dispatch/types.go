@@ -31,20 +31,20 @@ type Client interface {
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
-	// UploadArtifact writes a markdown document on the issue under name, as the next version of
-	// the document of that name when the issue holds one, and answers the slug Dispatch filed it
-	// under.
+	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
+	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
+	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
+	// issue lists no document under (messageArtifact).
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
-	// PlanDocument is one version of a document with its typed blocks and the issue carrying it:
-	// what register_plan reads a plan from at the version its owner gave. A Dispatch that
-	// predates the read with blocks answers ErrNoBlocks.
-	PlanDocument(ctx context.Context, artifactID string, version int) (PlanDocument, error)
+	// PlanDocument reads one version of a document with its typed blocks and the issue carrying
+	// it (DocumentVersion): what register_plan reads a plan from at the version its owner gave. A
+	// Dispatch that predates the read with blocks answers ErrNoBlocks.
+	PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
-	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
 	PutGatedSteps(ctx context.Context, project string, steps []string) error
@@ -52,10 +52,17 @@ type Client interface {
 	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
 	// gates record none.
 	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutRoleHolders publishes the session that holds each Legion role of the issue onto the
+	// issue's Dispatch row, replacing whatever set it holds; an empty list is an issue where no
+	// session holds a role.
+	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
 	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
-	// steps, or the rating a retro gave the plan onto the retro's record, where the write names
-	// one. Dispatch writes each field once and keeps every field the write leaves out.
+	// steps. Dispatch writes each field once and keeps every field the write leaves out.
 	PutStep(ctx context.Context, key, id string, write StepWrite) error
+	// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the
+	// issue, with the record's identity in write, on the record's rating route. Dispatch writes
+	// each field once, so a rating sent again changes nothing.
+	PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error
 	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
 	// issue. Its source, document, version and tasks are one fact: a write whose version is above
 	// the version Dispatch holds replaces all four, and one at or below it changes nothing (a
@@ -64,15 +71,6 @@ type Client interface {
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
-}
-
-// RepoProject is one mapping of a GitHub repository (owner/name) to a Dispatch project, and
-// whether it is that project's default: the repository an issue resolves to when neither it nor
-// any ancestor names one.
-type RepoProject struct {
-	Repo    string
-	Project string
-	Default bool
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
@@ -84,43 +82,66 @@ type DesignGateDocument struct {
 	ArtifactID string `json:"artifact_id"`
 }
 
+// RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
+// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
+// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+type RoleHolder struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
+}
+
 // StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:
 // every identity field of the step, written whatever its value, and each field the write may not
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
-// leaves out, so an empty value written where nil was meant would stand for good. It mirrors the
-// record's own StepRecord, because this package imports no record of the daemon's. Rating and
-// RatingReason are the rating a retro gave the plan, which only the record's rating route takes
-// (HTTPClient.PutStep sends a write naming a rating there) and every other write leaves out.
+// leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
+// because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
+// StepRecord, the rating aside, because this package imports no record of the daemon's.
 type StepWrite struct {
-	Task         string     `json:"task"`
-	Step         int        `json:"step"`
-	Kind         string     `json:"kind"`
-	Role         string     `json:"role"`
-	Type         string     `json:"type"`
-	Agent        string     `json:"agent"`
-	Generation   uint64     `json:"generation"`
-	Session      *string    `json:"session,omitempty"`
-	Model        *string    `json:"model,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
-	Result       *string    `json:"result,omitempty"`
-	ReturnedTo   *int       `json:"returned_to,omitempty"`
-	Report       *string    `json:"report,omitempty"`
-	Rating       *int       `json:"rating,omitempty"`
-	RatingReason *string    `json:"rating_reason,omitempty"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+}
+
+// PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
+// route takes them beside the step write (HTTPClient.PutStepRating). It mirrors the record's own
+// PlanRating, which the outbox converts to it, because this package imports no record of the
+// daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the
+// same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
-// the plan is of, its source (default or owner), the owner's document and its version, which a
+// the plan is of, its source (default or owner), the owner's document with its version, which a
 // plan of the source default leaves out because Dispatch refuses either on one, and each task with
 // its steps in order. It mirrors the record's own PlanRecord, because this package imports no
 // record of the daemon's.
 type PlanWrite struct {
-	Generation uint64     `json:"generation"`
-	Source     string     `json:"source"`
-	ArtifactID string     `json:"artifact_id,omitempty"`
-	Version    int        `json:"version,omitempty"`
-	Tasks      []PlanTask `json:"tasks"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	*PlanDocument
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from, as the plan
+// route takes it: embedded in PlanWrite, its artifact_id and version are members of the body, both
+// written or neither. It mirrors the record's own PlanDocument, which publishPlanRecord converts
+// to it, because this package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanTask is one task of a plan's write: its id and its steps in order, each a role or
@@ -149,8 +170,8 @@ func CarriesLegionLabel(labels []string) bool {
 
 // IssueSummary is one issue from Dispatch's project list. Rank is Dispatch's fractional key;
 // callers preserve the list's order when filtering. HandedOver is resolved once here, at the
-// client boundary, from the raw labels Dispatch's list route answers: every other reader of an
-// IssueSummary acts on this bool, never on a label list of its own.
+// client boundary, from the raw labels Dispatch's list route answers, and every decision acts on
+// this bool; Labels is the raw list itself, whose one reader is the copy of Dispatch's issues.
 type IssueSummary struct {
 	Key        string
 	Title      string
@@ -158,6 +179,10 @@ type IssueSummary struct {
 	Parent     *string
 	Rank       string
 	HandedOver bool
+	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
+	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
+	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
+	Labels []string
 	// LastSeq is how far Dispatch's own event log for the issue has run. A record whose applied
 	// sequence is behind it has events still to come on the stream, which carry the actor this
 	// snapshot does not.
@@ -176,15 +201,15 @@ type IssueSummary struct {
 }
 
 // Issue is the summary as an Issue, for a reader that has only Dispatch's listing of the issue:
-// every field the listing carries, the claim from its holder (Claim.Holder's `<kind>:<id>`). A
-// summary carries no project, no labels beyond the hand-over and no primary document, so those are
-// empty.
+// every field the listing carries, its labels among them, the claim from its holder
+// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary document, so those
+// are empty.
 func (s IssueSummary) Issue() Issue {
 	var claim *Claim
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -324,12 +349,12 @@ func (a Approval) LatestReviewer() Actor {
 	return a.By
 }
 
-// PlanDocument is one version of a document as the daemon reads a plan from it (PlanDocument on
+// DocumentVersion is one version of a document as the daemon reads a plan from it (PlanDocument on
 // HTTPClient): the document, the issue carrying it (empty for a project document), the version
 // read, and that version's typed blocks in document order. The blocks are the version's own, read
 // from its stored text by Dispatch, never the live document's, so the same version reads the same
 // blocks whenever it is read.
-type PlanDocument struct {
+type DocumentVersion struct {
 	ArtifactID string
 	IssueKey   string
 	Version    int
@@ -434,18 +459,23 @@ const (
 // change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
 
-// StepInput, StepWriter and StepOtherIssue are Dispatch's own spellings of three refusals of a step
-// record's write, each final: a value outside what the route takes (400), a writer that is not the
-// session of the issue's project's daemon (403), and an id that is a record of another issue (409).
-// A plan's write is refused the same three ways, its writer under StepWriter too, and the other
-// two under PlanInput and PlanOtherIssue. No mechanism shares a value between this module and
-// Dispatch's, so the spellings change together.
+// NoRoute is whether err is a Dispatch process's answer that it has no route for the request: its
+// router's 404 under the code NOT_FOUND whose message starts "no route for "
+// (packages/envoy/internal/dispatch/routes/router.go, staticHandler; the TypeScript clients'
+// NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
+// older build while a release rolls out, so no handler ran and the request is taken once the
+// release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
+// know, says "not found" instead, and is not this answer. No mechanism shares a value between
+// this module and Dispatch's, so the spellings change together.
+func NoRoute(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+}
+
 const (
-	StepInput      = "STEP_INPUT"
-	StepWriter     = "STEP_WRITER"
-	StepOtherIssue = "STEP_OTHER_ISSUE"
-	PlanInput      = "PLAN_INPUT"
-	PlanOtherIssue = "PLAN_OTHER_ISSUE"
+	noRouteCode          = "NOT_FOUND"
+	noRouteMessagePrefix = "no route for "
 )
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
@@ -484,7 +514,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 // name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
 // it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
 // serves only a Dispatch from before that change; a field whose loss would change a write ships as
-// a route of its own instead (the record's rating route, HTTPClient.PutStep). Any other malformed
+// a route of its own instead (the record's rating route, HTTPClient.PutStepRating). Any other malformed
 // body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
@@ -503,8 +533,8 @@ func unknownNewerField(message string) bool {
 // read — rather than anything Dispatch itself answered. request wraps every such failure in it
 // (client.go), the way appauth.TransientError wraps GitHub's, so a caller can tell "Dispatch
 // never answered" from "Dispatch answered and refused" without inspecting the wrapped error's
-// own type. A certificate the client does not trust is deliberately not wrapped: request types
-// that shape out on purpose, since no wait fixes a bad certificate.
+// own type. A refusal of the transport no wait fixes (TransportRefusal) is deliberately not
+// wrapped.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }
@@ -518,8 +548,14 @@ func (e *TransientError) Unwrap() error { return e.Err }
 // restart to take effect, same as a queued write already accepts). Anything else — a genuine coded
 // refusal PermanentRefusal does call permanent, or an error that is neither a TransientError nor
 // a Dispatch *Error at all, such as a 200 response whose body is not the JSON it promised — is not
-// an outage this waits out.
+// an outage this waits out. A refusal of the transport (TransportRefusal) is read first and wins
+// over an outage it is joined with — a TLS alert on one read beside a TransientError of another,
+// as the boot's catch-up joins the reads of one root — so a boot gate stops on it rather than
+// wait it out, as internal/natsauth's Unreachable lets an alert win.
 func Unreachable(err error) bool {
+	if TransportRefusal(err) {
+		return false
+	}
 	var transient *TransientError
 	if errors.As(err, &transient) {
 		return true

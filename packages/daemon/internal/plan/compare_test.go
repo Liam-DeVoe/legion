@@ -18,7 +18,7 @@ func planOf(t *testing.T, version int, blocks ...Block) Plan {
 // A later version changes a task when its block says anything else: its steps, its text, or an
 // attribute Legion reads, such as `needs`. A version that changes only the prose outside the task
 // blocks changes no task. A task the held plan has and the version does not is gone, and one the
-// version adds is new; both are changed, in the order of their ids (B-3, C2-2).
+// version adds is new; both are changed, in the order of their ids.
 func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 	intro := Block{ID: "intro", Type: "paragraph", Text: "Why the plan is so."}
 	task := func(attributes map[string]string, text string) Block {
@@ -47,7 +47,7 @@ func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 	}
 
 	defaults, _ := ParseSteps("planner implementer tester reviewer acceptance:owner")
-	heldDefault := Plan{Tasks: []Task{{ID: "default", HasSteps: true, Steps: defaults, Text: "The project's default steps."}}}
+	heldDefault := Plan{Tasks: []Task{{ID: "default", Steps: defaults, Text: "The project's default steps."}}}
 	next := planOf(t, 1, task(map[string]string{"steps": "implementer reviewer"}, "Do the change."))
 	if got, want := ChangedTasks(heldDefault, next), []string{"a", "default"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChangedTasks(default, {a}) = %#v, want %#v (one new, one gone)", got, want)

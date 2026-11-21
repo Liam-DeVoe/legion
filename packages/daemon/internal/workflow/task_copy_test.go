@@ -91,7 +91,7 @@ func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 				steps = append(steps, record.PlanStep{Issue: root.Key, Generation: root.Generation, Task: id, Position: 1,
 					Role: "implementer", Type: "implementation"})
 			}
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				if err := engine.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
 					return err
 				}
