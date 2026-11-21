@@ -366,7 +366,10 @@ func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
 		})
 		return nil
 	})
-	// The last peer's settlement is done when the server lets its connection go.
+	// The last peer's settlement is done when the server lets its connection go, and it stores what
+	// the room holds then: the room must hold the edit before the peer leaves (barrier), or a close
+	// that the server reads first settles version 1's text and stores no version 2.
+	peer.barrier(t)
 	peer.closeAndWait(t)
 	if _, err := pmdoc.ParseRendering(versionText(t, database, issue.PrimaryArtifactID, 2)); err == nil {
 		t.Fatal("the browser edit stored a version 2 that the parser reads; the test needs one that it refuses")
