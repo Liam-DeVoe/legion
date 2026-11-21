@@ -535,8 +535,9 @@ func (s *server) streamGoingRunEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // goingWaitingPlan is one run whose plan waits for its person, as the Inbox shows it: the run, its
-// conversation and words, the plan's number and summary, how many of its rows wait, and when the
-// plan was made. The plan itself is GET /api/v1/going/runs/{id}/plan.
+// conversation and words, the plan's number and summary, how many of its rows wait, when the plan
+// was made, and its version as the plan's own answer names it (goingPlanAnswer.Version), which an
+// approval from the Inbox names. The plan itself is GET /api/v1/going/runs/{id}/plan.
 type goingWaitingPlan struct {
 	Run          string    `json:"run"`
 	Conversation string    `json:"conversation"`
@@ -545,6 +546,7 @@ type goingWaitingPlan struct {
 	Summary      string    `json:"summary"`
 	Waiting      int       `json:"waiting"`
 	CreatedAt    time.Time `json:"created_at"`
+	Version      string    `json:"version"`
 }
 
 // goingWaitingPlansPage is a page of the caller's waiting plans, the newest first, paged as GET
@@ -559,7 +561,8 @@ type goingWaitingPlansPage struct {
 // listMyGoingPlans is GET /api/v1/me/going-plans: the caller's own runs whose latest plan waits
 // for them, while History lists their conversation, the newest plan first. It is the Inbox's read
 // of the plans; each change of what it lists appends going_plan.updated naming the person
-// (appendGoingPlanEvent), on which the Inbox reads it again.
+// (appendGoingPlanEvent), on which the Inbox reads it again. Each row's version is the plan's as
+// stored, read whole for it, as POST /api/v1/going/runs/{id}/plan/approve compares it.
 func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -571,7 +574,7 @@ func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select r.id::text, coalesce(r.conversation_id, r.id)::text, r.words, p.plan, p.summary, p.created_at,
+		select r.id::text, coalesce(r.conversation_id, r.id)::text, r.words, coalesce(r.mode, $5), p.plan, p.summary, p.created_at,
 		  (select count(*) from going_plan_rows w where w.run_id = p.run_id and w.plan = p.plan and w.state = 'waiting'),
 		  count(*) over ()
 		from going_runs r
@@ -579,18 +582,20 @@ func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 		where r.author_login = $1 and r.state = 'waiting' and p.state = 'waiting' and `+goingConversationListed(2)+`
 		order by p.created_at desc, r.id desc
 		limit $3 offset $4
-	`, model.CanonicalLogin(caller.ID), goingRunsKept.Seconds(), limit, offset)
+	`, model.CanonicalLogin(caller.ID), goingRunsKept.Seconds(), limit, offset, goingModeAsk)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("list my waiting plans: %w", err))
 		return
 	}
 	type listed struct {
 		plan  goingWaitingPlan
+		mode  string
 		total int64
 	}
 	plans, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (listed, error) {
 		var one listed
-		err := row.Scan(&one.plan.Run, &one.plan.Conversation, &one.plan.Words, &one.plan.Plan, &one.plan.Summary, &one.plan.CreatedAt, &one.plan.Waiting, &one.total)
+		err := row.Scan(&one.plan.Run, &one.plan.Conversation, &one.plan.Words, &one.mode, &one.plan.Plan, &one.plan.Summary,
+			&one.plan.CreatedAt, &one.plan.Waiting, &one.total)
 		return one, err
 	})
 	if err != nil {
@@ -599,6 +604,15 @@ func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	page := goingWaitingPlansPage{Rows: make([]goingWaitingPlan, 0, len(plans)), Limit: limit, Offset: offset}
 	for _, one := range plans {
+		stored, err := readGoingPlan(r.Context(), s.deps.Store.Pool, one.plan.Run, one.plan.Plan)
+		if err == nil && stored == nil {
+			err = fmt.Errorf("plan %d of run %s is gone", one.plan.Plan, one.plan.Run)
+		}
+		if err != nil {
+			s.writeHandlerError(w, fmt.Errorf("list my waiting plans: %w", err))
+			return
+		}
+		one.plan.Version = stored.answer(one.plan.Run, one.mode).Version
 		page.Rows, page.Total = append(page.Rows, one.plan), int(one.total)
 	}
 	WriteJSON(w, http.StatusOK, page)
