@@ -519,10 +519,11 @@ func leftBy(r streams.Report, err error) error {
 // recorded, unchanged` for one that records none yet, named in no output, since the census wrote
 // nothing there. The stores are the daemons' own databases, no stream of the hub, so the
 // postcheck counts none of these writes. With no stores, an error of theirs (a malformed
-// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), or
-// any store left unreconciled, which it names with why, it is UNKNOWN and the census writes no
-// done entry; a store changed before that is then named as what the run left (a *Left), so the
-// stop does not record the run as unchanged.
+// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), a
+// store the writer marks gone at an instance other than the one the operator's file states (or at
+// none), or any store left unreconciled, which it names with why, it is UNKNOWN and the census
+// writes no done entry; a store changed before that is then named as what the run left (a *Left),
+// so the stop does not record the run as unchanged.
 func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, deployments DaemonDeployments, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
 	if stores == nil {
 		return nil, unknownf(StepPostcheck, ErrNoStoreWriter, "reconcile the daemon stores' stream ids")
@@ -533,6 +534,18 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 	}
 	if err := result.Covers(families); err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
+	}
+	// A store is gone only at the instance its Deployment names and the operator's file states,
+	// both: a 3D000 from another server is no evidence that the live store is gone. The writer
+	// refuses such a store before it connects; this check stands beside it.
+	var elsewhere []string
+	for _, g := range result.Gone {
+		if g.Instance == "" || g.Instance != g.StatedInstance {
+			elsewhere = append(elsewhere, fmt.Sprintf("%s%s is gone at instance %q, and the operator's file states %q", daemonFamilyPrefix, g.Project, g.Instance, g.StatedInstance))
+		}
+	}
+	if len(elsewhere) > 0 {
+		return nil, unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: a store is gone only at the instance both name: %s", strings.Join(elsewhere, "; "))
 	}
 	outputs := map[string]string{}
 	var changed []string
