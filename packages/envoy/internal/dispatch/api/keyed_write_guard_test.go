@@ -85,6 +85,13 @@ var keyedWriteGuardAllowed = map[string]string{
 	// and an admission deletes the rows of every process that is no member, so a count a crash
 	// left behind is cleared rather than replayed.
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
+	// The stored listener answer (route_roster), which every request of a reader that does not see
+	// every object refreshes before the session content rule reads it (readerFor,
+	// refreshRosterForContent, readRouteRoster): the listener's sessions as it answered, shared by
+	// every process and every request, never the request's own work. It replaces the stored row
+	// only with a newer answer (sent_at), so a repeat after a takeover writes nothing a reader
+	// would not read anyway; a failure is only logged, and no write is undone for it.
+	"api.server.storeRouteRoster": "stores the listener's answer every process shares, newer answers only, which no key marks",
 }
 
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside
