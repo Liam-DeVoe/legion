@@ -54,19 +54,27 @@ func fragment(name, sql string) string { return Marker + name + " */ " + sql }
 // counts a member only through a people row of a full member, so a restricted member, or a login
 // nobody has signed in as, is never admitted by a group (v24 R2).
 func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
+	return personSeesProjectSQL("", personExpr, memberExpr, projectAlias)
+}
+
+// personSeesProjectSQL is PersonSeesProjectSQL with every table it reads named under schema: ""
+// in a statement, which names its tables as the rest of the statement does, and "public." in a
+// function's body (sessionContentFunctionBody), which runs under its caller's search_path and so
+// names each table by its schema, as session_clause_visible does, rather than setting one.
+func personSeesProjectSQL(schema, personExpr, memberExpr, projectAlias string) string {
 	return fragment("PersonSeesProjectSQL", fmt.Sprintf(`(%[3]s.owner = %[1]s
 		or exists (
-			select 1 from project_access listed
+			select 1 from %[4]sproject_access listed
 			where listed.project_key = %[3]s.key and listed.principal_kind = 'person' and listed.principal = %[1]s
 			offset 0)
 		or exists (
 			select 1
-			from project_access listed
-			join access_group_members member on member.group_name = listed.principal
-			join people full_member on full_member.email = member.person and full_member.member_kind = 'full'
+			from %[4]sproject_access listed
+			join %[4]saccess_group_members member on member.group_name = listed.principal
+			join %[4]speople full_member on full_member.email = member.person and full_member.member_kind = 'full'
 			where listed.project_key = %[3]s.key and listed.principal_kind = 'group' and member.person = %[1]s
 			offset 0)
-		or (%[3]s.visibility = 'public' and %[2]s = 'full'))`, personExpr, memberExpr, projectAlias))
+		or (%[3]s.visibility = 'public' and %[2]s = 'full'))`, personExpr, memberExpr, projectAlias, schema))
 }
 
 // VisibleProjectsSQL answers one caller's viewer in one row: every project it sees as a sorted
@@ -213,11 +221,14 @@ func PersonClause(loginExpr, viewerParam string) string {
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
 // 20261116081157_session_projects_proven empties both tables, and the command's --reset does again
-// in a deployment that may already hold a private project. Until the row is written a session of
-// a private project may have no row placing it there, so the open arm passes no session but the
-// viewer's own while any project is private. The marker's read names no column of the row it
-// tests, so a statement makes it once (an InitPlan), and only for an open viewer of a deployment
-// that holds a private project.
+// in a deployment that may already hold a private project, then refills the pairs one by one.
+// Until the row is written a session of a private project may have no row placing it there, or
+// have its pair in a project the viewer sees back before its pair in one the viewer does not, so
+// while any project is private no arm passes a session but the viewer's own: the open arm and the
+// arm of a viewer that is not open alike (migration 20261121165416_session_clause_filled). The
+// marker's read names no column of the row it tests, so a statement makes it once (an InitPlan),
+// and only for a viewer of a deployment that holds a private project that the statement's own SQL
+// does not answer.
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
@@ -232,7 +243,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 	return clause("SessionClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
 		or (%[4]s and not %[5]s)
 		or session_clause_visible((%[1]s), %[2]s::jsonb,
-			case when %[4]s and %[5]s then exists (
+			case when %[5]s then exists (
 				select 1 from session_projects_filled
 				offset 0)
 			else true end))`,
@@ -301,44 +312,46 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 // (PersonSeesProjectSQL), and the migration holds it as this text renders it:
 // TestTheContentFunctionIsTheBodyGoRenders fails while the function a migrated database holds
 // differs from it, so a change of either rule here ships with a migration that replaces the
-// function.
+// function. The function runs under its caller's search_path and sets none, which would save and
+// restore the setting on every call, so every table it reads is named by its schema, as
+// session_clause_visible names its tables.
 func sessionContentFunctionBody() string {
-	held := `(select listener.projects from route_roster_session_projects listener where listener.id = true)`
+	held := `(select listener.projects from public.route_roster_session_projects listener where listener.id = true)`
 	return fmt.Sprintf(`select coalesce(not exists (
-				select 1 from session_projects unseen
+				select 1 from public.session_projects unseen
 				where unseen.session_id = $1 and not (($2->'sees') ? unseen.project_key)
 				offset 0)
 			and not exists (
-				select 1 from session_reached_projects reached
+				select 1 from public.session_reached_projects reached
 				where reached.session_id = $1 and not (($2->'sees') ? reached.project_key)
 				offset 0)
 			and case when coalesce(%[2]s ? $1, false) then
 				(%[2]s->$1) <@ ($2->'sees')
 				and ((%[1]s
-						and exists (select 1 from session_projects_filled offset 0)
+						and exists (select 1 from public.session_projects_filled offset 0)
 						and (jsonb_array_length(%[2]s->$1) > 0
-							or exists (select 1 from session_projects acted where acted.session_id = $1 offset 0)))
+							or exists (select 1 from public.session_projects acted where acted.session_id = $1 offset 0)))
 					or (not %[1]s and %[5]s))
 			else
 				(%[1]s
-					and exists (select 1 from session_projects_filled offset 0)
-					and exists (select 1 from session_owners tied where tied.session_id = $1 offset 0)
+					and exists (select 1 from public.session_projects_filled offset 0)
+					and exists (select 1 from public.session_owners tied where tied.session_id = $1 offset 0)
 					and not exists (
-						select 1 from session_owners tied
-						join projects hidden on hidden.visibility = 'private' and not (($2->'sees') ? hidden.key)
-						left join people tied_person on tied_person.email = tied.login
+						select 1 from public.session_owners tied
+						join public.projects hidden on hidden.visibility = 'private' and not (($2->'sees') ? hidden.key)
+						left join public.people tied_person on tied_person.email = tied.login
 						where tied.session_id = $1 and %[4]s
 						offset 0))
-				or (not %[1]s and %[5]s)
+				or (not %[1]s and %[5]s and not ($2 ? 'lists'))
 			end, false)`,
 		ViewerFlag("$2", "open"), held, ViewerPerson("$2"),
-		PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden"),
+		personSeesProjectSQL("public.", "tied.login", "tied_person.member_kind", "hidden"),
 		fmt.Sprintf(`(exists (
-				select 1 from session_owners tied
+				select 1 from public.session_owners tied
 				where tied.session_id = $1 and tied.login = %[1]s
 				offset 0)
 			and not exists (
-				select 1 from session_owners tied
+				select 1 from public.session_owners tied
 				where tied.session_id = $1 and tied.login is distinct from %[1]s
 				offset 0))`, ViewerPerson("$2")))
 }

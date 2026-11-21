@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -37,6 +39,60 @@ func TestTheContentFunctionIsTheBodyGoRenders(t *testing.T) {
 	}
 	if cost != float32(0.0001) {
 		t.Errorf("session_content_visible is declared at cost %v, want 0.0001", cost)
+	}
+}
+
+// TestTheRuleFunctionsReadTheirTablesWhateverTheCallersSearchPath: session_content_visible and
+// session_clause_visible set no search_path, so each runs under its caller's, and each names every
+// table it reads by its schema, so a caller whose search_path puts another schema first, holding
+// tables of the same names, is answered from public's rows all the same. Schema shadow holds a
+// session_projects that places ses_shadowed in PRIV and a session_owners that ties it to bob alone;
+// public holds neither row. bob, a restricted member PRIV names, reads ses_shadowed by neither rule
+// under the default search_path, and by neither under `shadow, public`.
+//
+// Control: session_content_visible's tables named without their schema (the migration's first
+// text), and under `shadow, public` bob reads ses_shadowed's content.
+func TestTheRuleFunctionsReadTheirTablesWhateverTheCallersSearchPath(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
+		create schema shadow;
+		create table shadow.session_projects (session_id text, project_key text);
+		create table shadow.session_owners (session_id text, login text);
+		insert into shadow.session_projects values ('ses_shadowed', 'PRIV');
+		insert into shadow.session_owners values ('ses_shadowed', '`+bob+`');
+	`); err != nil {
+		t.Fatalf("seed the shadow schema: %v", err)
+	}
+	viewer, err := Resolve(ctx, database.Pool, cookie(bob))
+	if err != nil {
+		t.Fatalf("bob: Resolve: %v", err)
+	}
+	if viewer.Open || !viewer.AnyPrivate {
+		t.Fatalf("bob resolves as %+v, want a restricted member of a deployment that holds a private project", viewer)
+	}
+	connection, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("open a connection of its own: %v", err)
+	}
+	defer connection.Close(ctx)
+	for _, path := range []string{"public", "shadow, public"} {
+		if _, err := connection.Exec(ctx, `set search_path = `+path); err != nil {
+			t.Fatalf("set search_path = %s: %v", path, err)
+		}
+		for name, rule := range map[string]string{
+			"SessionClause":        SessionClause("$2", "$1"),
+			"SessionContentClause": SessionContentClause("$2", "$1"),
+		} {
+			var passes bool
+			if err := connection.QueryRow(ctx, `select `+rule, viewerArg(t, viewer), "ses_shadowed").Scan(&passes); err != nil {
+				t.Fatalf("search_path %s: %s: %v", path, name, err)
+			}
+			if passes {
+				t.Errorf("search_path %s: %s passes ses_shadowed for bob, want false: public holds no row placing or tying it", path, name)
+			}
+		}
 	}
 }
 
