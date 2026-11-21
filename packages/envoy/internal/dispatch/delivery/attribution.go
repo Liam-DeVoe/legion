@@ -654,17 +654,19 @@ const titleAndBranchSelect = `
 // remake.
 const KeyRemakeEvery = 30 * time.Second
 
-// remakeChunk is how many texts rows one statement of RemakeKeys remakes.
-const remakeChunk = 1000
+// remakeChunk is how many texts rows one statement of RemakeKeys remakes: 1,000 in every build. A
+// var, and the statement's argument, so a test of the chunks shrinks it (shrinkRemakeChunk) and
+// makes a remake of several chunks from hundreds of rows rather than thousands.
+var remakeChunk = 1000
 
-// remakeKeysStatement is one chunk of RemakeKeys: at most remakeChunk texts rows on another
+// remakeKeysStatement is one chunk of RemakeKeys: at most $1 (remakeChunk) texts rows on another
 // reading, a row that a writer holds skipped, each written with its own title so the trigger
 // pull_request_texts_keys writes its keys and the reading that runs now.
 func remakeKeysStatement(schema string) string {
 	return `with id as (select ` + schema + `.attribution_reading() as id), chunk as (
 		select t.repo, t.number from pull_request_texts t, id
 		where t.reading < id.id or t.reading > id.id
-		limit ` + strconv.Itoa(remakeChunk) + `
+		limit $1
 		for update of t skip locked
 	) update pull_request_texts x set title = x.title from chunk c, id
 	where (x.repo, x.number) = (c.repo, c.number) and (x.reading < id.id or x.reading > id.id)
@@ -691,7 +693,7 @@ func RemakeKeys(ctx context.Context, pool *store.Pool) (int, error) {
 	}
 	remade := 0
 	for {
-		tag, err := pool.Exec(ctx, statements.remakeKeys)
+		tag, err := pool.Exec(ctx, statements.remakeKeys, remakeChunk)
 		if err != nil {
 			return remade, fmt.Errorf("remake the keys of the texts rows on another reading: %w", err)
 		}

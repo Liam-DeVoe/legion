@@ -74,31 +74,38 @@ func seedPlanFixture(t *testing.T, ctx context.Context, pool *store.Pool) {
 		}
 	}
 	exec("old name", `insert into repo_projects (repo, project, created_by, renamed_to) values ('acme/old', 'ACME', '{"kind":"system","id":"test"}', 'acme/widgets')`)
+	// The 200 texts are sent once a chunk, each with its place, and the server makes the 5,000
+	// rows from them: row n takes text n mod 200, as the fixture always did. Sending each row's own
+	// copy marshalled 5,000 texts of 17 kB in the test and made the server parse each chunk's
+	// copies twice, the heads' statement included, which reads none of the bodies.
 	texts := planTexts()
 	const rows = 5000
-	payload := make([]map[string]any, 0, rows)
-	for number := 1; number <= rows; number++ {
-		text := texts[number%len(texts)]
-		repo := text.Repo
-		if repo == "acme/widgets" && number%100 == 0 {
-			repo = "acme/old"
-		}
-		payload = append(payload, map[string]any{"repo": repo, "number": number, "title": text.Title, "body": text.Body, "head_ref": text.HeadRef, "messages": text.Messages})
+	payload := make([]map[string]any, 0, len(texts))
+	for i, text := range texts {
+		payload = append(payload, map[string]any{"i": i, "repo": text.Repo, "title": text.Title, "body": text.Body, "head_ref": text.HeadRef, "messages": text.Messages})
 	}
-	for start := 0; start < len(payload); start += 1000 {
-		chunk, err := json.Marshal(payload[start:min(start+1000, len(payload))])
-		if err != nil {
-			t.Fatal(err)
-		}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const rowsOfTexts = `
+		with x as (
+			select * from jsonb_to_recordset($1::jsonb) as x(i int, repo text, title text, head_ref text, body text, messages text[])
+		)
+		select case when x.repo = 'acme/widgets' and n % 100 = 0 then 'acme/old' else x.repo end as repo, n as number,
+			x.title, x.head_ref, x.body, x.messages
+		from generate_series($2::int, $3::int) n join x on x.i = n % $4::int`
+	for start := 1; start <= rows; start += 1000 {
+		end := min(start+999, rows)
 		exec("results rows", `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
 				attribution_source, title, url, event_at, checked_at, github_read_at)
 			select u.repo, u.number, lpad(to_hex(u.number), 40, '0'), u.head_ref, 'main', 'merged', null, 'none', u.title,
 				'https://github.com/' || u.repo || '/pull/' || u.number, timestamptz '2026-11-01' + make_interval(secs => u.number), now(), now()
-			from jsonb_to_recordset($1::jsonb) as u(repo text, number int, title text, head_ref text)`, string(chunk))
+			from (`+rowsOfTexts+`) u order by u.number`, string(encoded), start, end, len(texts))
 		exec("texts", `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title, body, commit_messages, updated_at)
 			select u.repo, u.number, lpad(to_hex(u.number), 40, '0'), u.head_ref, u.repo, 'main', u.title, u.body, u.messages,
 				timestamptz '2026-11-01' + make_interval(secs => u.number)
-			from jsonb_to_recordset($1::jsonb) as u(repo text, number int, title text, head_ref text, body text, messages text[])`, string(chunk))
+			from (`+rowsOfTexts+`) u order by u.number`, string(encoded), start, end, len(texts))
 	}
 	exec("issues the texts name", `insert into issues (key, project_key, number, title, status, created_by, rank)
 		select k, split_part(k, '-', 1), split_part(k, '-', 2)::int, k, 'todo', '{"kind":"system","id":"test"}', k

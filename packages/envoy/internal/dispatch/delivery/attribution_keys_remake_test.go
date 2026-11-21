@@ -2,12 +2,17 @@ package delivery
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -103,16 +108,42 @@ func noReadFollows(t *testing.T, ctx context.Context, pool *store.Pool) {
 	}
 }
 
+// shrinkRemakeChunk sets remakeChunk to 100 for the test, and puts the production value back at
+// its end, so a remake of several chunks takes hundreds of texts rows and not thousands. Call it
+// before a remake or a loop starts: the cleanups run in reverse, so the chunk is put back only
+// once the loop has stopped.
+func shrinkRemakeChunk(t *testing.T) {
+	t.Helper()
+	chunk := remakeChunk
+	remakeChunk = 100
+	t.Cleanup(func() { remakeChunk = chunk })
+}
+
+// loopChecks counts the checks of the key remake loop on the pool it traces: each statement that
+// asks whether some texts row is on another reading (readingOtherStatement).
+type loopChecks struct{ checks atomic.Int64 }
+
+func (c *loopChecks) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "pg_catalog.min(x.reading)") {
+		c.checks.Add(1)
+	}
+	return ctx
+}
+
+func (c *loopChecks) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
 // The key remake loop remakes the keys of every texts row after a change of the reading while it
-// runs. 2,500 texts rows are on the reading. The loop starts with a check every 200 ms, and the
-// reading changes after some checks, as a migration changes it. Within 5 s every row is on the new
-// reading. The loop takes no client of GitHub, and the remake owes no read, so no read of GitHub
-// follows. Control in the same test: with no loop, the same change leaves the 2,500 rows on the old
-// reading for 5 s. It fails where the loop checks only at its start, or where a check that finds
-// rows on another reading remakes none or some.
+// runs. 250 texts rows, two and a half chunks of the 100 the test sets (shrinkRemakeChunk), are on
+// the reading. The loop starts with a check every 200 ms, and the reading changes after three
+// checks that found every row on the reading that runs, as a migration changes it. Within 2 s, ten
+// checks, every row is on the new reading. The loop takes no client of GitHub, and the remake owes
+// no read, so no read of GitHub follows. Control in the same test: with no loop, the same change
+// leaves the 250 rows on the old reading for those 2 s. It fails where the loop checks only at its
+// start, or where a check that finds rows on another reading remakes none or some.
 func TestTheKeyRemakeLoopRemakesKeysAfterAChangeWhileItRuns(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	const rows = 2500
+	shrinkRemakeChunk(t)
+	const rows, window = 250, 2 * time.Second
 	storeTextsRows(t, ctx, pool, 1, rows)
 	change := prepareReadingChange(t, ctx, pool)
 	if other := rowsOnAnotherReading(t, ctx, pool, change.schema); other != 0 {
@@ -125,11 +156,11 @@ func TestTheKeyRemakeLoopRemakesKeysAfterAChangeWhileItRuns(t *testing.T) {
 			t.Fatalf("the changed function keeps the identity %s: it is no change of the reading", identity)
 		}
 		other := rows
-		if testwait.Holds(5*time.Second, 100*time.Millisecond, func() bool {
+		if testwait.Holds(window, 100*time.Millisecond, func() bool {
 			other = rowsOnAnotherReading(t, ctx, pool, change.schema)
 			return other != rows
 		}) {
-			t.Errorf("the control: with no loop, %d of %d rows are on another reading within 5 s of the change, want %d for 5 s", other, rows, rows)
+			t.Errorf("the control: with no loop, %d of %d rows are on another reading within %s of the change, want %d for %s", other, rows, window, rows, window)
 		}
 		applyReading(t, ctx, pool, change.original)
 		if other := rowsOnAnotherReading(t, ctx, pool, change.schema); other != 0 {
@@ -139,40 +170,46 @@ func TestTheKeyRemakeLoopRemakesKeysAfterAChangeWhileItRuns(t *testing.T) {
 		return
 	}
 
+	checks := &loopChecks{}
+	traced := storetest.Traced(t, pool, checks, nil)
 	loop, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		KeyRemakeLoop(loop, pool, 200*time.Millisecond)
+		KeyRemakeLoop(loop, traced, 200*time.Millisecond)
 	}()
 	t.Cleanup(func() {
 		stop()
 		<-done
 	})
-	// The loop checks at once and then every 200 ms. The change comes after several checks that
+	// The loop checks at once and then every 200 ms. The change comes after three checks that
 	// found every row on the reading that runs.
-	time.Sleep(time.Second)
+	waitFor(t, 10*time.Second, func() bool { return checks.checks.Load() >= 3 }, func() string {
+		return fmt.Sprintf("the loop made %d checks in 10 s, want 3 before the change", checks.checks.Load())
+	})
 	applyReading(t, ctx, pool, change.changed)
 	changedAt := time.Now()
 	other := rows
-	if !testwait.Holds(5*time.Second, 50*time.Millisecond, func() bool {
+	if !testwait.Holds(window, 50*time.Millisecond, func() bool {
 		other = rowsOnAnotherReading(t, ctx, pool, change.schema)
 		return other == 0
 	}) {
-		t.Errorf("%d of %d rows are on another reading %v after the change, want 0 within 5 s", other, rows, time.Since(changedAt).Round(time.Millisecond))
+		t.Errorf("%d of %d rows are on another reading %v after the change, want 0 within %s", other, rows, time.Since(changedAt).Round(time.Millisecond), window)
 	}
 	stop()
 	<-done
 	noReadFollows(t, ctx, pool)
 }
 
-// Two remakes at once take disjoint rows. 3,000 texts rows are on another reading after a change of
-// the reading. Two RemakeKeys calls start together. Their counts add up to 3,000, and no row stays
-// on another reading. It fails where a remake counts a row that the other remade (an update with no
-// test of the reading), or where the two remakes stop while rows are on another reading.
+// Two remakes at once take disjoint rows. 300 texts rows, three chunks of the 100 the test sets
+// (shrinkRemakeChunk), are on another reading after a change of the reading. Two RemakeKeys calls
+// start together. Their counts add up to 300, and no row stays on another reading. It fails where a
+// remake counts a row that the other remade (an update with no test of the reading), or where the
+// two remakes stop while rows are on another reading.
 func TestTwoRemakesTakeDisjointRows(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	const rows = 3000
+	shrinkRemakeChunk(t)
+	const rows = 300
 	storeTextsRows(t, ctx, pool, 1, rows)
 	change := prepareReadingChange(t, ctx, pool)
 	applyReading(t, ctx, pool, change.changed)
