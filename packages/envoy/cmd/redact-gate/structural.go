@@ -6,13 +6,14 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
 
 // structural runs the box, holder and reflection censuses over every production file of one
 // type-checked package.
-func (g *gate) structural(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) {
+func (g *gate) structural(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info) {
 	box := g.inv.Gate.Box
 	boxPkg, boxName := splitTypeName(box.Type)
 	g.collectValueOf(path, files, info)
@@ -24,7 +25,6 @@ func (g *gate) structural(c *census, dir, path string, fset *token.FileSet, file
 		w := &walker{g: g, c: c, fset: fset, info: info, rel: rel, path: path, boxPkg: boxPkg, boxName: boxName, instances: instances}
 		w.file(f)
 	}
-	_ = pkg
 }
 
 // valueOfSite is one reflect.ValueOf call, with the static types its argument can have: its own,
@@ -269,7 +269,7 @@ func (w *walker) holder(n *ast.StructType, parents []ast.Node, function string) 
 		}
 	}
 	if name == w.boxPkg+"."+w.boxName {
-		return // the box itself
+		return
 	}
 	if name == "" {
 		// An anonymous struct is named by the function that declares it and its type, which a
@@ -308,7 +308,6 @@ func (w *walker) storageField(id *ast.Ident) bool {
 	if !ok || !v.IsField() || v.Name() != w.g.inv.Gate.Box.Field || v.Pkg() == nil || v.Pkg().Path() != w.boxPkg {
 		return false
 	}
-	// The field belongs to the box's struct.
 	box := v.Pkg().Scope().Lookup(w.boxName)
 	if box == nil {
 		return false
@@ -391,13 +390,13 @@ func (w *walker) storage(sel *ast.SelectorExpr, parents []ast.Node, function str
 		for _, arg := range q.Args {
 			if ast.Unparen(arg) == child {
 				switch {
-				case setOf(w.g.inv.Gate.Box.Rule)[callee]:
+				case slices.Contains(w.g.inv.Gate.Box.Rule, callee):
 					f.Kind, f.OK, f.Why = "rule", true, "the argument of "+callee
 					return
-				case setOf(w.g.inv.Gate.Box.Comparisons)[callee]:
+				case slices.Contains(w.g.inv.Gate.Box.Comparisons, callee):
 					f.Kind, f.OK, f.Why = "comparison", true, "an operand of "+callee
 					return
-				case setOf(w.g.inv.Gate.Box.Parses)[callee]:
+				case slices.Contains(w.g.inv.Gate.Box.Parses, callee):
 					if why := w.parseErrorKept(q, parents[:i]); why != "" {
 						f.Kind, f.Why = "raw", "the text is the argument of "+callee+", "+why
 						return
@@ -478,24 +477,10 @@ func (w *walker) parseErrorKept(call *ast.CallExpr, above []ast.Node) string {
 	return why
 }
 
+// callee is the full name of the function or method call calls (calleeFunc), its generic origin's
+// for an instance, or "".
 func (w *walker) callee(call *ast.CallExpr) string {
-	var id *ast.Ident
-	switch fun := ast.Unparen(call.Fun).(type) {
-	case *ast.Ident:
-		id = fun
-	case *ast.SelectorExpr:
-		id = fun.Sel
-	case *ast.IndexExpr:
-		if s, ok := fun.X.(*ast.SelectorExpr); ok {
-			id = s.Sel
-		} else if i, ok := fun.X.(*ast.Ident); ok {
-			id = i
-		}
-	}
-	if id == nil {
-		return ""
-	}
-	if fn, ok := w.info.Uses[id].(*types.Func); ok {
+	if fn := calleeFunc(w.info, call); fn != nil {
 		return fn.Origin().FullName()
 	}
 	return ""
@@ -505,8 +490,6 @@ func isNil(e ast.Expr) bool {
 	id, ok := ast.Unparen(e).(*ast.Ident)
 	return ok && id.Name == "nil"
 }
-
-func setOf(xs []string) map[string]bool { return set(xs) }
 
 func orName(name, otherwise string) string {
 	if name == "" {

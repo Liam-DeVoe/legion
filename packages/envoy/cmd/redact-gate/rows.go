@@ -60,7 +60,7 @@ func (g *gate) gateRow(r *row, at [2]int) {
 		g.fail("stage 5 (mutation) row %s: %v", r.ID, err)
 		return
 	}
-	if err := g.onlyChange(copyDir, r, before, after); err != nil {
+	if err := g.onlyChange(r, before, after); err != nil {
 		g.fail("stage 5 (mutation) row %s: %v", r.ID, err)
 		return
 	}
@@ -73,8 +73,9 @@ func (g *gate) gateRow(r *row, at [2]int) {
 }
 
 // onlyChange checks that the copy's mutated file differs from the snapshot's by the one
-// replacement, and that no other file of the copy differs.
-func (g *gate) onlyChange(copyDir string, r *row, before, after []byte) error {
+// replacement. No other file of the copy differs: copy makes it from the snapshot afresh for each
+// row, and gateRow writes no other file.
+func (g *gate) onlyChange(r *row, before, after []byte) error {
 	pristine, err := os.ReadFile(filepath.Join(g.snapshot, r.Mutation.File))
 	if err != nil || !bytes.Equal(pristine, before) {
 		return errors.New("the copy's file is not the snapshot's before the mutation")
@@ -130,7 +131,6 @@ type result struct {
 	asserted                            []string // REDACT-ASSERT <capture> lines
 	captures                            map[string][]string
 	blind                               []string // the print test's blind rows ("blind: ...")
-	otherFailures                       []string
 	elapsed                             time.Duration
 	note                                string
 }
@@ -252,7 +252,6 @@ func (res *result) scan(text string) {
 func (g *gate) runTest(copyDir string, r *row) result {
 	res := result{captures: map[string][]string{}}
 	start := time.Now()
-	defer func() { res.elapsed = time.Since(start) }()
 	if r.bun {
 		return g.runBun(copyDir, r, res, start)
 	}

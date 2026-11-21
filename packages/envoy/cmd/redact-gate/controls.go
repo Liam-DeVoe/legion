@@ -515,16 +515,16 @@ func controlDefaultClient(ctx context.Context) *http.Client {
 		}},
 	{id: "27", what: "ten planted reads of an answer outside redact's readers: a raw body printed, a decode into an interface value, a generic decode helper, a type that reads itself from text, a Decode method value, a function literal in a package-level composite literal, one answer's text held with another answer's record, a decoder's error printed, a raw read under a limit, and a GitHub classifier's raw bytes read through a type that embeds the response", stage: 2,
 		each: [][]string{
-			{"answer census", plantDir + "control_answer.go:17", "controlRaw", "outside"},
-			{"answer census", plantDir + "control_answer.go:24", "controlAny", "outside"},
-			{"answer census", plantDir + "control_answer.go:36", "controlGeneric", "outside"},
-			{"answer census", plantDir + "control_answer.go:47", "controlUnmarshalText", "outside"},
-			{"answer census", plantDir + "control_answer.go:53", "controlMethodValue", "outside"},
-			{"answer census", plantDir + "control_answer.go:60", "controlReaders", "outside"},
-			{"answer census", plantDir + "control_answer.go:65", "controlOtherRecord", "another answer"},
-			{"answer census", plantDir + "control_answer.go:71", "controlDecoderError", "outside"},
-			{"answer census", plantDir + "control_answer.go:79", "controlLimited", "outside"},
-			{"answer census", plantDir + "control_answer.go:87", "controlClassify", "outside"},
+			{"answer census", plantDir + "control_answer.go:14", "controlRaw", "outside"},
+			{"answer census", plantDir + "control_answer.go:21", "controlAny", "outside"},
+			{"answer census", plantDir + "control_answer.go:33", "controlGeneric", "outside"},
+			{"answer census", plantDir + "control_answer.go:44", "controlUnmarshalText", "outside"},
+			{"answer census", plantDir + "control_answer.go:50", "controlMethodValue", "outside"},
+			{"answer census", plantDir + "control_answer.go:57", "controlReaders", "outside"},
+			{"answer census", plantDir + "control_answer.go:62", "controlOtherRecord", "another answer"},
+			{"answer census", plantDir + "control_answer.go:68", "controlDecoderError", "outside"},
+			{"answer census", plantDir + "control_answer.go:76", "controlLimited", "outside"},
+			{"answer census", plantDir + "control_answer.go:84", "controlClassify", "outside"},
 		},
 		plant: func(c *controlRun) error {
 			return c.write(plantDir+"control_answer.go", `package cipherclient
@@ -537,9 +537,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 )
-
-// Control (27)'s planted reads of an answer's body outside redact's readers, one for each shape
-// the round-4 review planted past the old census, a raw read, and a GitHub classifier's raw path.
 
 // controlRaw prints an answer's raw body.
 func controlRaw(resp *http.Response) error {
@@ -749,7 +746,7 @@ func earlierTree(repo string, inv inventory, id, rev string, files []string, cap
 
 // runControls runs each control (or the ones only names) from a passing baseline in a worktree of
 // its own, and accepts it only when the gate rejects it at its stage for its row or call.
-func runControls(repo, inventoryPath, only string) int {
+func runControls(repo, only string) int {
 	want := set(strings.Split(only, ","))
 	failed := 0
 	for _, ctl := range controls {

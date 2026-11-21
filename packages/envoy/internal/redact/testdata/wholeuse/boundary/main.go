@@ -428,18 +428,8 @@ func libraryDispatch(info *types.Info, stack []ast.Node, libTypes []types.Type, 
 // boundary for its token. One built from a token source of the library's own (Config.Client), or
 // named without a call, answers its refusal raw through net/http.
 func clientBuilt(info *types.Info, stack []ast.Node, tokenSource *types.Interface) string {
-	i := len(stack) - 1
-	fun := ast.Expr(stack[i].(*ast.Ident))
-	if i > 0 {
-		if sel, ok := stack[i-1].(*ast.SelectorExpr); ok && sel.Sel == fun {
-			fun, i = sel, i-1
-		}
-	}
-	if i < 1 {
-		return "a library HTTP client named without a call"
-	}
-	call, ok := stack[i-1].(*ast.CallExpr)
-	if !ok || call.Fun != fun {
+	call, _, ok := calledAt(stack)
+	if !ok {
 		return "a library HTTP client named without a call"
 	}
 	sources := 0

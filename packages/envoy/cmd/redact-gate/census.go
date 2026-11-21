@@ -188,7 +188,7 @@ func (g *gate) goPackage(c *census, dir, path, pkgDir string, goFiles []string, 
 		c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cannot be resolved: %v", path, err))
 		return
 	}
-	g.structural(c, dir, path, fset, parsed, info, checked)
+	g.structural(c, dir, path, fset, parsed, info)
 	g.answerCensus(c, dir, path, fset, parsed, info, checked)
 	if entry := g.inv.Gate.BoundaryFields.Entry; len(entry) > 0 {
 		if entryPkg, _ := splitTypeName(entry[0]); entryPkg == path {

@@ -159,15 +159,16 @@ func calleeFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 // redactMadeFields is each struct field of a RetrieveError type every write of which, in a
 // composite literal or an assignment, is a call of redact.NewRetrieveError.
 func redactMadeFields(pkgs []*packages.Package) map[*types.Var]bool {
-	writes := map[*types.Var][]bool{}
+	made := map[*types.Var]bool{}
 	record := func(info *types.Info, field *types.Var, value ast.Expr) {
 		call, ok := ast.Unparen(value).(*ast.CallExpr)
-		made := false
+		safe := false
 		if ok {
 			name, inRedact := redactCall(info, call)
-			made = inRedact && strings.HasSuffix(name, ".NewRetrieveError")
+			safe = inRedact && strings.HasSuffix(name, ".NewRetrieveError")
 		}
-		writes[field] = append(writes[field], made)
+		earlier, seen := made[field]
+		made[field] = safe && (!seen || earlier)
 	}
 	for _, pkg := range pkgs {
 		info := pkg.TypesInfo
@@ -194,14 +195,6 @@ func redactMadeFields(pkgs []*packages.Package) map[*types.Var]bool {
 				return true
 			})
 		}
-	}
-	made := map[*types.Var]bool{}
-	for field, all := range writes {
-		ok := len(all) > 0
-		for _, m := range all {
-			ok = ok && m
-		}
-		made[field] = ok
 	}
 	return made
 }

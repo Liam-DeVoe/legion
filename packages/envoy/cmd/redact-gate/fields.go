@@ -268,7 +268,7 @@ func (j *fieldJudge) classify(value ast.Expr, depth int) (bool, string) {
 			return ok, fmt.Sprintf("%s, defined as %s: %s", v.Name, exprString(def.value), why)
 		case def.index == 0:
 			if call, isCall := ast.Unparen(def.value).(*ast.CallExpr); isCall {
-				if fn := j.callee(call); fn != nil && j.parses[fn.Origin().FullName()] {
+				if fn := calleeFunc(j.info, call); fn != nil && j.parses[fn.Origin().FullName()] {
 					return true, fmt.Sprintf("%s, the value %s parses, which holds no text", v.Name, fn.Origin().FullName())
 				}
 			}
@@ -278,7 +278,7 @@ func (j *fieldJudge) classify(value ast.Expr, depth int) (bool, string) {
 			ok, why := j.classify(v.Args[0], depth+1)
 			return ok, "a conversion of " + why
 		}
-		if fn := j.callee(v); fn != nil {
+		if fn := calleeFunc(j.info, v); fn != nil {
 			full := fn.Origin().FullName()
 			sig := fn.Type().(*types.Signature)
 			switch {
@@ -313,18 +313,18 @@ func (j *fieldJudge) varOf(id *ast.Ident) *types.Var {
 	return v
 }
 
-// callee is the function or method call calls, past an explicit instantiation, or nil.
-func (j *fieldJudge) callee(call *ast.CallExpr) *types.Func {
+// calleeFunc is the function or method call calls, past an explicit instantiation, or nil.
+func calleeFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 	fun := ast.Unparen(call.Fun)
 	if index, ok := fun.(*ast.IndexExpr); ok {
 		fun = index.X
 	}
 	switch f := fun.(type) {
 	case *ast.Ident:
-		fn, _ := j.info.Uses[f].(*types.Func)
+		fn, _ := info.Uses[f].(*types.Func)
 		return fn
 	case *ast.SelectorExpr:
-		fn, _ := j.info.Uses[f.Sel].(*types.Func)
+		fn, _ := info.Uses[f.Sel].(*types.Func)
 		return fn
 	}
 	return nil

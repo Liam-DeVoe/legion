@@ -109,7 +109,6 @@ function holdsBox(
       )
         return true;
     }
-    // A class's # fields are no properties of its type; read its declarations.
     const declaration = type.getSymbol()?.valueDeclaration ?? type.getSymbol()?.declarations?.[0];
     if (declaration && ts.isClassLike(declaration)) {
       for (const member of declaration.members) {

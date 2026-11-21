@@ -57,12 +57,12 @@ function functionName(node: ts.Node): string | undefined {
       return n.name.text;
     return undefined;
   };
-  let found: string | undefined;
+  let outermostName: string | undefined;
   for (let n: ts.Node | undefined = node; n; n = n.parent) {
     const name = named(n);
-    if (name) found = name; // the outermost named function holds it
+    if (name) outermostName = name;
   }
-  return found;
+  return outermostName;
 }
 
 const byPackage = new Map<string, string[]>();

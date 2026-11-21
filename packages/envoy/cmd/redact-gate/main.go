@@ -257,7 +257,7 @@ func main() {
 		os.Exit(2)
 	}
 	if *controlsFlag {
-		os.Exit(runControls(*repo, *inventoryPath, *only))
+		os.Exit(runControls(*repo, *only))
 	}
 	o := options{rows: *rowsFlag, stage: *stage, head: *head, base: *base, report: *report}
 	os.Exit(run(*repo, *inventoryPath, o, os.Stdout))
