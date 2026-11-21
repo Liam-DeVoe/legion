@@ -874,7 +874,9 @@ it serves. Its migrations take about a second: the first builds the new table em
 one, and the second makes every later write of `embeddings` write both tables, except a write made
 as a replica (`session_replication_role = replica`, as a restore or a replication apply writes),
 which fires no trigger and is not carried over: make no such write of `embeddings` while it
-copies. The server's embeddings fill then copies the stored rows into the new table, in batches
+copies, since the fill catches one only where it leaves the two tables' row counts apart (below),
+and a replica's update, or a delete and an insert, is swapped in as the copy holds it. The
+server's embeddings fill then copies the stored rows into the new table, in batches
 of 200, and swaps the two tables when it is done. On a bench of production's size (995,184 rows
 over 20 projects, 15.7 GiB) the copy took 71 to 82 minutes and the swap held both tables for 247
 to 341 ms, over five runs: plan on about 80 minutes of copying, and one hold of about a third of a
@@ -887,26 +889,33 @@ the partitions of the projects its reader sees, at `hnsw.ef_search` 20, the widt
 a full member's meaning search answered p50 1,491 and 1,482 ms there, against 1,471 and 1,458 ms
 before, at recall@20 0.988 and 0.993 against 0.960 and 0.949.
 
-The swap waits until every live server process (a heartbeat within the registry's 15 seconds)
-serves the commit of the process that runs it, because a build before this release inserts its
-coverage rows on the key the swap replaces and cannot run that insert once the swap is made. So
-the swap runs once the roll is over, and a fleet serving two commits, a roll or a rollback in
-progress, holds it; each try while it waits logs `dispatch: embeddings stays unpartitioned for
+The swap waits while the fleet holds a build of another commit than the process that runs it: a
+registered process of one whose heartbeat is within the registry's prune age (10 minutes, so one
+frozen or cut from the database still counts), or a dashboard of one published within the hour,
+which an earlier build writes when it boots, before its coverage pass runs and before it
+registers. It reads that again once it holds its locks. A build before this release inserts its
+coverage rows on the key the swap replaces and cannot run that insert once the swap is made, so
+the swap runs once the roll is over: a roll, or a rollback whose first process has published its
+dashboard, holds it. Each try while it waits logs `dispatch: embeddings stays unpartitioned for
 now`, naming the commits it waits on, and is tried again about five minutes later. **After the
-swap, do not roll back past this release**: a build before it fails its coverage pass on every
-tick (`SQLSTATE 42P10`, `there is no unique or exclusion constraint matching the ON CONFLICT
-specification`), so the pass that adds an embedding row an issue lacks adds none until the fleet
-runs this release or a later one again.
+swap, do not roll back past this release**, and a rollback begun in the moment the swap commits
+counts as one after it: a build before it fails its coverage pass on every tick (`SQLSTATE
+42P10`, `there is no unique or exclusion constraint matching the ON CONFLICT specification`), and
+that pass then stops at its insert, so the build adds no embedding row an issue lacks, repairs no
+stale one, and after an embedder change neither drops nor re-admits another identity's vectors,
+until the fleet runs this release or a later one again.
 
 The log says `dispatch: the embeddings partition copy began`, then `... is copying` every 30
 seconds with the rows so far, then `... finished` with `rows` (read) and `inserted`, then
 `dispatch: embeddings is partitioned by project: the copy is swapped in` with `held`, how long the
-swap held the tables, and last `dispatch: embeddings is analyzed after its swap`. Before it takes
-any lock the fill counts both tables in one snapshot: counts that differ, a write that reached one
-table and not the other, log `... does not hold the rows embeddings holds, so it is emptied and
-copied again` with both counts, and the fill empties the copy and copies it again, with no lock a
-reader waits on; a second difference in the same pass ends it with an error, and the next pass
-copies again. A swap that cannot take its locks within 5 seconds fails, and the pass is tried again
+swap held the tables, and last `dispatch: embeddings is analyzed after its swap`: an `ANALYZE ONLY
+embeddings`, which a project created while it runs waits for. Before it takes any lock the fill
+counts both tables in one snapshot: counts that differ, a write that reached one table and not
+the other, log `... does not hold the rows embeddings holds, so it is emptied and copied again`
+with both counts, and the fill empties the copy and copies it again, with no lock a reader waits
+on; a second difference in the same pass ends it with an error, and the next pass copies again.
+A difference of content with equal counts is not caught (above). A swap that cannot take its
+locks within 5 seconds fails, and the pass is tried again
 about five minutes later. A project written with the `projects` table's triggers disabled (a
 restore with `--disable-triggers`) has no partition until its first item is written; a row of it
 stored with no project is refused with the statement that gives it one,
