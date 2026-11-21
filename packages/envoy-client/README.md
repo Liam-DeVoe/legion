@@ -1081,9 +1081,10 @@ tool holds no credential and signs nothing.
 The proxy sends the method, the path, the query, the end-to-end headers and the body of a request.
 It does not copy `Host` or a hop-by-hop header, and it replaces `Authorization` and `DPoP`. It asks
 Dispatch for no content encoding (`Accept-Encoding: identity`). It gives back Dispatch's status,
-end-to-end headers and body as Dispatch sent them, a binary body included. An answer with a
-`Content-Encoding` other than `identity` is the one exception: it comes back without its
-`Content-Length`, with its body chunked. It gives back a redirect, and does not follow it.
+end-to-end headers and body as Dispatch sent them, a binary body included. An answer that carries
+`Transfer-Encoding` as well as `Content-Length` is the one exception: it comes back without that
+`Content-Length` (RFC 9112, section 6.3), with its body chunked. It gives back a redirect, and does
+not follow it.
 
 The proxy holds one broker credential for the session, as a `dispatch` command does. It trades for
 the token once before it starts the command. It trades again only when the token has less than

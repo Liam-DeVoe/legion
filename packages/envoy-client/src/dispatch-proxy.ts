@@ -421,16 +421,21 @@ function forwardedHeaders(incoming: IncomingHttpHeaders): Record<string, string>
 }
 
 /** Dispatch's end-to-end headers, as the proxy gives them back (R3). Its `Content-Length` comes
- *  back as Dispatch sent it where the answer carries no `Content-Encoding`, or
- *  `Content-Encoding: identity`, so the tool reads the length Dispatch gave; under any other
- *  `Content-Encoding` it is left out, and `node:http` sends the body chunked. */
+ *  back as Dispatch sent it, whatever the `Content-Encoding`: the proxy fetches with
+ *  `decompress: false`, so that length frames the very bytes it gives back. An answer that also
+ *  carries `Transfer-Encoding` is the one exception: RFC 9112, section 6.3, has an intermediary
+ *  remove the received `Content-Length` before it forwards such a message, so it is left out, and
+ *  `node:http` sends the body chunked. `Transfer-Encoding` itself is hop-by-hop, and is never
+ *  copied. */
 function answeredHeaders(headers: Headers): Record<string, string | string[]> {
   const named = connectionNamed(headers.get("connection"));
-  const encoding = (headers.get("content-encoding") ?? "identity").trim().toLowerCase();
+  // Bun's fetch keeps both headers of such an answer, and reads its body by the transfer coding,
+  // past that length.
+  const transferCoded = headers.has("transfer-encoding");
   const kept: Record<string, string | string[]> = {};
   headers.forEach((value, name) => {
     if (HOP_BY_HOP.has(name) || named.has(name) || name === "set-cookie") return;
-    if (name === "content-length" && encoding !== "identity") return;
+    if (name === "content-length" && transferCoded) return;
     kept[name] = value;
   });
   const cookies = headers.getSetCookie();
@@ -558,10 +563,13 @@ async function serve(
 /**
  * Dispatch's answer to the tool as Dispatch sent it (R3): its status, its end-to-end headers and
  * its body, streamed as it arrives with no total deadline, since some routes stream
- * (`/api/v1/going/requests/{id}/stream`). A body whose `Content-Length` {@link answeredHeaders}
- * gives back goes out unchunked, with that length; any other body goes out chunked. A body that
- * breaks off ends the connection, so the tool reads a cut answer as one. A redirect is given
- * back, never followed.
+ * (`/api/v1/going/requests/{id}/stream`). {@link answeredHeaders} gives back Dispatch's
+ * `Content-Length` whatever the `Content-Encoding`, and leaves it out only where the answer also
+ * carries `Transfer-Encoding`: a body with that length goes out unchunked, and any other body goes
+ * out chunked. The status line and the headers go out before the body is read, so a body that
+ * breaks off, before its first byte or after it, leaves Dispatch's status, its headers and a short
+ * body on the socket, then a close: the tool reads a cut answer as one. A redirect is given back,
+ * never followed.
  */
 async function giveBack(answer: Response, response: ServerResponse): Promise<void> {
   response.writeHead(answer.status, answeredHeaders(answer.headers));
@@ -569,14 +577,20 @@ async function giveBack(answer: Response, response: ServerResponse): Promise<voi
     response.end();
     return;
   }
+  // Bun's `node:http` puts nothing on the wire until the first write. The status line and the
+  // headers are queued now, so a body that breaks off before its first byte still has them sent.
+  response.flushHeaders();
   try {
     for await (const chunk of answer.body) {
       if (response.destroyed) return;
       if (!response.write(chunk)) await drained(response);
     }
   } catch {
-    // Dispatch's answer broke off, or the tool hung up: the tool reads a cut answer as one.
-    response.destroy();
+    // Dispatch's answer broke off, or the tool hung up. Under Bun, destroying the socket sends
+    // what is queued, the status line and the headers among it, then closes the connection, so
+    // the tool reads Dispatch's status, a short body and a close. `response.destroy()` would drop
+    // what is not on the wire yet: the tool would read nothing, or a stock `200 OK` of Bun's.
+    response.socket?.destroy();
     return;
   }
   response.end();

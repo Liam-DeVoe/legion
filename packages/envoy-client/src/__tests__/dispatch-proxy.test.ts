@@ -17,8 +17,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { dispatchToolSpecs } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -265,9 +266,17 @@ async function viaSocket(socket: string, path: string, init: RequestInit = {}): 
 /** How long a request written by hand waits for its whole answer. */
 const RAW_ANSWER_MS = 3_000;
 
-/** The answer `bytes` holds once it is whole (or once the connection `ended`), else undefined.
- *  `bodiless` is a HEAD's answer, which carries no body whatever its headers say. */
-function wholeAnswer(bytes: Buffer, ended: boolean, bodiless: boolean): Answer | undefined {
+/** An answer as its own framing bounds it in the bytes a tool read, and the bytes after it: a
+ *  tool reads those as the start of its next answer on the connection. */
+interface Framed {
+  readonly answer: Answer;
+  readonly after: Buffer;
+}
+
+/** The answer `bytes` holds once its framing says it is whole (or once the connection `ended`),
+ *  and the bytes after it; else undefined. `bodiless` is a HEAD's answer, which carries no body
+ *  whatever its headers say. */
+function framedAnswer(bytes: Buffer, ended: boolean, bodiless: boolean): Framed | undefined {
   const end = bytes.indexOf("\r\n\r\n");
   if (end < 0) return undefined;
   const [statusLine = "", ...lines] = bytes.subarray(0, end).toString("latin1").split("\r\n");
@@ -280,8 +289,12 @@ function wholeAnswer(bytes: Buffer, ended: boolean, bodiless: boolean): Answer |
     headers[name] = headers[name] === undefined ? value : `${headers[name]}, ${value}`;
   }
   const rest = bytes.subarray(end + 4);
+  // A body that runs to the connection's end, as far as it came, once the connection `ended`:
+  // nothing follows it.
+  const toTheEnd = (body: Buffer): Framed | undefined =>
+    ended ? { answer: { status, headers, body }, after: Buffer.alloc(0) } : undefined;
   if (bodiless || status === 204 || status === 304) {
-    return { status, headers, body: Buffer.alloc(0) };
+    return { answer: { status, headers, body: Buffer.alloc(0) }, after: rest };
   }
   if ((headers["transfer-encoding"] ?? "").toLowerCase().includes("chunked")) {
     const chunks: Buffer[] = [];
@@ -290,18 +303,29 @@ function wholeAnswer(bytes: Buffer, ended: boolean, bodiless: boolean): Answer |
       const sizeEnd = rest.indexOf("\r\n", at);
       if (sizeEnd < 0) break;
       const size = Number.parseInt(rest.subarray(at, sizeEnd).toString("latin1"), 16);
-      if (size === 0) return { status, headers, body: Buffer.concat(chunks) };
+      if (size === 0) {
+        // The last chunk, then the trailer section, which ends at an empty line.
+        const trailerEnd = rest.indexOf("\r\n\r\n", sizeEnd);
+        if (trailerEnd < 0) break;
+        return {
+          answer: { status, headers, body: Buffer.concat(chunks) },
+          after: rest.subarray(trailerEnd + 4),
+        };
+      }
       if (rest.length < sizeEnd + 2 + size + 2) break;
       chunks.push(rest.subarray(sizeEnd + 2, sizeEnd + 2 + size));
       at = sizeEnd + 2 + size + 2;
     }
-    return ended ? { status, headers, body: Buffer.concat(chunks) } : undefined;
+    return toTheEnd(Buffer.concat(chunks));
   }
   const length = headers["content-length"];
   if (length !== undefined && rest.length >= Number(length)) {
-    return { status, headers, body: rest.subarray(0, Number(length)) };
+    return {
+      answer: { status, headers, body: rest.subarray(0, Number(length)) },
+      after: rest.subarray(Number(length)),
+    };
   }
-  return ended ? { status, headers, body: rest } : undefined;
+  return toTheEnd(rest);
 }
 
 /** `request`, written as it stands over a connection to the proxy's socket, and its answer. */
@@ -328,17 +352,49 @@ function rawRequest(socket: string, request: string, bodiless = false): Promise<
   }, RAW_ANSWER_MS);
   connection.on("data", (chunk: Buffer) => {
     bytes = Buffer.concat([bytes, chunk]);
-    const answer = wholeAnswer(bytes, false, bodiless);
+    const answer = framedAnswer(bytes, false, bodiless)?.answer;
     if (answer !== undefined) settle(answer);
   });
   connection.on("end", () => {
     settle(
-      wholeAnswer(bytes, true, bodiless) ??
+      framedAnswer(bytes, true, bodiless)?.answer ??
         new Error(`the connection ended with no answer to ${JSON.stringify(firstLine)}`)
     );
   });
   connection.on("error", (error) => {
     settle(new Error(`${JSON.stringify(firstLine)}: ${error.message}`));
+  });
+  connection.write(request);
+  return promise;
+}
+
+/** The bytes the proxy writes on a connection for `request`, written as it stands, up to the
+ *  connection's close: what a tool reads past an answer's own framing, a cut body included. */
+function untilClosed(socket: string, request: string): Promise<Buffer> {
+  const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
+  const firstLine = request.slice(0, request.indexOf("\r\n"));
+  const connection = connect(socket);
+  let bytes = Buffer.alloc(0);
+  const timer = setTimeout(() => {
+    connection.destroy();
+    reject(
+      new Error(
+        `the connection for ${JSON.stringify(firstLine)} did not close within ${RAW_ANSWER_MS} ms; ${bytes.length} bytes came: ${JSON.stringify(bytes.toString("latin1").slice(0, 300))}`
+      )
+    );
+  }, RAW_ANSWER_MS);
+  connection.on("data", (chunk: Buffer) => {
+    bytes = Buffer.concat([bytes, chunk]);
+  });
+  connection.on("end", () => {
+    clearTimeout(timer);
+    connection.destroy();
+    resolve(bytes);
+  });
+  connection.on("error", (error) => {
+    clearTimeout(timer);
+    connection.destroy();
+    reject(new Error(`${JSON.stringify(firstLine)}: ${error.message}`));
   });
   connection.write(request);
   return promise;
@@ -572,6 +628,56 @@ function standInDispatch() {
   servers.push(server);
   url = `http://127.0.0.1:${server.port}`;
   return { url, port: server.port, received, answered, blob };
+}
+
+/** An answer as a Dispatch writes it on the wire: its status line, its header lines and
+ *  `Connection: close`, an empty line, then `body` as it stands. */
+function onTheWire(
+  statusLine: string,
+  headerLines: readonly string[],
+  body: Buffer | string = ""
+): Buffer {
+  const head = [statusLine, ...headerLines, "Connection: close", "", ""].join("\r\n");
+  return Buffer.concat([Buffer.from(head, "latin1"), Buffer.from(body)]);
+}
+
+/**
+ * A Dispatch written by hand over `node:net`, for an answer `Bun.serve` does not send as it
+ * stands: once a request's head has come, it records the request's target, writes `answer` byte
+ * for byte, and ends the connection. `answer` says `Connection: close` ({@link onTheWire}), so the
+ * proxy's fetch sends each request on a connection of its own.
+ */
+async function rawDispatch(answer: Buffer) {
+  const targets: string[] = [];
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => undefined);
+    let head = Buffer.alloc(0);
+    let answered = false;
+    socket.on("data", (chunk: Buffer) => {
+      if (answered) return;
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      answered = true;
+      targets.push(head.subarray(0, end).toString("latin1").split(" ")[1] ?? "");
+      socket.end(answer);
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", () => listening.resolve());
+  await listening.promise;
+  servers.push({
+    stop: () => {
+      server.close();
+      for (const socket of sockets) socket.destroy();
+    },
+  });
+  const address = server.address();
+  const port = address !== null && typeof address === "object" ? address.port : 0;
+  return { url: `http://127.0.0.1:${port}`, targets };
 }
 
 /** A Dispatch URL nothing listens at: a server's port, once that server has stopped. */
@@ -1007,7 +1113,7 @@ test("gives back the status, the end-to-end headers and a binary body of 1 MiB a
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 
-test("gives back Dispatch's Content-Length with the body, unchunked, when the answer carries no Content-Encoding but identity", async () => {
+test("gives back Dispatch's Content-Length with a binary body and with its 403 and 404 refusals, unchunked", async () => {
   const broker = standInBroker({ kind: "token", seconds: 3600 });
   const dispatch = standInDispatch();
   const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
@@ -1035,6 +1141,116 @@ test("gives back Dispatch's Content-Length with the body, unchunked, when the an
   expect(JSON.parse(answers.get("/api/v1/issues/DSP-404")?.body.toString("utf8") ?? "")).toEqual(
     NOT_FOUND
   );
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
+test("gives back Dispatch's Content-Length with a gzip body, unchunked, and the gzip bytes as Dispatch sent them", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  const gzip = gzipSync(JSON.stringify(ISSUES));
+  const dispatch = await rawDispatch(
+    onTheWire(
+      "HTTP/1.1 200 OK",
+      [
+        "Content-Type: application/json",
+        "Content-Encoding: gzip",
+        `Content-Length: ${gzip.length}`,
+      ],
+      gzip
+    )
+  );
+  const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
+
+  // Read up to the close, so the row reads the framing the proxy wrote, and anything after it.
+  const read = framedAnswer(await untilClosed(run.socket, rawGet("/api/v1/issues")), false, false);
+
+  expect(dispatch.targets).toEqual(["/api/v1/issues"]);
+  expect(read?.answer.status).toBe(200);
+  expect(read?.answer.headers["content-encoding"]).toBe("gzip");
+  expect(read?.answer.headers["content-length"]).toBe(String(gzip.length));
+  expect(read?.answer.headers["transfer-encoding"]).toBeUndefined();
+  expect(read?.answer.body.equals(gzip)).toBe(true);
+  expect(read?.after.length).toBe(0);
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
+test("gives back an answer that carries Transfer-Encoding as well as Content-Length without that Content-Length, with its whole body chunked and nothing after it", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  // A length of 5, and a body of 11 bytes that the chunked coding frames, as RFC 9112, section
+  // 6.3, has a reader take it.
+  const body = "hello world";
+  const dispatch = await rawDispatch(
+    onTheWire(
+      "HTTP/1.1 200 OK",
+      ["Content-Type: text/plain", "Content-Length: 5", "Transfer-Encoding: chunked"],
+      `${body.length.toString(16)}\r\n${body}\r\n0\r\n\r\n`
+    )
+  );
+  const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
+
+  // Read up to the close: a tool that took a length of 5 would read the rest of the body as the
+  // start of its next answer.
+  const read = framedAnswer(await untilClosed(run.socket, rawGet("/api/v1/issues")), false, false);
+
+  expect(dispatch.targets).toEqual(["/api/v1/issues"]);
+  expect(read?.answer.status).toBe(200);
+  expect(read?.answer.headers["content-length"]).toBeUndefined();
+  expect(read?.answer.headers["transfer-encoding"]).toBe("chunked");
+  expect(read?.answer.body.toString("latin1")).toBe(body);
+  expect(read?.after.length).toBe(0);
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
+test("gives back Dispatch's status line and headers when its answer breaks off before the first body byte, then a short body and a close", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  // A 503 whose head promises 64 bytes, on a connection that ends before the first of them.
+  const dispatch = await rawDispatch(
+    onTheWire("HTTP/1.1 503 Service Unavailable", [
+      "Content-Type: application/json",
+      "Content-Length: 64",
+    ])
+  );
+  const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
+
+  // One request asks the proxy to close the connection after its answer, and one keeps it, as
+  // curl and Python's `http.client` do by default. Each is read up to the close.
+  const requests = [
+    ["a request that asks for a close", rawGet("/api/v1/issues")],
+    [
+      "a request that keeps its connection",
+      "GET /api/v1/issues HTTP/1.1\r\nHost: dispatch\r\n\r\n",
+    ],
+  ] as const;
+  const reads: { readonly what: string; readonly bytes: Buffer }[] = [];
+  for (const [what, request] of requests) {
+    reads.push({ what, bytes: await untilClosed(run.socket, request) });
+  }
+
+  expect(dispatch.targets).toEqual(["/api/v1/issues", "/api/v1/issues"]);
+  // Dispatch's status line and headers, and not one byte of the 64 its head promised.
+  expect(
+    reads.map(({ what, bytes }) => {
+      const answer = framedAnswer(bytes, true, false)?.answer;
+      return {
+        what,
+        status: answer?.status,
+        type: answer?.headers["content-type"],
+        length: answer?.headers["content-length"],
+        body: answer?.body.length,
+      };
+    })
+  ).toEqual(
+    requests.map(([what]) => ({
+      what,
+      status: 503,
+      type: "application/json",
+      length: "64",
+      body: 0,
+    }))
+  );
+  // A short body, then the close: the bytes hold no whole answer.
+  for (const { what, bytes } of reads) {
+    expect(framedAnswer(bytes, false, false), what).toBeUndefined();
+  }
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 

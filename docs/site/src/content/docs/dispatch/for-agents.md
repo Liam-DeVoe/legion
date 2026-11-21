@@ -438,11 +438,12 @@ environment. It sends the request with the session's broker token and a new DPoP
 tool holds no credential and signs nothing.
 
 The proxy gives back Dispatch's status, end-to-end headers and body as Dispatch sent them, a binary
-body included. An answer with a `Content-Encoding` other than `identity` is the one exception: it
-comes back without its `Content-Length`, with its body chunked. It gives back a redirect, and does
-not follow it. It trades for the token once before it starts the command. It trades again only when
-the token has less than five minutes to live, or after Dispatch answers
-`401 BROKER_TOKEN_NOT_ACTIVE`. After that answer, it sends the request once more with the new token.
+body included. An answer that carries `Transfer-Encoding` as well as `Content-Length` is the one
+exception: it comes back without that `Content-Length` (RFC 9112, section 6.3), with its body
+chunked. It gives back a redirect, and does not follow it. It trades for the token once before it
+starts the command. It trades again only when the token has less than five minutes to live, or
+after Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`. After that answer, it sends the request once
+more with the new token.
 
 The proxy sends two kinds of request, and refuses every other one:
 
