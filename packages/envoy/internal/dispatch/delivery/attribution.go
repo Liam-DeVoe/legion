@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/distinct"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -195,35 +196,9 @@ func attributionInputsFrom(facts attributionFacts) AttributionInputs {
 }
 
 func uniqueKeys(text string) []string {
-	keys := newUniqueStrings()
-	keys.add(issueKeyCandidate.FindAllString(text, -1)...)
-	return keys.list
-}
-
-// uniqueStrings is a list that keeps each string once, in the order it was first added. seen holds
-// the list's members, so adding a value costs one lookup however long the list is: a scan of the
-// list for each value cost the square of the distinct values, 193 ms for the 10,943 distinct
-// references a 64 KiB pull request body can carry.
-type uniqueStrings struct {
-	list []string
-	seen map[string]struct{}
-}
-
-// newUniqueStrings returns an empty uniqueStrings. Its list is empty, not nil: a stored attribution
-// input that is nil was never read (AttributionInputs).
-func newUniqueStrings() *uniqueStrings {
-	return &uniqueStrings{list: []string{}, seen: map[string]struct{}{}}
-}
-
-// add appends each value the list does not hold yet.
-func (u *uniqueStrings) add(values ...string) {
-	for _, value := range values {
-		if _, held := u.seen[value]; held {
-			continue
-		}
-		u.seen[value] = struct{}{}
-		u.list = append(u.list, value)
-	}
+	keys := distinct.New()
+	keys.Add(issueKeyCandidate.FindAllString(text, -1)...)
+	return keys.List()
 }
 
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
@@ -244,11 +219,11 @@ func citedIssues(repo, body string) []string {
 		citations = append(citations, citation{match[2], "https://github.com/" + repo + "/issues/" + body[match[2]:match[3]]})
 	}
 	slices.SortStableFunc(citations, func(a, b citation) int { return cmp.Compare(a.at, b.at) })
-	urls := newUniqueStrings()
+	urls := distinct.New()
 	for _, c := range citations {
-		urls.add(c.url)
+		urls.Add(c.url)
 	}
-	return urls.list
+	return urls.List()
 }
 
 // attributionColumns are the SQL expressions attributionCandidates reads a pull request's URL

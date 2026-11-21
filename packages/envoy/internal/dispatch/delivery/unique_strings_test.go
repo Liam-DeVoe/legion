@@ -6,10 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/distinct"
 )
 
-// appendUniqueByScan is how delivery kept each value once before uniqueStrings: a scan of the
-// kept list for each value. The differential row holds uniqueStrings to its answers.
+// appendUniqueByScan is how delivery kept each value once before distinct.Strings: a scan of the
+// kept list for each value. The differential row holds distinct.Strings to its answers; the
+// distinct package's own rows count its steps.
 func appendUniqueByScan(list []string, values ...string) []string {
 	for _, value := range values {
 		if !slices.Contains(list, value) {
@@ -19,42 +22,12 @@ func appendUniqueByScan(list []string, values ...string) []string {
 	return list
 }
 
-// TestUniqueStringsHoldsEachDistinctValueInItsSetOnce counts what keeping values once holds: over
-// the 10,943 distinct citations a 64 KiB body of bare references makes, each added three times,
-// the set holds exactly one entry for each distinct value, and so does the list, so membership is
-// kept in the set. A scan of the list for each value, which cost 193 ms against 6 ms for one
-// repeated value, keeps no set and fails here. A scan added beside the set passes: no count a
-// test can read sees the comparisons a scan makes.
-func TestUniqueStringsHoldsEachDistinctValueInItsSetOnce(t *testing.T) {
-	var body strings.Builder
-	for i := 10; body.Len() < 65536-8; i++ {
-		body.WriteString("#" + strconv.Itoa(i) + " ")
-	}
-	cited := citedIssues("acme/widgets", body.String())
-	if len(cited) < 10000 {
-		t.Fatalf("the body cites %d distinct issues, want over 10,000: the row would count too few to matter", len(cited))
-	}
-	kept := newUniqueStrings()
-	for _, value := range cited {
-		kept.add(value, value)
-	}
-	kept.add(cited...)
-	if len(kept.list) != len(cited) || len(kept.seen) != len(cited) {
-		t.Errorf("adding %d distinct values three times each kept %d in the list and %d in the set, want %d in each: membership is not one set lookup a value", len(cited), len(kept.list), len(kept.seen), len(cited))
-	}
-	for _, value := range kept.list {
-		if _, held := kept.seen[value]; !held {
-			t.Fatalf("the list holds %q, which the set does not", value)
-		}
-	}
-}
-
 // TestUniqueStringsAnswersAsTheScanDid is the differential row: over 2,000 sequences drawn with a
 // fixed seed (pools of 1 to 5,000 values, so from all repeats to all distinct; values that differ
 // only in case, in a trailing space or in a two-byte letter; the empty string), and over the
-// values delivery's finders read from generated text (issue keys, session trailers), uniqueStrings
-// keeps what the scan kept, in the same order, and uniqueKeys, sessionTrailers and citedIssues
-// answer a non-nil list when they find nothing, as before.
+// values delivery's finders read from generated text (issue keys, session trailers),
+// distinct.Strings keeps what the scan kept, in the same order, and uniqueKeys, sessionTrailers and
+// citedIssues answer a non-nil list when they find nothing, as before.
 func TestUniqueStringsAnswersAsTheScanDid(t *testing.T) {
 	draw := rand.New(rand.NewPCG(5041, 2026))
 	sequences := 0
@@ -65,10 +38,10 @@ func TestUniqueStringsAnswersAsTheScanDid(t *testing.T) {
 			n := draw.IntN(pool)
 			values[i] = [...]string{"v" + strconv.Itoa(n), "V" + strconv.Itoa(n), "v" + strconv.Itoa(n) + " ", "é" + strconv.Itoa(n), ""}[draw.IntN(5)]
 		}
-		kept := newUniqueStrings()
-		kept.add(values...)
-		if want := appendUniqueByScan([]string{}, values...); !slices.Equal(kept.list, want) {
-			t.Fatalf("sequence %d of %d values keeps %d values, want the scan's %d in its order", sequences, len(values), len(kept.list), len(want))
+		kept := distinct.New()
+		kept.Add(values...)
+		if want := appendUniqueByScan([]string{}, values...); !slices.Equal(kept.List(), want) {
+			t.Fatalf("sequence %d of %d values keeps %d values, want the scan's %d in its order", sequences, len(values), len(kept.List()), len(want))
 		}
 		sequences++
 	}
