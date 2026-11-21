@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logging"
@@ -15,56 +13,12 @@ import (
 )
 
 // dispatchListenerGoldens are the pods gcp:Dispatch renders for its listener Deployment, by the
-// NATS credential they connect with: the seed, and natsAudience's projected token. read is the
-// path from this package's directory and path the same file from the repository root, for a
-// failure read in CI. The component lives in packages/envoy/infra, a Go module of its own, so this
-// test reads what it renders rather than calling it.
-var dispatchListenerGoldens = []struct{ read, path string }{
-	{"../../infra/gcp/testdata/dispatch-listener-pod.golden", "packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden"},
-	{"../../infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden", "packages/envoy/infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden"},
-}
-
-// dispatchListenerGoldenEnv reads the envoy-listener container's environment out of the pod golden at
-// read: each variable's value, and for one read from a Secret the empty string, its name a key of
-// fromSecret. path names the golden from the repository root, for a failure read in CI.
-func dispatchListenerGoldenEnv(t *testing.T, read, path string) (env map[string]string, fromSecret map[string]bool) {
-	t.Helper()
-	golden, err := os.ReadFile(read)
-	if err != nil {
-		t.Fatalf("read %s, a pod gcp:Dispatch renders for this command: %v", path, err)
-	}
-	var pod struct {
-		Spec struct {
-			Containers []struct {
-				Name string `json:"name"`
-				Env  []struct {
-					Name      string `json:"name"`
-					Value     string `json:"value"`
-					ValueFrom *struct {
-						SecretKeyRef *struct{} `json:"secretKeyRef"`
-					} `json:"valueFrom"`
-				} `json:"env"`
-			} `json:"containers"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(golden, &pod); err != nil {
-		t.Fatalf("parse %s as the pod JSON it records: %v", path, err)
-	}
-	for _, container := range pod.Spec.Containers {
-		if container.Name != "envoy-listener" {
-			continue
-		}
-		env, fromSecret = map[string]string{}, map[string]bool{}
-		for _, variable := range container.Env {
-			env[variable.Name] = variable.Value
-			if variable.ValueFrom != nil && variable.ValueFrom.SecretKeyRef != nil {
-				fromSecret[variable.Name] = true
-			}
-		}
-		return env, fromSecret
-	}
-	t.Fatalf("%s holds no envoy-listener container", path)
-	return nil, nil
+// NATS credential they connect with: the seed, and natsAudience's projected token. The component
+// lives in packages/envoy/infra, a Go module of its own, so this test reads what it renders
+// (renderedListenerEnv) rather than calling it.
+var dispatchListenerGoldens = []string{
+	"dispatch-listener-pod.golden",
+	"dispatch-listener-pod-with-service-identity.golden",
 }
 
 // Dispatch's listener is a Deployment of its own, which rolls apart from the app's, so in the
@@ -82,14 +36,14 @@ func dispatchListenerGoldenEnv(t *testing.T, read, path string) (env map[string]
 // token of another account for the same audience and no credential at all, are refused.
 func TestDispatchsListenerAdmitsBothCredentialsThisRelease(t *testing.T) {
 	for _, golden := range dispatchListenerGoldens {
-		t.Run(golden.path, func(t *testing.T) {
-			rendered, fromSecret := dispatchListenerGoldenEnv(t, golden.read, golden.path)
+		t.Run(golden, func(t *testing.T) {
+			rendered, fromSecret := renderedListenerEnv(t, golden, "envoy-listener")
 			if !fromSecret["ENVOY_API_TOKEN"] {
-				t.Fatalf("%s renders no ENVOY_API_TOKEN from a Secret: the listener would refuse the shared bearer an app pod of the release before presents", golden.path)
+				t.Fatalf("%s renders no ENVOY_API_TOKEN from a Secret: the listener would refuse the shared bearer an app pod of the release before presents", golden)
 			}
 			for _, name := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS", "ENVOY_DISPATCH_PRINCIPAL"} {
 				if rendered[name] == "" {
-					t.Fatalf("%s renders no %s: the listener would refuse Dispatch's own token", golden.path, name)
+					t.Fatalf("%s renders no %s: the listener would refuse Dispatch's own token", golden, name)
 				}
 			}
 			issuer := oidctest.New(t)

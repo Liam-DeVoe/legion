@@ -8,11 +8,12 @@ import (
 	"testing"
 )
 
-// renderedListenerEnv is the environment of the container named listener in the pod spec golden
+// renderedListenerEnv is the environment of the container named container in the pod spec golden
 // name, which envoy-infra renders under packages/envoy/infra/gcp/testdata: each variable with a
-// plain value, as the container receives it. A variable drawn from a Secret or a field has no
-// value there and is left out; a golden holding no such container fails the test.
-func renderedListenerEnv(t *testing.T, name string) map[string]string {
+// plain value, as the container receives it, and in fromSecret the name of each variable drawn
+// from a Secret, which has no value there and is left out of env. A golden holding no such
+// container, or one whose container renders no plain value, fails the test.
+func renderedListenerEnv(t *testing.T, name, container string) (env map[string]string, fromSecret map[string]bool) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "infra", "gcp", "testdata", name))
 	if err != nil {
@@ -23,8 +24,11 @@ func renderedListenerEnv(t *testing.T, name string) map[string]string {
 			Containers []struct {
 				Name string `json:"name"`
 				Env  []struct {
-					Name  string  `json:"name"`
-					Value *string `json:"value"`
+					Name      string  `json:"name"`
+					Value     *string `json:"value"`
+					ValueFrom *struct {
+						SecretKeyRef *struct{} `json:"secretKeyRef"`
+					} `json:"valueFrom"`
 				} `json:"env"`
 			} `json:"containers"`
 		} `json:"spec"`
@@ -32,23 +36,26 @@ func renderedListenerEnv(t *testing.T, name string) map[string]string {
 	if err := json.Unmarshal(raw, &pod); err != nil {
 		t.Fatalf("decode the rendered pod %s: %v", name, err)
 	}
-	for _, container := range pod.Spec.Containers {
-		if container.Name != "listener" {
+	for _, rendered := range pod.Spec.Containers {
+		if rendered.Name != container {
 			continue
 		}
-		env := make(map[string]string, len(container.Env))
-		for _, variable := range container.Env {
-			if variable.Value != nil {
+		env, fromSecret = make(map[string]string, len(rendered.Env)), map[string]bool{}
+		for _, variable := range rendered.Env {
+			switch {
+			case variable.Value != nil:
 				env[variable.Name] = *variable.Value
+			case variable.ValueFrom != nil && variable.ValueFrom.SecretKeyRef != nil:
+				fromSecret[variable.Name] = true
 			}
 		}
 		if len(env) == 0 {
-			t.Fatalf("the listener container of %s renders no environment", name)
+			t.Fatalf("the %s container of %s renders no environment", container, name)
 		}
-		return env
+		return env, fromSecret
 	}
-	t.Fatalf("%s holds no container named listener", name)
-	return nil
+	t.Fatalf("%s holds no container named %s", name, container)
+	return nil, nil
 }
 
 // TestTheRenderedListenerEnvResolves holds the listener envoy-infra renders to the listener's own
@@ -65,7 +72,7 @@ func TestTheRenderedListenerEnvResolves(t *testing.T) {
 		"clustered-hub-listener-pod-private.golden",
 	} {
 		t.Run(golden, func(t *testing.T) {
-			env := renderedListenerEnv(t, golden)
+			env, _ := renderedListenerEnv(t, golden, "listener")
 			config, err := resolveListenerBrokerConfig(func(name string) string { return env[name] })
 			if err != nil {
 				t.Fatalf("the listener refuses the environment %s renders: %v", golden, err)
