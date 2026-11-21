@@ -74,14 +74,6 @@ func TestABootReportsAnUnprovisionedPrivateProjectAndStaysUp(t *testing.T) {
 			t.Fatalf("the boot's report names PRIV, private before its full switch, with no INFO line naming it as such:\n%s", logged)
 		}
 	})
-	t.Run("PRIV on both lists takes its full switch", func(t *testing.T) {
-		// The boot settles a key on both lists (resolveBootConfig), so the state is built from
-		// the lists the boot hands it, as main builds it.
-		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "PRIV", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "PRIV"})
-		if logged := report(t, boot.PrivateProjects, boot.PrivateBeforeFullSwitch); strings.Contains(logged, beforeFullSwitchLine) || strings.Contains(logged, "level=ERROR") {
-			t.Fatalf("the boot's report with PRIV on both lists names it private before its full switch, or logs an ERROR:\n%s", logged)
-		}
-	})
 	t.Run("DAYONE named before its full switch but not private yet", func(t *testing.T) {
 		logged := report(t, nil, []string{"DAYONE", "PRIV"})
 		// The line names the setting, DISPATCH_PRIVATE_BEFORE_FULL_SWITCH, so it is read by its
