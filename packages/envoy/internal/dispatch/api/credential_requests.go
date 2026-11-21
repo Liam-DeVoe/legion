@@ -349,18 +349,17 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	held, owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
-	if err != nil {
-		writeError(w, "MACHINE_LOGIN_APPROVALS_UNREAD", http.StatusServiceUnavailable,
-			"whether a revocation of this person's machine logins is owed could not be read, so the approval was not relayed; try again in a minute")
-		return
-	}
-	if !held {
+	owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
+	switch {
+	case errors.Is(err, store.ErrMachineLoginApprovalInFlight):
 		writeError(w, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", http.StatusConflict,
 			"another approval of this person's machine logins is being relayed to the secrets broker, or a removal of theirs from an access list is being recorded; approve again in a few seconds")
 		return
-	}
-	if owed {
+	case err != nil:
+		writeError(w, "MACHINE_LOGIN_APPROVALS_UNREAD", http.StatusServiceUnavailable,
+			"whether a revocation of this person's machine logins is owed could not be read, so the approval was not relayed; try again in a minute")
+		return
+	case owed:
 		writeError(w, "MACHINE_LOGIN_REVOCATION_OWED", http.StatusConflict,
 			"this person's machine logins are being revoked after a removal from an access list; approve again once that is done, in about a minute")
 		return

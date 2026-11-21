@@ -82,28 +82,36 @@ func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) 
 	return nil
 }
 
+// ErrMachineLoginApprovalInFlight is HoldMachineLoginApprovals' refusal while another transaction
+// holds the person's approval lock: another approval of theirs that Dispatch is relaying, a removal
+// of them from an access list, or the runbook's restore block. The approve answers it 409
+// MACHINE_LOGIN_APPROVAL_IN_FLIGHT (api.relayMachineLoginApproval); a caller that does not match it
+// relays nothing either, since it is an error.
+var ErrMachineLoginApprovalInFlight = errors.New("store: another holder has the person's machine-login approval lock")
+
 // HoldMachineLoginApprovals tries to take, for the rest of tx, the person email's approval lock,
-// and reports whether it took it and, when it did, whether a revocation of their machine logins is
-// owed. An approval of theirs holds tx open until the broker has answered it, and is relayed only
-// when it took the lock and nothing is owed: a removal that records a revocation meanwhile waits for
-// it (LockMachineLoginApprovals), so the login the approval mints is one the pass lists, and once
-// one is owed no approval is relayed until a pass settles it. It never waits: while another
-// approval of the person's holds the lock, or a removal or the runbook's restore block does, it
-// answers held false at once, so a person holds at most one database connection across a broker
-// call, whatever burst of approves they send.
-func HoldMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) (held, owed bool, err error) {
+// and reports, once it took it, whether a revocation of their machine logins is owed. An approval
+// of theirs holds tx open until the broker has answered it, and is relayed only when it took the
+// lock and nothing is owed: a removal that records a revocation meanwhile waits for it
+// (LockMachineLoginApprovals), so the login the approval mints is one the pass lists, and once one
+// is owed no approval is relayed until a pass settles it. It never waits: while another approval of
+// the person's holds the lock, or a removal or the runbook's restore block does, it answers
+// ErrMachineLoginApprovalInFlight at once, so a person holds at most one database connection
+// across a broker call, whatever burst of approves they send.
+func HoldMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) (owed bool, err error) {
+	var held bool
 	if err := tx.QueryRow(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_try_advisory_xact_lock"), email).Scan(&held); err != nil {
-		return false, false, fmt.Errorf("hold the machine-login approvals of %s: %w", email, err)
+		return false, fmt.Errorf("hold the machine-login approvals of %s: %w", email, err)
 	}
 	if !held {
-		return false, false, nil
+		return false, ErrMachineLoginApprovalInFlight
 	}
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from machine_login_revocations where email = lower(btrim($1)) and done_at is null)
 	`, email).Scan(&owed); err != nil {
-		return true, false, fmt.Errorf("read whether the revocation of %s's machine logins is owed: %w", email, err)
+		return false, fmt.Errorf("read whether the revocation of %s's machine logins is owed: %w", email, err)
 	}
-	return true, owed, nil
+	return owed, nil
 }
 
 // Claim takes up to limit owed revocations no pass claimed within retry, those never tried first,
