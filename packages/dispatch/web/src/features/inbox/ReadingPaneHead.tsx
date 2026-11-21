@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useState } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, InboxRow, MyReplyRow } from "../../api/types";
@@ -15,7 +15,7 @@ import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
-import { AssignToMe } from "./AssignToMe";
+import { AssignToMe, useAskAssign } from "./AssignToMe";
 import { askIssueKey, controlName } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
@@ -87,11 +87,11 @@ export function ReadingPaneHead({
   sectionBlockId,
   viewer,
 }: ReadingPaneHeadProps): ReactNode {
-  // The Inbox row keeps "Assign to me" mounted while its write is in flight or failed, so
-  // `Assigning…` and a refusal are shown by the instance that wrote rather than lost to the
-  // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
-  const [assignLive, setAssignLive] = useState(false);
-  const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
+  // The Inbox holds the Assign to me write, by ask, so it outlives this head, which goes when the
+  // reader moves the selection (`AskAssignWritesProvider`). The optimistic assignee takes the
+  // issue out of `isUnassigned` at the press, so the head draws the control while that write is
+  // out or refused as well: `Assigning…`, and a refusal with its Retry.
+  const assign = useAskAssign(ask.id);
   const name = controlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
@@ -115,8 +115,8 @@ export function ReadingPaneHead({
       )}
       {ask.issue_key !== null &&
       viewer !== undefined &&
-      (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
-        <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignLive} viewer={viewer} />
+      (isUnassigned({ ask, kind: "ask" }) || assign.pending || assign.failed) ? (
+        <AssignToMe askId={ask.id} issueKey={ask.issue_key} viewer={viewer} />
       ) : null}
       {/* The Inbox holds the write this Snooze makes, by ask, so it outlives this head, which
           goes when the reader moves the selection (`useAskSnoozeWrites`). */}

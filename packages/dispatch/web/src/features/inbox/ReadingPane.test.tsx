@@ -33,6 +33,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
+import { AskAssignWritesProvider } from "./AssignToMe";
 import { SnoozeWrites } from "./ask-snooze-fixture";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
@@ -295,11 +296,14 @@ function renderPane({
           <MarginProvider>
             <HandOnWrites onOut={recordHandOnsOut}>
               <SnoozeWrites onOut={recordOut}>
-                <ReadingPane
-                  onAnswered={(id) => answered.push(id)}
-                  row={{ ask: row, kind: "ask" }}
-                  viewer="alice"
-                />
+                {/* The head reads the Inbox's Assign to me of its ask (`ReadingPaneHead`). */}
+                <AskAssignWritesProvider>
+                  <ReadingPane
+                    onAnswered={(id) => answered.push(id)}
+                    row={{ ask: row, kind: "ask" }}
+                    viewer="alice"
+                  />
+                </AskAssignWritesProvider>
               </SnoozeWrites>
             </HandOnWrites>
           </MarginProvider>

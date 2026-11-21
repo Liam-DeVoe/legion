@@ -75,7 +75,13 @@ import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/t
 import { AskCard } from "./AskCard";
 import { AskHandOn } from "./AskHandOn";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
-import { AssignToMe } from "./AssignToMe";
+import { replyRefusal } from "./AskThread";
+import {
+  AskAssignWritesContext,
+  AskAssignWritesProvider,
+  AssignToMe,
+  useAskAssign,
+} from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
 import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
@@ -114,7 +120,9 @@ import { MARK_ALL_REFUSED_TEXT, MARK_ALL_STOPPED_TEXT, useMarkAllRead } from "./
 import { useMotionHold } from "./motion-hold";
 import {
   AskAnswerWritesContext,
+  AskClarificationWritesContext,
   AskDeclineWritesContext,
+  AskReplyWritesContext,
   useOutstandingAnswerWrites,
 } from "./outstanding-answers";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
@@ -137,7 +145,7 @@ import {
 import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
-import { answerFailure } from "./useAskAnswerForm";
+import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
 import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 import { AskSnoozeContext, AskSnoozeWritesProvider, useAskSnooze } from "./useAskSnooze";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
@@ -448,9 +456,9 @@ function ShortRowFrame({
   );
 }
 
-/** What a short row says of its question's answer or decline that the column's card made: why
- *  it was refused, or that the reader stopped it (`refusal`), else that it is out (`out`), else
- *  nothing. */
+/** What a short row says of a write the column made for its row - an answer, a decline, a
+ *  question back, a reply: why it was refused, or that the reader stopped it (`refusal`), else
+ *  that it is out (`out`), else nothing. */
 function RowWriteNote({
   out,
   refusal,
@@ -481,12 +489,20 @@ function AskShortRow({
   row,
   section,
   selected,
-}: InboxRowProps & ShortRowProps & { ask: InboxRow }): ReactNode {
+  viewer,
+}: InboxRowProps &
+  ShortRowProps & {
+    ask: InboxRow;
+    /** The signed-in person's lowercase email; "Assign to me" writes it. */
+    viewer: string;
+  }): ReactNode {
   const name = controlName(ask, ordinal);
   const snooze = useAskSnooze(ask.id);
+  const assign = useAskAssign(ask.id);
   const handOn = useInboxWrites(AskHandOnWritesContext).of(ask);
   const answer = useInboxWrites(AskAnswerWritesContext).of(ask.id);
   const decline = useInboxWrites(AskDeclineWritesContext).of(ask.id);
+  const clarification = useInboxWrites(AskClarificationWritesContext).of(ask.id);
   return (
     <ShortRowFrame
       age={formatAskAge(rowLastActivityAt(row))}
@@ -500,11 +516,12 @@ function AskShortRow({
       selected={selected}
       title={<span className="min-w-0 grow truncate text-sm">{questionLine(ask.question)}</span>}
     >
-      {/* The column's head draws the Snooze of the question the column shows, and a short row
-          draws none of its own. A snooze of this ask can be out or failed while the column shows
-          another question: the reader moved the selection after pressing Snooze in the head.
-          The row draws the control then, so its `Snoozing…`, its refusal and its Retry stay on
-          the row they are about. */}
+      {/* The column's head draws the Snooze and the Assign to me of the question the column
+          shows, and a short row draws neither of its own. A snooze or an Assign to me of this
+          ask can be out or failed while the column shows another question: the reader moved the
+          selection after pressing it in the head. The row draws the control then, so its
+          `Snoozing…` or `Assigning…`, its refusal and its Retry stay on the row they are
+          about. */}
       {selected || !(snooze.pending || snooze.failed) ? null : (
         <div className="flex max-w-full flex-wrap items-center gap-1 pl-6">
           <SnoozeControl
@@ -514,11 +531,17 @@ function AskShortRow({
           />
         </div>
       )}
-      {/* The same for the column's card, which draws the hand-on, the answer and the decline of
-          the question the column shows: each can be out or failed while the column shows
-          another question. The row draws the hand-on control then, with its `Handing on…`, its
-          refusal and its Retry, and a line for an answer or a decline, which says it is out or
-          why it failed. That Retry is the card's, once the column shows the question again. */}
+      {selected || ask.issue_key === null || !(assign.pending || assign.failed) ? null : (
+        <div className="flex max-w-full flex-wrap items-center gap-1 pl-6">
+          <AssignToMe askId={ask.id} issueKey={ask.issue_key} viewer={viewer} />
+        </div>
+      )}
+      {/* The same for the column's card, which draws the hand-on, the answer, the decline and
+          the question back of the question the column shows: each can be out or failed while
+          the column shows another question. The row draws the hand-on control then, with its
+          `Handing on…`, its refusal and its Retry, and a line for an answer, a decline or a
+          question back, which says it is out or why it failed. That Retry is the card's, once
+          the column shows the question again. */}
       {selected || !(handOn.pending || handOn.failed) ? null : (
         <div className="pl-6">
           <AskHandOn ask={ask} assignee={ask.issue?.assignee ?? null} />
@@ -537,6 +560,17 @@ function AskShortRow({
           <RowWriteNote
             out={decline.isPending ? "Declining…" : undefined}
             refusal={decline.error === null ? undefined : declineRefusal(decline.error)}
+          />
+          <RowWriteNote
+            out={clarification.isPending ? "Asking back…" : undefined}
+            refusal={
+              clarification.error === null
+                ? undefined
+                : clarificationRefusal({
+                    error: clarification.error,
+                    method: clarification.method,
+                  })
+            }
           />
         </>
       )}
@@ -559,6 +593,11 @@ function ThreadShortRow({
   thread,
 }: InboxRowProps & ShortRowProps & { thread: MyReplyRow }): ReactNode {
   const reference = threadReferenceRoute(thread);
+  // The column draws an ask's thread with the ask's card, whose reply the Inbox holds by ask
+  // (`AskReplyWritesContext`): it can be out or failed while the column shows another row. The
+  // row then says it is out, or why it failed; the Retry is the card's, once the column shows the
+  // thread again.
+  const reply = useInboxWrites(AskReplyWritesContext).of(thread.thread_id);
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
@@ -586,7 +625,18 @@ function ThreadShortRow({
       title={
         <ThreadTitle className="min-w-0 grow truncate text-sm" href={thread.ref} thread={thread} />
       }
-    />
+    >
+      {selected || thread.kind !== "ask" ? null : (
+        <RowWriteNote
+          out={reply.isPending ? "Replying…" : undefined}
+          refusal={
+            reply.error === null
+              ? undefined
+              : replyRefusal({ error: reply.error, method: reply.method })
+          }
+        />
+      )}
+    </ShortRowFrame>
   );
 }
 
@@ -594,11 +644,9 @@ function ThreadShortRow({
  *  that defer or reroute it. */
 function InboxCardRow({
   ask,
-  assignLive,
   group: groupKey,
   marked,
   onAnswered,
-  onAssignLive,
   onMark,
   onRelease,
   ordinal,
@@ -608,17 +656,17 @@ function InboxCardRow({
   viewer,
 }: InboxRowProps & {
   ask: InboxRow;
-  /** True while this row's "Assign to me" write is in flight or failed, whatever band the
-   *  optimistic update put the row in. */
-  assignLive: boolean;
   onAnswered: (id: string) => void;
-  onAssignLive: (askId: string, live: boolean) => void;
   /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
 }): ReactNode {
   const name = controlName(ask, ordinal);
+  // The optimistic assignee takes the issue out of `isUnassigned` at the press, so the row draws
+  // Assign to me while its write is out or refused as well: `Assigning…`, and a refusal with its
+  // Retry.
+  const assign = useAskAssign(ask.id);
   return (
     <InboxRowShell
       group={groupKey}
@@ -650,13 +698,8 @@ function InboxCardRow({
           {ask.issue_key === null ? null : (
             <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
           )}
-          {ask.issue_key !== null && (isUnassigned(row) || assignLive) ? (
-            <AssignToMe
-              askId={ask.id}
-              issueKey={ask.issue_key}
-              onLive={onAssignLive}
-              viewer={viewer}
-            />
+          {ask.issue_key !== null && (isUnassigned(row) || assign.pending || assign.failed) ? (
+            <AssignToMe askId={ask.id} issueKey={ask.issue_key} viewer={viewer} />
           ) : null}
           <SnoozeControl
             askId={ask.id}
@@ -760,13 +803,15 @@ function withHeldBands(
 }
 
 /** The row to keep where the reader last saw it (`seen`), if any: one kept for the reader
- *  (`kept`) - the row under their hand, or one whose hand-on, answer or decline is out, which the
- *  Inbox holds (`useAskHandOnWrites`, `useOutstandingAnswerWrites`) - or one whose snooze write
- *  is out (`snoozeOut`) - its own write, which the Inbox holds too (`useAskSnoozeWrites`), or the
- *  bar's over the rows the reader marked. Dropped from the list: a kept row is kept where last
- *  seen, drawn as `current`, or as last seen while `current` is undefined - an answer or a
- *  decline takes its row out of the Inbox's read, and a hand-on can take it out of the reader's
- *  own list. Moved to another band: what the list says about it changed under the reader's hand,
+ *  (`kept`) - the row under their hand, or one whose Assign to me, hand-on, answer, decline,
+ *  question back or reply is out, which the Inbox holds (`AskAssignWritesProvider`,
+ *  `useAskHandOnWrites`, `useOutstandingAnswerWrites`) - or one whose snooze write is out
+ *  (`snoozeOut`) - its own write, which the Inbox holds too (`useAskSnoozeWrites`), or the bar's
+ *  over the rows the reader marked. Dropped from the list: a kept row is kept where last seen,
+ *  drawn as `current`, or as last seen while `current` is undefined - an answer or a decline
+ *  takes its row out of the Inbox's read, an Assign to me or a hand-on can take it out of the
+ *  reader's list, and a read of the Inbox can take it out while a question back or a reply is
+ *  out. Moved to another band: what the list says about it changed under the reader's hand,
  *  their write or their snooze, so the listed row is kept in the band they saw it in. A move into
  *  or out of Later is a snooze, the reader's own press, and it is made once its write lands: the
  *  row is kept in its band while that write is out, and moves in the commit in which the Inbox
@@ -888,25 +933,33 @@ export function Inbox({
 }
 
 /**
- * Every write one Inbox holds by ask (`ask-writes.ts`): each row's snooze, and the hand-on, the
- * answer and the decline of every card the Inbox draws, the document page's own cards in its
- * reading column included. A control can go while its write is out - the reading column's head
- * and card go whenever the reader moves the selection - and the write, its row's hold and its
- * refusal stay. The page's Inbox and the drawer's hold their own. The writes' own steps
- * re-render this component alone: what it draws re-renders only when the writes it provides
- * change.
+ * Every write one Inbox holds by ask (`ask-writes.ts`, `AskAssignWritesProvider`): each row's
+ * snooze and Assign to me, and the hand-on, the answer, the decline, the question back and the
+ * reply of every card the Inbox draws, the document page's own cards in its reading column
+ * included. A control can go while its write is out - the reading column's head and card go
+ * whenever the reader moves the selection - and the write, its row's hold and its refusal stay.
+ * The page's Inbox and the drawer's hold their own. The writes' own steps re-render this
+ * component alone: what it draws re-renders only when the writes it provides change.
  */
 function InboxAskWrites({ children }: { children: ReactNode }): ReactNode {
   const handOns = useAskHandOnWrites();
   const answers = useOutstandingAnswerWrites();
   const declines = useOutstandingAnswerWrites();
+  const clarifications = useOutstandingAnswerWrites();
+  const replies = useOutstandingAnswerWrites();
   return (
     <AskSnoozeWritesProvider>
-      <AskHandOnWritesContext value={handOns}>
-        <AskAnswerWritesContext value={answers}>
-          <AskDeclineWritesContext value={declines}>{children}</AskDeclineWritesContext>
-        </AskAnswerWritesContext>
-      </AskHandOnWritesContext>
+      <AskAssignWritesProvider>
+        <AskHandOnWritesContext value={handOns}>
+          <AskAnswerWritesContext value={answers}>
+            <AskDeclineWritesContext value={declines}>
+              <AskClarificationWritesContext value={clarifications}>
+                <AskReplyWritesContext value={replies}>{children}</AskReplyWritesContext>
+              </AskClarificationWritesContext>
+            </AskDeclineWritesContext>
+          </AskAnswerWritesContext>
+        </AskHandOnWritesContext>
+      </AskAssignWritesProvider>
     </AskSnoozeWritesProvider>
   );
 }
@@ -1011,18 +1064,6 @@ function InboxBody({
     changeFilter({ ...filter, q: next === "" ? undefined : next });
   };
   const agentText = useAgentText();
-  // Rows (by ask id) whose "Assign to me" write is in flight or failed: their control stays
-  // mounted through the optimistic assignment and the rollback out of it (see `AssignToMe`).
-  const [assigning, setAssigning] = useState<ReadonlySet<string>>(() => new Set());
-  const onAssignLive = useCallback((askId: string, live: boolean) => {
-    setAssigning((current) => {
-      if (current.has(askId) === live) return current;
-      const next = new Set(current);
-      if (live) next.add(askId);
-      else next.delete(askId);
-      return next;
-    });
-  }, []);
   // Every row's snooze write, held by ask around this list (`Inbox`) rather than by the control
   // that pressed, which can go while the write is out: the column's head goes when the reader
   // moves the selection. A row whose write is out (`snoozing`) stays in the band the reader saw
@@ -1050,13 +1091,17 @@ function InboxBody({
    *  words it was held under (`searchWords`, joined): it stays held while the reader's words are
    *  those, whatever the server does to the text they search. Written on every render below. */
   const heldUnder = useRef<{ readonly id: string; readonly words: string } | undefined>(undefined);
-  // Every card's hand-on, answer and decline, held by ask around this list (`Inbox`) as each
-  // snooze is, since the card that pressed can go while the write is out: the column's card goes
-  // when the reader moves the selection. An answer or a decline takes its row out of the Inbox's
-  // read the moment it goes, and a hand-on's optimistic `waiting_on_person` can take it out of
-  // the reader's own list, so a row whose write is out is kept where the reader saw it until the
-  // write lands (`heldRow`). A refused or stopped write holds no row: the rollback has put the
-  // row back, and the next read places it, with the refusal shown on it.
+  // Every row's Assign to me, and every card's hand-on, answer, decline, question back and reply,
+  // held by ask around this list (`Inbox`) as each snooze is, since the control that pressed can
+  // go while the write is out: the column's head and card go when the reader moves the
+  // selection. An answer or a decline takes its row out of the Inbox's read the moment it goes,
+  // an Assign to me's optimistic assignee takes it out of the Unassigned filter, a hand-on's
+  // optimistic `waiting_on_person` can take it out of the reader's own list, and a read of the
+  // Inbox can take it out or move it while a question back or a reply is out. So a row whose
+  // write is out is kept where the reader saw it until the write lands (`heldRow`). A question
+  // back keeps its ask's row, and a reply keeps the row of its ask's thread, the Reply row whose
+  // card made it. A refused or stopped write holds no row: the rollback has put the row back,
+  // and the next read places it, with the refusal shown on it.
   //
   // Only a row this list drew is kept. The cards reach these writes through the context this
   // list provides (`useAskHandOn.ts`, `outstanding-answers.ts`), since one of them is the
@@ -1065,9 +1110,12 @@ function InboxBody({
   // reader's filters hide, and every ask block of a document open in the column, not only the
   // selected one. Keeping one of those would pull a question the filters hide into the list. So
   // a write keeps its ask's row only among `presented`, the rows this list last drew.
+  const assignsOut = useInboxWrites(AskAssignWritesContext).out;
   const handOnsOut = useInboxWrites(AskHandOnWritesContext).out;
   const answersOut = useInboxWrites(AskAnswerWritesContext).out;
   const declinesOut = useInboxWrites(AskDeclineWritesContext).out;
+  const clarificationsOut = useInboxWrites(AskClarificationWritesContext).out;
+  const repliesOut = useInboxWrites(AskReplyWritesContext).out;
   // The row the reader's hand is on (focus or pointer), read from the DOM as last committed. When
   // the server has dropped it (answered or resolved elsewhere) or handed its turn the other way
   // (their own ask-back, an agent's note or reply), it is kept - `held` - where the reader last
@@ -1108,20 +1156,15 @@ function InboxBody({
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
-  // The filters and the typed text both decide what is listed, with one exception that outranks
-  // them all: a row whose "Assign to me" write is live stays. Taking a question under the
-  // Unassigned filter is exactly that case - the row stops matching the moment the optimistic
-  // assignment lands - and unmounting the control would take `Assigning…`, a refusal and its
-  // Retry off the screen with it. A hand-on the filters drop keeps its row where the reader saw
-  // it instead (`heldRow`), as an answer and a decline do.
+  // The filters and the typed text both decide what is listed. A row a write of the reader's
+  // takes out of them while it is out - Assign to me under the Unassigned filter, whose
+  // optimistic assignee stops the row matching at the press, or a hand-on the filters drop - is
+  // kept where the reader saw it instead (`heldRow`), as an answer and a decline are.
   const narrowed = candidates.filter(
     (row) =>
-      (row.kind === "ask" && assigning.has(row.ask.id)) ||
-      (inAssigneeFilter(row, selection, viewer ?? "") &&
-        matchesInboxSearch(row, words) &&
-        INBOX_FILTER_FIELDS.every((field) =>
-          inFieldFilter(row, field, filters[field], viewer ?? "")
-        ))
+      inAssigneeFilter(row, selection, viewer ?? "") &&
+      matchesInboxSearch(row, words) &&
+      INBOX_FILTER_FIELDS.every((field) => inFieldFilter(row, field, filters[field], viewer ?? ""))
   );
   // The Dismissed view keeps the server's own order, newest dismissal first, and bands nothing:
   // it is one list of what the reader has already dealt with.
@@ -1792,13 +1835,14 @@ function InboxBody({
 
   // Which row the list holds in place while the server moves the list under it: the row the
   // reader's hand is on (focus or pointer), with or without the reading column, and a row whose
-  // hand-on, answer or decline is out, whatever the selection does. A row the column is merely
-  // showing is not held - the Inbox selects the first row for the reader the moment it opens,
-  // and a question the server withdraws, resolves or answers elsewhere must not stay in the list
-  // on the strength of a selection nobody made. What the column does with a selected question
-  // the server takes away is `paneRow` (`pane-selection.ts`). A row the reader dismissed under
-  // their own hand is not held either: they asked for it to go, so it goes at once and the next
-  // row takes its place; and a row they answered goes once the server has recorded the answer.
+  // Assign to me, hand-on, answer, decline, question back or reply is out, whatever the selection
+  // does. A row the column is merely showing is not held - the Inbox selects the first row for
+  // the reader the moment it opens, and a question the server withdraws, resolves or answers
+  // elsewhere must not stay in the list on the strength of a selection nobody made. What the
+  // column does with a selected question the server takes away is `paneRow`
+  // (`pane-selection.ts`). A row the reader dismissed under their own hand is not held either:
+  // they asked for it to go, so it goes at once and the next row takes its place; and a row they
+  // answered goes once the server has recorded the answer.
   //
   // The hold is told which rows the typed text excludes rather than being handed the narrowed
   // list: a row the reader's own typing drops must go at once, even with the pointer resting on
@@ -1824,13 +1868,14 @@ function InboxBody({
   // marked - is held in the band they saw it in until the Inbox lets go of it once the write
   // lands (`heldRow`), while the list still lists it. A refused or stopped write holds nothing.
   // Under the Blocked on you narrowing, which lists no snoozed ask, the row is dropped at once,
-  // and only the reader's hand holds it. A row whose hand-on, answer or decline is out is held
-  // as the row under the hand is, listed or not, until that write lands.
+  // and only the reader's hand holds it. A row whose Assign to me, hand-on, answer, decline,
+  // question back or reply is out is held as the row under the hand is, listed or not, until
+  // that write lands.
   // That band is a band of the layout the row was drawn under, so a snooze holds its row only
   // while the list is still drawn under it - the same grouping, and the same view. Under that
   // layout the band a write holds its row in is drawn again though no other row is left in it
   // (`keptBands`): a snooze takes its row out of the band whoever else is there, and an answer,
-  // a decline or a hand-on the filters drop takes it out of the list.
+  // a decline, an Assign to me or a hand-on the filters drop takes it out of the list.
   const layout = showDismissed ? "dismissed" : groupBy;
   const sameLayout = presentedBands.current.layout === layout;
   const held: PlacedRow[] = [];
@@ -1841,8 +1886,13 @@ function InboxBody({
     const inHand = seen !== undefined && rowId(seen.row) === id;
     const out = sameLayout && (snoozing.has(id) || bulkSnoozing.has(id));
     const written =
-      placed.row.kind === "ask" &&
-      (handOnsOut.has(id) || answersOut.has(id) || declinesOut.has(id));
+      placed.row.kind === "ask"
+        ? assignsOut.has(id) ||
+          handOnsOut.has(id) ||
+          answersOut.has(id) ||
+          declinesOut.has(id) ||
+          clarificationsOut.has(id)
+        : placed.row.thread.kind === "ask" && repliesOut.has(placed.row.thread.thread_id);
     if (!inHand && !out && !written) continue;
     const listed = byId.get(id);
     const kept = heldRow(
@@ -2508,6 +2558,7 @@ function InboxBody({
           key={id}
           onSelect={paneSelection.select}
           selected={id === paneSelection.id}
+          viewer={viewer}
         />
       ) : (
         <ThreadShortRow
@@ -2523,10 +2574,8 @@ function InboxBody({
       <InboxCardRow
         {...shared}
         ask={row.ask}
-        assignLive={assigning.has(row.ask.id)}
         key={id}
         onAnswered={recordAnswered}
-        onAssignLive={onAssignLive}
         threadUpdatedAt={inbox.dataUpdatedAt}
         viewer={viewer}
       />
@@ -2550,9 +2599,10 @@ function InboxBody({
   //
   // The anchor does not hold the reader's row in place against the rows a press of theirs takes
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
-  // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), and the
-  // rows a snooze write, a row's own or the bar's, moves to another band in the commit that lets
-  // go of them.
+  // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
+  // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
+  // them, and the rows an Assign to me or a question back lets go of, which then leave the list
+  // where the read no longer lists them there.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -2569,7 +2619,13 @@ function InboxBody({
         className="space-y-4"
         group="data-inbox-section"
         item={ROW_ATTRIBUTE}
-        leaving={(id) => dismissedHere(id) || snoozing.has(id) || bulkSnoozing.has(id)}
+        leaving={(id) =>
+          dismissedHere(id) ||
+          snoozing.has(id) ||
+          bulkSnoozing.has(id) ||
+          assignsOut.has(id) ||
+          clarificationsOut.has(id)
+        }
         ref={viewport}
         rootRef={listRef}
         scroller={paneShown ? listScroller : scroller}

@@ -2206,11 +2206,12 @@ test("a reply composer remounted while its send is out shows the draft disabled 
     const field = second.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     expect(field.value).toBe("hello");
     expect(field.disabled).toBe(true);
-    const send = second.getByRole("button", { name: /^Repl/ }) as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    // The send holds this one disabled, and user-event refuses a disabled control; the point of
-    // this line is that the press the browser still delivers posts nothing a second time.
-    fireEvent.click(send);
+    // Held while the send is out by `aria-disabled`, not `disabled`, so it would keep a reader's
+    // focus; a press of it posts nothing a second time.
+    const send = second.getByRole("button", { name: /^Repl/ });
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    await user.click(send);
 
     await act(async () => sent.resolve(reply({ body: "hello" })));
     await waitFor(() => expect(field.value).toBe(""));

@@ -37,6 +37,7 @@ import type {
   InboxRow,
   Issue,
   IssueDetails,
+  MyReplyRow,
 } from "../../api/types";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
@@ -2522,12 +2523,13 @@ function drawnAssign(askId: string, issueKey: string): string {
 }
 
 // Under the Unassigned filter the optimistic assignment takes the row out of the filter, and the
-// Inbox lets go of it in the effects of the commit that draws the save's answer. The button is
-// held from the press through that commit, so it goes with its row in the commit its hold ends:
-// the press is still live then, and the page's rescue reads the row's going as its doing
-// (`causedByReader`). A button let go in the answer's own commit would end the press a commit
-// before the row goes, where a browser can run the rescue's check in between.
-test("Assign to me stays held through the commit after its answer, and goes with its row in the commit its hold ends", async () => {
+// Inbox keeps the row while the save is out (`AskAssignWritesProvider`). It lets go of the row in
+// the commit that draws the save's answer, while the button is still held from the press
+// (`useHeldThroughAnswer`), so the button goes with its row while it is held: the press is still
+// live then, and the page's rescue reads the row's going as its doing (`causedByReader`). A
+// button let go before its row goes would end the press while the row still stands, where a
+// browser can run the rescue's check before the row goes.
+test("Assign to me stays held until it goes with its row, in the commit that draws its answer", async () => {
   const user = userEvent.setup();
   const orphan = issueAsk(
     {
@@ -2565,9 +2567,9 @@ test("Assign to me stays held through the commit after its answer, and goes with
     });
     await waitFor(() => expect(rowIds()).toEqual([]));
 
-    // `Assign to me` again is the commit that draws the answer: still held there, and the next
-    // drawing is the row gone.
-    expect(drawnChanges(fromPress())).toEqual(["held Assigning…", "held Assign to me", "(no row)"]);
+    // The commit that draws the answer is the one the row goes in: the button is held until
+    // then.
+    expect(drawnChanges(fromPress())).toEqual(["held Assigning…", "(no row)"]);
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -7474,6 +7476,341 @@ test("a decline from the column's card keeps its row while it is out after the s
     unmount();
     narrow();
     declineAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// An Assign to me the column's head makes is the Inbox's write, not the head's: moving the
+// selection takes the head away, and under the Unassigned filter the row stays where the reader
+// saw it while the save is out, though the optimistic assignee takes it out of the filter, with
+// `Assigning…` on the row itself. A refusal ends the hold: the rollback puts the row back in the
+// filter, with the reason on the row, and in the head drawn for it again, with its Retry. A Retry
+// that lands after the reader moved on again lets the row go.
+test("an Assign to me from the column's head keeps its row while it is out after the selection moves, shows a refusal on the row and in the head drawn again, and lets the row go once it lands", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = issueAsk(
+    {
+      id: "ask-a",
+      issue: { assignee: null, key: "CORE-1", title: "Nobody's issue" },
+      issue_key: "CORE-1",
+      question: "Which approach?",
+    },
+    null
+  );
+  const second = issueAsk(
+    {
+      id: "ask-b",
+      issue: { assignee: null, key: "CORE-2", title: "Nobody's other issue" },
+      issue_key: "CORE-2",
+      question: "Which format?",
+    },
+    null
+  );
+  let served: InboxRow[] = [first, second];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([first, second]);
+  const getIssue = mockIssueReads();
+  const refusal = Promise.withResolvers<Issue>();
+  const landing = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(() => landing.promise);
+  const { unmount } = renderInbox("/?assignee=unassigned");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    await user.click(within(pane).getByRole("button", { name: "Assign CORE-1 to me" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row is where the reader saw it, though its optimistic assignee takes it out of
+    // the Unassigned filter and the head that wrote has gone.
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(
+      within(shortRow("ask-a")).getByRole("button", { name: "Assign CORE-1 to me" }).textContent
+    ).toBe("Assigning…");
+
+    await act(async () => {
+      refusal.reject(
+        new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed; reopen it first" })
+      );
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(within(shortRow("ask-a")).getByRole("alert")).toHaveTextContent(
+        "CORE-1 is closed; reopen it first"
+      )
+    );
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // The head drawn for the question again shows the refusal, with its Retry.
+    await user.click(shortRow("ask-a"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    const refused = within(screen.getByTestId("inbox-pane")).getByRole("alert");
+    expect(refused).toHaveTextContent("CORE-1 is closed; reopen it first");
+    await user.click(within(refused).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(
+      within(shortRow("ask-a")).getByRole("button", { name: "Assign CORE-1 to me" }).textContent
+    ).toBe("Assigning…");
+
+    served = [
+      {
+        ...first,
+        issue: { assignee: "alice", key: "CORE-1", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
+      second,
+    ];
+    await act(async () => {
+      landing.resolve(narrowIssueOf(first, "alice"));
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    expect(patchIssue.mock.calls.map(([key, input]) => [key, input])).toEqual([
+      ["CORE-1", { assignee: "alice" }],
+      ["CORE-1", { assignee: "alice" }],
+    ]);
+  } finally {
+    unmount();
+    narrow();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+/** The comment Dispatch answers a posted question back or reply with: `body` under `askId`, on
+ *  `issueKey`, by alice. */
+function postedComment(issueKey: string, askId: string, body: string): Comment {
+  return {
+    anchor: null,
+    ask_id: askId,
+    author: { id: "alice", kind: "user" },
+    body,
+    created_at: "2026-09-11T02:00:00Z",
+    edited_at: null,
+    id: `${askId}-comment`,
+    issue_key: issueKey,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: "agent",
+    ...commentDeliveryFields(),
+  };
+}
+
+// The same for a question back, sent by Ask back instead: it takes nothing out of the Inbox's
+// read, but a read that says the asker holds the turn can drop the row while the write is out.
+// The row stays where the reader saw it then, saying `Asking back…` on it, and a refusal shows
+// its reason on the row, and in the card drawn for it again, with its Retry. A Retry that lands
+// lets the row go where the read places it.
+test("a question back from the column's card keeps its row while it is out after the selection moves, shows a refusal on the row and in the card drawn again, and lets the row go once it lands", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const second = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served: InboxRow[] = [first, second];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([first, second]);
+  const getIssue = mockIssueReads();
+  const refusal = Promise.withResolvers<Comment>();
+  const landing = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment")
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(() => landing.promise);
+  const { queryClient, unmount } = renderInbox();
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.click(within(pane).getByLabelText("Your answer"));
+    await user.paste("Ship what, exactly?");
+    await user.click(within(pane).getByRole("button", { name: "Answer" }));
+    await user.click(await within(pane).findByRole("button", { name: "Ask back instead" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row says so, though the card that wrote has gone.
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(within(shortRow("ask-a")).getByText("Asking back…")).toBeTruthy();
+
+    await act(async () => {
+      refusal.reject(new ApiError(400, { error: "Dispatch refused this comment." }));
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(within(shortRow("ask-a")).getByRole("alert")).toHaveTextContent(
+        "Could not send your clarification."
+      )
+    );
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // The card drawn for the question again shows the refusal, with its Retry.
+    await user.click(shortRow("ask-a"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    const refused = await within(screen.getByTestId("inbox-pane")).findByRole("alert");
+    expect(refused).toHaveTextContent("Could not send your clarification.");
+    await user.click(within(refused).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // A read of the Inbox that lists the question no longer - the asker holds its turn - and
+    // words the other one afresh, which says the read is drawn: the row stays while the write is
+    // out.
+    served = [{ ...second, question: "Which format, again?" }];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await within(shortRow("ask-b")).findByText("Which format, again?");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(within(shortRow("ask-a")).getByText("Asking back…")).toBeTruthy();
+
+    await act(async () => {
+      landing.resolve(postedComment("CORE-1", "ask-a", "Ship what, exactly?"));
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    expect(createComment.mock.calls.map(([issueKey, input]) => [issueKey, input])).toEqual([
+      ["CORE-1", { ask_id: "ask-a", body: "Ship what, exactly?" }],
+      ["CORE-1", { ask_id: "ask-a", body: "Ship what, exactly?" }],
+    ]);
+  } finally {
+    unmount();
+    narrow();
+    createComment.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The same for a reply under a settled ask, from the column of the ask's Reply row. Reply is
+// held by `aria-disabled` while it sends, so it keeps the reader's focus. Moving the selection
+// takes the column away, and the Reply row stays where the reader saw it while the reply is out,
+// though a read of the Inbox's threads drops it then, saying `Replying…` on it. A refusal shows
+// its reason on the row, and in the column drawn for the thread again, with its Retry. A Retry
+// that lands lets the row go where the read places it.
+test("a reply from a thread's column keeps Reply focused while it sends, keeps its row while it is out after the selection moves, shows a refusal on the row and in the column drawn again, and lets the row go once it lands", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const open = inboxIssue("ask-b", "CORE-2", "Which format?");
+  const settled = issueAsk({
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "bob" },
+    id: "ask-done",
+    issue: { assignee: "bob", key: "CORE-3", title: "Bob's issue" },
+    issue_key: "CORE-3",
+    question: "Which approach?",
+    state: "answered",
+  });
+  const thread = replyRow("ask-done", {
+    issue: { key: "CORE-3", title: "Bob's issue" },
+    kind: "ask",
+    ref: "/issues/CORE-3/asks/ask-done",
+    subject: "Which approach?",
+  });
+  const threads = (rows: MyReplyRow[]) => ({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows,
+    total: rows.length,
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([open]);
+  const getAsk = mockAskReads([open, settled]);
+  const getIssue = mockIssueReads();
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue(threads([thread]));
+  const refusal = Promise.withResolvers<Comment>();
+  const landing = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment")
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(() => landing.promise);
+  const { queryClient, unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(rowIds()).toContain("reply:ask-done"));
+    await user.click(shortRow("reply:ask-done"));
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:ask-done"]));
+    const pane = screen.getByTestId("inbox-pane");
+    await user.click(await within(pane).findByRole("textbox", { name: "Reply" }));
+    await user.paste("Thanks, shipping it.");
+    const send = within(pane).getByRole("button", { name: "Reply" });
+    await user.click(send);
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    // Held while it sends, and still the reader's focus.
+    await waitFor(() => expect(send.textContent).toBe("Replying…"));
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    expect(send).toHaveFocus();
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row says so, though the column that wrote has gone.
+    expect(within(shortRow("reply:ask-done")).getByText("Replying…")).toBeTruthy();
+
+    await act(async () => {
+      refusal.reject(new ApiError(400, { error: "Dispatch refused this comment." }));
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(within(shortRow("reply:ask-done")).getByRole("alert")).toHaveTextContent(
+        "Could not post your reply."
+      )
+    );
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // The column drawn for the thread again shows the refusal, with its Retry.
+    await user.click(shortRow("reply:ask-done"));
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:ask-done"]));
+    const refused = await within(screen.getByTestId("inbox-pane")).findByRole("alert");
+    expect(refused).toHaveTextContent("Could not post your reply.");
+    await user.click(within(refused).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // A read of the Inbox's threads that lists this one no longer, and lists another, which says
+    // the read is drawn: the row stays while the reply is out.
+    listMyReplies.mockResolvedValue(threads([replyRow("c-fresh", { subject: "Fresh thread" })]));
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await waitFor(() => expect(rowIds()).toContain("reply:c-fresh"));
+    expect(rowIds()).toContain("reply:ask-done");
+    expect(within(shortRow("reply:ask-done")).getByText("Replying…")).toBeTruthy();
+
+    await act(async () => {
+      landing.resolve(postedComment("CORE-3", "ask-done", "Thanks, shipping it."));
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).not.toContain("reply:ask-done"));
+    expect(createComment.mock.calls.map(([issueKey, input]) => [issueKey, input])).toEqual([
+      ["CORE-3", { ask_id: "ask-done", body: "Thanks, shipping it." }],
+      ["CORE-3", { ask_id: "ask-done", body: "Thanks, shipping it." }],
+    ]);
+  } finally {
+    unmount();
+    narrow();
+    createComment.mockRestore();
+    listMyReplies.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();

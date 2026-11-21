@@ -1,9 +1,10 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useContext, useId, useState } from "react";
 
-import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
+import { type ArtifactOwner, api, type WriteBounds, type WriteMethod } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
+import { useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -34,6 +35,12 @@ import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import type { AskPress } from "./ask-writes";
+import {
+  AskReplyWritesContext,
+  type OutstandingAnswerWrite,
+  type OutstandingAnswerWriteOptions,
+  useInboxAnswerWrite,
+} from "./outstanding-answers";
 import { askArtifactId } from "./owner-reads";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";
@@ -171,6 +178,16 @@ export function UnsentReply({ className, text }: { className?: string; text: str
   );
 }
 
+/** What the reply form says of a reply the reader stopped, or that Dispatch refused: a stopped one
+ *  may have been posted, and Retry makes that very press again. The Inbox's row of the ask's
+ *  thread says the same words of it (`ThreadShortRow`). */
+export function replyRefusal(reply: {
+  readonly error: Error;
+  readonly method: WriteMethod | undefined;
+}): string {
+  return stoppedNote(reply, "your reply", "posted") ?? "Could not post your reply.";
+}
+
 /**
  * The reply form under an ask that is no longer open (`takesReply`). It posts to the ask's issue,
  * or to its document for a project-document ask, then invalidates the shared thread so the reply
@@ -178,6 +195,18 @@ export function UnsentReply({ className, text }: { className?: string; text: str
  * any composer's reply to this ask is out, every composer for it, including one mounted since,
  * shows the draft disabled. A file pasted or dropped into the field uploads to `uploadOwner` and
  * its text joins the draft.
+ *
+ * Inside an Inbox the send is not the form's: the Inbox holds it, by ask, as it holds the card's
+ * answer (`AskReplyWritesContext`), since the reading column's card goes whenever the reader
+ * moves the selection. The send and its refusal outlive the form: the form drawn for the ask
+ * again shows them, with Retry, and the row of the ask's thread says what the send is doing
+ * (`ThreadShortRow`). Outside an Inbox the form makes its own send, named by its ask, which every
+ * composer for the ask on the page reads (`useSending`).
+ *
+ * Reply is held while the send is out and through the commit after its answer
+ * (`useHeldThroughAnswer`): by `aria-disabled`, never `disabled`, so it keeps the reader's focus
+ * through the hold. Its press still submits the form, and the form's submit sends nothing while
+ * Reply is held. With nothing typed, or an upload still out, it is `disabled`.
  */
 export function AskReplyComposer({
   ask,
@@ -195,10 +224,10 @@ export function AskReplyComposer({
   // transition cannot share an ask-id-derived id.
   const fieldId = `${useId()}-reply`;
   const [body, setBody] = useReplyDraft(ask.id);
-  // Keyed by the ask, so the send outlives the composer that started it and any composer for the
-  // ask sees it in flight.
+  // Keyed by the ask, so the form's own send outlives the composer that started it and any
+  // composer for the ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
-  const { sending } = useSending(mutationKey);
+  const ownSending = useSending(mutationKey).sending;
   // A file's text joins the draft of the ask it was pasted or dropped under, which its press
   // carries (`useDraftUpload`): a host may draw this composer for another ask before it lands.
   const upload = useDraftUpload((text: string, askId: string) =>
@@ -208,10 +237,12 @@ export function AskReplyComposer({
   // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
   // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
-  // host draws this composer for by then.
-  const submit = useKeyedWrite({
+  // host draws this composer for by then. A reply leaves the ask's row in the Inbox's read.
+  const options: OutstandingAnswerWriteOptions<Comment, ReplyPress> = {
+    label: (press) => `Reply on “${press.ask.question}”`,
     method: "POST",
-    write: (press: ReplyPress, bounds) => {
+    removesRow: () => false,
+    write: (press, bounds) => {
       if (press.ask.issue_key === null) {
         return api.createArtifactComment(
           askArtifactId(press.ask),
@@ -221,20 +252,30 @@ export function AskReplyComposer({
       }
       return reply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
-    inline: true,
-    label: (press: ReplyPress) => `Reply on “${press.ask.question}”`,
-    mutationKey,
     onSuccess: (_comment, press) => {
       clearReplyDraft(press.ask.id, press.text);
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
+  };
+  const own = useKeyedWrite({
+    inline: true,
+    label: options.label,
+    method: options.method,
+    mutationKey,
+    write: options.write,
+    onSuccess: (comment, press) => options.onSuccess?.(comment, press),
   });
+  const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
+  const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
+  const sending = inbox === undefined ? ownSending : inbox.isPending;
+  const held = useHeldThroughAnswer(sending);
 
   const submitReply = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const text = body.trim();
-    // A reply sent while a picture is still uploading would go without it.
-    if (text === "" || sending || uploading) {
+    // A held Reply is only `aria-disabled`, so its press still submits the form: that submit
+    // sends nothing. A reply sent while a picture is still uploading would go without it.
+    if (text === "" || held || uploading) {
       return;
     }
     submit.mutate({ ask, text });
@@ -265,19 +306,20 @@ export function AskReplyComposer({
       </label>
       <DraftUploadStatus upload={upload} />
       <button
-        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}
-        disabled={body.trim() === "" || sending || uploading}
+        aria-disabled={held || undefined}
+        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} refused:cursor-not-allowed refused:opacity-50`}
+        disabled={body.trim() === "" || uploading}
         type="submit"
       >
         {sending ? "Replying…" : "Reply"}
       </button>
-      {submit.isError ? (
+      {submit.error === null ? null : (
         <QueryError
-          message={stoppedNote(submit, "your reply", "posted") ?? "Could not post your reply."}
+          message={replyRefusal({ error: submit.error, method: submit.method })}
           onRetry={submit.retry}
           retrying={submit.isPending}
         />
-      ) : null}
+      )}
     </form>
   );
 }

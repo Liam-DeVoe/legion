@@ -29,7 +29,7 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
 import {
@@ -37,7 +37,11 @@ import {
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
 import type { AskPress } from "./ask-writes";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import {
+  AskAnswerWritesContext,
+  AskClarificationWritesContext,
+  useOutstandingAnswerWrite,
+} from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
@@ -141,6 +145,18 @@ export function answerFailure(answer: {
     }
   }
   return { message: "Could not save your answer.", retryable: true };
+}
+
+/** What the card says of a question back the reader stopped, or that Dispatch refused: a stopped
+ *  one may have been sent, and the card's Retry makes that very press again (`retryLast`). The
+ *  Inbox's short row says the same words of it (`AskShortRow`). */
+export function clarificationRefusal(clarification: {
+  readonly error: Error;
+  readonly method: WriteMethod | undefined;
+}): string {
+  return (
+    stoppedNote(clarification, "your clarification", "sent") ?? "Could not send your clarification."
+  );
 }
 
 export function useAskAnswerForm({
@@ -249,7 +265,7 @@ export function useAskAnswerForm({
   // press's own values (`useKeyedWrite`), and a host may draw this card for one ask after
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
-  const mutation = useOutstandingAnswerWrite(ask.id, {
+  const mutation = useOutstandingAnswerWrite(AskAnswerWritesContext, ask.id, {
     label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
@@ -318,9 +334,10 @@ export function useAskAnswerForm({
       invalidateOwnerReads(queryClient, press.ask);
     },
   });
-  // A question back carries its ask as an answer does, for the same reason.
-  const clarification = useKeyedWrite({
-    inline: true,
+  // A question back carries its ask as an answer does, for the same reason, and inside an Inbox
+  // the Inbox holds it by ask as it holds the answer, so its refusal outlives this card. It
+  // leaves the ask's row in the Inbox's read: the turn it hands the asker is read afresh.
+  const clarification = useOutstandingAnswerWrite(AskClarificationWritesContext, ask.id, {
     label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
     method: "POST",
     write: (press: ClarificationPress, bounds) => {
@@ -333,6 +350,7 @@ export function useAskAnswerForm({
       }
       return createReply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
+    removesRow: () => false,
     onSettled: () => {
       submitGuard.release();
     },

@@ -1,5 +1,6 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
+  type Context,
   createContext,
   type RefObject,
   useCallback,
@@ -23,8 +24,8 @@ import { type AskPress, pressAsk, useAskWrites } from "./ask-writes";
  *  server has already recorded, whose ask has no open row there - and so kept nothing. */
 type InboxRowsBefore = { readonly rows: InboxRow[] | undefined } | undefined;
 
-/** What an answer or a decline is written with, beyond what the write itself does with the
- *  Inbox's row. */
+/** What an answer, a decline, a question back or a reply is written with, beyond what the write
+ *  itself does with the Inbox's row. */
 export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPress> {
   /** What the shell's pending-writes indicator names this write, in the reader's words. */
   readonly label: (variables: TVariables) => string;
@@ -42,8 +43,8 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
   readonly onSuccess?: (data: TData | null, variables: TVariables) => void;
 }
 
-/** An answer's or a decline's write as the surface that makes it reads it: the part of
- *  `useKeyedWrite`'s result these surfaces read, of the newest press. */
+/** An answer's, a decline's, a question back's or a reply's write as the surface that makes it
+ *  reads it: the part of `useKeyedWrite`'s result these surfaces read, of the newest press. */
 export interface OutstandingAnswerWrite<TVariables> {
   readonly error: Error | null;
   readonly isError: boolean;
@@ -60,17 +61,17 @@ export interface OutstandingAnswerWrite<TVariables> {
 }
 
 /**
- * What an answer or a decline is written with, by a surface's own write and by an Inbox's alike:
- * it takes the ask's row out of the Inbox's read the moment the write goes, puts it back where the
- * server refuses it, and holds the Inbox's reads until Dispatch has taken the write, around what
- * the surface writes it with (`surfaceOf`, for each press).
- *
- * A write that takes the row out holds the Inbox's reads until Dispatch has taken it (`holds`:
- * its answer, or the ask's `ask.answered` or `ask.resolved` event, and at most
- * `SEND_DEADLINE_MS`): one asked before could be answered with the row still in it. The Inbox
- * lists the asks other people open, so the hold ends on the event rather than wait out an answer
- * that is late. The write is inline: the surface shows a refusal itself, over what the reader
- * wrote, so the shell's indicator carries the write only while it is out.
+ * What an answer, a decline, a question back or a reply is written with, by a surface's own write
+ * and by an Inbox's alike, around what the surface writes it with (`surfaceOf`, for each press).
+ * A write that takes its ask's row out of the Inbox's read (`removesRow`: an answer, a decline)
+ * takes it out the moment it goes, puts it back where the server refuses it, and holds the
+ * Inbox's reads until Dispatch has taken it (`holds`: its answer, or the ask's `ask.answered` or
+ * `ask.resolved` event, and at most `SEND_DEADLINE_MS`): one asked before could be answered with
+ * the row still in it. The Inbox lists the asks other people open, so the hold ends on the event
+ * rather than wait out an answer that is late. A write that leaves the row alone - a change to a
+ * recorded answer, a question back, a reply - takes nothing out and holds no read. The write is
+ * inline: the surface shows a refusal itself, over what the reader wrote, so the shell's
+ * indicator carries the write only while it is out.
  */
 function outstandingAnswerWrite<TData, TVariables extends AskPress>(
   queryClient: QueryClient,
@@ -107,20 +108,21 @@ function outstandingAnswerWrite<TData, TVariables extends AskPress>(
   };
 }
 
-/** What a press of an answer or a decline is written with, as the surface it belongs to last
- *  drew it (`OutstandingAnswerWriteOptions`): a ref the surface keeps current. The Inbox's writes
- *  hold presses of every surface of one kind, each of its own variables, so they hold this
- *  without them. */
+/** What a press of one of these writes is written with, as the surface it belongs to last drew it
+ *  (`OutstandingAnswerWriteOptions`): a ref the surface keeps current. The Inbox's writes hold
+ *  presses of every surface of one kind, each of its own variables, so they hold this without
+ *  them. */
 export type PressSurface = RefObject<OutstandingAnswerWriteOptions<unknown, AskPress>>;
 
-/** What the newest answer, or the newest decline, of one ask in an Inbox is doing, as every
- *  surface drawn for the ask and the ask's row show it. */
+/** What the newest write of one kind of one ask in an Inbox is doing, as every surface drawn for
+ *  the ask and the ask's row show it. */
 export type OutstandingAnswerShown = Omit<
   OutstandingAnswerWrite<AskPress>,
   "mutate" | "reset" | "retry"
 >;
 
-/** Every answer, or every decline, the reader makes in one Inbox (`useOutstandingAnswerWrites`). */
+/** Every write of one kind the reader makes from a card in one Inbox - its answers, its declines,
+ *  its questions back or its replies (`useOutstandingAnswerWrites`). */
 export interface OutstandingAnswerWrites {
   /** Draws `surface` for `askId` until the returned function is called: a press of the ask that
    *  lands or is refused while its own surface is gone is the drawn surface's to show. */
@@ -140,13 +142,16 @@ export interface OutstandingAnswerWrites {
 }
 
 /**
- * Every answer, or every decline, the reader makes in one Inbox, held by ask in the Inbox's own
- * state (`useAskWrites`), as each row's snooze is. The write takes the ask's row out of the
- * Inbox's read the moment it goes, and the card that pressed can go before the server answers:
- * the reading column's card goes whenever the reader moves the selection. So the Inbox keeps the
- * row where the reader saw it while the write is out, and the write and its refusal outlive the
- * card: the card drawn for the ask again shows them, with its Retry, and the ask's row says
- * what the write is doing (`AskShortRow`).
+ * Every write of one kind the reader makes from a card in one Inbox - its answers, its declines,
+ * its questions back or its replies - held by ask in the Inbox's own state (`useAskWrites`), as
+ * each row's snooze is. An answer or a decline takes the ask's row out of the Inbox's read the
+ * moment it goes, and a question back hands the ask's turn to the asker, which a read of the
+ * Inbox can show before Dispatch has answered the write. The card that pressed can go before the
+ * server answers: the reading column's card goes whenever the reader moves the selection. So the
+ * Inbox keeps the row where the reader saw it while the write is out, and the write and its
+ * refusal outlive the card: the card drawn for the ask again shows them, with its Retry, and the
+ * ask's row says what the write is doing (`AskShortRow`, and for a reply the row of the ask's
+ * thread, `ThreadShortRow`).
  *
  * A press is written, and its landing or refusal handled, with the options of a surface
  * (`PressSurface`): the surface that made or last retried it, while that surface is drawn for
@@ -171,7 +176,7 @@ export function useOutstandingAnswerWrites(): OutstandingAnswerWrites {
         ? maker
         : (shown?.values().next().value ?? maker);
     if (surface === undefined) {
-      throw new Error("An answer was pressed with no surface to write it");
+      throw new Error("An ask write was pressed with no surface to write it");
     }
     return surface.current;
   };
@@ -236,12 +241,22 @@ export const AskDeclineWritesContext = createContext<OutstandingAnswerWrites | u
   undefined
 );
 
+/** The reader's questions back in the Inbox around a card (**Ask back**, **Ask back instead**), as
+ *  `AskAnswerWritesContext` is for answers. */
+export const AskClarificationWritesContext = createContext<OutstandingAnswerWrites | undefined>(
+  undefined
+);
+
+/** The reader's replies under a settled ask in the Inbox around a reply composer
+ *  (`AskReplyComposer`), as `AskAnswerWritesContext` is for answers. */
+export const AskReplyWritesContext = createContext<OutstandingAnswerWrites | undefined>(undefined);
+
 /**
- * A surface's own answer or decline, made outside an Inbox - the issue page's Conversation, a
- * document's margin and its ask block, the Answers page: it takes the ask's row out of the
- * Inbox's read the moment it goes and puts it back where the server refuses it
- * (`outstandingAnswerWrite`). It lives as long as the surface: nothing there takes the row out
- * from under it.
+ * A surface's own answer, decline or question back, made outside an Inbox - the issue page's
+ * Conversation, a document's margin and its ask block, the Answers page: an answer or a decline
+ * takes the ask's row out of the Inbox's read the moment it goes and puts it back where the
+ * server refuses it (`outstandingAnswerWrite`). It lives as long as the surface: nothing there
+ * takes the row out from under it.
  */
 export function useOwnAnswerWrite<TData, TVariables extends AskPress>(
   options: OutstandingAnswerWriteOptions<TData, TVariables>
@@ -250,8 +265,8 @@ export function useOwnAnswerWrite<TData, TVariables extends AskPress>(
 }
 
 /**
- * The Inbox's answer or decline of `askId` as a surface drawn for that ask shows it, from the
- * writes of one kind (`inbox`) the Inbox provides; undefined outside an Inbox, where `inbox` is
+ * The Inbox's write of one kind of `askId` as a surface drawn for that ask shows it, from the
+ * writes of that kind (`inbox`) the Inbox provides; undefined outside an Inbox, where `inbox` is
  * undefined.
  *
  * The Inbox's write is reached through the context it provides, since the card can be the
@@ -289,17 +304,18 @@ export function useInboxAnswerWrite<TData, TVariables extends AskPress>(
 }
 
 /**
- * The reader's own answer to an ask, inside an Inbox and outside it alike: the Inbox's write of
- * `askId` where the card is drawn under one (`useInboxAnswerWrite`), else the card's own
- * (`useOwnAnswerWrite`). The answer form builds `options` from its own state inside
- * `useAskAnswerForm`, which `AskCard` calls at its top, so the form cannot pick one of the two
- * by the component it draws, as `DeclineControl` does. It makes its own write inside an Inbox
- * too, and that write makes no press there.
+ * The reader's own answer, or question back, to an ask, inside an Inbox and outside it alike: the
+ * Inbox's write of `askId` of the kind `context` provides, where the card is drawn under one
+ * (`useInboxAnswerWrite`), else the card's own (`useOwnAnswerWrite`). The answer form builds
+ * `options` from its own state inside `useAskAnswerForm`, which `AskCard` calls at its top, so
+ * the form cannot pick one of the two by the component it draws, as `DeclineControl` does. It
+ * makes its own write inside an Inbox too, and that write makes no press there.
  */
 export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>(
+  context: Context<OutstandingAnswerWrites | undefined>,
   askId: string,
   options: OutstandingAnswerWriteOptions<TData, TVariables>
 ): OutstandingAnswerWrite<TVariables> {
   const own = useOwnAnswerWrite(options);
-  return useInboxAnswerWrite(useContext(AskAnswerWritesContext), askId, options) ?? own;
+  return useInboxAnswerWrite(useContext(context), askId, options) ?? own;
 }

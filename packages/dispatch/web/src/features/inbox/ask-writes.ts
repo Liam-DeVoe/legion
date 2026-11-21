@@ -25,8 +25,8 @@ export type AskPressState<P> =
   | { readonly at: number; readonly press: P; readonly state: "landed" | "out" }
   | { readonly at: number; readonly failure: Error; readonly press: P; readonly state: "failed" };
 
-/** One kind of an Inbox's ask writes - its snoozes, its hand-ons, its answers or its declines -
- *  held by ask (`useAskWrites`). */
+/** One kind of an Inbox's ask writes - its snoozes, its hand-ons, its answers, its declines, its
+ *  questions back or its replies - held by ask (`useAskWrites`). */
 export interface AskWrites<P> {
   /** Lets go of the newest press of `askId` once Dispatch has decided it, its refusal with it.
    *  A press that is out stays: it is Dispatch's to decide. */

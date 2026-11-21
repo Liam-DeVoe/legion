@@ -381,10 +381,8 @@ function DecisionBody({
  * (`ThreadPane.tsx`), which fall back the same way.
  *
  * Each flow keys its head by the ask, so the next question selected is drawn under a head of its
- * own. The head's Assign to me holds the write it made - `Assigning…`, a refusal and its Retry -
- * and a head still showing the last question's would show that write under this question. The
- * head's Snooze holds no write: the Inbox holds each snooze, by ask, and the head shows its own
- * ask's (`useAskSnoozeWrites`).
+ * own. The head holds no write: the Inbox holds each snooze and each Assign to me, by ask, and
+ * the head shows its own ask's (`useAskSnoozeWrites`, `AskAssignWritesProvider`).
  */
 export function ReadingPane({ onAnswered, row, viewer }: ReadingPaneProps): ReactNode {
   if (row.kind === "thread") {

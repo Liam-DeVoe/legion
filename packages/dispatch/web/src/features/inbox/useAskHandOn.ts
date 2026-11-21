@@ -196,11 +196,9 @@ export function useAskHandOnWrites(): AskHandOnWrites {
  * `ProofDocument` -> `AskBlockCard` - which carry no prop of the Inbox's, and threading one
  * through them would leave the next host free to omit it exactly as that path did. `AskHandOn`
  * reads the writes from here instead, so every card under an Inbox has them and no host can be
- * written without them. The reader's answer and decline reach the Inbox's writes the same way
- * (`outstanding-answers.ts`), and so does every row's snooze (`useAskSnoozeWrites`). `AssignToMe`
- * still reports upward through a prop, because its hosts are the Inbox's own: the row it renders,
- * and the reading column's head (`ReadingPaneHead`), whose `AssignToMe` reports no further than
- * the head, which draws it while that write is live.
+ * written without them. The reader's answer, decline, question back and reply reach the Inbox's
+ * writes the same way (`outstanding-answers.ts`), and so does every row's snooze
+ * (`useAskSnoozeWrites`) and every Assign to me (`AskAssignWritesProvider`).
  *
  * Reaching every card is also why the Inbox holds only rows it drew. Many cards under it speak
  * for an ask it draws no row for: the card of a Reply row's thread, whose ask can be one the

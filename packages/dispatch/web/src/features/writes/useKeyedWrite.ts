@@ -217,21 +217,6 @@ export function useRefusalOfSubject<TVariables>(
   return write.isError && !gone;
 }
 
-/** Registers `subject` with `register` while a write of it is live: `true` once it is, and
- *  `false` once the write is decided, the subject changes, or the surface goes. `subject` is the
- *  live press's own, never the one the control is drawn for by then, and `undefined` registers
- *  nothing. */
-export function useLiveRegistration(
-  subject: string | undefined,
-  register: (subject: string, live: boolean) => void
-): void {
-  useEffect(() => {
-    if (subject === undefined) return;
-    register(subject, true);
-    return () => register(subject, false);
-  }, [register, subject]);
-}
-
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made
  *  of it: each is handed that press's variables, as it would be from a `useMutation` of its own. */
 function pressCallbacks<TData, TVariables, TContext>(

@@ -24,15 +24,12 @@ export function heldPress(
 
 /**
  * Whether a control whose press started a write is held: from the first render with `pending`
- * until the commit after `pending` turns false. A list that holds a row through
- * `useLiveRegistration` lets go of it in the effects of the answer's commit, so the row and the
- * control go one commit after the answer, and a hold let go by those same effects ends in that
- * commit too. A list that holds the write itself, as the Inbox does a row's snooze
- * (`useAskSnoozeWrites`), lets go of the row in the answer's own commit, while this hold is still
- * on. The hold is part of the action of the reader's press that started the write while it is on
- * (`beginAnswerHold`), so the page's rescue reads the row's going as the press's doing
- * (`causedByReader`), and the focus goes to the control now at the row's place rather than to
- * the body.
+ * until the commit after `pending` turns false. A list that holds the write itself, as the Inbox
+ * does a row's snooze (`useAskSnoozeWrites`) and its Assign to me (`AskAssignWritesProvider`),
+ * lets go of the row in the answer's own commit, while this hold is still on. The hold is part of
+ * the action of the reader's press that started the write while it is on (`beginAnswerHold`), so
+ * the page's rescue reads the row's going as the press's doing (`causedByReader`), and the focus
+ * goes to the control now at the row's place rather than to the body.
  */
 export function useHeldThroughAnswer(pending: boolean): boolean {
   const [answering, setAnswering] = useState(false);
