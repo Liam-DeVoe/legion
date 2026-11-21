@@ -483,8 +483,10 @@ func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(
 	hold.HoldReconnect(t, conn)
 	notYet("before its end, during the hold")
 	attempt := hold.Attempts()
-	cancel()
+	// The end's time is read before the cancel: a request woken by it records its answer's time at
+	// once, which can come before a time read after cancel returns (CI's -race run, 792 ns).
 	cancelled := time.Now()
+	cancel()
 	ends := map[string]time.Time{"RequestCore": cancelled, "requestConfirmed": cancelled, "PendingForward.Wait": forwardEnds}
 	guard := time.NewTimer(time.Until(forwardEnds) + heldBound + heldMargin)
 	defer guard.Stop()
