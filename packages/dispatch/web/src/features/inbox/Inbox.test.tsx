@@ -3648,6 +3648,74 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
   }
 });
 
+// An answer from a card deep in the list, with the reader's focus moved on to a row below it
+// while the answer is out. The Inbox keeps the answered row where the reader saw it until the
+// answer lands, and lets it go then: the reader's own press takes it away, so the rows after it
+// move up into its place, the focused one with them. The window is not scrolled to hold the
+// focused row where it stood.
+test("an answer that lands and takes its row away from above the focused row lets the focused row move up into its place, with no scroll", async () => {
+  const user = userEvent.setup();
+  const answeredAsk = inboxIssue("ask-c", "CORE-3", "Which approach?", {
+    options: [{ label: "Ship" }, { label: "Hold" }],
+  });
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "First question?"),
+    inboxIssue("ask-b", "CORE-2", "Second question?"),
+    answeredAsk,
+    inboxIssue("ask-d", "CORE-4", "Fourth question?"),
+    inboxIssue("ask-e", "CORE-5", "Fifth question?"),
+    inboxIssue("ask-f", "CORE-6", "Sixth question?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads(rows);
+  const landing = Promise.withResolvers<void>();
+  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+    await landing.promise;
+    served = rows.filter((row) => row.id !== "ask-c");
+    return {
+      ...answeredAsk,
+      answer: { at: "2026-09-11T03:00:00Z", selected: ["Ship"], text: "", user: "alice" },
+      state: "answered",
+    };
+  });
+  // One row above the window: the answered row stands 100 px down it, the focused row 300 px.
+  const laidOut = layRowsDown(LAID_ROW_PX);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(rows.map((row) => row.id)));
+    const card = screen.getByTestId("ask-ask-c");
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(card).findByRole("radio", { name: "Ship" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    // Out, the row is where the reader saw it, though the answer took it out of the Inbox read.
+    expect(rowIds()).toEqual(rows.map((row) => row.id));
+
+    const focused = markOf("ask-e");
+    act(() => focused.focus());
+    const place = focused.getBoundingClientRect().top;
+    const scrolledBefore = moves.scrolled.length;
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).not.toContain("ask-c"));
+    expect(focused).toHaveFocus();
+    expect(focused.getBoundingClientRect().top).toBe(place - LAID_ROW_PX);
+    expect(window.scrollY).toBe(LAID_ROW_PX);
+    expect(moves.scrolled.length).toBe(scrolledBefore);
+  } finally {
+    unmount();
+    moves.restore();
+    laidOut();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 // The bar's Snooze deep in the list, with the pointer come to rest on a row below the marked rows
 // while the write is out. The rows move into Later once it lands, and the rows after them move up
 // into their place, the one under the pointer with them: the window is not scrolled to hold that

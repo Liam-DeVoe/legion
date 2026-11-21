@@ -1322,10 +1322,12 @@ function InboxBody({
    *  the reader on that question, so the record is still theirs: React fires no blur for a
    *  node it removes, and the `document.body` the focus falls to is focused by nothing, so
    *  neither drop of (b) reads it. Their next focus does. A control that disables itself is
-   *  not that case: Chromium blurs it as it is disabled, before React removes it - the head's
-   *  `Assign to me` while its write is in flight - so the wrapper's `onBlur` reads the focus
-   *  leaving for the body and drops the record, and Escape then goes to the row of the
-   *  question the column shows. */
+   *  not that case: Chromium blurs it as it is disabled, before React removes it, so the
+   *  wrapper's `onBlur` reads the focus leaving for the body and drops the record, and Escape
+   *  then goes to the row of the question the column shows. A control held under the reader's
+   *  press while its write is out - the head's Assign to me and Snooze, a thread's Reply and its
+   *  box - is never disabled: it is held by `aria-disabled` (`held-press.ts`), the box read-only
+   *  as well, so it keeps the focus, and the record stands. */
   const paneReturn = useRef<string | null>(null);
   /** The question the column was showing when this component last looked, which is how the
    *  layout effect below tells a commit that changed it from one that did not, and what the
@@ -2601,8 +2603,8 @@ function InboxBody({
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
   // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
   // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
-  // them, and the rows an Assign to me or a question back lets go of, which then leave the list
-  // where the read no longer lists them there.
+  // them, and the rows an Assign to me, a hand-on, an answer, a decline or a question back lets
+  // go of, which then leave the list where the read no longer lists them there.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -2624,6 +2626,9 @@ function InboxBody({
           snoozing.has(id) ||
           bulkSnoozing.has(id) ||
           assignsOut.has(id) ||
+          handOnsOut.has(id) ||
+          answersOut.has(id) ||
+          declinesOut.has(id) ||
           clarificationsOut.has(id)
         }
         ref={viewport}

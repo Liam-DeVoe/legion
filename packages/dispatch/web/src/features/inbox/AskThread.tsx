@@ -193,8 +193,8 @@ export function replyRefusal(reply: {
  * or to its document for a project-document ask, then invalidates the shared thread so the reply
  * shows first. Its draft is the ask's (`reply-drafts.ts`), and its send is the ask's too: while
  * any composer's reply to this ask is out, every composer for it, including one mounted since,
- * shows the draft disabled. A file pasted or dropped into the field uploads to `uploadOwner` and
- * its text joins the draft.
+ * holds the draft. A file pasted or dropped into the field uploads to `uploadOwner` and its text
+ * joins the draft.
  *
  * Inside an Inbox the send is not the form's: the Inbox holds it, by ask, as it holds the card's
  * answer (`AskReplyWritesContext`), since the reading column's card goes whenever the reader
@@ -203,10 +203,14 @@ export function replyRefusal(reply: {
  * (`ThreadShortRow`). Outside an Inbox the form makes its own send, named by its ask, which every
  * composer for the ask on the page reads (`useSending`).
  *
- * Reply is held while the send is out and through the commit after its answer
- * (`useHeldThroughAnswer`): by `aria-disabled`, never `disabled`, so it keeps the reader's focus
- * through the hold. Its press still submits the form, and the form's submit sends nothing while
- * Reply is held. With nothing typed, or an upload still out, it is `disabled`.
+ * Reply and the box are held while the send is out and through the commit after its answer
+ * (`useHeldThroughAnswer`): by `aria-disabled`, never `disabled`, so the one the reader pressed or
+ * typed Ctrl+Enter in keeps their focus through the hold. The box is read-only then: Ctrl+Enter in
+ * it submits nothing, and a paste or a drop into it uploads nothing. Reply is held the same way
+ * while it has nothing to send - nothing typed, which is what a landing that clears the draft
+ * leaves - and while an upload is still out, so a Reply the reader pressed keeps the focus as the
+ * draft empties. A press of a held Reply still submits the form, and the form's submit sends
+ * nothing while Reply is held, whatever holds it.
  */
 export function AskReplyComposer({
   ask,
@@ -269,16 +273,16 @@ export function AskReplyComposer({
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
   const sending = inbox === undefined ? ownSending : inbox.isPending;
   const held = useHeldThroughAnswer(sending);
+  // Reply is held while the send is out, while nothing is typed, and while a picture is still
+  // uploading: a reply sent then would go without it.
+  const replyHeld = held || body.trim() === "" || uploading;
 
   const submitReply = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const text = body.trim();
     // A held Reply is only `aria-disabled`, so its press still submits the form: that submit
-    // sends nothing. A reply sent while a picture is still uploading would go without it.
-    if (text === "" || held || uploading) {
-      return;
-    }
-    submit.mutate({ ask, text });
+    // sends nothing.
+    if (replyHeld) return;
+    submit.mutate({ ask, text: body.trim() });
   };
 
   return (
@@ -286,29 +290,33 @@ export function AskReplyComposer({
       <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
         Reply
         <textarea
+          aria-disabled={held || undefined}
           className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          disabled={sending}
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
           onDrop={
             uploadOwner === undefined
               ? undefined
-              : (event) => upload.drop(event, uploadOwner, ask.id)
+              : (event) => {
+                  if (!held) upload.drop(event, uploadOwner, ask.id);
+                }
           }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || held })}
           onPaste={
             uploadOwner === undefined
               ? undefined
-              : (event) => upload.paste(event, uploadOwner, ask.id)
+              : (event) => {
+                  if (!held) upload.paste(event, uploadOwner, ask.id);
+                }
           }
+          readOnly={held}
           value={body}
         />
       </label>
       <DraftUploadStatus upload={upload} />
       <button
-        aria-disabled={held || undefined}
+        aria-disabled={replyHeld || undefined}
         className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} refused:cursor-not-allowed refused:opacity-50`}
-        disabled={body.trim() === "" || uploading}
         type="submit"
       >
         {sending ? "Replying…" : "Reply"}
