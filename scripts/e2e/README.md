@@ -4116,7 +4116,7 @@ Each item below names an input and its default, then what it means.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
 
-- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — `1c7c8253678fedad99b5142defc5824e2c57b9a8`
+- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — `a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c`
 
   the commit of the release before this change, whose build writes `older-rows`' database: main at the commit the change's branch last merged.
   The script takes its `packages/envoy` with `git archive` and builds `./cmd/dispatch`: from this checkout's repository where it holds the commit, else from a bare repository of the run's own that fetches that one commit at depth 1 from `origin`.

@@ -100,8 +100,9 @@
 # attribution line of a pass, as DISPATCH_BIN built from a commit before that line is, so the
 # boundary of one pass does not count that line.
 # VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
-# build writes older-rows' database: 1c7c8253678fedad99b5142defc5824e2c57b9a8 unless it is given,
-# which is main at the commit this change's branch last merged. Its packages/envoy is taken with
+# build writes older-rows' database: a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c unless it is given,
+# which is main at the commit this change's branch last merged (a later merge of main moves it
+# here and in scripts/e2e/README.md). Its packages/envoy is taken with
 # `git archive` and built: from this checkout's own repository where that holds the commit, else
 # from a bare repository of the run's own that fetches that one commit from this checkout's
 # `origin`, since a CI checkout is shallow and holds its own head alone; either way this working
@@ -147,7 +148,7 @@ database_url=${DATABASE_URL:-}
 dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
 envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
 github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
-release_before=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE:-1c7c8253678fedad99b5142defc5824e2c57b9a8}
+release_before=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE:-a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c}
 release_before_bin=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN:-}
 # older-rows runs in a whole run and in its own negative control (the driver skips it under any
 # other VERIFICATION_RESULTS_E2E_ONLY), and only then is the release before built.
