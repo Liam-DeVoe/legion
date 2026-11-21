@@ -58,13 +58,13 @@ func RecordedSessionConsumers(ctx context.Context, conn *nats.Conn) ([]streams.C
 	}
 	for _, id := range slices.Sorted(maps.Keys(sessions)) {
 		add(streams.ConsumerShape{
-			Stream: notifications, Exact: true, AckPolicy: nats.AckExplicitPolicy,
+			Stream: notifications, AckPolicy: nats.AckExplicitPolicy,
 			FilterCovers: bus.SessionConsumerFilters([]string{contracts.LegacyAgentSubject(id)}),
 		}, sessions[id])
 	}
 	for _, durable := range slices.Sorted(maps.Keys(listeners)) {
 		add(streams.ConsumerShape{
-			Stream: notifications, Exact: true, FilterSubjects: bus.StreamSubjects(), Push: true, AckPolicy: nats.AckExplicitPolicy,
+			Stream: notifications, FilterSubjects: bus.StreamSubjects(), Push: true, AckPolicy: nats.AckExplicitPolicy,
 		}, listeners[durable])
 	}
 	return shapes, nil

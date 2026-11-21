@@ -34,13 +34,8 @@ type ConsumerShape struct {
 	// Stream is the stream the consumer reads.
 	Stream string
 	// Name is the consumer's durable name. A consumer named Name, or Name~<nuid>, the form
-	// the writer hold's convert gives it, takes this shape; with Exact, Name alone does. Empty for
-	// an ordered watcher (Ordered).
+	// the writer hold's convert gives it, takes this shape. Empty for an ordered watcher (Ordered).
 	Name string
-	// Exact is a shape whose Name alone takes it, never Name~<nuid>: a name a selection record
-	// holds, and a listener's fixed durable, whose fresh names only their records declare, so a
-	// fresh listener durable no record names is removed.
-	Exact bool
 	// Ordered is a KV watcher's ordered consumer, which the server names: unnamed of its own, it
 	// acknowledges nothing, delivers to a reply inbox, filters within its bucket's subjects and is
 	// removed by the server once it is inactive.
@@ -87,7 +82,7 @@ func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 	shapes = append(shapes, ConsumerShape{Stream: recordsStream, Ordered: true})
 	for _, machineID := range set.ListenerMachineIDs {
 		shapes = append(shapes, ConsumerShape{
-			Stream: bus.Stream, Name: bus.ListenerDurable(machineID), Exact: true, FilterSubjects: bus.StreamSubjects(),
+			Stream: bus.Stream, Name: bus.ListenerDurable(machineID), FilterSubjects: bus.StreamSubjects(),
 			Push: true, AckPolicy: nats.AckExplicitPolicy,
 		})
 	}
@@ -123,6 +118,14 @@ type CensusInput struct {
 	// each in its family's shape, skipping the bucket's other system keys (a key holding a '.':
 	// its sentinel envoy.bucket and each hold's hold.barrier.<id>).
 	RecordedSessionConsumers func(ctx context.Context) ([]ConsumerShape, error)
+	// RecordedFreshNames are the fresh consumer names the selection records name, family to names:
+	// each name in its fresh form, <base>~<nuid>, as a convert or a create gives it, for the
+	// listeners' durables, Dispatch's two durables and each daemon's, current and retiring. Under a
+	// hold no creator runs, so a consumer in a fresh form no family's list names is a crashed
+	// create's orphan, and the census removes it, naming it. It is a plain set per family, which
+	// the writer hold fills from the consumer-names records; the census reads their union, since
+	// every family's fresh names begin with that family's own base names.
+	RecordedFreshNames map[string][]string
 }
 
 // ErrNotConverted is a census asked for before every family's cutover row is done.
@@ -137,9 +140,12 @@ var ErrNotConverted = errors.New("the census runs only after convert")
 // message schedules, settings nats-server cannot turn off, fails the census naming the setting, and
 // it stops: the hold's window restores that stream from its backup. A listing is complete only
 // when STREAM.LIST's own total equals the streams it returned, its missing list is empty and
-// STREAM.NAMES agrees; otherwise the census is UNKNOWN and changes nothing. It runs as the operator
-// inside a hold, only once every family is converted, and reads the recorded session consumers only
-// after its barrier on their bucket.
+// STREAM.NAMES agrees; otherwise the census is UNKNOWN and changes nothing. A consumer in a shape's
+// fresh form, <base>~<nuid>, is kept only when in.RecordedFreshNames names it: under a hold no
+// creator runs, so an unrecorded one is a crashed create's orphan, removed and named. The census
+// writes, so it runs only as the operator inside a hold (held; check is the read-only word), only
+// once every family is converted, and reads the recorded session consumers only after its barrier
+// on their bucket.
 func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error) {
 	if err := requirePhase(ctx, "streams census", in.Phase, natsgrant.OperatorPhaseHeld); err != nil {
 		return Report{}, err
@@ -158,6 +164,12 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 		return Report{Unknown: []string{"read the recorded session consumers: " + err.Error()}}, nil
 	}
 	shapes := slices.Concat(in.Consumers, recorded)
+	fresh := map[string]bool{}
+	for _, names := range in.RecordedFreshNames {
+		for _, name := range names {
+			fresh[name] = true
+		}
+	}
 	declared := streamset.Declared(in.Settings)
 
 	streams, unknown := listStreams(ctx, conn)
@@ -211,7 +223,7 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 			return report, nil
 		}
 		for _, consumer := range consumers {
-			if reason := shapeMismatch(shapes, name, consumer); reason != "" {
+			if reason := shapeMismatch(shapes, fresh, name, consumer); reason != "" {
 				if _, err := request(ctx, conn, "$JS.API.CONSUMER.DELETE."+name+"."+consumer.Name, nil); err != nil {
 					report.Failures = append(report.Failures, Finding{Stream: name, Consumer: consumer.Name, What: reason + ", and its delete failed: " + err.Error()})
 					return report, nil
@@ -287,8 +299,9 @@ func readsAnotherStream(config nats.StreamConfig) []string {
 }
 
 // shapeMismatch is why consumer, of stream, matches no shape, and empty when one takes it: no shape
-// of its stream names it, or the one that does has another configuration.
-func shapeMismatch(shapes []ConsumerShape, stream string, consumer *nats.ConsumerInfo) string {
+// of its stream names it, the one that does has another configuration, or its name is a shape's
+// fresh form that fresh, the recorded fresh names, does not hold.
+func shapeMismatch(shapes []ConsumerShape, fresh map[string]bool, stream string, consumer *nats.ConsumerInfo) string {
 	mismatch := ""
 	for _, shape := range shapes {
 		if shape.Stream != stream {
@@ -300,7 +313,12 @@ func shapeMismatch(shapes []ConsumerShape, stream string, consumer *nats.Consume
 			}
 			continue
 		}
-		if !namedFor(shape, consumer.Name) {
+		own, freshForm := consumer.Name == shape.Name, freshFormOf(shape.Name, consumer.Name)
+		if !own && !freshForm {
+			continue
+		}
+		if freshForm && !fresh[consumer.Name] {
+			mismatch = "a fresh name of " + shape.Name + " that no selection record names: under a hold no creator runs, so it is a crashed create's orphan"
 			continue
 		}
 		reason := configMismatch(shape, consumer.Config)
@@ -315,16 +333,10 @@ func shapeMismatch(shapes []ConsumerShape, stream string, consumer *nats.Consume
 	return "its name matches no declared consumer"
 }
 
-// namedFor reports whether name is the shape's own, or, unless the shape is Exact, its convert
-// form, <shape>~<nuid>.
-func namedFor(shape ConsumerShape, name string) bool {
-	if name == shape.Name {
-		return true
-	}
-	if shape.Exact {
-		return false
-	}
-	suffix, found := strings.CutPrefix(name, shape.Name+"~")
+// freshFormOf reports whether name is shape's fresh form, <shape>~<nuid>, the name a convert or a
+// create gives it.
+func freshFormOf(shape, name string) bool {
+	suffix, found := strings.CutPrefix(name, shape+"~")
 	return found && nuidLike(suffix)
 }
 
