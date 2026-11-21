@@ -527,6 +527,97 @@ test("a column's grip takes the focus, and its keys change, bound and reset the 
   expect(grip, "the grip keeps the focus through its keys").toHaveFocus();
 });
 
+/** The deploys with a colour dot before them, as the Delivery list draws one: a column that does
+ *  not sort or filter, drawn at 20 px, under the 36 px the stored layout keeps
+ *  (`STORED_WIDTH.min`), headed by `header`. */
+const dotColumns = (header: string): ColumnDef<Deploy>[] => [
+  {
+    accessorFn: (row) => row.region,
+    enableColumnFilter: false,
+    enableSorting: false,
+    header,
+    id: "color",
+    minSize: 20,
+    size: 20,
+  },
+  ...COLUMNS,
+];
+const DOT_LAYOUT: LayoutColumns = {
+  ...LAYOUT_COLUMNS,
+  ids: ["color", ...LAYOUT_COLUMNS.ids],
+  minimums: { color: 20 },
+};
+
+// INFRA-2160's review round 1 (thread PRRT_kwDORFy7ds66U3XP): a column drawn narrower than the
+// grip's narrowest - the Delivery list's colour dot, at 20 px under the 36 px the stored layout
+// keeps - keeps its width on ArrowLeft rather than grow to that bound, and the range its grip
+// reports holds the width it is drawn at. ArrowRight still sets only a width the stored layout
+// keeps.
+test("a column drawn under its grip's narrowest keeps its width on ArrowLeft, and its grip's range holds that width", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys columns={dotColumns("Dot")} layoutColumns={DOT_LAYOUT} layoutKey="dots" />);
+
+  const table = await screen.findByRole("table", { name: "Deploys dots" });
+  const grip = within(table).getByRole("separator", { name: "Resize Dot" });
+  const header = grip.closest("th");
+  const width = () => [header?.style.width, grip.getAttribute("aria-valuenow")];
+  const range = () => [grip.getAttribute("aria-valuemin"), grip.getAttribute("aria-valuemax")];
+  const stored = () => JSON.parse(localStorage.getItem("dots") ?? "{}").sizing;
+  expect(width()).toEqual(["20px", "20"]);
+  expect(range(), "the grip's range holds the 20 px the column is drawn at").toEqual([
+    "20",
+    "2000",
+  ]);
+
+  act(() => grip.focus());
+  await user.keyboard("{ArrowLeft}");
+  expect(width(), "ArrowLeft leaves the column at its 20 px").toEqual(["20px", "20"]);
+  expect(stored(), "ArrowLeft writes no width").toEqual({});
+  await user.keyboard("{ArrowRight}");
+  expect(width(), "ArrowRight sets the narrowest width the stored layout keeps").toEqual([
+    "36px",
+    "36",
+  ]);
+  expect(range()).toEqual(["36", "2000"]);
+  await user.keyboard("{ArrowLeft}");
+  expect(width(), "ArrowLeft at that narrowest keeps the column there").toEqual(["36px", "36"]);
+  expect(stored()).toEqual({ color: 36 });
+
+  await user.keyboard("{Enter}");
+  expect(width(), "Enter gives the column back its first width").toEqual(["20px", "20"]);
+  expect(stored()).toEqual({});
+});
+
+// INFRA-2160's review round 1 (thread PRRT_kwDORFy7ds66U3XR): a column whose header draws no
+// text, as the Delivery list's colour dot, names its grip and its move menu by its id, so
+// neither Tab stop is heard as a bare "Resize" or "Move".
+test("a column whose header draws no text names its grip and its move menu by its id", async () => {
+  draw(<Deploys columns={dotColumns("")} layoutColumns={DOT_LAYOUT} layoutKey="dots" />);
+
+  const table = await screen.findByRole("table", { name: "Deploys dots" });
+  expect(within(table).getByRole("separator", { name: "Resize color" })).toBeInTheDocument();
+  expect(within(table).getByRole("button", { name: "Move color" })).toBeInTheDocument();
+});
+
+// INFRA-2160's review round 1 (thread PRRT_kwDORFy7ds66U3XJ): the move menu's trigger is drawn
+// out of the header's flow, and keeps its place among the header's Tab stops: after the sort,
+// before the filter and the grip.
+test("a header's Tab stops run from its sort to its move menu, its filter and its grip", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  act(() => within(table).getByRole("button", { name: "Service" }).focus());
+  for (const stop of [
+    within(table).getByRole("button", { name: "Move Service" }),
+    within(table).getByRole("button", { name: "Filter Service" }),
+    within(table).getByRole("separator", { name: "Resize Service" }),
+  ]) {
+    await user.tab();
+    expect(stop).toHaveFocus();
+  }
+});
+
 // R12: a column moves by its header's menu as well as by a drag. Move left and Move right are
 // offered only where a column that is not pinned stands on that side; a move writes the order a
 // drop writes, under the table's key; and the menu leaves the focus on its trigger in the moved

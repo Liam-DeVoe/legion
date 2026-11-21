@@ -435,15 +435,20 @@ function MoveIcon(): ReactNode {
 
 /**
  * One header cell: its sort control, which doubles as the handle that drags the column
- * elsewhere, its move menu, its filter, and the grip on its edge that resizes it.
+ * elsewhere, its move menu, its filter, and the grip on its edge that resizes it. The grip and
+ * the move menu are named for the column by its header's text, or by its id where the header
+ * draws no text, as the Delivery list's colour dot draws none: "Resize color", "Move color".
  *
  * The grip is a Tab stop as well as a pointer's handle (`role="separator"`, with the width as its
  * value): ArrowLeft and ArrowRight change the width by `GRIP_STEP.plain`, with Shift by
  * `GRIP_STEP.shift`, within `widthBounds`, and Enter gives the column back its first width, as a
- * double-click does. Both paths write the same widths (`onColumnSizingChange`, the layout's
- * `setSizing`). The grip takes only those keys, with `preventDefault`, so the page's keymap,
- * which skips a handled key, reads every other key as it reads it on the header's other
- * controls: `j` and `k` still walk the rows.
+ * double-click does. A key never moves the width against its own direction: a column drawn
+ * outside those bounds - the colour dot is drawn at 20 px, under the 36 px the stored layout
+ * keeps - stays as it is on a narrowing key, and the range the grip reports takes in the drawn
+ * width. Both paths write the same widths (`onColumnSizingChange`, the layout's `setSizing`). The
+ * grip takes only those keys, with `preventDefault`, so the page's keymap, which skips a handled
+ * key, reads every other key as it reads it on the header's other controls: `j` and `k` still
+ * walk the rows.
  *
  * The move menu (`ChoiceMenu`) offers Move left and Move right, each only where a column that
  * is not pinned stands on that side, and writes the order a drop writes (`reorder`): the column
@@ -452,6 +457,15 @@ function MoveIcon(): ReactNode {
  * closes; the move then draws the cell at its new place, which React does by taking the cell out
  * of its row and putting it back, and a cell taken out loses the focus to the page. So the cell
  * gives the trigger the focus again once the move is drawn.
+ *
+ * The menu's trigger takes no room in the header: it is drawn out of the header's flow, hanging
+ * from the cell's bottom edge at its right end, over the cell's bottom padding and the row
+ * under it. It shows, and takes a pointer's press, while the pointer is over the header cell,
+ * while it holds the focus and while its menu is open; otherwise it is transparent and a press
+ * goes through it to the row. It stays in the Tab order between the sort control and the
+ * filter. Each table's widths budget the label, the sort mark, the filter and the padding alone
+ * (`issues-table-model.ts`'s `ColumnSpec.min`, the Delivery list's widths), so a trigger in the
+ * flow would take its room from the sort control or push the filter under the next cell.
  */
 function TableHeaderCell<TData>({
   dragColumn,
@@ -496,7 +510,7 @@ function TableHeaderCell<TData>({
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
   const heading = column.columnDef.header;
-  const name = typeof heading === "string" ? heading : column.id;
+  const name = typeof heading === "string" && heading !== "" ? heading : column.id;
   const cell = useRef<HTMLTableCellElement>(null);
   // Set by a move from this cell's menu, and read once that move is drawn.
   const moved = useRef(false);
@@ -528,7 +542,7 @@ function TableHeaderCell<TData>({
             ? "descending"
             : undefined
       }
-      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      className={`group/header sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}
@@ -568,40 +582,38 @@ function TableHeaderCell<TData>({
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {moves.length === 0 ? (
-          filter
-        ) : (
-          <span className="flex shrink-0 items-center gap-0 md:gap-1">
-            <ChoiceMenu
-              choices={moves}
-              face="Move"
-              label={`Move ${name}`}
-              marks={{ [MOVE_MENU_ATTRIBUTE]: column.id }}
-              onChoose={(side) => {
-                const neighbour = side === "left" ? left : right;
-                if (neighbour === undefined) return;
-                moved.current = true;
-                setOrder(
-                  side === "left"
-                    ? reorder(order, column.id, neighbour)
-                    : reorder(order, neighbour, column.id)
-                );
-              }}
-              triggerClassName={`inline-flex min-h-11 min-w-8 items-center justify-center rounded p-1 md:min-h-8 md:min-w-6 ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
-            >
-              <MoveIcon />
-            </ChoiceMenu>
-            {filter}
-          </span>
+        {moves.length === 0 ? null : (
+          <ChoiceMenu
+            choices={moves}
+            face="Move"
+            label={`Move ${name}`}
+            marks={{ [MOVE_MENU_ATTRIBUTE]: column.id }}
+            onChoose={(side) => {
+              const neighbour = side === "left" ? left : right;
+              if (neighbour === undefined) return;
+              moved.current = true;
+              setOrder(
+                side === "left"
+                  ? reorder(order, column.id, neighbour)
+                  : reorder(order, neighbour, column.id)
+              );
+            }}
+            // Out of the flow, over the cell's 8 px bottom padding (`py-2`) and the row under it,
+            // so it covers neither the sort control nor the filter (see the comment above).
+            triggerClassName={`pointer-events-none absolute top-[calc(100%-0.5rem)] right-2 inline-flex min-h-11 min-w-8 items-center justify-center rounded border p-1 opacity-0 shadow-sm group-hover/header:pointer-events-auto group-hover/header:opacity-100 focus:pointer-events-auto focus:opacity-100 aria-expanded:pointer-events-auto aria-expanded:opacity-100 md:min-h-8 md:min-w-6 ${borderDefault} ${surfaceBg} ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
+          >
+            <MoveIcon />
+          </ChoiceMenu>
         )}
+        {filter}
       </span>
       {column.getCanResize() ? (
         // biome-ignore lint/a11y/useSemanticElements: the grip is a focusable separator, the WAI-ARIA window splitter whose value is the width, laid over the header's edge; an `<hr>` is a thematic break between blocks of content.
         <span
           aria-label={`Resize ${name}`}
           aria-orientation="vertical"
-          aria-valuemax={bounds.max}
-          aria-valuemin={bounds.min}
+          aria-valuemax={Math.max(width, bounds.max)}
+          aria-valuemin={Math.min(width, bounds.min)}
           aria-valuenow={width}
           className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${tableResizeFocus} ${column.getIsResizing() ? tableResizeActive : tableResizeHover}`}
           onDoubleClick={() => column.resetSize()}
@@ -617,9 +629,13 @@ function TableHeaderCell<TData>({
             if (direction === undefined) return;
             event.preventDefault();
             const step = direction * (event.shiftKey ? GRIP_STEP.shift : GRIP_STEP.plain);
+            const next = Math.min(bounds.max, Math.max(bounds.min, width + step));
+            // Held within the bounds, a step can turn round: ArrowLeft on the colour dot drawn at
+            // 20 px would set the 36 px minimum. Such a key leaves the width as it is.
+            if ((next - width) * direction < 0) return;
             header.getContext().table.setColumnSizing((sizing) => ({
               ...sizing,
-              [column.id]: Math.min(bounds.max, Math.max(bounds.min, width + step)),
+              [column.id]: next,
             }));
           }}
           onMouseDown={header.getResizeHandler()}
