@@ -16,6 +16,7 @@ import {
   PULL_PAGE,
   pullSql,
   sessionHeadSql,
+  sessionPathsSql,
   sessionsSql,
   sqlString,
   tasksSql,
@@ -223,6 +224,18 @@ describe("countsql.ts fills the SQL", () => {
       '"0123456789abcdef" is not a path hash of 64 hex characters'
     );
     expect(() => sessionHeadSql(["x'; DROP TABLE y; --"])).toThrow("is not a path hash");
+  });
+
+  test("session-paths.sql is filled with the path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
+    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const sql = sessionPathsSql([hash]);
+    expect(sql).toContain(`WHERE h.hash = ANY (ARRAY['${hash}']::text[])`);
+    expect(sql).not.toContain("{{");
+    for (const bad of [hash.toUpperCase(), "0123456789abcdef", "x'; DROP TABLE y; --"]) {
+      expect(() => sessionPathsSql([hash, bad])).toThrow(
+        `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
+      );
+    }
   });
 });
 
@@ -830,6 +843,18 @@ describe.skipIf(serverDsn === undefined)(
       expect(threeParts.length).toBeGreaterThan(1);
       expect(run(names.third, sessionHeadSql([session.hash]))).toEqual([session]);
       expect(run(names.first, sessionHeadSql([missing]))).toEqual([]);
+    });
+
+    test("session-paths.sql: the path of each file of a path hash, in path order; no row for a hash the store does not hold", () => {
+      const files = [F4_SESSION, F1_SUBAGENT, F1_SESSION].map((file) => ({
+        path: storedPath(file),
+        hash: createHash("sha256").update(storedPath(file)).digest("hex"),
+      }));
+      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const rows = run(names.first, sessionPathsSql([...files.map((each) => each.hash), missing]));
+      expect(rows).toEqual(files.toSorted((a, b) => (a.path < b.path ? -1 : 1)));
+      expect(rows).toHaveLength(3);
+      expect(run(names.first, sessionPathsSql([missing]))).toEqual([]);
     });
   }
 );

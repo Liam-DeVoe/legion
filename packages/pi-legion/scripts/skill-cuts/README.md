@@ -306,6 +306,9 @@ bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file 
   --skill <skill dir> --store <db>... --out <tasks.jsonl> [--model <model>] \
   [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash>] \
   [--max-candidates <n>] [--max-search-minutes <m>]
+bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --copies <copies out dir> \
+  --count <count dir> --reprofile <tasks.jsonl> --profiles-out <new dir> \
+  [--context-session <store>:<hash>]
 bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> \
   [--model <model>] [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
@@ -344,7 +347,11 @@ repository's project skills at its commit, as Oh My Pi lists them: each
 `<level>/.omp/skills/<name>/SKILL.md` (one with a description), then each
 `<level>/.claude/skills/<name>/SKILL.md`, where the levels are the working directory's path in the
 checkout and each of its parents up to the root, the nearest first (a working directory
-`<root>/agents/agentvm` reads `agents/agentvm/`, `agents/` and the root). Where another skill has
+`<root>/agents/agentvm` reads `agents/agentvm/`, `agents/` and the root). A session repository
+that is no unit's repository is read only where Oh My Pi reads a project, one directory a GitHub
+call: each level, its `.omp/`, `.claude/`, `.agent/`, `.agents/`, `.gemini/` and `.github/`, its
+`.omp/skills/` and `.claude/skills/`, and each skill directory in those. So a repository whose
+whole tree GitHub cuts short (`truncated`) is read too. Where another skill has
 the same name, the profile holds the copy Oh My Pi gives the session (unless the session read the
 other): a project's `.omp/skills` comes before `~/.omp/agent/skills` and extension packages; its
 `.claude/skills` comes after those and after `~/.claude/skills`, and before Claude Code plugins;
@@ -486,7 +493,22 @@ session of the context that installs the skill). That profile is rebuilt before 
 the build fails when that session gives none, and is refused (exit 2) when its rebuilt context
 does not list the skill. The summary's `profiles` records the context session, each task's
 profile with its evidence, and why a task has none. A build that has already finished gets no
-profiles afterwards: give it a fresh `--out`.
+profiles from `--profiles-out` afterwards; `--reprofile` builds them again.
+
+`--reprofile <tasks.jsonl> --profiles-out <new dir>` builds the profile of each task of a tasks
+file again, as `--profiles-out` builds one now, with no candidate search and no reader call, so the
+tasks a bounded search chose stay as they are. A task from a session takes its session's profile:
+the session is found in its store by its path hash (`session-paths.sql`, one query per store) and
+pulled as the search pulls it. A written task takes the profile of `--context-session`, else of
+the context session the tasks file's summary (`<tasks.jsonl>.summary.json`) names. The command
+writes each profile to `<new dir>/<task id>.json`, the tasks again to `<new dir>/tasks.jsonl` with
+each `profile` naming its new file, and `<new dir>/tasks.jsonl.summary.json`. The summary says of
+each task whether the profile's bytes changed (`unchanged` or `changed`) and lists the evidence
+items added and removed against the old summary's. A task whose session its store no longer holds
+keeps its old profile (`kept`), and its evidence item `no session in the store` says so. A
+session task whose rebuilt context no longer lists the skill is left out and named, and the
+command exits 1. A store read, a pull or a rebuild that fails stops the command (exit 1) before it
+writes anything to `<new dir>`; `<new dir>` must be new or empty.
 
 `--model <model>` (either mode) keeps only the sessions whose first request ran on that model, as
 the session's file names it and `attribute --models` writes it: its last `model_change` before its

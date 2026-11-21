@@ -2,8 +2,9 @@
  * Fills the runner's SQL with the values of one query: count.sql (the read count, for one store and
  * one UTC day or hour of file mtime), models.sql (the model of each session of the same files),
  * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms),
- * sessions.sql (the paths of the files a count row names by hash) and session-head.sql (the head
- * of each session a case or a load task names by its path's SHA-256). Each placeholder is the
+ * sessions.sql (the paths of the files a count row names by hash), session-head.sql (the head
+ * of each session a case or a load task names by its path's SHA-256) and session-paths.sql (the
+ * path of each session a load task names by its path's SHA-256). Each placeholder is the
  * name of a value inside double braces, and each is filled with one whole SQL value: a number, or
  * a string literal with its quotes (`sqlString`), so no value can end the literal it is in. The
  * filled text goes into the store's read command unchanged.
@@ -29,7 +30,8 @@ type Template =
   | "pull.sql"
   | "tasks.sql"
   | "sessions.sql"
-  | "session-head.sql";
+  | "session-head.sql"
+  | "session-paths.sql";
 
 /** The text of one of the runner's SQL files. */
 function readTemplate(name: Template): string {
@@ -192,14 +194,24 @@ export function sessionsSql(hashes: readonly string[]): string {
   return fillTemplate(readTemplate("sessions.sql"), { hashes: sqlTextArray(hashes) });
 }
 
-/** session-head.sql filled for the path hashes `pathHashes` (the SHA-256 of each session file's
- *  path in hex, 64 characters, as cases.ts's `pathHash` gives it). */
-export function sessionHeadSql(pathHashes: readonly string[]): string {
+/** `pathHashes` as a SQL text array. Throws on one that is not a path hash: the SHA-256 of a
+ *  session file's path in hex, 64 lowercase characters, as cases.ts's `pathHash` gives it. */
+function pathHashArray(pathHashes: readonly string[]): string {
   const bad = pathHashes.find((hash) => !/^[0-9a-f]{64}$/.test(hash));
   if (bad !== undefined) {
     throw new Error(`${JSON.stringify(bad)} is not a path hash of 64 hex characters`);
   }
-  return fillTemplate(readTemplate("session-head.sql"), { hashes: sqlTextArray(pathHashes) });
+  return sqlTextArray(pathHashes);
+}
+
+/** session-head.sql filled for the path hashes `pathHashes` (`pathHashArray`). */
+export function sessionHeadSql(pathHashes: readonly string[]): string {
+  return fillTemplate(readTemplate("session-head.sql"), { hashes: pathHashArray(pathHashes) });
+}
+
+/** session-paths.sql filled for the path hashes `pathHashes` (`pathHashArray`). */
+export function sessionPathsSql(pathHashes: readonly string[]): string {
+  return fillTemplate(readTemplate("session-paths.sql"), { hashes: pathHashArray(pathHashes) });
 }
 
 const USAGE =

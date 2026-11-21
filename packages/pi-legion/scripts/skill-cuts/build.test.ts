@@ -575,8 +575,8 @@ const TASK_ROWS = [
   },
 ];
 
-/** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql and session-head.sql
- *  from STORE. */
+/** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql, session-head.sql and
+ *  session-paths.sql from STORE. */
 const STANDIN_PSQL = (storeFile: string, logFile: string) => `
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -632,6 +632,14 @@ if (query.includes("omp_session_files_parts pt") && place) {
   rows = store.tasks
     .filter((row) => row.dayStart === dayStart && terms.some((t) => row.text.toLowerCase().includes(t.toLowerCase())))
     .map((row) => ({ path: row.path, text: row.text }));
+} else if (query.includes("json_build_object('path', h.path")) {
+  kind = "paths";
+  // The path of each file of a path hash the query names, in path order.
+  const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
+  rows = Object.keys(store.files)
+    .map((p) => ({ path: p, hash: createHash("sha256").update(p).digest("hex") }))
+    .filter((row) => hashes.has(row.hash))
+    .sort((a, b) => (a.path < b.path ? -1 : 1));
 } else if (query.includes("encode(sha256(convert_to(f.path")) {
   kind = "heads";
   // Each file of a path hash the query names: its header's cwd and timestamp and its first user
@@ -888,7 +896,10 @@ const SLOT_RULE =
  *  beta in `.claude/skills/`, lambda and older in `.omp/skills/` (beta and older are names
  *  acme/skills's installer links too), kappa and mu in `agents/.claude/skills/`, nu in
  *  `agents/agentvm/.omp/skills/` and xi in `other/.claude/skills/`; a CLAUDE.md, and an AGENTS.md
- *  in agents/agentvm/. acme/dual holds .claude/CLAUDE.md, AGENTS.md and CLAUDE.md at its root. */
+ *  in agents/agentvm/. acme/dual holds .claude/CLAUDE.md, AGENTS.md and CLAUDE.md at its root.
+ *  acme/big holds its own skill omega in `.claude/skills/` and an AGENTS.md, and the stand-in gh
+ *  cuts its whole tree short (TRUNCATED), as GitHub cuts the tree of a repository of too many
+ *  files. */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -959,19 +970,61 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "AGENTS.md": "# Made-up agent rules\n\nName each file you read.\n",
     "CLAUDE.md": "# Made-up project rules\n\nRun the tests first.\n",
   },
+  "acme/big": {
+    ".claude/skills/omega/SKILL.md": projectSkillMd("omega"),
+    ".claude/skills/omega/references/notes.md": "Omega notes.\n",
+    "AGENTS.md": "# Made-up rules of a large repository\n\nRead the index first.\n",
+    "data/runs/0001.json": "{}\n",
+    "data/runs/0002.json": "{}\n",
+  },
 };
 
 /** The blob id the stand-in gives a file's text. */
 const blobId = (text: string) => createHash("sha1").update(text).digest("hex");
 /** The one file a batch of blobs gives cut short, so it is read alone. */
 const CUT_SHORT = REPOSITORIES["acme/skills"]?.["docker/omp-plugins/package.json"] ?? "";
+/** The made-up repositories whose whole tree the stand-in gh gives cut short (`truncated`). */
+const TRUNCATED: Readonly<Record<string, true>> = { "acme/big": true };
+
+/** The id the stand-in gives the tree of the directory `dir` of `repo` at SHA: SHA for its root,
+ *  since GitHub takes a commit's id for its tree's, else one made from the two. */
+const treeId = (repo: string, dir: string) =>
+  dir === "" ? SHA : createHash("sha1").update(`tree ${repo} ${dir}`).digest("hex");
+
+/** The entries of the directory of `repo` whose tree id is `id`, one level, as GitHub's tree read
+ *  without `recursive` gives them (a subdirectory as an entry of type `tree`); undefined when no
+ *  directory of `repo` has that id. */
+function treeLevel(repo: string, id: string): Record<string, unknown>[] | undefined {
+  const files = Object.entries(REPOSITORIES[repo] ?? {});
+  const dirs = new Set(files.length === 0 ? [] : [""]);
+  for (const [file] of files) {
+    const parts = file.split("/");
+    for (let n = 1; n < parts.length; n += 1) dirs.add(parts.slice(0, n).join("/"));
+  }
+  const dir = [...dirs].find((each) => treeId(repo, each) === id);
+  if (dir === undefined) return undefined;
+  const prefix = dir === "" ? "" : `${dir}/`;
+  const entries = new Map<string, Record<string, unknown>>();
+  for (const [file, text] of files) {
+    if (!file.startsWith(prefix)) continue;
+    const [name = "", ...rest] = file.slice(prefix.length).split("/");
+    entries.set(
+      name,
+      rest.length === 0
+        ? { path: name, mode: "100644", type: "blob", sha: blobId(text), size: text.length }
+        : { path: name, mode: "040000", type: "tree", sha: treeId(repo, `${prefix}${name}`) }
+    );
+  }
+  return [...entries.values()].sort((a, b) => (String(a.path) < String(b.path) ? -1 : 1));
+}
 
 /** The gh calls the stand-in took. */
 const ghCalls: string[][] = [];
 
 /** The stand-in gh: GET reads of commits, default branches, two files, each file of a made-up
- *  repository at SHA, and the tree and the blobs of each made-up repository at SHA; and GraphQL
- *  reads of blobs in a batch. The clock is the real one. */
+ *  repository at SHA, the tree of each made-up repository at SHA (whole, cut short for
+ *  TRUNCATED's, or one directory a read by its tree id) and its blobs; and GraphQL reads of blobs
+ *  in a batch. The clock is the real one. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -1005,12 +1058,18 @@ const io = (lines: string[]): BuildIo => ({
       /^repos\/([^/]+\/[^/]+)\/git\/(trees|blobs)\/([0-9a-f]{40})(?:\?recursive=1)?$/.exec(route) ??
       [];
     const files = Object.entries(REPOSITORIES[repository] ?? {});
+    if (kind === "trees" && !route.endsWith("?recursive=1")) {
+      const level = treeLevel(repository, id);
+      if (level !== undefined)
+        return ok(JSON.stringify({ sha: id, truncated: false, tree: level }));
+    }
     if (kind === "trees" && id === SHA && files.length > 0) {
+      const cut = Object.hasOwn(TRUNCATED, repository);
       return ok(
         JSON.stringify({
           sha: SHA,
-          truncated: false,
-          tree: files.map(([file, text]) => ({
+          truncated: cut,
+          tree: files.slice(0, cut ? 1 : files.length).map(([file, text]) => ({
             path: file,
             mode: "100644",
             type: "blob",
@@ -1978,10 +2037,13 @@ describe("build-cases over every made-up session", () => {
     );
     // The working directory is the checkout's root, so no skill below it is listed.
     expect(c?.profile.skills.some((skill) => skill.path.startsWith("agents/"))).toBe(false);
-    // The repository is read at the session's commit, as the units' repositories are.
+    // The repository is read at the session's commit, one directory a read where Oh My Pi reads a
+    // project (from its root), and never whole: a session repository's whole tree can be more
+    // than GitHub gives in one answer.
+    expect(ghCalls.some((args) => args.includes(`repos/acme/proj/git/trees/${SHA}`))).toBe(true);
     expect(
       ghCalls.some((args) => args.includes(`repos/acme/proj/git/trees/${SHA}?recursive=1`))
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("a dev-box session in a checkout of the one listed repository of its directory's name lists that repository's project skills and gets its root CLAUDE.md beside the user-level file", () => {
@@ -4036,14 +4098,386 @@ test("build-tasks with no bound writes byte for byte what it wrote before the bo
   // ranking): those undone, it is the digest the code before the bounds gave,
   // fa41da9e62a9f60d1a7f75f4b2f29bf7a79251643e4348ada6e11d2899b0e28e. The profiles' is that run's
   // with each dev box's user-level context file marked `user: true`: that undone, it is
-  // c749ba1f82683dc6045da91d28a90b0238a5d74211f3ef2244d3df0e2af7fbfd.
+  // c749ba1f82683dc6045da91d28a90b0238a5d74211f3ef2244d3df0e2af7fbfd. Since the session repository
+  // is read one directory a call, the source of the summary's item `the skills of acme/widgets at
+  // <commit>` names those reads in place of the whole tree (`gh api repos/acme/widgets/git/trees/
+  // <commit>?recursive=1: its 0 SKILL.md files, …`); with that one source put back, the summary's
+  // digest is f1931fe933e679585811234810766cb48799160f457f820a133829a181c75d5f, and the profiles'
+  // digest has not changed.
   expect(digests).toEqual({
     "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "f1931fe933e679585811234810766cb48799160f457f820a133829a181c75d5f",
+    "profiles summary": "548690d45d15c1ac9f85f4bf3f27fcbe8fa1cd233003c83ece74e7aa0f21c7bc",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "040bb4d5142a96ae518e1aabacb19f8557f5647e03d32edc88afbc0757b8b367",
   });
+}, 120_000);
+
+/** A stand-in store holding the suite's files (by store, then path) as `change` leaves them, and
+ *  the path of a configuration whose store command reads it; its calls go to the suite's log. */
+function changedStore(
+  name: string,
+  change: (files: Record<string, Record<string, string>>) => void
+): string {
+  const dir = path.join(setupDir, name);
+  mkdirSync(dir, { recursive: true });
+  const stores = JSON.parse(readFileSync(path.join(setupDir, "store.json"), "utf8")) as Record<
+    string,
+    { files: Record<string, string> }
+  >;
+  change(Object.fromEntries(Object.entries(stores).map(([db, store]) => [db, store.files])));
+  writeFileSync(path.join(dir, "store.json"), JSON.stringify(stores));
+  writeFileSync(path.join(dir, "psql.ts"), STANDIN_PSQL(path.join(dir, "store.json"), psqlLog));
+  const psql = path.join(dir, "psql");
+  writeFileSync(
+    psql,
+    `#!/bin/sh\nexec '${process.execPath}' '${path.join(dir, "psql.ts")}' "$@"\n`
+  );
+  chmodSync(psql, 0o755);
+  const file = path.join(dir, "skill-cuts.json");
+  writeFileSync(
+    file,
+    JSON.stringify({ ...JSON.parse(readFileSync(config, "utf8")), psqlCommand: psql })
+  );
+  return file;
+}
+
+/** `text`, a session's transcript, with its header's working directory `cwd`. */
+const inDirectory = (text: string, cwd: string) =>
+  text
+    .split("\n")
+    .map((line) => {
+      if (line === "") return line;
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      return entry.type === "session" ? JSON.stringify({ ...entry, cwd }) : line;
+    })
+    .join("\n");
+
+test("a session repository whose whole tree GitHub cuts short is read one directory at a time, only where Oh My Pi reads a project, so build-cases --reprofile gives its case that repository's project skill and context file", async () => {
+  const legion = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("legion"))
+  ) as Case;
+  // The legion session, in a workspace of acme/big, whose whole tree the stand-in cuts short.
+  const moved = "/sessions/big-legion.jsonl";
+  const big = changedStore("truncated-tree", (files) => {
+    (files.store_b ?? {})[moved] = inDirectory(
+      sessionText("legion"),
+      "/legion/workspaces/acme/big/acme-12"
+    );
+  });
+  const dir = path.join(scratch, "truncated-tree");
+  const from = path.join(dir, "old.jsonl");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    from,
+    `${JSON.stringify({ ...legion, source: { ...legion.source, pathHash: pathHash(moved) } })}\n`
+  );
+  const fresh = path.join(dir, "reprofiled.jsonl");
+  const lines: string[] = [];
+  const code = await main(
+    [
+      "build-cases",
+      "--config",
+      big,
+      "--old",
+      old,
+      "--copies",
+      copiesDir,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--out",
+      fresh,
+    ],
+    io(lines)
+  );
+  expect(lines.join("\n")).not.toContain("cuts the tree");
+  expect(code).toBe(EXIT.ok);
+  const [c] = loadCases(fresh, old);
+  expect(c?.profile.skills).toEqual(
+    [
+      ...legion.profile.skills,
+      { repo: "acme/big", commit: SHA, path: ".claude/skills/omega", name: "omega" },
+    ].sort((a, b) => (a.name < b.name ? -1 : 1))
+  );
+  expect(c?.profile.contextFiles).toEqual([
+    { repo: "acme/big", commit: SHA, path: "AGENTS.md" },
+    ...legion.profile.contextFiles.filter((file) => file.repo !== "acme/widgets"),
+  ]);
+  // No whole tree of acme/big is asked for: its root, .claude/, .claude/skills/ and the skill's
+  // directory, one level each, and not data/ or the skill's references/.
+  expect(
+    ghCalls
+      .flatMap((args) => args.filter((arg) => arg.startsWith("repos/acme/big/git/trees/")))
+      .sort()
+  ).toEqual(
+    ["", ".claude", ".claude/skills", ".claude/skills/omega"]
+      .map((dir) => `repos/acme/big/git/trees/${treeId("acme/big", dir)}`)
+      .sort()
+  );
+}, 120_000);
+
+/** The tasks file a build-tasks run with --profiles-out wrote on the suite's store (t1 from the
+ *  session /sessions/task-4.jsonl and t2 from another session, each F1 as the good session has
+ *  it; eight written tasks in the legion session's context), built once. */
+async function profiledTasks(): Promise<string> {
+  const out = path.join(scratch, "reprofile-from", "tasks.jsonl");
+  if (!existsSync(out)) {
+    const dir = path.join(scratch, "reprofile-from", "profiles");
+    expect(await main(tasksArgs(out, ...profileFlags(dir)), io([]))).toBe(EXIT.ok);
+  }
+  return out;
+}
+
+/** The arguments of a build-tasks --reprofile run of `from` into `dir`, its configuration
+ *  `configFile`. */
+const reprofileArgs = (configFile: string, from: string, dir: string, ...extra: string[]) => [
+  "build-tasks",
+  "--config",
+  configFile,
+  "--copies",
+  copiesDir,
+  "--count",
+  countDir,
+  "--reprofile",
+  from,
+  "--profiles-out",
+  dir,
+  ...extra,
+];
+
+/** One evidence item. */
+interface Item {
+  item: string;
+  source: string;
+}
+
+/** What build-tasks --reprofile records of one task. */
+interface Reprofiled {
+  task: string;
+  from: string;
+  was: string | null;
+  profile: string | null;
+  outcome: string;
+  differs: { added: Item[]; removed: Item[] };
+}
+
+/** The summary build-tasks --reprofile wrote beside the tasks file of `dir`. */
+const reprofileSummary = (dir: string) =>
+  JSON.parse(readFileSync(path.join(dir, "tasks.jsonl.summary.json"), "utf8")) as {
+    command: string;
+    counts: Record<string, number>;
+    profiles: { contextSession: Record<string, unknown> | null; tasks: Reprofiled[] };
+  };
+
+test("build-tasks --reprofile builds each task's profile again as --profiles-out builds it, with no reader call: on the store the tasks were built from, each is byte for byte the old one and says unchanged, and the new tasks file names the new profiles", async () => {
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "reprofile-same", "profiles");
+  const requests = recorder.requests.length;
+  const logged = psqlLogLength();
+  const lines: string[] = [];
+  expect(await main(reprofileArgs(config, from, dir), io(lines))).toBe(EXIT.ok);
+  expect(recorder.requests.length).toBe(requests);
+  const tasks = tasksOf(from);
+  expect(tasks.filter((task) => task.source === "session")).toHaveLength(2);
+  expect(tasksOf(path.join(dir, "tasks.jsonl"))).toEqual(
+    tasks.map((task) => ({ ...task, profile: path.resolve(dir, `${task.id}.json`) }))
+  );
+  for (const task of tasks) {
+    expect(readFileSync(path.resolve(dir, `${task.id}.json`), "utf8")).toBe(
+      readFileSync(String(task.profile), "utf8")
+    );
+  }
+  const summary = reprofileSummary(dir);
+  expect(summary.command).toBe("build-tasks --reprofile");
+  expect(
+    summary.profiles.tasks.map((each) => [each.task, each.from, each.outcome, each.differs])
+  ).toEqual(
+    tasks.map((task) => [
+      String(task.id),
+      task.source === "session" ? "session" : "context-session",
+      "unchanged",
+      { added: [], removed: [] },
+    ])
+  );
+  expect(summary.counts).toEqual({ changed: 0, unchanged: tasks.length, kept: 0, leftOut: 0 });
+  expect(summary.profiles.contextSession).toMatchObject({
+    store: "store_b",
+    hash: fileHash(sessionPath("legion")),
+  });
+  // The session tasks' paths by their path hashes, one query of their store; the context session
+  // the old summary names by its file hash; and one pull of each of the three sessions.
+  expect(
+    psqlLines(logged)
+      .filter((line) => line.kind !== "pull")
+      .map((line) => `${line.db} ${line.kind}`)
+      .sort()
+  ).toEqual(["store_a paths", "store_b sessions"]);
+  expect(transcriptPulls(logged)).toBe(3);
+  expect(existsSync(`${dir}.spool`)).toBe(false);
+
+  // Refused before any read: a flag of the search or the reader, a directory that holds files
+  // already, and a tasks file with no summary.
+  const other = path.join(scratch, "reprofile-same", "other");
+  const bare = path.join(scratch, "reprofile-same", "bare.jsonl");
+  writeFileSync(bare, readFileSync(from));
+  const refusedAt = psqlLogLength();
+  const rows: [string[], string][] = [
+    [[...reprofileArgs(config, from, other), "--key-file", keyFile], "so it takes no --key-file"],
+    [[...reprofileArgs(config, from, other), "--store", "store_a"], "so it takes no --store"],
+    [reprofileArgs(config, from, dir), `--profiles-out ${dir} holds files already`],
+    [reprofileArgs(config, bare, other), `${bare}.summary.json is not a file`],
+  ];
+  for (const [args, why] of rows) {
+    const refused: string[] = [];
+    expect({ why, code: await main(args, io(refused)) }).toEqual({ why, code: EXIT.refused });
+    expect(refused.join("\n")).toContain(why);
+  }
+  expect(psqlLogLength()).toBe(refusedAt);
+  expect(existsSync(other)).toBe(false);
+}, 120_000);
+
+test("build-tasks --reprofile of a task whose session is now in a checkout of acme/proj gives it a profile that lists acme/proj's project skills and root CLAUDE.md, says changed and lists the evidence items that differ; the other tasks are unchanged", async () => {
+  const from = await profiledTasks();
+  const task4 = "/sessions/task-4.jsonl";
+  const moved = changedStore("reprofile-moved", (files) => {
+    (files.store_a ?? {})[task4] = inDirectory(sessionText("good"), "/home/dev/src/proj");
+  });
+  const dir = path.join(scratch, "reprofile-moved", "profiles");
+  const lines: string[] = [];
+  expect(await main(reprofileArgs(moved, from, dir), io(lines))).toBe(EXIT.ok);
+  const t1 = tasksOf(from).find((task) => task.id === "t1");
+  expect(t1?.pathHash).toBe(pathHash(task4));
+  const before = JSON.parse(readFileSync(String(t1?.profile), "utf8"));
+  expect(JSON.parse(readFileSync(path.resolve(dir, "t1.json"), "utf8"))).toEqual({
+    ...before,
+    skills: [
+      { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
+    ],
+    contextFiles: [
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
+    ],
+  });
+  const summary = reprofileSummary(dir);
+  const record = summary.profiles.tasks.find((each) => each.task === "t1");
+  expect(record?.outcome).toBe("changed");
+  expect(record?.differs.added.map((each) => each.item)).toEqual(
+    expect.arrayContaining([
+      "session repository acme/proj",
+      "skill kappa (acme/proj .claude/skills/kappa)",
+      "skill older (acme/proj .omp/skills/older)",
+      "context file acme/proj CLAUDE.md",
+    ])
+  );
+  expect(record?.differs.removed.map((each) => each.item)).toEqual(
+    expect.arrayContaining(["no session repository", "skill older (acme/skills skills/older)"])
+  );
+  expect(
+    summary.profiles.tasks.filter((each) => each.task !== "t1").map((each) => each.outcome)
+  ).toEqual(Array(9).fill("unchanged"));
+  expect(summary.counts).toMatchObject({ changed: 1, unchanged: 9 });
+  expect(lines.join("")).toContain("build-tasks: t1: profile changed");
+}, 120_000);
+
+test("build-tasks --reprofile gives each written task the profile of the --context-session it is given, in place of the session the tasks file's summary names, and lists the evidence items that differ", async () => {
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "reprofile-context", "profiles");
+  const task4 = fileHash("/sessions/task-4.jsonl");
+  expect(
+    await main(reprofileArgs(config, from, dir, "--context-session", `store_a:${task4}`), io([]))
+  ).toBe(EXIT.ok);
+  const tasks = tasksOf(from);
+  const written = tasks.filter((task) => task.source === "written");
+  expect(written).toHaveLength(8);
+  // task-4's session is F1 as the good session has it: its profile is t1's, not the legion one.
+  const good = readFileSync(path.resolve(dir, "t1.json"), "utf8");
+  const summary = reprofileSummary(dir);
+  for (const task of written) {
+    expect(readFileSync(String(task.profile), "utf8")).not.toBe(good);
+    expect(readFileSync(path.resolve(dir, `${task.id}.json`), "utf8")).toBe(good);
+    const record = summary.profiles.tasks.find((each) => each.task === task.id);
+    expect(record?.from).toBe("context-session");
+    expect(record?.outcome).toBe("changed");
+    expect(record?.differs.added.map((each) => each.item)).toContain("no role");
+    expect(record?.differs.removed.map((each) => each.item)).toContain("role tester");
+  }
+  expect(summary.profiles.contextSession).toMatchObject({
+    store: "store_a",
+    hash: task4,
+    pathHash: pathHash("/sessions/task-4.jsonl"),
+    context: "devbox",
+  });
+  expect(summary.counts).toMatchObject({ changed: 8, unchanged: 2 });
+}, 120_000);
+
+test("build-tasks --reprofile keeps the old profile of a task whose session its store holds no longer, and of each written task when the context session is gone, each with an evidence item that says so; a store read that fails fails the run", async () => {
+  const from = await profiledTasks();
+  const task4 = "/sessions/task-4.jsonl";
+  const gone = changedStore("reprofile-gone", (files) => {
+    delete files.store_a?.[task4];
+    delete files.store_b?.[sessionPath("legion")];
+  });
+  const dir = path.join(scratch, "reprofile-gone", "profiles");
+  const lines: string[] = [];
+  expect(await main(reprofileArgs(gone, from, dir), io(lines))).toBe(EXIT.ok);
+  const tasks = tasksOf(from);
+  for (const task of tasks) {
+    expect(readFileSync(path.resolve(dir, `${task.id}.json`), "utf8")).toBe(
+      readFileSync(String(task.profile), "utf8")
+    );
+  }
+  const summary = reprofileSummary(dir);
+  const byTask = new Map(summary.profiles.tasks.map((each) => [each.task, each]));
+  expect(byTask.get("t1")).toMatchObject({
+    outcome: "kept",
+    differs: {
+      added: [
+        {
+          item: "no session in the store",
+          source: `the store store_a holds no file of the path hash ${pathHash(task4)} now (session-paths.sql), so the task keeps its old profile`,
+        },
+      ],
+      removed: [],
+    },
+  });
+  expect(byTask.get("t2")?.outcome).toBe("unchanged");
+  for (const task of tasks.filter((each) => each.source === "written")) {
+    expect(byTask.get(String(task.id))).toMatchObject({
+      outcome: "kept",
+      differs: {
+        added: [
+          {
+            item: "no session in the store",
+            source: `the store store_b holds no file of the hash ${fileHash(sessionPath("legion"))} now (sessions.sql), so each written task keeps its old profile`,
+          },
+        ],
+        removed: [],
+      },
+    });
+  }
+  expect(summary.counts).toEqual({ changed: 0, unchanged: 1, kept: 9, leftOut: 0 });
+
+  // A store command that fails fails the run, and no tasks file is written.
+  const failing = path.join(setupDir, "reprofile-failing");
+  mkdirSync(failing, { recursive: true });
+  const command = path.join(failing, "psql");
+  writeFileSync(command, "#!/bin/sh\necho 'psql: error: gone' >&2\nexit 3\n");
+  chmodSync(command, 0o755);
+  const broken = path.join(failing, "skill-cuts.json");
+  writeFileSync(
+    broken,
+    JSON.stringify({ ...JSON.parse(readFileSync(config, "utf8")), psqlCommand: command })
+  );
+  const failed = path.join(scratch, "reprofile-failing", "profiles");
+  const said: string[] = [];
+  expect(await main(reprofileArgs(broken, from, failed), io(said))).toBe(EXIT.failed);
+  expect(said.join("\n")).toContain("the store command exited 3: psql: error: gone");
+  expect(existsSync(path.join(failed, "tasks.jsonl"))).toBe(false);
 }, 120_000);

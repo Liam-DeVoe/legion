@@ -43,6 +43,8 @@
  *       --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
  *       --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>]
  *       [--max-search-minutes <m>]
+ *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --copies <dir> --count <dir>
+ *       --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]
  *   bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <file> --key-file <file>
  *       --skill <dir> --sessions <file> --seed <n> [--max <n>] --out <tasks.jsonl>
  *       [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]
@@ -2107,6 +2109,7 @@ const USAGE = [
   "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
+  "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",
   "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]",
 ].join("\n");
 

@@ -20,6 +20,9 @@
  *       --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
  *       --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
  *       [--max-candidates <n>] [--max-search-minutes <m>]
+ *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --copies <copies out dir>
+ *       --count <count dir> --reprofile <tasks.jsonl> --profiles-out <new dir>
+ *       [--context-session <store>:<hash>]
  *   bun scripts/skill-cuts/build.ts build-tasks --first-read --config <skill-cuts.json>
  *       --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>]
  *       --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <copies out dir>
@@ -251,7 +254,9 @@
  *   part of its working directory, or of the nearest parent named as any listed repository, when
  *   one alone has that name (otherwise none, and the evidence names the repositories that
  *   matched); the checkout's root is that directory. Its project skills, read at its commit with
- *   the units' repositories: each `<level>/.omp/skills/<name>/SKILL.md` that has a description,
+ *   the units' repositories (when it is no unit's repository, only where Oh My Pi reads a project,
+ *   one directory a call, `GithubReads.project`, so a repository whose whole tree GitHub cuts
+ *   short is read too): each `<level>/.omp/skills/<name>/SKILL.md` that has a description,
  *   then each `<level>/.claude/skills/<name>/SKILL.md`, the levels the working directory and each
  *   parent up to the checkout's root, the nearest first (Oh My Pi 18.18.6's discovery/builtin.ts,
  *   lines 81-109 and 314-327, and discovery/claude.ts, lines 205-224). A project skill and another
@@ -336,13 +341,28 @@
  * written task takes the profile of `--context-session <store>:<hash>` (required in the reader's
  * mode; rebuilt before any reader call, and a session that gives none fails the build). The
  * summary's `profiles` records the context session, each task's profile and its evidence, and why
- * a task has none. A finished build gets none afterwards: profiles come with a fresh `--out`.
+ * a task has none. A finished build gets no profiles from `--profiles-out` afterwards;
+ * `--reprofile` (below) builds them again from its tasks file.
  * A task whose context does not list the tested skill tests nothing (`listsSkill`: a subagent's
  * recorded listing lacks its line, or another context's profile does not install it), so with
  * `--profiles-out` such a session is dropped (`skill-not-listed`) and counted: in the reader's
  * mode each offered message's session is rebuilt first and the next candidate taken in its
  * place (`offeredMessages`, `candidateDrops`), in `--first-read` when the session is tried
  * (`skillNotListed`); and a `--context-session` whose context does not list it is refused.
+ *
+ * **build-tasks --reprofile <tasks.jsonl> --profiles-out <new dir>** builds the profile of each task
+ * of a tasks file again as `--profiles-out` builds one now, with no candidate search and no reader
+ * call: a task from a session takes its session's, found in its store by its path hash
+ * (session-paths.sql, one query a store) and pulled as the search pulls it; a written task takes
+ * that of `--context-session`, else of the context session the tasks file's summary
+ * (`<tasks.jsonl>.summary.json`) names. It writes each profile to `<new dir>/<task id>.json`, the
+ * tasks again to `<new dir>/tasks.jsonl` with each `profile` naming its new file, and
+ * `<new dir>/tasks.jsonl.summary.json`: per task, whether the profile's bytes changed
+ * (`unchanged`, `changed`) and the evidence items added and removed against the old summary's.
+ * A task whose session its store holds no longer keeps its old profile (`kept`, with the evidence
+ * item `no session in the store`). A session task whose rebuilt context no longer lists the skill
+ * is left out and named, and the command exits 1; a store read, a pull or a rebuild that fails
+ * fails it, with nothing written to `<new dir>`.
  *
  * **--model <model>** (both modes: a load test runs on one model, and the tasks taken from real
  * sessions come only from sessions on it): a candidate session is kept only when its first request
@@ -452,7 +472,7 @@ import {
   spawnGh,
   type TreeEntry,
 } from "./copies";
-import { mtimeRange, PULL_PAGE, pullSql, sessionsSql, tasksSql } from "./countsql";
+import { mtimeRange, PULL_PAGE, pullSql, sessionPathsSql, sessionsSql, tasksSql } from "./countsql";
 import {
   addModelSpend,
   BudgetSpent,
@@ -471,7 +491,7 @@ import {
   skillReadResults,
   stepText,
 } from "./judge";
-import { firstMessageLoad } from "./load";
+import { firstMessageLoad, Task } from "./load";
 import { PsqlTable, PullCheck } from "./psql-rows";
 import {
   AuditAnswer,
@@ -821,16 +841,19 @@ export function fileHash(filePath: string): string {
 
 const SessionRow = z.strictObject({ path: z.string().min(1), hash: z.string() });
 
-/** The paths of the files of `hashes` in the store `db`, by hash, in one sessions.sql query (none
- *  for no hash): the query reads the store's whole file table once, whatever the hashes. */
+/** The paths of the files of `hashes` in the store `db`, by hash, in one query of `query` (none
+ *  for no hash): sessions.sql (`sessionsSql`, file hashes) unless another is given, such as
+ *  session-paths.sql (`sessionPathsSql`, path hashes). Either reads the store's whole file table
+ *  once, whatever the hashes. */
 async function resolvePaths(
   command: string,
   db: string,
-  hashes: readonly string[]
+  hashes: readonly string[],
+  query: (hashes: readonly string[]) => string = sessionsSql
 ): Promise<{ paths: Map<string, string>; queries: number }> {
   const paths = new Map<string, string>();
   if (hashes.length === 0) return { paths, queries: 0 };
-  for (const row of await storeRows(command, db, sessionsSql(hashes))) {
+  for (const row of await storeRows(command, db, query(hashes))) {
     const { path: filePath, hash } = SessionRow.parse(row);
     paths.set(hash, filePath);
   }
@@ -1742,6 +1765,7 @@ export class GithubReads {
     Promise<{ code: number; stdout: string; stderr: string }>
   >();
   private readonly held = new Map<string, Promise<RepositoryAt>>();
+  private readonly projects = new Map<string, Promise<{ at: RepositoryAt; reads: number }>>();
   private readonly blobs = new Map<string, Promise<string>>();
 
   constructor(
@@ -1818,10 +1842,16 @@ export class GithubReads {
     return this.ok(args);
   }
 
-  /** Every entry of the tree of `repo` at `commit`. The answer is not kept (a large repository's
-   *  tree is megabytes); `at` keeps what it reads from it. Throws on a tree GitHub cuts short. */
-  private async tree(repo: string, commit: string): Promise<TreeEntry[]> {
-    const args = ["api", `repos/${repo}/git/trees/${commit}?recursive=1`];
+  /** The entries of the tree `sha` of `repo` (a commit's id gives its root tree's): every entry
+   *  below it when `recursive`, else those of its own level; and whether GitHub cut the answer
+   *  short. The answer is not kept (a large repository's tree is megabytes); `at` and `project`
+   *  keep what they read from it. */
+  private async treeAnswer(
+    repo: string,
+    sha: string,
+    recursive: boolean
+  ): Promise<{ entries: TreeEntry[]; truncated: boolean }> {
+    const args = ["api", `repos/${repo}/git/trees/${sha}${recursive ? "?recursive=1" : ""}`];
     const result = await this.gh(args);
     if (result.code !== 0) {
       const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
@@ -1829,10 +1859,31 @@ export class GithubReads {
     }
     const tree = GitTree.safeParse(parseJson(result.stdout));
     if (!tree.success) throw new Error(`gh ${args.join(" ")} gave no git tree`);
-    if (tree.data.truncated === true) {
+    return { entries: tree.data.tree, truncated: tree.data.truncated === true };
+  }
+
+  /** Every entry of the tree of `repo` at `commit`. Throws on a tree GitHub cuts short. */
+  private async tree(repo: string, commit: string): Promise<TreeEntry[]> {
+    const { entries, truncated } = await this.treeAnswer(repo, commit, true);
+    if (truncated) {
       throw new Error(`GitHub cuts the tree of ${repo} at ${commit} short, so it is not read`);
     }
-    return tree.data.tree;
+    return entries;
+  }
+
+  /** The entries of one level of the tree `sha` of `repo`, the directory `dir` of it (`""` the
+   *  root), each with its path in the repository. Throws when GitHub cuts even that level short. */
+  private async level(repo: string, sha: string, dir: string): Promise<TreeEntry[]> {
+    const { entries, truncated } = await this.treeAnswer(repo, sha, false);
+    if (truncated) {
+      throw new Error(
+        `GitHub cuts ${dir === "" ? "the root" : dir} of ${repo} short even one level deep, so it is not read`
+      );
+    }
+    return entries.map((entry) => ({
+      ...entry,
+      path: dir === "" ? entry.path : `${dir}/${entry.path}`,
+    }));
   }
 
   /** The text of the blob `sha` of `repo`, read once: a blob's id is its content, so a file that
@@ -1901,7 +1952,75 @@ export class GithubReads {
     commit: string,
     excludePaths: SkillCutsConfig["excludePaths"]
   ): Promise<RepositoryAt> {
-    const entries = await this.tree(repo, commit);
+    return this.fromEntries(repo, await this.tree(repo, commit), excludePaths);
+  }
+
+  /**
+   * What the session repository `repo` holds at `commit` where Oh My Pi reads a project for a
+   * working directory in a checkout of it: `at`'s reading of the entries of the directories it
+   * reads, one level of each a call by its tree id. Those are each of `levels` (the working
+   * directory's path in the checkout, then each parent up to the root, `""`), each directory of
+   * PROJECT_LEVEL_DIRS there, the skills directory of each PROJECT_SKILLS kind there, and each
+   * skill directory in it. So a repository whose whole tree GitHub cuts short is read too, and a
+   * large one in a few calls; for the paths the rebuild uses (CONTEXT_FILES, PROJECT_SKILLS) it
+   * gives what `at` gives. Read once for each commit and levels; gives its tree reads too.
+   */
+  project(
+    repo: string,
+    commit: string,
+    levels: readonly string[],
+    excludePaths: SkillCutsConfig["excludePaths"]
+  ): Promise<{ at: RepositoryAt; reads: number }> {
+    const key = [repo, commit, ...levels].join("\0");
+    let held = this.projects.get(key);
+    if (held === undefined) {
+      held = this.readProject(repo, commit, levels, excludePaths);
+      this.projects.set(key, held);
+    }
+    return held;
+  }
+
+  private async readProject(
+    repo: string,
+    commit: string,
+    levels: readonly string[],
+    excludePaths: SkillCutsConfig["excludePaths"]
+  ): Promise<{ at: RepositoryAt; reads: number }> {
+    const entries = await this.level(repo, commit, "");
+    const read = new Set([""]);
+    /** Adds one level of each directory of `dirs` that the entries read so far hold as a tree
+     *  and that is not read yet. */
+    const readDirs = async (dirs: readonly string[]) => {
+      const found = entries.filter(
+        (entry) => entry.type === "tree" && dirs.includes(entry.path) && !read.has(entry.path)
+      );
+      for (const entry of found) read.add(entry.path);
+      const answers = await mapLimit(found, GITHUB_JOBS, (entry) =>
+        this.level(repo, entry.sha, entry.path)
+      );
+      for (const answer of answers) entries.push(...answer);
+    };
+    const under = (level: string, dir: string) => (level === "" ? dir : `${level}/${dir}`);
+    // From the root down to the working directory: each level is a directory of the one above.
+    const down = [...levels].reverse();
+    for (const level of down) await readDirs([level]);
+    await readDirs(down.flatMap((level) => PROJECT_LEVEL_DIRS.map((dir) => under(level, dir))));
+    const skillDirs = down.flatMap((level) => PROJECT_SKILLS.map((kind) => under(level, kind.dir)));
+    await readDirs(skillDirs);
+    await readDirs(
+      entries
+        .filter((entry) => skillDirs.includes(path.posix.dirname(entry.path)))
+        .map((entry) => entry.path)
+    );
+    return { at: await this.fromEntries(repo, entries, excludePaths), reads: read.size };
+  }
+
+  /** What `repo` holds by the tree entries `entries`, as `at` reads it (see there). */
+  private async fromEntries(
+    repo: string,
+    entries: readonly TreeEntry[],
+    excludePaths: SkillCutsConfig["excludePaths"]
+  ): Promise<RepositoryAt> {
     const faults: { file: string; why: string }[] = [];
     const dirOf = (file: string) => {
       const dir = path.posix.dirname(file);
@@ -2203,6 +2322,16 @@ const CONTEXT_FILES: readonly {
 /** How Oh My Pi 18.18.6 picks and orders the project context files a session gets. */
 const CONTEXT_SLOT_RULE =
   "Oh My Pi 18.18.6 keeps one project context file at each level from the working directory up to the checkout's root (capability/context-file.ts, lines 36-46: one for each depth), the first in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333), and joins the files it keeps the farthest level first (system-prompt.ts, lines 392-398)";
+/** The directories of each level that the session repository's read reads (GithubReads'
+ *  `project`): each one a file of CONTEXT_FILES or a kind of PROJECT_SKILLS is in (`.omp`,
+ *  `.claude`, `.agent`, `.agents`, `.gemini`, `.github`). */
+const PROJECT_LEVEL_DIRS = [
+  ...new Set(
+    [...CONTEXT_FILES.map((spec) => spec.file), ...PROJECT_SKILLS.map((kind) => kind.dir)].flatMap(
+      (file) => (file.includes("/") ? [file.slice(0, file.indexOf("/"))] : [])
+    )
+  ),
+];
 
 /** What every profile of one build reads. */
 type ProfileRun = Pick<CaseRun, "config" | "copies" | "github" | "placer">;
@@ -2381,8 +2510,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   const held = new Map<string, RepositoryAt>();
-  // The session repository is read at its commit too, for its project skills; it joins the
-  // units' resolution only when it is a unit's repository.
+  // The session repository is read at its commit too, for its project skills and context files;
+  // it joins the units' resolution only when it is a unit's repository. A unit's repository is
+  // read whole, for copies.ts's rules; one that is the session repository alone only where Oh My
+  // Pi reads a project (`project`), since a repository's whole tree can be more than GitHub gives.
   const toRead = new Set(repositories);
   if (checkout.repo !== undefined) toRead.add(checkout.repo);
   let projectTree: RepositoryAt | undefined;
@@ -2391,12 +2522,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const reads = await Promise.allSettled(
     [...toRead].sort().map(async (repo) => {
       const commit = await readCommit(repo);
-      return { repo, commit, at: await github.at(repo, commit.sha, run.config.excludePaths) };
+      const { excludePaths } = run.config;
+      return repositories.has(repo)
+        ? { repo, commit, at: await github.at(repo, commit.sha, excludePaths), reads: 0 }
+        : { repo, commit, ...(await github.project(repo, commit.sha, levels, excludePaths)) };
     })
   );
   for (const settled of reads) {
     if (settled.status === "rejected") throw settled.reason;
-    const { repo, commit, at } = settled.value;
+    const { repo, commit, at, reads: treeReads } = settled.value;
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
     if (repo === checkout.repo) projectTree = at;
@@ -2410,7 +2544,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           }
         : {
             item: `the skills of ${repo} at ${commit.sha}`,
-            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files, read at that commit, give the session repository's project skills`,
+            source: `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${treeReads} ${treeReads === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.map((kind) => `${kind.dir}/`).join(" and ")} and each skill directory in them. Their ${at.copies.length} SKILL.md files, read at that commit, give the session repository's project skills`,
           }
     );
     for (const fault of at.faults) {
@@ -2827,7 +2961,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 const BUILD_CASES_USAGE =
   "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
-  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
+  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
 /** One candidate session of the sessions file. */
 const Candidate = z.strictObject({
@@ -4618,17 +4752,7 @@ function profilesPlan(
         `--profiles-out needs --context-session <store>:<hash>, the session whose profile a written task takes. ${BUILD_TASKS_USAGE}`
       );
     }
-    const match = /^([^:\s]+):([0-9a-f]{16})$/.exec(named);
-    if (match === null) {
-      throw new Refused(`--context-session ${named} is not <store>:<16 hex characters>`);
-    }
-    const [, store = "", hash = ""] = match;
-    try {
-      storeNamed(config, store);
-    } catch (error) {
-      throw new Refused(messageFor(error));
-    }
-    contextSession = { store, hash };
+    contextSession = contextSessionOption(named, config);
   } else if (named !== undefined) {
     throw new Refused("--first-read writes no written task, so it takes no --context-session");
   }
@@ -4643,6 +4767,25 @@ function profilesPlan(
       placer: placing,
     },
   };
+}
+
+/** The session `named` (`--context-session`'s `<store>:<hash>`) names, its store one of
+ *  `config`'s. Refuses another form, and a store the configuration does not name. */
+function contextSessionOption(
+  named: string,
+  config: SkillCutsConfig
+): { readonly store: string; readonly hash: string } {
+  const match = /^([^:\s]+):([0-9a-f]{16})$/.exec(named);
+  if (match === null) {
+    throw new Refused(`--context-session ${named} is not <store>:<16 hex characters>`);
+  }
+  const [, store = "", hash = ""] = match;
+  try {
+    storeNamed(config, store);
+  } catch (error) {
+    throw new Refused(messageFor(error));
+  }
+  return { store, hash };
 }
 
 /** The transcript of the file `filePath` of `store`, pulled into `spool` and parsed
@@ -4680,8 +4823,8 @@ interface ContextProfile {
 }
 
 /** The context session's profile, rebuilt before any reader call, or undefined when the plan
- *  names no context session. Throws when the session gives none, and refuses (exit 2) a session
- *  whose profile does not list the skill, since a written task in it would test nothing. */
+ *  names no context session. Throws when the store holds the session no longer or it gives no
+ *  profile, and refuses (exit 2) one whose profile does not list the skill (`rebuiltContext`). */
 async function contextProfile(
   plan: ProfilesPlan,
   spool: string,
@@ -4690,12 +4833,29 @@ async function contextProfile(
   if (plan.contextSession === undefined) return undefined;
   const { store, hash } = plan.contextSession;
   const named = `--context-session ${store}:${hash}`;
-  const { paths } = await resolvePaths(plan.run.config.psqlCommand, store, [hash]);
+  const built = await rebuiltContext(plan.run, plan.contextSession, named, spool, skill);
+  if (built === undefined) throw new Error(`${named}: sessions.sql gives no file of this hash`);
+  return built;
+}
+
+/** The profile of the context session `session`, pulled into `spool` and rebuilt, or undefined
+ *  when sessions.sql gives no file of its hash (its store holds it no longer). Throws, naming it
+ *  `named`, when the session gives no profile, and refuses (exit 2) a session whose profile does
+ *  not list the skill, since a written task in it would test nothing. */
+async function rebuiltContext(
+  run: ProfileRun,
+  session: { readonly store: string; readonly hash: string },
+  named: string,
+  spool: string,
+  skill: string
+): Promise<ContextProfile | undefined> {
+  const { store, hash } = session;
+  const { paths } = await resolvePaths(run.config.psqlCommand, store, [hash]);
   const filePath = paths.get(hash);
-  if (filePath === undefined) throw new Error(`${named}: sessions.sql gives no file of this hash`);
+  if (filePath === undefined) return undefined;
   let built: SessionProfile;
   try {
-    built = await pulledProfile(plan.run, store, filePath, spool, skill);
+    built = await pulledProfile(run, store, filePath, spool, skill);
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);
   }
@@ -5220,6 +5380,320 @@ function modelOption(value: unknown): string | undefined {
   return modelForm(value.trim());
 }
 
+// ---------------------------------------------------------------------------------------------
+// build-tasks --reprofile
+
+/** The command a `--reprofile` summary names. */
+const REPROFILE_COMMAND = "build-tasks --reprofile";
+/** The item of a reprofiled task's evidence when its store holds its session no longer. */
+const NO_SESSION = "no session in the store";
+/** The flags of the candidate search and the tasks reader, none of which `--reprofile` takes. */
+const REPROFILE_REFUSES = [
+  "key-file",
+  "skill",
+  "store",
+  "out",
+  "first-read",
+  "sessions",
+  "seed",
+  "max",
+  "model",
+  "max-candidates",
+  "max-search-minutes",
+] as const;
+
+/** One item of a profile's evidence, as a summary keeps it. */
+const EvidenceItem = z.strictObject({ item: z.string(), source: z.string() });
+
+/** What `--reprofile` reads of a tasks file's summary (`<tasks>.summary.json`, as build-tasks or
+ *  `--reprofile` wrote it): the tested skill, and, when the tasks have profiles, the context
+ *  session and the evidence of each task's profile. */
+const ProfiledSummary = z.looseObject({
+  command: z.enum(["build-tasks", REPROFILE_COMMAND]),
+  skill: z.string().min(1),
+  profiles: z
+    .looseObject({
+      contextSession: z
+        .looseObject({
+          store: z.string(),
+          hash: z.string(),
+          evidence: z.array(EvidenceItem).optional(),
+        })
+        .nullable(),
+      tasks: z.array(
+        z.looseObject({ task: z.string(), evidence: z.array(EvidenceItem).optional() })
+      ),
+    })
+    .optional(),
+});
+
+/** The tasks of `file`, one JSON line each (load.ts's Task). Refuses a line that is no task, an id
+ *  given twice (an id names its profile's file) and a file of no task. */
+function tasksToReprofile(file: string): Task[] {
+  const tasks: Task[] = [];
+  const faults: string[] = [];
+  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+    if (line.trim() === "") continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch (error) {
+      faults.push(`line ${index + 1} is not JSON: ${messageFor(error)}`);
+      continue;
+    }
+    const parsed = Task.safeParse(raw);
+    if (!parsed.success) {
+      faults.push(`line ${index + 1} is no task: ${schemaFaults(parsed.error)}`);
+    } else if (tasks.some((task) => task.id === parsed.data.id)) {
+      faults.push(`line ${index + 1}: the task id ${parsed.data.id} is given twice`);
+    } else {
+      tasks.push(parsed.data);
+    }
+  }
+  if (faults.length > 0) throw new Refused(`--reprofile ${file}: ${faults.join("; ")}`);
+  if (tasks.length === 0) throw new Refused(`--reprofile ${file} holds no task`);
+  return tasks;
+}
+
+/**
+ * `build-tasks --reprofile`: the profile of each task of a tasks file built again as
+ * `--profiles-out` builds one now, with no candidate search and no reader call, so the tasks a
+ * bounded search chose stay as it chose them. A session task's session is found in its store by
+ * its path hash (session-paths.sql, one query a store) and pulled as the search pulls it
+ * (`pulledProfile`); a written task takes the profile of `--context-session`, else of the context
+ * session the tasks file's summary names (`rebuiltContext`). A task whose session its store holds
+ * no longer keeps its old profile, and its evidence says so (NO_SESSION). A session task whose
+ * rebuilt context no longer lists the skill is left out and named, and the command fails (exit
+ * 1); a store read, a pull or a rebuild that fails fails it before anything is written. Writes
+ * each profile to `<dir>/<task id>.json`, the tasks to `<dir>/tasks.jsonl`, each `profile` naming
+ * its new file, and `<dir>/tasks.jsonl.summary.json`: per task, whether the profile's bytes
+ * changed and the evidence items added and removed against the old summary's.
+ */
+async function reprofileTasks(
+  values: Readonly<Record<string, string | boolean | string[] | undefined>>,
+  io: BuildIo
+): Promise<number> {
+  const given = required(
+    values,
+    ["config", "copies", "count", "reprofile", "profiles-out"],
+    BUILD_TASKS_USAGE
+  );
+  for (const flag of REPROFILE_REFUSES) {
+    if (values[flag] !== undefined) {
+      throw new Refused(
+        `--reprofile builds the profiles of a tasks file again with no candidate search and no reader call, so it takes no --${flag}`
+      );
+    }
+  }
+  const dir = path.resolve(given["profiles-out"]);
+  const there = statSync(dir, { throwIfNoEntry: false });
+  if (there !== undefined && !there.isDirectory()) {
+    throw new Refused(`--profiles-out ${dir} is a file; give a new directory`);
+  }
+  if (there !== undefined && readdirSync(dir).length > 0) {
+    throw new Refused(`--profiles-out ${dir} holds files already; give a new directory`);
+  }
+  const config = configFrom(given.config);
+  const from = given.reprofile;
+  mustBeFile(from, "--reprofile");
+  const summaryFile = `${from}.summary.json`;
+  mustBeFile(summaryFile, "--reprofile's summary");
+  const parsed = ProfiledSummary.safeParse(readJson(summaryFile));
+  if (!parsed.success) {
+    throw new Refused(`${summaryFile} is no build-tasks summary: ${schemaFaults(parsed.error)}`);
+  }
+  const { skill, profiles: before } = parsed.data;
+  const tasks = tasksToReprofile(from);
+  // Each task's old profile, read before any store read, and the evidence the summary gives it.
+  const noted = new Map((before?.tasks ?? []).map((note) => [note.task, note.evidence ?? []]));
+  const recorded = before?.contextSession ?? undefined;
+  const contextBefore: Evidence[] = recorded?.evidence ?? [];
+  const old = new Map<string, { readonly file: string; readonly text: string }>();
+  for (const task of tasks) {
+    if (task.source === "session") {
+      try {
+        storeNamed(config, task.store);
+      } catch (error) {
+        throw new Refused(`task ${task.id}: ${messageFor(error)}`);
+      }
+    }
+    if (task.profile === undefined) continue;
+    const file = path.resolve(path.dirname(from), task.profile);
+    mustBeFile(file, `task ${task.id}'s profile`);
+    old.set(task.id, { file, text: readFileSync(file, "utf8") });
+  }
+  // The session whose profile each written task takes.
+  const written = tasks.some((task) => task.source === "written");
+  const named = values["context-session"];
+  let contextSession: { readonly store: string; readonly hash: string } | undefined;
+  if (typeof named === "string") {
+    if (!written) {
+      throw new Refused(`${from} holds no written task, so --reprofile takes no --context-session`);
+    }
+    contextSession = contextSessionOption(named, config);
+  } else if (written) {
+    if (recorded === undefined) {
+      throw new Refused(
+        `${from} holds written tasks, and ${summaryFile} names no context session whose profile they take; give --context-session <store>:<hash>`
+      );
+    }
+    contextSession = contextSessionOption(`${recorded.store}:${recorded.hash}`, config);
+  }
+  const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
+  const run: ProfileRun = {
+    config,
+    copies,
+    github: new GithubReads(io.gh, copies.branches),
+    placer: placing,
+  };
+
+  const spools = spoolDir(dir);
+  const spool = path.join(spools, "profile.jsonl");
+  let sessionQueries = 0;
+  let context: ContextProfile | undefined;
+  let contextGone: Evidence | undefined;
+  if (contextSession !== undefined) {
+    const { store, hash } = contextSession;
+    const label = `the context session ${store}:${hash}`;
+    context = await rebuiltContext(run, contextSession, label, spool, skill);
+    sessionQueries += 1;
+    if (context === undefined) {
+      contextGone = {
+        item: NO_SESSION,
+        source: `the store ${store} holds no file of the hash ${hash} now (sessions.sql), so each written task keeps its old profile`,
+      };
+    }
+  }
+  // Each session task's path, by its path hash: one session-paths.sql query a store.
+  const paths = new Map<string, string>();
+  const sessionTasks = tasks.flatMap((task) => (task.source === "session" ? [task] : []));
+  for (const store of new Set(sessionTasks.map((task) => task.store))) {
+    const hashes = sessionTasks.filter((task) => task.store === store).map((task) => task.pathHash);
+    const unique = [...new Set(hashes)];
+    const resolved = await resolvePaths(config.psqlCommand, store, unique, sessionPathsSql);
+    sessionQueries += resolved.queries;
+    for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
+  }
+
+  const same = (a: Evidence, b: Evidence) => a.item === b.item && a.source === b.source;
+  const lines: Task[] = [];
+  const files = new Map<string, string>();
+  const records: Record<string, unknown>[] = [];
+  const leftOut: { task: string; why: string }[] = [];
+  const counts = { changed: 0, unchanged: 0, kept: 0, leftOut: 0 };
+  for (const task of tasks) {
+    const was = old.get(task.id);
+    const evidenceBefore = task.source === "written" ? contextBefore : (noted.get(task.id) ?? []);
+    // The profile built again and its evidence, or why the store gives none (`gone`).
+    let rebuilt: { readonly text: string; readonly evidence: Evidence[] } | undefined;
+    let gone: Evidence | undefined;
+    if (task.source === "written") {
+      gone = contextGone;
+      if (context !== undefined) {
+        rebuilt = { text: json(context.built.profile), evidence: context.built.evidence };
+      }
+    } else {
+      const filePath = paths.get(`${task.store}\0${task.pathHash}`);
+      if (filePath === undefined) {
+        gone = {
+          item: NO_SESSION,
+          source: `the store ${task.store} holds no file of the path hash ${task.pathHash} now (session-paths.sql), so the task keeps its old profile`,
+        };
+      } else {
+        let built: SessionProfile;
+        try {
+          built = await pulledProfile(run, task.store, filePath, spool, skill);
+        } catch (error) {
+          throw new Error(
+            `task ${task.id} (${task.store} ${task.pathHash.slice(0, 12)}): ${messageFor(error)}`
+          );
+        }
+        if (!built.listed) {
+          const why = `its rebuilt context ${built.profile.context} does not list ${skill}, so it would test nothing`;
+          leftOut.push({ task: task.id, why });
+          io.err(`build-tasks: ${task.id}: left out: ${why}`);
+          continue;
+        }
+        rebuilt = { text: json(built.profile), evidence: built.evidence };
+      }
+    }
+    const text = rebuilt?.text ?? was?.text;
+    const evidence = rebuilt?.evidence ?? [
+      ...evidenceBefore,
+      ...(gone === undefined ? [] : [gone]),
+    ];
+    const outcome = rebuilt === undefined ? "kept" : text === was?.text ? "unchanged" : "changed";
+    counts[outcome] += 1;
+    const file = path.join(dir, `${task.id}.json`);
+    if (text !== undefined) files.set(file, text);
+    lines.push({ ...task, profile: text === undefined ? undefined : file });
+    const added = evidence.filter((each) => !evidenceBefore.some((other) => same(each, other)));
+    const removed = evidenceBefore.filter((each) => !evidence.some((other) => same(each, other)));
+    records.push({
+      task: task.id,
+      from: task.source === "written" ? "context-session" : "session",
+      was: was?.file ?? null,
+      profile: text === undefined ? null : file,
+      outcome,
+      ...(task.source === "session" ? { evidence } : {}),
+      differs: { added, removed },
+    });
+    io.out(
+      `build-tasks: ${task.id}: profile ${outcome}${
+        outcome === "changed"
+          ? `: ${added.length} evidence items added, ${removed.length} removed`
+          : gone === undefined
+            ? ""
+            : `: ${gone.source}`
+      }\n`
+    );
+  }
+  rmSync(spools, { recursive: true, force: true });
+  for (const [file, text] of files) writeWhole(file, text);
+  const tasksFile = path.join(dir, "tasks.jsonl");
+  writeWhole(tasksFile, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+  counts.leftOut = leftOut.length;
+  const summaryOut = `${tasksFile}.summary.json`;
+  writeWhole(
+    summaryOut,
+    json({
+      command: REPROFILE_COMMAND,
+      from: path.resolve(from),
+      skill,
+      counts,
+      leftOut,
+      profiles: {
+        dir,
+        contextSession:
+          contextSession === undefined
+            ? null
+            : {
+                ...contextSession,
+                pathHash: context?.pathHash ?? null,
+                context: context?.built.profile.context ?? null,
+                secretsRemoved: context?.built.secretsRemoved ?? null,
+                evidence: context?.built.evidence ?? [
+                  ...contextBefore,
+                  ...(contextGone === undefined ? [] : [contextGone]),
+                ],
+              },
+        tasks: records,
+        sessionQueries,
+      },
+    })
+  );
+  io.out(
+    `build-tasks: ${lines.length} of ${tasks.length} tasks written with their profiles built again (${counts.changed} changed, ${counts.unchanged} unchanged, ${counts.kept} kept because their store holds their session no longer) to ${tasksFile}, the profiles beside it, and ${summaryOut}\n`
+  );
+  if (leftOut.length > 0) {
+    io.err(
+      `build-tasks: failed: ${leftOut.length} tasks left out: ${leftOut.map((each) => each.task).join(", ")}`
+    );
+    return EXIT.failed;
+  }
+  return EXIT.ok;
+}
+
 /** `skill-cuts build-tasks`. */
 async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number> {
   const values = parse(
@@ -5241,9 +5715,11 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       model: { type: "string" },
       "max-candidates": { type: "string" },
       "max-search-minutes": { type: "string" },
+      reprofile: { type: "string" },
     },
     BUILD_TASKS_USAGE
   );
+  if (values.reprofile !== undefined) return reprofileTasks(values, io);
   if (values["first-read"] === true) return buildControlTasks(values, io);
   for (const flag of ["sessions", "seed", "max"] as const) {
     if (values[flag] !== undefined) {
