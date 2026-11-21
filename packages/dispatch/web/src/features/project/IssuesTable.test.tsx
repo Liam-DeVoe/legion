@@ -2740,6 +2740,48 @@ test("Finish of a merge whose target left work asks the merge's question, and on
   ]);
 });
 
+// A merge whose move of an issue in work was refused once its target was in work leaves that move
+// to Finish. Another writer then takes the target out of work. Finish asks the merge's question
+// before it writes anything (D12: the table asks whatever the setting), so its first request is the
+// target's dry run and no move of the issue goes out while the question is open. With the setting
+// off, a move sent first would put the issue in work under an epic on the backlog, unasked.
+test("Finish of a merge whose issue's move was refused, its target since out of work, asks before it sends that move again", async () => {
+  const user = userEvent.setup();
+  const rows = mergeRows("backlog");
+  const sent = answerEpicWrites([epicIssue("CORE-2", "Target", "backlog")]);
+  let refuse = true;
+  answerIssuePatches().mockImplementation(async (key, input) => {
+    sent.push(["PATCH", key, input]);
+    if (refuse && key === "CORE-3") {
+      refuse = false;
+      throw new ApiError(400, { code: "REFUSED_ONCE", error: "refused once" });
+    }
+    return savedIssue(key);
+  });
+  table(rows, "?group=epic");
+  const heading = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!heading) throw new Error("The source epic has no heading row");
+  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
+  await user.click(screen.getByRole("button", { name: "Merge…" }));
+  const asked = await screen.findByRole("dialog", { name: "Move CORE-2 into work too?" });
+  await user.click(within(asked).getByRole("button", { name: "Move into work too" }));
+  await screen.findByRole("alert");
+  expect(sent).toEqual([
+    ["status-change", "CORE-2", intoWorkDryRun],
+    ["status-change", "CORE-2", intoWork],
+    ["PATCH", "CORE-3", { parent: "CORE-2" }],
+  ]);
+  // The target is out of work again: the listing and the dry run both read it on the backlog.
+  const before = sent.length;
+  await pressFinish(user);
+  await screen.findByRole("dialog", { name: "Move CORE-2 into work too?" });
+  expect(sent.slice(before)).toEqual([["status-change", "CORE-2", intoWorkDryRun]]);
+});
+
 /** Each interrupted action whose epic Finish finds not in work while an issue it still moves is,
  *  with the question Finish asks of it. */
 const finishingActions = [
