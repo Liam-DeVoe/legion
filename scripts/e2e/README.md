@@ -2222,7 +2222,6 @@ LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermo
   LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
   LEGION_E2E_DISPATCH_URL=https://<dispatch> LEGION_E2E_ENVOY_URL=http://<listener>:<port> LEGION_E2E_NATS_URL=nats://<nats>:4222 \
   LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE=<email of a person signed in to Dispatch> \
-  LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> \
   LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
   LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE=<0600 file> \
   LEGION_E2E_SESSION_DB_PORT=<port> \
@@ -2253,18 +2252,18 @@ the default assignee the run's project names when `prerequisites` creates it (`e
 Every project names the person its unowned work lands on, and the agents' bearer acts for nobody, so Dispatch refuses that create naming none (400 `INVALID_PROJECT`) or naming somebody who never signed in (400 `ASSIGNEE_NOT_ALLOWED`), for a project that already exists too.
 `prerequisites` refuses the variable unset or not shaped as an email, naming the variable and never its value;
 the repository carries no person's email.
-`LEGION_E2E_ENVOY_TOKEN_SECRET_ID` is the Secrets Manager id of the production Envoy listener's API token, which `prerequisites` reads with the devbox admin role.
-Only the run's own reads of that listener present it (the interests sampler, the controller-role lookup): no `legion.yaml` or `controller.yaml` names it, so neither the daemon, its roles nor the controller holds it.
-Both bearers land in 0600 files under the run's scratch directory.
+`LEGION_E2E_AGENT_SECRETS_URL`, `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (and the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE`) are the pods' broker route, the run's `runtime.kubernetes.agent_secrets` block ([`lib/broker-route.sh`](#libbroker-routesh)):
+the daemon enrols every pod with the production secrets broker, and each role trades its pod's exchange token for a broker token naming its own session, its one credential at the production listener, which takes no shared token.
+Each role's endpoint check (`assert_claim_endpoints` and the address-moved checkpoints) refuses a role that carries `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN`.
+`LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE` is the daemon's own identity at that broker, as in [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh): a token of the daemon's ServiceAccount for the exchange audience, of an account the broker's `BROKER_EXCHANGE_ACCOUNTS` names for the session `legion-daemon:<project>`, which the daemon, told it as a daemon pod is, trades for the broker token it presents the listener.
+`prerequisites` refuses each of these, and each token file that is not an absolute path to a non-empty file only its owner can read, naming the variable and never its value or what the file holds.
+The run's own reads of that listener (the interests sampler, the controller-role lookup) present the devbox's own broker token, which the operator's `AGENT_SECRETS_*` environment trades, through [`lib/listener-get.ts`](#liblistener-getts);
+`prerequisites` reads an unheld role with it, requires 404, and refuses a devbox with no broker route, naming what it lacks.
+The controller the run starts on the devbox trades the same environment for the broker token its session presents the listener, since `controller.yaml` names no Envoy bearer and `legion controller start` refuses an `envoy_url` off loopback without `AGENT_SECRETS_URL` and `AGENT_SECRETS_MACHINE_IDENTITY`.
+The Dispatch bearer lands in a 0600 file under the run's scratch directory.
 `prerequisites` refuses the token file when the variable is unset, or names something that is not a readable regular file, whose group or others have any permission bit (read through a symlink, from the file it names), or that holds only whitespace;
 each refusal names the variable and the path, never what the file holds.
 It refuses the other three when they are unset or malformed (the audience through [`lib/model-gateway-audience.sh`](#libmodel-gateway-audiencesh)), naming the variable and never its value.
-`LEGION_E2E_AGENT_SECRETS_URL`, `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (and the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE`) are the pods' broker route, the run's `runtime.kubernetes.agent_secrets` block ([`lib/broker-route.sh`](#libbroker-routesh)):
-the daemon enrols every pod with the production secrets broker, and each role trades its pod's exchange token for a broker token naming its own session, its one credential at the production listener, since the daemon hands a role no Envoy bearer (each role's endpoint check, `assert_claim_endpoints` and the address-moved checkpoints, refuses a role that carries `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN`).
-`LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE` is the daemon's own identity at that broker, as in [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh): a token of the daemon's ServiceAccount for the exchange audience, of an account the broker's `BROKER_EXCHANGE_ACCOUNTS` names for the session `legion-daemon:<project>`, which the daemon, told it as a daemon pod is, trades for the broker token it presents the listener.
-`prerequisites` refuses each of these, and each token file that is not an absolute path to a non-empty file only its owner can read, naming the variable and never its value or what the file holds.
-The controller the run starts on the devbox presents the listener the broker token the operator's own `AGENT_SECRETS_URL` and `AGENT_SECRETS_MACHINE_IDENTITY` trade, since `controller.yaml` names no Envoy bearer and `legion controller start` refuses an `envoy_url` off loopback without both;
-`prerequisites` refuses either unset, unless `STAGE4B_SKIP_CONTROLLER` is set.
 `preflight` reads Dispatch's `whoami` with the run's bearer and requires an agent session;
 the same read with an invalid bearer, its negative control, must be refused 401.
 
@@ -5991,6 +5990,19 @@ broker_block=$(bash scripts/e2e/lib/broker-route.sh [TOKEN_FILE_VARIABLE...])
 Each variable named after it is another token file the proof needs, checked as the daemon's is and printed nowhere (`claude-backend-sandbox.sh`'s `LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE`, and both proofs' `LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE`).
 It exits 1 naming every missing or wrong input on stderr in one run, never a value or what a file holds, and prints nothing on stdout, so a proof calls it in `prerequisites`, before it creates anything.
 `lib/broker-route.test.ts` (`bun test scripts/e2e/lib`) runs it over every refusal and the block it prints.
+
+## lib/listener-get.ts
+
+One GET of an Envoy listener that takes no shared token, presented as every session's client presents itself: this machine's own broker token under DPoP, traded at the broker the `AGENT_SECRETS_*` environment names (the operator's `agent-secrets login`, or a pod's projected token), with a fresh proof of the token's key naming the request's method and URL (`packages/envoy-client`'s `brokerCredential` over `packages/cipher-client`).
+Stage 4b's interests sampler and controller-role lookup, and its `prerequisites` read of an unheld role, go through it.
+
+```sh
+status=$(bun scripts/e2e/lib/listener-get.ts --out <file> [--max-time <seconds>] <url>)
+```
+
+It prints the HTTP status, as `curl -w '%{http_code}'` does, writes the body to the file (0600), follows no redirect, and exits 0 for any answer;
+1 when no answer came or the token could not be made, and 2, sending nothing, when this machine has no broker route.
+A line it prints names the request's path, never its host or a token.
 
 ## lib/install-model-gateway.sh
 

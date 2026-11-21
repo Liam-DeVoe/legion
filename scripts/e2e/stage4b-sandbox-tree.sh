@@ -94,9 +94,13 @@
 #   (optional), are the pods' broker route, the run's runtime.kubernetes.agent_secrets block
 #   (lib/broker-route.sh says what each is): the daemon enrols every pod with the production
 #   secrets broker, and each role trades its pod's exchange token for a broker token naming its
-#   own session, its one credential at the production Envoy listener: the daemon hands a role no
-#   Envoy bearer. prerequisites refuses a missing or wrong one by name, before the run creates
-#   anything.
+#   own session, its one credential at the production Envoy listener, which takes no shared token.
+#   prerequisites refuses a missing or wrong one by name, before the run creates anything. The
+#   run's own reads of that listener (the interests sampler, the controller-role lookup) present
+#   this devbox's own broker token, which the operator's AGENT_SECRETS_* environment trades (their
+#   `agent-secrets login`), through lib/listener-get.ts; prerequisites reads the listener once with
+#   it and refuses a devbox that has no broker route, naming what it lacks. The repository carries
+#   no credential.
 # - LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE (required) is the daemon's own identity at that broker: a
 #   file only its owner can read, holding a token of the daemon's ServiceAccount for the exchange
 #   audience, of an account the broker's BROKER_EXCHANGE_ACCOUNTS names for the session
@@ -104,15 +108,10 @@
 #   presents the listener (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY=kubernetes,
 #   AGENT_SECRETS_MACHINE_TOKEN_FILE, as a daemon pod is told them; docs/kubernetes.md), and
 #   prerequisites refuses it as lib/broker-route.sh refuses the daemon's login token.
-# - The operator's own AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY (required unless
-#   STAGE4B_SKIP_CONTROLLER) are this devbox's identity at the broker, which the controller
-#   `legion controller start` runs here trades for the broker token its session presents the
-#   listener: controller.yaml names no Envoy bearer, and `legion controller start` refuses an
-#   envoy_url off loopback without both. prerequisites refuses either unset, naming it.
-# - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
-#   listener's API token, which the run's own reads of that listener present (the interests sampler,
-#   the controller-role lookup); no legion.yaml or controller.yaml names it, so neither the daemon,
-#   its roles nor the controller holds it. The repository carries neither credential.
+# - The operator's own AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, the devbox's broker
+#   route above, are also what the controller `legion controller start` runs here trades for the
+#   broker token its session presents the listener: controller.yaml names no Envoy bearer, and
+#   `legion controller start` refuses an envoy_url off loopback without both.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
 #   another deployment's two role Apps: each App's numeric id, and the name of the secrets broker
 #   github-app secret the `agent-secrets` client releases the implement App's installation tokens
@@ -169,14 +168,13 @@
 # - STAGE4B_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) holds the transcript, the
 #   daemon log, the pod watch, every agent transcript, and the negative controls.
 #
-# The production bearers are copied, the Dispatch one from its file and the Envoy one read from
-# Secrets Manager with the devbox admin role, into 0600 files under the run's scratch directory.
-# They are never printed, never in an argv (curl reads them from header files), and never in the
-# evidence. The Envoy one is the run's own reads' alone: the daemon and the controller present the
-# listener broker tokens. One run at a time per identity (above): the NATS durable consumer names
-# and the lock path both derive from LEGION_E2E_PROJECT, so the run takes its own lock and refuses
-# to start while another run of the same identity holds it, or while that identity's project has
-# pods, Sandboxes or claims it did not create.
+# The Dispatch bearer is copied from its file into a 0600 file under the run's scratch directory.
+# It is never printed, never in an argv (curl reads it from a header file), and never in the
+# evidence. The run holds no Envoy bearer: the listener takes none. One run at a time per identity
+# (above): the NATS durable consumer names and the lock
+# path both derive from LEGION_E2E_PROJECT, so the run takes its own lock and refuses to start
+# while another run of the same identity holds it, or while that identity's project has pods,
+# Sandboxes or claims it did not create.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -211,7 +209,6 @@ runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
 dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
-envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
 # The daemon's own identity at the secrets broker, as a daemon pod is told it, which prerequisites
 # fills once lib/broker-route.sh has checked its inputs; empty until then.
 daemon_broker_env=()
@@ -1425,13 +1422,15 @@ pod_endpoint_mismatch() {
 read_bearers() {
   write_dispatch_header &&
   (umask 077 &&
-    aws secretsmanager get-secret-value --secret-id "$envoy_token_secret_id" --query SecretString --output text >"$work/envoy-token" &&
-    printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header" &&
     head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
     head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
   [ -s "$work/dispatch-token" ] || fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
-  [ -s "$work/envoy-token" ] || fail "Secrets Manager returned an empty bearer for LEGION_E2E_ENVOY_TOKEN_SECRET_ID"
 }
+# listener_get OUT PATH prints the production listener's status for GET PATH and leaves its body in
+# OUT, the read presented with this devbox's own broker token (lib/listener-get.ts, over the
+# operator's AGENT_SECRETS_* environment): the listener takes no shared token. It fails, saying why
+# on stderr, when no answer came or no token could be made.
+listener_get() { bun "$root/scripts/e2e/lib/listener-get.ts" --out "$1" --max-time 20 "$envoy_url$2"; }
 # scrub replaces each production service's host with the variable that names it, and the run's
 # default assignee with LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE: the run prints none of them, and a
 # tool's error (a refused connection, an unresolved name) may carry a host, and Dispatch's refusal
@@ -3131,7 +3130,7 @@ interests_sample() {
   local session code now tmp=$work/interest.$BASHPID.json
   for session in $(jq -R -r "fromjson? | $registered_jq | .session" "$daemon_log" | sort -u); do
     now=$(date -u +%FT%T.%3NZ)
-    if ! code=$(curl -sS --max-time 20 -o "$tmp" -w '%{http_code}' -H "@$work/envoy-auth-header" "$envoy_url/v1/interests/$session" 2>&1); then
+    if ! code=$(listener_get "$tmp" "/v1/interests/$session" 2>&1); then
       printf '%s %s error unreachable: %s\n' "$now" "$session" "$(tr '\n' ' ' <<<"$code" | scrub)" >>"$evidence/interests-outcomes.txt"
       continue
     fi
@@ -3366,27 +3365,23 @@ esac
 # which Dispatch would otherwise refuse after the run had begun. The value is never printed.
 [[ $dispatch_default_assignee =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] ||
   fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
-[[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
-  fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
 # The pods' broker route (lib/broker-route.sh) and the daemon's own exchange token, each missing or
 # wrong input named at once; the block goes into legion.yaml as it is printed. The daemon is told
 # its identity as a daemon pod is (daemon_broker_env), the variables it reads for its own trade.
+# The production listener takes no shared token, so the run's own reads of it present this devbox's
+# broker token: one read here, of a role nobody holds, proves the devbox has one the listener admits
+# (an answer 404), and a devbox with no broker route at all is refused naming what it lacks. The
+# controller the run starts on the devbox trades that same route.
 broker_block=$(bash "$root/scripts/e2e/lib/broker-route.sh" LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE) ||
   fail "the pods' broker route is not one the daemon's runtime.kubernetes.agent_secrets takes (each input is named above)"
 daemon_broker_env=(AGENT_SECRETS_URL="${LEGION_E2E_AGENT_SECRETS_URL%/}" AGENT_SECRETS_MACHINE_IDENTITY=kubernetes
   AGENT_SECRETS_MACHINE_TOKEN_FILE="$LEGION_E2E_DAEMON_EXCHANGE_TOKEN_FILE")
 broker_audience=${LEGION_E2E_AGENT_SECRETS_AUDIENCE:-agent-secrets}
 exchange_audience=$LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE
-# The controller the run starts on the devbox presents the production listener the broker token this
-# devbox's own identity trades, and `legion controller start` refuses an envoy_url off loopback
-# without it: refused here, before the run creates anything, rather than at the controller
-# checkpoint hours in. The values are never printed.
-if [ -z "$skip_controller" ]; then
-  for name in AGENT_SECRETS_URL AGENT_SECRETS_MACHINE_IDENTITY; do
-    [ -n "${!name:-}" ] ||
-      fail "$name is unset: the controller this run starts on the devbox presents the production Envoy listener the broker token this devbox's identity trades (AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY), since controller.yaml names no Envoy bearer"
-  done
-fi
+listener_status=$(listener_get "$work/listener-preflight.json" "/v1/roles/legion-e2e4b-preflight-$$" 2> >(scrub >&2)) ||
+  fail "the production listener could not be read with this devbox's broker token (lib/listener-get.ts said why above): run agent-secrets login, or name the devbox's machine identity in AGENT_SECRETS_*"
+[ "$listener_status" = 404 ] ||
+  fail "the production listener answered a read of an unheld role $listener_status with this devbox's broker token, not 404: $(head -c 200 "$work/listener-preflight.json" | scrub)"
 # Legion's two role Apps proved against GitHub before the run's first write anywhere
 # (lib/github-apps.sh); legion.yaml's github_apps is the block proved. The review App's key
 # command runs once, here, in this shell's own environment, into $work/app-key, which the daemon
@@ -6274,7 +6269,7 @@ begin daemon-controller-liveness
 controller_token=legion-${project,,}-controller
 # role_answer prints the listener's status for the lookup of the controller role, and leaves its body
 # in $work/controller-role.json.
-role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{http_code}' -H "@$work/envoy-auth-header" "$envoy_url/v1/roles/$controller_token" 2>/dev/null; }
+role_answer() { listener_get "$work/controller-role.json" "/v1/roles/$controller_token" 2>/dev/null; }
 role_unheld() { [ "$(role_answer)" = 404 ]; }
 role_held_by() { [ "$(role_answer)" = 200 ] && jq -e --arg s "$1" '.holder == $s' "$work/controller-role.json" >/dev/null; }
 # The operator's controller quits as a person quits it (controller-start-tmux.sh): Ctrl-C ends a
