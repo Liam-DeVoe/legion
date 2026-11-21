@@ -249,8 +249,12 @@ jobs:
       # runs. natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
       # user a Dispatch event, and the edge listener starts, relays a send and is reached by a
       # role message through a shared listener under its rendered grant, with no violation, and
-      # ends its start, naming its inbox prefix, under a grant without it. Each package runs only
-      # the tests its tag adds: `-tags natslive ./pkg` would re-run
+      # ends its start, naming its inbox prefix, under a grant without it; a role message of the
+      # edge reaches no holder of another project's role; and the relay socket's rows, most of the
+      # step's time, run two edge listeners and the real broker with 30 s tokens, and carry frames
+      # and receipts, refuse other sessions' subjects, and close the socket at a token's expiry,
+      # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker. Each
+      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
       # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
       # step above, and internal/bus and internal/broker/natscallout in envoy-go-race, which the
       # unit step's grep -Ev leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
