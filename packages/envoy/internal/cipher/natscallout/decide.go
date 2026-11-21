@@ -153,8 +153,8 @@ func credentialKind(req Request) string {
 // serviceGrant is entry's kind's grant, before it is held to the entry's projects, and ok false
 // for a kind it lists no grant for: the privacy measurement, which reads the broker's GET
 // /v1/project-privacy and no subject of the hub, and any kind added here without one. Such an
-// entry takes no NATS user (no_nats_user), never an empty grant, whose empty allow lists a NATS
-// server can read as no restriction at all.
+// entry is refused no_nats_user here: an empty grant would reach admit's guard, which refuses it
+// open_direction, as though the grant were open rather than missing.
 func serviceGrant(entry ServiceEntry) (natsgrant.Permissions, bool) {
 	switch entry.Kind {
 	case KindDispatch:

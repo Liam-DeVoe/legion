@@ -237,7 +237,7 @@ func TestRefusals(t *testing.T) {
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
 		{"the privacy measurement, which takes no NATS user", deps, nil, serviceRequest("privacy-measure-token"), labelNoNATSUser, "service takes no NATS user: privacy-measure/project-privacy-measure"},
 		// An entry of a kind serviceGrant lists no grant for, as one added without one would be,
-		// takes no NATS user: never an empty grant, whose empty allow lists read as no restriction.
+		// takes no NATS user, refused as such rather than as an open grant (open_direction).
 		{"a kind with no grant", deps, nil, serviceRequest("no-grant-token"), labelNoNATSUser, "service takes no NATS user: no-grant/example-no-grant"},
 	} {
 		t.Run(row.name, func(t *testing.T) {

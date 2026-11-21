@@ -761,9 +761,9 @@ type Config struct {
 	// writes one and read at start (natscallout.ParseServices); GET /v1/project-privacy answers a
 	// listener or privacy-measure entry with the whole grant (*), the readers natscallout names,
 	// and no other caller, and the auth service answers a privacy-measure entry no NATS user. A
-	// google: reader presents that route a token for BROKER_GOOGLE_OIDC_AUDIENCE, which needs a
-	// google: entry in BROKER_API_ACCOUNTS or a VM service, so list a VM reader in
-	// BROKER_API_ACCOUNTS too: its entry here alone can leave the broker no verifier for it.
+	// google: reader presents that route a token for BROKER_GOOGLE_OIDC_AUDIENCE, so it needs that
+	// setting, which needs a google: entry in BROKER_API_ACCOUNTS or a VM service: a reader's
+	// entry here does not count, and on a broker with neither no VM reader's token can verify.
 	// BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must carry,
 	// verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE the
 	// audience a service's Google identity token must carry, verified against
