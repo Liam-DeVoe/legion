@@ -481,9 +481,15 @@ func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
 // Control: compare the two hosts by strings.EqualFold alone (checkOutsideOrigin before its fix),
 // and each pair below boots and the row fails.
 func TestBootRefusesAnOutsideOriginOnTheServerURLsHostHoweverSpelled(t *testing.T) {
-	for _, server := range []string{"https://canon.example.com.", "https://CANON.Example.com..", "https://canon.example.com.:8443"} {
-		if err := checkOutsideOrigin("https://canon.example.com", server); err == nil || !strings.HasPrefix(err.Error(), "DISPATCH_OUTSIDE_ORIGIN: ") {
-			t.Errorf("checkOutsideOrigin(https://canon.example.com, %s) = %v, want a refusal naming DISPATCH_OUTSIDE_ORIGIN", server, err)
+	for _, pair := range []struct{ outside, server string }{
+		{"https://canon.example.com", "https://canon.example.com."},
+		{"https://canon.example.com", "https://CANON.Example.com.."},
+		{"https://canon.example.com", "https://canon.example.com.:8443"},
+		// The pair #4854's review found: a local server on another port, its host written with a dot.
+		{"https://localhost", "http://localhost.:8080"},
+	} {
+		if err := checkOutsideOrigin(pair.outside, pair.server); err == nil || !strings.HasPrefix(err.Error(), "DISPATCH_OUTSIDE_ORIGIN: ") {
+			t.Errorf("checkOutsideOrigin(%s, %s) = %v, want a refusal naming DISPATCH_OUTSIDE_ORIGIN", pair.outside, pair.server, err)
 		}
 	}
 	if err := checkOutsideOrigin("https://outside.example.com", "https://canon.example.com."); err != nil {
