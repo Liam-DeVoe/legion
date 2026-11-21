@@ -1196,9 +1196,9 @@ ENVOY_FORCED_ORDER_PKGS = {
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
 # The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
-# forced-order.test.sh runs forced-order.sh three times, and the one run that gets as far as a go
-# test is over its fixture package, hooktest/skiponly, on the linked version; the other two are
-# refused before anything is built.
+# forced-order.test.sh runs forced-order.sh in six cases, and the one run that gets as far as a
+# go test is over its fixture package, hooktest/skiponly, on the linked version; the other five
+# are refused before anything is built.
 FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
 ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
 ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]

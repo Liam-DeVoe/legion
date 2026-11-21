@@ -17,17 +17,14 @@ type (
 	Hold  = internal.Hold
 )
 
-// The points internal/testnats names: its eight hold points, and the two shutdown points a test
-// awaits.
+// The points of internal/testnats a test of another module holds or awaits through this package:
+// the hold points the daemon's forced-order tests take, and the two shutdown points a test awaits.
 const (
 	WritePreIO     = internal.WritePreIO
 	WritePreRename = internal.WritePreRename
-	FlushEncoded   = internal.FlushEncoded
 	StoreCreate    = internal.StoreCreate
 	APIWorker      = internal.APIWorker
 	ClientPublish  = internal.ClientPublish
-	MetaApply      = internal.MetaApply
-	StreamApply    = internal.StreamApply
 	ServerShutdown = internal.ServerShutdown
 	ServerDown     = internal.ServerDown
 )
