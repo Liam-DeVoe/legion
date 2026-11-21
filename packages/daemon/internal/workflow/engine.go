@@ -1014,7 +1014,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // failed claim no longer holds its role, until the child's architect runs again: the daemon starts
 // it again at the child's next phase start (start), and so do a re-admission of the tree while the
 // child stands in a phase (admit's startMidPhaseMembers), an operator's retry and the retry of an
-// architect above it through the claim door (api's claimRetry). The worker-died names the failure,
+// architect above it through the agent door (api's retryAgent). The worker-died names the failure,
 // as a finished role's does, so the architect above it reads why the child's architect stopped; no
 // controller copy goes with it, since an architect inside the tree is left to act on it. A child
 // that left the workflow or a member of a lingering tree tells nobody, as below.

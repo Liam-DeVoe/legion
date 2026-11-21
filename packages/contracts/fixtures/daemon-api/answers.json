@@ -159,14 +159,14 @@
     "noBody": false
   },
   {
-    "id": "claim-operation",
+    "id": "agent-action",
     "routes": [
-      "POST /legion/v1/claims/stop",
-      "POST /legion/v1/claims/retry",
-      "POST /legion/v1/claims/suspend",
-      "POST /legion/v1/claims/resume"
+      "POST /legion/v1/agents/stop",
+      "POST /legion/v1/agents/retry",
+      "POST /legion/v1/agents/suspend",
+      "POST /legion/v1/agents/resume"
     ],
-    "since": 212,
+    "since": 215,
     "noBody": false
   },
   {
@@ -174,7 +174,7 @@
     "routes": [
       "POST /legion/v1/issues/pod-update"
     ],
-    "since": 212,
+    "since": 215,
     "noBody": false
   }
 ]

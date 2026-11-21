@@ -115,10 +115,10 @@ function recordingDaemon(options: {
     "issueStatus",
     "freshSession",
     "compact",
-    "stopClaim",
-    "retryClaim",
-    "suspendClaim",
-    "resumeClaim",
+    "stopAgent",
+    "retryAgent",
+    "suspendAgent",
+    "resumeAgent",
     "issuePodUpdate",
     "handoffComplete",
     "releaseRecords",
@@ -336,7 +336,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "reaches, and one left working under a relaunch the wake pacing parked " +
   "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
   "and for role controller. " +
-  "stop, retry, suspend and resume_claim (issue, role) are the operator's own claim operations. Each answers " +
+  "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent " +
+  "(stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role); the four " +
+  "are the operator's own. Each answers " +
   "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
   "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
   "stop ends the claim: the daemon stops its agent at once, also in a turn, which loses that turn, and " +
@@ -346,14 +348,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
   "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
   "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
-  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_claim that one, unless the operator suspended it. " +
+  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_agent that one, unless the operator suspended it. " +
   "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
   "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
   "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
-  "again until your resume_claim or the operator's resume. " +
-  "resume_claim starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
-  "The daemon refuses resume_claim for a claim stored working (CLAIM_IN_A_TURN). " +
-  "The daemon refuses resume_claim, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
+  "again until your resume_agent or the operator's resume. " +
+  "resume_agent starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
+  "The daemon refuses resume_agent for a claim stored working (CLAIM_IN_A_TURN). " +
+  "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
   "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
   "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first, or " +
   "where fresh_session left behind the session the claim recorded, so the claim starts in a new session once " +
@@ -361,20 +363,20 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The controller's compact is not refused the operator's suspension, and answers such a claim " +
   "in its own codes. The four " +
   "refuse role controller as fresh_session and compact do. " +
-  "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
-  "resume_claim (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
+  "An architect has the same six agent actions, fresh_session, compact, stop, retry, suspend and " +
+  "resume_agent (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
   "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on a claim " +
   "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
   "architect another tree's claim (ISSUE_OUTSIDE_TREE), a claim of an issue of its tree that it does not own, " +
   "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own claim " +
-  "(OWN_CLAIM). It refuses " +
+  "(OWN_AGENT). It refuses " +
   "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
   "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
   "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
   "fresh_session's own suspension ran first, or where fresh_session left behind the session the claim " +
   "recorded, so the claim starts in a new session once it is started: ask the holder to lift its suspension. " +
-  "An architect's suspension is recorded as architect. An architect's resume_claim lifts it, and the " +
-  "controller's resume_claim and the operator's resume lift it too. An architect's resume_claim, suspend, stop and " +
+  "An architect's suspension is recorded as architect. An architect's resume_agent lifts it, and the " +
+  "controller's resume_agent and the operator's resume lift it too. An architect's resume_agent, suspend, stop and " +
   "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
   "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
   "over a claim the daemon released, and its stop retires one. " +
@@ -395,7 +397,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
   "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
   "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-  "the project is paused it refuses fresh_session, compact, retry, resume_claim and replace_pod (PROJECT_PAUSED, " +
+  "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
   "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
   "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. A claim a " +
   "suspension holds when the project is resumed stays suspended until that suspension's own resume lifts it. " +
@@ -457,7 +459,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "stop",
         "retry",
         "suspend",
-        "resume_claim",
+        "resume_agent",
         "read_build",
         "read_state",
         "set_status",
@@ -2058,13 +2060,13 @@ test("the controller reads the state without a grant and sets an issue's status 
 
 test("the controller stops, retries, suspends and resumes a claim it names by issue and role", async () => {
   const minted: string[] = [];
-  // What the daemon answers each operation (claim-*.json): the claim as it left it, and who
+  // What the daemon answers each action (agent-*.json): the claim as it left it, and who
   // holds a suspension over it.
   const answers = {
-    stopClaim: { state: "retired" },
-    retryClaim: { state: "launching" },
-    suspendClaim: { state: "suspended", suspendedBy: "controller" },
-    resumeClaim: { state: "launching" },
+    stopAgent: { state: "retired" },
+    retryAgent: { state: "launching" },
+    suspendAgent: { state: "suspended", suspendedBy: "controller" },
+    resumeAgent: { state: "launching" },
   };
   const { calls, daemon } = recordingDaemon({ answers });
   const tool = controllerTool(daemon, minted);
@@ -2074,10 +2076,10 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
   // Each names the claim as fresh_session and compact do, mints the controller's grant, and
   // returns the daemon's answer whole.
   for (const [op, route] of [
-    ["stop", "stopClaim"],
-    ["retry", "retryClaim"],
-    ["suspend", "suspendClaim"],
-    ["resume_claim", "resumeClaim"],
+    ["stop", "stopAgent"],
+    ["retry", "retryAgent"],
+    ["suspend", "suspendAgent"],
+    ["resume_agent", "resumeAgent"],
   ] as const) {
     const answer = answers[route];
     await expect(run({ op, issue: "LEGION-209", role: "tester" })).resolves.toEqual({
@@ -2099,8 +2101,8 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
     [{ op: "retry", issue: "LEGION-209", role: "controller" }, "retry requires role architect"],
     [{ op: "suspend", role: "tester" }, "suspend requires issue"],
     [
-      { op: "resume_claim", issue: "LEGION-209", role: "tester", reason: "why" },
-      'resume_claim does not accept field "reason"; it takes issue, role',
+      { op: "resume_agent", issue: "LEGION-209", role: "tester", reason: "why" },
+      'resume_agent does not accept field "reason"; it takes issue, role',
     ],
   ] as const) {
     const result = await run(parameters);
@@ -2114,9 +2116,9 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
   // the operator's own suspension, which only the operator lifts.
   const refusing = recordingDaemon({
     answers: {
-      resumeClaim: new LegionDaemonApiError(
+      resumeAgent: new LegionDaemonApiError(
         "POST",
-        "/legion/v1/claims/resume",
+        "/legion/v1/agents/resume",
         409,
         "SUSPENDED_BY_OPERATOR",
         "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts"
@@ -2125,7 +2127,7 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
   });
   const refused = await controllerTool(refusing.daemon, []).execute(
     "",
-    { op: "resume_claim", issue: "LEGION-209", role: "tester" },
+    { op: "resume_agent", issue: "LEGION-209", role: "tester" },
     undefined,
     undefined,
     context("ses_controller")
@@ -2204,10 +2206,10 @@ test("the controller asks for the replacement of an issue's pod with its own gra
 
 // The architect's operation set, pinned whole: every `op` the tool's schema lists that an
 // architect's session is not refused as unavailable. It is the tree's workflow operations, the
-// phase ops, the six claim operations the daemon serves an architect for the issues it owns, and
+// phase ops, the six agent actions the daemon serves an architect for the issues it owns, and
 // read_build, which every session holds; the controller's read_state, set_status and replace_pod
 // stay the controller's alone.
-test("an architect's operation set is the tree's operations and the six claim operations", async () => {
+test("an architect's operation set is the tree's operations and the six agent actions", async () => {
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
@@ -2241,13 +2243,13 @@ test("an architect's operation set is the tree's operations and the six claim op
       "stop",
       "retry",
       "suspend",
-      "resume_claim",
+      "resume_agent",
       "read_build",
     ]);
   }
 });
 
-// An architect's claim operations name the claim by issue and role, as the controller's do, and
+// An architect's agent actions name the claim by issue and role, as the controller's do, and
 // mint the architect's own claim grant rather than a controller grant: the daemon reads the tree
 // and the issue from that grant and refuses every claim of an issue it does not own. Each returns
 // the daemon's answer whole.
@@ -2255,10 +2257,10 @@ test("an architect acts on a claim of an issue it owns with its own grant", asyn
   const answers = {
     freshSession: {},
     compact: { compacted: true },
-    stopClaim: { state: "retired" },
-    retryClaim: { state: "launching" },
-    suspendClaim: { state: "suspended", suspendedBy: "architect" },
-    resumeClaim: { state: "launching" },
+    stopAgent: { state: "retired" },
+    retryAgent: { state: "launching" },
+    suspendAgent: { state: "suspended", suspendedBy: "architect" },
+    resumeAgent: { state: "launching" },
   };
   const { calls, daemon } = recordingDaemon({ answers });
   const architect = claimSession("architect");
@@ -2269,10 +2271,10 @@ test("an architect acts on a claim of an issue it owns with its own grant", asyn
   for (const [op, route] of [
     ["fresh_session", "freshSession"],
     ["compact", "compact"],
-    ["stop", "stopClaim"],
-    ["retry", "retryClaim"],
-    ["suspend", "suspendClaim"],
-    ["resume_claim", "resumeClaim"],
+    ["stop", "stopAgent"],
+    ["retry", "retryAgent"],
+    ["suspend", "suspendAgent"],
+    ["resume_agent", "resumeAgent"],
   ] as const) {
     const answer = answers[route];
     await expect(run({ op, issue: "LEGION-209", role: "tester" })).resolves.toEqual({
@@ -2296,8 +2298,8 @@ test("an architect acts on a claim of an issue it owns with its own grant", asyn
     [{ op: "compact", issue: "LEGION-209", role: "controller" }, "compact requires role architect"],
     [{ op: "suspend", role: "tester" }, "suspend requires issue"],
     [
-      { op: "resume_claim", issue: "LEGION-209", role: "tester", reason: "why" },
-      'resume_claim does not accept field "reason"; it takes issue, role',
+      { op: "resume_agent", issue: "LEGION-209", role: "tester", reason: "why" },
+      'resume_agent does not accept field "reason"; it takes issue, role',
     ],
   ] as const) {
     const result = await run(parameters);
@@ -2310,10 +2312,10 @@ test("an architect acts on a claim of an issue it owns with its own grant", asyn
   // a claim of an issue of its tree it does not own, its own claim, and a claim the controller's
   // suspension holds.
   for (const [route, op, path, status, code] of [
-    ["stopClaim", "stop", "/legion/v1/claims/stop", 403, "ISSUE_OUTSIDE_TREE"],
-    ["retryClaim", "retry", "/legion/v1/claims/retry", 403, "ISSUE_NOT_OWNED"],
-    ["suspendClaim", "suspend", "/legion/v1/claims/suspend", 403, "OWN_CLAIM"],
-    ["resumeClaim", "resume_claim", "/legion/v1/claims/resume", 409, "SUSPENDED_BY_CONTROLLER"],
+    ["stopAgent", "stop", "/legion/v1/agents/stop", 403, "ISSUE_OUTSIDE_TREE"],
+    ["retryAgent", "retry", "/legion/v1/agents/retry", 403, "ISSUE_NOT_OWNED"],
+    ["suspendAgent", "suspend", "/legion/v1/agents/suspend", 403, "OWN_AGENT"],
+    ["resumeAgent", "resume_agent", "/legion/v1/agents/resume", 409, "SUSPENDED_BY_CONTROLLER"],
   ] as const) {
     const refusing = recordingDaemon({
       answers: {
@@ -2563,23 +2565,23 @@ test("pause and resume are offered to no architect and no phase worker", async (
   expect(posted).toEqual([]);
 });
 
-// The controller's resume_claim and the project's resume are two operations: resume_claim names
+// The controller's resume_agent and the project's resume are two operations: resume_agent names
 // a claim by issue and role and posts that claim's resume, and resume names nothing and is
-// refused a claim's fields. A resume_claim the daemon refuses because the project is paused
+// refused a claim's fields. A resume_agent the daemon refuses because the project is paused
 // reaches the controller in the daemon's own words, which name the resume operation that lifts
 // the pause, so a controller that meant the project's resume reads which operation that is.
-test("resume_claim resumes a claim, resume takes no claim, and a paused project's refusal names resume", async () => {
-  const { calls, daemon } = recordingDaemon({ answers: { resumeClaim: { state: "launching" } } });
+test("resume_agent resumes a claim, resume takes no claim, and a paused project's refusal names resume", async () => {
+  const { calls, daemon } = recordingDaemon({ answers: { resumeAgent: { state: "launching" } } });
   const tool = controllerTool(daemon, []);
   await tool.execute(
     "",
-    { op: "resume_claim", issue: "LEGION-209", role: "tester" },
+    { op: "resume_agent", issue: "LEGION-209", role: "tester" },
     undefined,
     undefined,
     context("ses_controller")
   );
   expect(calls.at(-1)).toEqual([
-    "resumeClaim",
+    "resumeAgent",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "tester" },
   ]);
   const asProject = await tool.execute(
@@ -2603,9 +2605,9 @@ test("resume_claim resumes a claim, resume takes no claim, and a paused project'
     "names no issue, or the operator's legion project resume. Ask again once the project runs";
   const refusing = recordingDaemon({
     answers: {
-      resumeClaim: new LegionDaemonApiError(
+      resumeAgent: new LegionDaemonApiError(
         "POST",
-        "/legion/v1/claims/resume",
+        "/legion/v1/agents/resume",
         409,
         "PROJECT_PAUSED",
         sentence
@@ -2614,7 +2616,7 @@ test("resume_claim resumes a claim, resume takes no claim, and a paused project'
   });
   const refused = await controllerTool(refusing.daemon, []).execute(
     "",
-    { op: "resume_claim", issue: "LEGION-209", role: "tester" },
+    { op: "resume_agent", issue: "LEGION-209", role: "tester" },
     undefined,
     undefined,
     context("ses_controller")

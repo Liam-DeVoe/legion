@@ -374,10 +374,10 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
-    readonly stopClaim: (body: object) => Promise<unknown>;
-    readonly retryClaim: (body: object) => Promise<unknown>;
-    readonly suspendClaim: (body: object) => Promise<unknown>;
-    readonly resumeClaim: (body: object) => Promise<unknown>;
+    readonly stopAgent: (body: object) => Promise<unknown>;
+    readonly retryAgent: (body: object) => Promise<unknown>;
+    readonly suspendAgent: (body: object) => Promise<unknown>;
+    readonly resumeAgent: (body: object) => Promise<unknown>;
     readonly issuePodUpdate: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
@@ -431,31 +431,31 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
     ],
-    // The controller's four claim operations take the recoveries' body and answer the claim as
+    // The controller's four agent actions take the recoveries' body and answer the claim as
     // each left it, with who holds a suspension over it.
     [
-      "stopClaim",
-      "/legion/v1/claims/stop",
+      "stopAgent",
+      "/legion/v1/agents/stop",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
-      "claim-stop.json",
+      "agent-stop.json",
     ],
     [
-      "retryClaim",
-      "/legion/v1/claims/retry",
+      "retryAgent",
+      "/legion/v1/agents/retry",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
-      "claim-retry.json",
+      "agent-retry.json",
     ],
     [
-      "suspendClaim",
-      "/legion/v1/claims/suspend",
+      "suspendAgent",
+      "/legion/v1/agents/suspend",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
-      "claim-suspend.json",
+      "agent-suspend.json",
     ],
     [
-      "resumeClaim",
-      "/legion/v1/claims/resume",
+      "resumeAgent",
+      "/legion/v1/agents/resume",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
-      "claim-resume.json",
+      "agent-resume.json",
     ],
     // The controller's replace_pod: the daemon's update round over the issue's pod, its reasons,
     // and whether this request opened it.

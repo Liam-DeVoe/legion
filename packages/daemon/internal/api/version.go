@@ -2979,16 +2979,18 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 212: #4065 -- the project's controller gets the four claim operations the
-// operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
-// each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
-// (claimDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
+// 215: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// resume, compact and fresh session of one agent, named by its issue and role) it lacked, the
+// four the operator already has, as controller routes beside `claims/fresh-session` and
+// `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
+// the same door
+// (agentDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
 // CONTROLLER_REQUIRED`, a claim the daemon supervises or `404 NO_CLAIM`, built from the daemon's
-// own project, so another project's claim cannot be named): `POST /legion/v1/claims/stop` runs
-// `legion claims stop`'s effect, `POST /legion/v1/claims/retry` the plain `legion claims retry`
-// (no fresh session), `POST /legion/v1/claims/suspend` `legion claims suspend`'s, and
-// `POST /legion/v1/claims/resume` `legion claims resume`'s. Each answers
-// `api.ClaimOperationResponse`: the claim's `state` after the request and, where a suspension is
+// own project, so another project's claim cannot be named): `POST /legion/v1/agents/stop` runs
+// `legion claims stop`'s effect, `POST /legion/v1/agents/retry` the plain `legion claims retry`
+// (no fresh session), `POST /legion/v1/agents/suspend` `legion claims suspend`'s, and
+// `POST /legion/v1/agents/resume` `legion claims resume`'s. Each answers
+// `api.AgentActionResponse`: the claim's `state` after the request and, where a suspension is
 // over it, `suspendedBy`, `suspensionHeld` and
 // `suspensionHeldBy`, which these routes alone of the session-facing ones carry, since no plugin
 // below this contract calls them (the state still names no suspender, StrandedClaim); a
@@ -2998,19 +3000,19 @@ package api
 // migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
 // resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
 // `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
-// bearer reads. The controller's resume_claim, suspend, stop and retry, and its fresh session,
+// bearer reads. The controller's resume_agent, suspend, stop and retry, and its fresh session,
 // are refused a claim the operator's own suspension holds, held for a turn or landed, with `409
 // SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and answers such a
 // claim in its own codes. Its retry and resume of a claim stored working that no such suspension
-// holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six operations — these
+// holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six agent actions — these
 // four, `fresh-session` and `compact` — for the claims of the issues it owns alone (#4065), as
 // sign_off and retry_or_escalate take an issue: an issue the daemon does not record is `404
 // ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`, one of its own tree it does not
 // own — for a sub-architect its tree's root and a sibling's subtree — `403 ISSUE_NOT_OWNED`, and
-// the architect's own claim `403 OWN_CLAIM`. Its suspension is recorded as `architect`, a
+// the architect's own claim `403 OWN_AGENT`. Its suspension is recorded as `architect`, a
 // further supervise.SuspendSource that `claims.suspended_by` admits from migration
 // 20261115083448, which holds as the controller's does and ranks under it: an architect's resume
-// lifts it, and so do the controller's and the operator's. Each of an architect's operations is
+// lifts it, and so do the controller's and the operator's. Each of an architect's actions is
 // refused a claim the operator's own suspension holds (`409 SUSPENDED_BY_OPERATOR`) and one the
 // controller's holds (`409 SUSPENDED_BY_CONTROLLER`), held or landed, and its resume, suspend, stop
 // and fresh session a claim the daemon suspended (`409 SUSPENDED_BY_DAEMON`; its suspend and stop
@@ -3043,11 +3045,11 @@ package api
 // that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
 // `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
 // ended the wait, and the bound.
-// While the project is paused (178), the controller's and an architect's `claims/resume` and
-// `claims/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands, for every claim, as
+// While the project is paused (178), the controller's and an architect's `agents/resume` and
+// `agents/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands, for every claim, as
 // their `claims/fresh-session` and `claims/compact` do, and change nothing: a claim the pause
-// stopped is the pause's to bring back at the project's resume, and no claim operation undoes
-// the pause. Their `claims/stop` and `claims/suspend` start nothing and still
+// stopped is the pause's to bring back at the project's resume, and no agent action undoes
+// the pause. Their `agents/stop` and `agents/suspend` start nothing and still
 // run. A suspension of the controller's, an architect's or the operator's and the pause's stop
 // each keep their own source: the pause stops no claim such a suspension already holds, a
 // claim the pause stopped that such a suspension then takes over stays suspended by it at the
@@ -3062,12 +3064,12 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 212 is served down by 193's rule (#3659): every answer goes through one writer, which
-// shapes it to the contract its caller reads. The claim operations' answer and the pod update's
-// are two rows of answers.go's table, `claim-operation` on the four routes and `pod-update` on
+// Contract 215 is served down by 193's rule (#3659): every answer goes through one writer, which
+// shapes it to the contract its caller reads. The agent actions' answer and the pod update's
+// are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
-// (claimOperationsContract), so no contract below records either, and shapeAnswer serves each as
-// written. The claim operations' `state`, `suspendedBy` and `suspensionHeldBy` are enumerated
+// (agentActionsContract), so no contract below records either, and shapeAnswer serves each as
+// written. The agent actions' `state`, `suspendedBy` and `suspensionHeldBy` are enumerated
 // fields of the table, each recorded whole at this contract, so no value of them is held back,
 // and the plugin reads every field of both answers as optional, since its code hands each answer
 // on whole and reads none of them (`LEGION_ANSWER_READS`). Every refusal of the five routes is the
@@ -3077,7 +3079,7 @@ package api
 // five routes' request records start at this contract
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
 // other answer moved, so this contract's records of every other answer are 202's, under its own
-// number. claimOperationsContract is now the last number of answers.go's SupportedContracts,
+// number. agentActionsContract is now the last number of answers.go's SupportedContracts,
 // after shapedAnswersContract, 199 and repositoriesLiveContract, and a renumber of this entry
 // moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
@@ -3151,6 +3153,8 @@ package api
 // head, 204 by #3831 and #4030, 205 by #4573 and 206 by #4540, so this entry moved from 203 to
 // 207, the lowest number above main's 202 that no other open head declares. The merge of main
 // `7009f289` moves it from 207 to 212: 207 to 211 are other open pull requests' (read at
-// refs/pull/<n>/head of all 395 open pull requests, 2026-11-21T11:08:11Z to 11:12:19Z). Read the
-// base's own number and every open head again at the next merge rather than from this line.)
-const DaemonAPIVersion = 212
+// refs/pull/<n>/head of all 395 open pull requests, 2026-11-21T11:08:11Z to 11:12:19Z). Round 22
+// moves it from 212 to 215: 203 to 214 are other open pull requests' (read at refs/pull/<n>/head
+// of all 411 open pull requests, 2026-11-21T18:33:51Z to 18:38:25Z). Read the base's own number
+// and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 215

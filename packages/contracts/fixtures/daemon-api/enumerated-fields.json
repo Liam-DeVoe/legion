@@ -1972,120 +1972,120 @@
     ]
   },
   {
-    "answer": "claim-operation",
+    "answer": "agent-action",
     "keyPath": "state",
     "values": [
       {
         "value": "failed",
-        "since": 212
+        "since": 215
       },
       {
         "value": "idle",
-        "since": 212
+        "since": 215
       },
       {
         "value": "launch_uncertain",
-        "since": 212
+        "since": 215
       },
       {
         "value": "launching",
-        "since": 212
+        "since": 215
       },
       {
         "value": "queued",
-        "since": 212
+        "since": 215
       },
       {
         "value": "ready",
-        "since": 212
+        "since": 215
       },
       {
         "value": "registered",
-        "since": 212
+        "since": 215
       },
       {
         "value": "retired",
-        "since": 212
+        "since": 215
       },
       {
         "value": "shim_connected",
-        "since": 212
+        "since": 215
       },
       {
         "value": "suspended",
-        "since": 212
+        "since": 215
       },
       {
         "value": "working",
-        "since": 212
+        "since": 215
       }
     ]
   },
   {
-    "answer": "claim-operation",
+    "answer": "agent-action",
     "keyPath": "suspendedBy",
     "values": [
       {
         "value": "architect",
-        "since": 212
+        "since": 215
       },
       {
         "value": "controller",
-        "since": 212
+        "since": 215
       },
       {
         "value": "daemon",
-        "since": 212
+        "since": 215
       },
       {
         "value": "exit",
-        "since": 212
+        "since": 215
       },
       {
         "value": "operator",
-        "since": 212
+        "since": 215
       },
       {
         "value": "released",
-        "since": 212
+        "since": 215
       },
       {
         "value": "unknown",
-        "since": 212
+        "since": 215
       }
     ]
   },
   {
-    "answer": "claim-operation",
+    "answer": "agent-action",
     "keyPath": "suspensionHeldBy",
     "values": [
       {
         "value": "architect",
-        "since": 212
+        "since": 215
       },
       {
         "value": "controller",
-        "since": 212
+        "since": 215
       },
       {
         "value": "daemon",
-        "since": 212
+        "since": 215
       },
       {
         "value": "exit",
-        "since": 212
+        "since": 215
       },
       {
         "value": "operator",
-        "since": 212
+        "since": 215
       },
       {
         "value": "released",
-        "since": 212
+        "since": 215
       },
       {
         "value": "unknown",
-        "since": 212
+        "since": 215
       }
     ]
   }

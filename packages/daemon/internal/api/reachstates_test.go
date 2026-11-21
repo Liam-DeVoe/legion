@@ -181,7 +181,7 @@ func sentenceNaming(t *testing.T, refusal, needle string) string {
 // suspends where the request arrives and starts again, and which the compaction refuses, since
 // it has no agent to ask for a compaction at all.
 type reachDoor struct {
-	op               claimOp
+	op               agentAction
 	live             func(supervise.ClaimState) bool
 	stopped          func(supervise.ClaimState) bool
 	overADeadProcess func(supervise.ClaimState) bool
@@ -203,8 +203,8 @@ func (d reachDoor) reaches(state supervise.ClaimState) bool {
 
 // Each door's words for the states it reaches are the states its own predicates admit, over
 // every state a claim can be in: the sentence every refusal that ends in askAgainLater carries
-// (claimOp.reaches), and the live half the held suspension's refusal writes its own
-// sentence around (claimOp.liveStates). A door that named the other door's set, or a set
+// (agentAction.reaches), and the live half the held suspension's refusal writes its own
+// sentence around (agentAction.liveStates). A door that named the other door's set, or a set
 // that had gone stale against the predicate, fails here whatever the surrounding wording is.
 func TestEachDoorNamesTheStatesItsOwnPredicatesReach(t *testing.T) {
 	all := claimStates(t)
@@ -299,7 +299,7 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		op    claimOp
+		op    agentAction
 		token claim.Token
 		state supervise.ClaimState
 		role  claim.Role

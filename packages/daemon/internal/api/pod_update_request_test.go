@@ -54,7 +54,7 @@ func askPodUpdate(h *harness, grant, issue string) *httptest.ResponseRecorder {
 // The route takes the controller's grant alone, a Dispatch issue key, and an issue of the
 // daemon's own project, and each refusal is made before the daemon is asked anything: a phase
 // worker's grant is 403 CONTROLLER_REQUIRED, a key that is no issue key 400 INVALID_ISSUE, and an
-// issue of another project 404 NO_CLAIM, the code the claim operations give the one form another
+// issue of another project 404 NO_CLAIM, the code the agent actions give the one form another
 // project's claim takes there, a claim this daemon does not supervise.
 //
 // The negative control is any of the three checks undone: the stand-in daemon is then asked, and
@@ -90,9 +90,9 @@ func TestThePodUpdateNeedsAControllerGrantAnIssueKeyAndAnIssueOfTheDaemonsProjec
 }
 
 // An architect's grant is refused 403 CONTROLLER_REQUIRED, as a phase worker's is, though it opens
-// the claim door's six operations for the claims of the issues it owns: the pod update is the
+// the six agent actions for the claims of the issues it owns: the pod update is the
 // controller's alone, and the daemon is asked nothing. The architect is LEGION-208's root
-// architect, built as the claim door's tests build it (treeArchitect), asking for the pod of its
+// architect, built as the agent door's tests build it (treeArchitect), asking for the pod of its
 // own issue.
 //
 // The negative control is the route taking any grant (no grant.Controller check): the daemon is

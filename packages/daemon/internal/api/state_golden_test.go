@@ -1155,8 +1155,8 @@ func TestHealthGolden(t *testing.T) {
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
 // INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
-// operator claim routes and to the controller's four claim operations alone
-// (ClaimOperationResponse), which no plugin below the contract that added them calls; the guard
+// operator claim routes and to the controller's four agent actions alone
+// (AgentActionResponse), which no plugin below the contract that added them calls; the guard
 // beside `legion-api.test.ts`'s schema tests holds the same property on the schema side.
 func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	// The body where the key does live, so a guard over nothing cannot pass for a clean one.
@@ -1756,12 +1756,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
-	golden(t, "claim-stop.json", ClaimOperationResponse{State: string(supervise.StateRetired)})
-	golden(t, "claim-retry.json", ClaimOperationResponse{State: string(supervise.StateLaunching)})
-	golden(t, "claim-suspend.json", ClaimOperationResponse{
+	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
+	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	golden(t, "agent-suspend.json", AgentActionResponse{
 		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
 	})
-	golden(t, "claim-resume.json", ClaimOperationResponse{State: string(supervise.StateLaunching)})
+	golden(t, "agent-resume.json", AgentActionResponse{State: string(supervise.StateLaunching)})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})

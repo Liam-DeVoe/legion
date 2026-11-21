@@ -92,8 +92,8 @@ func freshSessionDoors() []freshSessionDoor {
 // wantHeldRefusal holds the answer this door gave the fresh session of token, a claim a
 // suspension by heldBy is held over, to the refusal it gives such a claim: the held suspension's
 // own, code and message (refuseHeldSuspension), except where the suspension outranks the door's
-// caller. The claim door refuses the controller the operator's suspension, held or landed,
-// before the fresh session reads anything of the claim (claimDoor, SUSPENDED_BY_OPERATOR), and
+// caller. The agent door refuses the controller the operator's suspension, held or landed,
+// before the fresh session reads anything of the claim (agentDoor, SUSPENDED_BY_OPERATOR), and
 // nothing outranks the operator.
 func (d freshSessionDoor) wantHeldRefusal(t *testing.T, recorder *httptest.ResponseRecorder, token claim.Token,
 	heldBy supervise.SuspendSource, code, message string) {
@@ -895,7 +895,7 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			want: func(token claim.Token) string {
 				return string(token) + " is held by the controller's suspension, which only the controller or the operator lifts, so " +
 					"a fresh session by the architect went no further than its own suspension of the claim, which that suspension " +
-					"then took over, and the claim keeps the session it recorded. Ask the controller: its `resume_claim` is its " +
+					"then took over, and the claim keeps the session it recorded. Ask the controller: its `resume_agent` is its " +
 					"own to run"
 			},
 		},

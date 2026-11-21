@@ -1,7 +1,7 @@
 import {
   type LegionActivityRequest,
   LegionChildRequest,
-  LegionClaimOperationResponse,
+  LegionAgentActionResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerGrantRequest,
@@ -183,9 +183,9 @@ export interface LegionDaemonClient {
    * retired, the effect `legion claims stop` runs for an operator; a turn it is in is cut off with
    * it. Refused for a claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The
    * answer is the claim as the stop left it. */
-  readonly stopClaim: (
+  readonly stopAgent: (
     input: z.input<typeof LegionClaimRequest>
-  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  ) => Promise<z.output<typeof LegionAgentActionResponse>>;
   /** The controller's or an architect's `retry`: a claim that failed, or that a stop retired,
    * starts again in the session it recorded, the effect a plain `legion claims retry` runs for an
    * operator; a phase worker is started through its issue's phase. Refused for a claim stored
@@ -193,19 +193,19 @@ export interface LegionDaemonClient {
    * (`SUSPENDED_BY_OPERATOR`), and for every claim while the project is paused
    * (`PROJECT_PAUSED`, with the pause that stands; its resume lifts that refusal). The answer is
    * the claim as the retry left it. */
-  readonly retryClaim: (
+  readonly retryAgent: (
     input: z.input<typeof LegionClaimRequest>
-  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  ) => Promise<z.output<typeof LegionAgentActionResponse>>;
   /** The controller's or an architect's `suspend`: the claim's process stops and its session is
    * kept, the effect `legion claims suspend` runs for an operator, held for a turn's end; the
    * suspension is the caller's (`controller` or `architect`), which holds against the daemon's
-   * rules and which the caller's own `resume_claim` lifts. Refused for a claim the operator's own
+   * rules and which the caller's own `resume_agent` lifts. Refused for a claim the operator's own
    * suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the suspension left it,
    * with who holds the suspension. */
-  readonly suspendClaim: (
+  readonly suspendAgent: (
     input: z.input<typeof LegionClaimRequest>
-  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
-  /** The controller's or an architect's `resume_claim`: a suspended claim's session is relaunched,
+  ) => Promise<z.output<typeof LegionAgentActionResponse>>;
+  /** The controller's or an architect's `resume_agent`: a suspended claim's session is relaunched,
    * the effect `legion claims resume` runs for an operator, but never over the operator's own
    * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`),
    * and so is every claim while the project is paused (`PROJECT_PAUSED`): a claim the pause
@@ -213,15 +213,15 @@ export interface LegionDaemonClient {
    * project is paused. The answer is the claim as the resume left it.
    *
    * An architect's grant reaches the claims of the issues it owns alone, through all six of these
-   * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
-   * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_CLAIM`), a
-   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_claim`,
+   * agent actions: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
+   * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_AGENT`), a
+   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_agent`,
    * suspend, stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and,
    * for its retry and `fresh_session`, a failed or retired claim whose issue is out of the
    * workflow or whose tree lingers (`ISSUE_OUT_OF_WORKFLOW`). */
-  readonly resumeClaim: (
+  readonly resumeAgent: (
     input: z.input<typeof LegionClaimRequest>
-  ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
+  ) => Promise<z.output<typeof LegionAgentActionResponse>>;
   /** The controller's `replace_pod`: the daemon opens its update round over the pod `issue` runs
    * in, as a drift opens one. Each role of the pod is asked to push its work and answer
    * `ready_for_update`, and the pod is replaced once each has answered, no turn runs and each
@@ -749,14 +749,14 @@ export function createLegionDaemonClient(
       ),
     compact: (input) =>
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
-    stopClaim: (input) =>
-      post("/legion/v1/claims/stop", LegionClaimRequest, LegionClaimOperationResponse, input),
-    retryClaim: (input) =>
-      post("/legion/v1/claims/retry", LegionClaimRequest, LegionClaimOperationResponse, input),
-    suspendClaim: (input) =>
-      post("/legion/v1/claims/suspend", LegionClaimRequest, LegionClaimOperationResponse, input),
-    resumeClaim: (input) =>
-      post("/legion/v1/claims/resume", LegionClaimRequest, LegionClaimOperationResponse, input),
+    stopAgent: (input) =>
+      post("/legion/v1/agents/stop", LegionClaimRequest, LegionAgentActionResponse, input),
+    retryAgent: (input) =>
+      post("/legion/v1/agents/retry", LegionClaimRequest, LegionAgentActionResponse, input),
+    suspendAgent: (input) =>
+      post("/legion/v1/agents/suspend", LegionClaimRequest, LegionAgentActionResponse, input),
+    resumeAgent: (input) =>
+      post("/legion/v1/agents/resume", LegionClaimRequest, LegionAgentActionResponse, input),
     issuePodUpdate: (input) =>
       post("/legion/v1/issues/pod-update", LegionPodUpdateRequest, LegionPodUpdateResponse, input),
     projectPause: (input) =>

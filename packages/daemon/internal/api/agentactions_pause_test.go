@@ -10,19 +10,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// While the project is paused, the claim door's resume and retry are refused PROJECT_PAUSED for
+// While the project is paused, the agent door's resume and retry are refused PROJECT_PAUSED for
 // the controller and for an architect alike, with the pause that stands and a sentence that names
 // the controller's resume operation as what lifts the pause, and nothing of the claim changes: no
-// claim operation undoes the pause (claimResume's event builder, claimRetry). The door's stop
+// agent action undoes the pause (resumeAgent's event builder, retryAgent). The door's stop
 // and suspend start nothing and still run: the test asks the controller's suspend and an
 // architect's stop. The controller's pod update is refused PROJECT_PAUSED as well, before the
 // daemon is asked anything (issuePodUpdate, refusedForPause).
 //
-// The negative control is the pause check undone (the refusedWhilePaused calls of claimResume's
-// event builder and of claimRetry, and issuePodUpdate's refusedForPause): the resume and the
+// The negative control is the pause check undone (the refusedWhilePaused calls of resumeAgent's
+// event builder and of retryAgent, and issuePodUpdate's refusedForPause): the resume and the
 // retry reach the claim and are answered 200, and the pod update is answered 404 NO_POD by this
 // daemon, which runs no pod update rounds.
-func TestWhilePausedTheClaimDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t *testing.T) {
+func TestWhilePausedTheAgentDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t *testing.T) {
 	h := newPauseHarness(t, pauseCapable())
 	grant := h.controllerSession()
 	architect := treeArchitect(t, h.harness)
@@ -31,8 +31,8 @@ func TestWhilePausedTheClaimDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t 
 	implementer := architectSuspendedImplementer(t, h.harness, architect)
 	tester, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleTester)
 	h.ready(tester, "ses_tester", 1)
-	wantClaimOperationAnswer(t, askAsArchitect(t, h.harness, architect, "/legion/v1/claims/stop", "LEGION-209", claim.RoleTester),
-		http.StatusOK, ClaimOperationResponse{State: "retired"})
+	wantAgentActionAnswer(t, askAsArchitect(t, h.harness, architect, "/legion/v1/agents/stop", "LEGION-209", claim.RoleTester),
+		http.StatusOK, AgentActionResponse{State: "retired"})
 	reviewer, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleReviewer)
 	h.ready(reviewer, "ses_reviewer", 1)
 	planner, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RolePlanner)
@@ -57,8 +57,8 @@ func TestWhilePausedTheClaimDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t 
 			route string
 			role  claim.Role
 		}{
-			{"/legion/v1/claims/resume", claim.RoleImplementer},
-			{"/legion/v1/claims/retry", claim.RoleTester},
+			{"/legion/v1/agents/resume", claim.RoleImplementer},
+			{"/legion/v1/agents/retry", claim.RoleTester},
 		} {
 			failure := h.pauseRefused(request.route, ClaimRequest{GrantID: by.grant(), Issue: "LEGION-209", Role: string(request.role)},
 				nil, http.StatusConflict, projectPaused)
@@ -90,10 +90,10 @@ func TestWhilePausedTheClaimDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t 
 
 	// A suspension and a stop start nothing, and still run: the controller's suspend and an
 	// architect's stop.
-	wantClaimOperationAnswer(t, askClaimOperation(t, h.harness, "/legion/v1/claims/suspend", "LEGION-209", claim.RoleReviewer),
-		http.StatusOK, ClaimOperationResponse{State: "suspended", SuspendedBy: "controller"})
-	wantClaimOperationAnswer(t, askAsArchitect(t, h.harness, architect, "/legion/v1/claims/stop", "LEGION-209", claim.RolePlanner),
-		http.StatusOK, ClaimOperationResponse{State: "retired"})
+	wantAgentActionAnswer(t, askAgentAction(t, h.harness, "/legion/v1/agents/suspend", "LEGION-209", claim.RoleReviewer),
+		http.StatusOK, AgentActionResponse{State: "suspended", SuspendedBy: "controller"})
+	wantAgentActionAnswer(t, askAsArchitect(t, h.harness, architect, "/legion/v1/agents/stop", "LEGION-209", claim.RolePlanner),
+		http.StatusOK, AgentActionResponse{State: "retired"})
 	if _, open := h.svc.Paused(); !open {
 		t.Fatal("the pause ended under the requests")
 	}

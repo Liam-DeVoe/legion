@@ -53,33 +53,33 @@ export interface LegionControllerToolSession {
 
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
-/** The operations on one claim, each naming it by `issue` and `role`: the two recoveries and the
- * operator's four `legion claims` operations, which the daemon serves the controller for its
+/** The actions on one agent, each naming its claim by `issue` and `role`: the two recoveries and
+ * the operator's four `legion claims` operations, which the daemon serves the controller for its
  * project's claims and an architect for the claims of the issues it owns, on routes of their own.
- * Declared before every other list of the tool's operations, which take them from here: a claim
- * operation added to this list is offered to both session kinds that have them, takes the claim's
+ * Declared before every other list of the tool's operations, which take them from here: an agent
+ * action added to this list is offered to both session kinds that have them, takes the claim's
  * two fields, and reaches its own branch of `execute`, so none can fall through into another
  * operation's. */
-const CLAIM_OPERATIONS = [
+const AGENT_ACTIONS = [
   "fresh_session",
   "compact",
   "stop",
   "retry",
   "suspend",
-  "resume_claim",
+  "resume_agent",
 ] as const;
 
-type ClaimOperation = (typeof CLAIM_OPERATIONS)[number];
+type AgentAction = (typeof AGENT_ACTIONS)[number];
 
-const isClaimOperation = (operation: string): operation is ClaimOperation =>
-  (CLAIM_OPERATIONS as readonly string[]).includes(operation);
+const isAgentAction = (operation: string): operation is AgentAction =>
+  (AGENT_ACTIONS as readonly string[]).includes(operation);
 
-/** The fields every claim operation takes: the claim, by its issue and its role. */
-const CLAIM_FIELDS = ["issue", "role"] as const;
+/** The fields every agent action takes: the claim, by its issue and its role. */
+const AGENT_FIELDS = ["issue", "role"] as const;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and so are the claim operations
- * (`CLAIM_OPERATIONS`); `read_build` is every session's: the controller holds a claim like any
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and so are the agent actions
+ * (`AGENT_ACTIONS`); `read_build` is every session's: the controller holds a claim like any
  * other role and reads its own build the same way. An operation two kinds hold is one `op` value,
  * listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
@@ -96,7 +96,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
-    ...CLAIM_OPERATIONS,
+    ...AGENT_ACTIONS,
     "read_build",
   ],
   "phase-worker": [
@@ -112,7 +112,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_state",
     "set_status",
     "replace_pod",
-    ...CLAIM_OPERATIONS,
+    ...AGENT_ACTIONS,
     "pause",
     "resume",
   ],
@@ -134,7 +134,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
   replace_pod: ["issue"],
-  ...Object.fromEntries(CLAIM_OPERATIONS.map((operation) => [operation, CLAIM_FIELDS])),
+  ...Object.fromEntries(AGENT_ACTIONS.map((operation) => [operation, AGENT_FIELDS])),
   pause: ["reason"],
   resume: [],
 };
@@ -144,10 +144,10 @@ const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
 
-/** Posts one claim operation, its grant minted, and answers the daemon's answer whole. */
-async function claimOperation(
+/** Posts one agent action, its grant minted, and answers the daemon's answer whole. */
+async function agentAction(
   client: LegionDaemonClient,
-  operation: ClaimOperation,
+  operation: AgentAction,
   request: { readonly grantId: string; readonly issue: string; readonly role: LegionRole }
 ): Promise<ToolResult> {
   switch (operation) {
@@ -160,16 +160,16 @@ async function claimOperation(
       // restart, and naming the refusal where the claim came back owing no task and the workflow
       // refused the restart that would have handed it one.
       return jsonSuccess(await client.freshSession(request));
-    // The operator's four operations answer the claim as each left it, with who holds a
+    // The operator's four actions answer the claim as each left it, with who holds a
     // suspension over it, so the caller reads whether its own resume lifts it.
     case "stop":
-      return jsonSuccess(await client.stopClaim(request));
+      return jsonSuccess(await client.stopAgent(request));
     case "retry":
-      return jsonSuccess(await client.retryClaim(request));
+      return jsonSuccess(await client.retryAgent(request));
     case "suspend":
-      return jsonSuccess(await client.suspendClaim(request));
-    case "resume_claim":
-      return jsonSuccess(await client.resumeClaim(request));
+      return jsonSuccess(await client.suspendAgent(request));
+    case "resume_agent":
+      return jsonSuccess(await client.resumeAgent(request));
   }
 }
 
@@ -443,7 +443,7 @@ function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    // `read_build` and the claim operations belong to the architect's roster and the
+    // `read_build` and the agent actions belong to the architect's roster and the
     // controller's, and the enum names every value once, so the two rosters are joined through a
     // set.
     op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
@@ -526,8 +526,8 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
  * operation. The operations of `OPERATIONS.controller` belong to the controller: `read_state`,
- * `set_status`, `replace_pod`, `pause` and `resume` to it alone, and the claim operations
- * (`CLAIM_OPERATIONS`) to it and to an architect, whose reach the daemon limits to the claims of
+ * `set_status`, `replace_pod`, `pause` and `resume` to it alone, and the agent actions
+ * (`AGENT_ACTIONS`) to it and to an architect, whose reach the daemon limits to the claims of
  * the issues it owns. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
@@ -582,7 +582,7 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its sign_off and the controller's operations, and the architect's limit
-    // on the claim operations to the issues it owns: the exact text tools.test.ts pins, so a
+    // on the agent actions to the issues it owns: the exact text tools.test.ts pins, so a
     // change to the shared template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
@@ -679,7 +679,9 @@ export function createLegionTool(deps: {
         "reaches, and one left working under a relaunch the wake pacing parked " +
         "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
         "and for role controller. " +
-        "stop, retry, suspend and resume_claim (issue, role) are the operator's own claim operations. Each answers " +
+        "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent " +
+        "(stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role); the four " +
+        "are the operator's own. Each answers " +
         "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
         "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
         "stop ends the claim: the daemon stops its agent at once, also in a turn, which loses that turn, and " +
@@ -689,14 +691,14 @@ export function createLegionTool(deps: {
         "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
         "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
         "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
-        "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_claim that one, unless the operator suspended it. " +
+        "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_agent that one, unless the operator suspended it. " +
         "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
         "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
-        "again until your resume_claim or the operator's resume. " +
-        "resume_claim starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
-        "The daemon refuses resume_claim for a claim stored working (CLAIM_IN_A_TURN). " +
-        "The daemon refuses resume_claim, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
+        "again until your resume_agent or the operator's resume. " +
+        "resume_agent starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
+        "The daemon refuses resume_agent for a claim stored working (CLAIM_IN_A_TURN). " +
+        "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
         "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first, or " +
         "where fresh_session left behind the session the claim recorded, so the claim starts in a new session once " +
@@ -704,20 +706,20 @@ export function createLegionTool(deps: {
         "The controller's compact is not refused the operator's suspension, and answers such a claim " +
         "in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +
-        "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
-        "resume_claim (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
+        "An architect has the same six agent actions, fresh_session, compact, stop, retry, suspend and " +
+        "resume_agent (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
         "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on a claim " +
         "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
         "architect another tree's claim (ISSUE_OUTSIDE_TREE), a claim of an issue of its tree that it does not own, " +
         "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own claim " +
-        "(OWN_CLAIM). It refuses " +
+        "(OWN_AGENT). It refuses " +
         "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
         "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
         "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
         "fresh_session's own suspension ran first, or where fresh_session left behind the session the claim " +
         "recorded, so the claim starts in a new session once it is started: ask the holder to lift its suspension. " +
-        "An architect's suspension is recorded as architect. An architect's resume_claim lifts it, and the " +
-        "controller's resume_claim and the operator's resume lift it too. An architect's resume_claim, suspend, stop and " +
+        "An architect's suspension is recorded as architect. An architect's resume_agent lifts it, and the " +
+        "controller's resume_agent and the operator's resume lift it too. An architect's resume_agent, suspend, stop and " +
         "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
         "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
         "over a claim the daemon released, and its stop retires one. " +
@@ -738,7 +740,7 @@ export function createLegionTool(deps: {
         "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-        "the project is paused it refuses fresh_session, compact, retry, resume_claim and replace_pod (PROJECT_PAUSED, " +
+        "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
         "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
         "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. A claim a " +
         "suspension holds when the project is resumed stays suspended until that suspension's own resume lifts it. ",
@@ -788,7 +790,7 @@ export function createLegionTool(deps: {
         if (active.kind === "controller" && operation === "read_state") {
           return readState(await client.state(), parameters);
         }
-        if (isClaimOperation(operation)) {
+        if (isAgentAction(operation)) {
           // Validated whole before its grant is minted: the controller's with its registration's
           // secret, an architect's with its claim's. The daemon decides which claims each reaches.
           const issue = requiredString(parameters, operation, "issue");
@@ -800,13 +802,13 @@ export function createLegionTool(deps: {
             active.kind === "controller"
               ? (await controllerGrant(active.sessionID)).grantId
               : await mintClaimGrant(client, active);
-          return await claimOperation(client, operation, { grantId, issue, role });
+          return await agentAction(client, operation, { grantId, issue, role });
         }
         if (active.kind === "controller") {
           // A controller session holds no claim, so it cannot reach `executePhaseOp`, which
           // mints from one. It answers the same values here: this build's package, version and
           // contract, and the contract the daemon states on the health route. Its read_state is
-          // answered above, before the claim operations.
+          // answered above, before the agent actions.
           if (operation === "read_build") {
             return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
           }

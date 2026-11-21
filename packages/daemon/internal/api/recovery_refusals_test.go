@@ -583,7 +583,7 @@ func processReads(h *harness) int {
 
 // recoveryDoor is one of the four doors the two recoveries have, with the words its own
 // operation writes into the refusals both of its doors give (freshSessionDoors, compactDoors,
-// claimOp). The rows whose answer is the same at every door run through all four.
+// agentAction). The rows whose answer is the same at every door run through all four.
 type recoveryDoor struct {
 	name        string
 	ask         func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder
@@ -1155,7 +1155,7 @@ func routeServer(h *harness) *server {
 func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      claimOp
+		op      agentAction
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1308,7 +1308,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      claimOp
+		op      agentAction
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1583,7 +1583,7 @@ func heldSuspensionCases() []heldSuspensionCase {
 // role's — the fresh session for a workflow role, and the daemon's controller keeper for the
 // project's own controller — and the asking operation is what reaches a live one, in the
 // states that operation's own set holds (api's refuseHeldSuspension, startsAgainName,
-// claimOp.liveStates).
+// agentAction.liveStates).
 //
 // The second sentence is of the claims nothing is held over, because the claim in hand is
 // held: a hold over a ready agent is reached by neither door while it stands, and a sentence

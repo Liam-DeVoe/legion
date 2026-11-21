@@ -2922,7 +2922,7 @@ func (s *supervision) architectHolds(ctx context.Context, held []supervise.Claim
 // claim other than c that this daemon supervises and that has neither failed nor retired
 // (claimEnded). The outbox finishes undelivered a notice whose architect's claim has ended
 // (noticeAnswered's architectEnded), so such a hold is the controller's to hear, and the
-// controller's resume_claim lifts an architect's suspension too. The tree root's own architect
+// controller's resume_agent lifts an architect's suspension too. The tree root's own architect
 // has no architect above it: the walk from its parent ends at that claim itself, so a hold over
 // it is the controller's as well. A supervision with no owner reader has no workflow to walk,
 // and tells the controller.

@@ -244,7 +244,7 @@ func TestACheckStartOnAHeldImplementerEndsTheLook(t *testing.T) {
 // architect's. The workflow's suspend of the role between looks keeps the hold it meets
 // (record.SuperviseRequest.KeepsHold), so after that row runs the implementer is still suspended
 // by the architect, and the architect's resume lifts it rather than being refused the daemon's
-// suspension (SUSPENDED_BY_DAEMON at the claim door).
+// suspension (SUSPENDED_BY_DAEMON at the agent door).
 //
 // The negative control is supervise's suspendedAgain without its KeepsHold read: the suspend row
 // then takes the claim over for the daemon, and the architect's resume is refused

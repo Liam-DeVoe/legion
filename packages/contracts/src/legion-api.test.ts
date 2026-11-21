@@ -12,7 +12,7 @@ import {
   LegionActivityRequest,
   LegionCapabilityReport,
   LegionChildRequest,
-  LegionClaimOperationResponse,
+  LegionAgentActionResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerCredentialResponse,
@@ -163,13 +163,13 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // The four claim operations of the controller and of an architect (contract 212): the claim as
+  // The four agent actions of the controller and of an architect (contract 215): the claim as
   // each left it, and who holds a suspension over it.
-  "claim-stop.json": LegionClaimOperationResponse,
-  "claim-retry.json": LegionClaimOperationResponse,
-  "claim-suspend.json": LegionClaimOperationResponse,
-  "claim-resume.json": LegionClaimOperationResponse,
-  // The controller's request for the replacement of one issue's pod (contract 212): the update
+  "agent-stop.json": LegionAgentActionResponse,
+  "agent-retry.json": LegionAgentActionResponse,
+  "agent-suspend.json": LegionAgentActionResponse,
+  "agent-resume.json": LegionAgentActionResponse,
+  // The controller's request for the replacement of one issue's pod (contract 215): the update
   // round over it, its reasons, and whether the request opened it.
   "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -439,9 +439,9 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
-  // The four claim operations of the controller and of an architect (contract 212): the claim's
+  // The four agent actions of the controller and of an architect (contract 215): the claim's
   // `state`, and who holds a suspension over it.
-  "claim-operation": LegionClaimOperationResponse,
+  "agent-action": LegionAgentActionResponse,
 };
 
 /** One step of a path from a schema's root to a node below it: the field `key` of an object,
@@ -2623,23 +2623,23 @@ const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimsResponse: true,
 };
 
-/** The one session-facing exception: the four claim operations of the controller and of an
- * architect (`POST /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension,
+/** The one session-facing exception: the four agent actions of the controller and of an
+ * architect (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume lifts it. The reason the
- * guard exists does not reach them: they arrived with contract 212, so only a plugin at that
+ * guard exists does not reach them: they arrived with contract 215, so only a plugin at that
  * contract or later calls them, and no reader of these bodies predates the key. The schema and the
  * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
  * suspender still fails the walk below. */
-const claimOperationSchemas: Record<string, true> = { LegionClaimOperationResponse: true };
-const claimOperationFixtures: Record<string, true> = {
-  "claim-stop.json": true,
-  "claim-retry.json": true,
-  "claim-suspend.json": true,
-  "claim-resume.json": true,
+const agentActionSchemas: Record<string, true> = { LegionAgentActionResponse: true };
+const agentActionFixtures: Record<string, true> = {
+  "agent-stop.json": true,
+  "agent-retry.json": true,
+  "agent-suspend.json": true,
+  "agent-resume.json": true,
 };
 
 /** The daemon's tables of every answer's shape, one row per answer (and per contract), which
- * name the claim operations' `suspendedBy` in that answer's rows alone. */
+ * name the agent actions' `suspendedBy` in that answer's rows alone. */
 const shapeTables: Record<string, true> = {
   "contract-shapes.json": true,
   "enumerated-fields.json": true,
@@ -2678,13 +2678,13 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 212, to the four claim
-// operations of the controller and of an architect (claimOperationSchemas), and nowhere else; this
+// `suspendedBy` is served to the operator's bearer and, from contract 215, to the four agent
+// actions of the controller and of an architect (agentActionSchemas), and nowhere else; this
 // holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
-    if (!isSchema(schema) || operatorSchemas[name] === true || claimOperationSchemas[name] === true)
+    if (!isSchema(schema) || operatorSchemas[name] === true || agentActionSchemas[name] === true)
       continue;
     walked += 1;
     expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
@@ -2692,21 +2692,21 @@ test("no session-facing response carries suspendedBy", () => {
   expect(walked).toBeGreaterThan(20);
   // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
   expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
-  expect([...schemaKeys(LegionClaimOperationResponse)]).toContain("suspendedBy");
+  expect([...schemaKeys(LegionAgentActionResponse)]).toContain("suspendedBy");
 
   // And no body the daemon writes carries it outside the operator's own and the four routes'.
   // The daemon's own tables of the answers' shapes (`contract-shapes.json`,
   // `enumerated-fields.json`) are no body a route writes: they record each answer's key paths and
-  // value domains, so they name `suspendedBy` at the four routes' answer, `claim-operation`, and
+  // value domains, so they name `suspendedBy` at the four routes' answer, `agent-action`, and
   // must name it at no other answer.
   const fixtures = readdirSync(fixtureDir);
   for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
-    if (name.startsWith("operator-") || claimOperationFixtures[name] === true) continue;
+    if (name.startsWith("operator-") || agentActionFixtures[name] === true) continue;
     if (shapeTables[name] === true) {
       const rows = JSON.parse(readFileSync(path.join(fixtureDir, name), "utf8")) as {
         readonly answer: string;
       }[];
-      for (const row of rows.filter((entry) => entry.answer !== "claim-operation")) {
+      for (const row of rows.filter((entry) => entry.answer !== "agent-action")) {
         expect(JSON.stringify(row), `${name}: the ${row.answer} answer`).not.toContain(
           "suspendedBy"
         );
@@ -2716,27 +2716,27 @@ test("no session-facing response carries suspendedBy", () => {
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
   }
   // The exception is the four routes' and no wider: each of their fixtures exists.
-  for (const name of Object.keys(claimOperationFixtures)) {
+  for (const name of Object.keys(agentActionFixtures)) {
     expect(fixtures, name).toContain(name);
   }
 });
 
-// An architect's suspension is a source of its own (contract 212, #4065): the
-// claim operations' answer names it, landed or held, while the state, which the walk above holds
+// An architect's suspension is a source of its own (contract 215, #4065): the
+// agent actions' answer names it, landed or held, while the state, which the walk above holds
 // to no suspender at all, still names none.
-test("the claim operations name an architect's suspension", () => {
+test("the agent actions name an architect's suspension", () => {
   expect(
-    LegionClaimOperationResponse.parse({ state: "suspended", suspendedBy: "architect" })
+    LegionAgentActionResponse.parse({ state: "suspended", suspendedBy: "architect" })
   ).toEqual({ state: "suspended", suspendedBy: "architect" });
   expect(
-    LegionClaimOperationResponse.parse({
+    LegionAgentActionResponse.parse({
       state: "working",
       suspensionHeld: true,
       suspensionHeldBy: "architect",
     }).suspensionHeldBy
   ).toBe("architect");
   expect(
-    LegionClaimOperationResponse.safeParse({ state: "suspended", suspendedBy: "tree" }).success
+    LegionAgentActionResponse.safeParse({ state: "suspended", suspendedBy: "tree" }).success
   ).toBeFalse();
 });
 

@@ -16,9 +16,10 @@ const nonEmptyString = z.string().min(1);
 
 /** `api.ClaimRequest`, what either of the two claim recoveries names: the claim on `role` of
  * `issue`, under the caller's grant, the project controller's or an architect's for the claims of
- * the issues it owns (below). The controller's four claim operations
- * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 212) take the same body and the
- * same door, and answer `LegionClaimOperationResponse` (`legion-api.ts`). The project's controller
+ * the issues it owns (below). The two are actions on an agent (stop, retry, suspend, resume,
+ * compact and fresh session of one agent, named by its issue and role); the controller's other
+ * four (`POST /legion/v1/agents/stop|retry|suspend|resume`, contract 215) take the same body and
+ * the same door, and answer `LegionAgentActionResponse` (`legion-api.ts`). The project's controller
  * is no role here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the
  * daemon's refusal of the controller's own claim, belongs to the operator's door, and this one
  * never gives it. Nor can a body name another project's claim: the daemon builds the token from
@@ -35,11 +36,11 @@ const nonEmptyString = z.string().min(1);
  * compaction lifts nothing: a claim that suspension holds takes the compaction's own refusal
  * below, whose sentence names the operator's `legion claims resume` as what starts the claim.
  *
- * The same six operations take an architect's grant for the claims of the issues it owns alone
- * (contract 212): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
+ * The same six agent actions take an architect's grant for the claims of the issues it owns alone
+ * (contract 215): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
  * tree `ISSUE_OUTSIDE_TREE` (403), one of its own tree it does not own (for a sub-architect, its
  * tree's root and a sibling's issues) `ISSUE_NOT_OWNED` (403), and the architect's own claim
- * `OWN_CLAIM` (403). Each is refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's
+ * `OWN_AGENT` (403). Each is refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's
  * suspension holds and `SUSPENDED_BY_CONTROLLER` (409) for one the controller's holds, held or
  * landed, and the architect's resume, suspend, stop and `fresh_session` are refused
  * `SUSPENDED_BY_DAEMON` (409) for a claim the daemon suspended: an architect's resume lifts an
@@ -47,11 +48,11 @@ const nonEmptyString = z.string().min(1);
  * suspension of the daemon's. The architect's retry and `fresh_session` of a claim that failed or
  * that a stop retired are refused `ISSUE_OUT_OF_WORKFLOW` (409) while the claim's issue is out of
  * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
- * suspension is recorded as `architect`, which the controller's `resume_claim` lifts too.
+ * suspension is recorded as `architect`, which the controller's `resume_agent` lifts too.
  *
- * While the project is paused, every operation of the door that would start a turn of a claim —
- * `resume_claim`, `retry` and `fresh_session`, which start its session again, and `compact`,
- * whose end sends its task again — is refused `PROJECT_PAUSED` (409, contract 212) with the
+ * While the project is paused, every action of the door that would start a turn of a claim —
+ * `resume_agent`, `retry` and `fresh_session`, which start its session again, and `compact`,
+ * whose end sends its task again — is refused `PROJECT_PAUSED` (409, contract 215) with the
  * `pause` that stands, for the controller and an architect alike, and nothing of the claim
  * changes: a claim the pause stopped is the project's resume's to bring back. A suspension above
  * the caller is refused in its own code first, bar under the controller's `compact`, which the

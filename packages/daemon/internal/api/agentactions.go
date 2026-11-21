@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// ClaimOperationResponse is what the claim door's four claim operations answer — stop, retry,
-// suspend and resume (claimStop, claimRetry, claimSuspend, claimResume), the controller's and an
+// AgentActionResponse is what the agent door's four agent actions answer — stop, retry,
+// suspend and resume (stopAgent, retryAgent, suspendAgent, resumeAgent), the controller's and an
 // architect's alike: the claim as the request left it, read from its machine's published view as
 // every operator request on a claim reads it (claimRequest).
 //
@@ -26,7 +26,7 @@ import (
 // own plugin's contract, and a key added there refuses the whole state in every pod whose plugin
 // predates the stranded-claim reading (StrandedClaim). Only a plugin at the contract that added these routes calls
 // them, so no reader of this body predates its keys.
-type ClaimOperationResponse struct {
+type AgentActionResponse struct {
 	// State is the claim's state after the request: retired after a stop; suspended after a
 	// suspension that landed, and still working or launching after one held for the agent's
 	// turn or its ready (the 202 answer); launching after a resume, or a retry the claim's own
@@ -43,7 +43,7 @@ type ClaimOperationResponse struct {
 	SuspensionHeldBy string `json:"suspensionHeldBy,omitempty"`
 }
 
-// The refusals of a request the claim door's caller may not make past a suspension
+// The refusals of a request the agent door's caller may not make past a suspension
 // (refuseHold), each 409. Each says what of the claim changed, which is nothing but where a
 // fresh session's own suspension ran first or its forget left the recorded session behind
 // (nothingChanged, itsSuspensionTakenOver, sessionLeftBehind).
@@ -52,12 +52,12 @@ const (
 	// suspension the operator holds, held for a turn or landed — its resume, which would lift it;
 	// its suspend, which would take it over or change nothing; its stop, which would retire the
 	// claim under it for a retry to relaunch; its retry; and its fresh session, which would
-	// resume it — and, for an architect, its compaction as well, so every operation of the door
-	// but the controller's compaction (supervise.ErrOperatorHolds, claimOp.controllerPassesHold).
+	// resume it — and, for an architect, its compaction as well, so every action of the door but
+	// the controller's compaction (supervise.ErrOperatorHolds, agentAction.controllerPassesHold).
 	// Only the operator undoes the operator's decision, so the sentence sends the caller to the
 	// operator.
 	suspendedByOperator = "SUSPENDED_BY_OPERATOR"
-	// suspendedByController: an architect's operation on a claim the controller's suspension
+	// suspendedByController: an architect's action on a claim the controller's suspension
 	// holds, held or landed (supervise.ErrControllerHolds). The controller's suspension is
 	// project-wide work — a deploy, a merge hold, a stuck pod — which a tree's architect must not
 	// undo, so the sentence sends the architect to the controller.
@@ -86,36 +86,36 @@ const (
 	sessionLeftBehind      = "went no further than leaving behind the session the claim recorded, which that suspension took the claim over after, so the claim starts in a new session once it is started"
 )
 
-// The four lifecycle operations on a claim in the words their refusals name them by (claimOp), with
-// what the log line of each says it did (answerClaimOperation) and, for the three that are a
-// single event to the claim's machine, the request that event makes (claimEventOperation). Each
-// takes the name and the refusal of the role `controller` its door gives (claimDoor); the two
+// The four lifecycle actions on an agent in the words their refusals name them by (agentAction),
+// with what the log line of each says it did (answerAgentAction) and, for the three that are a
+// single event to the claim's machine, the request that event makes (agentEventAction). Each
+// takes the name and the refusal of the role `controller` its door gives (agentDoor); the two
 // that refuse a claim in a turn, the retry and the resume, say so and name the states they do
 // reach (refuseClaimInATurn). The resume's is the machine's refusal, which refusesATurn answers
-// as a claim in a turn; the retry's is claimRetry's own read of the claim's state, made before
+// as a claim in a turn; the retry's is retryAgent's own read of the claim's state, made before
 // anything is asked of the machine, so the retry carries neither request nor refusesATurn. The
 // turn's cut and the live states are the two recoveries' own (freshSessionOp, compactOp): a stop
 // ends a turn by design, and a suspension is held for the turn's end.
 var (
-	stopOp = claimOp{
+	stopOp = agentAction{
 		name:        "a stop",
 		invalidRole: "the controller does not stop its own claim",
 		request:     "stop",
 		did:         "stopped",
 	}
-	retryOp = claimOp{
+	retryOp = agentAction{
 		name:        "a retry",
 		invalidRole: "the controller does not retry its own claim",
 		did:         "retried",
 		reaches:     "A retry reaches a claim that failed and one a stop retired",
 	}
-	suspendOp = claimOp{
+	suspendOp = agentAction{
 		name:        "a suspension",
 		invalidRole: "the controller does not suspend its own claim",
 		request:     "suspend",
 		did:         "suspended",
 	}
-	resumeOp = claimOp{
+	resumeOp = agentAction{
 		name:         "a resume",
 		invalidRole:  "the controller does not resume its own claim",
 		request:      "resume",
@@ -125,7 +125,7 @@ var (
 	}
 )
 
-// callerName is who came through a door of the claim operations (claimTarget.by, and the
+// callerName is who came through a door of the agent actions (claimTarget.by, and the
 // operator's fresh session), in the words its refusals and its log lines name it by. Each source
 // that comes through one has its own words, and any other is named as the source it is, so a
 // sentence never gives one caller's request another's name.
@@ -138,26 +138,26 @@ func callerName(by supervise.SuspendSource) string {
 	case supervise.SuspendedByOperator:
 		return "the operator"
 	default:
-		return fmt.Sprintf("a caller of source %q, which no door of the claim operations lets in", by)
+		return fmt.Sprintf("a caller of source %q, which no door of the agent actions lets in", by)
 	}
 }
 
-// claimStop is the claim door's `legion claims stop` (stopEvent): the claim is released and
+// stopAgent is the agent door's `legion claims stop` (stopEvent): the claim is released and
 // retired, a turn it is in cut off with it. The one difference is a hold the caller may not get
-// past, which its stop does not end (claimDoor, supervise.RequestStop.By,
+// past, which its stop does not end (agentDoor, supervise.RequestStop.By,
 // supervise.Claim.StopOrSuspendRefusal): the operator's for the controller, the operator's or the
 // controller's for an architect (SUSPENDED_BY_OPERATOR, SUSPENDED_BY_CONTROLLER), and for an
 // architect the daemon's own suspension too (SUSPENDED_BY_DAEMON) — a park, a linger, a close. A
 // stop would retire the claim, and a retry would then relaunch it past that hold. An architect's
 // stop of a claim the daemon released retires it, since any wake would bring that claim back
 // anyway.
-func (s *server) claimStop(w http.ResponseWriter, r *http.Request) {
-	s.claimEventOperation(w, r, stopOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
+func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
+	s.agentEventAction(w, r, stopOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
 		return supervise.RequestStop{Claim: target.token, By: target.by}, true
 	})
 }
 
-// claimSuspend is the claim door's `legion claims suspend` (suspendEvent): the claim's process is
+// suspendAgent is the agent door's `legion claims suspend` (suspendEvent): the claim's process is
 // stopped and its session kept, and a suspension that reaches a claim in a turn, or one whose
 // launch has not said ready, is held for that turn's end or that ready, bounded at the stop
 // timeout as the operator's is, and answered 202. The suspension is recorded as the caller's
@@ -167,22 +167,22 @@ func (s *server) claimStop(w http.ResponseWriter, r *http.Request) {
 // is refused (SUSPENDED_BY_OPERATOR, and for an architect SUSPENDED_BY_CONTROLLER), and so is an
 // architect's of one the daemon's own suspension holds (SUSPENDED_BY_DAEMON); an architect's
 // suspend of a released claim takes it over.
-func (s *server) claimSuspend(w http.ResponseWriter, r *http.Request) {
-	s.claimEventOperation(w, r, suspendOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
+func (s *server) suspendAgent(w http.ResponseWriter, r *http.Request) {
+	s.agentEventAction(w, r, suspendOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
 		return supervise.RequestSuspend{Claim: target.token, Reason: callerName(target.by) + " suspended it", By: target.by}, true
 	})
 }
 
-// claimResume is the claim door's `legion claims resume` (resumeEvent): the suspended claim's
-// session is relaunched. The controller's resume_claim lifts every suspension but the operator's
+// resumeAgent is the agent door's `legion claims resume` (resumeEvent): the suspended claim's
+// session is relaunched. The controller's resume_agent lifts every suspension but the operator's
 // own, which only the operator lifts; an architect's lifts an architect's suspension alone
-// (claimDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
+// (agentDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
 // paused its event builder refuses it PROJECT_PAUSED, before the event is posted, and nothing of
 // the claim changes (refusedWhilePaused), as the operator's resume is (resumeEvent): a claim the
-// pause stopped is the pause's to bring back at the project's resume, and no claim operation
+// pause stopped is the pause's to bring back at the project's resume, and no agent action
 // undoes the pause.
-func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
-	s.claimEventOperation(w, r, resumeOp, func(w http.ResponseWriter, r *http.Request, target claimTarget) (supervise.Event, bool) {
+func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
+	s.agentEventAction(w, r, resumeOp, func(w http.ResponseWriter, r *http.Request, target claimTarget) (supervise.Event, bool) {
 		if s.refusedWhilePaused(w, r, "resume", target.machine.View().Claim) {
 			return nil, false
 		}
@@ -190,22 +190,22 @@ func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// claimRetry is the claim door's plain `legion claims retry` (retryStart), with no fresh
+// retryAgent is the agent door's plain `legion claims retry` (retryStart), with no fresh
 // session: a claim that failed, or that a stop retired, is started again in the session it
 // recorded — a phase worker through its issue's phase, which hands it that phase's task, and an
 // architect by its own machine. The store records no one as having retired a claim
 // (supervise.Machine.retire writes the state alone), so a claim the operator stopped is retried
 // here as one the controller stopped is. A claim a suspension above the caller holds, landed or
-// held for its turn, is refused by the door before anything is asked, as every operation of the
-// door but the controller's compaction is (claimDoor). A claim stored working is refused as a
+// held for its turn, is refused by the door before anything is asked, as every action of the
+// door but the controller's compaction is (agentDoor). A claim stored working is refused as a
 // claim in a turn (refuseClaimInATurn), and an architect's retry of a claim whose issue is out of
 // the workflow or whose tree lingers is refused as work the daemon stopped
 // (ISSUE_OUT_OF_WORKFLOW, refuseStartOfStoppedWork); every other refusal is the effect's own, in
 // the words the operator's door gives it. One read of the claim's state decides both refusals.
 // While the project is paused it is refused PROJECT_PAUSED before that read, and nothing of the
 // claim changes (refusedWhilePaused), as the operator's retry is.
-func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
-	target, ok := s.claimDoor(w, r, retryOp)
+func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
+	target, ok := s.agentDoor(w, r, retryOp)
 	if !ok {
 		return
 	}
@@ -224,7 +224,7 @@ func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.answerClaimOperation(w, r, target, retryOp.did, status)
+	s.answerAgentAction(w, r, target, retryOp.did, status)
 }
 
 // issueOutOfWorkflow is the refusal of an architect's start of a claim whose issue's work the
@@ -253,11 +253,11 @@ const issueOutOfWorkflow = "ISSUE_OUT_OF_WORKFLOW"
 // meets there (supervise's suspensionRank), so that claim is the daemon's from then on and only
 // the daemon's own rules start it again.
 //
-// A claim in any other state is left to the operation's own refusals: a suspended claim's is its
+// A claim in any other state is left to the action's own refusals: a suspended claim's is its
 // suspension's (SUSPENDED_BY_DAEMON for the daemon's own), and a live one is the park's
 // suspension's to reach.
 func (s *server) refuseStartOfStoppedWork(w http.ResponseWriter, r *http.Request, target claimTarget, state supervise.ClaimState,
-	op claimOp) bool {
+	op agentAction) bool {
 	if target.by != supervise.SuspendedByArchitect || !failedOrRetired(state) {
 		return false
 	}
@@ -312,7 +312,7 @@ func stoppedWork(issue record.Issue, root *record.Issue) string {
 	return strings.Join(why, ", and ")
 }
 
-// capitalized is sentence with its first letter upper-case, for an operation's name (claimOp.name)
+// capitalized is sentence with its first letter upper-case, for an action's name (agentAction.name)
 // that opens a sentence.
 func capitalized(sentence string) string {
 	if sentence == "" {
@@ -321,18 +321,18 @@ func capitalized(sentence string) string {
 	return strings.ToUpper(sentence[:1]) + sentence[1:]
 }
 
-// claimEventOperation is the claim door's one operator request a single event to the claim's
+// agentEventAction is the agent door's one operator request a single event to the claim's
 // machine makes (claimRequest), op.request: the claim is named by its issue and role and the
 // caller authenticated as the project's controller or an architect that owns the claim's issue
-// (claimDoor), the event is built and posted, and the claim is answered as it then stands, the
+// (agentDoor), the event is built and posted, and the claim is answered as it then stands, the
 // log line saying the caller op.did it. The event builder has the operator's door's shape: it
 // answers the request itself and reports false where it refuses it, as the resume's does while
-// the project is paused (claimResume, refusedWhilePaused), and nothing is posted then. A
+// the project is paused (resumeAgent, refusedWhilePaused), and nothing is posted then. A
 // suspension the machine holds for the agent's turn is no refusal and answers 202, as the
 // operator's does.
-func (s *server) claimEventOperation(w http.ResponseWriter, r *http.Request, op claimOp,
+func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op agentAction,
 	event func(http.ResponseWriter, *http.Request, claimTarget) (supervise.Event, bool)) {
-	target, ok := s.claimDoor(w, r, op)
+	target, ok := s.agentDoor(w, r, op)
 	if !ok {
 		return
 	}
@@ -348,18 +348,18 @@ func (s *server) claimEventOperation(w http.ResponseWriter, r *http.Request, op 
 	if errors.Is(err, supervise.ErrSuspendHeld) {
 		status = http.StatusAccepted
 	} else if err != nil {
-		s.refuseClaimOperation(w, r, target, err, op)
+		s.refuseAgentAction(w, r, target, err, op)
 		return
 	}
-	s.answerClaimOperation(w, r, target, op.did, status)
+	s.answerAgentAction(w, r, target, op.did, status)
 }
 
-// refuseClaimOperation answers an event of the caller's that the claim's machine refused: a
+// refuseAgentAction answers an event of the caller's that the claim's machine refused: a
 // suspension the caller may not get past in that hold's own code (refuseHold), a claim stored
-// working that the operation does not reach as a claim in a turn (claimOp.refusesATurn,
+// working that the action does not reach as a claim in a turn (agentAction.refusesATurn,
 // refuseClaimInATurn), and every other refusal as the operator's door answers it, in the
 // machine's own words (operationFailure).
-func (s *server) refuseClaimOperation(w http.ResponseWriter, r *http.Request, target claimTarget, err error, op claimOp) {
+func (s *server) refuseAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, err error, op agentAction) {
 	var refused *supervise.RefusedError
 	switch {
 	case holdRefusal(err):
@@ -391,11 +391,11 @@ func holdRefusal(err error) bool {
 // itsSuspensionTakenOver). An error it does not know is no hold it can name: it is logged and
 // answered 500 in its own words, as the daemon's own failure, rather than given the words of a
 // hold it may not be.
-func (s *server) refuseHold(w http.ResponseWriter, r *http.Request, token claim.Token, op claimOp, by supervise.SuspendSource,
+func (s *server) refuseHold(w http.ResponseWriter, r *http.Request, token claim.Token, op agentAction, by supervise.SuspendSource,
 	err error, outcome string) {
 	switch code, heldBy, lifts, held := holdSentences(token, err); {
 	case !held:
-		s.logFailure("api: a refusal of a hold that no answer of the claim door decides", "claim", token, "error", err)
+		s.logFailure("api: a refusal of a hold that no answer of the agent door decides", "claim", token, "error", err)
 		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf(
 			"%s by %s of %s met a refusal this daemon has no answer for: %v", op.name, callerName(by), token, err))
 	case code == suspendedByDaemon:
@@ -411,7 +411,7 @@ func (s *server) refuseHold(w http.ResponseWriter, r *http.Request, token claim.
 // holdSentences is how the refusals of a suspension a caller may not get past name it, from the
 // machine's word for it: the code, what the claim is held by, in words that read after "<token>
 // is", and the sentence naming what starts the claim again — the holder's resume, or for the
-// daemon's own suspension the daemon's rules, the controller's resume_claim and the operator's
+// daemon's own suspension the daemon's rules, the controller's resume_agent and the operator's
 // resume. Each refusal of a hold says both (refuseHold), and so does each recovery's refusal of a
 // claim such a hold stands over, where it would otherwise name a door that refuses the caller
 // (refuseHeldSuspension, refuseNotRunning). held is whether err names such a hold at all, which
@@ -424,10 +424,10 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 			"Ask the operator: `legion claims resume --claim " + string(token) + "` is theirs to run", true
 	case errors.Is(err, supervise.ErrControllerHolds):
 		return suspendedByController, "held by the controller's suspension, which only the controller or the operator lifts",
-			"Ask the controller: its `resume_claim` is its own to run", true
+			"Ask the controller: its `resume_agent` is its own to run", true
 	case errors.Is(err, supervise.ErrNotTheArchitectsSuspension):
 		return suspendedByDaemon, "suspended by the daemon, not by an architect",
-			"The daemon's own rules start such a claim again — its issue's phase, or its role's next wake — and so do the controller's `resume_claim` and the operator's `legion claims resume`", true
+			"The daemon's own rules start such a claim again — its issue's phase, or its role's next wake — and so do the controller's `resume_agent` and the operator's `legion claims resume`", true
 	}
 	return "", "", "", false
 }
@@ -435,23 +435,22 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 // refuseClaimInATurn is the retry's and the resume's refusal of a claim stored working
 // (claimInATurn): neither reaches a claim in a turn, the machine refuses each for a claim that
 // has not failed or is not suspended, and the code is the one both recoveries give a claim stored
-// working, so the caller reads one code for it whichever operation it asked. A claim stored
+// working, so the caller reads one code for it whichever action it asked. A claim stored
 // working that a suspension above the caller holds, held for its turn, is no exception: the
-// door refuses that claim in the hold's code before any operation reads its state, so it too
-// takes one code whichever operation was asked (claimDoor). The sentence names the states the
-// operation reaches and sends the caller to the state (askAgainLater).
-func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, token claim.Token, op claimOp) {
+// door refuses that claim in the hold's code before any action reads its state, so it too
+// takes one code whichever action was asked (agentDoor). The sentence names the states the
+// action reaches and sends the caller to the state (askAgainLater).
+func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, token claim.Token, op agentAction) {
 	s.writeFailure(w, r, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is stored working, and %s reaches no claim in a turn. %s. %s", token, op.name, op.reaches, askAgainLater))
 }
 
-// answerClaimOperation writes the claim as the caller's operation left it
-// (ClaimOperationResponse) under status, as the answer the claim operations' row of the table
-// names (AnswerClaimOperation), and logs what the caller did to which claim, as the caller named
-// it.
-func (s *server) answerClaimOperation(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int) {
+// answerAgentAction writes the claim as the caller's action left it (AgentActionResponse) under
+// status, as the answer the agent actions' row of the table names (AnswerAgentAction), and logs
+// what the caller did to which claim, as the caller named it.
+func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int) {
 	view := target.machine.View().Claim
-	answer := ClaimOperationResponse{
+	answer := AgentActionResponse{
 		State:            string(view.State),
 		SuspensionHeld:   view.SuspensionHeld,
 		SuspensionHeldBy: string(view.SuspensionHeldBy),
@@ -461,5 +460,5 @@ func (s *server) answerClaimOperation(w http.ResponseWriter, r *http.Request, ta
 	}
 	s.log.Info("api: "+callerName(target.by)+" "+did+" a claim", "claim", target.token, "issue", target.issue, "role", target.role,
 		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status)
-	s.writeAnswer(w, r, AnswerClaimOperation, status, answer)
+	s.writeAnswer(w, r, AnswerAgentAction, status, answer)
 }

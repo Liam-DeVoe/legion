@@ -247,8 +247,8 @@ func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grant
 
 // issueOfTree is architectForIssue's check of the issue against an architect's grant already
 // redeemed: the issue's record, 404 ISSUE_NOT_FOUND where the daemon records none, and 403
-// ISSUE_OUTSIDE_TREE where it is of another tree than the grant's. The claim door makes it for an
-// architect's grant, since that door redeems a grant that may be the controller's (claimDoor).
+// ISSUE_OUTSIDE_TREE where it is of another tree than the grant's. The agent door makes it for an
+// architect's grant, since that door redeems a grant that may be the controller's (agentDoor).
 func (s *server) issueOfTree(w http.ResponseWriter, r *http.Request, grant credential.Grant, issue string) (record.Issue, bool) {
 	recorded, err := s.recordedIssue(r.Context(), issue)
 	if err != nil {

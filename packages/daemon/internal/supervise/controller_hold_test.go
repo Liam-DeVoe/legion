@@ -143,7 +143,7 @@ func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 // (ErrOperatorHolds): a stop retires the claim, and a retry then relaunches it, past the operator's
 // hold. Its stop of a claim it suspended itself retires it, and the operator's stop is refused
 // nothing here.
-func TestTheControllersStopOfAClaimTheOperatorHoldsIsRefused(t *testing.T) {
+func TestTheControllersStopOfAnAgentTheOperatorHoldsIsRefused(t *testing.T) {
 	t.Run("the operator's landed suspension", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByOperator)

@@ -466,7 +466,7 @@ type RequestSuspend struct {
 // it (askedBy): SuspendedByOperator for the operator, through its own resume and its fresh
 // session (api's resumeEvent, freshSession), whose resume lifts every suspension, whoever placed
 // it; SuspendedByController for the project's controller, through its own `legion` tool (api's
-// claimResume), whose resume lifts every suspension but the operator's own; and
+// resumeAgent), whose resume lifts every suspension but the operator's own; and
 // SuspendedByArchitect for an architect that owns the claim's issue, through the same tool, whose
 // resume lifts an architect's suspension alone. Each is refused what it may not lift
 // (Claim.ResumeRefusal: ErrOperatorHolds, ErrControllerHolds, ErrNotTheArchitectsSuspension),
@@ -516,7 +516,7 @@ type RequestRuleResume struct {
 // stop of a controller an earlier boot launched on a daemon that leaves the controller to its
 // operator (the daemon's stopLaunchedController); SuspendedByController for the project's
 // controller and SuspendedByArchitect for an architect that owns the claim's issue, each through
-// its own `legion` tool (api's claimStop). Either of those two is refused for a claim a suspension
+// its own `legion` tool (api's stopAgent). Either of those two is refused for a claim a suspension
 // outranking it holds, held or landed — the operator's for either, the controller's for an
 // architect's — and an architect's for a claim the daemon's own suspension holds
 // (Claim.StopOrSuspendRefusal), since a stop retires the claim and a retry then relaunches it,
@@ -575,7 +575,7 @@ type RequestRetry struct {
 // By is who asks, and every retry names it (askedBy): SuspendedByOperator for the operator's own
 // retry and its fresh session's (api's retryClaim), and SuspendedByController or
 // SuspendedByArchitect for the retry and the fresh session of the controller or an architect
-// through the claim door (api's claimRetry, claimFreshSession). The wake pacing reads it: the
+// through the agent door (api's retryAgent, claimFreshSession). The wake pacing reads it: the
 // operator's retry is one a person waits on and is let through unpaced, and every other caller's
 // takes its turn (exemptWake).
 //

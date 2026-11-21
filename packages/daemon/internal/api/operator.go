@@ -793,7 +793,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 // alone. A request the claim's machine refused (409) writes its answer and logs no line. One that
 // fails otherwise logs its failure instead (operationFailure), and that line names who asked in
 // its `by` field, so the operator's failed requests are counted there, apart from the
-// controller's and the architects', whose requests the claim door fails through the same line.
+// controller's and the architects', whose requests the agent door fails through the same line.
 func (s *server) operatorDone(r *http.Request, token claim.Token) {
 	s.log.Info("api: operator request", "route", r.Pattern, "claim", token, "caller", r.RemoteAddr)
 }
@@ -853,7 +853,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, http.StatusOK, OperatorClaims{Claims: views, PodUpdateRounds: &rounds})
 }
 
-// operationFailure answers a claim operation its machine did not take, the operator's, the
+// operationFailure answers an agent action its machine did not take, the operator's, the
 // controller's or an architect's (by): 409 with the machine's reason when the claim's state does
 // not allow it, and otherwise a 500 that says what failed — the caller is the one who has to act
 // on a launch the runtime refused. The line it logs names the caller in its `by` field, so the
@@ -865,6 +865,6 @@ func (s *server) operationFailure(w http.ResponseWriter, r *http.Request, by sup
 		s.refuse(w, r, http.StatusConflict, refused.Error())
 		return
 	}
-	s.logFailure("api: a claim operation failed", "by", string(by), "request", request, "claim", token, "error", err)
+	s.logFailure("api: an agent action failed", "by", string(by), "request", request, "claim", token, "error", err)
 	s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("%s %s: %v", request, token, err))
 }

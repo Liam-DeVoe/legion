@@ -102,17 +102,17 @@ const compactInstructions = "Write the summary as text. " +
 // whose turn a compaction would abort, and the states a compaction does reach (refuseState).
 // Those states are the two the machine itself takes a compaction in, which is all a compaction
 // reaches live, so reaches and liveStates name the same pair here where the fresh session's
-// differ (supervise.TakesCompaction, claimOp). The type is every claim operation's own
-// (claimOp, freshsession.go).
+// differ (supervise.TakesCompaction, agentAction). The type is every agent action's own
+// (agentAction, freshsession.go).
 //
-// It is the one operation the claim door lets the controller past a suspension that outranks
+// It is the one action the agent door lets the controller past a suspension that outranks
 // it (controllerPassesHold): a compaction stops, takes over and lifts no suspension, so the
 // operator's suspension is no refusal of it. A claim that suspension holds is answered by the
 // compaction's own refusals of the claim as it stands: a landed one runs no session to compact,
 // and a held one is the held suspension's refusal (refuseState, refuseHeldSuspension). Each of
 // them names the operator's resume as what starts that claim again, since the controller's
 // fresh session would be refused that suspension at the door (holdSentences).
-var compactOp = claimOp{
+var compactOp = agentAction{
 	name:                 "a compaction",
 	invalidRole:          "the controller does not compact its own session",
 	controllerPassesHold: true,
@@ -121,12 +121,12 @@ var compactOp = claimOp{
 	liveStates:           "ready or idle",
 }
 
-// claimCompact is the claim door's compaction (compact). The effect is the operator's own, and so
-// are its refusals and its answer; only the authentication differs (claimDoor), which refuses an
+// claimCompact is the agent door's compaction (compact). The effect is the operator's own, and so
+// are its refusals and its answer; only the authentication differs (agentDoor), which refuses an
 // architect a claim the operator's or the controller's suspension holds before the effect is
 // asked, and lets the controller past the operator's (compactOp).
 func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
-	target, ok := s.claimDoor(w, r, compactOp)
+	target, ok := s.agentDoor(w, r, compactOp)
 	if !ok {
 		return
 	}
@@ -235,7 +235,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // keeper does nothing for (startsAgainName, refuseState, refuseHeldSuspension,
 // refuseDeadController). For the same reason a claim held by a suspension that outranks the
 // caller (by, whose resume that suspension refuses: supervise.Claim.ResumeRefusal) is named that
-// suspension's own resume as what starts it, rather than the fresh session the claim door would
+// suspension's own resume as what starts it, rather than the fresh session the agent door would
 // refuse the caller (holdSentences).
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, and the
@@ -252,9 +252,9 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // While the project is paused, a claim that is not the project's controller is refused
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
 // (refusedWhilePaused). An architect's compaction of a
-// claim a suspension above it holds is refused at the claim door in that hold's code first
-// (claimDoor), paused or not; the controller's passes the door's hold check
-// (claimOp.controllerPassesHold) and meets the pause here.
+// claim a suspension above it holds is refused at the agent door in that hold's code first
+// (agentDoor), paused or not; the controller's passes the door's hold check
+// (agentAction.controllerPassesHold) and meets the pause here.
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource) (CompactResponse, bool) {
 	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {

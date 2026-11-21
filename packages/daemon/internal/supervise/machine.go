@@ -102,12 +102,12 @@ const (
 	// SuspendedByOperator: the operator's suspend route.
 	SuspendedByOperator SuspendSource = "operator"
 	// SuspendedByController: the project's controller's suspend, through its `legion` tool (api's
-	// claimSuspend). It holds as the operator's does, and its resume lifts it as the operator's
+	// suspendAgent). It holds as the operator's does, and its resume lifts it as the operator's
 	// does; it ranks below the operator's, so the controller can neither take over nor lift a
 	// suspension the operator holds (suspensionRank, ErrOperatorHolds).
 	SuspendedByController SuspendSource = "controller"
 	// SuspendedByArchitect: an architect's suspend of a claim of an issue it owns, through its
-	// `legion` tool (api's claimSuspend). It holds as the controller's does, and an architect's
+	// `legion` tool (api's suspendAgent). It holds as the controller's does, and an architect's
 	// resume lifts it; it ranks below the controller's, so the controller's resume lifts it too,
 	// and an architect can neither take over nor lift a suspension the controller or the operator
 	// holds (suspensionRank, ErrControllerHolds, ErrOperatorHolds). A controller's suspension is

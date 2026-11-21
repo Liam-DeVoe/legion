@@ -775,8 +775,8 @@ func operatorDelivery(ev Event) bool {
 // which a person is waiting on, and a spawn whose caller marked it exempt, which is the
 // operator's spawn route and nothing else — the project controller is exempt by identity, in the
 // gate itself, which covers the launches no request raises as well (reserveWake,
-// claim.IsController). The same two events from the claim door are paced: the controller's and an
-// architect's resume, retry and fresh session (api's claimResume, claimRetry, claimFreshSession)
+// claim.IsController). The same two events from the agent door are paced: the controller's and an
+// architect's resume, retry and fresh session (api's resumeAgent, retryAgent, claimFreshSession)
 // are launches an agent raises, as many at once as it asks for — a controller lifting its own
 // holds after a deploy asks one for every claim it held — and let through, they would start them
 // all at once, past `worker_wakes_per_minute`, the bound that keeps a wave under the provider's

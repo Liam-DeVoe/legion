@@ -439,7 +439,7 @@ func TestASuspensionThatKeepsHoldsTakesOverNoSourceThatHolds(t *testing.T) {
 // turn, is refused with that hold's own error: a stop retires the claim and a retry then
 // relaunches it, past the hold. Its stop of a claim an architect suspended, or one the daemon
 // released, retires it (the daemon's own suspension: TestAnArchitectDoesNotTakeOverTheDaemonsSuspension).
-func TestAnArchitectsStopOfAClaimAHoldAboveItHoldsIsRefused(t *testing.T) {
+func TestAnArchitectsStopOfAnAgentAHoldAboveItHoldsIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		holder SuspendSource
 		want   error

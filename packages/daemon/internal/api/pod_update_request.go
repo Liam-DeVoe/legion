@@ -45,8 +45,8 @@ type PodUpdateRefusal int
 const (
 	// PodUpdateNoClaim: this daemon supervises no claim of the issue that has not retired — an
 	// issue it never ran, one whose every claim retired, or an issue of another project. 404
-	// NO_CLAIM, the code the claim operations give a claim this daemon does not supervise, which is
-	// the form another project's claim takes there (claimDoor).
+	// NO_CLAIM, the code the agent actions give a claim this daemon does not supervise, which is
+	// the form another project's claim takes there (agentDoor).
 	PodUpdateNoClaim PodUpdateRefusal = iota + 1
 	// PodUpdateNoPod: the issue's claims run no worker in a pod a round could ask, in either of two
 	// ways: no claim records a process in a pod (each is suspended or between launches, or the

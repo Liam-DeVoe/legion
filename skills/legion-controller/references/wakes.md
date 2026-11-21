@@ -46,7 +46,7 @@ Six turns of `role` in a row ended in a provider error; the daemon keeps prompti
 
 ## A root architect's stuck tool call
 
-Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call: `suspend` the root's architect claim, then `resume_claim` it once `read_state` shows it suspended, so it starts again in its own session with the task it owes (`skill://legion-controller/references/operations.md`).
+Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call: `suspend` the root's architect claim, then `resume_agent` it once `read_state` shows it suspended, so it starts again in its own session with the task it owes (`skill://legion-controller/references/operations.md`).
 
 ## GitHub mentions
 

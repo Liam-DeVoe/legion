@@ -11,14 +11,14 @@ Read this before an operation of your own work, and before you send another sess
 
 ## A claim's state
 
-Use these on a claim of your project that needs action, a tree's architect claim included: `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`. Each refuses your own claim.
+These are the actions on an agent (stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role). Use them on a claim of your project that needs action, a tree's architect claim included: `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`. Each refuses your own claim.
 
 | `op` | What it does |
 | --- | --- |
-| `suspend` | Stops the claim's agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_claim` or the operator's starts it again. |
-| `resume_claim` | Starts a suspended claim again in its recorded session with the task it owes, an architect's suspension included. |
+| `suspend` | Stops the claim's agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
+| `resume_agent` | Starts a suspended claim again in its recorded session with the task it owes, an architect's suspension included. |
 | `stop` | Ends the claim at once, also in a turn, and retires it; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that claim. |
-| `retry` | Starts a failed or stopped claim again in its recorded session, with new launch budgets. A suspended claim takes `resume_claim`. |
+| `retry` | Starts a failed or stopped claim again in its recorded session, with new launch budgets. A suspended claim takes `resume_agent`. |
 | `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; a claim with no process (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
 | `fresh_session` | Starts the claim in a new session, leaving the old one and all it knew. Use it for a claim no process stands behind, or one still refused after `compact`. |
 
@@ -26,7 +26,7 @@ Use these on a claim of your project that needs action, a tree's architect claim
 2. After a refusal, ask again later: the refusal says what the claim does now. For a root with no architect claim, `compact` and `fresh_session` answer `NO_CLAIM`.
 3. While a wave runs (the summary's `wakes waiting` count is above 0), a start you raised waits its turn: ask for nothing again.
 
-While your project is paused (the summary's `paused:` line), the daemon refuses `resume_claim`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`. Only the project's resume lifts the pause: your `resume` operation or the operator's `legion project resume`; `resume_claim` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [A claim the operator holds](#a-claim-the-operator-holds).
+While your project is paused (the summary's `paused:` line), the daemon refuses `resume_agent`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`. Only the project's resume lifts the pause: your `resume` operation or the operator's `legion project resume`; `resume_agent` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [A claim the operator holds](#a-claim-the-operator-holds).
 
 ## A restart of your project's daemon
 

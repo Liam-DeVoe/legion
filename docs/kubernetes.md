@@ -7184,7 +7184,7 @@ While it waits, the message holds the issue's pod, as any row of the role-messag
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
 A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
-Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, the controller's `suspend`, `resume_claim`, `stop` and `fresh_session`, and an architect's `suspend` and `stop`.
+Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, the controller's `suspend`, `resume_agent`, `stop` and `fresh_session`, and an architect's `suspend` and `stop`.
 The boot's resume by rule passes over a released claim (`booted`), and a wake or a backstop that came due while the daemon was down acts once the daemon has started.
 Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
@@ -7367,7 +7367,7 @@ Under `controller: operator` the daemon holds no controller claim, so nothing of
 Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, and each row of another project on the same database.
 The workflow still records what happens.
 A handoff, a review, a CI result or a merge moves its issue's phase as it does while the project runs, and the start that the move writes waits with the other held rows.
-`legion claims suspend`, `legion claims stop`, `legion issue status` and the controller's `set_status` still work, because none of them starts a turn, and so do the controller's and an architect's `stop` and `suspend` claim operations.
+`legion claims suspend`, `legion claims stop`, `legion issue status` and the controller's `set_status` still work, because none of them starts a turn, and so do the controller's and an architect's `stop` and `suspend`, two of the actions on an agent (stop, retry, suspend, resume, compact and fresh session of one agent, named by its issue and role).
 A suspension of the controller's, an architect's or the operator's and the pause's stop each keep their own source: the pause stops no claim such a suspension already holds, a claim the pause stopped that such a suspension then takes over stays suspended by it after the resume, and the resume brings back only what the pause stopped.
 
 **How each role stops.**
@@ -7543,7 +7543,7 @@ The daemon logs four messages, each with the claim it is about where it has one:
   On every other daemon, a resume is never refused for the configuration.
 
 - While the project is paused, an operation that would start a turn of a role other than the controller answers 409 `PROJECT_PAUSED`, with the pause that stands, and changes nothing.
-  These are the controller's `compact`, `fresh_session` and `replace_pod`, the controller's and an architect's `retry` and `resume_claim` (and an architect's `compact` and `fresh_session`), and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
+  These are the controller's `compact`, `fresh_session` and `replace_pod`, the controller's and an architect's `retry` and `resume_agent` (and an architect's `compact` and `fresh_session`), and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
   The refusal's sentence ends by naming what lifts the pause: the controller's `resume` operation, which names no issue, or the operator's `legion project resume`.
 
 A caller whose plugin speaks a contract below the one that added the pause is served each of these refusals as the plain failure, its `code` and `error` alone, with no `setting`, `pause` or `lastPause`, and is served the release records' resumes without their `pause`.
