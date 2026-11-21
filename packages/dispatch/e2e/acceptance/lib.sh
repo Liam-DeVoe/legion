@@ -174,7 +174,10 @@ observe_horizon() {
 # $answer to the oldest transaction of this run's database that has held that observation back,
 # named with its pid, its client, its start and its query, or to '' where none has; and
 # $observation_age to how long that observation has waited, in seconds, or to '' where none of them
-# has waited 5 s. One statement reads both, so the age is the one the judgement read.
+# has waited 5 s. One statement reads both, so the age is the one the judgement read. Each
+# observation's time goes into that statement as written: observe_horizon writes a number, and
+# node-projects-horizon-hold.test.ts writes an expression on the statement's own clock, so the age
+# it judges is one no scheduling can move.
 #
 # The horizon proves an observation only once no transaction id below the observer's is running
 # (events/horizon.go, "Safe horizon"). So a transaction holds an observation back only while it

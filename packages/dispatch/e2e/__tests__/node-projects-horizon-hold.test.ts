@@ -247,23 +247,18 @@ test.skipIf(!live)(
   rowLimit("short", "short", "short")
 );
 
-/** How many observations the row below takes, at most, before it gives up on a machine so loaded
- *  that each check started the bound or more after its observation. */
-const underTries = 5;
+/** `observation`, its time written as the clock of the statement that judges it, less `seconds`.
+ *  own_horizon_hold writes an observation's time into that statement as given, so the statement
+ *  reads the observation exactly `seconds` old, however long the machine took to start it. */
+const agedAtTheCheck = (observation: string, seconds: number): string =>
+  `${observation.split(" ")[0]} extract(epoch from now()) - ${seconds}`;
 
-/** How long the row below waits after its observation before the check, on the database's clock:
- *  a second under the bound, and past any shorter bound by a second or more. */
-const underBound = `${boundSeconds - 1} seconds`;
-
-// The check reads the observation at least `underBound` old, since it starts after a wait on the
-// database's clock until then, so a bound of 4 s or less would name the holder here. Only the
-// check's own statement can say the observation was still under the bound: a query after the check
-// reads it older by however long the machine took in between, and on a loaded machine that passed
-// the bound three times in a row. So the check answers the age it judged, and the observation, the
-// wait and the check run back to back in one bash, as the driver runs its observation and its
-// check, with one psql start between the wait and the check. A check that read the observation at
-// the bound or past it must name the holder, and the row holds it to that and observes again; the
-// first check that read it under the bound decides the row.
+// The bound itself, judged where no scheduling can move it: the holder is open past the bound and
+// drew its id before the observer drew its own, and the judging statement reads the observation
+// on its own clock (agedAtTheCheck), half a second under the bound and then half a second over it.
+// A bound of 4.5 s or less names the holder at the first, and a bound over 5.5 s names none at the
+// second. A check that waited on the real clock instead had only the time between its wait and its
+// statement to spare, and a loaded machine spends more than that.
 test.skipIf(!live)(
   "a transaction that drew its id before the observation is no holder until the observation has waited the bound",
   async () => {
@@ -272,38 +267,25 @@ test.skipIf(!live)(
     try {
       await untilPastTheBound(`(select xact_start from pg_stat_activity where pid = ${pid})`);
       expect(await heldPastTheBound(pid)).toBe("t");
-      const judged: number[] = [];
-      for (let tried = 1; ; tried++) {
-        const { age, holder } = holdOf(
-          await lib(
-            'observe_horizon hold && observation=$answer && query hold "wait on the database\'s clock" ' +
-              `"select pg_sleep_until(to_timestamp(\${observation#* }) + interval '${underBound}')" && ` +
-              `own_horizon_hold hold "$observation" && ${printHold}`
-          )
-        );
-        if (age === null) {
-          expect(
-            holder,
-            `backend ${pid} has held the observation back ${underBound} or more but less than the bound, however long it has been open`
-          ).toBe("");
-          break;
-        }
-        judged.push(age);
-        expect(
-          holder,
-          `the check read the observation ${age} s old, past the bound, so it names backend ${pid}`
-        ).toStartWith(`backend ${pid} (application `);
-        if (tried === underTries) {
-          throw new Error(
-            `each of ${underTries} checks judged its observation past the bound, at ${judged.join(", ")} s, so none read one under it`
-          );
-        }
-      }
+      const observation = await observe();
+      expect(
+        await check(agedAtTheCheck(observation, boundSeconds - 0.5)),
+        `backend ${pid} has held the observation back ${boundSeconds - 0.5} s, under the bound, however long it has been open`
+      ).toEqual({ age: null, holder: "" });
+      const over = await check(agedAtTheCheck(observation, boundSeconds + 0.5));
+      expect(
+        over.holder,
+        `backend ${pid} has held the observation back ${boundSeconds + 0.5} s, past the bound`
+      ).toStartWith(`backend ${pid} (application `);
+      expect(over.age ?? Number.NaN, "the age of the observation the check judged").toBeCloseTo(
+        boundSeconds + 0.5,
+        3
+      );
     } finally {
       await sql("ROLLBACK");
     }
   },
-  rowLimit(...Array.from({ length: underTries }, () => "short" as const))
+  rowLimit("short", "short", "short")
 );
 
 test.skipIf(!live)(
