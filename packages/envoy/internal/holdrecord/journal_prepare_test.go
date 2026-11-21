@@ -19,17 +19,19 @@ func prepareAbortRows(t *testing.T) {
 	cohort := json.RawMessage(`{"raised":["a"]}`)
 
 	// restoredReleased deletes the row and restores it released with holdID, at the gen the
-	// route names, as the operator restores a row lost in prepare.
-	restoredReleased := func(t *testing.T, r rig, c *holdrecord.Client, holdID string) {
+	// route names, as the operator restores a row lost in prepare from a new process, which has
+	// seen no row (RestoreRow's seen gen).
+	restoredReleased := func(t *testing.T, r rig, holdID string) {
 		t.Helper()
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 			t.Fatal(err)
 		}
+		operator := r.client(t)
 		var mismatch *holdrecord.RestoreGenError
-		if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+		if err := operator.Bootstrap(ctx); !errors.As(err, &mismatch) {
 			t.Fatalf("Bootstrap with the row lost answered %v, want a RestoreGenError", err)
 		}
-		if _, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete in prepare"); err != nil {
+		if _, err := operator.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete in prepare"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -61,7 +63,7 @@ func prepareAbortRows(t *testing.T) {
 		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, cohort); err != nil {
 			t.Fatal(err)
 		}
-		restoredReleased(t, r, c, holdID)
+		restoredReleased(t, r, holdID)
 		if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandAbort), nil); err != nil {
 			t.Errorf("Admit(hold abort) on the released row answered %v, want admitted", err)
 		}
@@ -104,9 +106,10 @@ func prepareAbortRows(t *testing.T) {
 		}
 	})
 
-	t.Run("a released row with no journal for its hold deletes no cohort", func(t *testing.T) {
-		// The row was lost in prepare before the journal was written. Fails while the route reads
-		// a missing journal as one that shows prepare.
+	t.Run("a released row with no journal for its hold: hold abort deletes the cohort", func(t *testing.T) {
+		// The row was lost in prepare before the journal was written (ReleasedNoJournalAbort): the
+		// abort has no journal to admit it, and deletes the cohort alone. Fails while the route
+		// refuses a released row with no done record: the cohort stays for good.
 		r := newRig(t)
 		c := r.client(t)
 		const holdID = "h-released-nojournal"
@@ -117,10 +120,38 @@ func prepareAbortRows(t *testing.T) {
 		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, cohort); err != nil {
 			t.Fatal(err)
 		}
-		restoredReleased(t, r, c, holdID)
+		restoredReleased(t, r, holdID)
+		if err := c.DeleteCohort(ctx, holdID); err != nil {
+			t.Errorf("DeleteCohort on the released row of a hold with no journal answered %v, want nil", err)
+		}
+		if n := cohorts(t, r, holdID); n != 0 {
+			t.Errorf("after the delete the table holds %d cohort records, want 0", n)
+		}
+	})
+
+	t.Run("a released row whose done record does not verify deletes no cohort", func(t *testing.T) {
+		// A database writer changed the journal's signature. Fails while the route reads a journal
+		// that does not verify as no journal: it deletes the cohort.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-released-forged"
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.StartJournal(ctx, holdID, holdrecord.WorkflowCutover, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, cohort); err != nil {
+			t.Fatal(err)
+		}
+		restoredReleased(t, r, holdID)
+		if _, err := r.Pool.Exec(ctx, `update nats_hold_records set sig = 'forged' where hold_id = $1 and kind = 'done'`, holdID); err != nil {
+			t.Fatal(err)
+		}
 		var refusal *holdrecord.RouteError
 		if err := c.DeleteCohort(ctx, holdID); !errors.As(err, &refusal) || refusal.Code != "hold_mismatch" {
-			t.Errorf("DeleteCohort on the released row of a hold with no journal answered %v, want 409 hold_mismatch", err)
+			t.Errorf("DeleteCohort on the released row of a hold whose done record does not verify answered %v, want 409 hold_mismatch", err)
 		}
 		if n := cohorts(t, r, holdID); n != 1 {
 			t.Errorf("after the refused delete the table holds %d cohort records, want 1", n)

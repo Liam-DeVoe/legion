@@ -4119,11 +4119,15 @@ The residual: on this path clients reach the restored and proven hub before its 
 
 **The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
 hold row (`holdRowFloor`, a `signedrecord.Floor`, in `internal/cipher/api`): the highest verified
-gen it has served or written, with the digest of that row's signed lines. A row put back below that
-gen, or another row at it, reads as unknown, no move is made from such a row, and no route's 409
-carries it as the row it refused against (it answers `below_floor` instead), so the operator never
-signs a move from a row a hold has moved past (a prepare row put back mid-hold, say). It
-keeps a floor of each hold record it has written or served too (`recordFloors`): an older signed
+gen it has served or written, with the digest of that row's signed lines and the time the operator
+signed it. A row put back below that gen, or another row at it, reads as unknown, and so does a row
+at a higher gen signed more than five minutes before it (`signedrecord.SignedAtSkew`, the clock-skew
+allowance between operator processes): a row of an earlier history of the tables, put back after a
+database restore or an emptied log, whose gens started again below the old ones. No move is made
+from such a row, no route's 409 carries it as the row it refused against (it answers `below_floor`
+instead), and a row a write's statement answers changed (a trigger, say) raises no floor, so the
+operator never signs a move from a row a hold has moved past (a prepare row put back mid-hold, say).
+It keeps a floor of each hold record it has written or served too (`recordFloors`): an older signed
 record put back, or a record gone that no route deleted, reads as unknown, and the command that
 reads it stops. The one record the routes delete, the cohort that `hold abort` from `prepare`
 deletes, goes with the operator's signed delete kept beside the records in the same statement
@@ -4141,26 +4145,33 @@ its log holds, which no command can read: a restore at any other gen is refused 
 log entry carries the row the operator signed, with its signing time and signature, and the route
 judges a restore only by a latest entry that verifies and that its floor of the row takes, so it
 refuses a restore at or below a row it served, read or wrote, and a log emptied under one: each is
-409 `below_floor`, and nothing is stored. A row lost mid-hold is restored `held` with its hold id
-(`RestoreRow`, which follows `restore_gen` for that shape on its own, only when it is one above the
-latest row the client verified); `RestoreRow` reads the hold's journal first and refuses `held` for
-a hold whose `hold release` or `hold abort` is done, and the route stores `held` only after a
-verified `prepare` or `held` entry of the same hold id, so a hold that `hold abort` from `prepare`
-ended, which leaves no journal entry, is not held again. A row lost after a hold ended, or before
-the first, is restored `released`: take the gen the `RestoreGenError` names and run `RestoreRow`
-with it, `released` and no hold id (or the ended hold's), which reads no journal and sends the row
-once at that gen. A row lost while the hold is `prepare`, before its journal starts or after, is
-restored the same way, `released` with that hold's id, the row `hold abort` from `prepare` would
-have written. When the journal was written, `hold abort` then runs on the released row: Admit
-admits it while the journal shows prepare (no done `hold set`, no ended entry), the cohort-delete
-route deletes the hold's cohort on that row, and abort's done entry ends the journal. The next
-hold starts with `hold set` and a new hold id.
-The route stores `released` only after a verified `released` or `prepare` entry, since a `prepare`
-row refuses no client, or after a `held` one whose hold's signed journal shows `hold release` or
-`hold abort` done; after any other `held` entry it refuses `bad_transition`, so no restore frees
-every client while a command of a hold may run. The log and the floors are per database and per
-process: a database writer who empties the log lets `Bootstrap` write gen 1 again on a replica that
-has served no row since it started.
+409 `below_floor`, and nothing is stored. The client bounds the gen too: once it has verified a row
+at gen N (read, moved or restored it), every restore it sends, `released` and `Bootstrap`'s gen 1
+included, goes at N+1 alone, and any other gen is `ErrUnknown` with nothing sent. A client that has
+seen no row, a process that has just started, has no seen gen, and then only the route bounds it.
+A row lost mid-hold is restored `held` with its hold id (`RestoreRow`, which sends it at N+1, or
+follows `restore_gen` once when it has seen no row); `RestoreRow` reads the hold's journal first and
+refuses `held` for a hold whose `hold release` or `hold abort` is done, and the route stores `held`
+only after a verified `prepare` or `held` entry of the same hold id, so a hold that `hold abort`
+from `prepare` ended, which leaves no journal entry, is not held again. A row lost after a hold
+ended, or before the first, is restored `released`: take the gen the `RestoreGenError` names and run
+`RestoreRow` with it, `released` and no hold id (or the ended hold's), which reads no journal and
+sends the row once at that gen. A row lost while the hold is `prepare`, before its journal starts
+or after, is restored the same way, `released` with that hold's id, the row `hold abort` from
+`prepare` would have written. When the journal was written, `hold abort` then runs on the released
+row: Admit admits it while the journal shows prepare (no done `hold set`, no ended entry), the
+cohort-delete route deletes the hold's cohort on that row, and abort's done entry ends the journal.
+When the row was lost before the journal was written, there is nothing for Admit to read: run
+`hold abort`, whose cohort delete the route admits on the released row of a hold with no done
+record, and which writes no entry. The next hold starts with `hold set` and a new hold id. The route
+stores `released` only after a verified `released` or `prepare` entry, since a `prepare` row refuses
+no client, or after a `held` one whose hold's signed journal shows `hold release` or `hold abort`
+done; after any other `held` entry it refuses `bad_transition`, so no restore frees every client
+while a command of a hold may run. Whatever the log shows, it refuses a `released` row naming a hold
+whose signed journal shows `hold set` done and no end: that hold is held by its own record. The log
+and the floors are per database and per process: a database writer who empties the log lets
+`Bootstrap` write gen 1 again on a replica that has served no row since it started, sent by a client
+that has seen no row.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

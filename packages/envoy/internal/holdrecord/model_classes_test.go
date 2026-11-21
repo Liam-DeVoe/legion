@@ -171,9 +171,10 @@ func classifyR28(r modelRules, sc modelScenario, kind string, s modelState, trac
 }
 
 func classify(r modelRules, sc modelScenario, kind string, s modelState, trace []string) string {
-	// A row lost in prepare and restored released left the hold's cohort and journal, and no
-	// command ends them: the class ReleasedPrepareAbort fixes, whichever command failed before.
-	if kind == "liveness" && s.PrepLost == 'O' {
+	// A row lost in prepare and restored released left the hold's cohort, and its journal when
+	// written, and no command ends them: the class ReleasedPrepareAbort and ReleasedNoJournalAbort
+	// fix, whichever command failed before.
+	if kind == "liveness" && (s.PrepLost == 'O' || s.PrepLost == 'N') {
 		return classOrphan
 	}
 	// A command failed for good after its intent, and no command the table admits ends the hold:

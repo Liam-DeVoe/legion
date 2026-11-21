@@ -49,7 +49,7 @@ const (
 
 func runs(sl modelSlot) bool {
 	switch sl.Cmd {
-	case "", cmdAbortPrepare:
+	case "", cmdAbortPrepare, cmdAbortNoJournal:
 		return false
 	case cmdSet:
 		return sl.Step >= setRestore
@@ -118,6 +118,15 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 					ns := writeIntent(s, CommandAbort)
 					ns.Slots[k] = modelSlot{Cmd: cmdAbortReleased, Step: 1}
 					out = append(out, modelEdge{to: ns, label: cmdAbortReleased + ": admitted, intent written", op: true})
+				}
+				// Lost before the journal was written, the hold may have left its cohort and no
+				// journal: hold abort on the released row, which the table admits for the zero Done
+				// (ReleasedNoJournalAbort), deletes the cohort and writes no entry.
+				if s.PrepLost == 'N' && a2(s, cmdAbortNoJournal) &&
+					t.decide(Done{}, modelRequest{Request: Request{Command: CommandAbort, RowReleased: true}}) == nil {
+					ns := s
+					ns.Slots[k] = modelSlot{Cmd: cmdAbortNoJournal, Step: 1}
+					out = append(out, modelEdge{to: ns, label: cmdAbortNoJournal + ": started", op: true})
 				}
 			}
 			continue
@@ -490,6 +499,10 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 		m := finish(t, sc, ns, k)
 		m.PrepLost = 'E'
 		return []modelEdge{{to: m, label: cmdAbortReleased + ": done, the journal ended", op: true}}
+	case cmdAbortNoJournal:
+		m := idle(ns, k)
+		m.PrepLost = 'E'
+		return []modelEdge{{to: m, label: cmdAbortNoJournal + ": cohort deleted", op: true}}
 	}
 	putRow := func(ns modelState, abort bool) (modelState, string) {
 		ns.Row = 'R'

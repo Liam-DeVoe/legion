@@ -49,11 +49,12 @@ func prepareRestoreRows(t *testing.T) {
 			if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 				t.Fatal(err)
 			}
+			operator := r.client(t) // a new process, which has seen no row
 			var mismatch *holdrecord.RestoreGenError
-			if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+			if err := operator.Bootstrap(ctx); !errors.As(err, &mismatch) {
 				t.Fatalf("Bootstrap with the row lost in prepare answered %v, want a RestoreGenError", err)
 			}
-			restored, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete in prepare")
+			restored, err := operator.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete in prepare")
 			if err != nil || restored.Gen != mismatch.RestoreGen || restored.Phase != natsgrant.OperatorPhaseReleased || restored.HoldID != holdID {
 				t.Fatalf("RestoreRow of released with %s at restore_gen %d = %+v, %v; want released, that hold id, at that gen", holdID, mismatch.RestoreGen, restored, err)
 			}
@@ -121,12 +122,13 @@ func restoreLogRows(t *testing.T) {
 			values (10, 'released', $1, 'forged', now(), 'writer', now(), 'forged')`, holdID); err != nil {
 			t.Fatal(err)
 		}
+		operator := r.client(t) // a new process, which has seen no row: only the route bounds it
 		gen := uint64(11)
 		var mismatch *holdrecord.RestoreGenError
-		if err := c.Bootstrap(ctx); errors.As(err, &mismatch) {
+		if err := operator.Bootstrap(ctx); errors.As(err, &mismatch) {
 			gen = mismatch.RestoreGen
 		}
-		got, err := c.RestoreRow(ctx, gen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete")
+		got, err := operator.RestoreRow(ctx, gen, natsgrant.OperatorPhaseReleased, holdID, "restored after a delete")
 		var refusal *holdrecord.RouteError
 		if !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Code != "below_floor" {
 			t.Errorf("RestoreRow of released at gen %d after the forged entry answered %+v, %v; want 409 below_floor, read as ErrUnknown", gen, got, err)
@@ -154,11 +156,12 @@ func restoreLogRows(t *testing.T) {
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 			t.Fatal(err)
 		}
+		operator := r.client(t) // a new process, which has seen no row
 		var mismatch *holdrecord.RestoreGenError
-		if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+		if err := operator.Bootstrap(ctx); !errors.As(err, &mismatch) {
 			t.Fatalf("Bootstrap answered %v, want a RestoreGenError", err)
 		}
-		restored, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after the release's done entry")
+		restored, err := operator.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after the release's done entry")
 		if err != nil || restored.Phase != natsgrant.OperatorPhaseReleased || restored.Gen != mismatch.RestoreGen {
 			t.Fatalf("RestoreRow of released at restore_gen %d = %+v, %v; want released at that gen", mismatch.RestoreGen, restored, err)
 		}

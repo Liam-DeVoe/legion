@@ -239,14 +239,16 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // MoveRow. A row restored `held` inside a hold keeps its hold id at a new `gen`, and the record's
 // completion stands, because no command is admitted while the row is missing. The route stores the
 // row only at one above the highest `gen` its log holds, which no command can read, and answers any
-// other gen 409 `gen_mismatch` naming that one in `restore_gen`. For a `held` row with its hold id
-// RestoreRow then signs the row afresh at `restore_gen` and sends it once more, and answers a
-// second refusal, another writer's restore between the two, as it is; for any other row it answers
-// the first as a RestoreGenError. It follows `restore_gen` only when it is one above the highest
-// row gen this client has verified, read or written, and refuses any other as ErrUnknown: one at
-// or below that gen, or more than one above it, is a gen a database writer chose by the log
+// other gen 409 `gen_mismatch` naming that one in `restore_gen`. Every restore's gen is bounded by
+// the highest row gen this client has verified, read or written (its seen gen): a client that has
+// seen gen N sends a restore at N+1 alone, and answers any other gen ErrUnknown without sending it,
+// since a gen at or below N, or more than one above it, is a gen a database writer chose by the log
 // entries it deleted or added, and the operator would sign the restored row there. A client that
-// has verified no row has nothing to bound it by. Before it restores a `held` row it reads the
+// has seen no row (a new process) has no seen gen, and only the route bounds it. For a `held` row
+// with its hold id RestoreRow sends at N+1 when it has seen gen N, and at gen otherwise; it then
+// follows the route's `restore_gen` once, signed afresh, when that is the bounded gen, and answers
+// a second refusal, another writer's restore between the two, as it is. A `released` row is sent
+// once at gen, and a refusal answered as a RestoreGenError. Before it restores a `held` row it reads the
 // hold's journal, and refuses a hold that has ended, a done `hold release` or `hold abort`
 // (ErrAlreadyDone): no command is admitted after the end, so a held row restored for it would keep
 // every client out with no command left to release it. The route judges every restore by the log's
@@ -275,46 +277,56 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 				return Row{}, wrap(ErrAlreadyDone, fmt.Sprintf("hold %s has ended (%s is done), so its row is not restored held; restore the row released", holdID, end))
 			}
 		}
+		if seen := c.seen(); seen != 0 {
+			gen = seen + 1
+		}
 	}
 	row, err := c.restore(ctx, gen, phase, holdID, reason)
 	var mismatch *RestoreGenError
 	if phase == natsgrant.OperatorPhaseHeld && holdID != "" && errors.As(err, &mismatch) && mismatch.RestoreGen != gen {
-		if err := c.followable(mismatch.RestoreGen); err != nil {
-			return Row{}, err
-		}
 		return c.restore(ctx, mismatch.RestoreGen, phase, holdID, reason)
 	}
 	return row, err
 }
 
-// followable is whether RestoreRow follows restoreGen, the gen a route's restore refusal named:
-// only one above the highest row gen this client has verified, when it has verified one.
-func (c *Client) followable(restoreGen uint64) error {
+// seen is the highest hold-row gen this client has verified, 0 for none.
+func (c *Client) seen() uint64 {
 	c.seenMu.Lock()
-	seen := c.seenGen
-	c.seenMu.Unlock()
-	if seen == 0 || restoreGen == seen+1 {
+	defer c.seenMu.Unlock()
+	return c.seenGen
+}
+
+// bounded is whether a restore at gen may be sent: only one above the highest row gen this client
+// has verified, when it has verified one.
+func (c *Client) bounded(gen uint64) error {
+	seen := c.seen()
+	if seen == 0 || gen == seen+1 {
 		return nil
 	}
-	return wrap(ErrUnknown, fmt.Sprintf("the route names restore_gen %d, and the latest hold row this client verified is at gen %d, so a restored row follows it at gen %d alone", restoreGen, seen, seen+1))
+	return wrap(ErrUnknown, fmt.Sprintf("a restore at gen %d, and the latest hold row this client verified is at gen %d, so a restored row follows it at gen %d alone (restore_gen and the first row's gen 1 included)", gen, seen, seen+1))
 }
 
 // Bootstrap writes the first row, `released` with no hold id at gen 1, through `POST
 // /v1/nats-hold/restore`, once. It answers any refusal as it is: `row_exists` while a row is
 // there, and a RestoreGenError when the log holds entries, so a lost row is not replaced by the
-// first row's at a gen it did not name. That holds only as long as nats_hold_log keeps its
-// entries: the log is the broker database's, and a database writer who empties it lets Bootstrap
-// write gen 1 again. The operator restores a lost row with RestoreRow: held with its hold id
-// mid-hold, and released, at the RestoreGenError's gen, after a released or prepare entry or a held
-// one whose hold has ended.
+// first row's at a gen it did not name. A client that has seen a row answers ErrUnknown without
+// sending (RestoreRow's seen gen: gen 1 follows no row). Otherwise that holds only as long as
+// nats_hold_log keeps its entries: the log is the broker database's, and a database writer who
+// empties it lets Bootstrap write gen 1 again. The operator restores a lost row with RestoreRow:
+// held with its hold id mid-hold, and released, at the RestoreGenError's gen, after a released or
+// prepare entry or a held one whose hold has ended.
 func (c *Client) Bootstrap(ctx context.Context) error {
 	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
 	return err
 }
 
-// restore sends one restore of the row at gen, and answers the row stored, a RestoreGenError for
-// a gen_mismatch naming restore_gen, or the route's other refusal.
+// restore sends one restore of the row at gen, once gen is bounded by the client's seen gen
+// (bounded), and answers the row stored, a RestoreGenError for a gen_mismatch naming restore_gen,
+// or the route's other refusal.
 func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
+	if err := c.bounded(gen); err != nil {
+		return Row{}, err
+	}
 	signedAt, sig, err := c.signRow(gen, phase, holdID)
 	if err != nil {
 		return Row{}, err
@@ -399,9 +411,11 @@ func (c *Client) PutRecord(ctx context.Context, holdID, kind, key string, expect
 	return record, nil
 }
 
-// DeleteCohort deletes the cohort record, for `hold abort` from `prepare`. The broker keeps each
-// delete, signed, beside the records, so after a delete that committed every replica reads the
-// cohort as absent, and the abort's rerun, served by any of them, deletes nothing and answers nil.
+// DeleteCohort deletes the cohort record, for `hold abort` from `prepare`, and for `hold abort` on
+// a row lost in prepare and restored released: after its Admit while the journal shows prepare, and
+// alone, with no Admit, when the hold has no journal. The broker keeps each delete, signed, beside
+// the records, so after a delete that committed every replica reads the cohort as absent, and the
+// abort's rerun, served by any of them, deletes nothing and answers nil.
 func (c *Client) DeleteCohort(ctx context.Context, holdID string) error {
 	if len(c.cfg.SigningKey) == 0 {
 		return errNoSigningKey
