@@ -174,8 +174,8 @@ type Answer struct {
 	SlackChannelsPresent bool `json:"-"`
 	// ClosedToDeveloperBoxes is Dispatch's word that no developer-box credential may list the
 	// project: true while it is in its closing state, the start of an owner's switch to private,
-	// and while it is private and its full switch is done (Dispatch names its key among the
-	// projects it provisioned as private). The exchange refuses a developer box a token of such a
+	// and while it is private by its full switch (the owner's switch to private that committed,
+	// which Dispatch records). The exchange refuses a developer box a token of such a
 	// project on this field alone (DeveloperBoxAsOf), never on Visibility: a project private on its
 	// first day, before its full switch, still gives the developer boxes of the people who work
 	// on it their tokens. Dispatch writes the key only while it is true, so an answer that carries
