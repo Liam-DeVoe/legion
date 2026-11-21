@@ -994,12 +994,12 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
 	// An edge listener relays a session only on the projects of the token it admitted the
-	// session's registration on, which it holds in memory (edgeAdmissions) and never reads back
-	// from the session's record. A session no registration of reached this listener since it
-	// started - one this replica's restart forgot, one whose record names this machine and was
-	// written by no registration here, or one whose admission was forgotten after its entry left
-	// the cache (pruneAdmissions) - is relayed nothing, and its messages wait in its consumer
-	// until it registers through this listener, which starts the relay again (apply).
+	// session's registration or role claim on, which it holds in memory (edgeAdmissions) and
+	// never reads back from the session's record. A session no registration or claim of reached
+	// this listener since it started - one this replica's restart forgot, one whose record names
+	// this machine and was written by neither here, or one whose admission was forgotten after
+	// its entry left the cache (pruneAdmissions) - is relayed nothing, and its messages wait in
+	// its consumer until it registers through this listener, which starts the relay again (apply).
 	if m.repositories != nil {
 		if _, admitted := m.delivery.admissions.of(sessionID); !admitted {
 			m.logger.Info("edge relay holds the session's messages in its consumer until the session registers through this listener",

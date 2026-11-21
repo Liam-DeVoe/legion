@@ -2052,6 +2052,16 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		if entry.SessionID != body.SessionID {
 			entry.Projects = registeringProjects(r)
 		}
+		// The refresh names this machine as the session's relay, so a claim made through
+		// another edge replica than the one the session registered through moves the relay
+		// here. An edge relay holds the session's frames to the projects of the token this
+		// replica admitted it on (edgeAdmissions), and relays nothing to a session it admitted
+		// none of, so the claim records the admission of its own token first, as a registration
+		// does (subscribeHandler): the relay the refresh starts here has it, and the session's
+		// messages keep reaching it before its next registration.
+		if projects, held := heldProjects(r); held && d.consumers != nil {
+			d.consumers.admissions.admit(body.SessionID, projects)
+		}
 		// Whether the claimant was live before this refresh is read before it, from this
 		// listener's cache with no bucket call, as a registration reads it (registerPass): a
 		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.
