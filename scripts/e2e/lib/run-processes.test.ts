@@ -788,17 +788,17 @@ test.skipIf(skip)(
     // walk named nothing of a marked process, which a sweep then left running. The harness's shell
     // starts a process that re-execs itself without end, as a run starts its processes, each exec
     // keeping its pid and its environment, a 100,000-byte variable first and the run's mark after it
-    // (env -i keeps that order), so every exec opens that window again and a read of the 25 pages
-    // before the mark is often cut; it adds the process to the row's proc root, walks 30 times over
-    // it and this test process, and every walk must name it. A walk that read only an empty read
-    // again (aec1fb77ff) missed such a process in 36 of 200 walks, and one that took every read for
-    // an answer in more; with a 9,000-byte variable it missed in 2 of 200, which 60 walks did not
-    // catch.
+    // (env -i keeps that order), so a read of the 25 pages before the mark that an exec meets is
+    // often cut; it sleeps 10 ms between its execs, so it holds no CPU and most reads fall within
+    // one exec on any machine (back to back, its execs left a two-CPU runner no such read in 10 s).
+    // The shell adds it to the row's proc root, walks 30 times over it and this test process, and
+    // every walk must name it. A walk that read only an empty read again (aec1fb77ff) missed such a
+    // process; one that took every read for an answer missed it more.
     const work = join(dir, "exec-window");
     mkdirSync(work);
     const r = harness(
       work,
-      `loop='exec "$0" -c "$1" "$0" "$1"'
+      `loop='sleep 0.01; exec "$0" -c "$1" "$0" "$1"'
 pad=$(head -c 100000 /dev/zero | tr '\\0' x)
 env -i PATH="$PATH" PAD="$pad" LEGION_E2E_RUN="$work" sh -c "$loop" sh "$loop" </dev/null >/dev/null 2>&1 &
 looping=$!
