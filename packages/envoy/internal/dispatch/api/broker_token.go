@@ -79,10 +79,11 @@ func errNoBrokerConfigured() *apiError {
 	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
 }
 
-// readOnlyPersonScopes is what a read-only broker token that acts for its person holds: the
-// person scope alone, never approve (brokerTokenActor). Every such credential shares this one
-// slice, as personCredential shares model.Scopes, so a request allocates none; nothing writes it.
-var readOnlyPersonScopes = []string{model.ScopePerson}
+// brokerPersonScopes is what a broker token that acts for its person holds, a read-only one
+// included: the person scope alone, never approve (brokerTokenActor). Every such credential
+// shares this one slice, as personCredential shares model.Scopes, so a request allocates none;
+// nothing writes it.
+var brokerPersonScopes = []string{model.ScopePerson}
 
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
@@ -165,25 +166,27 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
 			"the secrets broker cannot be reached; try again in a minute")
 	}
-	// Both scopes go to a token the broker scoped to its person: that token is the person's own
-	// agent acting for them, so it may do what they may, approvals included. A token scoped to a
-	// project gets none, because the deployment mapped that token to a project and not to the
-	// person: it proves a session, not that any person stands behind the request. A token that
-	// names a service and no person gets none either, whatever scope the broker answered: there
-	// is no person for it to act as, and a scope that said otherwise would let it act as the
-	// session's own id on the routes that read what belongs to a person.
+	// A token the broker scoped to its person holds the person scope: that token is the person's
+	// own agent acting for them, so it reads, writes and answers their questions as they do. No
+	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
+	// one is made from a file on the machine that holds it, a machine login or a person's sign-in,
+	// so whoever copies that file holds it, and approve settles what only the person settles - an
+	// approval, a credential decision or revoke, a personal token. Those need the person's browser
+	// session or a personal token the person gave approve. A token scoped to a project gets no
+	// scope, because the deployment mapped that token to a project and not to the person: it
+	// proves a session, not that any person stands behind the request. A token that names a
+	// service and no person gets none either, whatever scope the broker answered: there is no
+	// person for it to act as, and a scope that said otherwise would let it act as the session's
+	// own id on the routes that read what belongs to a person.
 	//
 	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
-	// token without read would be, and holds less: one narrowed from a token that acts as its
-	// person still acts for that person, so it holds the person scope alone, and never approve;
-	// every other holds none. The scope read itself is carried as the credential's ReadOnly mark
-	// and never as a scope a route could require, so no recorded act names it.
+	// token without read would be: one narrowed from a token that acts as its person still acts
+	// for that person, so it holds the person scope, and every other holds none. The scope read
+	// itself is carried as the credential's ReadOnly mark and never as a scope a route could
+	// require, so no recorded act names it.
 	var scopes []string
 	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson {
-		scopes = model.Scopes
-		if caller.ReadOnly {
-			scopes = readOnlyPersonScopes
-		}
+		scopes = brokerPersonScopes
 	}
 	actor := model.Actor{
 		Kind: "session",

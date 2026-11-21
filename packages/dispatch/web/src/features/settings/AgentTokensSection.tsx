@@ -81,7 +81,8 @@ const ACT_AS_YOU: TokenScope<"person"> = {
 };
 
 const APPROVE: TokenScope<"approve"> = {
-  allows: "Answers approvals for you, and approves the credentials agents ask you for.",
+  allows:
+    "Reviews documents, answers approvals and keeps decisions for you, and approves the credentials agents ask you for.",
   id: "approve",
   label: "Approve and control credentials",
 };
