@@ -6,16 +6,20 @@ import { KEY } from "./decisions-filter/decisions-fixtures";
 
 /**
  * What the outline's unit tests share (`IssueTree.test.tsx`, `outline-reads.test.tsx`): the
- * comments the comments' read answers for the fixtures' issue (`issueDetails`), and a wait inside
+ * comments the comments' read answers for the fixtures' issue (`issueDetails`), and a task inside
  * `act`.
  */
 
-/** Lets `ms` pass inside `act`, after `first` where given, and React draw what changed by then. */
-export function waitInAct(ms: number, first?: () => void): Promise<void> {
+/** Lets one task pass inside `act`, after `first` where given, and React draw what changed by
+ *  then: a zero-delay timer, which fires after every zero-delay timer set before it, so the look
+ *  a product puts a task on (`press-focus.ts`, `useNodeEditing.ts`) has run by its end. It waits
+ *  no time: a row that waits a timer with a delay of its own moves the fake clock over it
+ *  (`web/src/__tests__/fake-clock.ts`). */
+export function waitInAct(first?: () => void): Promise<void> {
   return act(async () => {
     first?.();
     const waited = Promise.withResolvers<void>();
-    setTimeout(waited.resolve, ms);
+    setTimeout(waited.resolve, 0);
     await waited.promise;
   });
 }

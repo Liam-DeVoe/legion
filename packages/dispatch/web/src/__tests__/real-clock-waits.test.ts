@@ -10,10 +10,12 @@ import { fileURLToPath } from "node:url";
  * clock (INFRA-1505)"), and docs/testing.md, "The clock of a unit test", is the rule.
  *
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
- * `__tests__` folder, a `*-fixture.ts(x)` helper - for a wait of real time: an awaited timer whose
- * callback is a promise's `resolve` and whose delay is not `0`, or a `Bun.sleep` of more than `0`.
- * A zero-delay timer orders tasks and waits no time, so it is not one. The act-rule inputs
- * (`*.fixture.tsx`) are written to break rules and are left out.
+ * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for a wait of real time:
+ * an awaited timer whose callback is a promise's `resolve` and whose delay is not `0`, or a
+ * `Bun.sleep` of more than `0`. A zero-delay timer orders tasks and waits no time, so it is not
+ * one. The act-rule inputs (`*.fixture.tsx`) are written to break rules and are left out. A file
+ * that imports `bun:test` or Testing Library is a test file or a helper whatever its name, and the
+ * scan holds itself to reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -26,17 +28,23 @@ const awaitedTimer = /setTimeout\(\s*(?:\w+\.)?resolve\s*,\s*([^)]+?)\s*\)/g;
 const sleep = /\bBun\.sleep\(\s*([^)]*?)\s*\)/g;
 const comment = /^\s*(?:\/\/|\/\*|\*|\{\/\*)/;
 
-function testFiles(directory: string): string[] {
+/** Every `.ts(x)` file under `directory` but the act-rule inputs (`*.fixture.tsx`). */
+function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) return entry.name === "node_modules" ? [] : testFiles(path);
+    if (entry.isDirectory()) return entry.name === "node_modules" ? [] : sourceFiles(path);
     if (!/\.tsx?$/.test(entry.name) || /\.fixture\.tsx?$/.test(entry.name)) return [];
-    const isTest =
-      /\.test\.tsx?$/.test(entry.name) ||
-      /-fixture\.tsx?$/.test(entry.name) ||
-      path.split("/").includes("__tests__");
-    return isTest ? [path] : [];
+    return [path];
   });
+}
+
+/** Whether `path` is a unit test file or a test helper, by its name or its folder. */
+function isTestFile(path: string): boolean {
+  return (
+    /\.test\.tsx?$/.test(path) ||
+    /-fixtures?\.tsx?$/.test(path) ||
+    path.split("/").includes("__tests__")
+  );
 }
 
 interface RealWait {
@@ -61,7 +69,10 @@ export function realWaits(file: string, text: string): RealWait[] {
   return found;
 }
 
-const files = testFiles(webSource).filter((path) => !path.endsWith("real-clock-waits.test.ts"));
+const sources = sourceFiles(webSource);
+const files = sources
+  .filter(isTestFile)
+  .filter((path) => !path.endsWith("real-clock-waits.test.ts"));
 const waits = files.flatMap((path) =>
   realWaits(relative(webSource, path), readFileSync(path, "utf8"))
 );
@@ -70,6 +81,16 @@ test("the scan reads the unit suite and finds the waits it keeps", () => {
   expect(files.length).toBeGreaterThan(100);
   // Margin.landing.test.tsx's `quiet` stays on the real clock with its reason.
   expect(waits.some((wait) => wait.reasoned)).toBe(true);
+});
+
+test("the scan reads every file that imports bun:test or Testing Library", () => {
+  const unread = sources
+    .filter((path) => !isTestFile(path))
+    .filter((path) =>
+      /from "(?:bun:test|@testing-library\/[\w-]+)"/.test(readFileSync(path, "utf8"))
+    )
+    .map((path) => relative(webSource, path));
+  expect(unread, "a test helper the scan does not read by its name").toEqual([]);
 });
 
 test("a wait of real time is found, and its reason is read from the comment above it", () => {
