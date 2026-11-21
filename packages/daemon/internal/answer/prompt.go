@@ -40,9 +40,12 @@ func systemPrompt(req Request) string {
 // lastCall is the message the answer's last model call carries (agentloop.Request.LastCall).
 // That call offers no tool, which the system prompt says once, far above; a model not told so on
 // the call itself has spent it on one more tool call it could not make, or on a reply with nothing
-// in it. The message is the loop's own instruction, as the system prompt is, and the append holds
-// no trace of it (Reply.Append).
-const lastCall = "This is your last model call, and it offers no tool. Reply now, in the reply form, from what you already know."
+// in it. It also names the reply form's needs rule (parseReply), since that call's reply is never
+// asked for again: a not_answered or needs_work reply naming no need there is malformed, and the
+// asker hears nothing of what is needed. The message is the loop's own instruction, as the system
+// prompt is, and the append holds no trace of it (Reply.Append).
+const lastCall = "This is your last model call, and it offers no tool. Reply now, in the reply form, from what you already know. " +
+	"A not_answered or needs_work reply must say in needs what you need, and needs is never empty for them."
 
 // userMessage is the one user message after the conversation: what has changed on the issue, the
 // question with who asked and where, and on a re-run the gh calls already made with their results.
