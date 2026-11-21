@@ -403,9 +403,10 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 // the debt. The pass after the block lists the login the approve minted and revokes it, and leaves
 // the debt owed until a claim comes machineLoginSettleAfter after the block.
 //
-// Controls: the block without its approval lock statement, or with that lock under another key
-// than store.LockMachineLoginApprovals', and the block commits while the approve is in flight,
-// named; the block keeping the debt's recorded_at, and the pass at once settles the debt, named.
+// Controls: the block's machine-login statement taking no approval lock (pg_advisory_xact_lock
+// dropped from its select), or that lock under another key than store.LockMachineLoginApprovals',
+// and the block commits while the approve is in flight, named; the block keeping the debt's
+// recorded_at, and the pass at once settles the debt, named.
 func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
