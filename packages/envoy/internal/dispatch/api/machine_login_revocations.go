@@ -62,11 +62,13 @@ var errRevocationWindowSpent = errors.New("the claim may start no more broker ca
 // approve on its own request's context: an approve Dispatch gave up on can still commit a login
 // after the record, and a pass that listed before that commit would settle the debt and leave the
 // login refreshing. Every such approve reached the broker's handler before Dispatch gave up on it,
-// so before the record, and its commit is over within this bound of the record. So a pass revokes
-// what it lists whenever it runs, but settles only when its claim came this long after the
-// record, since its list then holds every such login; until then the member's approve is 409
-// MACHINE_LOGIN_REVOCATION_OWED, for about a minute after a removal. An approve that a proxy
-// between Dispatch and the broker held past Dispatch's call and sent on later is outside it.
+// so before the record, and its commit is over within this bound of the record, on the assumption
+// wire.RequestWriteMargin names: that the broker's database completes a commit within the margin.
+// So a pass revokes what it lists whenever it runs, but settles only when its claim came this long
+// after the record, since its list then holds every such login; until then the member's approve is
+// 409 MACHINE_LOGIN_REVOCATION_OWED, for about a minute after a removal. Two approves are outside
+// it: one that a proxy between Dispatch and the broker held past Dispatch's call and sent on
+// later, and one whose COMMIT the broker's database took longer than the margin to complete.
 const machineLoginSettleAfter = wire.RequestDeadline + wire.RequestWriteMargin
 
 // revokeOwedMachineLogins is the loop's pass over the machine-login revocations owed: it claims
