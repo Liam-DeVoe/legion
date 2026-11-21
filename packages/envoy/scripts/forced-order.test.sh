@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/forced-order.test.sh: the refusals forced-order.sh must make. Each case
-# runs the script as a developer or a CI step does and checks its exit status and what it printed.
-# Needs the fixture package internal/testnats/hooktest/skiponly/.
+# runs the script as a developer or a CI step does, and passes only when the run exits non-zero,
+# prints that refusal's own message and prints nothing a run past the refusal would. Each case is
+# first judged against a stand-in that fails early for another reason, as a failed download does,
+# and must fail there: a case that passes on any refusal would pass a run that never reached the
+# one it names. Needs the fixture package internal/testnats/hooktest/skiponly/.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
@@ -9,31 +12,65 @@ out="$(mktemp -d)"
 trap 'rm -rf -- "$out"' EXIT
 failed=0
 
-# expect <name> <want: refuse> <grep -E pattern that must not appear> -- <args...>
-refused() {
-  local name=$1 absent=$2
-  shift 2
-  local code=0
-  (cd "$envoy" && scripts/forced-order.sh "$@") >"$out/$name" 2>&1 || code=$?
+# The stand-in: a line forced-order.sh prints when go mod download fails, and its exit status.
+early="$out/early-failure.sh"
+cat >"$early" <<'EOF'
+#!/usr/bin/env bash
+echo "forced-order.sh: go mod download could not fetch github.com/nats-io/nats-server/v2@v2.15.1" >&2
+exit 1
+EOF
+chmod +x "$early"
+
+# judge <script> <log> <message> <absent> <args...>: whether <script> <args...>, run in packages/envoy,
+# exits non-zero, prints <message> (fixed text) and prints no line matching <absent> (grep -E). It
+# prints why.
+judge() {
+  local script=$1 log=$2 message=$3 absent=$4 code=0
+  shift 4
+  (cd "$envoy" && "$script" "$@") >"$log" 2>&1 || code=$?
   if [ "$code" -eq 0 ]; then
-    echo "FAIL $name: exit 0, want a refusal: forced-order.sh $*"
+    echo "exit 0, want a refusal"
+    return 1
+  fi
+  if ! grep -qF -- "$message" "$log"; then
+    echo "exit $code without the refusal's message \"$message\"; its last line: $(tail -n 1 "$log")"
+    return 1
+  fi
+  if grep -qE -- "$absent" "$log"; then
+    echo "exit $code, but the output holds /$absent/: $(grep -E -- "$absent" "$log" | head -n 1)"
+    return 1
+  fi
+  echo "exit $code: $(grep -F -- "$message" "$log" | head -n 1)"
+}
+
+# refused <name> <message> <absent> <args...>
+refused() {
+  local name=$1 message=$2 absent=$3 why
+  shift 3
+  if why="$(judge "$early" "$out/$name.control" "$message" "$absent" "$@")"; then
+    echo "FAIL $name: the case passes a run that fails early for another reason ($why)"
     failed=$((failed + 1))
-  elif grep -qE "$absent" "$out/$name"; then
-    echo "FAIL $name: exit $code, but the output holds /$absent/: forced-order.sh $*"
-    grep -E "$absent" "$out/$name" | head -n 3 | sed 's/^/    /'
-    failed=$((failed + 1))
+    return
+  fi
+  echo "control $name: a run that fails early for another reason fails the case ($why)"
+  if why="$(judge scripts/forced-order.sh "$out/$name" "$message" "$absent" "$@")"; then
+    echo "PASS $name: $why"
   else
-    echo "PASS $name: exit $code: $(tail -n 1 "$out/$name")"
+    echo "FAIL $name: $why: forced-order.sh $*"
+    failed=$((failed + 1))
   fi
 }
 
 # A package whose forced-order tests all skip runs no forced-order test.
-refused skip-only '^ok[[:space:]]' ./internal/testnats/hooktest/skiponly/
+refused skip-only 'forced-order.sh: no TestForcedOrder test ran in: github.com/sjawhar/envoy/internal/testnats/hooktest/skiponly' \
+  '^ok[[:space:]]' ./internal/testnats/hooktest/skiponly/
 # -drop names a hold point; a name that is none is refused before any line of nats-server is cut
 # and before the build, so a control never "fails" on a compile error.
-refused drop-not-a-point 'dropped [0-9]+ hook line|^# github.com/nats-io/nats-server' -drop stream ./internal/testnats/hooktest/
+refused drop-not-a-point 'forced-order.sh: -drop stream: no hook of nats-server ' \
+  'dropped [0-9]+ hook line|^# github.com/nats-io/nats-server' -drop stream ./internal/testnats/hooktest/
 # -server with an empty value is no version, not the default.
-refused server-empty '^=== RUN' -server '' ./internal/testnats/hooktest/
+refused server-empty "forced-order.sh: -server '' names no version" \
+  '^=== RUN' -server '' ./internal/testnats/hooktest/
 
 echo "forced-order.test.sh: $failed failed of 3"
 [ "$failed" -eq 0 ]
