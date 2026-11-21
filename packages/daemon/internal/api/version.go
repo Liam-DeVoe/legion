@@ -3018,6 +3018,7 @@ package api
 // 202, and a reading of every open pull request at that merge, which ended at
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
+//
 // 208: a claim Envoy cannot reach, and its relaunch on its same session.
 // Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
 // locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
@@ -3116,10 +3117,14 @@ package api
 // #3993, #4065, #4553, #4596 and #4661), none of which declared it at the reading of 00:06Z, 204 at
 // one, 205 at three, 206 at one, 207 at four and 208 at one. It took 208 at the forward merge of
 // 2026-11-21 that brought main in at 0497e861b0, which landed contract 205
-// (cybermonklabs/legion#4573), the entry right above: a reading at refs/pull/<n>/head for each of
-// the 400 open pull requests, 0 unread, made between 2026-11-21T19:23:15Z and 19:23:42Z, gave 203
-// at this change alone, 204 at three heads, 205 at none, 206 at two, 207 at nine, 208 at none, 209
-// at three, 210 at one and 211 to 214 at seven, so 208 was the lowest number above the base's 205
-// that no open head declared. Its band of the state's shape is the last row of shaping.go's
-// stateNarrowings, and 208 is the last number of answers.go's SupportedContracts.)
+// (cybermonklabs/legion#4573), the entry right above: a reading at refs/pull/<n>/head made between
+// 2026-11-21T19:23:15Z and 19:23:42Z found 208 at no open head. That reading listed 400 of the 416
+// open pull requests: the list it read stopped at 400 and left out every pull request below #2653,
+// and one it left out, cybermonklabs/legion#2230, declared 208 too. A reading of all 416 open pull
+// requests, 0 unread, made between 2026-11-21T21:01:31Z and 21:01:50Z, gave 205 at twenty-eight
+// heads, 206 at two, 207 at eight, 208 at this change and #2230, 209 at two, 210 at one, 211 at
+// two, 212 at one, 213 at two, 214 at two, 215 at one and 216 at three. This change keeps 208, and
+// #2230 moves to a free number at its own merge of main. Its band of the state's shape is the last
+// row of shaping.go's stateNarrowings, and 208 is the last number of answers.go's
+// SupportedContracts.)
 const DaemonAPIVersion = 208
