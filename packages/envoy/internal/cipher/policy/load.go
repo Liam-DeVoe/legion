@@ -334,12 +334,16 @@ func pendingOf(ls secrets.Listing) Pending {
 
 // Lookup is LoadOne's answer: Served with the Secret; or Reason, a Reason* refusal constant, with
 // Owner as a Refusal carries it; or ReasonAbsent or ReasonPendingValue, neither of which is a
-// refusal.
+// refusal. Current.RefreshOne answers one too, with Moved.
 type Lookup struct {
 	Secret Secret
 	Served bool
 	Reason string
 	Owner  string
+	// Moved is, in Current.RefreshOne's answer, every name whose value that reread may have
+	// moved (movedByReread): the names the airlock's proxy drops what it holds of. LoadOne
+	// leaves it nil.
+	Moved []string
 	// version is a served type secret's value's version, as Set's versions holds it, and "" for
 	// every other answer.
 	version string

@@ -330,7 +330,7 @@ func rereadAppSecret(t *testing.T, value string) string {
 // TestARereadOfAGitHubAppSourceDropsItsProfilesTokensOnlyWhenItMovedItsValue: a proxied GitHub
 // profile's held value is an installation token the proxy minted from its source's stored App
 // key, so a reread of the source through the public route drops it only when the reread moved
-// the source's value version (policy.Current.MovedByReread). A reread that finds the value as the
+// the source's value version (policy.Lookup.Moved). A reread that finds the value as the
 // broker held it leaves the proxy spending the token it holds: no read of the grant's values and
 // no token request to GitHub. A reread that finds a new version of the value has the proxy read
 // the grant's values again, which mints from the new one.

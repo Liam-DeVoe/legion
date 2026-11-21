@@ -272,9 +272,9 @@ func main() {
 	// when it is stored, so the store and those reads are on different goroutines.
 	var airlockProxy atomic.Pointer[proxy.Server]
 	// dropAirlockName is what one reread of a secret's name does to the proxy, for each name the
-	// reread moved the value of (dropReread): it drops that name's value from every grant the
-	// proxy holds values for, so the next request of such a grant reads the value again and
-	// mints again from it. The reread of the name is the signal for a stored value, not the
+	// reread moved the value of (policy.Lookup.Moved): it drops that name's value from every
+	// grant the proxy holds values for, so the next request of such a grant reads the value again
+	// and mints again from it. The reread of the name is the signal for a stored value, not the
 	// policy version: a new version of a secret's value moves neither the policy's version nor
 	// the set of names it serves, so nothing else this process sees says that the value the proxy
 	// is holding is the old one. Nothing to do when there is no proxy, which is both a deployment
@@ -686,12 +686,14 @@ func main() {
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
 		Draining:               draining.Load,
-		NotifyReread: func(ctx context.Context, name string, before *policy.Set) {
+		NotifyReread: func(ctx context.Context, name string, moved []string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: what the reread
 			// moved of it is dropped from the airlock proxy's own cache before the peers are
-			// told (dropReread).
-			dropReread(current, before, name, dropAirlockName)
+			// told.
+			for _, affected := range moved {
+				dropAirlockName(affected)
+			}
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
@@ -1095,39 +1097,29 @@ func airlockListen(cfg config.Config, rules proxyrules.Rules) func() (net.Listen
 
 // peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
 // told this one to make, current's RefreshOne. A peer served the reread, so this pod's airlock
-// proxy may be holding the old value of that name: dropReread drops what this pod's own reread
-// moved of it, read against the live set before it, by the rule the reread route's own drop
-// follows. A reread whose context ended during its value read alone (policy.ErrValueUnchecked)
-// has merged the tags it read, which this pod now serves, so it is a reread that ran: it answers
-// nil, and the next load reads the value again. Any other error is a reread that did not run,
-// which the listener logs: it moved no type secret's value version, so it drops none of a type
-// secret's names, and it drops a stored value's as every reread of one does.
+// proxy may be holding the old value of that name: it drops each name the reread moved
+// (policy.Lookup.Moved), by the rule the reread route's own drop follows. The proxy holds a
+// grant's values by the name the grant was released under, which for a profile of another name
+// is the profile's own, so a reread of a source drops its profiles, and a reread of a profile
+// drops its source and its sibling profiles; dropping the reread name alone left the old value in
+// every request of the others until their grants ended, and a stored value has no expiry. A type
+// secret's held values are tokens minted from its value, which a reread that left that value's
+// version alone gives no reason to mint again, and anyone may ask for a reread. A reread whose
+// context ended during its value read alone (policy.ErrValueUnchecked) has merged the tags it
+// read, which this pod now serves, so it is a reread that ran: it answers nil, and the next load
+// reads the value again. Any other error is a reread that did not run, which the listener logs:
+// it moved no type secret's value version, so it drops none of a type secret's names, and it
+// drops a stored value's as every reread of one does.
 func peerReread(current *policy.Current, dropAirlockName func(string)) func(context.Context, string) error {
 	return func(ctx context.Context, name string) error {
-		before := current.Get()
-		_, err := current.RefreshOne(ctx, name)
-		dropReread(current, before, name, dropAirlockName)
+		lk, err := current.RefreshOne(ctx, name)
+		for _, affected := range lk.Moved {
+			dropAirlockName(affected)
+		}
 		if errors.Is(err, policy.ErrValueUnchecked) {
 			return nil
 		}
 		return err
-	}
-}
-
-// dropReread drops from the airlock proxy's held values, through drop, every name whose value a
-// reread of name moved, read against before, the live set as it stood before that reread
-// (policy.Current.MovedByReread): the stored secret it read, and each profile served from that
-// secret, where that secret is a stored value, or a type secret whose value version the reread
-// moved. The proxy holds a grant's values by the name the grant was released under, which for a
-// profile of another name is the profile's own, so a reread of a source drops its profiles, and
-// a reread of a profile drops its source and its sibling profiles; dropping the reread name alone
-// left the old value in every request of the others until their grants ended, and a stored value
-// has no expiry. A type secret's held values are tokens minted from its value, which a reread
-// that left that value's version alone gives no reason to mint again, and anyone may ask for a
-// reread. The mapping is the live policy's, which is the one RefreshOne reads by.
-func dropReread(current *policy.Current, before *policy.Set, name string, drop func(string)) {
-	for _, affected := range current.MovedByReread(name, before) {
-		drop(affected)
 	}
 }
 

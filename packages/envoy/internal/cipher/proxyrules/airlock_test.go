@@ -7,174 +7,26 @@ import (
 	"testing"
 )
 
-// validFile sets every field of an entry, so a parse that drops one is seen, and leaves
-// every optional field out of the second entry, so the nil defaults are seen beside the
-// empty lists of the third.
-const validFile = `{
-  "secrets": [
-    {
-      "name": "github",
-      "hosts": ["api.github.com", "*.githubusercontent.com"],
-      "headers": ["authorization", "x-github-token"],
-      "allow": [{"method": "GET", "pathPrefix": "/repos/"}],
-      "kind": "azure",
-      "judge": 900
-    },
-    {"name": "plain", "hosts": ["example.com"]},
-    {"name": "sealed", "hosts": ["sealed.example.com"], "headers": [], "allow": []}
-  ]
-}`
-
-// decodeRules reads a rules file into Rules through Decode, as every test here that needs a
-// file's entries reads one.
-func decodeRules(data []byte) (Rules, error) {
-	var rules Rules
-	err := Decode(data, &rules)
-	return rules, err
-}
-
-// TestDecodeValidFile reads every field of an entry, and keeps apart the two meanings the
-// format gives an absent list and an empty one.
-func TestDecodeValidFile(t *testing.T) {
-	rules, err := decodeRules([]byte(validFile))
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-	if len(rules.Secrets) != 3 {
-		t.Fatalf("decoded %d entries, want 3: %+v", len(rules.Secrets), rules.Secrets)
-	}
-	github := rules.Secrets[0]
-	if github.Name != "github" || github.Kind != "azure" {
-		t.Errorf("entry 0 name=%q kind=%q, want github/azure", github.Name, github.Kind)
-	}
-	if got, want := strings.Join(github.Hosts, ","), "api.github.com,*.githubusercontent.com"; got != want {
-		t.Errorf("entry 0 hosts = %q, want %q", got, want)
-	}
-	if got, want := strings.Join(github.Headers, ","), "authorization,x-github-token"; got != want {
-		t.Errorf("entry 0 headers = %q, want %q", got, want)
-	}
-	if len(github.Allow) != 1 || github.Allow[0] != (Allow{Method: "GET", PathPrefix: "/repos/"}) {
-		t.Errorf("entry 0 allow = %+v, want one GET /repos/", github.Allow)
-	}
-	if github.Judge == nil || *github.Judge != 900 {
-		t.Errorf("entry 0 judge = %v, want 900", github.Judge)
-	}
-	if plain := rules.Secrets[1]; plain.Headers != nil || plain.Allow != nil || plain.Judge != nil || plain.Kind != "" {
-		t.Errorf("entry 1 = %+v, want every optional field unset", plain)
-	}
-	if sealed := rules.Secrets[2]; sealed.Headers == nil || len(sealed.Headers) != 0 || sealed.Allow == nil || len(sealed.Allow) != 0 {
-		t.Errorf("entry 2 headers = %v allow = %v, want both empty and not nil", sealed.Headers, sealed.Allow)
-	}
-}
-
-// TestDecodeNotJSON: the error names the byte offset the decoder stopped at and the line and
-// column that offset falls on, because a person reads the file by line and column.
-func TestDecodeNotJSON(t *testing.T) {
-	// Byte 16 is the "x": one for "{", one for the newline, then 13 bytes of line 2.
-	data := []byte("{\n  \"secrets\": x\n}")
-	_, err := decodeRules(data)
-	if err == nil {
-		t.Fatal("Decode of a file that is not JSON: no error")
-	}
-	for _, want := range []string{"byte offset 16", "line 2", "column 14"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestDecodeWrongType: a field of the wrong type names its position too.
-func TestDecodeWrongType(t *testing.T) {
-	_, err := decodeRules([]byte("{\n  \"secrets\": {\"name\": \"a\"}\n}"))
-	if err == nil {
-		t.Fatal("Decode of secrets as an object: no error")
-	}
-	for _, want := range []string{"secrets", "byte offset", "line 2", "column 14"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestDecodeUnknownField: a field this broker does not know is refused, so a file written
-// for a later broker is not served with that field's rule missing, and the refusal names where
-// the field's name starts, as the refusal of a field of the wrong type names where its value is.
-// The field is in the first of two entries, so a refusal that named where the decoder stopped
-// reading, the end of the file, would name another line.
-func TestDecodeUnknownField(t *testing.T) {
-	// The name "lifetime" opens at byte 47: line 1 is 14 bytes with its newline, and the name's
-	// quote is column 33 of line 2.
-	data := []byte("{\"secrets\": [\n  {\"name\": \"a\", \"hosts\": [\"h\"], \"lifetime\": 5},\n  {\"name\": \"b\", \"hosts\": [\"h\"]}\n]}")
-	_, err := decodeRules(data)
-	if err == nil {
-		t.Fatal("Decode of a file with an unknown field: no error")
-	}
-	for _, want := range []string{`unknown field "lifetime"`, "byte offset 47, line 2, column 33"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestDecodeUnknownFieldItCannotPlace: where the second reading unknownField takes stops at
-// another fault than the first reading's unknown field, the refusal names the field alone, never
-// that other fault's position as the field's. "Ab" folds to two fields of ambiguous, which the
-// first reading, under v1's legacy semantics, takes as the first of them and reads on to "zz",
-// and the second reading refuses as ambiguous.
-func TestDecodeUnknownFieldItCannotPlace(t *testing.T) {
-	var ambiguous struct {
-		Lower int `json:"ab"`
-		Upper int `json:"AB"`
-	}
-	err := Decode([]byte(`{"Ab": 1, "zz": 2}`), &ambiguous)
-	if err == nil || err.Error() != `unknown field "zz"` {
-		t.Errorf("Decode = %v; want the refusal unknown field \"zz\", with no position", err)
-	}
-}
-
-// TestDecodeRefusesWhatFollowsTheObject: a file whose one object is followed by anything but
-// white space is refused, naming where that starts. json.Decoder would read the first object and
-// drop the rest: an author who wrote a second object would believe both were in force, and one
-// whose object ends at a stray bracket meant it to go on. A file that is empty, or that ends
-// inside its object, holds no object at all, and says so rather than naming the decoder's EOF.
-func TestDecodeRefusesWhatFollowsTheObject(t *testing.T) {
-	for name, c := range map[string]struct {
-		data string
-		want []string
-	}{
-		"a second object":           {"{\"secrets\": []}\n{\"secrets\": [{\"name\": \"a\", \"hosts\": [\"h\"]}]}\n", []string{"goes on after its one JSON object", "line 2, column 1"}},
-		"a stray closing brace":     {"{\"secrets\": []}\n}\n", []string{"goes on after its one JSON object", "line 2, column 1"}},
-		"a stray closing bracket":   {"{\"secrets\": []}\n  ]", []string{"goes on after its one JSON object", "line 2, column 3"}},
-		"a word after the object":   {"{\"secrets\": []} done", []string{"goes on after its one JSON object", "line 1, column 17"}},
-		"an empty file":             {"", []string{"empty", "no JSON object"}},
-		"a file of white space":     {"\n  \n", []string{"empty", "no JSON object"}},
-		"a file that ends too soon": {"{\"secrets\": [\n", []string{"ends inside its JSON object"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := decodeRules([]byte(c.data))
-			if err == nil {
-				t.Fatalf("Decode(%q): no error", c.data)
-			}
-			for _, want := range c.want {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("Decode(%q) = %q, which does not say %q", c.data, err, want)
-				}
-			}
-		})
-	}
-	// The control: white space after the object is no second value.
-	if _, err := decodeRules([]byte("{\"secrets\": []}\n\n")); err != nil {
-		t.Fatalf("Decode of one object and a trailing newline: %v", err)
-	}
-}
+// validRules sets every field of an entry, leaves every optional field out of the second entry,
+// and gives the third empty lists where the second has none, so the nil defaults are checked
+// beside the empty lists. The profiles file is what the broker reads rules from, and its tests
+// (policy's) hold how a file is read into these entries.
+var validRules = Rules{Secrets: []SecretRule{
+	{
+		Name:    "github",
+		Hosts:   []string{"api.github.com", "*.githubusercontent.com"},
+		Headers: []string{"authorization", "x-github-token"},
+		Allow:   []Allow{{Method: "GET", PathPrefix: "/repos/"}},
+		Kind:    "azure",
+		Judge:   new(uint32(900)),
+	},
+	{Name: "plain", Hosts: []string{"example.com"}},
+	{Name: "sealed", Hosts: []string{"sealed.example.com"}, Headers: []string{}, Allow: []Allow{}},
+}}
 
 func TestValidate(t *testing.T) {
-	valid, err := decodeRules([]byte(validFile))
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-	if err := Validate(valid); err != nil {
-		t.Fatalf("Validate of a valid file: %v", err)
+	if err := Validate(validRules); err != nil {
+		t.Fatalf("Validate of valid rules: %v", err)
 	}
 
 	cases := []struct {

@@ -44,20 +44,6 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 	refused := make(map[string]Refusal, len(set.Refused)+len(p.list))
 	maps.Copy(refused, set.Refused)
 	byName := map[string]Refusal{}
-	held := make(map[string]bool, len(p.list))
-	var profilesOf map[string][]string
-	var profileSources map[string]string
-	for i := range p.list {
-		profile := &p.list[i]
-		held[profile.Name] = true
-		if profile.Source != profile.Name {
-			if profilesOf == nil {
-				profilesOf, profileSources = map[string][]string{}, map[string]string{}
-			}
-			profilesOf[profile.Source] = append(profilesOf[profile.Source], profile.Name)
-			profileSources[profile.Name] = profile.Source
-		}
-	}
 	for i := range p.list {
 		profile := &p.list[i]
 		delete(served, profile.Name)
@@ -76,14 +62,14 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 			refused[prefix+slugOf(profile.Name)] = Refusal{Reason: ReasonProfileNameTaken, Owner: stored.Owner, Detail: "the profile " + profile.Name + " holds this name"}
 		}
 	}
-	for source := range profilesOf {
-		if !held[source] {
+	for source := range p.of {
+		if p.Lookup(source) == nil {
 			delete(served, source)
 			delete(versions, source)
 		}
 	}
 	for name, secret := range set.Secrets {
-		if held[name] || profilesOf[name] != nil || secret.Type() != TypeGitHubApp {
+		if p.Lookup(name) != nil || p.Of(name) != nil || secret.Type() != TypeGitHubApp {
 			continue
 		}
 		delete(served, name)
@@ -93,7 +79,7 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		byName[name] = refusal
 	}
 	next := setOf(served, refused, set.Pending, versions)
-	next.ProfilesOf, next.profileRefused, next.profileSources = profilesOf, byName, profileSources
+	next.profiles, next.profileRefused = p, byName
 	return next
 }
 
@@ -283,35 +269,21 @@ func kindOf(secretType string) string {
 // session's operator who withholds one of them withholds each, in both directions: a source's own
 // name withholds each profile of it, and a profile withholds its source's own name and each other
 // profile of it, a read profile its write sibling. A name that is no profile is its own source
-// (source), so a stored secret no profile uses withholds itself alone. It is the one reading of
-// Requester.Withheld: Evaluate decides by it, and so does every check of the request machine that
-// asks whether a name is withheld from a session, the withhold's own ending of the grants it
-// covers among them (requests' withhold).
+// (Profiles.SourceOf), so a stored secret no profile uses withholds itself alone. It is the one
+// reading of Requester.Withheld: Evaluate decides by it, and so does every check of the request
+// machine that asks whether a name is withheld from a session, the withhold's own ending of the
+// grants it covers among them (requests' withhold).
 func (s *Set) Withholds(r Requester, name string) bool {
 	if len(r.Withheld) == 0 {
 		return false
 	}
-	source := s.source(name)
+	source, _ := s.profiles.SourceOf(name)
 	for _, withheld := range r.Withheld {
-		if s.source(withheld) == source {
+		if of, _ := s.profiles.SourceOf(withheld); of == source {
 			return true
 		}
 	}
 	return false
-}
-
-// source is the name of what name is served from: the source of the profile s serves or refuses by
-// that name, as the profiles file names it, and name itself for every other name — a stored secret
-// served by its own name, a source asked for by its own name, a profile that holds its source's
-// name, or a name s has never heard of.
-func (s *Set) source(name string) string {
-	if profile := s.Secrets[name].Profile; profile != nil {
-		return profile.Source
-	}
-	if source, ok := s.profileSources[name]; ok {
-		return source
-	}
-	return name
 }
 
 // notServed is Evaluate's error for a name the set does not serve for a reason the profiles file
@@ -339,7 +311,7 @@ func (s *Set) unservedError(name string) error {
 		}
 		return &notServed{kind: ErrProfileRefused, text: name + " " + ErrProfileRefused.Error() + ": " + why}
 	}
-	profiles := s.ProfilesOf[name]
+	profiles := s.ProfilesOf(name)
 	if len(profiles) == 0 {
 		return ErrUnknownSecret
 	}

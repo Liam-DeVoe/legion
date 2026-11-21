@@ -75,6 +75,7 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		{"an empty repositories list", githubWrite(`{"accounts": ["example-org"], "repositories": [], "permissions": {"contents": "read"}}`), "github.repositories", []string{"empty"}},
 		{"a repository with no account", githubWrite(`{"accounts": ["example-org"], "repositories": ["legion"], "permissions": {"contents": "read"}}`), "github.repositories[0]", []string{"account/name"}},
 		{"a repository of an account the profile does not name", githubWrite(`{"accounts": ["example-org"], "repositories": ["example-org/legion", "other-org/legion"], "permissions": {"contents": "read"}}`), "github.repositories[1]", []string{"other-org", "github.accounts"}},
+		{"an account no repository names", githubWrite(`{"accounts": ["example-org", "Ada"], "repositories": ["example-org/legion"], "permissions": {"contents": "read", "metadata": "read"}}`), "github.accounts[1]", []string{"names ada", "github.repositories names no repository of it"}},
 		{"a repository name GitHub cannot hold", githubWrite(`{"accounts": ["example-org"], "repositories": ["example-org/a b"], "permissions": {"contents": "read"}}`), "github.repositories[0]", []string{"letters, digits"}},
 		{"the repository name ..", githubWrite(`{"accounts": ["example-org"], "repositories": ["example-org/.."], "permissions": {"contents": "read"}}`), "github.repositories[0]", []string{"letters, digits"}},
 		{"more repositories than a token takes", githubWrite(`{"accounts": ["example-org"], "repositories": ` + repositories(secrets.MaxNarrowedRepositories+1) + `, "permissions": {"contents": "read"}}`), "github.repositories", []string{fmt.Sprint(secrets.MaxNarrowedRepositories + 1), fmt.Sprint(secrets.MaxNarrowedRepositories)}},
@@ -129,12 +130,15 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 // TestParseProfilesRefusesUnknownFieldsAndASecondValue: a field the broker does not know, at any
 // depth of the file, is refused rather than ignored, so a file written for a later broker is not
 // served with that field's rule missing; so is anything after the file's one object, which its
-// author would believe in force. A file that is not JSON, holds a field of the wrong type or holds
-// a field the broker does not know is refused naming where: an unknown field by where its name
-// starts, the second "name" of the proxy block's row and not the profile's own. A file that is not
-// the one object {"profiles": [...]} (a null, a list, a string, an object with no profiles list or
-// a null one) is refused naming what it is, never read as a file of no profiles: a file of no
-// profiles says so, {"profiles": []}.
+// author would believe in force, a second value, a stray bracket or a word alike. A file that is
+// not JSON, holds a field of the wrong type or holds a field the broker does not know is refused
+// naming where: an unknown field by where its name starts, the second "name" of the proxy block's
+// row and not the profile's own, and text that is not JSON by the byte at fault, the trailing
+// comma of a list and not the bracket after it. A file that is empty, white space alone, or ends
+// inside its object holds no object and says so. A file that is not the one object
+// {"profiles": [...]} (a null, a list, a string, an object with no profiles list or a null one)
+// is refused naming what it is, never read as a file of no profiles: a file of no profiles says
+// so, {"profiles": []}.
 func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 	for name, c := range map[string]struct {
 		file string
@@ -148,10 +152,15 @@ func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 		"a field of an allow entry":    {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "allow": [{"method": "GET", "path": "/"}]}`)), []string{`unknown field "path"`, "byte offset 111, line 1, column 111"}},
 		"a second value":               {profilesFile(githubRead) + "\n" + profilesFile(), []string{"goes on after its one JSON object", "line 4, column 1"}},
 		"a stray closing brace":        {profilesFile(githubRead) + "\n}\n", []string{"goes on after its one JSON object", "line 4, column 1"}},
-		"a file that is not JSON":      {"{\"profiles\": [\n  " + githubRead + ",\n]}", []string{"not JSON", "byte offset", "line 5, column 1"}},
+		"a stray closing bracket":      {"{\"profiles\": []}\n  ]", []string{"goes on after its one JSON object", "line 2, column 3"}},
+		"a word after the object":      {`{"profiles": []} done`, []string{"goes on after its one JSON object", "byte offset 18, line 1, column 18"}},
+		"a file that is not JSON":      {"{\"profiles\": [\n  " + githubRead + ",\n]}", []string{"not JSON", "invalid character ','", "line 4, column 56"}},
+		"a value that is no JSON":      {"{\n  \"profiles\": x\n}", []string{"not JSON", "invalid character 'x'", "byte offset 17, line 2, column 15"}},
+		"a file that ends too soon":    {"{\"profiles\": [\n", []string{"ends inside its JSON object", "byte offset 16, line 2, column 1"}},
 		"a field of the wrong type":    {profilesFile(githubRead, githubWrite(`{"accounts": "example-org", "permissions": {"contents": "read"}}`)), []string{"profiles.1.github.accounts", "byte offset"}},
 		"an empty file":                {"", []string{"empty"}},
-		"profiles that is no list":     {`{"profiles": {"name": "GITHUB_READ"}}`, []string{"profiles", "byte offset"}},
+		"a file of white space":        {"\n  \n", []string{"empty", "no JSON object"}},
+		"profiles that is no list":     {`{"profiles": {"name": "GITHUB_READ"}}`, []string{"profiles", "byte offset 14, line 1, column 14"}},
 		"a judge that is not a number": {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": "300"}`)), []string{"profiles.0.proxy.judge"}},
 		"a file that is null":          {"null\n", []string{"the file is null", "no JSON object"}},
 		"a file that is a list":        {`[{"name": "GITHUB_READ"}]`, []string{"the file is a JSON array", "not one JSON object", "line 1, column 1"}},
@@ -228,6 +237,68 @@ func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 	var none policy.Profiles
 	if none.Lookup("GITHUB_WRITE") != nil || len(none.Names()) != 0 || none.Digest("GITHUB_WRITE") != "" || len(none.ProxyRules().Secrets) != 0 {
 		t.Error("the zero Profiles, a deployment with no profiles file, holds a profile")
+	}
+}
+
+// TestProfilesIndexEachProfilesSource: SourceOf answers the source of the profile of a name, a
+// profile that holds its source's name and one that names no source among them, and a name the
+// file holds no profile of as itself, with false. Of answers the profiles of other names made from
+// a source, in the file's order, and nil for a source only a profile of its own name uses, for a
+// profile's name, and for a name no profile names. Where a file DecodeProfiles reads repeats a
+// name, SourceOf answers the first, as Lookup and Digest do. The zero Profiles, a deployment with
+// no profiles file, holds no profile and is no profile's source.
+func TestProfilesIndexEachProfilesSource(t *testing.T) {
+	profiles, err := policy.ParseProfiles([]byte(profilesFile(
+		githubRead,
+		githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}}`),
+		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"metadata": "read"}}}`,
+		adminPAT(`{"hosts": ["api.github.com"]}`),
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		name, source string
+		profile      bool
+	}{
+		{"GITHUB_READ", "LEGION_IMPLEMENT_APP", true},
+		{"GITHUB_WRITE", "LEGION_IMPLEMENT_APP", true},
+		{"LEGION_IMPLEMENT_APP", "LEGION_IMPLEMENT_APP", true},
+		{"GITHUB_ADMIN_PAT", "GITHUB_ADMIN_PAT", true},
+		{"NO_SUCH_KEY", "NO_SUCH_KEY", false},
+	} {
+		if source, profile := profiles.SourceOf(row.name); source != row.source || profile != row.profile {
+			t.Errorf("SourceOf(%s) = %s, %t; want %s, %t", row.name, source, profile, row.source, row.profile)
+		}
+	}
+	for _, row := range []struct {
+		source   string
+		profiles []string
+	}{
+		{"LEGION_IMPLEMENT_APP", []string{"GITHUB_READ", "GITHUB_WRITE"}},
+		{"GITHUB_ADMIN_PAT", nil},
+		{"GITHUB_READ", nil},
+		{"NO_SUCH_KEY", nil},
+	} {
+		if got := profiles.Of(row.source); !reflect.DeepEqual(got, row.profiles) {
+			t.Errorf("Of(%s) = %v; want %v", row.source, got, row.profiles)
+		}
+	}
+
+	repeated, err := policy.DecodeProfiles([]byte(profilesFile(
+		`{"name": "TWICE_KEY", "source": "FIRST_KEY", "proxy": {"hosts": ["first.example.com"]}}`,
+		`{"name": "TWICE_KEY", "source": "SECOND_KEY", "proxy": {"hosts": ["second.example.com"]}}`,
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source, _ := repeated.SourceOf("TWICE_KEY"); source != "FIRST_KEY" || repeated.Lookup("TWICE_KEY").Source != "FIRST_KEY" {
+		t.Errorf("SourceOf(TWICE_KEY) = %s and Lookup's source %s; want the first profile's, FIRST_KEY", source, repeated.Lookup("TWICE_KEY").Source)
+	}
+
+	var none policy.Profiles
+	if source, profile := none.SourceOf("GITHUB_READ"); source != "GITHUB_READ" || profile || none.Of("LEGION_IMPLEMENT_APP") != nil {
+		t.Error("the zero Profiles, a deployment with no profiles file, holds a profile or a source")
 	}
 }
 
