@@ -26,7 +26,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import type { ServerWebSocket } from "bun";
 import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { type BoundName, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const sweepScript = fileURLToPath(new URL("../acceptance/restricted-sweep.sh", import.meta.url));
@@ -359,6 +359,9 @@ const indexes = temporaryDirectories("restricted-sweep-index");
 interface RunShape extends FakeShape {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly rows?: readonly string[];
+  /** The bound the run is stopped at: `short` for a run over the rows a rule needs, and
+   *  `wholeIndexSweep` for the one run over the whole route index. */
+  readonly bound?: BoundName;
 }
 
 /** What one run of the sweep answered, the paths of every request the member sent, and how many
@@ -395,7 +398,7 @@ async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promise<Swep
   };
   const run = await runBounded({
     argv: ["bash", sweepScript],
-    bound: "short",
+    bound: shape.bound ?? "short",
     cwd: dispatchPackage,
     env: Object.fromEntries(
       Object.entries(inputs).filter((entry): entry is [string, string] => entry[1] !== undefined)
@@ -922,7 +925,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
  *  it makes about 400 calls. */
 let quiet: Promise<SweptRun> | undefined;
 function quietRun(): Promise<SweptRun> {
-  quiet ??= sweep([]);
+  quiet ??= sweep([], { bound: "wholeIndexSweep" });
   return quiet;
 }
 
@@ -942,7 +945,7 @@ describe.skipIf(withoutTools)("a run that proves nothing", () => {
       expect(stdout).not.toContain("PASS");
       expect(code).toBe(2);
     },
-    rowLimit("short")
+    rowLimit("wholeIndexSweep")
   );
 
   test(
@@ -1070,7 +1073,7 @@ describe.skipIf(withoutTools)("the routes it calls", () => {
       });
       expect(unsent).toEqual([]);
     },
-    rowLimit("short")
+    rowLimit("wholeIndexSweep")
   );
 });
 
