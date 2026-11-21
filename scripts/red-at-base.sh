@@ -26,11 +26,13 @@
 # \s):
 #
 #   <kind> <dir> <test regex or case> <file>...
+#   cmd <dir> <name> [<file>...] -- <command> [<argument>...]
 #
 # Blank lines, and lines whose first field starts with #, are passed over; a list with no other line
 # is refused, since a run over nothing proves nothing. Each path is relative to the top of the
 # checkout. Each <file> is copied as the checkout's working tree holds it, committed or not, over the
-# base's copy at the same path; a line names at least one.
+# base's copy at the same path; a go, bun or e2e line names at least one, and a cmd line names any
+# number.
 #
 #   go   <dir> is the package directory. The run is
 #          go -C <dir> test -json -count=1 -run <regex> .
@@ -44,25 +46,28 @@
 #        the copy is the failure of the line's files. When it builds none, because <dir> is new or a
 #        build constraint leaves out each of its files, the line's files are the whole package.
 #        A build of the run that fails is BUILD-FAILED. Otherwise only the results of the tests the
-#        regex selects count. The regex is split at each / and | outside [] and (), as the testing
-#        package splits it, into alternatives of one pattern for each level of a test's name, and a
-#        test is selected when its name, split at each /, matches each pattern of one alternative
-#        down to that alternative's depth. So ^TestA$/^b$|^TestC$ selects TestA/b, what runs under
-#        it, and TestC, and a TestA that fails before b starts counts for nothing. A failed selected
-#        test is RED, and so is a failed run that ended inside a selected test (a timeout, an
-#        os.Exit); a passed one is GREEN; skips alone, no tests to run, or a run that failed before
-#        a selected test ran, are NO-TEST.
+#        regex selects count. The regex is read as the testing package reads it: split at each / and
+#        | outside [] and (), into alternatives of one pattern for each level of a test's name, and
+#        each pattern rewritten as the testing package rewrites names (each blank, U+00A0 among
+#        them, becomes _, and an unprintable character its Go escape). A test is selected when its
+#        name, split at each /, matches each pattern of one alternative down to that alternative's
+#        depth. So ^TestA$/^b$|^TestC$ selects TestA/b, what runs under it, and TestC, and a TestA
+#        that fails before b starts counts for nothing. A failed selected test is RED, and so is a
+#        failed run that ended inside a selected test (a timeout, an os.Exit); a passed one is
+#        GREEN; skips alone, no tests to run, or a run that failed before a selected test ran, are
+#        NO-TEST.
 #   bun  <dir> is the directory bun test runs in. Each of the line's files under <dir> whose name
 #        bun reads as a test file (a.test.ts, a_spec.js and the like) runs on its own:
 #          bun test --no-install ./<test file> -t <regex>
 #        and the line reads the most red of its files' verdicts (RED, then BUILD-FAILED, then
-#        GREEN, then NO-TEST); a bun line names at least one such file. A failed test is RED. A file
-#        that does not load, such as one that imports a name the base does not export, so that no
-#        test of it ran, is BUILD-FAILED; an import of a package that is not installed is NO-TEST.
-#        bun counts a failed hook (beforeAll, afterAll) as a failed test named (unnamed): a hook
-#        that fails before any test the regex names ran makes the file NO-TEST, and one that fails
-#        after such a test passed leaves it GREEN. A pass is GREEN; skips or todos alone, and
-#        "matched 0 tests", are NO-TEST.
+#        GREEN, then NO-TEST); a bun line names at least one such file. A failed test is RED, and so
+#        is a failed hook (beforeAll, afterAll and the like), which bun counts as a failed test
+#        named (unnamed): a hook can hold the assertions of a test's postcondition, so its failure
+#        is never set aside. So is any other failure bun counts in a file that loaded. A file that
+#        does not load, such as one that imports a name the base does not export, so that no test
+#        or hook of it ran, is BUILD-FAILED; an import of a package that is not installed is
+#        NO-TEST. A pass with no failure is GREEN; skips or todos alone, and "matched 0 tests", are
+#        NO-TEST.
 #   e2e  <dir> is the e2e script, such as scripts/e2e/check-states.sh, and the third field is one
 #        case, or several with commas between them. The run, at the top of the worktree, is
 #          <NAME>_E2E_CASES=<cases> bash <script>
@@ -75,6 +80,18 @@
 #        GREEN. A case that never started, or one that started and printed no ok in a run that
 #        exits 0 (it skipped, or reported nothing), makes the line NO-TEST. An e2e line reads no
 #        BUILD-FAILED.
+#   cmd  a command: its words are what follows the field --, run as they are, with no shell, in
+#        <dir> of the worktree, after the line's files are copied. <name> names the line and
+#        nothing else. The command runs with no input and with TMPDIR set to an empty directory of
+#        its own under the tool's, removed with the worktree, so that what it writes there (a work
+#        directory a script defaults under TMPDIR, say) starts fresh for each line and is gone
+#        after. An exit of 0 is GREEN; any other exit is RED, the run's last lines quoted. A command
+#        that never starts is BUILD-FAILED: <dir> is no directory of the base, the command's first
+#        word is no file exec can run there (a path that is no executable file, or a name PATH
+#        does not hold), or the command is bash or sh with a script that the base does not hold.
+#        A cmd line reads no NO-TEST, so a command that cannot tell the base from the change, such
+#        as one that fails for want of its own setup, reads RED there: such a line proves something
+#        only when its command fails at the base for the change's reason.
 #
 # What a run reads. Each run gets the tool's own environment, so a database URL, GOCACHE, GOTMPDIR
 # and GOFLAGS reach the test as the caller set them. The tool needs no network: go runs with
@@ -110,7 +127,8 @@ usage() {
 usage: bash scripts/red-at-base.sh --base <commit> --list <file>
 
 Runs each test of the list at the base commit, and prints RED, BUILD-FAILED, GREEN or NO-TEST for
-each line. A line is <kind> <dir> <test regex or case> <file>..., its kind one of go, bun and e2e.
+each line. A line is <kind> <dir> <test regex or case> <file>..., its kind one of go, bun and e2e,
+or cmd <dir> <name> [<file>...] -- <command> [<argument>...].
 The header of this script says how each kind runs and how each verdict is read.
 exit: 0 every line is red (RED or BUILD-FAILED), 1 a line is not, 2 a refused argument or list
 EOF
@@ -172,6 +190,7 @@ dirs=()
 tests=()
 line_files=()
 bun_tests=()
+commands=()
 number=0
 while IFS= read -r raw || [[ -n $raw ]]; do
   number=$((number + 1))
@@ -184,13 +203,27 @@ while IFS= read -r raw || [[ -n $raw ]]; do
   dir=${field[1]%/}
   test=${field[2]}
   files=("${field[@]:3}")
+  command_words=()
+  if [[ $kind == cmd ]]; then
+    [[ $test != -- ]] || refuse "line $number of $list: a cmd line names itself before its field --"
+    # The files run up to the field --, and the command is what follows it.
+    files=()
+    for ((at = 3; at < ${#field[@]}; at++)); do
+      [[ ${field[at]} != -- ]] || break
+      files+=("${field[at]}")
+    done
+    ((at < ${#field[@]})) ||
+      refuse "line $number of $list: a cmd line is cmd <dir> <name> [<file>...] -- <command> [<argument>...], and this one has no field --"
+    command_words=("${field[@]:at+1}")
+    ((${#command_words[@]} > 0)) || refuse "line $number of $list: nothing follows the field --, so the line names no command"
+  fi
   safe_path "$number" "$dir"
   for path in "${files[@]}"; do
     safe_path "$number" "$path"
     [[ -f ${repo}/${path} ]] || refuse "line $number of $list: $path is no file of the checkout"
   done
   case $kind in
-  go | bun)
+  go | bun | cmd)
     [[ -d ${repo}/${dir} ]] || refuse "line $number of $list: $dir is no directory of the checkout"
     ;;
   e2e)
@@ -200,7 +233,7 @@ while IFS= read -r raw || [[ -n $raw ]]; do
       refuse "line $number of $list: $test is no case name, nor several with commas between them"
     ;;
   *)
-    refuse "line $number of $list: $kind is no kind; a kind is go, bun or e2e"
+    refuse "line $number of $list: $kind is no kind; a kind is go, bun, e2e or cmd"
     ;;
   esac
   bun_files=''
@@ -228,6 +261,7 @@ while IFS= read -r raw || [[ -n $raw ]]; do
   tests+=("$test")
   line_files+=("${files[*]}")
   bun_tests+=("${bun_files# }")
+  commands+=("${command_words[*]}")
 done <"$list"
 ((${#kinds[@]} > 0)) || refuse "the list $list holds no line to run, and a run over nothing proves nothing"
 
@@ -391,8 +425,8 @@ type event struct {
 }
 
 // splitRegexp is testing/match.go's: the regex split at each / and | outside [] and (), into its
-// alternatives, each one pattern for each level of a test's name. The testing package also
-// rewrites the blanks of each pattern to _, and a field of the list holds no blank.
+// alternatives, each one pattern for each level of a test's name. Each pattern is then rewritten,
+// as the testing package's verify does (rewrite, below), before it is compiled.
 func splitRegexp(s string) [][]string {
 	var alternatives [][]string
 	var levels []string
@@ -432,6 +466,43 @@ func splitRegexp(s string) [][]string {
 	return append(alternatives, append(levels, s))
 }
 
+// rewrite is testing/match.go's: each blank becomes _, and an unprintable character its Go escape,
+// as the testing package rewrites both a subtest's name and each pattern of -run.
+func rewrite(s string) string {
+	b := []byte{}
+	for _, r := range s {
+		switch {
+		case isSpace(r):
+			b = append(b, '_')
+		case !strconv.IsPrint(r):
+			s := strconv.QuoteRune(r)
+			b = append(b, s[1:len(s)-1]...)
+		default:
+			b = append(b, string(r)...)
+		}
+	}
+	return string(b)
+}
+
+// isSpace is testing/match.go's: not the same as Unicode's Z class.
+func isSpace(r rune) bool {
+	if r < 0x2000 {
+		switch r {
+		case '\t', '\n', '\v', '\f', '\r', ' ', 0x85, 0xA0, 0x1680:
+			return true
+		}
+	} else {
+		if r <= 0x200a {
+			return true
+		}
+		switch r {
+		case 0x2028, 0x2029, 0x202f, 0x205f, 0x3000:
+			return true
+		}
+	}
+	return false
+}
+
 type selector [][]*regexp.Regexp
 
 // selects: the name, split at each /, matches each pattern of one alternative.
@@ -462,7 +533,7 @@ func verdict(regex string, status int, stream io.Reader, text io.Writer) string 
 	for _, alternative := range splitRegexp(regex) {
 		var patterns []*regexp.Regexp
 		for _, pattern := range alternative {
-			compiled, err := regexp.Compile(pattern)
+			compiled, err := regexp.Compile(rewrite(pattern))
 			if err != nil {
 				return "NO-TEST\tgo test cannot read the regex: " + err.Error()
 			}
@@ -641,7 +712,8 @@ check_base_package() {
 
 # bun_verdict <exit status>: "<VERDICT><tab><what decided it>" for a bun test run of one file, read
 # from bun's summary. A failed test counts once in "fail"; a file that does not load, once in "fail"
-# and once in "error"; a failed hook, once in "fail", as a test named (unnamed).
+# and once in "error"; a failed hook, once in "fail", as a test named (unnamed). Every failure but a
+# file that does not load is RED: a hook may hold the assertions of a test's postcondition.
 bun_verdict() {
   RUN_STATUS=$1 awk '
     BEGIN { status = ENVIRON["RUN_STATUS"] + 0 }
@@ -655,21 +727,21 @@ bun_verdict() {
     /^(error|[A-Za-z]*Error): / { error_line = $0; if (error == "") error = $0 }
     first == "" && NF && !/^bun test v/ { first = $0 }
     END {
-      tests = count["fail"] - count["error"] - hooks
+      named = count["fail"] - count["error"] - hooks
       if (nomatch != "") { print "NO-TEST\t" nomatch; exit }
       if (missing != "") { print "NO-TEST\ta package the test imports is not installed for the base: " missing; exit }
-      if (tests > 0) { print "RED\t" (fail != "" ? fail : tests " fail"); exit }
-      if (count["error"] > 0 && count["pass"] + count["skip"] + count["todo"] + hooks == 0) {
+      if (count["error"] > 0 && count["pass"] + count["skip"] + count["todo"] + hooks + (named > 0 ? named : 0) == 0) {
         print "BUILD-FAILED\tthe file does not load at the base: " (error != "" ? error : "an error outside any test")
         exit
       }
-      if (count["pass"] > 0 && hooks + count["error"] > 0) {
-        print "GREEN\t" count["pass"] " pass, and then a hook or the file failed outside the tests: " (hook != "" ? hook : error)
+      if (named > 0) { print "RED\t" (fail != "" ? fail : named " fail"); exit }
+      if (hooks > 0) {
+        print "RED\ta hook failed, which bun counts as a failed test named (unnamed): " (hook != "" ? hook : "no error line")
         exit
       }
-      if (count["pass"] > 0) { print "GREEN\t" count["pass"] " pass"; exit }
-      if (hooks > 0) { print "NO-TEST\ta hook failed before a test the regex names ran: " hook; exit }
+      if (count["fail"] > 0) { print "RED\ta failure outside any test, in a file that loaded: " (error != "" ? error : first); exit }
       if (status != 0) { print "NO-TEST\tbun test failed with no test result (exit " status "): " (error != "" ? error : first); exit }
+      if (count["pass"] > 0) { print "GREEN\t" count["pass"] " pass"; exit }
       print "NO-TEST\tno test the regex names ran to a pass or a fail (" count["skip"] + 0 " skip, " count["todo"] + 0 " todo)"
     }' "$log"
 }
@@ -723,6 +795,105 @@ e2e_verdict() {
       if (started) { print "NO-TEST\tthe script never started " never " (exit " status ")"; exit }
       print "NO-TEST\tno line == <case> for " ENVIRON["RUN_CASES"] ": the script started no case of the line (exit " status ")"
     }' "$log"
+}
+
+# script_of <command>...: the script a bash or sh command runs, as bash reads its own arguments, or
+# nothing when it runs none (bash -c <string>, or bash reading its input).
+script_of() {
+  shift
+  while (($# > 0)); do
+    case $1 in
+    --)
+      (($# < 2)) || printf '%s' "$2"
+      return 0
+      ;;
+    --rcfile | --init-file | -o | +o | -O | +O) shift 2 || return 0 ;;
+    --*) shift ;;
+    # A bundle of short options that holds c (a command string) or s (commands on its input).
+    -*c* | -*s*) return 0 ;;
+    -* | +*) shift ;;
+    *)
+      printf '%s' "$1"
+      return 0
+      ;;
+    esac
+  done
+}
+
+# remove_tree <directory>: the directory and all it holds, made writable first, since a command may
+# leave a directory it made read-only, as go does its module cache.
+remove_tree() {
+  [[ -e $1 ]] || return 0
+  chmod -R u+w -- "$1" 2>/dev/null || true
+  rm -rf -- "$1"
+}
+
+readonly command_tmp="${tmp}/cmd-tmp"
+start_failure=''
+# run_command <directory> <command>...: the command of a cmd line, as the header says, its output in
+# the run's log and its exit status in status. When it never starts, start_failure says why; the
+# log then holds what bash printed, if anything.
+run_command() {
+  local directory=$1 marker="${tmp}/never-started" script=''
+  shift
+  rm -f -- "$marker"
+  remove_tree "$command_tmp"
+  mkdir -- "$command_tmp"
+  {
+    printf '   run in %s, with TMPDIR %s:' "$directory" "$command_tmp"
+    printf ' %q' "$@"
+    echo
+  } >&2
+  case ${1##*/} in
+  bash | sh) script="$(script_of "$@")" ;;
+  esac
+  status=0
+  (
+    cd -- "$directory" 2>/dev/null || {
+      printf '%s is no directory of the base\n' "${directory#"${wt}"/}" >"$marker"
+      exit 127
+    }
+    if [[ -n $script && ! -f $script ]]; then
+      printf 'the script %s that %s runs is no file of the base\n' "$script" "$1" >"$marker"
+      exit 127
+    fi
+    # A subshell ends at an exec that fails, whatever execfail says, with the exit status a command
+    # of its own could give. So the command is looked up first, as exec looks it up: a word with a /
+    # is a path, and any other word a file on PATH (exec runs no builtin).
+    case $1 in
+    */*) [[ -f $1 && -x $1 ]] ;;
+    *) [[ -n $(type -P -- "$1") ]] ;;
+    esac || {
+      printf '%s is no command the base can start\n' "$1" >"$marker"
+      exit 127
+    }
+    export TMPDIR="$command_tmp"
+    exec "$@"
+  ) </dev/null >"$log" 2>&1 || status=$?
+  start_failure=''
+  [[ ! -f $marker ]] || start_failure="$(<"$marker")"
+  cat -- "$log" >&2
+  echo "   exit $status" >&2
+}
+
+# last_lines: the run's last three lines that hold anything, with " | " between them.
+last_lines() {
+  awk 'NF { sub(/^[ \t]+/, ""); line[++n] = $0 }
+    END { for (i = (n > 3 ? n - 2 : 1); i <= n; i++) printf "%s%s", (i > (n > 3 ? n - 2 : 1) ? " | " : ""), line[i] }' "$log"
+}
+
+# command_verdict <command> <exit status>: "<VERDICT><tab><what decided it>" for a cmd line.
+command_verdict() {
+  local last
+  last="$(last_lines)"
+  ((${#last} <= 600)) || last="...${last: -600}"
+  if [[ -n $start_failure ]]; then
+    printf 'BUILD-FAILED\tthe command never started: %s%s' "$start_failure" "${last:+: $last}"
+  elif (($2 == 0)); then
+    printf 'GREEN\texit 0 from %s%s' "$1" "${last:+: $last}"
+  else
+    printf 'RED\texit %s from %s%s' "$2" "$1" "${last:+: $last}"
+  fi
 }
 
 # ---- each line, at the base ---------------------------------------------------------------------------
@@ -780,9 +951,15 @@ for i in "${!kinds[@]}"; do
       run_logged "$wt" env "${name//[^A-Z0-9]/_}_E2E_CASES=${test}" bash "$dir"
       result="$(e2e_verdict "$test" "$status")"
       ;;
+    cmd)
+      read -r -a command_line <<<"${commands[i]}"
+      run_command "${wt}/${dir}" "${command_line[@]}"
+      result="$(command_verdict "${commands[i]}" "$status")"
+      ;;
     esac
   fi
   drop_worktree
+  remove_tree "$command_tmp"
   [[ -n $result ]] || result="NO-TEST"$'\t'"the tool could not read the run's log"
   verdict=${result%%$'\t'*}
   case $verdict in

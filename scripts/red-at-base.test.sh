@@ -11,17 +11,22 @@
 #   subtest, a parent that fails before its subtest starts, a base that does not build without the
 #   line's files, a file the checkout has not committed, GOFLAGS passed through, a passing test
 #   that prints failure lines, regexes whose alternatives stand at different depths, a base whose
-#   every file of the package a build constraint leaves out, a package the base lacks), bun (a
-#   workspace package that must resolve to the base's copy, an installed package that must resolve
-#   at all, a skip, no match, an import the base lacks, a package nobody installed, a teardown and
-#   a setup that fail, two files in one line) and e2e (a case that fails in the worktree and would
-#   pass in the checkout, a case that passes, a case the script does not have, two cases in one
-#   line, a case that skips, one that prints its start and no result, one that dies after its
-#   start);
+#   every file of the package a build constraint leaves out, a package the base lacks, a subtest
+#   whose name holds a no-break space), bun (a workspace package that must resolve to the base's
+#   copy, an installed package that must resolve at all, a skip, no match, an import the base
+#   lacks, a package nobody installed, a teardown whose assertion the base breaks, a setup that
+#   fails, two files in one line), e2e (a case that fails in the worktree and would pass in the
+#   checkout, a case that passes, a case the script does not have, two cases in one line, a case
+#   that skips, one that prints its start and no result, one that dies after its start) and cmd (a
+#   script that reads the base and exits non-zero, a command that exits 0, a command, a script and
+#   a directory the base lacks, the line's own TMPDIR, a bash command string);
+# - each test that must read red at the base passes in the checkout first, so the base is what
+#   fails;
 # - a list whose every line is red, a BUILD-FAILED among them, exits 0;
 # - the tool leaves nothing behind in the checkout, in its git directory or in TMPDIR, even when a
 #   TERM stops it while a test runs;
-# - a bad list or argument exits 2 before any test runs, and so does a list that holds no line.
+# - a bad list or argument exits 2 before any test runs, and so does a list that holds no line, a
+#   cmd line with no field -- and one with no command after it.
 set -euo pipefail
 
 # Hermetic: the developer's global and system git configuration (commit.gpgsign, core.hooksPath)
@@ -49,6 +54,9 @@ cleanup() {
   rm -rf -- "$scratch"
 }
 trap cleanup EXIT
+
+# A no-break space, U+00A0, as UTF-8: a field of a list may hold it, and Go rewrites it to _.
+readonly nbsp=$'\xc2\xa0'
 
 for program in git go bun awk realpath; do
   command -v "$program" >/dev/null || {
@@ -292,19 +300,20 @@ import { nothing } from "not-installed-anywhere";
 test("imports", () => {
   expect(nothing).toBeDefined();
 });'
-# Hooks that fail: bun counts each as a failed test named (unnamed).
+# Hooks that fail: bun counts each as a failed test named (unnamed). The teardown asserts a
+# postcondition that the base breaks (the total of an empty list) and the change keeps.
 write web/src/hooks.test.ts 'import { afterAll, expect, test } from "bun:test";
 import { total } from "@scratch/lib";
 
 afterAll(() => {
-  throw new Error("the teardown fails");
+  expect(total([])).toBe(0);
 });
 
-test("passes before a failing teardown", () => {
+test("passes before a teardown that checks the empty total", () => {
   expect(1).toBe(1);
 });
 
-test("totals an empty list beside a failing teardown", () => {
+test("totals an empty list beside a checking teardown", () => {
   expect(total([])).toBe(0);
 });'
 write web/src/setup.test.ts 'import { beforeAll, expect, test } from "bun:test";
@@ -357,6 +366,34 @@ for case in ${SCRATCH_CASES_E2E_CASES//,/ }; do
     ;;
   esac
 done'
+# A subtest whose name holds a no-break space (U+00A0), which the testing package rewrites to _ in
+# both the name and the pattern.
+write calc/unicode_test.go 'package calc
+
+import "testing"
+
+func TestUnicode(t *testing.T) {
+	t.Run("a\u00a0b", func(t *testing.T) {
+		if Add(2, 3) != 5 {
+			t.Fatal("Add(2, 3) is not 5")
+		}
+	})
+	t.Run("other", func(t *testing.T) {})
+}'
+# Two scripts a cmd line runs: one that reads the checkout it runs in, and one that reads its TMPDIR.
+# shellcheck disable=SC2016 # the script's own expansions, run by its bash
+write scripts/version-check.sh '#!/usr/bin/env bash
+echo "reading version.txt"
+version=$(<version.txt)
+echo "version.txt holds $version"
+[[ $version == 2 ]] || { echo "want 2"; exit 4; }
+echo "version is two"'
+# shellcheck disable=SC2016 # the script's own expansions, run by its bash
+write scripts/tmp-check.sh '#!/usr/bin/env bash
+case $TMPDIR in */red-at-base.*/cmd-tmp) ;; *) echo "TMPDIR is $TMPDIR, no directory of the tool"; exit 5 ;; esac
+[[ -d $TMPDIR && -z $(ls -A "$TMPDIR") ]] || { echo "TMPDIR $TMPDIR is no empty directory"; exit 6; }
+: >"$TMPDIR/written"
+echo "TMPDIR is the line'"'"'s own, and empty"'
 write version.txt '2'
 scratch_git add -A
 scratch_git commit -q -m 'the change'
@@ -390,8 +427,6 @@ ln -s "../../../lib" "${repo}/web/node_modules/@scratch/lib"
 snapshot() {
   (cd "$repo" && find . -path ./.git -prune -o -printf '%y %p %s %T@ %l\n' | LC_ALL=C sort)
 }
-checkout_before="$(snapshot)"
-readonly checkout_before
 
 status=0
 output=''
@@ -478,6 +513,36 @@ expect_nothing_left() {
     fail "the checkout changed: $(diff <(printf '%s\n' "$checkout_before") <(snapshot) | head -n 5 | tr '\n' ' ')"
 }
 
+# ---- the controls pass in the checkout -----------------------------------------------------------------
+# A line that must read red at the base proves the tool right only if its test passes at the change,
+# so the base and not the test is what fails. Each test below runs in the checkout first.
+case_name='the teardown that checks the empty total passes in the checkout'
+set +e
+(cd "${repo}/web" && bun test --no-install ./src/hooks.test.ts -t '^passes\sbefore\sa\steardown\sthat\schecks\sthe\sempty\stotal$') \
+  >"${scratch}/out" 2>&1
+status=$?
+set -e
+output="$(<"${scratch}/out")"
+expect_status 0
+[[ $output == *" 1 pass"* && $output == *" 0 fail"* ]] || fail 'expected bun to count 1 pass and 0 fail'
+case_name='the subtest whose name holds a no-break space runs and passes in the checkout'
+set +e
+go -C "${repo}/calc" test -count=1 -v -run "^TestUnicode\$/^a${nbsp}b\$" . >"${scratch}/out" 2>&1
+status=$?
+set -e
+output="$(<"${scratch}/out")"
+expect_status 0
+[[ $output == *"--- PASS: TestUnicode/a_b"* ]] || fail 'expected go to run and pass TestUnicode/a_b'
+case_name='the version check passes in the checkout'
+set +e
+(cd "$repo" && bash scripts/version-check.sh) >"${scratch}/out" 2>&1
+status=$?
+set -e
+output="$(<"${scratch}/out")"
+expect_status 0
+checkout_before="$(snapshot)"
+readonly checkout_before
+
 # ---- the cases -----------------------------------------------------------------------------------------
 case_name='a red test, a green test and a regex that matches nothing read RED, GREEN and NO-TEST, and the tool exits 1'
 run_tool "$(list three \
@@ -507,9 +572,10 @@ run_tool "$(list go \
   'go calc ^TestTable$/^two_and_two$|^TestAbsent$ calc/sub_test.go' \
   'go calc ^TestNegOfNegIsItself$|^TestTable$/^zero$ calc/neg_more_test.go calc/sub_test.go' \
   'go live ^TestVersionIsTwo$ live/version_test.go' \
-  'go fresh ^TestFreshPackageReadsTwo$ fresh/fresh_test.go')"
+  'go fresh ^TestFreshPackageReadsTwo$ fresh/fresh_test.go' \
+  "go calc ^TestUnicode\$/^a${nbsp}b\$ calc/unicode_test.go")"
 expect_status 1
-expect_lines 15
+expect_lines 16
 expect_verdict 1 BUILD-FAILED 'undefined: Mul'
 expect_verdict 2 NO-TEST 'skipped'
 expect_verdict 3 RED 'TestTable/two_and_two'
@@ -533,6 +599,9 @@ expect_verdict 13 GREEN
 # the line's file is the package, and it runs.
 expect_verdict 14 RED 'TestVersionIsTwo'
 expect_verdict 15 RED 'TestFreshPackageReadsTwo'
+# Go rewrites the no-break space to _ in the subtest's name and in the pattern alike: the selected
+# subtest ran, and fails at the base.
+expect_verdict 16 RED '--- FAIL: TestUnicode/a_b'
 expect_nothing_left
 
 case_name='go: the caller GOFLAGS reaches go test'
@@ -551,8 +620,8 @@ run_tool "$(list bun \
   'bun web ^no\ssuch\stest$ web/src/total.test.ts' \
   'bun web ^counts$ web/src/count.test.ts' \
   'bun web ^imports$ web/src/missing.test.ts' \
-  'bun web ^passes\sbefore\sa\sfailing\steardown$ web/src/hooks.test.ts' \
-  'bun web ^totals\san\sempty\slist\sbeside\sa\sfailing\steardown$ web/src/hooks.test.ts' \
+  'bun web ^passes\sbefore\sa\steardown\sthat\schecks\sthe\sempty\stotal$ web/src/hooks.test.ts' \
+  'bun web ^totals\san\sempty\slist\sbeside\sa\schecking\steardown$ web/src/hooks.test.ts' \
   'bun web ^never\sruns\safter\sa\sfailing\ssetup$ web/src/setup.test.ts' \
   'bun web ^counts$|^total\sof\sone\sand\stwo\sis\sthree$ web/src/total.test.ts web/src/count.test.ts')"
 expect_status 1
@@ -567,13 +636,40 @@ expect_verdict 5 NO-TEST 'matched 0 tests'
 expect_verdict 6 BUILD-FAILED "Export named 'count' not found"
 # A package nobody installed is no fault of the test's code at the base.
 expect_verdict 7 NO-TEST 'not-installed-anywhere'
-# A teardown that fails after the test passed is no failure of the test, and no file that does
-# not load; a setup that fails before it ran leaves no test that ran.
-expect_verdict 8 GREEN 'the teardown fails'
-expect_verdict 9 RED 'totals an empty list beside a failing teardown'
-expect_verdict 10 NO-TEST 'a hook failed before a test the regex names ran: error: the setup fails'
+# A teardown asserts the postcondition that the base breaks, after the named test passed (the
+# checkout passes it, above): the failure is the test's, so RED, never GREEN or BUILD-FAILED. A setup
+# that fails is a failure of the file's tests too.
+expect_verdict 8 RED 'a hook failed, which bun counts as a failed test named (unnamed): error: expect(received).toBe(expected)'
+expect_verdict 9 RED 'totals an empty list beside a checking teardown'
+expect_verdict 10 RED 'a hook failed, which bun counts as a failed test named (unnamed): error: the setup fails'
 # Each file runs on its own, and the line reads the more red of the two.
 expect_verdict 11 BUILD-FAILED "web/src/count.test.ts: the file does not load at the base"
+expect_nothing_left
+
+case_name='cmd: each verdict of a cmd line'
+run_tool "$(list cmd \
+  'cmd . version-check scripts/version-check.sh -- bash scripts/version-check.sh' \
+  'cmd . version-file-exists -- test -f version.txt' \
+  'cmd . no-command -- no-such-command-anywhere version.txt' \
+  'cmd . unlisted-script -- bash scripts/version-check.sh' \
+  'cmd web in-its-directory web/src/count.test.ts -- test -f src/count.test.ts' \
+  'cmd fresh no-directory-at-base -- true' \
+  'cmd . own-tmpdir scripts/tmp-check.sh -- bash scripts/tmp-check.sh' \
+  'cmd . a-command-string -- bash -c true')"
+expect_status 1
+expect_lines 8
+# Red only when the script reads the base's version.txt, which holds 1; the checkout's holds 2.
+expect_verdict 1 RED 'exit 4 from bash scripts/version-check.sh: reading version.txt | version.txt holds 1 | want 2'
+expect_verdict 2 GREEN 'exit 0 from test -f version.txt'
+expect_verdict 3 BUILD-FAILED 'the command never started: no-such-command-anywhere is no command the base can start'
+# The script is the change's, and only a line that lists it copies it to the base.
+expect_verdict 4 BUILD-FAILED 'the script scripts/version-check.sh that bash runs is no file of the base'
+expect_verdict 5 GREEN 'exit 0 from test -f src/count.test.ts'
+# fresh is the change's directory, and the line copies nothing into it.
+expect_verdict 6 BUILD-FAILED 'fresh is no directory of the base'
+expect_verdict 7 GREEN "TMPDIR is the line's own, and empty"
+# bash -c runs a command string and no script, so there is no script to look for.
+expect_verdict 8 GREEN 'exit 0 from bash -c true'
 expect_nothing_left
 
 case_name='e2e: each verdict of an e2e line'
@@ -661,6 +757,10 @@ refused 'a line of fewer than four fields exits 2' "$(list short 'go calc ^TestX
 refused 'a bun line with no test file under its directory exits 2' "$(list nobuntest 'bun web ^x$ lib/index.ts')"
 refused 'an e2e line whose script is no .sh file of the checkout exits 2' \
   "$(list noscript 'e2e scripts/e2e/absent.sh some-case scripts/e2e/scratch-cases.sh')"
+refused 'a cmd line with no field -- exits 2' "$(list nodashes 'cmd . no-dashes version.txt true')"
+grep -q 'has no field --' "${scratch}/err" || fail 'expected stderr to say the line has no field --'
+refused 'a cmd line with nothing after -- exits 2' "$(list nocommand 'cmd . no-command version.txt --')"
+grep -q 'names no command' "${scratch}/err" || fail 'expected stderr to say the line names no command'
 
 case_name='a base that names no commit exits 2'
 set +e
