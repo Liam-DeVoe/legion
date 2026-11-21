@@ -79,7 +79,7 @@ func (c askCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time
 		Urgency: c.Urgency, State: "open", CreatedAt: at,
 	}
 	if wrote := dry.ask; wrote != nil {
-		ask.Anchor = heldAnchor(wrote.Anchor)
+		ask.Anchor, ask.AnchorArtifact, ask.WaitingOnPerson = heldAnchor(wrote.Anchor), wrote.AnchorArtifact, wrote.WaitingOnPerson
 	}
 	return newShapedAsk(ask, trees)
 }
@@ -299,7 +299,7 @@ func (c commentCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at 
 	if wrote := dry.comment; wrote != nil {
 		heldCommentWrites(&comment, wrote)
 	}
-	return commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
+	return commentWriteResponse{shapedComment: newShapedComment(comment, trees), AskWaitingOn: dry.askWaitingOn}
 }
 
 // advice is the comment's write advice, which its dry run found.
@@ -309,7 +309,7 @@ func (c commentCreate) advice(_ *server, _ *http.Request, _ model.Actor, advice 
 
 func (c commentCreate) dryRun(s *server, ctx context.Context, actor model.Actor, id string, held *heldPost) (heldDryRun, error) {
 	written, err := s.writeComment(ctx, c, actor, id, held)
-	return dryRunEnded(heldDryRun{advice: written.advice, comment: &written.comment}, err)
+	return dryRunEnded(heldDryRun{advice: written.advice, comment: &written.comment, askWaitingOn: written.waitingOn}, err)
 }
 
 func (c commentCreate) post(s *server, ctx context.Context, row heldRow, held *heldPost) error {
@@ -413,8 +413,8 @@ func (c heldReplay) dryRun(s *server, ctx context.Context, _ model.Actor, _ stri
 	case answer.isDryRunPass():
 		var dry heldDryRun
 		switch wrote := held.wrote.(type) {
-		case model.Comment:
-			dry.comment = &wrote
+		case commentWritten:
+			dry.comment, dry.askWaitingOn = &wrote.comment, wrote.waitingOn
 		case model.Message:
 			dry.message = &wrote
 		}

@@ -288,13 +288,17 @@ test("a held new issue shows once it posts, rewritten, and the badge beside its 
     )
   );
   expect(key).toMatch(/^DEMO-\d+$/);
-  // No person reads the issue while it is held.
-  const unseen = await getIssue(key).then(
-    () => "read",
-    (error: unknown) => String(error)
+  // No person reads the issue while it is held, at any count before it posts: alice's read of it
+  // answers 404 each time, and any other answer fails the row at the read that took it.
+  await expectHiddenUntilPosted(key, () =>
+    getIssue(key).then(
+      () => 1,
+      (error: unknown) => {
+        expect(String(error), `alice's read of the held issue ${key}`).toContain("404");
+        return 0;
+      }
+    )
   );
-  expect(unseen).toContain("404");
-  await expect.poll(async () => (await getHeld(key)).state, { timeout: 30_000 }).toBe("posted");
 
   const alice = await atReviewer(browser, reviewer);
   try {

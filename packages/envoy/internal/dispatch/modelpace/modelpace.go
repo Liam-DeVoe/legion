@@ -38,7 +38,8 @@ const CharsPerToken = 4
 // characters at CharsPerToken, and replyBound, the most tokens its reply may hold, whole, since
 // the reply's length is not known before it comes. Every caller charges its calls so (WaitFor),
 // the answerer (package going) with a reply bound of 0, since its request names none, and the
-// boot (cmd/dispatch) refuses with it a quota that no call of a model group could fit.
+// boot (cmd/dispatch) refuses with it a quota that no call of a model group, or of the answerer,
+// could fit.
 func Charge(promptRunes, replyBound int) int {
 	return promptRunes/CharsPerToken + replyBound
 }

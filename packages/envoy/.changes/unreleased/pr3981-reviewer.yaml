@@ -25,9 +25,10 @@ body: |-
   text for the sweep to post again.
   A session's later reply to a delivery whose earlier reply is held waits on it, a generated or
   typed one too, so the replies post in the order written; one sent again on the same attempt
-  while the first is held is answered the first's held answer, and nothing more is held. A held
-  reply from the live holder of the role its delivery went to posts on what the listener said when
-  it was written.
+  while the first is held is answered the first's held answer, with no `ask_waiting_on`, as a
+  reply sent again after its post is answered, and nothing more is held. A held reply from the
+  live holder of the role its delivery went to posts on what the listener said when it was
+  written.
   With `after`, the text posts at once, and the findings of the review after it go to the writer.
   Nothing more happens if the writer does not act.
   A writer has `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`) to act, and a writer session that

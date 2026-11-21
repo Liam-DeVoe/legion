@@ -483,13 +483,15 @@ func (answer heldAnswer) MarshalJSON() ([]byte, error) {
 // heldAnswerOf is the answer a held write gets: today's response shape for its kind, built from
 // what the hold stored under the reserved id, with the `held` object. A new issue is in triage, as
 // every create files it, under the assignee its create names (holdWrite sets the one its post
-// writes). dry is the write's dry run, nil where none ran (a text beside a held parent, a reply
-// answered again): what the post writes beside the request's own fields is read off it, as the
-// dry run wrote it - an ask's anchor; a comment's anchor, turn, mentions, the block it replies to
-// and the agent text it answers; a message's block it replies to; an issue's repository, relations
-// to priorities and components (heldIssueWrites) - less what only the post makes: an anchor's mark
-// id, an issue's rank, document and sequence, the deliveries a post sends. advice, where not nil,
-// is the advice the write's own answer carries (heldAdvice), merged in as that answer merges it.
+// writes). dry is the write's dry run, nil where none ran (a text beside a held parent): what the
+// post writes beside the request's own fields is read off it, as the dry run wrote it - an ask's
+// anchor, the document its anchor quotes and the person it waits on; a comment's anchor, turn,
+// mentions, the block it replies to, the agent text it answers and whom its ask waits on once it
+// posts; a message's block it replies to; an issue's repository, relations to priorities and
+// components (heldIssueWrites) - less what only the post makes: an anchor's mark id, the sequence
+// of an ask's ask.opened event, an issue's rank, document and sequence, the deliveries a post
+// sends. advice, where not nil, is the advice the write's own answer carries (heldAdvice), merged
+// in as that answer merges it.
 func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Time, held heldState, dry *heldDryRun, trees bool, advice any) heldAnswer {
 	if dry == nil {
 		dry = &heldDryRun{}
@@ -587,15 +589,17 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 // answer would carry (nil where its path gives none), and what the dry run wrote and read back
 // before its rollback, the one of its kind: ask, comment, message, or, for a new issue, issue,
 // whose assignee is the person it is filed under, with markdown, its spec as its seed would store
-// it.
+// it. A comment, a new one or a reply, comes with askWaitingOn, whom the open ask of its thread
+// waits on once it posts, "" for a comment in no open ask's thread (the answer's ask_waiting_on).
 type heldDryRun struct {
-	answered *replayAnswer
-	advice   *writeAdvice
-	markdown string
-	ask      *model.Ask
-	comment  *model.Comment
-	message  *model.Message
-	issue    *model.Issue
+	answered     *replayAnswer
+	advice       *writeAdvice
+	markdown     string
+	ask          *model.Ask
+	comment      *model.Comment
+	askWaitingOn string
+	message      *model.Message
+	issue        *model.Issue
 }
 
 // dryRunHeld runs write as actor's under id in a transaction it rolls back before the commit
@@ -633,8 +637,9 @@ type heldPost struct {
 	// of asking the listener again (roleHolderReplyOf); nil for any other text, and for a reply
 	// held before the hold kept it, whose route asks.
 	roleHolder *roleHolderReply
-	// wrote is what a dry run's route of a reply kept whole wrote before the dry run ended (keep):
-	// the reply, as its post writes it, which the held answer reads (dryRunHeld).
+	// wrote is what a dry run's route of a reply kept whole wrote before the dry run ended (keep),
+	// which the held answer reads (dryRunHeld): a message reply, as its post writes it, and a
+	// comment reply as commentWritten holds one, with whom its ask waits on once it posts.
 	wrote any
 }
 

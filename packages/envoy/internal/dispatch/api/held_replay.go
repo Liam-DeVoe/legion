@@ -430,13 +430,33 @@ func replyAttemptOf(body []byte) replyAttempt {
 }
 
 // answerHeldReplyAgain answers a reply that repeats row, its writer's held reply, whose write
-// replay keeps: the answer row's hold gave, under its id, with its `held` object as it now stands,
-// 200 as the reply route answers a repeat on an answered attempt, and a message marked duplicate
-// as that route marks one. Nothing is held, and the writing check records nothing: the reply
-// writes none of its words.
+// replay keeps, as the reply route answers a repeat on an attempt its reply answered: 200, the
+// reply under row's id as its post writes it, read off a dry run of replay as row's hold read it
+// (heldAnswerOf), with its `held` object as it now stands, and a message marked duplicate as that
+// route marks one. As that route's repeat, it names no ask_waiting_on: whom the ask waits on once
+// a reply is its newest, which a repeated reply need no longer be. A row that waits on a held text
+// ran no dry run at its hold and runs none here. A dry run its route answers otherwise - a
+// refusal, or the stored reply of row, which posted meanwhile - is the repeat's answer, as with the
+// reviewer off. Nothing is held, and the writing check records nothing: the reply writes none of
+// its words.
 func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, row heldRow, replay heldReplay) {
-	answer := heldAnswerOf(replay.reviewed(reviewer.Kind(row.kind)), row.id, row.actor, row.writtenAt,
-		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, nil, wantsDisplayTrees(r), nil)
+	write := replay.reviewed(reviewer.Kind(row.kind))
+	var dry *heldDryRun
+	if row.dependsOn == "" {
+		ran, err := s.dryRunHeld(write, row.actor, row.id)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if own := ran.answered; own != nil {
+			own.writeTo(w)
+			return
+		}
+		ran.askWaitingOn = ""
+		dry = &ran
+	}
+	answer := heldAnswerOf(write, row.id, row.actor, row.writtenAt,
+		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, dry, wantsDisplayTrees(r), nil)
 	if read, isMessage := answer.payload.(replyRead); isMessage {
 		read.Duplicate = true
 		answer.payload = read
@@ -751,11 +771,12 @@ func markKeptWritePosted(id string, marked *atomic.Bool) store.BeforeCommit {
 
 // replayAnswerOf is the answer a held reply's write gets: the reply route's own shape, built
 // from what the hold stored under the reserved id, and, where the hold's dry run ran the route
-// (dry, never nil), from the reply it wrote: a comment reply's issue or document, and what a held
-// comment states of its dry run (heldCommentWrites); a message reply's issue, target and the
-// message it answers, a follow-up's being the first reply it is filed under, and what a held
-// message states of its dry run (heldMessageWrites). A reply answered again, which runs no dry
-// run, states what the hold stored alone.
+// (dry, never nil), from the reply it wrote: a comment reply's issue or document, what a held
+// comment states of its dry run (heldCommentWrites) and whom the ask of its thread waits on once
+// it posts (ask_waiting_on); a message reply's issue, target and the message it answers, a
+// follow-up's being the first reply it is filed under, and what a held message states of its dry
+// run (heldMessageWrites). A reply that waits on a held text, which runs no dry run, states what
+// the hold stored alone.
 func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
 	parent := replay.Subject.InReplyTo
 	if kind == reviewer.KindComment {
@@ -774,7 +795,7 @@ func replayAnswerOf(kind reviewer.Kind, replay heldReplay, id string, actor mode
 			comment.IssueKey, comment.ArtifactID = wrote.IssueKey, wrote.ArtifactID
 			heldCommentWrites(&comment, wrote)
 		}
-		return commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
+		return commentWriteResponse{shapedComment: newShapedComment(comment, trees), AskWaitingOn: dry.askWaitingOn}
 	}
 	message := model.Message{ID: id, Author: actor, Body: replay.Text.Body, CreatedAt: at, Deliveries: []model.MessageDelivery{}}
 	if parent != "" {

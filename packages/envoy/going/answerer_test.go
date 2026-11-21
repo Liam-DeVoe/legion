@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
@@ -569,6 +570,49 @@ func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
 	}
 	if got := model.Calls(); got != 0 {
 		t.Errorf("model served %d calls, want none: the quota could pace none of them", got)
+	}
+}
+
+// TestNoCallFitsAQuotaOfTheLeastACallIsCharged: the least a call is charged, modelpace.Charge of
+// LeastCallRunes with no reply bound, is less than the shortest run's call is charged, a question
+// of one word whose search finds nothing, which sends the rules, the question and the search tool.
+// So a quota of that least, which the boot refuses for the answerer's deployment, paces no call and
+// ends the run as a quota too small does, and a quota of the shortest call's charge paces it.
+func TestNoCallFitsAQuotaOfTheLeastACallIsCharged(t *testing.T) {
+	frozen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	run := func(quota int) (*goingtest.Model, *answerStream) {
+		t.Helper()
+		model := goingtest.NewModel(t, goingtest.Reply{Text: "Dispatch holds no answer to that question."})
+		answerer := testAnswerer(t, model, going.AnswererConfig{Pace: testPace(quota, func() time.Time { return frozen })})
+		stream := &answerStream{}
+		if err := answerer.Run(t.Context(), (&reads{}).request("port"), stream.emit); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return model, stream
+	}
+	least := modelpace.Charge(going.LeastCallRunes(), 0)
+	served, _ := run(testTokensPerMinute)
+	if served.Calls() != 1 {
+		t.Fatalf("the shortest run made %d calls, want one", served.Calls())
+	}
+	// The call's characters as its pacer counts them: its messages and its tools.
+	sent := served.Requests()[0]
+	runes := 0
+	for _, message := range sent.Messages {
+		runes += utf8.RuneCountInString(message.Content)
+	}
+	for _, tool := range sent.Tools {
+		runes += utf8.RuneCountInString(tool.Name) + utf8.RuneCountInString(tool.Description)
+	}
+	shortest := modelpace.Charge(runes, 0)
+	if shortest <= least {
+		t.Fatalf("the shortest call is charged %d, not more than the least %d", shortest, least)
+	}
+	if model, stream := run(least); model.Calls() != 0 || stream.code(t) != contracts.GoingErrorAnswerDidNotArrive {
+		t.Errorf("a quota of the least charge %d: %d calls, code %s, want none and %s", least, model.Calls(), stream.code(t), contracts.GoingErrorAnswerDidNotArrive)
+	}
+	if model, _ := run(shortest); model.Calls() != 1 {
+		t.Errorf("a quota of the shortest call's charge %d: %d calls, want one", shortest, model.Calls())
 	}
 }
 

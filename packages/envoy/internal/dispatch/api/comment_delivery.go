@@ -1576,7 +1576,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	held.keep(reply)
+	// A held reply's dry run keeps the reply and whom its ask waits on after it, which the held
+	// answer states as this answer does (replayAnswerOf).
+	held.keep(commentWritten{comment: reply, waitingOn: waitingOn})
 	if err := held.finish(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)
 		return

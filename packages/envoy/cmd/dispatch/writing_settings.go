@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
@@ -106,6 +107,11 @@ var (
 	recordsLeastCharge       = leastChargeText(wordRecordsModelSpec)
 	testModelsLeastCharge    = leastChargeText(testModelSpec(modelKindAzure))
 )
+
+// answererLeastCharge is the least the answerer's calls are charged: the estimated tokens of what
+// every call of its run sends (going.LeastCallRunes), and no reply bound, since its request names
+// none. No rule set changes it.
+var answererLeastCharge = modelpace.Charge(going.LeastCallRunes(), 0)
 
 // leastChargeText is the least the calls of spec are charged under reviewer.DefaultRules.
 func leastChargeText(spec modelGroupSpec) string {
@@ -387,17 +393,20 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 	return cfg, nil
 }
 
-// refuseQuotaNoCallFits refuses a minute's quota that could serve no call of a set model group or
-// of a test model: one at or under the least any of the calls the group sends is charged, its
-// reply bound and the estimated tokens of the shortest system prompt of those calls under
-// DISPATCH_REVIEWER_RULES (modelGroupSpec.leastCharge, modelpace.Charge, the charge the pacer
-// takes): the reviewer's group's reviews, Rewrite and Define's rewrites and definitions, and the
-// records job's calls. The pacer charges a call its prompt, the system prompt and the user message
-// together, and its whole reply bound before the call is sent, and refuses for good a call that
-// costs more than a minute's whole quota; every call's user message holds some of the text. Under
-// such a quota every call would fail with nothing at boot saying why, and each reviewed text would
-// post as written. Three settings can be that quota, and each is weighed as the pacer reads it,
-// from the shares main joins the pacer with (modelGroup.share, answererConfig.share):
+// refuseQuotaNoCallFits refuses a minute's quota that could serve no call of a set model group, of
+// a test model or of the answerer: one at or under the least any of the calls the caller sends is
+// charged. A group's least is its reply bound and the estimated tokens of the shortest system
+// prompt of its calls under DISPATCH_REVIEWER_RULES (modelGroupSpec.leastCharge, modelpace.Charge,
+// the charge the pacer takes): the reviewer's group's reviews, Rewrite and Define's rewrites and
+// definitions, and the records job's calls. The answerer's is the estimated tokens of what every
+// call of its run sends, the rules' system message and the search tool (going.LeastCallRunes), and
+// no reply bound, since its request names none. The pacer charges a call its prompt, the system
+// prompt and the user message together, and its whole reply bound before the call is sent, and
+// refuses for good a call that costs more than a minute's whole quota; every call's user message
+// holds some of the text. Under such a quota every call would fail with nothing at boot saying why:
+// each reviewed text would post as written, and each question would end unanswered. Three settings
+// can be a group's quota, and each is weighed as the pacer reads it, from the shares main joins the
+// pacer with (modelGroup.share, answererConfig.share):
 //
 //   - the group's own _TOKENS_PER_MINUTE ceiling;
 //   - the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, which is then
@@ -406,9 +415,11 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 //     answerer's as the pacer keys it (pacedDeployment). An answerer of another kind, on another
 //     endpoint host or of another deployment is another limiter, and is not weighed.
 //
-// A test model serves the reviewer's reviews and Rewrite and Define's rewrites and definitions, so
-// it is held to the shortest of them. A quota for a deployment that no group and no test model
-// names is not weighed.
+// The answerer's quota is weighed as a ceiling is: DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE, the
+// ceiling on its share; and so is the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for its
+// deployment. A test model serves the reviewer's reviews and Rewrite and Define's rewrites and
+// definitions, so it is held to the shortest of them. A quota for a deployment that no group, no
+// test model and not the answerer names is not weighed.
 func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 	const why = "each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, so a minute's quota no larger could serve no call"
 	// stated is what the answerer asks of its deployment. A share of no tokens states no quota,
@@ -460,6 +471,19 @@ func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 		if err := refuse(spec, group, spec.prefix+"TOKENS_PER_MINUTE", testModelsSetting); err != nil {
 			return err
 		}
+	}
+	if answerer.Place == "" {
+		return nil
+	}
+	// The answerer's own calls, on its share, whose ceiling its form states, and on its
+	// deployment's limiter, paced at the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for it.
+	charged := fmt.Sprintf("%d, the least the answerer's calls are charged (its system prompt and its search tool, and no reply bound)", answererLeastCharge)
+	if 0 < stated.TokensPerMinute && stated.TokensPerMinute <= answererLeastCharge {
+		return fmt.Errorf("%s=%d is not more than %s: %s", answererQuotaSetting, stated.TokensPerMinute, charged, why)
+	}
+	if quota, named := cfg.DeploymentQuotas[stated.Deployment.Name]; named && quota <= answererLeastCharge {
+		return fmt.Errorf("%s names %s=%d, not more than %s, which go to that deployment (%s): %s",
+			deploymentQuotasSetting, stated.Deployment.Name, quota, charged, answerer.deploymentSetting(), why)
 	}
 	return nil
 }

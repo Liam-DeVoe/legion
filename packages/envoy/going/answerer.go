@@ -366,3 +366,14 @@ func requestRunes(request ChatRequest) int {
 	}
 	return chars
 }
+
+// LeastCallRunes is the fewest characters any call of a run sends, as its pacer counts them
+// (requestRunes): the system message of the rules and the search tool's name and description,
+// which every call sends beside the question and what was found for it. Every call is so charged
+// more than modelpace.Charge(LeastCallRunes(), 0), and a quota not more than that charge could
+// pace no call of any run: the boot refuses such a quota for the answerer's deployment
+// (cmd/dispatch refuseQuotaNoCallFits).
+func LeastCallRunes() int {
+	tool := (&answerRun{}).searchTool()
+	return utf8.RuneCountInString(answerRules) + utf8.RuneCountInString(tool.Name) + utf8.RuneCountInString(tool.Description)
+}

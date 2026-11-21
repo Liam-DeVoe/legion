@@ -721,7 +721,8 @@ type commentWritten struct {
 // publishes the events and puts each mention on its way. createCommentFor runs it with a fresh
 // id, and a held comment's post with the id its hold reserved (held, whose row its write phase
 // takes first and marks posted in the comment's transaction). A hold's dry run answers
-// errHeldDryRun, before the commit, with the advice the write would have answered with.
+// errHeldDryRun, before the commit, with the comment, whom its ask waits on after it and the
+// advice the write would have answered with.
 func (s *server) writeComment(ctx context.Context, create commentCreate, actor model.Actor, id string, held *heldPost) (commentWritten, error) {
 	owner, input, delivery, mentionTargets := create.Owner, create.Input, create.Delivery, create.MentionTargets
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
@@ -1091,7 +1092,7 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	}
 	events = append(events, event)
 	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
-		return commentWritten{comment: comment, advice: advice}, err
+		return commentWritten{comment: comment, waitingOn: waitingOn, advice: advice}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return commentWritten{}, err

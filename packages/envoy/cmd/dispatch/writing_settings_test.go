@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
@@ -460,6 +461,41 @@ func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T
 				t.Errorf("the pacer, charged the shortest call: %v, want %v", err, want)
 			}
 		})
+	}
+}
+
+// An answerer's call is charged its request's estimated tokens before it is sent and no reply bound,
+// and every call sends the rules' system message and the search tool (going.LeastCallRunes), so a
+// quota that paces the answerer and is not more than that charge could serve no call, and every
+// question would end on the pacer's refusal. The boot refuses it, naming the setting, its value and
+// that charge: the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the answerer's deployment, the
+// azure form's DISPATCH_AZURE_CHAT_DEPLOYMENT and the endpoint form's DISPATCH_CHAT_MODEL, and the
+// azure form's own DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE, the ceiling on its share whatever quota
+// paces the deployment. A quota one token more starts.
+func TestAQuotaNoAnswererCallFitsRefusesBoot(t *testing.T) {
+	const why = ": each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, so a minute's quota no larger could serve no call"
+	least := modelpace.Charge(going.LeastCallRunes(), 0)
+	at, over := strconv.Itoa(least), strconv.Itoa(least+1)
+	charged := at + ", the least the answerer's calls are charged (its system prompt and its search tool, and no reply bound)"
+	for _, row := range []struct {
+		place, deployment, setting string
+		env                        func(map[string]string) map[string]string
+	}{
+		{"azure", "chat-deployment", "DISPATCH_AZURE_CHAT_DEPLOYMENT", azureChatEnvironment},
+		{"endpoint", "chat-model", "DISPATCH_CHAT_MODEL", endpointChatEnvironment},
+	} {
+		t.Run(row.place, func(t *testing.T) {
+			refusedWith(t, row.env(map[string]string{"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": row.deployment + "=" + at}),
+				"DISPATCH_MODEL_DEPLOYMENT_QUOTAS names "+row.deployment+"="+at+", not more than "+charged+", which go to that deployment ("+row.setting+")"+why)
+			if got := resolveWith(t, row.env(map[string]string{"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": row.deployment + "=" + over})).Writing.DeploymentQuotas[row.deployment]; got != least+1 {
+				t.Errorf("the answerer's deployment's quota one over the charge: %d, want %d", got, least+1)
+			}
+		})
+	}
+	refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": at}),
+		"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE="+at+" is not more than "+charged+why)
+	if got := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": over})).Answerer.TokensPerMinute; got != least+1 {
+		t.Errorf("the answerer's quota one over the charge: %d, want %d", got, least+1)
 	}
 }
 

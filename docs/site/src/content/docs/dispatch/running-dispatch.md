@@ -379,6 +379,9 @@ bound before it is sent: 32,768 tokens for the reviewer and for Rewrite and Defi
 the records job. Dispatch does not start when a group's `_TOKENS_PER_MINUTE`, or its deployment's
 quota, is not more than the least a call is charged, that bound and the group's shortest system
 prompt, so set well more: a group makes at most about ceiling / (bound + prompt) calls a minute.
+Nor does it start when `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, or the quota of the answerer's
+deployment, is not more than the least an answerer call is charged: its rules and its search tool,
+which every call sends.
 
 `GET /api/v1/writing-check/counts` counts, for each day, project and person, what the check and
 the reviewer decided, the questions people asked about words, and their Rewrite and Define uses.

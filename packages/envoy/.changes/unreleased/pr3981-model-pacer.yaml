@@ -14,4 +14,7 @@ body: |-
   that paces its deployment, is not more than that, and the refusal names the setting, its value,
   the group's calls and the least one of them is charged. With the reviewer's default rule sets the
   system prompt adds about 5,100 tokens to the reviewer's reviews and about 4,700 to Rewrite and
-  Define's rewrites and definitions.
+  Define's rewrites and definitions. Every call of the answerer sends its rules and its search
+  tool, about 270 tokens, so the server refuses to start too when
+  `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, or the quota `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` names for
+  the answerer's deployment, is not more than that.
