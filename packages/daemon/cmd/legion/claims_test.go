@@ -173,10 +173,10 @@ func (s *memoryClaims) ClaimByBootTokenHash(_ context.Context, hash []byte) (sup
 	return supervise.Claim{}, false, nil
 }
 
-// The tree barrier is the store's, held to its own tests: here every tree is open at epoch 1, and
-// a close's cleanup releases the tree through the runtime at once. No tree is ever created here
-// (treelifecycle.Lifecycle.Created), so the open runs its created for none of them: this fake
-// holds no transaction for one to write in.
+// The lifecycle barrier is the store's, held to its own tests: here every tree and issue is open at
+// epoch 1, and a close's cleanup releases each issue through the runtime at once. No tree is ever
+// created here (treelifecycle.Lifecycle.Created), so the open runs its created for none of them:
+// this fake holds no transaction for one to write in.
 func (s *memoryClaims) OpenOperatorTreeLifecycle(_ context.Context, project, tree string,
 	_ func(context.Context, pgx.Tx) error) (treelifecycle.Lifecycle, error) {
 	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityOperator}, nil
@@ -188,12 +188,12 @@ func (s *memoryClaims) OpenIssueLifecycle(_ context.Context, project, issue stri
 	return treelifecycle.Lifecycle{Project: project, Tree: issue, Epoch: 1, Authority: authority}, nil
 }
 
-func (s *memoryClaims) ReserveOperatorTreeCleanup(_ context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
-	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityOperator, CleanupStarted: true}, true, nil
+func (s *memoryClaims) ReserveOperatorIssueCleanup(_ context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error) {
+	return treelifecycle.Lifecycle{Project: project, Tree: issue, Epoch: 1, Authority: treelifecycle.AuthorityOperator, CleanupStarted: true}, true, nil
 }
 
-func (s *memoryClaims) CleanupReservedTree(ctx context.Context, _, tree string, _ uint64, releaser store.TreeReleaser) error {
-	return releaser.CleanupTree(ctx, tree)
+func (s *memoryClaims) CleanupReservedIssue(ctx context.Context, _, issue string, _ uint64, releaser store.IssueReleaser) error {
+	return releaser.CleanupIssue(ctx, issue)
 }
 
 // seenRequest is one request that reached the daemon, and what the daemon answered it.

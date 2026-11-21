@@ -182,11 +182,11 @@ type Options struct {
 	// caller here writes a second copy of it. Nil serves a recorded repository under its own name,
 	// which a test that configures no rename and a daemon with no GitHub Apps both want.
 	Serving func(recorded ghrepo.Repository) ghrepo.Repository
-	// Releaser releases what the runtime holds for a tree whose operator close reserved and
-	// finished its cleanup: the daemon's runtime.
-	Releaser store.TreeReleaser
-	// Trees is the store's durable tree barrier, which the operator routes open a root's tree
-	// through and reserve and finish a closed tree's cleanup through.
+	// Releaser releases what the runtime holds for an issue whose operator close reserved and
+	// finished its cleanup: the daemon's runtime (runtime.Runtime.CleanupIssue).
+	Releaser store.IssueReleaser
+	// Trees is the store's durable lifecycle barrier, which the operator routes open a root's tree
+	// and each issue through, and reserve and finish a closed issue's cleanup through.
 	Trees TreeLifecycles
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// of which the operator's spawn draws every tree-unit one for a tree it opens for the first
@@ -294,18 +294,20 @@ type Options struct {
 	Pause PauseService
 }
 
-// TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
-// an operator root opens its tree's lifecycle before its claim is stored, and the tree's close
-// reserves the tree's cleanup, then finishes it once every claim of the tree has retired. The
-// open's created runs in the open's own transaction where it created the tree's row, and is where
-// the tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle). Every spawn opens its
-// issue's own lifecycle too, which each claim of the issue binds (store.Store.OpenIssueLifecycle).
+// TreeLifecycles is the store's durable lifecycle barrier (store.Store) as the operator routes use
+// it: an operator root opens its tree's lifecycle before its claim is stored, which is where the
+// tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle, its created running in the
+// open's own transaction where it created the tree's row), and every spawn opens its issue's own
+// lifecycle, which each claim of the issue binds (store.Store.OpenIssueLifecycle). A close of the
+// operator's tree reserves the cleanup of each issue its claims name, then finishes each once
+// every claim of that issue has retired, by the issue's own identity (R17 of
+// dispatch://INFRA-3320): nothing of a tree is deleted whole.
 type TreeLifecycles interface {
 	OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
 		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
 	OpenIssueLifecycle(ctx context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
-	ReserveOperatorTreeCleanup(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error)
-	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
+	ReserveOperatorIssueCleanup(ctx context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error)
+	CleanupReservedIssue(ctx context.Context, project, issue string, epoch uint64, releaser store.IssueReleaser) error
 }
 
 // ReleaseRecordStore is the store's idle-release records (store.Store) as the claim route reads
@@ -369,7 +371,7 @@ type server struct {
 	serving   func(recorded ghrepo.Repository) ghrepo.Repository
 	githubAPI string
 	grants    *credential.Grants
-	releaser  store.TreeReleaser
+	releaser  store.IssueReleaser
 	trees     TreeLifecycles
 	// experiments, source and now are Options.Experiments, Options.ExperimentSource and
 	// Options.Now: what the spawn's own draw for a tree it opens for the first time reads

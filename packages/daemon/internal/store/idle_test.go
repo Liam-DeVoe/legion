@@ -365,7 +365,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 	// Every row of the release reads the kind back out of the mark, whatever the fences then
 	// decide for the row itself.
 	decision, err := st.IssueRelease(ctx, "legion",
-		IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last},
+		IssueReleased{Issue: rootIssue, Generation: 1, Row: last},
 		record.OutOfWorkflow)
 	if err != nil || !decision.SuspendsNoRole {
 		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
@@ -553,7 +553,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	// The consequence itself: the close's own suspension acts, which is what deletes the issue's
 	// Sandbox and takes the pod's role Secrets with it.
 	act, err := st.IssueSuspension(ctx, "legion",
-		IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: closeRow},
+		IssueClose{Issue: rootIssue, Generation: 1, Row: closeRow},
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close after the race = %t, %v; want it to act", act, err)

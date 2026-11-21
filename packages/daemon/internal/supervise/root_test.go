@@ -336,14 +336,15 @@ func TestTheGateHoldersArchitectIsReadByItsMarkNotItsTree(t *testing.T) {
 		}
 	})
 	// The outbox's start marks a claim whose issue became a gate holder since its last launch
-	// (Machine.MarkGate), and the mark persists with the claim.
+	// (Machine.MarkLaunch), and the mark persists with the claim, the gate root it stands under
+	// with it.
 	t.Run("an architect marked at its start", func(t *testing.T) {
 		h := newHarnessOf(t, member)
-		if err := h.m.MarkGate(h.ctx, true); err != nil {
-			t.Fatalf("mark the gate: %v", err)
+		if err := h.m.MarkLaunch(h.ctx, member.Issue, true); err != nil {
+			t.Fatalf("mark the launch: %v", err)
 		}
-		if stored := h.store.load(rootToken); !stored.HoldsGate {
-			t.Fatalf("stored %+v, want the mark persisted", stored)
+		if stored := h.store.load(rootToken); !stored.HoldsGate || stored.LaunchTree != member.Issue {
+			t.Fatalf("stored %+v, want the mark and the gate root persisted", stored)
 		}
 		h.reach(StateReady)
 		if err := h.handle(RequestStop{Claim: rootToken}); !errors.Is(err, ErrRootStop) {

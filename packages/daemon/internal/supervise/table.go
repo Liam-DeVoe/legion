@@ -736,6 +736,7 @@ const (
 	onCompactEnded eventKind = "compact_ended"
 
 	onStalePlugin   eventKind = "stale_plugin"
+	onGateRootMoved eventKind = "gate_root_moved"
 	onStallBackstop eventKind = "stall_backstop"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
@@ -777,6 +778,8 @@ func kindOf(ev Event) eventKind {
 		return timerPrefix + eventKind(ev.Kind)
 	case StalePlugin:
 		return onStalePlugin
+	case GateRootMoved:
+		return onGateRootMoved
 	case StallBackstop:
 		return onStallBackstop
 	case PodUpdateOpen:
@@ -1080,6 +1083,14 @@ func fillTable(t *builder) {
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// A claim whose process was launched under another gate root than its issue stands under on
+	// the Dispatch chain now: relaunched in its session under the new one, at its turn's end. A
+	// held suspension ends it in a suspension rather than a relaunch (replaceProcess, endHeld).
+	t.row(onGateRootMoved, "the process was launched under another gate root: relaunch it in its session under its issue's gate root", relaunchUnderGateRoot,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateRegistered, StateReady, StateWorking, StateIdle)
+	t.ignore(onGateRootMoved, "the claim holds no process to relaunch: its next start writes the gate root its launch names",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
 
 	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
@@ -2138,6 +2149,12 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
 		if err := m.refreshPlugin(ctx, *held, false); err != nil {
+			return err
+		}
+	}
+	if tree := m.retree; tree != "" {
+		m.retree = ""
+		if err := m.relaunchUnder(ctx, tree); err != nil {
 			return err
 		}
 	}

@@ -215,19 +215,44 @@ func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State)
 // let go, so a project's pause has nothing of it to stop.
 func (c Claim) Gone() bool { return IsGone(c.State) }
 
-// MarkGate records on the claim whether its issue holds its own design gate, as the Dispatch chain
-// reads it when the claim is started (Claim.HoldsGate, record.Chains.HoldsOwnGate): the daemon's
-// outbox writes it at each start, so a change of parent that makes the issue a root, or takes a
+// MarkLaunch records on the claim what the Dispatch chain reads of its issue when the claim is
+// started: tree, the issue's gate root (record.Chains.StateTree), which the claim's next launch
+// carries as its spawn spec's Tree, so as the role's LEGION_TREE and the pod label of a pod that
+// launch makes (Claim.LaunchTree, decision 13 of dispatch://INFRA-4730), and holds, whether the
+// issue holds its own design gate (Claim.HoldsGate, record.Chains.HoldsOwnGate). The daemon's
+// outbox writes both at each start, so a change of parent that makes the issue a root, or takes a
 // root under a parent that holds the gate, reaches the claim's next launch. The mark is what the
 // machine reads a gate holder's architect by (Claim.treeRoot); a claim already marked so writes
 // nothing.
-func (m *Machine) MarkGate(ctx context.Context, holds bool) error {
+//
+// LaunchTree stays the tree the claim's process was launched under while one runs (a state that
+// holds the process's capability): such a claim is relaunched in its own session under the new
+// gate root by the GateRootMoved event the caller posts (relaunchUnder), so its plugin registers
+// the gate root again (R22 of dispatch://INFRA-3320). A claim with no process writes tree for the
+// launch its start makes.
+func (m *Machine) MarkLaunch(ctx context.Context, tree string, holds bool) error {
 	m.mu.Lock()
 	defer m.unlock()
-	if m.claim.HoldsGate == holds {
+	changed := m.claim.HoldsGate != holds
+	if changed {
+		m.log.Info("supervise: the claim's issue holds its own design gate", "holds_gate", holds)
+		m.claim.HoldsGate = holds
+	}
+	if !HoldsCapability(m.claim.State) && m.claim.LaunchTree != tree {
+		m.claim.LaunchTree, changed = tree, true
+	}
+	if !changed {
 		return nil
 	}
-	m.log.Info("supervise: the claim's issue holds its own design gate", "holds_gate", holds)
-	m.claim.HoldsGate = holds
 	return m.persist(ctx)
+}
+
+// LaunchedTree is the tree the claim's launch names (Claim.LaunchTree): the gate root its issue
+// stood under when the daemon last started it, or, for a claim no start of this release has
+// marked (one the operator spawned, one the release before launched), the tree it stores.
+func (c Claim) LaunchedTree() string {
+	if c.LaunchTree != "" {
+		return c.LaunchTree
+	}
+	return c.Tree
 }

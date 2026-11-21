@@ -1669,6 +1669,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	supervision.gateRoots = w.gateRoots
 	if w.pauses != nil {
 		// The flag is read again at each sweep (decision 18), so a pause made or ended through
 		// another daemon of a rolling restart reaches this daemon's machines within one sweep.
@@ -1676,6 +1677,31 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	}
 	w.attachIdleRelease(supervision)
 	w.workspaceHeld = workspaceHeldBy(supervision.supervisor.deps.Runtime, w.stateDir)
+}
+
+// gateRoots is the gate root each of issues stands under on the Dispatch chain as the copy holds
+// it now (record.Chains.StateTree), by issue, for each issue the workflow records in Legion's work
+// (record.InLegionsWork), read in one read-only transaction: the running architects' pass reads it
+// (supervision.relaunchUnderGateRoots). An issue out of work, or one the workflow records nothing
+// of, has no entry.
+func (w *workflowRuntime) gateRoots(ctx context.Context, issues []string) (map[string]string, error) {
+	roots := make(map[string]string, len(issues))
+	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		chains, err := record.ReadChainsOf(ctx, tx, w.records, w.dispatchProject, issues)
+		if err != nil {
+			return err
+		}
+		for _, key := range issues {
+			if issue, recorded := chains.Record(key); recorded && record.InLegionsWork(issue) {
+				roots[key] = chains.StateTree(key)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the gate roots of %d issues: %w", len(issues), err)
+	}
+	return roots, nil
 }
 
 // workspaceHeldBy is whether an issue holds its workspace under rt: its Sandbox, where rt keeps

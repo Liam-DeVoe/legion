@@ -15,14 +15,14 @@ import (
 )
 
 // IssueReleased is one idle release of an issue's pod as its issue_release outbox row names it:
-// the run it released (the issue's generation and its tree root's) and the row, written after the
-// release's per-role stops. It is the release's counterpart to IssueClose, and differs in what it
+// the run it released (the issue's own generation) and the row, written after the release's
+// per-role stops. It is the release's counterpart to IssueClose, and differs in what it
 // authorizes: a close acts on an issue the workflow has taken out, a release on an issue that is
 // still in it and comes back at the next wake for one of its roles.
 type IssueReleased struct {
-	Issue, Tree                     string
-	IssueGeneration, TreeGeneration uint64
-	Row                             int64
+	Issue      string
+	Generation uint64
+	Row        int64
 }
 
 // ReleaseAct is what one row of an idle release may do, which the store decides and the row's
@@ -350,14 +350,15 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // bundle the issue's next pod is owed.
 //
 // It cancels the release — the pod stays, the claims it suspended are resumed and the bundle it
-// stored goes — when the run it released has moved on, the issue or its tree root has left the
-// workflow (each of which is a stop's business, not a release's), when the tree's cleanup is
-// reserved, which deletes the Sandbox this release would, or when the pod went on working after
-// the mark: a claim started, resumed or holding a process now. It waits while the release's own
-// workspace save or one of its role stops is unfinished, or a stored claim of the issue may still
-// hold a process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
-// (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
-// other path that acts on a released pod reads (pods.InWorkflowWithRoot).
+// stored goes — when the run it released has moved on, the issue has left the workflow (a stop's
+// business, not a release's), when the issue's own cleanup is reserved, which deletes the Sandbox
+// this release would, or when the pod went on working after the mark: a claim started, resumed
+// or holding a process now. It waits while the release's own workspace save or one of its role
+// stops is unfinished, or a stored claim of the issue may still hold a process. outOfWorkflow is
+// the workflow's rule for a status that takes an issue out of it (record.OutOfWorkflow), which the
+// store does not restate; the gate itself is the issue's own standing (pods.Standing.InWorkflow):
+// nothing of the tree its record stores, or of any issue above it, decides a release of its pod
+// (R17 of dispatch://INFRA-3320).
 //
 // The decision carries the cause of a cancel, because a pod taken up again reads the same here
 // as it does at a role stop and a deployment's records must say so once, and the roles whose
@@ -365,12 +366,12 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // cancel resumes.
 //
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
-// issue has left the workflow, and a release acts only while the issue and its tree root are still
-// in the workflow. The two order against each other because each waits on the other's role stops:
-// both read the same `suspend`, `issue_close` and `release` ops.
+// issue has left the workflow, and a release acts only while the issue is still in the workflow.
+// The two order against each other because each waits on the other's role stops: both read the
+// same `suspend`, `issue_close` and `release` ops.
 func (s *Store) IssueRelease(ctx context.Context, project string, release IssueReleased, outOfWorkflow func(status string) bool) (ReleaseDecision, error) {
-	if release.Issue == "" || release.Tree == "" || release.IssueGeneration == 0 || release.TreeGeneration == 0 || release.Row <= 0 {
-		return ReleaseDecision{}, errors.New("issue release requires issue, tree, both generations and its outbox row")
+	if release.Issue == "" || release.Generation == 0 || release.Row <= 0 {
+		return ReleaseDecision{}, errors.New("issue release requires the issue, its generation and its outbox row")
 	}
 	var decision ReleaseDecision
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
@@ -384,23 +385,18 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
-		var issueGeneration, rootGeneration int64
-		var issuePhase, status, rootPhase, rootStatus string
-		err = tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.generation, root.phase, root.status
-			from issues i join issues root on root.key = i.tree where i.key = $1 and i.tree = $2`,
-			release.Issue, release.Tree).Scan(&issueGeneration, &issuePhase, &status,
-			&rootGeneration, &rootPhase, &rootStatus)
+		var generation int64
+		var issuePhase, status string
+		err = tx.QueryRow(ctx, `select generation, phase, status from issues where key = $1 and lower(project) = $2`,
+			release.Issue, project).Scan(&generation, &issuePhase, &status)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		live := pods.InWorkflowWithRoot(
-			pods.Standing{Phase: phase.Phase(issuePhase), Status: status},
-			pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus},
-			outOfWorkflow)
-		if uint64(issueGeneration) != release.IssueGeneration || uint64(rootGeneration) != release.TreeGeneration || !live {
+		live := pods.Standing{Phase: phase.Phase(issuePhase), Status: status}.InWorkflow(outOfWorkflow)
+		if uint64(generation) != release.Generation || !live {
 			return nil
 		}
 		// A role started or resumed since the mark, or a start queued above the release's own
@@ -408,10 +404,9 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// it, and the stop that would have caught it has already run. The release reads every
 		// queued start row where IssueSuspension reads only a production check's look, and
 		// needs no narrowing of its own: the read above has already returned a cancel for an
-		// issue that is not pods.InWorkflowWithRoot, so this predicate runs only for an issue
-		// still in the workflow under a root still in it, where the outbox's start fence declines
-		// nothing and a queued start row really is a start. The cause is the one a role stop
-		// reads for it.
+		// issue out of the workflow, so this predicate runs only for an issue still in it, where
+		// the outbox's start fence declines nothing and a queued start row really is a start. The
+		// cause is the one a role stop reads for it.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
 		if err != nil {
 			return err
@@ -427,7 +422,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			decision.Cause = ReleaseCauseOvertaken
 			return nil
 		}
-		may, err := issueStopFences(ctx, tx, project, release.Issue, release.Tree, "release", release.Row, release.IssueGeneration)
+		may, err := issueStopFences(ctx, tx, project, release.Issue, "release", release.Row, release.Generation)
 		if err != nil {
 			return err
 		}

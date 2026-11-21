@@ -349,6 +349,16 @@ func (h *harness) treeCleanup(tree string) (started, confirmed bool) {
 	return started, confirmed
 }
 
+// issueCleanup is whether issue's own cleanup was reserved, and whether it was confirmed.
+func (h *harness) issueCleanup(issue string) (started, confirmed bool) {
+	h.t.Helper()
+	if err := h.store.Pool().QueryRow(h.ctx, `select cleanup_started, cleanup_confirmed_at is not null from issue_lifecycles
+		where project = $1 and issue = $2`, testProject, issue).Scan(&started, &confirmed); err != nil {
+		h.t.Fatalf("read the lifecycle of issue %s: %v", issue, err)
+	}
+	return started, confirmed
+}
+
 // launch creates a claim the way the spawn route does and launches it, returning its token and
 // the boot token its launch minted.
 func (h *harness) launch(issue string, role claim.Role) (claim.Token, string) {

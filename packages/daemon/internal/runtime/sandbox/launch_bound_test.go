@@ -213,31 +213,19 @@ func (c countingTokens) Token(ctx context.Context, repo ghrepo.Repository) (stri
 	return staticTokens{}.Token(ctx, repo)
 }
 
-// countingStore counts the store reads a launch makes (ensureSandbox, provision) over the rig's
-// store.
-type countingStore struct {
-	Store
-	reads *atomic.Int32
-}
-
-func (s countingStore) IssueRunsElsewhere(ctx context.Context, project, issue, tree string) (string, error) {
-	s.reads.Add(1)
-	return s.Store.IssueRunsElsewhere(ctx, project, issue, tree)
-}
-
 // relaunchCalls never undercounts a replacing try: one that reads every launcher binding of a live
 // pod, finds it unbound and replaces it — the longest path a try takes — makes no more bounded
 // calls than relaunchCalls counts, every request through the fakes (the informers' lists and
-// watches aside), every mint, every store read and every launcher frame together.
+// watches aside), every mint and every launcher frame together. A launch reads nothing of the
+// store: a Sandbox under another tree label is used as it is (ensureSandbox).
 func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
-	var mints, renders, reads atomic.Int32
+	var mints, renders atomic.Int32
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Tokens = countingTokens{&mints}
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			renders.Add(1)
 			return staticCredential(ctx, role, repo)
 		}
-		o.Store = countingStore{Store: o.Store, reads: &reads}
 	}))
 	tester := g.spawn(workerSpec(t))
 	// The merger's Secret, the last of the pod's six a start reads (launcherBound), binds another
@@ -248,7 +236,6 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	g.clearActions()
 	mints.Store(0)
 	renders.Store(0)
-	reads.Store(0)
 
 	reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	loc := g.spawn(reviewer)
@@ -257,9 +244,9 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	}
 	requests := g.requests()
 	frames := len(g.sent(reviewer.Claim))
-	calls := len(requests) + int(mints.Load()) + int(renders.Load()) + int(reads.Load()) + frames
-	t.Logf("the replacing try made %d calls: %d requests, %d mints, %d credential renders, %d store reads, %d launcher frames; relaunchCalls is %d",
-		calls, len(requests), mints.Load(), renders.Load(), reads.Load(), frames, relaunchCalls)
+	calls := len(requests) + int(mints.Load()) + int(renders.Load()) + frames
+	t.Logf("the replacing try made %d calls: %d requests, %d mints, %d credential renders, %d launcher frames; relaunchCalls is %d",
+		calls, len(requests), mints.Load(), renders.Load(), frames, relaunchCalls)
 	if calls > relaunchCalls {
 		var listed []string
 		for _, a := range requests {

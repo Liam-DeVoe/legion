@@ -30,11 +30,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -216,13 +218,16 @@ type outbox struct {
 	wg      sync.WaitGroup
 }
 
-// outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open resume
-// that refuses one, a project pause's stop of a role and which pause stopped a role, and the end
-// of a pause's hold of a pod a deletion took.
+// outboxTrees is the store's lifecycle barrier (store.Store) as the outbox runs it: an issue
+// close's suspension and the cleanup of its own lifecycle that follows it, an idle release's own
+// two decisions and the bundle it saves, a stop's wait for a stored claim's machine, a delivery
+// wake and the open resume that refuses one, a project pause's stop of a role and which pause
+// stopped a role, and the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
+	ReserveIssueCleanup(ctx context.Context, project, issue string, generation uint64,
+		inLegionsWork func(at phase.Phase, status string) bool) (treelifecycle.Lifecycle, bool, error)
+	CleanupReservedIssue(ctx context.Context, project, issue string, epoch uint64, releaser store.IssueReleaser) error
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
@@ -2928,12 +2933,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
 			}
 		}
-		// Whether the issue holds its own design gate is read on the Dispatch chain at each start and
-		// written on the claim (supervise.Claim.HoldsGate, record.Chains.HoldsOwnGate), since
-		// supervise holds no store: it is what the machine reads a gate holder's architect by, for
-		// the stop refusal, the exit suspension, the superseding of a task and the root's hearing
-		// guard (R18 of dispatch://INFRA-3320).
-		holdsGate, err := r.holdsOwnGate(ctx, issue)
+		// The issue's gate root and whether it holds its own design gate are read on the Dispatch
+		// chain at each start and written on the claim (supervise.Machine.MarkLaunch), since
+		// supervise holds no store: the gate root is what the launch names as its LEGION_TREE and
+		// the label of a pod it makes (decision 13 of dispatch://INFRA-4730), and the mark is what
+		// the machine reads a gate holder's architect by, for the stop refusal, the exit
+		// suspension, the superseding of a task and the root's hearing guard (R18 of
+		// dispatch://INFRA-3320). The tree the claim stores is its issue's stored tree, which the
+		// claim's admission writes for the release before (store.Store.AdmitClaim) and no decision
+		// reads.
+		launch, err := r.launchOf(ctx, issue)
 		if err != nil {
 			return err
 		}
@@ -2942,13 +2951,26 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			machine, _, err = r.supervisor.Create(ctx, supervise.Claim{
-				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued, HoldsGate: holdsGate,
+				Token: token, Project: r.project, Tree: issue.Tree, LaunchTree: launch.tree, Issue: issue.Key, Role: payload.Role,
+				State: supervise.StateQueued, HoldsGate: launch.holdsGate,
 			}, "")
 			if err != nil {
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
-		} else if err := machine.MarkGate(ctx, holdsGate); err != nil {
-			return fmt.Errorf("mark the gate of claim %s: %w", token, err)
+		} else {
+			if err := machine.MarkLaunch(ctx, launch.tree, launch.holdsGate); err != nil {
+				return fmt.Errorf("mark the launch of claim %s: %w", token, err)
+			}
+			// An architect whose process runs under another gate root is relaunched in its
+			// session under this one, at its turn's end, so its plugin registers that gate root;
+			// one with no process launches under it by the mark above (supervise.GateRootMoved,
+			// R22 of dispatch://INFRA-3320). A phase worker keeps the LEGION_TREE of its launch
+			// until its next one.
+			if payload.Role == claim.RoleArchitect {
+				if err := machine.Handle(ctx, supervise.GateRootMoved{Claim: token, Tree: launch.tree}); err != nil {
+					return fmt.Errorf("relaunch claim %s under its gate root %s: %w", token, launch.tree, err)
+				}
+			}
 		}
 		// The task this start gives the claim, nil for a start that carries none. It is built here,
 		// before the start is recorded, because the record reads it: a task the claim holds back
@@ -3311,12 +3333,15 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // store refused ends (endPods). A runtime that runs no pod of an issue (tmux) has none to delete,
 // and the close is the end of the issue's run there, so a close its fence does not refuse ends
 // what a pod's end ends (endPods): each issue's own close is where its run ends, since no close
-// ends a tree's.
+// ends a tree's. A close of an issue Dispatch shows done then cleans up the issue's own lifecycle
+// (cleanupClosedIssue).
 //
 // The row is fenced by its issue's own run, phase entry and pod (record.IssueSuspend), read under
-// that same lock (podStands): a row of an earlier run or entry deletes no pod a return made, and
-// one queued for a pod the issue's claims no longer run in deletes nothing (R17 of
-// dispatch://INFRA-3320: a cleanup deletes only its own issue's pod).
+// that same lock (podStands), and the runtime holds it to the pod it was queued for as well
+// (runtime.IssueSuspender): a row of an earlier run or entry deletes no pod a return made, and one
+// queued for a pod the issue's claims no longer run in deletes nothing (R17 of
+// dispatch://INFRA-3320: a cleanup deletes only its own issue's pod). The tree the row carries is
+// the release before's, and read here by nothing.
 func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
 	if r.supervisor == nil {
 		return errors.New("issue suspension executor has no claim supervisor")
@@ -3327,10 +3352,9 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 			return err
 		}
 		r.endPods(ctx, row.Issue)
-		return nil
+		return r.cleanupClosedIssue(ctx, row, value)
 	}
-	closing := store.IssueClose{Issue: row.Issue, Tree: value.Tree, IssueGeneration: value.Generation,
-		TreeGeneration: value.TreeGeneration, Row: row.ID}
+	closing := store.IssueClose{Issue: row.Issue, Generation: value.Generation, Row: row.ID}
 	// ended and authorized are the store's answer under the runtime's pod lock, read by two
 	// rules. A close the fence (podStands) or the store refused finishes without acting and may
 	// leave the pod standing, so it turns both false. The pause's hold of the pod is the store's
@@ -3338,7 +3362,7 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 	// of the pod also follows a runtime that stops the pod without asking the store, its nil return
 	// being the stop: ended starts true.
 	ended, authorized := true, false
-	if err := suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
+	if err := suspender.SuspendIssue(ctx, row.Issue, value.PodUID, func(ctx context.Context) (bool, error) {
 		if stands, err := r.podStands(ctx, row, value); err != nil || !stands {
 			ended = false
 			return false, err
@@ -3358,7 +3382,41 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 	if ended {
 		r.endPods(ctx, row.Issue)
 	}
-	return nil
+	return r.cleanupClosedIssue(ctx, row, value)
+}
+
+// cleanupClosedIssue ends the issue's own lifecycle once its close is done: an issue Dispatch shows
+// done reserves its cleanup (store.Store.ReserveIssueCleanup) and, once every claim of it has
+// retired — its close's issue_close rows run ahead of this one on the issue's lane — has the
+// runtime delete what it still holds of the issue by the issue's own identity
+// (runtime.Runtime.CleanupIssue) and confirms the cleanup (store.Store.CleanupReservedIssue), so
+// the orphan sweep reads the issue's resources as nobody's and a later run opens a lifecycle of
+// its own. A claim that has not retired yet makes it a wait, and the row runs again on its
+// backoff. An issue a stop took out of work keeps its lifecycle: its claims stay suspended and
+// come back with it (R20 of dispatch://INFRA-3320), so a fresh reservation is made for a closed
+// issue alone, at the run the row is of, and only while no production check of it is open, whose
+// look still starts a role. A reservation an earlier try of the row made is finished whatever the
+// issue has done since, which is the store's own rule. Nothing of another issue is reserved or
+// deleted.
+func (r *outbox) cleanupClosedIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
+	if r.pool == nil {
+		return nil
+	}
+	check, err := r.productionCheck(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	open := check != nil && check.ClosedAt == nil
+	lifecycle, reserved, err := r.trees.ReserveIssueCleanup(ctx, r.project, row.Issue, value.Generation, func(at phase.Phase, status string) bool {
+		return open || status != "done" || record.InLegionsWork(record.Issue{Phase: at, Status: status})
+	})
+	if err != nil {
+		return fmt.Errorf("reserve the cleanup of closed issue %s: %w", row.Issue, err)
+	}
+	if !reserved {
+		return nil
+	}
+	return r.trees.CleanupReservedIssue(ctx, r.project, row.Issue, lifecycle.Epoch, r.supervisor.deps.Runtime)
 }
 
 // endPods runs the end of issues' pods (podEnded), where attach set it.
@@ -3533,8 +3591,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// A runtime with no shared issue resources has no pod to release.
 		return nil
 	}
-	releasing := store.IssueReleased{Issue: row.Issue, Tree: payload.Tree, IssueGeneration: payload.Generation,
-		TreeGeneration: payload.TreeGeneration, Row: row.ID}
+	releasing := store.IssueReleased{Issue: row.Issue, Generation: payload.Generation, Row: row.ID}
 	first, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
 	if err != nil {
 		return err
@@ -3590,7 +3647,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	} else if savedBytes, _, err = r.trees.WorkspaceBundleSize(ctx, row.Issue); err != nil {
 		return err
 	}
-	if err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
+	if err := releaser.ReleaseIssue(ctx, row.Issue, payload.PodUID, authorize); err != nil {
 		return err
 	}
 	switch decision.Act {
@@ -4108,43 +4165,57 @@ func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, 
 	return version, nil
 }
 
-// holdsOwnGate says whether issue holds its own design gate on the Dispatch chain as the copy shows
-// it now (record.Chains.HoldsOwnGate, R15 of dispatch://INFRA-3320): a root, or an issue that ran
-// as one and keeps its gate under a parent in Legion's work. It is read in a read-only transaction
-// of its own just before a start acts, as every fence of a row is.
-func (r *outbox) holdsOwnGate(ctx context.Context, issue record.Issue) (bool, error) {
-	var holds bool
+// issueLaunch is what a start reads of its issue on the Dispatch chain as the copy shows it now
+// (launchOf): tree, the gate root its launch names (record.Chains.StateTree: the issue's gate root
+// while it is in Legion's work, R22 of dispatch://INFRA-3320), and holdsGate, whether it holds its
+// own design gate (record.Chains.HoldsOwnGate, R15: a root, or an issue that ran as one and keeps
+// its gate under a parent in Legion's work).
+type issueLaunch struct {
+	tree      string
+	holdsGate bool
+}
+
+// launchOf reads issue's launch (issueLaunch) in a read-only transaction of its own just before a
+// start acts, as every fence of a row is.
+func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch, error) {
+	var launch issueLaunch
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		chains, err := record.ReadChains(ctx, tx, r.records, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
 		}
-		holds = chains.HoldsOwnGate(issue.Key)
+		launch = issueLaunch{tree: chains.StateTree(issue.Key), holdsGate: chains.HoldsOwnGate(issue.Key)}
 		return nil
 	}); err != nil {
-		return false, fmt.Errorf("read whether %s holds its own design gate: %w", issue.Key, err)
+		return issueLaunch{}, fmt.Errorf("read the gate root of %s: %w", issue.Key, err)
 	}
-	return holds, nil
+	return launch, nil
 }
 
-// designGateClosed says whether the design gate of the issue's tree is closed, which holds the
-// merger's start (supervise): the gate is the tree root's, so every member of the tree reads the
-// same rows, and it is closed when a step the deployment gates holds a row no approval has opened
-// (classify.StandingGate, the first such step in the configured order). A tree with no row for a
-// step — nothing registered one, or the project's design gate is off, which registers it
-// approved — holds nothing on that step: nobody can be waiting on a document the record does not
-// know. It is read just before the row acts, as every other fence of a row is.
-func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
+// designGateClosed says whether the design gate of the issue's gate root is closed, which holds
+// the merger's start (supervise): the gate is the gate root's, the nearest issue at or above it in
+// Legion's work that holds its own gate on the Dispatch chain (record.Chains.GateRoot), so every
+// issue under that root reads the same rows, and it is closed when a step the deployment gates
+// holds a row no approval has opened (classify.StandingGate, the first such step in the
+// configured order). A gate root with no row for a step — nothing registered one, or the project's
+// design gate is off, which registers it approved — holds nothing on that step: nobody can be
+// waiting on a document the record does not know. It is read just before the row acts, as every
+// other fence of a row is. root is the gate root read, for the wait's words.
+func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (root string, closed bool, err error) {
 	var gates map[record.DesignStep]record.DesignGate
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		gates, err = r.records.GatesOf(ctx, tx, issue.Tree)
+		chains, err := record.ReadChains(ctx, tx, r.records, issue.Project, []string{issue.Key})
+		if err != nil {
+			return err
+		}
+		root = chains.StateTree(issue.Key)
+		gates, err = r.records.GatesOf(ctx, tx, root)
 		return err
 	}); err != nil {
-		return false, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
+		return "", false, fmt.Errorf("read the design gate above %s: %w", issue.Key, err)
 	}
-	_, closed := classify.StandingGate(r.gatedSteps, gates)
-	return closed, nil
+	_, closed = classify.StandingGate(r.gatedSteps, gates)
+	return root, closed, nil
 }
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
@@ -4158,11 +4229,11 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	if role != claim.RoleMerger {
 		return nil
 	}
-	closed, err := r.designGateClosed(ctx, issue)
+	root, closed, err := r.designGateClosed(ctx, issue)
 	if err != nil || !closed {
 		return err
 	}
-	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, root)
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for

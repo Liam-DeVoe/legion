@@ -45,8 +45,9 @@ func (issueProvisionTokens) Token(context.Context, ghrepo.Repository) (string, e
 // A close whose role stop is still pending acts on nothing, and the same close, resumed after the
 // daemon and its runtime restart, suspends the issue's Sandbox and deletes it: neither the runtime
 // nor the outbox keeps the pending effect in memory, and the database owns it. The stopped role's
-// session is the store's and outlives the Sandbox, which owned no part of it. The tree stays live
-// until its linger closes, and its cleanup then finds the issue's Sandbox already gone.
+// session is the store's and outlives the Sandbox, which owned no part of it. The issue's own
+// lifecycle stays live while a claim of it has not retired, and once the last one has, the close's
+// cleanup confirms it, finding the issue's Sandbox already gone (R17 of dispatch://INFRA-3320).
 func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -59,7 +60,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	putOutboxIssue(t, pool, records, issue)
-	if _, err := st.OpenTreeLifecycle(ctx, "legion", issue.Tree, treelifecycle.AuthorityWorkflow); err != nil {
+	if _, err := st.OpenIssueLifecycle(ctx, "legion", issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
 	name := "legion-legion-legion-208"
@@ -141,8 +142,8 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	if err != nil || len(claims) != 1 || claims[0].Session != "saved-planner" || claims[0].SessionFile != "/legion/sessions/planner.jsonl" {
 		t.Fatalf("close lost retained session: %+v, %v", claims, err)
 	}
-	if live, err := st.TreeLive(ctx, "legion", issue.Tree); err != nil || !live {
-		t.Fatalf("close started tree cleanup: live=%t, err=%v", live, err)
+	if live, err := st.IssueLive(ctx, "legion", issue.Key); err != nil || !live {
+		t.Fatalf("issue live while its claim has not retired = %t, %v; want its cleanup unconfirmed", live, err)
 	}
 	stored.State = supervise.StateRetired
 	if err := st.PutClaim(ctx, stored); err != nil {
@@ -156,10 +157,10 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := api.mode(name); got != "deleted" {
-		t.Fatalf("Sandbox after linger cleanup = %s, want it still gone", got)
+		t.Fatalf("Sandbox after the issue's cleanup = %s, want it still gone", got)
 	}
-	if live, err := st.TreeLive(ctx, "legion", issue.Tree); err != nil || live {
-		t.Fatalf("tree after its linger cleanup is live = %t, %v; want its cleanup confirmed", live, err)
+	if live, err := st.IssueLive(ctx, "legion", issue.Key); err != nil || live {
+		t.Fatalf("issue after its claims retired is live = %t, %v; want its cleanup confirmed", live, err)
 	}
 }
 
@@ -206,12 +207,12 @@ type sandboxTeardowns struct {
 	sandboxes *sandbox.Runtime
 }
 
-func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize)
+func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error {
+	return r.sandboxes.SuspendIssue(ctx, issue, podUID, authorize)
 }
 
-func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize)
+func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error {
+	return r.sandboxes.ReleaseIssue(ctx, issue, podUID, authorize)
 }
 
 // A release leaves the issue in the workflow, so its teardown row (record.IssueRelease) asks the
@@ -394,8 +395,8 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	if left := effectsLeft(done.Key); left != 0 {
 		t.Fatalf("%d supervise/issue_suspend rows of the done child remain, want every one finished", left)
 	}
-	if live, err := st.TreeLive(ctx, "legion", root.Key); err != nil || !live {
-		t.Fatalf("tree live after the child's close = %t, %v; want the tree still live", live, err)
+	if live, err := st.IssueLive(ctx, "legion", root.Key); err != nil || !live {
+		t.Fatalf("the root's own lifecycle after the child's close = %t, %v; want it still live", live, err)
 	}
 	if !strings.Contains(logs.String(), "deleted the closed issue's Sandbox") {
 		t.Fatal("the close logged no line naming the issue's Sandbox")

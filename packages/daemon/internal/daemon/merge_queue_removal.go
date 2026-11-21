@@ -183,7 +183,7 @@ type heldMessage struct {
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its
-// role again. While the root's design gate is closed (designGateClosed) a released role is neither
+// role again. While the gate root's design gate is closed (designGateClosed) a released role is neither
 // woken nor told, and the row waits for the gate to open: a role the gate holds may not know the
 // gate closed, and woken by this message it would work against the gate. A role whose session
 // holds it is told at once, gate or none, and m.delivered is logged. The three other answers of
@@ -198,12 +198,12 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return nil
 	}
 	if held.Released() {
-		closed, err := r.designGateClosed(ctx, m.issue)
+		root, closed, err := r.designGateClosed(ctx, m.issue)
 		if err != nil {
 			return err
 		}
 		if closed {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
+			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, root, m.role)
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released

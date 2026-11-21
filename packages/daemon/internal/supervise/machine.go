@@ -1479,6 +1479,12 @@ type Machine struct {
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
 	staleRelaunch *string
+	// retree is the gate root a relaunch in the claim's session waits for the agent's turn to end
+	// under (relaunchUnder, afterTurn); "" for none. It is memory only, as staleRelaunch is: the
+	// daemon's boot pass and every orphan sweep post GateRootMoved again for a claim whose launch
+	// still names another gate root (internal/daemon's relaunchUnderGateRoots), and letGo drops it
+	// with the process it was made for.
+	retree string
 	// busyTurn is the claim recorded working by Oh My Pi's busy answer to a prompt of its pending
 	// task (recordBusyTurn): the agent said its session is in a prompt, preparing or running a
 	// turn, and no agent_start of that turn has been read yet. It arms the sweep's question
@@ -3282,7 +3288,9 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
-	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
+	// The launch names the gate root the claim's issue stood under at its last start
+	// (Claim.LaunchedTree), never the tree the claim stores, which is the release before's.
+	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.LaunchedTree(), m.claim.Issue, m.claim.Role
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
 	return spec, nil
@@ -3905,7 +3913,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.forgetSend()
 	m.outstanding = nil
 	m.held, m.heldLaunch = nil, false
-	m.staleRelaunch = nil
+	m.staleRelaunch, m.retree = nil, ""
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting, m.lostCompaction = nil, nil
@@ -4427,6 +4435,8 @@ func claimOf(ev Event) claim.Token {
 	case Timer:
 		return ev.Claim
 	case StalePlugin:
+		return ev.Claim
+	case GateRootMoved:
 		return ev.Claim
 	case StallBackstop:
 		return ev.Claim

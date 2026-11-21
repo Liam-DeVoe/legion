@@ -101,19 +101,14 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 			change:    "update issues set phase='done', status='done' where key='LEGION-208'",
 		},
 		{
-			name: "the tree lingers", state: supervise.StateSuspended, want: ReleaseCancel,
-			wantCause: ReleaseCauseUnauthorized,
-			change:    "update issues set linger_until = now() + interval '1 hour' where key='LEGION-208'",
-		},
-		{
 			name: "a re-admission moved the generation", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
 			change:    "update issues set generation=2 where key='LEGION-208'",
 		},
 		{
-			name: "the tree's cleanup is reserved", state: supervise.StateSuspended, want: ReleaseCancel,
+			name: "the issue's own cleanup is reserved", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
-			change:    "update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208'",
+			change:    "insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started) values ('legion', 'LEGION-208', 1, 'workflow', true)",
 		},
 		{
 			// R4's boundary never saw this one: the start ran before the role stop that would
@@ -158,9 +153,9 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 		{
 			// A pending save is a wait, and a wait never stands in for a cancel the store decides
 			// first: a reserved cleanup deletes the Sandbox itself.
-			name: "the tree's cleanup is reserved while the save is queued", state: supervise.StateSuspended, want: ReleaseCancel,
+			name: "the issue's own cleanup is reserved while the save is queued", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
-			change: `update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208';
+			change: `insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started) values ('legion', 'LEGION-208', 1, 'workflow', true);
 				insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
 				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
 				1,now() + interval '1 hour','the bundle could not be built')`,
@@ -191,7 +186,7 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 					t.Fatal(err)
 				}
 			}
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: 10}
 			decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if tc.wantWait != "" {
 				if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), tc.wantWait) || decision.Act == ReleaseActs {
@@ -225,7 +220,7 @@ func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
 		(9,'supervise','LEGION-208','{"op":"release","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`); err != nil {
 		t.Fatal(err)
 	}
-	act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}, record.OutOfWorkflow)
+	act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: rootIssue, Generation: 1, Row: 10}, record.OutOfWorkflow)
 	if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "role stop effects") || act {
 		t.Fatalf("suspension = %t, %v; want it to wait for the release's role stop", act, err)
 	}
@@ -463,7 +458,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 	if decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundaryA); err != nil || decision.Act != ReleaseOver {
 		t.Fatalf("the cancelled release's role stop = %s, %v; want %s", decision.Act, err, ReleaseOver)
 	}
-	stale := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: lastA}
+	stale := IssueReleased{Issue: rootIssue, Generation: 1, Row: lastA}
 	if decision, err := st.IssueRelease(ctx, "legion", stale, record.OutOfWorkflow); err != nil || decision.Act != ReleaseOver {
 		t.Fatalf("the cancelled release's teardown = %s, %v; want %s", decision.Act, err, ReleaseOver)
 	}
@@ -682,7 +677,7 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 				t.Fatalf("the role stop = %s for %s, want %s for %s", stop.Act, stop.Cause, tc.want, tc.cause)
 			}
 
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 			teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if tc.want == ReleaseActs {
 				if err != nil || teardown.Act != ReleaseActs {
@@ -845,7 +840,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 				rootIssue, first, boundary); err != nil {
 				t.Fatalf("finish the release's run rows: %v", err)
 			}
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 			teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if err != nil {
 				t.Fatalf("IssueRelease: %v", err)
@@ -864,7 +859,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 // of an issue that has left run on in it with their launcher tokens and `gh` credentials.
 //
 // The sequence is the one production runs: the release's stops have suspended the pod's claims,
-// the root is parked while the save runs so the linger's rows are queued above the release's,
+// the issue is stopped while the save runs so its leave's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
 	st := migratedStore(t)
@@ -876,11 +871,10 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 
-	// The root is parked: its tree lingers, its phase is done, and its close queues its own rows
-	// above the release's (workflow's beginLinger).
-	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'done', status = 'backlog',
-		linger_until = now() + interval '1 hour' where key = $1`, rootIssue); err != nil {
-		t.Fatalf("park the root: %v", err)
+	// The issue is stopped: a person moved it to the backlog, and its leave queues its own rows
+	// above the release's (workflow's leave), keeping its phase (R20 of dispatch://INFRA-3320).
+	if _, err := st.Pool().Exec(ctx, `update issues set status = 'backlog' where key = $1`, rootIssue); err != nil {
+		t.Fatalf("stop the issue: %v", err)
 	}
 	var closeRow int64
 	if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
@@ -889,7 +883,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("queue the close's own row: %v", err)
 	}
 
-	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 	teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 	if err != nil || teardown.Act != ReleaseCancel || teardown.Cause != ReleaseCauseUnauthorized {
 		t.Fatalf("the teardown = %s for %s, %v; want %s for %s", teardown.Act, teardown.Cause, err,
@@ -916,7 +910,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("finish the release's rows: %v", err)
 	}
 	act, err := st.IssueSuspension(ctx, "legion",
-		IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: closeRow},
+		IssueClose{Issue: rootIssue, Generation: 1, Row: closeRow},
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close = %t, %v; want it to act: its Sandbox deletion is what takes the pod's role Secrets with it", act, err)

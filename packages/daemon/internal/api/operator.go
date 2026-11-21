@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -849,10 +850,9 @@ func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, to
 }
 
 // closeTree is the operator closing a tree no workflow issue backs, through its root claim: the
-// tree's close, as the workflow's tree_close is for a tree whose linger expired. Without it a
-// root the operator spawned could never end — under a sandbox, its Sandbox and the tree volume
-// would stay for good. A workflow issue's tree is the workflow's to close, and a worker's claim is
-// stopped, not closed.
+// close of every issue the operator spawned in that tree. Without it a root the operator spawned
+// could never end — under a sandbox, its Sandbox would stay for good. A workflow issue's tree is
+// the workflow's to close, and a worker's claim is stopped, not closed.
 //
 // The tree's claims are read first and held as this route's decisions (RouteDecisions), so a
 // daemon's stop that begins during the close keeps their worker stream connections; a read that
@@ -862,14 +862,16 @@ func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, to
 // at all — where the answers and the close they decide sit together; a refused close stops
 // nothing, and the refusal an operator sees is the machine's. A close of a tree already retired
 // answers 200: the operator asked for an outcome that holds, and a retry after a timeout is not a
-// failure. Then every other claim of the tree that has not retired is stopped, as tree_close stops
-// each, so no worker is left on a tree volume that is being deleted. The close reserves the tree's
-// cleanup first, so no claim of the tree can bind or launch meanwhile; after every claim stopped,
-// the store's reserved cleanup has the runtime release the tree (Options.Releaser) and confirms
-// it. A release failure leaves the reservation durable for the same close to resume; a claim the
-// daemon supervises no machine for cannot be stopped that way, since the stop route answers 404 for
-// it, until the daemon restarts and builds a machine for every stored claim; the 500 says so for
-// that claim. Nothing retries either for the operator.
+// failure. Then every other claim of the tree that has not retired is stopped, so no worker is
+// left in a pod that is being deleted. The close reserves the cleanup of each issue the tree's
+// claims name first, by that issue's own lifecycle (store.Store.ReserveOperatorIssueCleanup), so
+// no claim of it can bind or launch meanwhile; after every claim stopped, the store's reserved
+// cleanup has the runtime release each issue (Options.Releaser) and confirms it: what is deleted is
+// each issue's own, by its identity, never a tree's whole (R17 of dispatch://INFRA-3320). A
+// release failure leaves the reservation durable for the same close to resume; a claim the daemon
+// supervises no machine for cannot be stopped that way, since the stop route answers 404 for it,
+// until the daemon restarts and builds a machine for every stored claim; the 500 says so for that
+// claim. Nothing retries either for the operator.
 func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	root, ok := s.supervisor.Machine(token)
@@ -898,11 +900,18 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		s.operatorFailure(w, r, "close", token, err)
 		return
 	}
-	lifecycle, cleanup, err := s.trees.ReserveOperatorTreeCleanup(ctx, s.project, c.Tree)
-	if err != nil {
-		s.logFailure("api: reserve cleanup of an operator-closed tree", "tree", c.Tree, "error", err)
-		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err))
-		return
+	issues := treeIssues(claims, c.Tree, c.Issue)
+	cleanups := make(map[string]uint64, len(issues))
+	for _, issue := range issues {
+		lifecycle, reserved, err := s.trees.ReserveOperatorIssueCleanup(ctx, s.project, issue)
+		if err != nil {
+			s.logFailure("api: reserve cleanup of an issue of an operator-closed tree", "tree", c.Tree, "issue", issue, "error", err)
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but the durable cleanup of its issue %s could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, issue, err))
+			return
+		}
+		if reserved {
+			cleanups[issue] = lifecycle.Epoch
+		}
 	}
 	claims, err = s.supervisor.Claims(ctx)
 	if err != nil {
@@ -935,10 +944,14 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 			c.Tree, token, strings.Join(unstopped, "; ")))
 		return
 	}
-	if cleanup {
-		if err := s.trees.CleanupReservedTree(ctx, s.project, c.Tree, lifecycle.Epoch, s.releaser); err != nil {
-			s.logFailure("api: cleanup an operator-closed tree", "tree", c.Tree, "error", err)
-			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err))
+	for _, issue := range issues {
+		epoch, reserved := cleanups[issue]
+		if !reserved {
+			continue
+		}
+		if err := s.trees.CleanupReservedIssue(ctx, s.project, issue, epoch, s.releaser); err != nil {
+			s.logFailure("api: cleanup an issue of an operator-closed tree", "tree", c.Tree, "issue", issue, "error", err)
+			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but the durable resource cleanup of issue %s is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, issue, err))
 			return
 		}
 	}
@@ -963,6 +976,19 @@ func treeOthers(claims []supervise.Claim, tree string, root claim.Token) []claim
 		}
 	}
 	return others
+}
+
+// treeIssues is root and every other issue a claim of tree in claims names, sorted, once each: the
+// issues an operator's close of tree cleans up, each by its own lifecycle.
+func treeIssues(claims []supervise.Claim, tree, root string) []string {
+	issues := []string{root}
+	for _, c := range claims {
+		if c.Tree == tree && c.Issue != "" && !slices.Contains(issues, c.Issue) {
+			issues = append(issues, c.Issue)
+		}
+	}
+	slices.Sort(issues)
+	return issues
 }
 
 // list answers every claim the daemon supervises, in token order: as its machine last published it

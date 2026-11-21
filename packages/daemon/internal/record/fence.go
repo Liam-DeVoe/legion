@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Fence is the run and the phase entry of one issue that a queued effect is for, and the pod it
@@ -82,10 +84,10 @@ func (f Fence) Outlives(queued Fence) bool {
 
 // OutlivesPod says whether an effect that acts on the pod queued names does nothing to pod, the
 // pod the issue or its claim runs in now: it names another. An effect that names no pod, and an
-// issue whose claims record none now, fence nothing.
-func OutlivesPod(queued, pod string) bool {
-	return queued != "" && pod != "" && queued != pod
-}
+// issue whose claims record none now, fence nothing. The rule is the runtime's
+// (runtime.OutlivesPod), which a runtime that deletes an issue's pod reads under its own launch
+// turn as well.
+func OutlivesPod(queued, pod string) bool { return runtime.OutlivesPod(queued, pod) }
 
 // ReportOnly says whether payload's kind only tells somebody something: an architect's notice
 // (Notice) or the project's controller's (ControllerNotice). It names the run and the phase entry

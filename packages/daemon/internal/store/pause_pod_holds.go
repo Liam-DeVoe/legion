@@ -304,46 +304,12 @@ func notStartedStates() []string {
 	return claimStateNames([]supervise.ClaimState{supervise.StateQueued, supervise.StateLaunching})
 }
 
-// endTreePausePodHoldsTx ends, at at, the hold that stands on the pod of each issue of tree: the
-// tree's cleanup has deleted every Sandbox of the tree (CleanupReservedTree), so a hold of one of
-// its pods holds nothing (PausePodHoldDeleted, decision 13 of dispatch://INFRA-3759). An issue of
-// the tree is one the issues table files under it under the hold's project, or one a claim of
-// project's names under it: a claim of the operator's spawn has no issue record, of this project's
-// issue or of another's, and a record another project's daemon keeps of the same key on a shared
-// database is not this project's (internal/daemon's projectRecords.Issue). Each hold ends under
-// its issue's lock, in key order. project is the project token, as the claims table holds it.
-func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, tree string, at time.Time) error {
-	rows, err := tx.Query(ctx, `select h.project, h.issue from project_pause_pod_holds h
-		where lower(h.project) = $1 and h.ended_at is null
-		and (exists (select 1 from issues i where i.key = h.issue and i.project = h.project and i.tree = $2)
-			or exists (select 1 from claims c where c.project = $1 and c.issue = h.issue and c.tree = $2))
-		order by h.issue`, project, tree)
-	if err != nil {
-		return fmt.Errorf("read the pod holds of tree %s: %w", tree, err)
-	}
-	type held struct{ project, issue string }
-	holds, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (held, error) {
-		var h held
-		err := row.Scan(&h.project, &h.issue)
-		return h, err
-	})
-	if err != nil {
-		return fmt.Errorf("read the pod holds of tree %s: %w", tree, err)
-	}
-	for _, h := range holds {
-		if _, err := EndPausePodHoldTx(ctx, tx, h.project, h.issue, PausePodHoldDeleted, at); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // endIssuePausePodHoldsTx ends, at at, the hold that stands on the pod of issue under project: the
 // issue's own cleanup has deleted its Sandbox (CleanupReservedIssue), so a hold of its pod holds
 // nothing (PausePodHoldDeleted, decision 13 of dispatch://INFRA-3759). It ends no hold of another
 // issue, whatever tree either stored. The hold ends under the issue's lock. project is the project
-// token, as the claims table holds it, and a hold's project is matched as endTreePausePodHoldsTx
-// matches it.
+// token, as the claims table holds it, and a hold's project is matched case-blind against it: a
+// hold carries the Dispatch project key.
 func endIssuePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, issue string, at time.Time) error {
 	rows, err := tx.Query(ctx, `select h.project from project_pause_pod_holds h
 		where lower(h.project) = $1 and h.issue = $2 and h.ended_at is null order by h.project`, project, issue)

@@ -61,14 +61,14 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	old := g.spawn(spec)
 	name := SandboxName(rootToken)
 	uid := g.sandbox(name).UID
-	authorize := authorizeClose(st, store.IssueClose{Issue: testTree, Tree: testTree, IssueGeneration: 1, TreeGeneration: 1, Row: 1})
+	authorize := authorizeClose(st, store.IssueClose{Issue: testTree, Generation: 1, Row: 1})
 	stored := supervise.Claim{Token: rootToken, Project: testProject, Tree: testTree, TreeEpoch: 1, Issue: testTree, Role: claim.RoleArchitect,
 		Generation: 1, State: supervise.StateWorking, Locator: &old, Session: "retained-session", SessionFile: resumeSession}
 	if err := st.PutClaim(g.ctx, stored); err != nil {
 		t.Fatal(err)
 	}
 	// A stored role still working keeps the close a wait, independently of runtime membership.
-	if err := g.r.SuspendIssue(g.ctx, testTree, testTree, authorize); !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "stored claim") {
+	if err := g.r.SuspendIssue(g.ctx, testTree, "", authorize); !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "stored claim") {
 		t.Fatalf("issue suspension with a remaining role process = %v, want the stored claim's wait", err)
 	}
 	if g.sandbox(name).mode() != modeRunning {
@@ -81,7 +81,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	if err := st.PutClaim(g.ctx, stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.r.SuspendIssue(g.ctx, testTree, testTree, authorize); err != nil {
+	if err := g.r.SuspendIssue(g.ctx, testTree, "", authorize); err != nil {
 		t.Fatal(err)
 	}
 	if got := g.sandbox(name); got != nil {
@@ -111,7 +111,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	if resumed != stored.SessionFile {
 		t.Fatalf("resumed session = %q, want %q", resumed, stored.SessionFile)
 	}
-	if err := g.r.SuspendIssue(context.Background(), testTree, testTree, authorize); err != nil {
+	if err := g.r.SuspendIssue(context.Background(), testTree, "", authorize); err != nil {
 		t.Fatalf("stale close: %v", err)
 	}
 	if obs, err := g.r.Probe(g.ctx, loc); err != nil || obs.Kind != runtime.Alive {
@@ -173,9 +173,9 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 			name := SandboxName(childToken)
 			uid := g.sandbox(name).UID
 			g.clearActions()
-			authorize := authorizeClose(st, store.IssueClose{Issue: childIssue, Tree: testTree, IssueGeneration: 2, TreeGeneration: 7, Row: 1})
+			authorize := authorizeClose(st, store.IssueClose{Issue: childIssue, Generation: 2, Row: 1})
 
-			if err := g.r.SuspendIssue(g.ctx, childIssue, testTree, authorize); err != nil {
+			if err := g.r.SuspendIssue(g.ctx, childIssue, "", authorize); err != nil {
 				t.Fatal(err)
 			}
 
@@ -204,7 +204,7 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 				}
 			}
 			// A retry after the delete — the outbox row run again — finds no Sandbox and finishes.
-			if err := g.r.SuspendIssue(g.ctx, childIssue, testTree, authorize); err != nil {
+			if err := g.r.SuspendIssue(g.ctx, childIssue, "", authorize); err != nil {
 				t.Fatalf("retried close = %v, want it finished on the Sandbox already gone", err)
 			}
 			if len(deletes) != 1 {
@@ -378,7 +378,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if sandbox, present := g.r.IssueSandbox(childIssue); !present || sandbox != name {
 				t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", sandbox, present, name)
 			}
-			if err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
+			if err := g.r.ReleaseIssue(g.ctx, childIssue, "", authorized); err != nil {
 				t.Fatalf("ReleaseIssue: %v", err)
 			}
 			if s := g.sandbox(name); s == nil || s.UID != uid || s.mode() != modeSuspended || !ownsKeptVolume(s) {
@@ -462,10 +462,10 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 
 // A kept volume does not outlive its issue's time in the workflow. Each end that takes the issue
 // out of the workflow deletes the Sandbox that owns the kept volume, in the foreground, so garbage
-// collection takes the claim with it: the issue's suspension (SuspendIssue: a close, a tree's
-// linger, a production check's wait) waits the pod out first; the tree's cleanup (CleanupTree)
-// deletes each kept Sandbox of the tree; and the orphan sweep (ReconcileOrphans) deletes a kept
-// Sandbox of a tree that is not live. The API then holds no Sandbox of the name.
+// collection takes the claim with it: the issue's suspension (SuspendIssue: a close, a stop, a
+// production check's wait) waits the pod out first; the issue's own cleanup (CleanupIssue)
+// deletes the kept Sandbox of that issue; and the orphan sweep (ReconcileOrphans) deletes a kept
+// Sandbox of an issue whose own lifecycle is not live. The API then holds no Sandbox of the name.
 func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
 	t.Run("the issue's suspension", func(t *testing.T) {
 		name := SandboxName(childToken)
@@ -488,7 +488,7 @@ func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
 			t.Fatalf("the issue's Sandbox = %+v, want one that owns the kept volume, or this case proves nothing", s)
 		}
 
-		if err := g.r.SuspendIssue(g.ctx, childIssue, testTree, authorized); err != nil {
+		if err := g.r.SuspendIssue(g.ctx, childIssue, "", authorized); err != nil {
 			t.Fatalf("SuspendIssue: %v", err)
 		}
 
@@ -539,17 +539,20 @@ func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
 		}
 	}
 
-	t.Run("the tree's cleanup", func(t *testing.T) {
+	t.Run("each issue's own cleanup", func(t *testing.T) {
 		c := keptCleanupRig(t)
-		if err := c.r.CleanupTree(c.ctx, testTree); err != nil {
-			t.Fatalf("CleanupTree: %v", err)
+		for _, issue := range []string{testTree, childIssue} {
+			if err := c.r.CleanupIssue(c.ctx, issue); err != nil {
+				t.Fatalf("CleanupIssue(%s): %v", issue, err)
+			}
 		}
 		deletedKept(t, c)
 	})
 
-	t.Run("the orphan sweep of a tree that is not live", func(t *testing.T) {
+	t.Run("the orphan sweep of issues whose own cleanup confirmed", func(t *testing.T) {
 		c := keptCleanupRig(t)
 		c.store.close(testTree)
+		c.store.close(childIssue)
 		if err := c.r.ReconcileOrphans(c.ctx, nil, 0); err != nil {
 			t.Fatalf("ReconcileOrphans: %v", err)
 		}
