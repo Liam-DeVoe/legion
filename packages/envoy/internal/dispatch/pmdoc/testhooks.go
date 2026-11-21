@@ -42,13 +42,14 @@ func (e ChildEdit) String() string {
 }
 
 // RecordChildEditsForTest reports to record every read of a fragment's children and every
-// positional delete and insert each write makes (fragmentEdits), in the order ygo receives them,
-// until the function it answers puts back the recorder it found. That includes the inserts into an
-// element the write builds before it inserts the element itself, which ygo receives first. It is
-// for tests alone, as bus.HoldFirstConnectForTest is, and is exported for the tests of the packages
-// that write documents through this one. It reports every write in the process, so a test that
-// reads it runs no other write beside the one it reads, and record must be safe to call from the
-// goroutine that writes.
+// positional delete and insert each write makes through fragmentEdits, in the order ygo receives
+// them, until the function it answers puts back the recorder it found. That includes the inserts
+// into an element the write builds before it inserts the element itself, which ygo receives first;
+// it leaves out what fragmentEdits' doc names as reaching the fragment around it. It is for tests
+// alone, as bus.HoldFirstConnectForTest is, and is exported for the tests of the packages that
+// write documents through this one. It reports every write in the process, so a test that reads it
+// runs no other write beside the one it reads, and record must be safe to call from the goroutine
+// that writes.
 func RecordChildEditsForTest(record func(ChildEdit)) (restore func()) {
 	previous := childEditRecorder.Swap(&record)
 	return func() { childEditRecorder.Store(previous) }

@@ -293,14 +293,17 @@ func liveAttrs(node *Node) Attrs {
 // so its type name is never read. It is built once, so a batch allocates only its own nodes.
 var emptyChildren = crdt.NewYXmlElement("paragraph").Children()
 
-// fragmentEdits is the one way Update reads or changes a fragment's children: every Children it
-// reads (childrenOf) and every positional Delete and Insert it makes, each one ygo call. Each such
-// call walks the fragment's items from its first: Children all of them, Delete and Insert to the
-// index they are given (deleteChildRange, leftChildAt). Replacing a run of n children is one
-// delete and one insert at the run's first index, where one call per child cost n walks, time
-// quadratic in n. When a test set a recorder (RecordChildEditsForTest), record reports each call
-// once ygo has received it; it is nil otherwise. A change inside ygo, a method that makes more than
-// one ygo call, or code that reaches frag around this struct makes no call a test can read.
+// fragmentEdits is how Update reads and changes a fragment's children as it writes them: every
+// Children it reads there (childrenOf) and every positional Delete and Insert it makes, each one
+// ygo call. Each such call walks the fragment's items from its first: Children all of them, Delete
+// and Insert to the index they are given (deleteChildRange, leftChildAt). Replacing a run of n
+// children is one delete and one insert at the run's first index, where one call per child cost n
+// walks, time quadratic in n. When a test set a recorder (RecordChildEditsForTest), record reports
+// each call once ygo has received it; it is nil otherwise. A change inside ygo, a method that
+// makes more than one ygo call, or code that reaches frag around this struct makes no call a test
+// can read. heldInFragment is such code: the read of the whole document (readDocument) that a
+// write makes when it would create an element this build may not create yet walks every child
+// around this struct.
 type fragmentEdits struct {
 	txn    *crdt.Transaction
 	frag   *crdt.YXmlFragment

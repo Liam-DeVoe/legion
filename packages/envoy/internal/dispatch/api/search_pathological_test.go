@@ -27,14 +27,15 @@ import (
 // digits meet an underscore, so a run of `a_` cost time quadratic in its length: 64 KiB of it saved
 // in 46 s. search_text (migration 0056) breaks a run after its sixteenth underscore-joined segment.
 // The parser's work reaches no count a test can read; its input does. The row's server runs on
-// connections that find a recording to_tsvector ahead of pg_catalog's (recordParserInput), so each
-// save is read as the parser received it, whatever path handed it the text: every save must hand
-// the parser some text, and no run of more than searchTextSegments segments. With search_text
-// answering its input unchanged, the 1 KiB document of `a_` hands it a run of 507. A path that
-// calls pg_catalog.to_tsvector by its qualified name is not recorded. A run joined again after
-// search_text, as the ask-block removal of the documents trigger can join one, is held by the row
-// of the change that moves that removal ahead of search_text, not by this one: no document here
-// holds an ask block.
+// connections that find a recording to_tsvector ahead of pg_catalog's
+// (recordPathologicalParserInput), so each save is read as the parser received it, whatever path
+// handed it the text: every save must hand the parser exactly parserCallsPerSave texts, and no run
+// of more than searchTextSegments segments. With search_text answering its input unchanged, the
+// 1 KiB document of `a_` hands it a run of 507; a trigger that parses the text once more, or once
+// for every so many characters of it, makes more calls. A path that calls pg_catalog.to_tsvector
+// by its qualified name is not recorded. A run joined again after search_text, as the ask-block
+// removal of the documents trigger can join one, is held by the row of the change that moves that
+// removal ahead of search_text, not by this one: no document here holds an ask block.
 //
 // pmdoc's Update wrote each new block with its own insert, and ygo walks a fragment from its first
 // child to the index each insert or delete names, so replacing a quote of n headings with a quote
@@ -56,9 +57,11 @@ import (
 // reaches the parser.
 //
 // What no count here holds: a change inside ygo; a change in pmdoc that reaches the fragment around
-// that struct, or makes more than one ygo call inside one of its methods; a parser call by the
-// qualified name; and a save that costs more CPU without making another call or handing the parser
-// a longer run, in Go or in Postgres. The count that load cannot move for that last is the
+// that struct, or makes more than one ygo call inside one of its methods, among them the read of
+// the whole document a write makes when it would create an element this build may not create yet
+// (heldInFragment), which none of these writes makes; a parser call by the qualified name; and a
+// save that costs more CPU without making another call or handing the parser another text or a
+// longer run, in Go or in Postgres. The count that load cannot move for that last is the
 // instructions the save executes, and this box gives a test no hardware counter
 // (kernel.perf_event_paranoid is 4).
 //
@@ -66,7 +69,7 @@ import (
 // server's shutdown settles each document still loaded, after every count is read. No test in this
 // package calls t.Parallel, so no other write runs beside the one read.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
-	recorded, parsed := recordParserInput(t, storetest.Open(t))
+	recorded, parsed := recordPathologicalParserInput(t, storetest.Open(t))
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour, store: recorded})
 	issue := createArtifactIssue(t, handler)
 	// save runs one save and holds what it handed the parser (parserInput).
@@ -75,8 +78,9 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 		input := parsed(write)
 		t.Logf("%s handed the parser %d texts, %s", what, input.calls, input)
 		switch {
-		case input.calls == 0:
-			t.Fatalf("%s handed the parser no text this row could read: no search function called to_tsvector by its bare name", what)
+		case input.calls != parserCallsPerSave:
+			t.Fatalf("%s handed the parser %d texts, want %d: search_vector parses the vector's head and its body once each, and a save that reached the parser by no bare to_tsvector hands it none this row can read",
+				what, input.calls, parserCallsPerSave)
 		case input.longest > searchTextSegments:
 			t.Fatalf("%s handed the parser a run of %d underscore-joined segments, want at most %d: the text-search parser rescans a run to its end from every segment",
 				what, input.longest, searchTextSegments)
@@ -236,10 +240,16 @@ func childEditsText(edits []pmdoc.ChildEdit) string {
 // in one run before it breaks the run with a space, which bounds the parser's rescans of it.
 const searchTextSegments = 16
 
+// parserCallsPerSave is how many texts each save of this row hands the parser: its trigger calls
+// search_vector once, which parses the vector's head, empty for a document or a comment, and its
+// body (migration 0087), once each. A body too long for one vector would make search_vector parse
+// cuts of it as well; no save here is one.
+const parserCallsPerSave = 2
+
 // parserInput is what Postgres's text-search parser was handed during one save, as
-// recordParserInput reads it: how many texts, and the most underscore-joined segments in one run of
-// any of them, read only where some run had more than searchTextSegments (0 otherwise). A segment
-// is letters, digits, `.` and `-` ending in `_`, the run search_text breaks.
+// recordPathologicalParserInput reads it: how many texts, and the most underscore-joined segments
+// in one run of any of them, read only where some run had more than searchTextSegments (0
+// otherwise). A segment is letters, digits, `.` and `-` ending in `_`, the run search_text breaks.
 type parserInput struct{ calls, longest int64 }
 
 func (p parserInput) String() string {
@@ -249,15 +259,15 @@ func (p parserInput) String() string {
 	return fmt.Sprintf("a run of %d segments", p.longest)
 }
 
-// recordParserInput answers a store on database whose connections find a to_tsvector of a schema
-// of their own ahead of pg_catalog's, for both its forms, and a function that runs a save and
-// answers what the parser was handed while it ran (parserInput). Each search function calls
-// to_tsvector by its bare name, so on those connections the text it hands the parser passes the
-// recorder first, whichever trigger or function handed it on. The recorder keeps its count and its
-// longest run in two sequences, which no rollback undoes, so a call whose subtransaction rolls back,
-// as search_vector's does for a vector too long, is counted too. The store's pool is its own,
+// recordPathologicalParserInput answers a store on database whose connections find a to_tsvector
+// of a schema of their own ahead of pg_catalog's, for both its forms, and a function that runs a
+// save and answers what the parser was handed while it ran (parserInput). Each search function
+// calls to_tsvector by its bare name, so on those connections the text it hands the parser passes
+// the recorder first, whichever trigger or function handed it on. The recorder keeps its count and
+// its longest run in two sequences, which no rollback undoes, so a call whose subtransaction rolls
+// back, as search_vector's does for a vector too long, is counted too. The store's pool is its own,
 // closed when t ends, before database is dropped.
-func recordParserInput(t *testing.T, database *store.Store) (*store.Store, func(save func()) parserInput) {
+func recordPathologicalParserInput(t *testing.T, database *store.Store) (*store.Store, func(save func()) parserInput) {
 	t.Helper()
 	ctx := context.Background()
 	for _, statement := range []string{
