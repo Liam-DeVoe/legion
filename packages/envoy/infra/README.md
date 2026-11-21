@@ -3207,7 +3207,10 @@ workflows, so its done entry completes the record that `hold release` needs.
   declared stream's source, mirror, republish or subject transform back to the build's
   configuration. A sealed stream, or one that allows per-message TTLs or message schedules, stops
   it. A listing it cannot complete is `UNKNOWN`. It reads the session consumers the hold records,
-  after the hold's barrier on their bucket.
+  after the hold's barrier on their bucket. A consumer in a family's fresh form, `<base>~<nuid>`, is
+  kept only when a selection record names it: under a hold no creator runs, so an unrecorded one
+  is a crashed create's orphan, and the census removes it and names it. The census writes, so it
+  runs only while the row is `held`; `check` is the read-only word.
 
 `check`'s token file holds the measurement job's platform token, presented as user `service`. Its
 settings are `--replicas`, `--stream-max-bytes` and `--session-max-age`, which default to
