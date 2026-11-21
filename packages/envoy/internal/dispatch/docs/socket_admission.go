@@ -271,10 +271,23 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// verification may read IAP's key set again; neither reads the pool, so the resolution gives
 	// the place back for that wait and takes it again after (admission.GiveBack,
 	// admission.Away.TakeBack; identity.Membership.Confirm, identity.IAPIdentity.Login). A
-	// resolution that answers a caller holds the place again for the issue's read below; one
-	// refused it answers a busy pool, which is refused here as an unserved read is.
+	// resolution that answers a caller holds the place again for the issue's read below. One whose
+	// place was refused back after the wait (admission.Place.RefusedTakeBack) is answered 429
+	// OVERLOADED with Retry-After: 1 before the upgrade, as admission answers a request it has no
+	// room for: the server had no room to go on, and nothing of the socket ran. It answered 503
+	// with Retry-After before, as an unserved read; a browser's WebSocket sees neither status, only
+	// a failed open, so its reconnect backoff decides the retry either way.
 	actor, err := s.requestActor(r.WithContext(admission.WithPlace(r.Context(), place)))
 	if err != nil {
+		if refusal := place.RefusedTakeBack(); refusal != nil {
+			if accesslog.ClientLeft(r.Context()) {
+				accesslog.ClientGone(r.Context())
+				return
+			}
+			slog.Debug("dispatch: a document socket was refused the place it asked back after its caller's wait on an issuer", "room", room, "error", refusal)
+			admission.WriteOutsideRefused(w, refusal)
+			return
+		}
 		if errors.Is(err, identity.ErrSignInUnavailable) {
 			identity.WriteError(w, r, err)
 			return

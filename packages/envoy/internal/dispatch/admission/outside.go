@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync/atomic"
 	"time"
 )
@@ -211,6 +212,29 @@ type Place struct {
 	outside *Outside
 	user    OutsideUser
 	held    bool
+	// takeBackRefusal is the refusal of the place asked back after a wait on the network
+	// (Away.TakeBack), nil where none was refused (RefusedTakeBack).
+	takeBackRefusal *OutsideRefusal
+}
+
+// RefusedTakeBack is the refusal of the place its work asked back after a wait on the network
+// (Away.TakeBack), and nil where none was refused, and for a nil Place. A document socket answers
+// it 429 OVERLOADED with Retry-After before its upgrade (WriteOutsideRefused,
+// docs.Service.ServeHTTP); a heartbeat check has no answer to give and skips.
+func (p *Place) RefusedTakeBack() *OutsideRefusal {
+	if p == nil {
+		return nil
+	}
+	return p.takeBackRefusal
+}
+
+// WriteOutsideRefused answers work Outside refused a place (an *OutsideRefusal) 429 OVERLOADED
+// with Retry-After, as WriteRefused answers a request a Limiter refused: nothing of the work ran,
+// so its client may send it again. A document socket refused the place it asked back after its
+// caller's wait on an issuer answers so before its upgrade.
+func WriteOutsideRefused(w http.ResponseWriter, refusal *OutsideRefusal) {
+	writeRetryable(w, http.StatusTooManyRequests, CodeOverloaded, "the server has no room for a "+
+		refusal.User.String()+" ("+string(refusal.Reason)+"); nothing ran, retry after Retry-After")
 }
 
 // Release gives the place back where it is held, handing it to the work at the head of the queue

@@ -450,6 +450,21 @@ type Ticket struct {
 	mu       sync.Mutex
 	held     bool
 	released bool
+	// takeBackRefusal is the refusal of the units the request asked back after a wait on the
+	// network (Away.TakeBack), nil where none was refused (RefusedTakeBack).
+	takeBackRefusal atomic.Pointer[Refusal]
+}
+
+// RefusedTakeBack is the refusal of the units the ticket's request asked back after a wait on the
+// network (Away.TakeBack), and nil where none was refused, and for a nil Ticket. The request's
+// entry point answers it, 429 OVERLOADED with Retry-After, in place of anything else the request
+// would have run or written (api's admitted): the layers between may read the error that carried
+// it as no caller at all and go on.
+func (t *Ticket) RefusedTakeBack() *Refusal {
+	if t == nil {
+		return nil
+	}
+	return t.takeBackRefusal.Load()
 }
 
 // Park gives the ticket's units back to its class, and to the combined cap, while its holder
@@ -622,32 +637,40 @@ func GiveBack(ctx context.Context) Away {
 // server, not for room, and counted it would leave a request whose key-set read took its ten
 // seconds no time to take its units back in. So the take-back waits at most its class's queue
 // wait, and never longer, whatever the network took. Where no unit comes free in that time, or the
-// class's queue is full, the request is refused as admission refuses one: its ticket is released
-// for good, so no unit is counted for it and nothing resumes it again; the refusal goes on the
-// request's store mark (store.RefuseRequest), so every statement and commit the request tries
-// after it fails with it, whatever layer of it swallowed the error, and it is answered 429
-// OVERLOADED with Retry-After as a request refused before it ran (WriteUnserved); and TakeBack
-// answers the *Refusal itself. A refusal after the issuer answered drops that answer, as a write a
+// class's queue is full, the request is refused as admission refuses one: its ticket records the
+// refusal (Ticket.RefusedTakeBack) and is released for good, so no unit is counted for it and
+// nothing resumes it again, and TakeBack answers the *Refusal. The request's entry point answers
+// the recorded refusal 429 OVERLOADED with Retry-After: 1 and runs nothing more of the request,
+// whatever the layers between do with the error (api's admitted and optionalActor). The refusal
+// also goes on the request's store mark (store.RefuseRequest), so no statement or commit of the
+// request runs after it either. A refusal after the issuer answered drops that answer, as a write a
 // busy pool refused would. A request whose context ends while it waits is answered that context's
 // error, holding nothing.
 //
 // A place comes back as Place.Retake takes one, waiting for it as Take waits. A place refused is a
 // bound of this server's own that ended the work before it asked the database anything, so nothing
-// of it was written, and it is answered as a pool with no connection free is (store.ErrPoolBusy,
-// wrapping the *OutsideRefusal or ctx's error): a heartbeat check counts it as a transient failure
-// (api's transientCheckFailure), a document socket refuses it as unserved, and a request waiting
-// on a sign-in's refresh another work leads tries again as a busy pool tells it to. The place
-// keeps that answer of its own rather than admission's 429, which none of its users answers.
+// of it was written. The place records the refusal (Place.RefusedTakeBack), and TakeBack answers it
+// as a pool with no connection free is (store.ErrPoolBusy, wrapping the *OutsideRefusal or ctx's
+// error): a document socket answers the recorded refusal 429 OVERLOADED with Retry-After: 1 before
+// its upgrade, as admission answers a request it has no room for (docs.Service.ServeHTTP); a
+// heartbeat check, which has no HTTP answer to give, counts the busy pool as a transient failure
+// and skips (api's transientCheckFailure); and a request waiting on a sign-in's refresh another
+// work leads tries again as a busy pool tells it to.
 func (a Away) TakeBack(ctx context.Context) error {
 	if err := a.ticket.Resume(ctx); err != nil {
 		var refusal *Refusal
 		if errors.As(err, &refusal) {
+			a.ticket.takeBackRefusal.Store(refusal)
 			a.ticket.Release()
 			store.RefuseRequest(ctx, refusal)
 		}
 		return err
 	}
 	if err := a.place.Retake(ctx); err != nil {
+		var refusal *OutsideRefusal
+		if errors.As(err, &refusal) {
+			a.place.takeBackRefusal = refusal
+		}
 		return fmt.Errorf("%w: no place of the request pool's share outside admission came free after a wait on the network: %w", store.ErrPoolBusy, err)
 	}
 	return nil

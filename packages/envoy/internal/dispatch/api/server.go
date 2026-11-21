@@ -1139,13 +1139,17 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // its statements and its commit fail where they stand and nothing of the request is written,
 // whether or not the handler reads the refusal from the read that ended its body. Its answer is
 // the refusal, which admission.WriteUnserved writes from the cause: the client is still there,
-// so this cancellation is never the 499 of a client that went away. The other take-back a request
-// may be refused - its caller's resolution gives its units back while it waits on an issuer and
-// asks for them again after (admission.GiveBack, admission.Away.TakeBack) - needs no cancellation
-// of its own: the refusal is put on the request's store mark (store.RefuseRequest), so every
-// statement and commit the request tries after it is refused with it, and a layer that reads the
-// resolution's error as no caller and goes on (refuseChangedLogin, callerHoldsScope) runs nothing
-// of it unadmitted. So only a request whose body went through the drain makes the cancellation.
+// so this cancellation is never the 499 of a client that went away. Only a request whose body went
+// through the drain makes it.
+//
+// The other take-back a request may be refused - its caller's resolution gives its units back while
+// it waits on an issuer and asks for them again after (admission.GiveBack, admission.Away.TakeBack)
+// - is answered here too, at the response, whatever the layers between do with the error: the
+// ticket records the refusal (admission.Ticket.RefusedTakeBack), the resolution that met it stops
+// the request's run where it stands (optionalActor, stopOnRefusedTakeBack), and this layer answers
+// it 429 OVERLOADED with Retry-After: 1 (answerRefusedTakeBack). A layer that reads the
+// resolution's error as no caller and goes on (refuseChangedLogin, callerHoldsScope, a project's
+// scope) so never reaches its next layer, its handler or a write of its own.
 //
 // A request whose client went away while it waited is answered nothing, since nobody is left to
 // read it, and its line carries 499 rather than the 200 of a handler that wrote nothing: under
@@ -1191,6 +1195,7 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 			}
 		}
 		defer ticket.Release()
+		defer answerRefusedTakeBack(w, ticket)
 		ctx := admission.WithTicket(r.Context(), ticket)
 		if body, drained := r.Body.(*drainedBody); drained {
 			var refused context.CancelCauseFunc
@@ -1200,6 +1205,43 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 		}
 		handler(w, r.WithContext(ctx))
 	}
+}
+
+// errRefusedTakeBack is what a resolution whose request was refused the units it gave back for a
+// wait on an issuer stops the request's run with (stopOnRefusedTakeBack), and admitted answers.
+var errRefusedTakeBack = errors.New("the request was refused the admission units it gave back for its caller's wait on an issuer")
+
+// stopOnRefusedTakeBack stops r's run where r's caller's resolution failed because its ticket was
+// refused the units it gave back for the issuer's wait (admission.Ticket.RefusedTakeBack): it
+// panics with errRefusedTakeBack, so no layer between the resolution and admitted - one that reads
+// the error as no caller and goes on, its handler, a write of its own - runs another line of the
+// request, and admitted answers it (answerRefusedTakeBack). Every resolution an admitted route
+// makes goes through optionalActor, on the request's own goroutine, so admitted's recovery is the
+// one that meets it; a request admission did not count holds no ticket, and nothing is stopped.
+func stopOnRefusedTakeBack(r *http.Request) {
+	if admission.TicketFrom(r.Context()).RefusedTakeBack() != nil {
+		panic(errRefusedTakeBack)
+	}
+}
+
+// answerRefusedTakeBack is admitted's answer to a request whose take-back was refused
+// (stopOnRefusedTakeBack): it recovers the stop and answers the ticket's refusal 429 OVERLOADED
+// with Retry-After: 1 (admission.WriteRefused), as admission answers a request it had no room for
+// before it ran; nothing else of the request was written, since a caller's resolution comes before
+// every answer. A request whose ticket recorded no refusal costs it one load and recovers nothing,
+// so every other panic goes on as it was raised, its stack whole.
+func answerRefusedTakeBack(w http.ResponseWriter, ticket *admission.Ticket) {
+	refusal := ticket.RefusedTakeBack()
+	if refusal == nil {
+		return
+	}
+	if raised := recover(); raised != errRefusedTakeBack {
+		if raised != nil {
+			panic(raised)
+		}
+		return
+	}
+	admission.WriteRefused(w, refusal)
 }
 
 // servedAsRead runs a read's handler under deadline, whose passing writeHandlerError answers 503
@@ -1737,7 +1779,10 @@ func (s *server) requestCredential(r *http.Request) (credentialKind, string) {
 
 // optionalActor resolves the request's caller by the credential it presents (requestCredential).
 // Each branch names that caller on the request's access-log line (accesslog.Note), which costs the
-// line what the authentication already resolved and never a lookup of its own.
+// line what the authentication already resolved and never a lookup of its own. A resolution that
+// waited on an issuer and was refused its admission units back after the wait does not return:
+// it stops the request's run, and admitted answers it 429 OVERLOADED (stopOnRefusedTakeBack), so no
+// caller of this can read the refusal as no caller and go on.
 func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	// The caller may already be decided: a keyed write resolves before its handler
 	// (keyedWrites), and a DPoP presentation is decided once a request however many layers
@@ -1758,7 +1803,11 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		// shared token is nobody's, so it acts as no person.
 		return model.Actor{Credential: scopelessCredential}, false, nil
 	case serviceTokenCredential:
-		return s.serviceTokenActor(r, token)
+		actor, human, err := s.serviceTokenActor(r, token)
+		if err != nil {
+			stopOnRefusedTakeBack(r)
+		}
+		return actor, human, err
 	case personalTokenCredential:
 		actor, err := s.personalTokenActor(r.Context(), token)
 		if err != nil {
@@ -1775,6 +1824,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	login, err := s.deps.Identity.Login(r)
 	if err != nil {
+		stopOnRefusedTakeBack(r)
 		return model.Actor{}, false, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)

@@ -79,11 +79,12 @@ func (h *holding) refused() error {
 // RefuseRequest refuses every later statement of ctx's request with refusal: each call it makes
 // on any pool (refuseOrPin), a read ForConcurrentRead split off it included, and the commit of a
 // transaction it opened (CommitRefusal). admission.Away.TakeBack puts it on a request refused the
-// admission units it gave back for a wait on the network, so a layer that reads that refusal as
-// no caller and goes on runs nothing on the database without its units: the next statement fails
-// with the refusal, which the API answers as admission's own (admission.WriteUnserved). It does
-// nothing for a context the pool cannot see (WithTransactionTracking), and the first refusal
-// stands.
+// admission units it gave back for a wait on the network. The API answers such a request itself,
+// 429 OVERLOADED, at its entry point before any layer can go on with it (api's admitted); this is
+// the database's own guard beside that answer, so no statement or commit of the request runs
+// whatever reaches the store: it fails with the refusal, which the API answers as admission's own
+// (admission.WriteUnserved). It does nothing for a context the pool cannot see
+// (WithTransactionTracking), and the first refusal stands.
 func RefuseRequest(ctx context.Context, refusal error) {
 	if state, ok := ctx.Value(holdingKey{}).(*holding); ok {
 		state.owner().refusal.CompareAndSwap(nil, &refusal)

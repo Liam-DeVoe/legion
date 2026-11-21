@@ -45,8 +45,10 @@ body: |-
   within what is left of its class's wait, where an IAP key rotation or a slow issuer had every
   such request hold a unit for up to ten seconds and every request whose caller resolves from
   memory refused `429 OVERLOADED` meanwhile; one that finds no room once the issuer has answered
-  is answered `429 OVERLOADED`, and every statement and commit it tries after is refused, so
-  nothing of it runs after. A read has a deadline of 20 seconds, and a file version download 5
+  is answered `429 OVERLOADED` with `Retry-After: 1` and runs nothing more, whatever the layer
+  that resolved its caller does with the refusal, and a document socket refused its place back
+  after such a wait is answered the same 429 before its upgrade, where it was answered `503`.
+  A read has a deadline of 20 seconds, and a file version download 5
   minutes for the work it does before its answer begins - reading its row and opening the file
   store - after which the answer's own bounds carry the file's bytes however long its reader
   takes; past either is `503 REQUEST_TIMEOUT`. A write has none and runs to completion
