@@ -2190,8 +2190,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				switch {
 				case verdict == roleHolderUnread:
 					// A read that did not answer, or a role claim view that cannot be
-					// served, takes nothing from a holder.
-					writeBusUnavailable(w, decideErr)
+					// served, takes nothing from a holder. At the edge a read of the holder's
+					// session is answered in the listener's own words (edgeScope.unresolved).
+					writeBusUnavailable(w, edgeScopeOf(r, nil).unresolved(body.Role, decideErr, logger))
 					return
 				case verdict == roleGrantGuarded:
 					// The bus answered, and this listener still cannot vouch that the

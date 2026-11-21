@@ -298,10 +298,11 @@ func (kv stalledSessionGetKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // role held by S_peer, a session of PRIV, is answered whole to the same token, a send to it names
 // S_peer, and so do the 409 of a soft claim of it and the 409 of a claim naming revision 0, which
 // gives the claim's revision too. A read of a holder's session that does not answer names no
-// holder either: with the session bucket's read of S_gone stalled, GET /v1/roles/<role> and a
-// role send to S_gone's role are the 503 of a bus that did not answer, with Retry-After, in the
-// listener's own words, where the read's own error names the session it read. Control: with edge
-// mode off each answer names its holder.
+// holder either: with the session bucket's read of S_gone stalled, GET /v1/roles/<role>, a role
+// send to S_gone's role and a soft claim of it, with and without S_gone named as its predecessor,
+// are each the 503 of a bus that did not answer, with Retry-After, in the listener's own words,
+// where the read's own error names the session it read. Control: with edge mode off each answer
+// names its holder.
 func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 	rig := newEdgeRig(t)
 	const reader, peer, foreign, gone = "ses_edge_answer_reader", "ses_edge_answer_peer", "ses_edge_answer_pub", "ses_edge_answer_pub_gone"
@@ -410,8 +411,10 @@ func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 	for _, unread := range []struct{ method, path, body string }{
 		{http.MethodGet, "/v1/roles/" + goneRole, ""},
 		{http.MethodPost, "/v1/messages/publish", sent},
+		{http.MethodPost, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, reader, goneRole)},
+		{http.MethodPost, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true,"previous_session_id":%q}`, reader, goneRole, gone)},
 	} {
-		asked := unread.method + " " + unread.path + " while the read of the holder's session does not answer"
+		asked := strings.TrimSpace(unread.method+" "+unread.path+" "+unread.body) + " while the read of the holder's session does not answer"
 		recorder := rig.call(t, unread.method, token, unread.path, unread.body)
 		t.Logf("%s: status %d %s", asked, recorder.Code, strings.TrimSpace(recorder.Body.String()))
 		var refusal listenerwire.APIError
@@ -421,6 +424,40 @@ func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 				asked, recorder.Code, recorder.Header().Get("Retry-After"), strings.TrimSpace(recorder.Body.String()))
 		}
 		requireNamesNone(t, asked, recorder.Body.String(), names...)
+	}
+}
+
+// A role send whose forward the bus refuses names no holder the edge does not show: the refusal's
+// own text names the subject the forward went to, the holder's agent subject, so at the edge the
+// answer for a holder the scope does not show is the listener's own text, under the status the
+// refusal gets (403 for a publish the server denied), and the refusal goes to the log. A holder
+// the scope shows is answered with the refusal as it is. The forward is the edge's own only once
+// a server denies it, which the edge's grant does not for an agent subject, so the row hands the
+// send its refusal. Control: with edge mode off, the scope shows every holder and the row fails.
+func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
+	rig := newEdgeRig(t)
+	var scope *edgeScope
+	if rig.edgeOn() {
+		scope = &edgeScope{projects: rig.projects}
+	}
+	const hidden, shown = "ses_edge_forward_pub", "ses_edge_forward_priv"
+	for _, holder := range []struct {
+		id       string
+		projects []string
+	}{{hidden, []string{"PUB"}}, {shown, []string{"PRIV"}}} {
+		recorder := httptest.NewRecorder()
+		send := &roleSend{w: recorder, record: &requestRecord{logger: rig.harness.config.logger, line: "listener publish", laneKey: "topic"},
+			d: rig.deps, scope: scope, role: "legion-priv-priv-5-tester", arrived: time.Now()}
+		send.hold(roles.Resolution{State: roles.Live, Holder: holder.id, HolderState: session.Live, Entry: session.SessionEntry{Projects: holder.projects}})
+		send.refused(fmt.Errorf("%w: nats: Permissions Violation for Publish to %q", bus.ErrPublishDenied, contracts.LegacyAgentSubject(holder.id)))
+		body := strings.TrimSpace(recorder.Body.String())
+		t.Logf("the refused forward to %s: status %d %s", holder.id, recorder.Code, body)
+		if recorder.Code != http.StatusForbidden || !strings.Contains(body, publishDeniedPrefix) {
+			t.Errorf("the refused forward to %s: status %d %s, want the 403 of a denied publish", holder.id, recorder.Code, body)
+		}
+		if names := strings.Contains(body, holder.id); names != (holder.id == shown) {
+			t.Errorf("the refused forward to %s answers %s, which names the holder: %v; want it named only for the holder of PRIV", holder.id, body, names)
+		}
 	}
 }
 

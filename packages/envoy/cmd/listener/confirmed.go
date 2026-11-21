@@ -310,11 +310,18 @@ func (s *roleSend) unresolved(err error) {
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
-// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
-// the message has marked the charge already (sendToRole).
+// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refusal's own text
+// names the subject the forward went to, the holder's agent subject, so at the edge, for a holder
+// the scope does not show, the answer is in the listener's own words under the same status, and
+// the refusal goes to the log (hideHolder). The refused forward stored nothing, so it marks
+// nothing: an earlier forward of the same send that may have stored the message has marked the
+// charge already (sendToRole).
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
+	if s.shown.State == roles.Unclaimed {
+		err = hideHolder(s.d.delivery.logger, "edge listener's forward of a role message was refused; its answer names no holder",
+			s.role, s.holder, "forward role "+s.role+"'s message to its holder", err)
+	}
 	s.record.refuseBusUnavailable(s.w, err)
 	s.settle(sendFailed)
 }

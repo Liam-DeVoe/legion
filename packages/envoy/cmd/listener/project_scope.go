@@ -232,9 +232,9 @@ func (s *edgeScope) agents(agents []legionagents.Agent) []legionagents.Agent {
 // session, whose id and activity the scope shows nobody, as it shows no such session in a read. A
 // lapsed holder whose session record is gone has no projects to show, so it reads as unclaimed
 // too, even where it was a session of one of the scope's projects: the rule fails closed, and a
-// claim of the role then gets the 409 of a role held. GET /v1/roles/<role> and a role send
-// through the publish route answer by it; the send still forwards to the holder. A nil scope
-// answers result as it is.
+// claim of the role still takes it from the holder that stopped answering. GET /v1/roles/<role>
+// and a role send through the publish route answer by it; the send still forwards to the holder.
+// A nil scope answers result as it is.
 func (s *edgeScope) holder(result roles.Resolution) roles.Resolution {
 	if result.State == roles.Unclaimed || s.shows(result.Entry) {
 		return result
@@ -253,35 +253,52 @@ func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID stri
 	return s.shows(entry)
 }
 
-// unresolved is err, the error of a resolution of role's holder that failed
-// (roles.ResolveHolder), as an answer the scope holds gives it. A read of the holder's session
-// that did not answer (roles.ReadError at roles.SessionRead) names that session in its text, a
-// session the scope may not show, so the scope answers it in the listener's own words
-// (edgeHolderUnread), which name the role and no holder, and logger gets the read's own error.
-// The answer keeps the status and Retry-After the read's error gets (writeBusUnavailable), which
-// edgeHolderUnread unwraps to. Every other error names no holder, and is answered as it is. A nil
-// scope answers err as it is.
+// unresolved is err, the error of a read of role's holder that failed, as an answer the scope
+// holds gives it: a resolution's read of the holder's session that did not answer
+// (roles.ReadError at roles.SessionRead, from GET /v1/roles/<role> and a role send), and a soft
+// claim's read of the holder's liveness or of the declared predecessor's registration
+// (holderSessionUnread, from POST /v1/roles/set). Each names that session in its text, a session
+// the scope may not show, so the scope answers it in the listener's own words, which name the
+// role and no holder, and logger gets the read's own error (hideHolder). Every other error names
+// no holder, and is answered as it is. A nil scope answers err as it is.
 func (s *edgeScope) unresolved(role string, err error, logger *logging.Logger) error {
-	var read *roles.ReadError
-	if s == nil || !errors.As(err, &read) || read.Step != roles.SessionRead {
+	if s == nil {
 		return err
 	}
-	logger.Warn("edge listener could not read a role holder's session; its answer names no holder",
-		slog.String("role", role), slog.String("holder_session_id", read.Holder), slog.String("error", err.Error()))
-	return &edgeHolderUnread{role: role, err: err}
+	var resolution *roles.ReadError
+	var claimRead *holderSessionUnread
+	holder := ""
+	switch {
+	case errors.As(err, &resolution) && resolution.Step == roles.SessionRead:
+		holder = resolution.Holder
+	case errors.As(err, &claimRead):
+		holder = claimRead.holder
+	default:
+		return err
+	}
+	return hideHolder(logger, "edge listener could not read a role holder's session; its answer names no holder",
+		role, holder, "read the holder session of role "+role, err)
 }
 
-// edgeHolderUnread is the error an edge answer gives a read of a role holder's session that did
-// not answer (edgeScope.unresolved): its text names the role alone, and it unwraps to the read's
-// own error, which decides how the answer is written.
-type edgeHolderUnread struct {
-	role string
+// hideHolder is err, whose text names holder, a holder of role an edge answer may not name, as
+// that answer gives it (edgeHolderHidden): text, the listener's own words, and err beneath, which
+// decides the answer's status and Retry-After (writeBusUnavailable). logger gets line with err.
+func hideHolder(logger *logging.Logger, line, role, holder, text string, err error) error {
+	logger.Warn(line, slog.String("role", role), slog.String("holder_session_id", holder), slog.String("error", err.Error()))
+	return &edgeHolderHidden{text: text, err: err}
+}
+
+// edgeHolderHidden is the error an edge answer gives a failure whose own text names a holder the
+// scope may not show (hideHolder): its text is the listener's own, and it unwraps to the failure,
+// which decides how the answer is written.
+type edgeHolderHidden struct {
+	text string
 	err  error
 }
 
-func (e *edgeHolderUnread) Error() string { return "read the holder session of role " + e.role }
+func (e *edgeHolderHidden) Error() string { return e.text }
 
-func (e *edgeHolderUnread) Unwrap() error { return e.err }
+func (e *edgeHolderHidden) Unwrap() error { return e.err }
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
 // project its key gives (contracts.ParseRoleClaimKey) is one of them. It is the edge's rule for a
