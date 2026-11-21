@@ -8667,8 +8667,12 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 
 	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
 	secondHolder := keywordFillHolder(t, second, time.Minute)
+	// The server writes events of its own as it boots: the eval registry's seed of each project
+	// creates the project's evals-md document, an artifact.created that starts no keyword version.
+	// So the fill's cursor can end past the last comment, and what the wait asks is that every
+	// comment's rows are written, which the cursor at or past the last comment says.
 	waitUntil(t, 5*time.Minute, "the new process to write every event's rows", func() bool {
-		return textversionstest.Cursor(t, database) == last
+		return textversionstest.Cursor(t, database) >= last
 	})
 
 	recorded := writes()
