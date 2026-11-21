@@ -78,7 +78,9 @@ awk -v project="$project" -v issue="$issue" '
     }
   }
   NR == 1 {
-    if ($0 !~ ("^" project ": [0-9]+ finished issues$")) unknown("the first line of the answer is no header of " project ": " $0)
+    # The header of a read with no --since counts the newest finished issues with a plan or a
+    # rating it lists, then those and every finished issue; a read with --since counts its window.
+    if ($0 !~ ("^" project ": [0-9]+ finished issues$") && $0 !~ ("^" project ": [0-9]+ of [0-9]+ finished issues with a plan or a rating; [0-9]+ finished in all; --since <RFC 3339 time> prints every finished issue closed since then$")) unknown("the first line of the answer is no header of " project ": " $0)
     listed = $2 + 0
     if (listed == 0) unknown("dispatch plans lists no finished issue of " project)
     next

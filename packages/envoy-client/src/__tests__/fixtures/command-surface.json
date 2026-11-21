@@ -1179,7 +1179,7 @@
       ],
       "outcome": "result",
       "text": [
-        "INFRA: 1 finished issues",
+        "INFRA: 1 of 1 finished issues with a plan or a rating; 1 finished in all; --since <RFC 3339 time> prints every finished issue closed since then",
         "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1"
       ]
     },

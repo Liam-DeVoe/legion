@@ -240,7 +240,70 @@ async function readPlans(args: Record<string, unknown>, answer: ProjectPlans) {
   };
 }
 
+/** The header `dispatch plans` prints with no `since`: how many issues it lists, of the finished
+ *  issues that have a plan or a rating, and how many finished in all. */
+function defaultHeader(project: string, listed: number, planned: number, finished: number): string {
+  return `${project}: ${listed} of ${planned} finished issues with a plan or a rating; ${finished} finished in all; --since <RFC 3339 time> prints every finished issue closed since then`;
+}
+
+/** `count` finished issues, newest close first, each a copy of `issue` under a key of its own, the
+ *  first `INFRA-<first>` and each next one a key lower and an hour older. */
+function finishedRun(issue: FinishedIssue, first: number, count: number): FinishedIssue[] {
+  return Array.from({ length: count }, (_, place) => ({
+    ...issue,
+    issue: `INFRA-${first - place}`,
+    closed_at: new Date(Date.parse("2026-11-20T12:00:00Z") - place * 3_600_000)
+      .toISOString()
+      .replace(".000Z", "Z"),
+  }));
+}
+
 describe("dispatch plans", () => {
+  // An owner reads the earlier plans to learn from plans, and a busy project closes hundreds of
+  // issues a day that Legion never ran, each `plan none ratings none`. So with no `since` the
+  // command lists only the newest PLANS_DEFAULT_COUNT finished issues that have a plan or a rating.
+  test("with no since, it prints the 20 newest finished issues with a plan or a rating, and says how many there are", async () => {
+    const planned = finishedRun(ratedOnce, 125, 25);
+    const unplanned = finishedRun(neverRan, 99, 10);
+    // Newest close first, as Dispatch answers: the issues Legion never ran stand among the others.
+    const issues = [
+      planned[0],
+      ...unplanned.slice(0, 5),
+      ...planned.slice(1),
+      ...unplanned.slice(5),
+    ];
+    const answer: ProjectPlans = { project: "INFRA", issues };
+
+    const { result, requests } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans"]);
+    const lines = result.text.split("\n");
+    expect(lines[0]).toBe(defaultHeader("INFRA", 20, 25, 35));
+    expect(lines.slice(1).map((line) => line.split(" ")[0])).toEqual(
+      planned.slice(0, 20).map((issue) => issue.issue)
+    );
+    expect(result.details).toEqual({ project: "INFRA", issues: planned.slice(0, 20) });
+  });
+
+  test("an explicit since prints every finished issue of its window, those with no plan too, under the plain header", async () => {
+    const issues = [...finishedRun(ratedOnce, 125, 25), neverRan];
+    const answer: ProjectPlans = { project: "INFRA", issues };
+
+    const { result, requests } = await readPlans(
+      { project: "INFRA", since: "2026-11-01T00:00:00Z" },
+      answer
+    );
+
+    expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans?since=2026-11-01T00%3A00%3A00Z"]);
+    const lines = result.text.split("\n");
+    expect(lines[0]).toBe("INFRA: 26 finished issues");
+    expect(lines).toHaveLength(27);
+    expect(lines[26]).toBe(
+      "INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings none time - failed steps 0"
+    );
+    expect(result.details).toEqual({ project: "INFRA", issues });
+  });
+
   test("prints a header, then one line per finished issue, a rated one and an unrated one", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [ratedOnce, unrated] };
 
@@ -249,7 +312,7 @@ describe("dispatch plans", () => {
     expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans"]);
     expect(result.text).toBe(
       [
-        "INFRA: 2 finished issues",
+        defaultHeader("INFRA", 2, 2, 2),
         'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
         "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
       ].join("\n")
@@ -263,7 +326,7 @@ describe("dispatch plans", () => {
     const { result } = await readPlans({ project: "INFRA" }, answer);
 
     expect(result.text.split("\n")).toEqual([
-      "INFRA: 1 finished issues",
+      defaultHeader("INFRA", 1, 1, 1),
       'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 5h8m failed steps 0',
     ]);
   });
@@ -305,7 +368,7 @@ describe("dispatch plans", () => {
     const { result } = await readPlans({ project: "INFRA" }, answer);
 
     expect(result.text.split("\n")).toEqual([
-      "INFRA: 1 finished issues",
+      defaultHeader("INFRA", 1, 1, 1),
       `INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings ${most}/${most} "The plan fit the first merge.", ${least}/${most} "The plan sent the second merge back.", ${least + 1}/${most} "The plan had no rollback step." time 5h8m failed steps 0`,
     ]);
   });
@@ -370,7 +433,7 @@ describe("dispatch plans", () => {
 
       const lines = result.text.split("\n");
       expect(lines, printed).toEqual([
-        "INFRA: 1 finished issues",
+        defaultHeader("INFRA", 1, 1, 1),
         `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0`,
       ]);
       // The reason as the line prints it reads back as the reason Dispatch answered.
@@ -391,7 +454,7 @@ describe("dispatch plans", () => {
       ],
     };
 
-    const { result } = await readPlans({ project: "INFRA" }, answer);
+    const { result } = await readPlans({ project: "INFRA", since: "2026-11-01T00:00:00Z" }, answer);
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 3 finished issues",
@@ -404,7 +467,7 @@ describe("dispatch plans", () => {
   test("an issue with no time prints time -, and one Legion never ran prints plan none too", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [uncountedTime, neverRan] };
 
-    const { result } = await readPlans({ project: "INFRA" }, answer);
+    const { result } = await readPlans({ project: "INFRA", since: "2026-11-01T00:00:00Z" }, answer);
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 2 finished issues",
@@ -422,7 +485,7 @@ describe("dispatch plans", () => {
     for (const answer of empty) {
       const { result } = await readPlans({ project: "INFRA" }, answer);
 
-      expect(result.text, JSON.stringify(answer)).toBe("INFRA: 0 finished issues");
+      expect(result.text, JSON.stringify(answer)).toBe(defaultHeader("INFRA", 0, 0, 0));
       expect(result.details, JSON.stringify(answer)).toEqual({ project: "INFRA", issues: [] });
     }
     const nulls: ProjectPlans = {
@@ -545,7 +608,7 @@ describe("dispatch plans on the command line", () => {
       [
         "INFRA",
         [
-          "INFRA: 2 finished issues",
+          defaultHeader("INFRA", 2, 2, 2),
           'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
           "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
         ],
@@ -553,7 +616,7 @@ describe("dispatch plans on the command line", () => {
       [
         "ACME",
         [
-          "ACME: 1 finished issues",
+          defaultHeader("ACME", 1, 1, 1),
           'ACME-3 closed 2026-11-13T17:00:00Z plan owner (1 tasks: implementer tester) ratings 2/5 "The plan left out the rollback." time 2h35m failed steps 3',
         ],
       ],

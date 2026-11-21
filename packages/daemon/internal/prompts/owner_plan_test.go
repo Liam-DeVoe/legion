@@ -120,7 +120,7 @@ func TestTheOwnersPromptNamesTheReadOfEarlierPlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const read = "Before you write a plan, read how the earlier plans of this project went: `dispatch plans --project <PROJECT>` prints each finished issue of the project with its plan, each rating a retro gave that plan with its reason, its time and its count of failed steps; then say in the task's text what they showed that this plan follows or changes."
+	const read = "Before you write a plan, read how the earlier plans of this project went: `dispatch plans --project <PROJECT>` prints the newest finished issues of the project that have a plan or a rating, each with its plan, each rating a retro gave that plan with its reason, its time and its count of failed steps; then say in the task's text what they showed that this plan follows or changes."
 	for _, tc := range []struct {
 		name   string
 		role   claim.Role
