@@ -41,11 +41,10 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    missing tie visible (R35).
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it: the
- * first sentence (`firstSentenceOf`) of the words of the answer's first block, or of its first
- * item where that block is a list (`firstBlockWordsRaw`), with each reference in it named in
- * plain words once the sentence is cut (`referenceStandIns`), or, where they wrote none, the
- * options they chose; the whole answer is carried beside it as stored, for the focus on the line
- * to draw character for character (R5).
+ * first sentence (`firstSentenceOf`) of the words the answer opens with (`firstBlockWordsRaw`),
+ * with each reference in it named in plain words once the sentence is cut
+ * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
+ * carried beside it as stored, for the focus on the line to draw character for character (R5).
  * A section of `decisions.md` the server marks a person's whose answered question this tree
  * does not hold is the agent's record of that decision, so it is drawn as an agent's words and
  * never quoted as the person's (R9).
@@ -103,9 +102,9 @@ export interface SpecDecision {
    *  named after the cut; absent where the words answer no question. */
   readonly question?: string;
   /** The one line the decision is quoted by under a statement, in plain words with each
-   *  reference named after its cut (`referenceStandIns`): the first sentence of a person's
-   *  answer read to its plain words, or the options they chose where they wrote nothing, or the
-   *  first line of an agent's decision's own words. */
+   *  reference named after its cut (`referenceStandIns`): the first sentence of the words a
+   *  person's answer opens with (`firstBlockWordsRaw`), or the options they chose where they
+   *  wrote nothing, or the first line of an agent's decision's own words (`lineWordsRaw`). */
   readonly quote: string;
   /** The node's own `dispatch://` address, which the link to the whole of it follows. */
   readonly reference?: string;
@@ -430,9 +429,8 @@ function decisionOf(
   // mouth (R9: "no agent's words are drawn under a person's name").
   const at = node?.at ?? decision.changed_at ?? undefined;
   const tree = decision.text_tree ?? node?.tree;
-  // The one line is cut from the words of the first block that holds any, as every one-line
-  // place cuts a node's, so the decision's own `##` heading never runs into the paragraph under
-  // it, and with none of the symbols the cell draws as formatting. A decision the tree holds no
+  // The one line is cut from the words `lineWordsRaw` reads, as every one-line place cuts a
+  // node's, with none of the symbols the cell draws as formatting. A decision the tree holds no
   // node for is read from its own text and its reading in the same way.
   const words = lineWordsRaw(node ?? { text: decision.text, tree: decision.text_tree });
   // The quote and the name a line gives it among others are cut from the one stood-in line, each
@@ -460,22 +458,21 @@ function decisionOf(
   };
 }
 
-/** A person's answer to `ask` as the column draws it: the first sentence of its first block's
- *  words with each reference named, or the options they chose where they wrote none (R5), with
- *  the whole answer as stored wherever it is not what the quote draws. */
+/** A person's answer to `ask` as the column draws it: the first sentence of the words it opens
+ *  with (`firstBlockWordsRaw`) with each reference named, or the options they chose where they
+ *  wrote none (R5), with the whole answer as stored wherever it is not what the quote draws. */
 function answerDecision(
   ask: TreeNode,
   answer: NonNullable<TreeNode["answer"]>,
   reader: string | undefined,
   nameOf: (reference: string) => string | undefined
 ): SpecDecision {
-  // The quote reads the answer's first block alone, as the Contents entry reads a comment's, and
-  // where that block is a list, its first item's own words (`firstBlockWordsRaw`): a quote
-  // never runs from one paragraph into the next, nor from a sentence into the list after it. A
-  // link the person wrote reads as its words and a mark as nothing, so the quote is their words
-  // and none of the markdown they were stored in. Each reference is named after the sentence is
-  // cut, so a name that opens with a label ("R2.") ends none of it. The answer holds its stored
-  // text's reading, so a redraw reads it again from memory rather than from a second parse.
+  // The quote reads the words the answer opens with (`firstBlockWordsRaw`), as the Contents entry
+  // reads a comment's. A link the person wrote reads as its words and a mark as nothing, so the
+  // quote is their words and none of the markdown they were stored in. Each reference is named
+  // after the sentence is cut, so a name that opens with a label ("R2.") ends none of it. The
+  // answer holds its stored text's reading, so a redraw reads it again from memory rather than
+  // from a second parse.
   const references = referenceStandIns(nameOf);
   const words = firstBlockWordsRaw(storedReading(answer.text, answer));
   const written = firstSentenceOf(references.standIn(words));

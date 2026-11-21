@@ -533,21 +533,10 @@ export function nodeWords(node: TreeNode): string {
 }
 
 /**
- * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
- * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * that block is a bulleted or a numbered list, the own words of the first of its items that holds
- * any (`firstWords`), never the whole list's, nor the item's nested list or later paragraphs; and
- * where the node has no reading the same of its stored text's reading (`storedReading`), in the
- * shape of the server's reading. A heading so ends at its own line and its marker is no word of
- * it, so `## # 1 rule` reads `# 1 rule`. A
- * text typed as a numbered list on two lines, `1. Keep the old page.` over `2. Then drop it.`,
- * reads `Keep the old page.`: its marker is no word, and its second item no part of its line. A
- * list that follows a paragraph with no blank line ends that paragraph, so the paragraph alone
- * is the first block. A block that holds no words - a horizontal rule, a paragraph that is only
- * an image or a piece of HTML - is passed over, or the line would be empty while the node has
- * words. A decision's reading opens with its own `##` heading, and `wordsOf` joins a heading and
- * the paragraph after it with one space, so a line cut from the whole reading ran the heading
- * into its body: "Keep it Keep the model pure.".
+ * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words its
+ * reading opens with (`firstWords`), and where the node has no reading the same of its stored
+ * text's reading (`storedReading`), in the shape of the server's reading. A heading's marker is
+ * no word of it, so `## # 1 rule` reads `# 1 rule`.
  *
  * A stored text is markdown, and its marks are no word of it, so its first block reads as that
  * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
@@ -621,55 +610,56 @@ function lineWordsBy(
   return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
 }
 
-/** The words of the first top-level block of a reading that holds any, or of a list's first item
- *  where that block is a list (`firstWords`, `lineWords`), each bare address outside code in them
- *  written as its target's short form (`withShortAddresses`); `""` for a reading none of whose
- *  blocks holds a word. */
+/** The words a reading opens with (`firstWords`), each bare address outside code in them written
+ *  as its target's short form (`withShortAddresses`): what a node's line (`lineWords`) and a
+ *  chip's name of a block (`chipLine`) are cut from. */
 function firstBlockWords(reading: DisplayTree): string {
   return firstWords(reading, (block) => wordsOf(withShortAddresses(block)));
 }
 
-/** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
- *  reads them but with no address written short (`wordsOf`): a bare address stays as written.
- *  A caller that names each reference itself reads these, since a short form leaves it no
- *  address to name: a node's line (`lineWordsRaw`) and a person's quote (`spec-decided-by.ts`).
- *  `""` for a reading none of whose blocks holds a word. */
+/** The words a reading opens with (`firstWords`), as `firstBlockWords` reads them but with no
+ *  address written short (`wordsOf`): a bare address stays as written. A caller that names each
+ *  reference itself reads these, since a short form leaves it no address to name: a node's line
+ *  (`lineWordsRaw`) and a person's quote (`spec-decided-by.ts`). */
 export function firstBlockWordsRaw(reading: DisplayTree): string {
-  return firstWords(reading);
+  return firstWords(reading, wordsOf);
 }
+
+/** The blocks `firstWords` walks into rather than reads whole. */
+const CONTAINER_BLOCKS: ReadonlySet<string> = new Set([
+  "blockquote",
+  "bullet_list",
+  "list_item",
+  "ordered_list",
+]);
 
 /**
- * The words a reading opens with: the words of the first top-level block of `reading` that holds
- * any, each block read to words by `read`, and where that block is a bulleted or a numbered list,
- * the own words of the first of its items that holds any (`itemWords`), never the whole list's,
- * nor the item's nested list or later paragraphs. A top-level block that is no list is read
- * whole. Markdown reads a leading `1. ` or `- ` as a list's marker, which is no word, and a
- * list's items are read as items before any sentence end is looked for, so a first sentence
- * never runs from one item into the next: a text typed as a list on one line is one item, and
- * one typed on two lines is two. `""` for a reading none of whose blocks holds a word. A node's
- * one line and a person's quote both read a reading's first block by this one walk, through
+ * The words a reading opens with, by the page's one first-block rule: the words of the reading's
+ * first block that holds any, alone, each block read whole by `read`. A bulleted or a numbered
+ * list, a list item and a block quote are containers, each read as its own first block that
+ * holds words by this same walk, so a list's later items, an item's nested list or later
+ * paragraphs and a block quote's later paragraphs are no part of their words: `- one` over an
+ * indented `- inner` reads `one`, and a block quote of two paragraphs, `> Yes` over `>` and
+ * `> Keep the old page.`, reads `Yes`. A block that holds no words - a horizontal rule, a
+ * paragraph that is only an image or a piece of HTML - is passed over, or a line would be empty
+ * while its node has words. `""` for a reading none of whose blocks holds a word.
+ *
+ * So a first sentence never runs from one block into the next. A decision's reading opens with
+ * its own `##` heading, and `wordsOf` joins a heading and the paragraph after it with one space,
+ * so a line cut from the whole reading ran the heading into its body: "Keep it Keep the model
+ * pure.". Markdown reads a leading `1. ` or `- ` as a list's marker, which is no word, and a
+ * list's items are read as items before any sentence end is looked for: a text typed as a list
+ * on one line is one item, and one typed on two lines, `1. Keep the old page.` over `2. Then
+ * drop it.`, is two, and reads `Keep the old page.`. A list that follows a paragraph with no
+ * blank line ends that paragraph, so the paragraph alone is the first block. A node's one line,
+ * a chip's name of a block and a person's quote all read a reading by this one walk, through
  * `firstBlockWords` and `firstBlockWordsRaw`.
  */
-function firstWords(reading: DisplayTree, read: (block: DisplayTree) => string = wordsOf): string {
+function firstWords(reading: DisplayTree, read: (block: DisplayTree) => string): string {
   const blocks = Array.isArray(reading.content) ? (reading.content as DisplayTree[]) : [];
   for (const block of blocks) {
-    const list = block.type === "bullet_list" || block.type === "ordered_list";
-    const words = list ? itemWords(block, read) : read(block);
+    const words = CONTAINER_BLOCKS.has(block.type) ? firstWords(block, read) : read(block);
     if (words.trim() !== "") return words;
-  }
-  return "";
-}
-
-/** The words of a list's first item that holds any, as the item's own blocks open with them
- *  (`firstWords`): its first block that holds words, and where that block is a list of its own,
- *  that list's first item by the same rule. So a nested list and a later paragraph of the item
- *  are no part of its words: `- one` over an indented `- inner` reads `one`. `""` where no item
- *  holds a word. */
-function itemWords(list: DisplayTree, read: (block: DisplayTree) => string): string {
-  const items = Array.isArray(list.content) ? (list.content as DisplayTree[]) : [];
-  for (const item of items) {
-    const words = firstWords(item, read);
-    if (words !== "") return words;
   }
   return "";
 }

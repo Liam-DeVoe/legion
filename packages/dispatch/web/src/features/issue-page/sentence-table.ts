@@ -12,11 +12,13 @@ export interface SentenceRow {
   /** The first sentence a reader of the stored text draws: a person's quote of it as their
    *  answer, a comment's Contents entry and the first of the issue's three sentences. It differs
    *  from `first` only where the text opens with a list marker, which markdown reads as no word,
-   *  or is stored as more blocks than one, since those readers read the first block alone, and of
-   *  a list its first item's own words alone. */
+   *  or is stored as more blocks than one, since a quote and a Contents entry read the words the
+   *  stored text opens with (`issue-tree.ts`'s `firstWords`). */
   readonly stored: string;
-  /** Whether the text stands as a summary's first sentence, as the table marks each row: one that
-   *  opens with a list marker makes the summary a list, and stands as none. */
+  /** Whether the issue's three sentences are tested over the row: the table's column for them,
+   *  where a row the table marks "n/a" is `false`. The flag follows that column and no rule of
+   *  its own, so k5 and k6, which open with no list marker, are `false` because the column marks
+   *  them n/a. */
   readonly summary: boolean;
 }
 
@@ -350,9 +352,9 @@ export const SENTENCE_TABLE: readonly SentenceRow[] = [
     summary: false,
     text: "1. Keep the old page. Then drop it.",
   },
-  // A text stored as blocks: a one-line place and a quote read the first block alone, and a
-  // list's first item's own words alone, so a quote never runs from one paragraph into the next.
-  // A paragraph, then a list: the function's answer is the paragraph's sentence too.
+  // A text stored as blocks, whose first sentence a quote and a Contents entry read from the words
+  // the stored text opens with (`issue-tree.ts`'s `firstWords`). A paragraph, then a list: the
+  // function's answer is the paragraph's sentence too.
   {
     first: "Read this first.",
     id: "k1",
@@ -392,5 +394,13 @@ export const SENTENCE_TABLE: readonly SentenceRow[] = [
     stored: "Pick one:",
     summary: false,
     text: "Pick one:\n- keep it\n- drop it",
+  },
+  // A block quote of two paragraphs, read by its first paragraph alone.
+  {
+    first: undefined,
+    id: "k6",
+    stored: "Yes",
+    summary: false,
+    text: "> Yes\n>\n> Keep the old page.",
   },
 ];

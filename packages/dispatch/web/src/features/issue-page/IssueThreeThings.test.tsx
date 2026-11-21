@@ -389,9 +389,8 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
 });
 
 // R1: the first of the issue's three sentences, after the page's own label, ends where the table
-// of sentence ends (`SENTENCE_TABLE`) ends a stored text's first sentence. A row the table marks
-// as no summary's sentence is passed over: a text that opens with a list marker, for one, would
-// make the summary a list.
+// of sentence ends (`SENTENCE_TABLE`) ends a stored text's first sentence. A row whose column for
+// the three sentences the confirmed table marks n/a (`summary` false) is passed over.
 test("a summary of each row of the sentence table draws the row's stored sentence first", () => {
   for (const row of SENTENCE_TABLE.filter(({ summary }) => summary)) {
     const { labels, lines, unmount } = bullets(summaryNode(row.text));
