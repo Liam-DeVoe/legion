@@ -1044,6 +1044,60 @@ test("an issue the table stops listing drops out of the selection and out of wha
   expect(readSelectedIssues()).toEqual(["CORE-1"]);
 });
 
+// Deep in a long List, the read of the list after the reader marked two issues no longer lists
+// them, so the selection empties and the bar goes while it holds the focus. The row after the
+// issue marked last moves up into its place, where the reader can see it, and its checkbox takes
+// the focus with no scroll. The first row, nine rows above the window, would scroll the box back
+// to its top through `focusRow`.
+test("the List's bar gone with the focus after the issue marked last left the list hands the focus to the row now at its place, with no scroll", async () => {
+  const user = userEvent.setup();
+  const issues = Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`));
+  const { client } = table(issues);
+  await screen.findByRole("checkbox", { name: "Select CORE-20" });
+  // The rows in the order the table draws them, and the three this case reads.
+  const order = [...document.querySelectorAll("[data-issue-row]")].map(
+    (row) => row.getAttribute("data-issue-row") ?? ""
+  );
+  const [marked, last, next] = order.slice(11, 14);
+  // Each row's checkbox is drawn where its row stands now, 100 px a row, with the tenth row at
+  // the window's top: happy-dom lays nothing out, and the hand-off reads what the reader sees.
+  const real = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const row = this.matches('input[type="checkbox"]') ? this.closest("[data-issue-row]") : null;
+    if (row === null) return real.call(this);
+    const index = [...document.querySelectorAll("[data-issue-row]")].indexOf(row);
+    return new DOMRect(0, (index - 9) * 100, 40, 40);
+  });
+  restores.push(() => rect.mockRestore());
+  await user.click(screen.getByRole("checkbox", { name: `Select ${marked}` }));
+  await user.click(screen.getByRole("checkbox", { name: `Select ${last}` }));
+  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  const realFocus = HTMLElement.prototype.focus;
+  const focused: { options: FocusOptions | undefined; target: HTMLElement }[] = [];
+  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    focused.push({ options, target: this });
+    realFocus.call(this, options);
+  });
+  const scroll = spyOn(Element.prototype, "scrollIntoView");
+  restores.push(() => {
+    focus.mockRestore();
+    scroll.mockRestore();
+  });
+  // The listing answers from `issues`, so the read again no longer lists the two issues.
+  issues.splice(0, issues.length, ...issues.filter(({ key }) => key !== marked && key !== last));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  const landing = screen.getByRole("checkbox", { name: `Select ${next}` });
+  await waitFor(() => expect(landing).toHaveFocus());
+  expect(focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+  expect(scroll).not.toHaveBeenCalled();
+});
+
 test("leaving the table clears what the bar says it will act on", async () => {
   const user = userEvent.setup();
   const { view } = table([issue("CORE-1")]);

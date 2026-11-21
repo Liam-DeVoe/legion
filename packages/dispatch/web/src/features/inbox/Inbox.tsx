@@ -26,7 +26,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { SearchBox } from "../../components/SearchBox";
-import { SelectionBar } from "../../components/SelectionBar";
+import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { capSearchQuery } from "../../lib/page-address";
 import {
@@ -849,8 +849,10 @@ function InboxBody({
   const show: InboxShow = filter.show ?? "inbox";
   const showDismissed = show === "dismissed";
   const listRef = useRef<HTMLElement>(null);
-  /** The list column, which scrolls in itself beside the reading column. */
-  const listScroller = useRef<HTMLDivElement>(null);
+  /** The list column, which scrolls in itself beside the reading column. It is drawn with no row
+   *  as well, and it is the list's own stop for the selection bar's hand-off
+   *  (`useLastMarkedPlace`). */
+  const listScroller = useRef<HTMLElement>(null);
   /** The reading column, where `h`, `o`, `y`, Enter and `1`-`9` act while it is on. Written by
    *  `holdPane` below rather than handed to the wrapper, so the column's unmount is seen. */
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -1695,6 +1697,21 @@ function InboxBody({
     },
   ]);
 
+  // The bar's hand-off after a press that took the row marked last away: a row the reader can
+  // see at its place, else before it, else the list column's own stop, with no scroll. A row a
+  // Dismiss or a Move to Inbox press is taking off this view is passed over: it is still drawn
+  // until the write's optimistic apply lands, and a focus handed to it would drop with it.
+  // `dismissedHere` names every such row - each id the dismiss write's `pending` holds, and the
+  // ids of a press made under the narrowing, which `pending` leaves out.
+  const landAtPlace = useLastMarkedPlace({
+    control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
+    lastMarked,
+    leaving: dismissedHere,
+    list: () => listScroller.current,
+    order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
+    shown: bulkBarShown,
+  });
+
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
@@ -2123,17 +2140,15 @@ function InboxBody({
       label="Selected rows"
       notice={snoozeRefusal}
       // The bar gone with the focus, or the control in it that held the focus: the checkbox of
-      // the row the reader marked last, else of the first row in list order, else the search
-      // box. A row a Dismiss or a Move to Inbox press is taking off this view is passed over: it
-      // is still drawn until the write's optimistic apply lands, and a focus handed to it would
-      // drop with it. `dismissedHere` names every such row - each id the dismiss write's
-      // `pending` holds, and the ids of a press made under the narrowing, which `pending` leaves
-      // out. A Move to Inbox that empties the Dismissed view leaves no other row, so the focus
-      // goes to the search box.
+      // the row the reader marked last while the list still draws it, brought into view, else of
+      // the first row in list order while no row is marked, else the list column's own stop with
+      // no scroll. A press that took the row marked last away is answered above (`landAtPlace`).
       returnFocus={() =>
-        [originRow(lastMarked()), ...rows()]
-          .find((row) => row !== null && !dismissedHere(row.dataset.inboxRow ?? ""))
-          ?.querySelector<HTMLElement>(MARK_SELECTOR) ?? searchRef.current
+        landAtPlace()
+          ? null
+          : ([originRow(lastMarked()), ...rows()]
+              .find((row) => row !== null && !dismissedHere(row.dataset.inboxRow ?? ""))
+              ?.querySelector<HTMLElement>(MARK_SELECTOR) ?? focusListStop(listScroller.current))
       }
       state={barState}
     >
@@ -2351,11 +2366,12 @@ function InboxBody({
     presented.current = [];
     presentedBands.current = { headings: [], layout };
     const empty = (
-      <div data-testid="inbox-list">
+      // The list column is the list's own stop, so it is named: a labelled `<section>` is a region.
+      <section aria-label="Inbox list" data-testid="inbox-list" ref={listScroller}>
         {emptyMessage === undefined ? null : (
           <EmptyState label="Inbox empty state" message={emptyMessage} />
         )}
-      </div>
+      </section>
     );
     return page(empty, paneSelection.showing([]));
   }
@@ -2461,8 +2477,10 @@ function InboxBody({
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
     // keeps the reader's row where it was in it. Without the pane the rows scroll in whatever
-    // the host gives (the drawer's own `aside`), and in the window when it gives nothing.
-    <div
+    // the host gives (the drawer's own `aside`), and in the window when it gives nothing. The
+    // column is the list's own stop for the selection bar's hand-off, so it is named.
+    <section
+      aria-label="Inbox list"
       className={paneShown ? "min-w-0 flex-1 overflow-y-auto pr-1" : undefined}
       data-testid="inbox-list"
       ref={listScroller}
@@ -2502,7 +2520,7 @@ function InboxBody({
           </button>
         )}
       </ViewportAnchor>
-    </div>
+    </section>
   );
 
   // Nothing to read is nothing to select, so an empty list is the whole Inbox above, as it is

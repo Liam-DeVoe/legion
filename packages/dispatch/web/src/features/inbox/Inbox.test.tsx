@@ -3438,6 +3438,74 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
   }
 });
 
+// The bar's Snooze deep in a long list folds the two rows marked into Later, the row marked last
+// among them. The row after them moves up into its place, where the reader can see it, and its
+// mark takes the focus with no scroll. The list's first row, nine rows above the window, would
+// scroll the list back to its top and throw the reader's place away.
+test("a bulk Snooze deep in a long list hands the focus to the row that moves up into the place of the row marked last, with no scroll", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 20 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  // Each row's mark is drawn where its row stands now, 100 px a row, with the tenth row at the
+  // window's top: happy-dom lays nothing out, and the hand-off reads what the reader can see.
+  const real = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const row = this.matches('input[type="checkbox"]') ? this.closest("[data-inbox-row]") : null;
+    if (row === null) return real.call(this);
+    const index = [...document.querySelectorAll("[data-inbox-row]")].indexOf(row);
+    return new DOMRect(0, (index - 9) * 100, 800, 100);
+  });
+  const realFocus = HTMLElement.prototype.focus;
+  const focused: { options: FocusOptions | undefined; target: HTMLElement }[] = [];
+  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    focused.push({ options, target: this });
+    realFocus.call(this, options);
+  });
+  const scrolled: Element[] = [];
+  const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this);
+  });
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 20?");
+    // The rows in the order the list draws them, and the three this case reads.
+    const [marked, last, next] = rowIds().slice(11, 14);
+    await user.click(within(rowOf(marked)).getByRole("checkbox", { name: /^Select / }));
+    await user.click(within(rowOf(last)).getByRole("checkbox", { name: /^Select / }));
+    await screen.findByText("2 selected");
+    const landing = within(rowOf(next)).getByRole("checkbox", { name: /^Select / });
+    await user.selectOptions(screen.getByLabelText("Snooze selected asks"), "tomorrow");
+    await waitFor(() => expect(rowIds()).not.toContain(last));
+    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
+    await waitFor(() => expect(landing).toHaveFocus());
+    expect(focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+    expect(scrolled).toEqual([]);
+  } finally {
+    unmount();
+    scroll.mockRestore();
+    focus.mockRestore();
+    rect.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // A row the bar's Snooze is saving is held as a row's own Snooze pick holds it: the optimistic
 // moment would draw Un-snooze, so the select stays drawn, held, with the moment being saved before
 // it and `Snoozing…` on its badge, and its status says what is being saved. The hold lasts through
