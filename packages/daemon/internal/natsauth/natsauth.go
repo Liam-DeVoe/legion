@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
@@ -156,8 +158,13 @@ func (s source) seed() (string, error) {
 // an operator reading /connz on the Envoy NATS sees which process holds each connection, and a
 // test fixture reporting a connection a test left open can say which client it was. It is
 // appended after the caller's own options, beside detectSilentCuts, so a caller's own nats.Name
-// does not win here.
+// does not win here. A server URL that does not parse is refused naming it without its userinfo
+// or its query (unreadableURL), before any dial.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
+	servers := strings.Join(urls, ",")
+	if err := unreadableURL(servers); err != nil {
+		return nil, err
+	}
 	if seed != "" {
 		user, err := userKey(seed, "the NATS nkey seed")
 		if err != nil {
@@ -171,7 +178,29 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 	}
 	// Last, so these pings and this name hold whatever a caller passed before them.
 	options = append(options, detectSilentCuts, nats.Name(name))
-	return nats.Connect(strings.Join(urls, ","), options...)
+	return nats.Connect(servers, options...)
+}
+
+// unreadableURL refuses the first server of servers, nats.go's comma-separated list, that does not
+// parse as nats.go parses one (split on commas and trimmed, a scheme added where it has none),
+// naming it through redact.URLCredentials, without its userinfo and its query, with url.Parse's
+// reason alone: nats.go refuses such a server with url.Parse's own error, which quotes the URL
+// whole, a token in its userinfo included.
+func unreadableURL(servers string) error {
+	for _, server := range strings.Split(servers, ",") {
+		server = strings.TrimSpace(server)
+		if !strings.Contains(server, "://") {
+			server = "nats://" + server
+		}
+		if _, err := url.Parse(server); err != nil {
+			var unread *url.Error
+			if errors.As(err, &unread) {
+				err = unread.Err
+			}
+			return fmt.Errorf("the NATS server URL %s cannot be read: %w", redact.URLCredentials(server), err)
+		}
+	}
+	return nil
 }
 
 // ReconnectForever is the connection option that never gives up reconnecting. nats.go's own
@@ -215,7 +244,9 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 // the JetStream API requests a consumer makes included, and a terminal close (a fatal server -ERR,
 // or — for a caller that has not also set ReconnectForever — reconnects exhausted), once, with
 // its cause; at warn, every other asynchronous error, with the subject of the subscription it
-// names, and every disconnect, with its cause; at info, every reconnect, with the server. nats.go's
+// names, and every disconnect, with its cause; at info, every reconnect, with the server, named
+// without its userinfo or its query (redact.URLCredentials): nats.go presents a URL's user name as
+// the connection's token, and ConnectedUrlRedacted masks only a password. nats.go's
 // default handler writes a refusal to stderr unlabelled and nothing for the rest. It owns the
 // connection's AsyncErrorCB, DisconnectedErrCB, ReconnectedCB and ClosedCB: an option after it
 // that sets one replaces its handler. It also sets NoCallbacksAfterClientClose, so the daemon's
@@ -244,7 +275,7 @@ func LogEvents(log *slog.Logger) nats.Option {
 			}
 		}
 		o.ReconnectedCB = func(c *nats.Conn) {
-			log.Info("NATS connection restored", "server", c.ConnectedUrlRedacted())
+			log.Info("NATS connection restored", "server", redact.URLCredentials(c.ConnectedUrl()))
 		}
 		// The daemon's own Close runs no callback (NoCallbacksAfterClientClose), so a close here is
 		// terminal and its cause is the connection's LastError. A permission refusal or a slow
