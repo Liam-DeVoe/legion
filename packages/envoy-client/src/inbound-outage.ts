@@ -34,11 +34,12 @@ export function inboundRestoredNoticeText(): string {
 export interface InboundUnavailable {
   /**
    * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it.
+   * this outage already told it. A notice the host could not show leaves the session untold.
    */
   refused(error: unknown): void;
   /** A registration was accepted: ends the outage, telling the session so through the host's
-   *  `restored` when it was told of the outage, and the next outage tells the session again. */
+   *  `restored` when it was shown the outage notice (once that notice is shown, where the host
+   *  is still showing it), and the next outage tells the session again. */
   accepted(): void;
   /**
    * The host bound a session and read that session's own record of what it was last told of its
@@ -62,27 +63,66 @@ export interface InboundUnavailable {
  * deaf after it recovered. `tell` takes the listener's own message (`messageFor`), which each host
  * words with `inboundUnavailableNoticeText`, and `restored` is worded with
  * `inboundRestoredNoticeText`; each host shows both where it shows a gap notice.
+ *
+ * A host whose notice is written later than it is asked for (claude-envoy's waits its turn behind
+ * every frame queued before it) returns from `tell` a promise that settles once the notice was
+ * shown, or rejects when it could not be. An outage notice that was not shown leaves the session
+ * untold, so its next refusal tells it again, and no accepted registration tells it the end of an
+ * outage it never heard of; an end accepted while the notice is still being shown is told only
+ * once the notice was. A host whose `tell` returns nothing showed its notice as it returned.
  */
 export function inboundUnavailable(
-  tell: (why: string) => void,
+  tell: (why: string) => void | Promise<void>,
   restored: () => void
 ): InboundUnavailable {
   // Whether the session bound now was told an outage and not its end, by this process or, as its
-  // record read at the bind says (`recordRead`), by an earlier one.
+  // record read at the bind says (`recordRead`), by an earlier one. Set as the outage notice is
+  // asked for, and taken back if the host could not show it.
   let told = false;
+  // The outage notice the host is still showing, which settles true once it was shown; undefined
+  // when there is none.
+  let telling: Promise<boolean> | undefined;
+  // Counts every change of `told`, so a notice that settles late acts only on the state it was
+  // asked for in, never on one a later bind, end or outage made since.
+  let change = 0;
   return {
     refused(error) {
       if (told) return;
       told = true;
-      tell(messageFor(error));
+      const asked = ++change;
+      const showing = tell(messageFor(error));
+      if (showing === undefined) return;
+      telling = showing.then(
+        () => {
+          if (change === asked) telling = undefined;
+          return true;
+        },
+        () => {
+          if (change === asked) {
+            told = false;
+            telling = undefined;
+          }
+          return false;
+        }
+      );
     },
     accepted() {
       if (!told) return;
       told = false;
-      restored();
+      const ended = ++change;
+      const showing = telling;
+      if (showing === undefined) {
+        restored();
+        return;
+      }
+      void showing.then((shown) => {
+        if (shown && change === ended) restored();
+      });
     },
     recordRead(recordTold) {
       told = recordTold;
+      change += 1;
+      telling = undefined;
     },
   };
 }

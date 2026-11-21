@@ -1157,12 +1157,18 @@ describe("one registration", () => {
    * One session's outage report (`inboundUnavailable`), and a registration under it that the
    * listener refuses (`no_grant`) or accepts, as the row says. `told` lists what the report told
    * the session, in order: the listener's reason for an outage, and `restored` for its end.
+   * `shown` is the host's answer for each outage notice: by default it was shown as it was told.
    */
-  function outageHarness() {
+  function outageHarness(shown: () => void | Promise<void> = () => undefined) {
     const told: string[] = [];
     const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
+      (why) => {
+        told.push(why);
+        return shown();
+      },
+      () => {
+        told.push("restored");
+      }
     );
     const register = (answer: "refused" | "accepted") =>
       registerWithRelay({
@@ -1192,7 +1198,9 @@ describe("one registration", () => {
       // session and warns about it, so it never goes out (INFRA-771 review).
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
       outage: inboundUnavailable(
-        (why) => told.push(why),
+        (why) => {
+          told.push(why);
+        },
         () => told.push("restored")
       ),
       send: (topics, delivery) => {
@@ -1210,7 +1218,9 @@ describe("one registration", () => {
   test("a session holding no relay subject registers nothing and is told once", async () => {
     const told: string[] = [];
     const outage = inboundUnavailable(
-      (why) => told.push(why),
+      (why) => {
+        told.push(why);
+      },
       () => told.push("restored")
     );
     const sent: unknown[] = [];
@@ -1244,7 +1254,9 @@ describe("one registration", () => {
       ownAgentSubject: AGENT,
       followed: [TEAM],
       outage: inboundUnavailable(
-        (why) => told.push(why),
+        (why) => {
+          told.push(why);
+        },
         () => told.push("restored")
       ),
       send: () => Promise.resolve("registered"),
@@ -1270,7 +1282,9 @@ describe("one registration", () => {
         ownAgentSubject: AGENT,
         followed: [TEAM],
         outage: inboundUnavailable(
-          (why) => told.push(why),
+          (why) => {
+            told.push(why);
+          },
           () => told.push("restored")
         ),
         send: () => Promise.reject(new Error("no_grant")),
@@ -1332,5 +1346,53 @@ describe("one registration", () => {
     await register("refused");
     await register("accepted");
     expect(told).toEqual(["no_grant", "no_grant", "restored"]);
+  });
+
+  /** Resolves once every promise settled so far has run its handlers. */
+  const nextTurn = (): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    return promise;
+  };
+
+  test("an outage notice the host could not show leaves the session untold: no end is told for it, and the next refusal tells the outage again", async () => {
+    let failing = true;
+    const { told, register } = outageHarness(() =>
+      failing ? Promise.reject(new Error("the mod is not linked")) : Promise.resolve()
+    );
+
+    await register("refused");
+    await nextTurn();
+    // The session never saw the outage, so it is told no end of it.
+    await register("accepted");
+    expect(told).toEqual(["no_grant"]);
+    failing = false;
+    await register("refused");
+    await nextTurn();
+    await register("accepted");
+    expect(told).toEqual(["no_grant", "no_grant", "restored"]);
+  });
+
+  test("an end accepted while the outage notice is still being shown is told once that notice is shown, and never when it could not be", async () => {
+    const showing: { resolve: () => void; reject: (error: Error) => void }[] = [];
+    const { told, register } = outageHarness(() => {
+      const shown = Promise.withResolvers<void>();
+      showing.push(shown);
+      return shown.promise;
+    });
+
+    await register("refused");
+    await register("accepted");
+    // The end waits for the outage notice, which the host is still showing.
+    expect(told).toEqual(["no_grant"]);
+    showing[0]?.resolve();
+    await nextTurn();
+    expect(told).toEqual(["no_grant", "restored"]);
+    // The second outage's notice is refused after its end was accepted: no end is told.
+    await register("refused");
+    await register("accepted");
+    showing[1]?.reject(new Error("the mod is not linked"));
+    await nextTurn();
+    expect(told).toEqual(["no_grant", "restored", "no_grant"]);
   });
 });

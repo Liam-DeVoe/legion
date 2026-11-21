@@ -27,9 +27,12 @@ const NEXT = "ses_outage_record_next"
 /** A notifier whose writes of a notice under `failing`'s heading are refused while it is set. */
 class RefusingNotifier extends FakeNotifier {
   failing: string | undefined
+  /** How many writes it refused. */
+  refused = 0
 
   override notification(notification: ChannelNotification): Promise<void> {
     if (this.failing !== undefined && notification.content.includes(this.failing)) {
+      this.refused += 1
       return Promise.reject(new Error("the mod is not linked"))
     }
     return super.notification(notification)
@@ -183,6 +186,34 @@ test("an end that could not be shown under one id leaves that id's record told, 
     expect(notices(notifier, "Envoy inbound restored")).toBe(0)
     expect(await toldIn(run.directory, NEXT)).not.toBe(true)
     expect(await toldIn(run.directory, SESSION)).toBe(true)
+  } finally {
+    await run.session.shutdown()
+  }
+}, 30_000)
+
+// The outage notice is refused by the notifier (the mod is not linked), and the listener then
+// accepts a registration while notices can be written again. The session never saw the outage, so
+// it is told no end of it, and its file records nothing told; the next outage is told again.
+test("a session whose outage notice could not be shown is told no end of that outage, and its next outage is told", async () => {
+  const notifier = new RefusingNotifier()
+  notifier.failing = "Envoy inbound unavailable"
+  const refusing = new Set([SESSION])
+  const run = await startRefusable(notifier, refusing)
+  try {
+    await waitFor(async () => notifier.refused >= 1, "the outage notice refused", run.state)
+    notifier.failing = undefined
+    refusing.delete(SESSION)
+    await run.registrations(SESSION, 3)
+    expect(notices(notifier, "Envoy inbound restored")).toBe(0)
+    expect(await toldIn(run.directory, SESSION)).not.toBe(true)
+    refusing.add(SESSION)
+    await waitFor(
+      async () =>
+        notices(notifier, "Envoy inbound unavailable") === 1 &&
+        (await toldIn(run.directory, SESSION)) === true,
+      "the next outage told, and its file recording it",
+      run.state,
+    )
   } finally {
     await run.session.shutdown()
   }

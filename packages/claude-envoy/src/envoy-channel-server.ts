@@ -292,9 +292,10 @@ export interface ChannelDeliveryPath extends ChannelDelivery {
   /**
    * Shows a notice of Envoy's own; a rejection says it was not shown. `addressed` names the
    * session the notice is for: the notice waits its turn behind every frame queued before it,
-   * and a `/clear` can move this process to another id while it waits, so the id is compared
-   * when the notice's turn comes, and a notice for an id this process no longer serves is
-   * refused rather than shown to the conversation it moved to.
+   * and a `/clear` can move Claude Code to another id while it waits, so the id is compared
+   * when the notice's turn comes, and a notice for an id this process no longer serves, or that
+   * Claude Code has left by a `/clear` this process has not taken up yet, is refused rather than
+   * shown to the conversation Claude Code moved to.
    */
   notice(content: string, addressed?: string): Promise<void>
 }
@@ -539,6 +540,12 @@ export function createChannelDelivery(input: {
   readonly configFile: SessionConfigFile
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
+  /**
+   * The id Claude Code is on, as its SessionStart hook last wrote it (`readSessionHandoff`); it
+   * names another id than `identity` while a `/clear` waits to be taken up (`adoptHandoff`), and
+   * nothing where the hook wrote none. Omitted for a session no `/clear` moves.
+   */
+  readonly pendingHandoff?: () => Promise<string | undefined>
 }): ChannelDeliveryPath {
   const inbox: ChannelInboxEntry[] = []
   let tail = Promise.resolve()
@@ -653,6 +660,18 @@ export function createChannelDelivery(input: {
         if (addressed !== undefined && addressed !== input.identity.id) {
           throw new Error(
             `the notice names session ${addressed}, and this process serves ${input.identity.id}`,
+          )
+        }
+        // Read at the notice's turn rather than when the server takes the `/clear` up: one that
+        // waits for a connection closed for good, or for the old id's DELETE the listener
+        // refused, has moved Claude Code already. A handoff file that cannot be read names no move.
+        const on =
+          addressed === undefined
+            ? undefined
+            : await input.pendingHandoff?.().catch(() => undefined)
+        if (on !== undefined && on !== addressed) {
+          throw new Error(
+            `the notice names session ${addressed}, and Claude Code moved to ${on}, which this process has not taken up yet`,
           )
         }
         await input.notifier.notification({ content })
@@ -814,19 +833,22 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /** The record the router above reads and writes, kept so a shutdown can wait for its writes
    *  and so the live view can read which Dispatch message a row is (`messageOf`). */
   let turns: UserTurnState | undefined
+  // The handoff file the SessionStart hook writes the id Claude Code is on to, for this process's
+  // parent: read before a notice's turn (`pendingHandoff`) and by each heartbeat (`adoptHandoff`).
+  const handoffFile =
+    options.handoffPid === undefined
+      ? undefined
+      : sessionHandoffFile(options.stateDirectory, options.handoffPid)
   const delivery = createChannelDelivery({
     identity,
     notifier: options.notifier,
     configFile: options.configFile,
     router: () => router,
+    ...(handoffFile === undefined ? {} : { pendingHandoff: () => readSessionHandoff(handoffFile) }),
   })
   const userTopics = new Set<string>()
   let heldRole: string | undefined
   let shuttingDown = false
-  const handoffFile =
-    options.handoffPid === undefined
-      ? undefined
-      : sessionHandoffFile(options.stateDirectory, options.handoffPid)
 
   /**
    * Every registry write runs through this chain, one at a time. The listener
@@ -1360,7 +1382,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * deaf after it recovered. Neither is said once shutdown has begun: a registration still on the
    * wire as the session leaves is no outage of a running session. Each is addressed to the id that
    * is current as it is said, so a `/clear` while it waits its turn refuses it rather than showing
-   * it to the conversation the process moved to, which is told its own (`bindStateFile`).
+   * it to the conversation the process moved to, which is told its own (`bindStateFile`). The
+   * outage notice's own outcome goes back to the report: one that could not be shown leaves the
+   * session untold, so no end is told for it.
    */
   const inboundOutage = inboundUnavailable(
     (why) => {
@@ -1368,14 +1392,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       process.stderr.write(
         `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
       )
-      showInboundNotice(inboundUnavailableNoticeText(why), true)
+      return showInboundNotice(inboundUnavailableNoticeText(why), true)
     },
     () => {
       if (shuttingDown) return
       process.stderr.write(
         "envoy-channel: this session receives again: its registration was accepted\n",
       )
-      showInboundNotice(inboundRestoredNoticeText(), false)
+      // A failed end is logged where it fails; nothing waits on it.
+      void showInboundNotice(inboundRestoredNoticeText(), false).catch(() => undefined)
     },
   )
 
@@ -1397,16 +1422,18 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * Shows the session one notice of its inbound (`inboundOutage`): the outage when `told` is true,
    * its end when false. The notice is addressed to the id that is current as it is said, and is
    * recorded as what that id was last told only once it was shown (`recordInboundOutage`); one
-   * that could not be shown is logged and records nothing.
+   * that could not be shown is logged, records nothing, and rejects, which the outage report
+   * reads for the outage notice.
    */
-  function showInboundNotice(text: string, told: boolean): void {
+  function showInboundNotice(text: string, told: boolean): Promise<void> {
     const addressed = identity.id
-    delivery.notice(text, addressed).then(
+    return delivery.notice(text, addressed).then(
       () => recordInboundOutage(addressed, told),
       (noticeError: unknown) => {
         process.stderr.write(
           `envoy-channel: the session could not be told that it receives ${told ? "nothing" : "again"} — ${messageFor(noticeError)}\n`,
         )
+        throw noticeError
       },
     )
   }
