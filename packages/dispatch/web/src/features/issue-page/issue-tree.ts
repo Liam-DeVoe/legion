@@ -358,25 +358,70 @@ export const FIRST_LINE_LIMIT = 100;
  */
 export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
-/** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
- *  where the words stop, or where a space and a word that does not start in lower case follow:
- *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. A
- *  full stop before a number ends an abbreviation too (`see p. 4`), not a sentence, unless the
- *  number opens a numbered label (`2. Then`), which starts the next sentence: digits and full
- *  stops, at most five characters, that end in a full stop before a space or where the words
- *  stop, the shape `LEADING_LABEL` reads. It is read past a leading label (`LEADING_LABEL`),
- *  which ends none: by every place that draws one line for a node (`firstLineOf`), by the
- *  issue's three sentences and by a person's quoted first sentence (`spec-decided-by.ts`'s
- *  `firstSentenceOf`), so the same words are split one way wherever the page draws them. */
-export const SENTENCE_END =
-  /(?:[!?]|\.(?!\s+\d(?![\d.]{0,3}\.(?:\s|$))))[)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
+/** A closing quote or bracket, which belongs to the sentence whose end mark it follows. */
+const CLOSING_MARK = /[)\]"'\u201d\u2019]/u;
+
+/** A numbered label at the start of a word: digits and one full stop, before a space or where
+ *  the text stops. */
+const NUMBERED_LABEL = /^(\d+)\.(?=\s|$)/u;
 
 /**
- * The node's own text to its first sentence end (`SENTENCE_END`) or `FIRST_LINE_LIMIT`
- * characters, whichever comes first, cut at a word wherever the limit falls near one. A
- * sentence end is a mark with any closing quote or bracket after it, where the words stop or a
- * word that does not start in lower case follows: a mark before a word in lower case
- * (`e.g. in`), or a full stop before a number (`see p. 4`), ends an abbreviation, not the
+ * How many characters of `text` its first sentence takes, its leading label included, or
+ * undefined where `text` holds no sentence end. Every place that splits words into sentences
+ * reads it: the one line drawn for a node (`firstLineOf`), the issue's three sentences
+ * (`IssueThreeThings.tsx`) and a person's quoted first sentence (`spec-decided-by.ts`'s
+ * `firstSentenceOf`), so the same words are split one way wherever the page draws them.
+ *
+ * A leading label (`LEADING_LABEL`) opens the first sentence and ends none, so the scan starts
+ * after it. A sentence end is a full stop, a question mark or an exclamation mark, with whatever
+ * closing quote or bracket the writer put after it, which belongs to the sentence it ends. A
+ * mark ends the sentence where the text stops after it, trailing whitespace aside, and ends none
+ * where no whitespace follows it, inside a token such as `x.yyyy` or `example.com`. A question
+ * or exclamation mark before a word ends the sentence whatever the word is, in lower case too. A
+ * full stop before a word in lower case ends an abbreviation (`e.g. in`), not the sentence, and
+ * so does a full stop before a number (`see p. 4`), unless the number is a numbered label that
+ * continues a list: digits and one full stop before whitespace or the end of the text, numbered
+ * 1 or one more than the text's own leading label, where that label is digits and a full stop
+ * (`2.`). Such a label starts the next sentence, so the full stop before it ends this one. Any
+ * other number after a full stop is part of the sentence and the scan goes on past it, so
+ * `as on p. 4. Then` ends at `4.`. A full stop before any other word, one in upper case or one
+ * that opens with a symbol, ends the sentence.
+ *
+ * The list rule misses a list that starts above 1 with no `1.` before it: `Do it now. 2. Then`
+ * ends at `2.`, not at `now.`. Such a list is rarer than the page and figure numbers after a
+ * full stop that the rule reads right.
+ */
+export function firstSentenceLength(text: string): number | undefined {
+  const label = LEADING_LABEL.exec(text)?.[0] ?? "";
+  const listed = NUMBERED_LABEL.exec(label);
+  const nextInList = listed === null ? 1 : Number(listed[1]) + 1;
+  for (let at = label.length; at < text.length; at += 1) {
+    const mark = text.charAt(at);
+    if (mark !== "." && mark !== "?" && mark !== "!") continue;
+    let end = at + 1;
+    while (CLOSING_MARK.test(text.charAt(end))) end += 1;
+    let word = end;
+    while (/\s/u.test(text.charAt(word))) word += 1;
+    if (word === text.length) return end;
+    if (word === end) continue;
+    if (mark !== ".") return end;
+    const next = text.slice(word);
+    if (/^\p{Ll}/u.test(next)) continue;
+    if (!/^\d/u.test(next)) return end;
+    const numbered = NUMBERED_LABEL.exec(next);
+    const number = numbered === null ? undefined : Number(numbered[1]);
+    if (number === 1 || number === nextInList) return end;
+  }
+  return undefined;
+}
+
+/**
+ * The node's own text to the end of its first sentence (`firstSentenceLength`) or
+ * `FIRST_LINE_LIMIT` characters, whichever comes first, cut at a word wherever the limit falls
+ * near one. A sentence ends at a mark with any closing quote or bracket after it, where the words
+ * stop or a word follows that the mark ends a sentence before: a question or exclamation mark
+ * ends one before any word, and a full stop before a word in lower case (`e.g. in`), or before a
+ * number that is no numbered label continuing a list (`see p. 4`), ends an abbreviation, not the
  * sentence. A leading label - a first word of at most five characters that ends in `.` and
  * holds a digit, as `R1.`, `12.` or `1.2.` - is part of the line and no sentence end, so a
  * statement's line runs on to the first sentence end after its label. A line held to the limit
@@ -397,11 +442,8 @@ export function firstLineOf(text: string): {
 } {
   const whole = text.replace(/\s+/gu, " ").trim();
   const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
-  const sentenceEnd = SENTENCE_END.exec(whole.slice(label.length));
-  const first =
-    sentenceEnd === null
-      ? undefined
-      : whole.slice(0, label.length + sentenceEnd.index + sentenceEnd[0].length);
+  const sentenceLength = firstSentenceLength(whole);
+  const first = sentenceLength === undefined ? undefined : whole.slice(0, sentenceLength);
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
     return { cut: first.length < whole.length, line: first, sentence: true };
   }

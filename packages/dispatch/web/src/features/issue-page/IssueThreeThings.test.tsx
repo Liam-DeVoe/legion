@@ -366,9 +366,9 @@ test("a bulleted summary draws its last item though it has no end mark", () => {
   }
 });
 
-// Review finding 4590606164: a leading label opens its sentence and ends none, and a mark before
-// a word in lower case ends an abbreviation, not a sentence, so each label names the sentence its
-// author wrote.
+// Review finding 4590606164: a leading label opens its sentence and ends none, and a full stop
+// before a word in lower case ends an abbreviation, not a sentence, so each label names the
+// sentence its author wrote.
 test("a sentence is ended neither at a leading label nor before a word in lower case", () => {
   const { lines, unmount } = bullets(
     summaryNode(
@@ -387,7 +387,8 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
 });
 
 // R1: the issue's three sentences read the same sentence end as a person's quote (`issue-tree.ts`'s
-// `SENTENCE_END`), so a full stop that a number follows ends an abbreviation, not a sentence.
+// `firstSentenceLength`), so a full stop that a number follows ends an abbreviation, not a
+// sentence.
 test("a sentence is not ended at an abbreviation that a number follows", () => {
   const { lines, unmount } = bullets(
     summaryNode(

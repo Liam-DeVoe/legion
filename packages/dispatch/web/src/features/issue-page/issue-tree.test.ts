@@ -1042,6 +1042,15 @@ test("firstLineOf runs past an abbreviation that a word in lower case follows", 
   });
 });
 
+test("firstLineOf ends a line at a question or exclamation mark before a word in lower case", () => {
+  expect(firstLineOf("Is this right? maybe not. Then more.")).toEqual({
+    cut: true,
+    line: "Is this right?",
+    sentence: true,
+  });
+  expect(firstLineOf("Stop! then go.")).toEqual({ cut: true, line: "Stop!", sentence: true });
+});
+
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
 // Basic Multilingual Plane is two UTF-16 units, and a line that ends on the first of them holds a
 // lone surrogate, which `encodeURIComponent` refuses and a row draws as a broken glyph.

@@ -3,7 +3,13 @@ import { type ReactNode, useMemo } from "react";
 import type { DisplayTree } from "../../api/types";
 import { pageInkBg, pageInkText, pageLineBorder, pageMutedText } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
-import { drawnLine, firstLineOf, LEADING_LABEL, SENTENCE_END, type TreeNode } from "./issue-tree";
+import {
+  drawnLine,
+  firstLineOf,
+  firstSentenceLength,
+  LEADING_LABEL,
+  type TreeNode,
+} from "./issue-tree";
 import { referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
@@ -122,21 +128,15 @@ export function IssueThreeThings({
 /** How many bullets the head draws at most: the three the requirement names (R5). */
 const BULLETS = 3;
 
-/** How many characters of `words` its leading label takes: a first word that opens its
- *  sentence and ends none (`LEADING_LABEL`). */
-function labelLength(words: string): number {
-  return LEADING_LABEL.exec(words)?.[0].length ?? 0;
-}
-
 /** `words` split into its sentences, each to its sentence end with the leading label it opens
- *  with, and the last to where the words stop whether or not it has an end. */
+ *  with (`firstSentenceLength`), and the last to where the words stop whether or not it has an
+ *  end. Each sentence's end is read from where that sentence starts, so the labels of a numbered
+ *  list follow on from one sentence to the next. */
 function sentencesOf(words: string): string[] {
   const sentences: string[] = [];
   let rest = words;
   while (rest !== "") {
-    const label = labelLength(rest);
-    const end = SENTENCE_END.exec(rest.slice(label));
-    const length = end === null ? rest.length : label + end.index + end[0].length;
+    const length = firstSentenceLength(rest) ?? rest.length;
     sentences.push(rest.slice(0, length));
     rest = rest.slice(length).trimStart();
   }
@@ -150,8 +150,8 @@ function sentencesOf(words: string): string[] {
  * The words are read in the runs they were written in: each paragraph and each heading one, and
  * each item of a bulleted or numbered list one, its own list inside it included. A paragraph's
  * or a heading's run is split at its sentence ends (`sentencesOf`), of which a leading label and
- * a mark before a word in lower case are none. A list item is a sentence of its own whether or
- * not its author ended it with a mark, because the item ends where the next one starts, so a
+ * a full stop before a word in lower case are none. A list item is a sentence of its own whether
+ * or not its author ended it with a mark, because the item ends where the next one starts, so a
  * list's last item is drawn too. A run's words are the reading's own (`wordsOf`), with each
  * reference in them named in plain words once the sentences are split (`referenceStandIns`), so
  * a name that opens with a label ("R1.") ends no sentence; nothing else is added, reordered or
@@ -179,9 +179,9 @@ function summarySentences(
     for (const child of children) walk(child, list);
   };
   walk(tree, false);
-  if (!runs.some(({ item, words }) => item || SENTENCE_END.test(words.slice(labelLength(words))))) {
+  if (!runs.some(({ item, words }) => item || firstSentenceLength(words) !== undefined)) {
     const whole = runs.map(({ words }) => words).join(" ");
-    const label = whole.slice(0, labelLength(whole));
+    const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
     const first = firstLineOf(whole.slice(label.length));
     // The label goes before the line and leaves its end where `first` read it, so the line ends
     // at its sentence's end exactly where `first` says it does (`sentence`).

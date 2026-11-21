@@ -683,9 +683,22 @@ test("a first sentence that opens with a numbered label holds the sentence after
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
 });
 
-// R5: a person's first sentence ends where the issue's three sentences end one. A mark before a
-// word in lower case ends an abbreviation, not the sentence, and a closing quote or bracket
-// after the mark belongs to the sentence it ends.
+// A number after a full stop starts the next sentence only where it continues a list.
+test("a numbered label continues a list from 1, and any other number after a full stop is part of the sentence", () => {
+  expect(firstSentenceOf("Draw it whole, as on p. 4. Then more words follow.")).toBe(
+    "Draw it whole, as on p. 4."
+  );
+  expect(firstSentenceOf("See fig. 3. It shows the cut.")).toBe("See fig. 3.");
+  expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
+  expect(firstSentenceOf("Two steps follow. 1. Open it.")).toBe("Two steps follow.");
+  // The rule's known miss: a list that starts above 1 with no `1.` before it reads its first
+  // label as part of the sentence before it.
+  expect(firstSentenceOf("Do it now. 2. Then go.")).toBe("Do it now. 2.");
+});
+
+// R5: a person's first sentence ends where the issue's three sentences end one. A full stop
+// before a word in lower case ends an abbreviation, not the sentence, and a closing quote or
+// bracket after the mark belongs to the sentence it ends.
 test("a first sentence runs past an abbreviation, and holds the closing quote after its mark", () => {
   expect(firstSentenceOf("Keep the memo, e.g. in the pane. Then more.")).toBe(
     "Keep the memo, e.g. in the pane."

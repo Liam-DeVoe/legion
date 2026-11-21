@@ -4,10 +4,9 @@ import { askIdOf, isReading } from "../decisions-filter/decisions-parts";
 import {
   drawnLine,
   firstLineOf,
+  firstSentenceLength,
   isStatement,
-  LEADING_LABEL,
   lineWordsRaw,
-  SENTENCE_END,
   type TreeNode,
 } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
@@ -297,23 +296,25 @@ export function specDecidedBy({
 
 /**
  * The first sentence of `text`, word for word: everything up to its first sentence end
- * (`SENTENCE_END`) - a full stop, question mark or exclamation mark, with the closing quote or
- * bracket the writer put after it, where the text stops or a word that does not start in lower
- * case follows - and the whole text where it holds none, with no limit of characters (R5). A
- * mark before a word in lower case ends an abbreviation (`e.g. in`), not the sentence. Line
- * breaks inside it are spaces, because the line it is drawn on is one line. A leading label is
- * no sentence end (`LEADING_LABEL`): a first word of at most five characters that ends in `.`
- * and holds a digit (`R1.`, `12.`) opens the sentence, as `firstLineOf` reads one. It is the
- * rule the issue's three sentences are split by, so the page splits the same words one way.
+ * (`firstSentenceLength`) - a full stop, question mark or exclamation mark, with the closing
+ * quote or bracket the writer put after it, where the text stops or a word follows that the mark
+ * ends a sentence before - and the whole text where it holds none, with no limit of characters
+ * (R5). A question or exclamation mark ends the sentence before any word. A full stop before a
+ * word in lower case (`e.g. in`), or before a number (`see p. 4`), ends an abbreviation, not the
+ * sentence, unless the number is a numbered label that continues a list from 1 or from the
+ * text's own leading label. Line breaks inside it are spaces, because the line it is drawn on is
+ * one line. A leading label is no sentence end (`LEADING_LABEL`): a first word of at most five
+ * characters that ends in `.` and holds a digit (`R1.`, `12.`) opens the sentence, as
+ * `firstLineOf` reads one. The issue's three sentences and `firstLineOf` read the same sentence
+ * end (`firstSentenceLength`), so the page splits the same words one way.
  *
  * It is not `firstLineOf`, which cuts a row's first line at 100 characters (R1): a person's
  * answer is quoted word for word, and a sentence of theirs is as long as they wrote it.
  */
 export function firstSentenceOf(text: string): string {
   const whole = text.replace(/\s+/gu, " ").trim();
-  const label = LEADING_LABEL.exec(whole)?.[0].length ?? 0;
-  const end = SENTENCE_END.exec(whole.slice(label));
-  return end === null ? whole : whole.slice(0, label + end.index + end[0].length);
+  const length = firstSentenceLength(whole);
+  return length === undefined ? whole : whole.slice(0, length);
 }
 
 /** Every node of the tree by its id, at its first placement, which is where a node drawn under
