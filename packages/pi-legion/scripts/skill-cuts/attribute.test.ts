@@ -1016,7 +1016,7 @@ test("each ranked skill's sessions file holds the copy's reading sessions after 
   });
 });
 
-/** R4's output directory for `world`, in copies.ts's columns. */
+/** The copies output directory for `world`, in copies.ts's columns. */
 function r4Dir(root: string, world: R4Tables): string {
   const rows = <C extends readonly string[]>(
     columns: C,
@@ -1255,7 +1255,9 @@ test("the command writes the count, its report, each cut's ranking and the model
     "- beta: acme/skills src/beta (0 sessions) ties with acme/tools plugins/acme-tools/skills/beta; the name has 1 unattributed session.",
     "- beta (src/beta): no read; 1 session read beta unattributed",
     "| acme/skills | 0123456789abcdef0123456789abcdef01234567 | 2 | 9 | 40 | 49 |",
-    "- skills-1 (acme/skills): 3 changed skills, in `skills-1/ranking.json`, with each one's reading sessions in `skills-1/sessions/<skill>.jsonl`; first: alpha (3), beta (0), gone (0). R4 read no copy at `skills/gone`: ranked with 0 sessions.",
+    "- skills-1 (acme/skills): 3 changed skills, in `skills-1/ranking.json`, with each one's reading sessions in `skills-1/sessions/<skill>.jsonl`; first: alpha (3), beta (0), gone (0). The copies output holds no copy at `skills/gone`: ranked with 0 sessions.",
+    "### Skills read that no copy in the copies output has",
+    "A skill that code, an agent definition or an installer loads into a session. The diagnosis of unread skills leaves these out.",
     "The models queries read 4 files; the head of 4 of them names a model. The 3 read sessions of the copies: with a model 3; whose file's head names none 0; in no models query's rows 0. Sessions two queries give two models for (the first day's is kept): 0.",
     "The gateway serves a model when its id is the id of one of the configuration's `servedModels`: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol.",
     `| ${sonnet} | yes | yes | 2 |`,
@@ -1304,7 +1306,7 @@ test("without --models the report says so and writes no models table and no mode
   expect(existsSync(path.join(out, "skills-1", "models"))).toBe(false);
 });
 
-test("the command refuses missing flags, an --out inside an input, an unknown cut, and R4 tables of other columns", () => {
+test("the command refuses missing flags, an --out inside an input, an unknown cut, and copies tables of other columns", () => {
   const root = path.join(dir, "refusals");
   const countDir = tree(path.join(root, "count"), { "run.log": "" });
   const modelsDir = tree(path.join(root, "models"), { "run.log": "" });

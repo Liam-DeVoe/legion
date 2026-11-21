@@ -1,5 +1,5 @@
 /**
- * The blind judge of the behaviour test (plan, R5 `judge.ts`): one plain Messages API call per
+ * The blind judge of the behaviour test: one plain Messages API call per
  * reply with `prompts/judge.md`, whose header pins the model, the thinking budget, `max_tokens`,
  * the temperature and the effort of every request (readers.ts, `promptBody`).
  *
@@ -304,7 +304,8 @@ export function newSeed(): string {
 
 /** `items` in the order the seed gives (a Fisher-Yates shuffle whose numbers are SHA-256 of the
  *  seed and a counter), each named by an opaque id: 12 hex digits of SHA-256 of the seed and its
- *  place, so an id says nothing of the item it names. The same seed gives the same order and ids. */
+ *  place, so an id says nothing of the item it names. The same seed gives the same order and
+ *  ids. */
 export function blindOrder<T>(items: readonly T[], seed: string): { id: string; item: T }[] {
   let counter = 0;
   const random = () =>

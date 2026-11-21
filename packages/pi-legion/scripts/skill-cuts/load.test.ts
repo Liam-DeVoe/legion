@@ -56,12 +56,13 @@ import {
 import { sendOrder } from "./replay";
 import type { TaskLabel } from "./score";
 
-// The load test (plan, R5 `load.ts`). Its detection rows read the request bodies of the pinned
+// The load test (load.ts). Its detection rows read the request bodies of the pinned
 // hosts and the gateway's replies to them (testdata/CAPTURE.md): F2, the body Oh My Pi 18.18.6
 // sends for a replayed history whose assistant message reads skill://alpha (`omp -p --mode json
 // --no-session --hook <replay hook>` against the recorder); F5, the gateway's replies to bodies
 // made from F2 (`bun send.ts <body.json>`); and F3, the bodies Claude Code 2.1.311 sent for a task
-// that calls `Skill` on acme-tools:alpha and `Read` on beta's SKILL.md (`CLAUDE_CONFIG_DIR=<scratch>
+// that calls `Skill` on acme-tools:alpha and `Read` on beta's SKILL.md
+// (`CLAUDE_CONFIG_DIR=<scratch>
 // ANTHROPIC_BASE_URL=<recording proxy> claude -p --output-format stream-json --verbose
 // "<prompt>"`). The subagent row's profile carries the system prompt and tools F1's `task`
 // subagent recorded in its `session_init` line (F1, `HOME=<scratch> omp -p --session-dir
@@ -433,7 +434,7 @@ describe("each task's loads feed score.ts's load rule", () => {
     });
     expect(skillOutcome([task("n1", "need", [true], 1)], 1)).toEqual({
       descriptionFault: null,
-      reason: "no verdict: R6's rule is of 3 runs a task, and this test runs 1",
+      reason: "no verdict: the load test's rule takes 3 runs a task, and this test runs 1",
     });
   });
 });
@@ -798,7 +799,7 @@ describe("skill-cuts load with saved captures", () => {
       /task near-1 \(near-miss, written\): loaded in 2 of 3 runs \(.*\): a fault: a near-miss task loads it in more than 1 of 3 runs/
     );
     expect(ran.stdout).toContain(
-      "the skill alpha: a description fault: tasks near-1 (R6's test has at least 5 need and 5 near-miss tasks; this one has 1 and 1)"
+      "the skill alpha: a description fault: tasks near-1 (a load test has at least 5 need and 5 near-miss tasks; this one has 1 and 1)"
     );
     // Each task in its own profile's context: need-1 the one its line names, near-1 --profile's.
     expect(ran.stdout).toContain(
@@ -1354,7 +1355,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
         },
       ]);
       expect(ran.stdout).toContain(
-        "no verdict: R6's rule is of 3 runs a task, and this test runs 1"
+        "no verdict: the load test's rule takes 3 runs a task, and this test runs 1"
       );
     },
     HOST_ROW_TIMEOUT_MS

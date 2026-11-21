@@ -1,5 +1,5 @@
 /**
- * The runner's readers (the plan's R5 `readers.ts`), and the one way each prompt of `prompts/`
+ * The runner's readers (the `read` command's prompts), and the one way each prompt of `prompts/`
  * reaches the model, which judge.ts takes too.
  *
  * A prompt file, `prompts/<name>.md`, is a header and a text. The header, between two `---` lines,
@@ -19,7 +19,7 @@
  * input does not hold.
  *
  * The readers, each with the input it reads and the answer it gives:
- * - `case` (R2): the lines of a skill's base text a case may name (those the session's own read
+ * - `case`: the lines of a skill's base text a case may name (those the session's own read
  *   of each file held, each with its number in the file; a file the session did not read is not
  *   shown) and the session around the skill's read; the first step the skill governs, its message
  *   index, the line it exercises, a criterion stating pass and fail, a violating step (a plausible
@@ -27,26 +27,26 @@
  *   message before the step that states the line's instruction in any wording, with words quoted
  *   from it; or no step. The case builder drops a proposal whose line is not a whole line of the
  *   base text, or of the session's read of its file, or that names a restatement.
- * - `restate` (R2): a case's line and one window of the messages before its step (a long message
+ * - `restate`: a case's line and one window of the messages before its step (a long message
  *   in parts); each message that states the line's instruction in any wording, with words quoted
  *   from it. The case builder reads every message before the step this way, window by window, and
  *   drops a case on any.
- * - `audit` (R2): a case's line, the messages before its step as the judge reads them, and its
+ * - `audit`: a case's line, the messages before its step as the judge reads them, and its
  *   real step, never its criterion; whether the step follows the line, breaks it, or is not a
  *   step the line governs, with a reason. The case builder keeps a case only when it follows.
- * - `map` (R3): a skill's base and cut texts and the rule-by-rule audit of the cut, if any; each rule
+ * - `map`: a skill's base and cut texts and the rule-by-rule audit of the cut, if any; each rule
  *   of the base text with its line in the cut text or why it is gone, called kept, narrowed,
  *   widened or lost, with the audit's words where the audit answers it.
- * - `attack` (R3): a skill's cut text; each vague phrase, undefined term, rule nobody can check and
+ * - `attack`: a skill's cut text; each vague phrase, undefined term, rule nobody can check and
  *   line that reads two ways, by file and line.
- * - `same-job` (R4): every skill's id, repository, name and description; each pair whose
+ * - `same-job`: every skill's id, repository, name and description; each pair whose
  *   descriptions give the same task to load them for.
- * - `sentence` (R4): skills' SKILL.md texts; each place one holds the sentence "disagrees with the
+ * - `sentence`: skills' SKILL.md texts; each place one holds the sentence "disagrees with the
  *   code" in any wording.
- * - `names` (R7): every skill's name and description, its load test's fault if any, and the names
+ * - `names`: every skill's name and description, its load test's fault if any, and the names
  *   in use; each skill nominated (with its risk, the task, the reason and one to three new names)
  *   or not. Each skill with a fault is nominated.
- * - `tasks` (R6): a skill's name and description and first user messages of real sessions; search
+ * - `tasks`: a skill's name and description and first user messages of real sessions; search
  *   terms, and at least TASKS_PER_LABEL need and near-miss tasks, each labelled, each taken from a
  *   message by its id or written and marked written. Each need task says whether the skill governs
  *   its first step (`firstStep`: an agent doing it would read the skill at once, before any other
@@ -71,10 +71,10 @@ import { TaskLabel } from "./score";
 export const PROMPTS_DIR = path.join(import.meta.dir, "prompts");
 /** The most times a reader asks for one batch before it fails. */
 export const READER_TRIES = 3;
-/** The fewest tasks of each label a load test takes (R6: at least 5 need and 5 near-miss). */
+/** The fewest tasks of each label a load test takes: at least 5 need and 5 near-miss. */
 export const TASKS_PER_LABEL = 5;
 /** What a names answer is refused for when a nomination's reason or task says only that the job is
- *  not clear from the name alone (R7); a run counts the refusals that hold it. */
+ *  not clear from the name alone; a run counts the refusals that hold it. */
 export const NAME_ONLY_REFUSAL = "says only that the job is not clear from the name alone";
 
 /** The settings a prompt file's header pins. With thinking on, the Messages API takes temperature
@@ -105,7 +105,8 @@ const HEADER_LINE = /^([a-z_]+): *(\S(?:.*\S)?) *$/;
 const NUMBER = /^-?\d+(?:\.\d+)?$/;
 
 /** The issues of `list` under the path `at`. An answer no option of a union takes is read as the
- *  option it came closest to, the one with the fewest issues, so the refusal names what is wrong. */
+ *  option it came closest to, the one with the fewest issues, so the refusal names what is
+ *  wrong. */
 function issueLines(list: readonly z.core.$ZodIssue[], at: readonly PropertyKey[]): string[] {
   return list.flatMap((issue) => {
     const where = [...at, ...issue.path];
@@ -171,7 +172,8 @@ interface UserPart {
 }
 
 /** The request body of one call with `prompt`: its pinned settings, the prompt as the system
- *  prompt, and `parts` as the one user message. The reply streams, and the gateway reads it whole. */
+ *  prompt, and `parts` as the one user message. The reply streams, and the gateway reads it
+ *  whole. */
 export function promptBody(prompt: Prompt, parts: readonly UserPart[]): MessagesBody {
   const { model, thinking_budget, max_tokens, temperature, effort } = prompt.settings;
   return {
@@ -336,7 +338,7 @@ function fileBlocks(files: readonly File[]): string {
     .join("\n\n");
 }
 
-// The case reader (R2).
+// The case reader.
 
 /** A message of a transcript as the case reader reads it: its index in the session, its role, and
  *  its text (judge.ts's `renderMessage`, with the skill's read results left out). */
@@ -455,7 +457,7 @@ const caseReader: Reader<CaseInput, CaseAnswer> = {
     ].join("\n\n"),
 };
 
-// The restatement reader (R2): the whole history before a case's step, window by window.
+// The restatement reader: the whole history before a case's step, window by window.
 
 /** One window of the messages before a case's step. A message longer than a window comes in
  *  parts, each under the message's index, its text opening with a note of which part it is. */
@@ -495,7 +497,7 @@ const restateReader: Reader<RestateInput, RestateAnswer> = {
     ].join("\n\n"),
 };
 
-// The audit reader (R2): the real step against the line, without the criterion.
+// The audit reader: the real step against the line, without the criterion.
 
 /** A case's line, the messages before its step as the judge reads them (judge.ts, `beforeText`),
  *  and its real step (judge.ts, `stepText`). Never the case's criterion. */
@@ -520,7 +522,7 @@ const auditReader: Reader<AuditInput, AuditAnswer> = {
     ].join("\n\n"),
 };
 
-// The map reader (R3).
+// The map reader.
 
 export const MapInput = z.strictObject({
   skill: z.string().min(1),
@@ -571,7 +573,7 @@ const mapReader: Reader<MapInput, MapAnswer> = {
     ].join("\n\n"),
 };
 
-// The attack reader (R3).
+// The attack reader.
 
 export const AttackInput = z.strictObject({
   skill: z.string().min(1),
@@ -604,7 +606,7 @@ const attackReader: Reader<AttackInput, AttackAnswer> = {
   render: (input) => `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
 };
 
-// The same-job reader (R4).
+// The same-job reader.
 
 export const SameJobInput = z
   .strictObject({
@@ -647,7 +649,7 @@ const sameJobReader: Reader<SameJobInput, SameJobAnswer> = {
       .join("\n")}\n</skills>`,
 };
 
-// The sentence reader (R4).
+// The sentence reader.
 
 export const SentenceInput = z
   .strictObject({
@@ -695,7 +697,7 @@ const sentenceReader: Reader<SentenceInput, SentenceAnswer> = {
       .join("\n\n"),
 };
 
-// The names reader (R7).
+// The names reader.
 
 /** The words a reason can be made of and still say only that the job is not clear from the name
  *  alone: none of them names a task the name suggests or hides. */
@@ -739,12 +741,12 @@ const NamesInput = z
           repo: z.string().min(1),
           name: z.string().min(1),
           description: z.string(),
-          /** What R6's load test found wrong with the description, or null. */
+          /** What the skill's load test found wrong with the description, or null. */
           descriptionFault: z.string().min(1).nullable(),
         })
       )
       .min(1),
-    /** Every skill name on R4's list: no proposed name may be one. */
+    /** Every skill name in the copies output's list: no proposed name may be one. */
     namesTaken: z.array(z.string().min(1)),
   })
   .superRefine((input, ctx) => uniqueIds(input.skills, ctx, "skills"));
@@ -827,7 +829,7 @@ const namesReader: Reader<NamesInput, NamesAnswer> = {
     ].join("\n\n"),
 };
 
-// The tasks reader (R6).
+// The tasks reader.
 
 export const TasksInput = z
   .strictObject({
@@ -989,13 +991,13 @@ export async function runReader(
   return { answer: asked.answer, refusals: asked.refusals, spent: asked.spent };
 }
 
-// The readers' positive controls (plan R3 and R4). Each plants a known finding in a copy of real
+// The readers' positive controls. Each plants a known finding in a copy of real
 // input, runs the reader once on it, and holds only when the answer names that finding: the map
 // reader calls a deleted rule lost, the attack reader lists an added vague line, the same-job
 // reader pairs a planted rewording of a description with its original, and the sentence reader
 // finds a planted rewording of the sentence.
 
-/** The line the attack control adds (plan R3, c-attack). */
+/** The line the attack control adds. */
 export const ATTACK_PLANTED_LINE = "Run the tests where needed.";
 
 /** The `.md` files of the skill directory `dir` (SKILL.md and its references), SKILL.md first and
@@ -1059,7 +1061,8 @@ function withLineAdded(text: string, line: string): { text: string; line: number
 }
 
 /** The planted input of `control` and its check. Throws when the control cannot be planted: a
- *  line to delete that the cut or the base text lacks, an id given twice, or an id the input lacks. */
+ *  line to delete that the cut or the base text lacks, an id given twice, or an id the input
+ *  lacks. */
 export function plantControl(control: Control): Planted {
   switch (control.reader) {
     case "map": {

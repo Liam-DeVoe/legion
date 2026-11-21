@@ -1,6 +1,6 @@
 /**
- * R1 of the skill-cuts plan, the attribution: the read count's totals (count.sql's rows, one psql
- * output per store and UTC day of file mtime) set against R4's copies (copies.ts's output), into
+ * The attribution of the read count: the count's totals (count.sql's rows, one psql output per
+ * store and UTC day of file mtime) set against the copies output's copies (copies.ts), into
  * one row per skill copy with its sessions, the report beside it, and each cut's ranking.
  *
  *   bun scripts/skill-cuts/attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir>
@@ -19,7 +19,7 @@
  *              lists every query run, `<time>\t<store>\t<day or hour>\trc=<status>\tseconds=<n>\t
  *              <its stderr>`, a `FAILED ...` line for each query given up, and `END <time>` when
  *              the run ended.
- *   --copies   R4's output (copies.ts): skill-copies.tsv, prefix-table.tsv, installers.tsv,
+ *   --copies   The copies output (copies.ts): skill-copies.tsv, prefix-table.tsv, installers.tsv,
  *              loaders.tsv, manifests.tsv and repositories.tsv, each with the columns copies.ts
  *              exports for it.
  *   --spans    One JSON line per store: `{store, earliest_mtime_ms, files}`, the store's earliest
@@ -86,7 +86,8 @@
  *   skill-read-count.tsv   READ_COUNT_COLUMNS, one row per copy of skill-copies.tsv, in its order:
  *                          repository, path, name, sessions, reference_sessions,
  *                          unattributed_sessions (of the name), tie (each copy of the name it ties
- *                          with, `<repository> <path>`, joined by `; `), loaded (yes or no), status.
+ *                          with, `<repository> <path>`, joined by `; `), loaded (yes or no),
+ *                          status.
  *   skill-read-count.md    The end time and the window; the stores with their spans, earliest
  *                          record and earliest read; each failed, split or missing query; the
  *                          attribution rule with the units each store's context installs; the
@@ -94,8 +95,9 @@
  *                          the mapped prefixes with their copies; the ties; the loaded list; per
  *                          repository, the skills with no read; the two Claude Code lists; per
  *                          repository, the bytes of its skill names and descriptions at the commit
- *                          R4 read; the rankings; and, with --models, the models of the reading
- *                          sessions, the models queries' issues and each cut's shares.
+ *                          the copies output read; the rankings; and, with --models, the models
+ *                          of the reading sessions, the models queries' issues and each cut's
+ *                          shares.
  *   <cut id>/ranking.json  For each `--changed` cut, the cut repository's changed skills, each
  *                          `{skill, sessions}` (the sessions of that repository's copy), in the
  *                          order of score.ts's `rankSkills` (most sessions first, a tie by name).
@@ -563,7 +565,7 @@ export function sessionModels(
 }
 
 // ---------------------------------------------------------------------------------------------
-// the spans file and R4's tables
+// the spans file and the copies output's tables
 
 /** One line of the spans file. */
 export const Span = z.looseObject({
@@ -601,7 +603,7 @@ export type LoadersRow = Columns<typeof LOADERS_COLUMNS>;
 export type RepositoriesRow = Columns<typeof REPOSITORIES_COLUMNS>;
 export type ManifestsRow = Columns<typeof MANIFESTS_COLUMNS>;
 
-/** The tables of R4's output this file reads. */
+/** The tables of the copies output (copies.ts) this file reads. */
 export interface R4Tables {
   readonly copies: readonly SkillCopiesRow[];
   readonly prefixes: readonly PrefixTableRow[];
@@ -610,8 +612,8 @@ export interface R4Tables {
   readonly repositories: readonly RepositoriesRow[];
 }
 
-/** R4's output as `readR4` reads it: the tables the attribution reads, and manifests.tsv, which
- *  build.ts's profiles read. */
+/** The copies output as `readR4` reads it: the tables the attribution reads, and manifests.tsv,
+ *  which build.ts's profiles read. */
 export interface R4Output extends R4Tables {
   readonly manifests: readonly ManifestsRow[];
 }
@@ -638,7 +640,7 @@ function readTable<C extends readonly string[]>(
   return parseTsv(text) as Columns<C>[];
 }
 
-/** R4's output in its directory `dir`. */
+/** The copies output in its directory `dir`. */
 export function readR4(dir: string): R4Output {
   return {
     copies: readTable(dir, "skill-copies.tsv", SKILL_COPIES_COLUMNS),
@@ -815,7 +817,7 @@ export interface StoreCount {
   readonly units: readonly StoreUnit[];
 }
 
-/** A skill name the count holds reads of that no copy of R4 has. */
+/** A skill name the count holds reads of that no copy of the copies output has. */
 export interface NameWithoutCopy {
   readonly name: string;
   readonly sessions: number;
@@ -969,7 +971,7 @@ export interface Placement {
   readonly outcome: string | undefined;
 }
 
-/** The placing of reads by the rules of this file's header, for one count and one R4 output. */
+/** The placing of reads by the rules of this file's header, for one count and one copies output. */
 export interface Placer {
   /** Where a read of the copy path `copyPath` of the skill `skill` in the store `store` goes. */
   place(store: string, copyPath: string, skill: string): Placement;
@@ -984,7 +986,8 @@ export interface Placer {
 
 /** The one place a read's copy is decided (the header's steps 1 to 4): `attribute` counts each
  *  row where this puts it, and build.ts keeps a session only when this puts its read at the cut's
- *  copy. Throws when R4's tables name a copy that skill-copies.tsv does not hold. */
+ *  copy. Throws when a prefix-table.tsv row, or an installers.tsv row that installs a copy, names
+ *  a copy that skill-copies.tsv does not hold. */
 export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
   const copies = new Map<string, SkillCopiesRow>();
   for (const row of r4.copies) copies.set(copyKey(row.repository, row.path), row);
@@ -1102,8 +1105,9 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
   return { place, storeUnits, members, installedInContext };
 }
 
-/** The attribution of the count's rows `outputs` to R4's copies, by the rules of this file's
- *  header. Throws when R4's tables name a copy that skill-copies.tsv does not hold. */
+/** The attribution of the count's rows `outputs` to the copies output's copies, by the rules of
+ *  this file's header. Throws as `placer` does, when a prefix-table.tsv row, or an installers.tsv
+ *  row that installs a copy, names a copy that skill-copies.tsv does not hold. */
 export function attribute(
   config: SkillCutsConfig,
   outputs: readonly QueryOutput[],
@@ -1328,8 +1332,8 @@ function copyStatus(sessions: number, ompInstalls: boolean, claudeInstalls: bool
 // rankings
 
 /** One cut's ranking: its changed skills with the sessions of its repository's copy, in
- *  `rankSkills` order (each row with its skill directory), and each changed skill directory R4
- *  read no copy at. */
+ *  `rankSkills` order (each row with its skill directory), and each changed skill directory the
+ *  copies output holds no copy at. */
 export interface Ranking {
   readonly cut: string;
   readonly repository: string;
@@ -1342,8 +1346,8 @@ export interface Ranking {
 }
 
 /** The ranking of the cut `cut` of `repository` whose changed skill directories are `changed` (the
- *  lines of its `--changed` file). A directory R4 read no copy at is ranked with 0 sessions, under
- *  its directory's name, and named in `missing`. */
+ *  lines of its `--changed` file). A directory the copies output holds no copy at is ranked with 0
+ *  sessions, under its directory's name, and named in `missing`. */
 export function rankChanged(
   attribution: Attribution,
   cut: string,
@@ -1509,8 +1513,8 @@ export function modelsBySkillTsv(attribution: Attribution, models: SessionModels
 }
 
 /** Each ranked changed skill of `ranking`, in rank order, with the read sessions (`sessionKey`) of
- *  the cut repository's copy after every attribution rule: none for a directory R4 read no copy
- *  at. */
+ *  the cut repository's copy after every attribution rule: none for a directory the copies output
+ *  holds no copy at. */
 export function rankedSessions(
   attribution: Attribution,
   ranking: Ranking
@@ -1831,7 +1835,7 @@ export function readCountMarkdown(report: Report): string {
     "",
     "1. The prefix table (prefix-table.tsv): a read goes to the copy that every row whose prefix matches its copy path maps to, when they map to one copy.",
     "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository.",
-    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. When their installer rows hold exactly one copy of the read's skill name, the read goes to that copy.",
+    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are their installer rows' copies and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
@@ -1900,7 +1904,7 @@ export function readCountMarkdown(report: Report): string {
     );
   }
 
-  say("", "### Skills read that no copy R4 read has", "");
+  say("", "### Skills read that no copy in the copies output has", "");
   if (attribution.namesWithoutCopy.length === 0) say("None.");
   for (const item of attribution.namesWithoutCopy) {
     say(
@@ -1912,7 +1916,7 @@ export function readCountMarkdown(report: Report): string {
     "",
     "## Loaded skills",
     "",
-    "A skill that code, an agent definition or an installer loads into a session. R6 leaves these out.",
+    "A skill that code, an agent definition or an installer loads into a session. The diagnosis of unread skills leaves these out.",
     ""
   );
   const loaded = attribution.copies.filter((copy) => copy.loadedBy.length > 0);
@@ -1986,7 +1990,7 @@ export function readCountMarkdown(report: Report): string {
     say(
       `- ${ranking.cut} (${ranking.repository}): ${ranking.rows.length} changed skills, in ${code(`${ranking.cut}/ranking.json`)}, with each one's reading sessions in ${code(`${ranking.cut}/sessions/<skill>.jsonl`)}; first: ${top || "none"}.` +
         (ranking.missing.length > 0
-          ? ` R4 read no copy at ${ranking.missing.map(code).join(", ")}: ranked with 0 sessions.`
+          ? ` The copies output holds no copy at ${ranking.missing.map(code).join(", ")}: ranked with 0 sessions.`
           : "") +
         (skipped.length > 0
           ? ` No sessions file for ${skipped.join(", ")}: its name is no file name, or two ranked directories share it.`

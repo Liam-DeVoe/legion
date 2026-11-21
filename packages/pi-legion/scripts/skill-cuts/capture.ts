@@ -1,11 +1,12 @@
 /**
- * The capture of one arm of a case (plan, R5 `capture.ts`): the request body the pinned Oh My Pi
- * 18.18.6 sends for the arm's messages in the case's context, which replay.ts then sends to the
- * gateway. `captureBody(c, arm, options)` runs
+ * The capture of one arm of a case (README.md, "The harness strings"): the request body the pinned
+ * Oh My Pi 18.18.6 sends for the arm's messages in the case's context, which replay.ts then sends
+ * to the gateway. `captureBody(c, arm, options)` runs
  *
- *     omp --profile capture -p --mode json --no-session --model <case model>
+ *     omp --profile capture -p --mode json --session-dir <scratch sessions> --model <case model>
  *         --thinking <case thinking> --hook replay-hook.ts [--extension <plugin>]...
- *         [--append-system-prompt <file>] <placeholder prompt>
+ *         [--append-system-prompt <file>] [--tools <the recorded tool names>]
+ *         <placeholder prompt>
  *
  * with a scratch HOME (and, for a devbox context with a user-level context file, CLAUDE_CONFIG_DIR
  * at context.ts's scratch Claude Code config directory), in the case's context (context.ts),
@@ -77,8 +78,9 @@
  * the run, the cut and the skill under test; the path of each context file's block (`<file
  * path="<cwd>/AGENTS.md">`, or the scratch Claude Code config directory's `CLAUDE.md`); and, in a
  * prompt it builds, the workstation's `- OS:` line of the pod. Such a string is a factor of the
- * measure: on one case of R2, a working directory that named the skill had its reference read in
- * 12 and 33 of 40 runs, and one that named no skill in 0 and 1 of 40. So every string of a body
+ * measure: on one case of a behaviour screen, a working directory that named the skill had its
+ * reference read in 12 and 33 of 40 runs, and one that named no skill in 0 and 1 of 40. So every
+ * string of a body
  * that comes from the capture and not from the session is replaced, before the body is saved, by
  * the session's recorded value, or by a neutral one where the store holds none
  * (`options.session`, `sessionFacts`): the working directory is the session header's `cwd` (or
@@ -368,8 +370,8 @@ export interface CaptureRecord {
     readonly extra: readonly string[];
     readonly leftOut: readonly { readonly name: string; readonly reason: string }[];
   } | null;
-  /** Each installed skill's hint: the runner's cache key, Oh My Pi's key, and whether this
-   *  capture had it written. */
+  /** Each listed skill's hint (an installed skill that is not hidden): the runner's cache key, Oh
+   *  My Pi's key, and whether this capture had it written. */
   readonly hints: readonly {
     readonly skill: string;
     readonly hint: string;
@@ -1477,13 +1479,17 @@ export async function captureBody(
     );
     ompRun = child;
     const timeoutMs = options.timeoutMs ?? RUN_TIMEOUT_MS;
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
     const code = await child.exited;
     clearTimeout(timer);
     ompRun = undefined;
     if (hintFailure !== undefined) throw hintFailure.error;
     stderr = existsSync(err) ? readFileSync(err, "utf8") : "";
-    const ended = `${child.signalCode ?? `exit ${code}`}${child.signalCode === "SIGKILL" ? ` after ${timeoutMs} ms` : ""}`;
+    const ended = `${child.signalCode ?? `exit ${code}`}${timedOut ? ` after ${timeoutMs} ms, its time limit` : ""}`;
     const tail = stderr.trim().split("\n").slice(-6).join("\n");
     exit = {
       code: child.signalCode === null ? code : null,

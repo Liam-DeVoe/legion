@@ -704,7 +704,8 @@ function controlText(name: string): string {
 }
 
 /** The transcript text of the control session c-other-model, which no row of CONTROL_SESSIONS
- *  holds: F1 with its own first request, run on openai/gpt-6.1-sol, whose first reply reads alpha. */
+ *  holds: F1 with its own first request, run on openai/gpt-6.1-sol, whose first reply reads
+ *  alpha. */
 function otherModelControlText(): string {
   const lines = f1Lines();
   setText(lines, 0, () => "Run the alpha checklist on the other model.");

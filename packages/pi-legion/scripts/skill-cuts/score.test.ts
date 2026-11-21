@@ -24,8 +24,9 @@ import {
   walk,
 } from "./score";
 
-// The rules of R5's table (plan "The rules (`score.ts`)"), R6's load rule and R7's poor-name rule,
-// one row on each side of each boundary. Every row is built here: this file reads no fixture. A
+// The rules of the behaviour test (score.ts's header), the load test's fault rule and the name
+// test's poor-name rule, one row on each side of each boundary. Every row is built here: this
+// file reads no fixture. A
 // row is a name, the call it checks and the value that call must give.
 
 /** `total` run records of one case, stage and arm: `passes` passes, the rest fails. */
@@ -499,7 +500,7 @@ const rows: [string, () => unknown, unknown][] = [
     true,
   ],
 
-  // load fault (R6), per task of 3 runs.
+  // load fault, per task of 3 runs.
   [
     "a need task loaded on 1 of 3 runs is a fault",
     () => taskFault({ label: "need", loads: 1 }),
@@ -523,7 +524,7 @@ const rows: [string, () => unknown, unknown][] = [
   ["a description with one faulty task is a fault", () => descriptionFault(failing), true],
   ["a description with no faulty task is no fault", () => descriptionFault(passing), false],
 
-  // poor name (R7): the current name fails the load test and a proposed name passes.
+  // poor name: the current name fails the load test and a proposed name passes.
   ["current fails, proposed passes: a poor name", () => poorName(failing, passing), true],
   ["current fails, proposed fails: no poor name", () => poorName(failing, failing), false],
   ["current passes, proposed passes: no poor name", () => poorName(passing, passing), false],

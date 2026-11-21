@@ -101,7 +101,8 @@
  *    line in the base text and in the read, a quote or restatement of it, and the profile of the
  *    reads before it) need the reader's answer, so they run after it and before the restatement
  *    check's and the audit's readers.
- * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's base
+ * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's
+ *    base
  *    text (`--old`) that a case may name: those of each file that the session's own successful
  *    reads of that file hold whole (the text after its `[Skill file: …]` line, each line trimmed,
  *    among the messages the reader reads), each with its number in the base file. A file the
@@ -287,7 +288,8 @@
  * whose first step it does not govern is left out, and the summary counts it (`droppedNeed`) and
  * keeps it with the reader's reason (`dropped`). The tasks file holds one JSON line per task,
  * labelled before any run: `{"id", "text", "label", "source": "session", "store", "pathHash"}` or
- * `{"id", "text", "label", "source": "written"}`. `<out>.summary.json` holds the terms, each query's
+ * `{"id", "text", "label", "source": "written"}`. `<out>.summary.json` holds the terms, each
+ * query's
  * row count (or its error), the messages offered, each task's reason, and the spend. Its queries,
  * one per store and day, take most of its time (an hour and more on the real stores), so it goes
  * on as build-cases does: the summary records the inputs (SKILL.md's SHA-256, the stores and the
@@ -3435,7 +3437,8 @@ const CasesInputs = z.strictObject({
 });
 type CasesInputs = z.infer<typeof CasesInputs>;
 
-/** The files of the copies output that build-cases reads (readCopies, and attribute.ts's readR4). */
+/** The files of the copies output that build-cases reads (readCopies, and attribute.ts's
+ *  readR4). */
 const COPIES_READ = [
   "installers.tsv",
   "loaders.tsv",

@@ -1451,7 +1451,7 @@ describe("behaviour", () => {
     expect(load.stderr).toContain(`--omp ${path.join(bin, "missing")} names no file`);
   }, 60_000);
 
-  test("the false-loss chance is the procedure's own, exact, and old at 10 of 10 no longer gives 0", () => {
+  test("the false-loss chance is the procedure's own, exact, and above 0 for an old text at 10 of 10", () => {
     /** The chance of each count of `runs` runs that each pass with chance `p`. */
     const pmf = (runs: number, p: number) => {
       const choose = (k: number) => {
@@ -1500,8 +1500,8 @@ describe("behaviour", () => {
         agrees: true,
       });
     }
-    // The plug-in figure, the chance at the old text's own screen rate, gave 0 for a case whose old
-    // text passed 10 of 10; this one does not.
+    // An old text that passed 10 of 10 still has a chance above 0: the pooled rate is 21/22, not
+    // the screen's own rate of 1, at which no loss could happen.
     const full = falseLossChance({ old: 10, new: 10, none: 0 });
     expect(full).toBeGreaterThan(0);
     expect(agrees(full, bruteForce(21 / 22, 21 / 22, 1 / 12))).toBe(true);

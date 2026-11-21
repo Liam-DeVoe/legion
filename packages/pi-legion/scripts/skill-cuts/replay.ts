@@ -1,6 +1,6 @@
 /**
- * The replay of one arm of a case (plan, R5 `replay.ts`): its captured request body sent to the
- * gateway, and the reply that is the judged step. The body is of either API the gateway serves:
+ * The replay of one arm of a case: its captured request body sent to the gateway, and the reply
+ * that is the judged step. The body is of either API the gateway serves:
  * a Messages body, or an OpenAI Responses body (gateway.ts's `isResponsesBody`); every round sends
  * the body in its own API, on the case's own model.
  *
@@ -13,11 +13,12 @@
  * and the body goes again with the reply and the answers added; at most `maxSkillRounds` times
  * (MAX_SKILL_ROUNDS). A Messages reply goes back as the assistant's message and its answers as one
  * user message of `tool_result` blocks (F2); a Responses reply's output items go back as they came
- * (its reasoning items' encrypted content included), each followed in the input by a
- * `function_call_output` item holding the answer's text (F8: the Responses API takes no error
- * flag, and Oh My Pi sends none). The first reply that holds no tool call, or any other tool call
- * (a read of another skill, a read of a path on disk, a read of a directory of the skill, any
- * other tool), is the judged step, and so is the reply after the last round, whatever it holds.
+ * (its reasoning items' encrypted content included), and after all of them, in the order of the
+ * reply's calls, one `function_call_output` item per call holding the answer's text (F8: the
+ * Responses API takes no error flag, and Oh My Pi sends none). The first reply that holds no tool
+ * call, or any other tool call (a read of another skill, a read of a path on disk, a read of a
+ * directory of the skill, any other tool), is the judged step, and so is the reply after the last
+ * round, whatever it holds.
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
  *

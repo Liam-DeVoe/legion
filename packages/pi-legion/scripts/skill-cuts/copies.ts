@@ -16,7 +16,8 @@
  * one owner (a search names one `org:`, `user:` or `repo:` qualifier). Blobs are read in batches of
  * up to 50 with `gh api graphql`, whose `-f owner=<owner>` field (the query's `$owner` variable) is
  * what the pod's gh routes a GraphQL call by, so it takes that owner's token; a blob a batch does
- * not give whole (binary, truncated, missing) is read alone with `gh api repos/<r>/git/blobs/<sha>`.
+ * not give whole (binary, truncated, missing) is read alone with
+ * `gh api repos/<r>/git/blobs/<sha>`.
  *
  * The run's peak resident memory (memory.ts) is checked before every gh call and at each step:
  * above MEMORY_LIMIT_BYTES (1.5 GiB) the run stops, exit 3, writing nothing; it is in the summary
@@ -140,7 +141,8 @@
  *                     adds its reads columns after them.
  *   prefix-table.tsv  `PREFIX_TABLE_COLUMNS`: prefix (a pattern: `**\/` at its start is any
  *                     leading directories, `*` is one path segment's text; `prefixMatches` is the
- *                     one matcher), repository, path, name, via (the unit and manifest it comes from).
+ *                     one matcher), repository, path, name, via (the unit and manifest it comes
+ *                     from).
  *   repositories.tsv  `REPOSITORIES_COLUMNS`: each repository read, its commit, fork and archived
  *                     marks, how its tree was read, its skills, or the error.
  *   loaders.tsv       `LOADERS_COLUMNS`: each file outside a skill that names a skill: repository,
@@ -797,7 +799,8 @@ class Github {
   }
 
   /** The file `file` of `repository` at `commit`, read alone: its blob `oid` when a batch gave it,
-   *  else the contents API's (`repos/<r>/contents/<path>?ref=<commit>`, 404 when it is not there). */
+   *  else the contents API's (`repos/<r>/contents/<path>?ref=<commit>`, 404 when it is not
+   *  there). */
   private async fileAlone(
     repository: string,
     commit: string,
@@ -1029,7 +1032,8 @@ export async function readTree(
   levels: WalkLevels
 ): Promise<{ entries: TreeEntry[]; count: number; reads: number; truncated: boolean }> {
   let reads = 0;
-  /** Counts `entry` into `part`, keeping it when `keep` does, and its subtree in a one-level read. */
+  /** Counts `entry` into `part`, keeping it when `keep` does, and its subtree in a one-level
+   *  read. */
   const take = (part: TreePart, entry: TreeEntry, oneLevel: boolean): void => {
     part.count++;
     if (keep(entry)) part.kept.push(entry);
@@ -3398,7 +3402,8 @@ function newRecord(job: SearchJob): QueryRecord {
 }
 
 /** Runs one search job, every page up to GitHub's 1,000 results; one an earlier run finished
- *  (`--cache-dir`) is taken from the cache, with no call, and one finished here is written to it. */
+ *  (`--cache-dir`) is taken from the cache, with no call, and one finished here is written to
+ *  it. */
 async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord): Promise<void> {
   const cached = search.cache.get("search", record.q, CachedSearch);
   if (cached !== undefined) {

@@ -1,5 +1,5 @@
 /**
- * The load test of R6 and R7 (plan, R5 `load.ts`): whether a host's agent loads a skill for a task,
+ * The load test (README.md, "load"): whether a host's agent loads a skill for a task,
  * given what the host lists for the skill. `skill-cuts load` (cli.ts) runs it:
  *
  *     bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
@@ -58,7 +58,7 @@
  * blocks, or `function_call` items with their arguments parsed): for Oh My Pi, a `read` of
  * `skill://<name>`, `skill://<name>/SKILL.md` or a path ending `/<name>/SKILL.md`; for Claude
  * Code, a `Skill` call naming `<name>` or `<plugin>:<name>`, or a `Read` of a path ending
- * `/<name>/SKILL.md`. These are R1's reads (count.sql): a read selector after the last `/`
+ * `/<name>/SKILL.md`. These are the reads count.sql counts: a read selector after the last `/`
  * (`:raw`, `:1-40`) is taken off first, and a read of a reference is no load. One tool call of
  * the message that reads the skill is enough, whatever comes before it. A run never goes past that
  * first message: no tool call is answered, so a skill that another skill sends the agent to is
@@ -178,8 +178,8 @@ export const LOAD_MODEL = "anthropic/claude-sonnet-5-5";
 /** Each host's thinking level unless `--thinking` says otherwise, as those fixture runs set it:
  *  Oh My Pi's `--thinking off` (F1, F2), and Claude Code's own default (F3), `auto` here. */
 export const LOAD_THINKING: Readonly<Record<Host, ThinkingLevel>> = { omp: "off", claude: "auto" };
-/** R6's smallest test: this many tasks of each label. A smaller test still gets its verdict, with
- *  a note that says so. */
+/** The fewest tasks of each label a load test is meant to have. A smaller test still gets its
+ *  verdict, with a note that says so. */
 const MIN_TASKS_PER_LABEL = 5;
 
 /** The longest one Claude Code run may take, by default. */
@@ -189,8 +189,8 @@ const RUN_TIMEOUT_MS = 600_000;
 const RECORDER_CREDENTIAL = "not-a-secret-the-recorder-reads-none";
 /** Claude Code's line before its skill listing. */
 const CLAUDE_LISTING = "The following skills are available for use with the Skill tool:";
-/** The arm a load test's capture is: the skill's text as written, which c-diagnosis calls the old
- *  description. */
+/** The arm a load test's capture is: the skill's text as written, the description the test
+ *  tests (arms.ts's `old`). */
 const ARM = "old";
 /** A skill, plugin or marketplace name: what can name a directory and a listing entry. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -491,8 +491,8 @@ export function renamedSkill(dir: string, name: string, scratch: string): string
   return dest;
 }
 
-/** Whether `target` (a path or a `skill://` URL) reads the SKILL.md of skill `name`, as R1 counts
- *  a read: a read selector after the last `/` is taken off first. */
+/** Whether `target` (a path or a `skill://` URL) reads the SKILL.md of skill `name`, as count.sql
+ *  counts a read: a read selector after the last `/` is taken off first. */
 function readsSkillFile(target: string, name: string): boolean {
   const bare = target.replace(/:[^/]*$/, "");
   return (
@@ -581,7 +581,7 @@ export function skillOutcome(
   if (wanted !== LOAD_RUNS) {
     return {
       descriptionFault: null,
-      reason: `no verdict: R6's rule is of ${LOAD_RUNS} runs a task, and this test runs ${wanted}`,
+      reason: `no verdict: the load test's rule takes ${LOAD_RUNS} runs a task, and this test runs ${wanted}`,
     };
   }
   const fault = descriptionFault(
@@ -1498,7 +1498,8 @@ function verdictWords(task: Task, outcome: TaskOutcome, wanted: number): string 
   if (!outcome.complete) {
     return `${outcome.made} of ${wanted} runs made; run the command again for the rest`;
   }
-  if (outcome.fault === null) return `no verdict: R6's rule is of ${LOAD_RUNS} runs a task`;
+  if (outcome.fault === null)
+    return `no verdict: the load test's rule takes ${LOAD_RUNS} runs a task`;
   if (!outcome.fault) return "no fault";
   return task.label === "need"
     ? `a fault: a need task loads it in fewer than ${NEED_MIN_LOADS} of ${LOAD_RUNS} runs`
@@ -1804,7 +1805,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const { verdict, usd } = writeSummary();
   const small =
     count("need") < MIN_TASKS_PER_LABEL || count("near-miss") < MIN_TASKS_PER_LABEL
-      ? ` (R6's test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`
+      ? ` (a load test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`
       : "";
   test.say(
     `the skill ${name}: ${verdict.reason}${small}; the test's runs and hints so far cost $${usd.toFixed(4)} at list price; written to ${summaryFile}`

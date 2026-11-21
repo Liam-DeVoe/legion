@@ -34,8 +34,9 @@ import { PULL_START, PullCheck, PullRow, psqlRows } from "./psql-rows";
 //   bun -e 'import { tasksSql, mtimeRange } from "./countsql"; process.stdout.write(tasksSql(
 //     mtimeRange("2026-11-20"), "2026-11-20T00:00:00Z", "2026-11-22T00:00:00Z", ["Fixture"]))' \
 //     | store "$FIRST" > testdata/F7-tasks.txt
-//   bun -e 'import { sessionsSql } from "./countsql"; process.stdout.write(sessionsSql(["83af4b8e0c75a050",
-//     "0da7427e81182998", "1e93689d7698bd6a", "0000000000000000"]))' | store "$FIRST" > testdata/F7-sessions.txt
+//   bun -e 'import { sessionsSql } from "./countsql"; process.stdout.write(sessionsSql([
+//     "83af4b8e0c75a050", "0da7427e81182998", "1e93689d7698bd6a", "0000000000000000"]))' \
+//     | store "$FIRST" > testdata/F7-sessions.txt
 //   echo "SELECT json_build_object('o', -1, 'c', E'first line | one\\nsecond line | two')::text AS part;" \
 //     | store "$FIRST" > testdata/F7-newline-pipe.txt
 //

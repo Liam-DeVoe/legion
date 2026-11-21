@@ -1,6 +1,6 @@
 SET LOCAL statement_timeout = '15min';
 -- The model of each session of one session store and one UTC day (or hour) of file mtime, for the
--- behaviour test's model population (R2): which models the sessions that read a skill ran on.
+-- behaviour test's model population: which models the sessions that read a skill ran on.
 -- `countsql.ts --query models --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD>
 -- [--hour <0-23>]` prints it with every placeholder filled; that text goes into the store's read
 -- command unchanged, as count.sql's does. The files are the same as count.sql's query of that
@@ -27,8 +27,8 @@ SET LOCAL statement_timeout = '15min';
 --
 -- Memory. Each file's head is built, read and dropped inside one LATERAL, one file at a time, and
 -- only each file's result (its hash, model, source and counts) is materialized, so the query's
--- temporary space does not grow with the heads (a version that materialized every head of a day
--- passed the server's temp_file_limit on four devbox days of the 2026-11-20 run). A day that still
+-- temporary space does not grow with the heads (materializing every head of a day can pass the
+-- server's temp_file_limit on a busy store's day). A day that still
 -- passes the statement timeout is split into its hours with `--hour`, as count.sql's is.
 --
 -- The model of a file, from its head, the first of these sources that gives one (`source`):

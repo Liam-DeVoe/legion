@@ -1,7 +1,7 @@
 /**
- * The rules of the behaviour test (R2, as the plan's R5 table states them), its load
- * test (R6) and its name test (R7), as pure functions: no file, network or clock. The runner
- * reads the constants below to decide how many runs to start, and `report` reads the same
+ * The rules of the behaviour test (README.md, "behaviour"), its load test (load.ts) and its name
+ * test (a load test under a proposed name), as pure functions: no file, network or clock. The
+ * runner reads the constants below to decide how many runs to start, and `report` reads the same
  * functions to print each case's passes and each skill's verdict, so both apply one rule.
  *
  * A run record is one JSON line per run (RunRecord). Counts are of judged runs only: a run whose
@@ -197,7 +197,8 @@ export function controlCase(
 
 /** A skill that gets no verdict, and why. */
 export type NoVerdict = { verdict: null; reason: string };
-/** A skill's verdict: the cut lost what a case's line makes agents do, or kept it; or no verdict. */
+/** A skill's verdict: the cut lost what a case's line makes agents do, or kept it; or no
+ *  verdict. */
 export type SkillOutcome = { verdict: "loss" | "keeps" } | NoVerdict;
 
 /** A skill's verdict from its counted cases: no verdict with fewer than MIN_INFORMATIVE_CASES
@@ -225,7 +226,8 @@ export function skillVerdict(counts: {
 }
 
 /** One case of a skill: its screen stage, whether it is informative and flagged (both false unless
- *  its screen runs are counted), its confirm stage when flagged, and whether that is a counted loss. */
+ *  its screen runs are counted), its confirm stage when flagged, and whether that is a counted
+ *  loss. */
 export interface CaseScore {
   caseId: string;
   screen: StageOutcome<"screen">;
@@ -331,8 +333,8 @@ export function screeningDone(counts: { screened: number; informative: number })
   return counts.informative >= MIN_INFORMATIVE_CASES || counts.screened >= MAX_SCREENED_CASES;
 }
 
-/** A cut's changed skills, loaded skills included, most read first by the R1 sessions of the cut
- *  repository's copy, a tie going to the lower name in string order. */
+/** A cut's changed skills, loaded skills included, most read first by the counted sessions of the
+ *  cut repository's copy, a tie going to the lower name in string order. */
 export function rankSkills(rows: readonly { skill: string; sessions: number }[]): string[] {
   return rows
     .toSorted((a, b) =>
@@ -383,20 +385,21 @@ export interface LoadTask {
   loads: number;
 }
 
-/** Whether one task of a load test is a fault (R6): a need task that loads on fewer than
- *  NEED_MIN_LOADS of its 3 runs, or a near-miss task that loads on more than NEAR_MISS_MAX_LOADS. */
+/** Whether one task of a load test is a fault: a need task that loads on fewer than
+ *  NEED_MIN_LOADS of its 3 runs, or a near-miss task that loads on more than
+ *  NEAR_MISS_MAX_LOADS. */
 export function taskFault(task: LoadTask): boolean {
   assertCounts({ [task.label]: task.loads }, LOAD_RUNS);
   return task.label === "need" ? task.loads < NEED_MIN_LOADS : task.loads > NEAR_MISS_MAX_LOADS;
 }
 
 /** Whether a load test finds a description fault: any of its tasks is a fault. A name that fails
- *  the load test (R7) is one whose test finds this fault. */
+ *  the load test is one whose test finds this fault. */
 export function descriptionFault(tasks: readonly LoadTask[]): boolean {
   return tasks.some(taskFault);
 }
 
-/** Whether a name test shows a poor name (R7): with the description unchanged, the load test fails
+/** Whether a name test shows a poor name: with the description unchanged, the load test fails
  *  under the current name and passes under the proposed one. */
 export function poorName(current: readonly LoadTask[], proposed: readonly LoadTask[]): boolean {
   return descriptionFault(current) && !descriptionFault(proposed);

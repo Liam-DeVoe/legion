@@ -1110,7 +1110,8 @@ describe("the full run over the owners", () => {
     expect(installerRows(r, "acme/skills", "packages/acme-envoy/package.json")).toContain(
       "ships package:@acme/acme-envoy beta acme/skills skills/beta"
     );
-    // The plugin.json a marketplace names is read into that marketplace's plugin, not a unit of its own.
+    // The plugin.json a marketplace names is read into that marketplace's plugin, not a unit of
+    // its own.
     expect(
       r
         .table("installers.tsv")
@@ -1452,7 +1453,8 @@ describe("one repository with --only, on F6's code search answer", () => {
   });
 
   test("F6's hits: kept where the name stands whole, dropped inside a longer name, inside a skill or not in the tree", () => {
-    // queries.jsonl is written by copies.ts from its QueryRecord values; read one back as that type.
+    // queries.jsonl is written by copies.ts from its QueryRecord values; read one back as that
+    // type.
     const query = r
       .queries()
       .find(
@@ -1829,7 +1831,8 @@ describe("a truncated tree", () => {
     expect(batched.count).toBe(rest.count);
     expect(batched.kept?.length).toBeGreaterThan(0);
     expect(batched.kept).toEqual(rest.kept);
-    // Refused batches are halved, then each subtree is read over REST, under the per-repository cap.
+    // Refused batches are halved, then each subtree is read over REST, under the
+    // per-repository cap.
     expect(rest.w.treeBatches).toEqual([]);
     expect(rest.w.maxTreeReads).toBe(READ_CALLS_PER_REPOSITORY);
     expect(READ_CALLS).toBeGreaterThan(READ_CALLS_PER_REPOSITORY);

@@ -10,9 +10,9 @@ You read part of a coding agent's session and propose one case for a test of a s
 The user message holds two parts:
 
 - `<skill>`: the lines of the skill's files that a case may name: only the lines of each file that the agent's own read of that file held, each as `<number>: <line>`, its number in the file. A line not shown cannot be a case's line, and a file not shown was not read.
-- `<transcript>`: the session around the agent's first read of the skill: some messages before that read, and the messages from it on. Each message has its index in the session and its role. Where the agent read a file of the skill, the file's text is left out. A tool call shows as `[tool call: <tool>] <arguments as JSON>`.
+- `<transcript>`: one window of the session from the agent's first read of the skill on, and before it some earlier messages. The first window starts at that read; when you propose no case, the next window starts after the last message of the one before. Each message has its index in the session and its role. Where the agent read a file of the skill, the file's text is left out. A tool call shows as `[tool call: <tool>] <arguments as JSON>`.
 
-The test replays the session up to one step under three texts of the skill (this text, a shorter rewrite of it, and no skill at all), and a judge decides whether the agent's step passes a criterion. Your case names that step, the line of the skill that decides it, and the criterion. Only the read results of the skill's files change between the three texts: every other message before the step is the same in each.
+The test replays the session up to one step under several texts of the skill (this text, a shorter rewrite of it, this text less the line you name, this text again, and no skill at all), and a judge decides whether the agent's step passes a criterion. Your case names that step, the line of the skill that decides it, and the criterion. Under a text of the skill only the read results of the skill's files change; with no skill, the reads of the skill and their results are taken out. Every other message before the step is the same under each.
 
 Find the step:
 

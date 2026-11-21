@@ -23,12 +23,14 @@ import {
   gitBlobId,
   legionRole,
   localSource,
+  NoSuchFile,
   PROMPTS_GO,
+  type RepoSource,
   readFrontmatter,
   skillFrontmatter,
 } from "./context";
 
-// The case context (plan, "The case context") built from made-up repositories, read from local
+// The case context (context.ts) built from made-up repositories, read from local
 // directories in place of `gh`: `acme/skills` (the skills alpha and beta), `acme/project` (an
 // AGENTS.md), `acme/infra` (a project's instructions file) and `acme/legion`, which holds a
 // made-up daemon whose role prompt composer has the API of packages/daemon/internal/prompts
@@ -552,10 +554,45 @@ test("a gh read that fails for good, such as a 404, is not tried again", async (
     sleep: async (ms) => void waits.push(ms),
   })
     .file("acme/project", COMMIT, "missing.md")
-    .catch((error: unknown) => String(error));
-  expect(failed).toContain("failed on its one try (not a transient failure, so not tried again)");
-  expect(failed).toContain("try 1: exit 1: gh: Not Found (HTTP 404)");
+    .catch((error: unknown) => error);
+  // A 404 is a file the commit does not hold, told apart from a read that failed.
+  expect(failed).toBeInstanceOf(NoSuchFile);
+  expect(String(failed)).toContain(
+    "failed on its one try (not a transient failure, so not tried again)"
+  );
+  expect(String(failed)).toContain("try 1: exit 1: gh: Not Found (HTTP 404)");
   expect(waits).toEqual([]);
+});
+
+// Catches: a read of prompts.go that failed taken as a repository that holds none.
+test("a Legion context's role prompt: a plugin repository that holds no prompts.go is passed over, and a read of it that failed stops the context, naming why", async () => {
+  const root = path.join(dir, "prompts-read");
+  const c = aCase("legion:acme:implementer", {
+    plugins: [
+      { repo: "acme/legion", commit: COMMIT, path: "plugins/skills-only", name: "skills-only" },
+    ],
+    contextFiles: [],
+  });
+  const { options, arm } = setUp(root, c);
+  const local = options.source;
+  /** The local source, but its read of prompts.go throws `error`. */
+  const failing = (error: Error): RepoSource => ({
+    ...local,
+    name: "a source whose read of prompts.go fails",
+    file: (repo, commit, file) =>
+      file === PROMPTS_GO ? Promise.reject(error) : local.file(repo, commit, file),
+  });
+  const failed = await buildContext(c, arm, {
+    ...options,
+    source: failing(new Error("gh: connection reset by peer")),
+  }).catch(String);
+  expect(failed).toContain("gh: connection reset by peer");
+  expect(failed).not.toContain("no plugin repository holds");
+  const absent = await buildContext(c, arm, {
+    ...options,
+    source: failing(new NoSuchFile("acme/legion holds no prompts.go")),
+  }).catch(String);
+  expect(absent).toContain(`no plugin repository holds ${PROMPTS_GO}`);
 });
 
 /** A file of the stand-in repository: its path, its bytes, and whether a GraphQL batch calls it

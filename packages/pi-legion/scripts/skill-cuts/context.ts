@@ -1,5 +1,5 @@
 /**
- * The case context of a capture (plan, "The case context"): what one case's arm installs before
+ * The case context of a capture: what one case's arm installs before
  * Oh My Pi builds its request, rebuilt from the case's `profile`, since a transcript keeps no
  * system prompt. `buildContext` writes it under one scratch directory, the same path for every arm
  * of a case, so the paths Oh My Pi puts in its prompt are the same in every arm:
@@ -19,7 +19,9 @@
  *   also looks for its skills at load) is a link to `skills/`, so a plugin lists the arm's skills
  *   and no copy of its own: only the case's skill differs between arms. A plugin with no
  *   `package.json` of that kind installs skills alone (a verification-skills plugin), which the
- *   profile's skills already hold. A plugin whose build fails is left out, with its reason.
+ *   profile's skills already hold. A plugin that cannot be installed (its repository cannot be
+ *   read, its manifest cannot be parsed, its build fails, or a plugin of its name is installed
+ *   already) is left out, with its reason.
  * - `work/`: the session's working directory. Each context file named `AGENTS.md` or `CLAUDE.md`
  *   (the session repository's, at its default branch's commit at the session's start) is written
  *   there at its path, where Oh My Pi reads context files.
@@ -88,7 +90,8 @@ export const PROMPTS_GO = "packages/daemon/internal/prompts/prompts.go";
 export interface RepoSource {
   /** What the record calls this source. */
   readonly name: string;
-  /** The bytes of `file` of `repo` (`owner/name`) at `commit`. Throws when it holds none. */
+  /** The bytes of `file` of `repo` (`owner/name`) at `commit`. Throws NoSuchFile when it holds
+   *  none, and another error when the read fails. */
   file(repo: string, commit: string, file: string): Promise<Uint8Array>;
   /** Writes each file of `repo` at `commit` under `dir` (a path inside the repository, or "" for
    *  all of it) into `dest`, at its path below `dir`. Throws when `dir` holds no file. */
@@ -100,6 +103,10 @@ export interface RepoSource {
    *  in which at least one of them was running. Absent for a source that reads no GitHub. */
   reads?(): { readonly calls: number; readonly ms: number };
 }
+
+/** What `RepoSource.file` throws when the repository holds no such file at the commit, as opposed
+ *  to a read that failed. */
+export class NoSuchFile extends Error {}
 
 /** One build the context needed: what it is, its cache key, whether the cache held it already,
  *  and how long it took, in milliseconds. */
@@ -126,7 +133,8 @@ export interface ContextRecord {
     readonly commit: string;
     readonly path: string;
     /** `extension`: built and loaded with `--extension`; `skills only`: nothing to load beyond
-     *  the profile's skills; `left out`: its build failed (`reason`). */
+     *  the profile's skills; `left out`: it could not be installed, for `reason` (a failed read,
+     *  manifest, build or copy). */
     readonly as: "extension" | "skills only" | "left out";
     readonly key?: string;
     readonly reason?: string;
@@ -343,19 +351,36 @@ async function run(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
   });
+  const limit = timeLimit(child, options.timeoutMs);
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).arrayBuffer(),
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  const ended = child.signalCode !== null && options.timeoutMs !== undefined;
+  limit.clear();
   return {
     code,
     stdout: new Uint8Array(stdout),
-    stderr: ended ? `${stderr}\ntimed out after ${options.timeoutMs} ms` : stderr,
+    stderr: limit.timedOut() ? `${stderr}\ntimed out after ${options.timeoutMs} ms` : stderr,
   };
+}
+
+/** Ends `child` (SIGTERM) once `ms` have passed, if `ms` is given. `timedOut()` says whether that
+ *  ended it, so a child a signal from elsewhere ended is not reported as out of time. */
+function timeLimit(
+  child: { kill(): void },
+  ms: number | undefined
+): { timedOut(): boolean; clear(): void } {
+  let timedOut = false;
+  const timer =
+    ms === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, ms);
+  return { timedOut: () => timedOut, clear: () => clearTimeout(timer) };
 }
 
 /** Runs `argv` and throws, naming it and its last error lines, when it fails. */
@@ -421,10 +446,10 @@ export interface GhOptions {
 /**
  * The value of the first try of `attempt` that exits 0. A try that fails transiently or on a rate
  * limit (`TRANSIENT_GH`, `RATE_LIMITED_GH`) is made again after a growing wait, or after the rate
- * limit's reset (gh prints no `retry-after` header on stderr, so the reset is read from
- * `rate_limit`, and a limit whose reset cannot be read waits a minute), at most `tries` times in
- * all; any other failure, or the last try's, throws naming `command`, each try's error and the
- * count.
+ * limit's reset (gh prints no `retry-after` header on stderr, so `rateReset` reads the reset of
+ * the call's own limit, REST's or GraphQL's, from `rate_limit`, and a limit whose reset cannot be
+ * read waits a minute), at most `tries` times in all; any other failure, or the last try's,
+ * throws naming `command`, each try's error and the count.
  */
 async function ghRetried<T>(
   command: string,
@@ -493,17 +518,19 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
   };
   const ghRun = (argv: readonly string[]) =>
     counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS }));
-  // When the rate limit resets, in seconds since the epoch, or undefined when it cannot be read.
-  const rateReset = async (): Promise<number | undefined> => {
+  // When the rate limit of `resource` (`core`, REST's, or `graphql`) resets, in seconds since the
+  // epoch, or undefined when it cannot be read.
+  const rateReset = async (resource: "core" | "graphql"): Promise<number | undefined> => {
     const ran = await ghRun([gh, "api", "--method", "GET", "rate_limit"]);
     try {
-      const reset: unknown = JSON.parse(new TextDecoder().decode(ran.stdout))?.resources?.core
+      const reset: unknown = JSON.parse(new TextDecoder().decode(ran.stdout))?.resources?.[resource]
         ?.reset;
       return ran.code === 0 && typeof reset === "number" ? reset : undefined;
     } catch {
       return undefined;
     }
   };
+  const restReset = () => rateReset("core");
   const api = async (route: string, raw: boolean): Promise<Uint8Array> => {
     const accept = raw ? ["-H", "Accept: application/vnd.github.raw"] : [];
     const argv = [gh, "api", "--method", "GET", ...accept, route];
@@ -514,7 +541,7 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
         return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
       },
       options,
-      rateReset
+      restReset
     );
   };
   const tarball = async (repo: string, commit: string, dest: string): Promise<void> => {
@@ -530,21 +557,23 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
               stdin: "ignore",
               stdout: Bun.file(archive),
               stderr: "pipe",
-              timeout: GH_TARBALL_TIMEOUT_MS,
             });
+            const limit = timeLimit(child, GH_TARBALL_TIMEOUT_MS);
             const [stderr, code] = await Promise.all([
               new Response(child.stderr).text(),
               child.exited,
             ]);
-            const ended = child.signalCode !== null;
+            limit.clear();
             return {
               code,
-              stderr: ended ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms` : stderr,
+              stderr: limit.timedOut()
+                ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms`
+                : stderr,
               value: undefined,
             };
           }),
         options,
-        rateReset
+        restReset
       );
       await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);
     } finally {
@@ -588,9 +617,17 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
   return {
     name: "gh",
     reads: () => ({ calls, ms: busyMs + (running > 0 ? performance.now() - busyFrom : 0) }),
-    file: (repo, commit, file) => {
+    file: async (repo, commit, file) => {
       const route = file.split("/").map(encodeURIComponent).join("/");
-      return api(`repos/${repo}/contents/${route}?ref=${encodeURIComponent(commit)}`, true);
+      try {
+        return await api(`repos/${repo}/contents/${route}?ref=${encodeURIComponent(commit)}`, true);
+      } catch (error) {
+        // GitHub answers a path the commit does not hold with 404; any other failure is a failure.
+        const said = messageFor(error);
+        if (/HTTP 404/.test(said))
+          throw new NoSuchFile(`${repo} at ${commit} holds no file ${file}: ${said}`);
+        throw error;
+      }
     },
     async prefetch(repo, commit, dirs) {
       const { entries, truncated } = await listingOf(repo, commit);
@@ -619,7 +656,7 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
               return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
             },
             options,
-            rateReset
+            () => rateReset("graphql")
           );
           answer = parseJson(new TextDecoder().decode(stdout));
         } catch {
@@ -632,7 +669,8 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
         batch.forEach((entry, index) => {
           const blob = parsed.data.data.repository?.[`b${index}`];
           if (blob?.isBinary !== false || blob.isTruncated || blob.text === null) return;
-          // Kept only when its bytes are the blob's: a text GraphQL decoded with a loss reads alone.
+          // Kept only when its bytes are the blob's: a text GraphQL decoded with a loss reads
+          // alone.
           const bytes = new TextEncoder().encode(blob.text);
           if (gitBlobId(bytes) === entry.sha) {
             blobs.set(entry.sha, { bytes, waiting: wanted.get(entry.sha)?.files ?? 1 });
@@ -680,7 +718,7 @@ export function localSource(root: string): RepoSource {
     name: `local directory ${root}`,
     async file(repo, commit, file) {
       const where = path.join(at(repo, commit), file);
-      if (!existsSync(where)) throw new Error(`${repo} at ${commit} holds no file ${file}`);
+      if (!existsSync(where)) throw new NoSuchFile(`${repo} at ${commit} holds no file ${file}`);
       return new Uint8Array(readFileSync(where));
     },
     async tree(repo, commit, dir, dest) {
@@ -965,8 +1003,10 @@ async function rolePrompt(
     if (promptsBlob === undefined) {
       try {
         promptsBlob = gitBlobId(await source.file(repo, commit, PROMPTS_GO));
-      } catch {
-        continue;
+      } catch (error) {
+        // A repository that holds no PROMPTS_GO is passed over; a read that failed stops the case.
+        if (error instanceof NoSuchFile) continue;
+        throw error;
       }
       known.set(`${repo}@${commit}`, promptsBlob);
     }

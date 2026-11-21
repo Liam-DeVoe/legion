@@ -1,6 +1,6 @@
 /**
  * The hook Oh My Pi loads for a capture (`omp --hook <this file>`, capture.ts), built from the
- * scratch hook plan task t1 proved on F2 (testdata/CAPTURE.md, "The scratch tools"):
+ * scratch replay hook of the fixtures' captures (testdata/CAPTURE.md, "The scratch tools"):
  *
  * - Its `context` handler gives the model exactly the arm's messages: the JSON list of Oh My Pi
  *   message objects in the file SKILL_CUTS_MESSAGES names. Every message the run itself holds is

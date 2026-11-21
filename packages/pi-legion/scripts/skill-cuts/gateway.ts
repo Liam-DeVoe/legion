@@ -1,5 +1,5 @@
 /**
- * The runner's one way to the model gateway (plan, R5 `gateway.ts`). `createGateway` posts a body
+ * The runner's one way to the model gateway. `createGateway` posts a body
  * through `skill-scenarios/messages-api.ts` (`postMessages`), the route and retry that
  * `label-comments.ts` uses too, to the gateway route of the body's API (`isResponsesBody`): an
  * Anthropic Messages API body to `<baseUrl>/v1/messages` with the key in `x-api-key`, and an OpenAI
@@ -39,7 +39,8 @@
  *   A try that failed is not, even a streamed Messages reply that failed after its
  *   `message_start` had sent its input tokens: the gateway can bill such a try and this count
  *   leaves it out, so the spend can fall short of the bill by the tries that failed mid-stream.
- * - Once the dollars reach `budgetUsd`, no new call starts: `send` rejects with `BudgetSpent`, which
+ * - Once the dollars reach `budgetUsd`, no new call starts: `send` rejects with `BudgetSpent`,
+ *   which
  *   says so. A call already in flight finishes and is counted, so the spend can pass the budget by
  *   at most the calls in flight, and the bill by those and the tries that failed mid-stream.
  */

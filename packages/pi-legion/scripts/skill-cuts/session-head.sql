@@ -25,7 +25,8 @@ SET LOCAL statement_timeout = '15min';
 --   {"hash": <the path hash>,
 --    "cwd": the header's `cwd`, or null; "start": the header's `timestamp`, or null,
 --    "first_user": {"timestamp", "attribution"} of the first message line whose message is a user
---      turn (its `message.timestamp` in epoch milliseconds, and its `message.attribution`), or null,
+--      turn (its `message.timestamp` in epoch milliseconds, and its `message.attribution`), or
+--      null,
 --    "reminders": [{"turn", "reminder", "placement"}, …] of each `date-cwd-reminder` entry's
 --      `data`, in file order (`turn` is the key of the turn it went on, `user:<timestamp>:
 --      <attribution>`; `placement` is `prefix` for a reminder put first in that user turn),

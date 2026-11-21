@@ -1,11 +1,13 @@
 /**
- * The skill-cuts runner's command line (plan, R5 `cli.ts`). Every command that calls a model takes
- * `--config <skill-cuts.json>` (config.ts: the gateway's address), `--key-file <file>` (the gateway
- * key, read inside gateway.ts and never printed, logged or written), and `--out` (where it writes;
- * `behaviour` and `load` write session text there, so they refuse an `--out` inside a git or jj
- * checkout).
- * The runner needs no GitHub token: it reads skill texts from two directories, cases from a file,
- * and the key from a file.
+ * The skill-cuts runner's command line (README.md, "Commands"). Every command that calls a model
+ * takes `--config <skill-cuts.json>` (config.ts: the gateway's address), `--key-file <file>` (the
+ * gateway key, read inside gateway.ts and never printed, logged or written), and `--out` (where
+ * it writes; `behaviour`'s stage commands, `load` and `build-cases` write session text there, so
+ * they refuse an `--out` inside a git or jj checkout, exit 2).
+ * `behaviour` and `load` read skill texts from directories, cases or tasks from a file, and the
+ * key from a file; the repositories a context needs come from `--repos <dir>` (a tree of
+ * `<owner>/<name>/<commit>/` directories, context.ts's `localSource`), or else from GitHub
+ * through `gh` (context.ts's `ghSource`). So they need no GitHub token only with `--repos`.
  *
  *   bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> --config <file>
  *       --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>
@@ -15,19 +17,40 @@
  *       [--reading-models <file>]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
+ *       [--concurrency <n>]
  *   bun scripts/skill-cuts/cli.ts control <map|attack|same-job|sentence> --config <file>
  *       --key-file <file> --in <input.json> --out <result.json> [what to plant, below]
- *       [--request-log <file>] [--budget-usd <n>]
+ *       [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
- *       [--hour <0-23>]
+ *       [--hour <0-23>] [--query count|models]
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
  *       [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir>
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
  *       [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>]
+ *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
+ *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
+ *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
+ *       --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]
+ *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file> --cut <id>
+ *       --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir>
+ *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
+ *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --old <dir> --copies <dir>
+ *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
+ *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
+ *       --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
+ *       --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>]
+ *       [--max-search-minutes <m>]
+ *   bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <file> --key-file <file>
+ *       --skill <dir> --sessions <file> --seed <n> [--max <n>] --out <tasks.jsonl>
+ *       [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]
  *
- * **`behaviour`** runs R2's behaviour test of one skill: `--old` and `--new` are the skill's own
+ * `count-sql`, `copies`, `attribute`, `build-cases` and `build-tasks` are the commands of
+ * countsql.ts, copies.ts, attribute.ts and build.ts, given their arguments whole.
+ *
+ * **`behaviour`** runs the behaviour test of one skill: `--old` and `--new` are the skill's own
  * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
  * checked against `--old`). Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
  * written whole (a fresh file renamed over it) after each round of runs, so a run started again
@@ -51,9 +74,11 @@
  *   models`, with the served and total counts): it gets no verdict, and the walk of the cut's
  *   ranking goes on to its next skill.
  * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
- * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less the
- *   case's line, or less `--planted-line`: the planted-loss control, which must be a loss) and
- *   `twin` (old again, its own capture: the false-loss control, which must be no loss).
+ * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less every
+ *   line of the case's file that is the case's line, trimmed, or less every line that is
+ *   `--planted-line`: a rule written twice is still the rule, so each copy goes; arms.ts) and
+ *   `twin` (old again, its own capture: the false-loss control, which must be no loss). Old
+ *   against `minus` is the planted-loss control, which must be a loss.
  *   confirm and control need the screen finished, and make no run when the skill can get no verdict
  *   (fewer than MIN_INFORMATIVE_CASES informative cases, a planted-loss control that is no loss,
  *   or a false-loss control that is a loss).
@@ -89,7 +114,8 @@
  * `--budget-usd` stops new model calls once the replies' dollars at list price reach it; the runs
  * of the round so far are saved.
  *
- * **`read`** runs one reader of readers.ts (`runReader`) on the input `--in` holds, one JSON value of
+ * **`read`** runs one reader of readers.ts (`runReader`) on the input `--in` holds, one JSON
+ * value of
  * that reader's input schema, and writes `--out` whole: `{prompt, settings, answer, refusals,
  * spent, usd}`, `answer` null when every reply was refused.
  *
@@ -100,9 +126,10 @@
  * <id> --sentence <text>`. It writes `--out` whole: `{control, held, why, answer, refusals, spent,
  * usd}`.
  *
- * **`count-sql`** is countsql.ts's own command: it prints count.sql filled for one store and day.
+ * **`count-sql`** prints count.sql (or, with `--query models`, models.sql) filled for one store
+ * and day.
  *
- * **`load`** is load.ts's load test of R6 and R7: per task, the host's first request captured once
+ * **`load`** is load.ts's load test: per task, the host's first request captured once
  * and sent `--runs` times (LOAD_RUNS by default), the runs of a profile's tasks in one seeded
  * order, each with a session id of its own; each run's first assistant message read for a read of
  * the skill, the loads and verdicts printed and saved under `--out`, which a run started again
@@ -120,7 +147,9 @@
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
  * did not hold, a call, a load test's task or an `--after-case` command that failed); 2 refused
- * before any model call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB).
+ * before any model call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB, 1.5 GiB
+ * for `copies`); 4 stopped by build-cases' stop rule. The commands of the other files return
+ * their own status, which `main` returns as it is.
  */
 import { createHash } from "node:crypto";
 import {
@@ -236,7 +265,7 @@ const CALL_TIMEOUT_MS = 600_000;
 /** The model calls in flight at once, unless `--concurrency` says otherwise. */
 const DEFAULT_CONCURRENCY = 8;
 /** The most the runner's peak resident memory may reach: a case that ends above it stops the run
- *  (plan, "Where things run"). */
+ *  (exit 3). */
 const MEMORY_LIMIT_BYTES = 1024 ** 3;
 /** The request log's name: `<out>/requests.jsonl` for `behaviour` and `load`, and the `--out`
  *  file's path with `.requests.jsonl` added for `read` and `control`, unless `--request-log`
@@ -745,7 +774,8 @@ export function caseResultFile(out: string, caseId: string): string {
   return path.join(out, "cases", `${encodeURIComponent(caseId)}.json`);
 }
 
-/** A digest of the skill directory `dir`: each file's path inside it and its bytes, in path order. */
+/** A digest of the skill directory `dir`: each file's path inside it and its bytes, in path
+ *  order. */
 export function textDigest(dir: string): string {
   const hash = createHash("sha256");
   const files = readdirSync(dir, { recursive: true, encoding: "utf8" })

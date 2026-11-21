@@ -716,7 +716,8 @@ test("sums a Responses reply's usage, its cache reads and writes and its reasoni
   // The second send of that body reads what the first wrote: 3 x 2 + 30 x 10 + 7982 x 0.10.
   expect(second.spent).toMatchObject({ input: 3, output: 30, cacheRead: 7982, cacheWrite: 0 });
   expect(second.spent.usd).toBeCloseTo(0.0011042, 10);
-  // The text reply: 3 x 2 + 76 x 10 + 8083 x 0.10 + 19 x 2.50, 43 of its 76 output tokens reasoning.
+  // The text reply: 3 x 2 + 76 x 10 + 8083 x 0.10 + 19 x 2.50, 43 of its 76 output tokens
+  // reasoning.
   expect(third.spent).toMatchObject({
     input: 3,
     output: 76,
@@ -771,7 +772,8 @@ test("prices gpt-6.1-sol's long context, over 272,000 input tokens, at its highe
   // 30000 x 5 = 265000.
   const short = { ...usage, input_tokens: 272_000 };
   expect(responsesCostUsd(short, price)).toBeCloseTo(0.265, 10);
-  // Unsplit, the 50000 written are priced at the 12-hour rate: 22000 x 2 + 1000 + 20000 + 50000 x 5.
+  // Unsplit, the 50000 written are priced at the 12-hour rate:
+  // 22000 x 2 + 1000 + 20000 + 50000 x 5.
   const unsplit = {
     ...short,
     input_tokens_details: { cached_tokens: 200_000, cache_write_tokens: 50_000 },

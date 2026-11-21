@@ -23,12 +23,14 @@ change what the agent does. Two such things did, and the runner now removes both
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
 repositories copies map to, the dev box's Claude Code config directory) comes from the `--config
 <skill-cuts.json>` file at run time (`config.ts` says each key). No file here names one. The
-behaviour test needs no GitHub token: it reads the skill texts from two directories, the cases from
-a file outside the repository, the repositories a case's context needs from local clones
-(`--repos`), and the gateway key from `--key-file`, inside the process that uses it, never
-printed, logged or written. `copies`, `build-cases` and `build-tasks` only read GitHub, through
-`gh`: GET calls, and, in `copies` and `build-cases`, GraphQL queries that read file contents in
-batches.
+gateway key comes from `--key-file`, read inside the process that uses it, never printed, logged
+or written. The behaviour test and the load test read the skill texts from directories and the
+cases or tasks from a file outside the repository. The repositories a context needs come from
+`--repos <dir>`, a tree of `<owner>/<name>/<commit>/` directories, each the repository at that
+commit; without `--repos` they are read from GitHub through `gh` (GET calls, tarballs and GraphQL
+queries). So `behaviour` and `load` need no GitHub token only with `--repos`. `copies`,
+`build-cases` and `build-tasks --profiles-out` read GitHub through `gh`, and only read it: GET
+calls, and GraphQL queries that read file contents in batches.
 
 ## Commands
 
@@ -160,8 +162,9 @@ rule and is refused.
 
 ```
 bun scripts/skill-cuts/cli.ts read --config <skill-cuts.json> --key-file <file> \
-  --prompt <case|map|attack|same-job|sentence|names|tasks> --in <input.json> --out <answer.json> \
-  [--request-log <file>] [--budget-usd <n>]
+  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks> \
+  --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>] \
+  [--concurrency <n>]
 ```
 
 Runs one reader (`readers.ts`, `prompts/<name>.md`) on one input, a JSON value of that reader's
@@ -172,6 +175,7 @@ input schema, and writes `{prompt, settings, answer, refusals, spent, usd}`.
 ```
 bun scripts/skill-cuts/cli.ts control <kind> --config <skill-cuts.json> --key-file <file> \
   --in <reader input.json> --out <result.json> [--request-log <file>] [--budget-usd <n>] \
+  [--concurrency <n>] \
   map:      --delete-line <a line of the cut text that the base text holds too>
   attack:   [--plant-line <line>]          (default: "Run the tests where needed.")
   same-job: --planted <skill entry.json> --copy-of <id>
@@ -205,7 +209,7 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
   [--claude <binary>] [--context-session <store>:<path hash>]
 ```
 
-The load test of R6 and R7 (`load.ts`): whether the host's agent loads the skill for each task,
+The load test (`load.ts`): whether the host's agent loads the skill for each task,
 given what the host lists for it. `--tasks` holds one task per line, `{id, text, label, source}`
 with `label` `need` or `near-miss` and `source` `written`, or `session` with its `store` and
 `pathHash`. A profile file is the other skills installed beside the skill (the `Profile` of
@@ -358,9 +362,10 @@ real step, never the criterion, and answers `follows`, `breaks` or `not-governed
 keeps the case (else `audit-breaks`, `audit-not-governed`), and its answer and reason go in the
 case's evidence. The summary records, per session, the check's messages read beside those it must
 read, its windows, and the audit. `--budget-usd` stops the build once its readers cost that much at
-list price (exit 3). The case file holds real session text, so it stays outside the repository.
+list price (exit 3). The case file and its spool hold real session text, so `build-cases` (both
+forms) refuses an `--out` inside a git or jj checkout (exit 2).
 
-The stop rule (the architect's, 2026-11-20T19:07:23Z) stops a skill's build (exit 4) as soon as
+The stop rule stops a skill's build (exit 4) as soon as
 `--stop-zero-case-usd` dollars (60 unless given) are spent with no case built, or, once at least
 `--stop-after-sessions` sessions (40) are decided, when the cost projected to `--max` cases from
 the build's own cases and spend passes `--stop-projected-usd` dollars (200): projected = max ×
@@ -415,8 +420,8 @@ each need task whose first step the skill does not govern, and its summary count
 (`droppedNeed`) and keeps each with the reader's reason (`dropped`). The reader must give at least
 5 need tasks whose first step the skill governs, and 5 near-miss tasks.
 
-`build-tasks --first-read` writes the need tasks of R6's positive control. It takes the sessions
-file `attribute` wrote for the skill (`{"store", "hash", "path"?}` per line) in the order of
+`build-tasks --first-read` writes the need tasks of the load test's positive control. It takes the
+sessions file `attribute` wrote for the skill (`{"store", "hash", "path"?}` per line) in the order of
 `--seed`, pulls each session in turn, and keeps a session only when its first assistant message
 reads the skill (load.ts's rule: an Oh My Pi `read` of `skill://<name>` or of its `SKILL.md`). It
 takes that session's first request as a need task as it is, with its secrets taken out, and no
@@ -436,15 +441,21 @@ as `build-cases` rebuilds a case's at the session's start: the units its host ha
 shipped at their commits then (from `--copies` and `--count`), the plugins, the context files, a
 subagent's recorded system prompt and tools, and the context (`devbox`, `legion:<project>:<role>`
 or `subagent:<agent>`), less the tested skill. It writes that to `<dir>/<task id>.json` (load.ts's
-`LoadProfile`), and the task line's `profile` is the file's path. A written task takes the profile
-of `--context-session <store>:<hash>`, the session the reader's mode requires for it (the
-most-read session of the context that installs the skill). That profile is rebuilt before any
-reader call, and the build fails when that session gives none. The summary's `profiles` records
-the context session, each task's profile with its evidence, and why a task has none. A build that
-has already finished gets no profiles afterwards: give it a fresh `--out`.
+`LoadProfile`), and the task line's `profile` is the file's path. A session whose rebuilt context
+does not list the skill (a subagent's recorded listing lacks its line, or another context's
+profile does not install it) would test nothing, so it is dropped as `skill-not-listed`: in the
+reader's mode each offered message's session is rebuilt first, the drop is counted in
+`candidateDrops`, and the next candidate is taken in its place; in `--first-read` the session is
+dropped when it is tried, and counted (`skillNotListed`). A written task takes the profile of
+`--context-session <store>:<hash>`, the session the reader's mode requires for it (the most-read
+session of the context that installs the skill). That profile is rebuilt before any reader call;
+the build fails when that session gives none, and is refused (exit 2) when its rebuilt context
+does not list the skill. The summary's `profiles` records the context session, each task's
+profile with its evidence, and why a task has none. A build that has already finished gets no
+profiles afterwards: give it a fresh `--out`.
 
 `--model <model>` (either mode) keeps only the sessions whose first request ran on that model, as
-the session's file names it and R1's model table writes it: its last `model_change` before its
+the session's file names it and `attribute --models` writes it: its last `model_change` before its
 first assistant message, a thinking suffix left out (so `<gateway>/openai/gpt-6.1-sol` and
 `openai/gpt-6.1-sol` are two models). Every other session is dropped and counted as
 `other-model`: in the reader's mode each offered message's session is pulled and the next
@@ -471,7 +482,7 @@ bounds. The summary's `search` holds the bounds, what ended the search (`--max-c
 accepted, and the search's seconds; `candidateDrops` holds the drops by reason. The file is
 removed once the summary is written. With neither bound the search runs to 60 messages offered or
 the last candidate, and writes no file. A bound is refused without `--model` or `--profiles-out`
-(no search runs) and with `--first-read` (it stops at `--max`). R6 and R7 give
+(no search runs) and with `--first-read` (it stops at `--max`). Build a load test's tasks with
 `--max-candidates 60 --max-search-minutes 90`.
 
 ## The request log
@@ -493,4 +504,6 @@ message's text.
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
 call, a load test's task or an `--after-case` command that failed); 2 refused before any model
-call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB).
+call or store read (among the refusals, an `--out` inside a git or jj checkout, from `behaviour`'s
+stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, or the peak memory
+passed 1 GiB, 1.5 GiB for `copies`); 4 stopped by build-cases' stop rule.

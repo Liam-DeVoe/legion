@@ -1,12 +1,12 @@
 /**
- * A stand-in model endpoint on 127.0.0.1 (plan, "Where things run"), of the Anthropic Messages API
+ * A stand-in model endpoint on 127.0.0.1, of the Anthropic Messages API
  * and of OpenAI's Responses API: a host process pointed at it sends its model requests here, never
  * to the gateway. The recorder keeps each request, its body byte for byte and its headers less
  * every auth header and every header that names a key, a token, a secret, a team or a user, and
  * answers it: with what `route` returns, or, when `route` returns nothing, with a fixed
  * end-of-turn reply streamed as Server-Sent Events in the API its path names (END_TURN_REPLY to
  * `/v1/messages`, END_TURN_RESPONSE to `/v1/responses`). capture.ts records Oh My Pi's request
- * bodies with it, and `cli.test.ts` builds its stand-in gateway on it.
+ * bodies with it, load.ts Claude Code's, and the tests build their stand-in gateways on it.
  *
  * `messageSse` writes a reply message as the event stream the Messages API sends for a request
  * that sets `stream` (the event shapes of the F5 replies): a `message_start`, each content block as
@@ -18,8 +18,8 @@
  * `function_call` and `reasoning` items.
  */
 
-/** A request the recorder took: its number from 1, method, path with its query, the headers it
- *  keeps, and the body as text. */
+/** A request the recorder took: its number from 1 in the order the requests arrived, method, path
+ *  with its query, the headers it keeps, and the body as text. */
 export interface RecordedRequest {
   readonly n: number;
   readonly method: string;
@@ -37,7 +37,7 @@ export type Route = (
 export interface Recorder {
   /** The base URL, `http://127.0.0.1:<port>`, with no trailing slash. */
   readonly url: string;
-  /** Every request taken so far, in the order they came. */
+  /** Every request taken so far, in the order their bodies were read whole. */
   readonly requests: readonly RecordedRequest[];
   /** Stops the server; requests still open are ended. */
   close(): Promise<void>;
@@ -287,6 +287,9 @@ export function sseResponse(sse: string, requestId?: string): Response {
 /** Starts a recorder on 127.0.0.1 at a free port. */
 export function startRecorder(options: { readonly route?: Route } = {}): Recorder {
   const requests: RecordedRequest[] = [];
+  // Requests arrived so far: a request's number is taken before its body is read, so two
+  // requests in flight at once never get the same one.
+  let arrived = 0;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -295,8 +298,9 @@ export function startRecorder(options: { readonly route?: Route } = {}): Recorde
     idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      arrived += 1;
       const recorded: RecordedRequest = {
-        n: requests.length + 1,
+        n: arrived,
         method: request.method,
         path: url.pathname + url.search,
         headers: keptHeaders(request.headers),

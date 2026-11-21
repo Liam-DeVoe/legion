@@ -1,5 +1,5 @@
 /**
- * Fills the runner's SQL with the values of one query: count.sql (R1's count, for one store and
+ * Fills the runner's SQL with the values of one query: count.sql (the read count, for one store and
  * one UTC day or hour of file mtime), models.sql (the model of each session of the same files),
  * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms),
  * sessions.sql (the paths of the files a count row names by hash) and session-head.sql (the head
@@ -8,7 +8,8 @@
  * a string literal with its quotes (`sqlString`), so no value can end the literal it is in. The
  * filled text goes into the store's read command unchanged.
  *
- *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]
+ *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD>
+ *     [--hour <0-23>] [--query count|models]
  *
  * prints count.sql (or, with `--query models`, models.sql) filled for that store and day (or for
  * the one hour of that day, which is how a day whose query times out is split), count.sql with the

@@ -12,7 +12,7 @@ import { type Arm, type ArmName, buildArm, skillFile } from "./arms";
 import { type Case, pathHash } from "./cases";
 
 // The arms of a case, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch profile with
-// the made-up skills alpha and beta, captured by plan task t1 with `HOME=<scratch> omp -p
+// the made-up skills alpha and beta, captured with `HOME=<scratch> omp -p
 // --session-dir <scratch>/sessions --model anthropic/claude-sonnet-5-5 "<prompt>"`
 // (testdata/CAPTURE.md). Its messages are: 0 the user's prompt, 1 a read of skill://alpha, 2 its
 // result, 3 a read of skill://alpha/references/x.md, 4 its result, 5 a read of the missing

@@ -1,5 +1,5 @@
 /**
- * The five arms of a case (plan, R5 `arms.ts`): `old` (the skill's base text, `--old`), `new` (the
+ * The five arms of a case: `old` (the skill's base text, `--old`), `new` (the
  * cut text, `--new`), `none` (no skill), `minus` (a copy of the old directory less every line
  * of the case's baseFile that is the case's line, trimmed, or less every line of any of its files
  * that is `--planted-line`, trimmed, when one is given: a rule written twice is still the rule, so
@@ -45,7 +45,8 @@ export interface Arm {
   readonly name: ArmName;
   /** The case's skill, as `skill://<skill>` names it. */
   readonly skill: string;
-  /** The arm's directory of the skill, absolute, or undefined for `none`. The model never sees it. */
+  /** The arm's directory of the skill, absolute, or undefined for `none`. The model never sees
+   *  it. */
   readonly skillDir: string | undefined;
   /** The skill's directory as the model sees it, the same in every arm of a case: the installed
    * directory the case's first `[Skill file: …]` line of the skill shows, or `/skills/<skill>`

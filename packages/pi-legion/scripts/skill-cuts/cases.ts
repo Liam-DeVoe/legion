@@ -1,9 +1,9 @@
 /**
- * The case file of the behaviour test (plan, R5 `cases.ts`): one JSON object per line, each one
- * step of a real Oh My Pi session that a line of one skill's text governs. Its writer is
- * `skill-cuts read --prompt case` with the case builder; arms.ts, capture.ts, judge.ts and `report`
- * read it through `loadCases`. A case file holds the cases of one skill: the runner is run once
- * per skill, with that skill's old and new directories.
+ * The case file of the behaviour test: one JSON object per line, each one step of a real Oh My Pi
+ * session that a line of one skill's text governs. Its writer is `skill-cuts build-cases`
+ * (build.ts), and `behaviour` (cli.ts) and build.ts read it through `loadCases`. A case file holds
+ * the cases of one skill: the runner is run once per skill, with that skill's old and new
+ * directories.
  *
  * A read of a skill file is a `read` tool call of `skill://<skill>` (its SKILL.md) or
  * `skill://<skill>/<path>`, as `skillReadFile` reads one. Oh My Pi answers a read of a skill file
@@ -30,8 +30,8 @@ const RepoPath = {
 export const ProfileSkill = z.strictObject({ ...RepoPath, name: z.string().min(1) });
 export type ProfileSkill = z.infer<typeof ProfileSkill>;
 
-/** What the capture installs for a case, the same in every arm but the case's skill (plan, "The
- * case context"): the installed skills, the plugins the session's context installed at its
+/** What the capture installs for a case, the same in every arm but the case's skill (context.ts):
+ * the installed skills, the plugins the session's context installed at its
  * start, the context files (the repository's `AGENTS.md`, a Legion project's instructions file),
  * and, for a Legion context, the role prompt that goes to `--append-system-prompt`. A subagent's
  * session records its own system prompt and tools (its `session_init` line), so its case carries
