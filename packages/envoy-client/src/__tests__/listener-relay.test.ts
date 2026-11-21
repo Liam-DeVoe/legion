@@ -547,6 +547,64 @@ describe("a relay socket", () => {
     expect(server.tradesAsked - trades).toBe(2);
   }, 40_000);
 
+  test("an upgrade refused 403 trades a fresh token, and waits 1 s, then 2 s, as after 4403", async () => {
+    const server = standIn();
+    await opened(server, "ses_a");
+    const trades = server.tradesAsked;
+    const refused = () => server.upgrades.filter((upgrade) => upgrade.status === 403);
+    server.refuseUpgrades = 403;
+    server.close(1012, "listener_stopping");
+    await until(
+      () => refused().length >= 2,
+      10_000,
+      () =>
+        `the stand-in refused ${refused().length} upgrades 403; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    server.refuseUpgrades = undefined;
+    await until(
+      () => opens(server).length === 2,
+      10_000,
+      () =>
+        `no socket opened once the stand-in took upgrades again; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    const held = opens(server)[0]?.token;
+    const [first, second] = refused();
+    // The 1012 says nothing against the token, so the first upgrade after it presents it.
+    expect(first?.token).toBe(held);
+    // Each open after a 403 trades a fresh token: the second 403's, and the open's after it.
+    expect(new Set([held, second?.token, opens(server)[1]?.token]).size).toBe(3);
+    expect(server.tradesAsked - trades).toBe(2);
+    // The stand-in took upgrades again once it had refused two, so the open is the next attempt.
+    expect({
+      afterFirst: (second?.at ?? 0) - (first?.at ?? 0) >= 1_000,
+      afterSecond: (opens(server)[1]?.at ?? 0) - (second?.at ?? 0) >= 2_000,
+    }).toEqual({ afterFirst: true, afterSecond: true });
+  }, 30_000);
+
+  test("every open presents a proof of its own, the token it holds or a fresh one", async () => {
+    // A reopen after 1012 presents the token in hand, and one after 4401 a fresh one: either way
+    // its proof is new, since a proof names the one request it was signed for.
+    const server = standIn();
+    await opened(server, "ses_a");
+    server.close(1012, "listener_stopping");
+    await until(
+      () => opens(server).length === 2,
+      5_000,
+      () => `no reopen after the 1012 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    server.close(4401, "credential_expired");
+    await until(
+      () => opens(server).length === 3,
+      5_000,
+      () => `no reopen after the 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    const [first, second, third] = opens(server);
+    expect([second?.token === first?.token, third?.token === first?.token]).toEqual([true, false]);
+    const proofs = opens(server).map((upgrade) => upgrade.proof);
+    expect(proofs.every((proof) => proof !== "")).toBe(true);
+    expect(new Set(proofs).size).toBe(3);
+  });
+
   test("an upgrade the listener never answers is dropped after 20 s, logged, and tried again", async () => {
     // A path that takes the connection and never answers the upgrade holds the socket connecting
     // with no close: unbounded, the session would receive nothing and say nothing until restarted.

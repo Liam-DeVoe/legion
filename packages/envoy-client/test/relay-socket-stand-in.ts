@@ -71,6 +71,8 @@ export interface StandInUpgrade {
   /** 101 for a socket it opened, else the status it refused with. */
   readonly status: number;
   readonly why: string;
+  /** The DPoP proof a socket it opened was upgraded with; "" for an upgrade it refused. */
+  readonly proof: string;
 }
 
 /** A frame the stand-in delivers: the headers a listener's relay frame carries, each name to the
@@ -223,7 +225,7 @@ export function startRelaySocketStandIn(
   let origin = "";
 
   const refuse = (session: string, token: string, status: number, why: string): Response => {
-    upgrades.push({ session, token, at: Date.now(), status, why });
+    upgrades.push({ session, token, at: Date.now(), status, why, proof: "" });
     return new Response(why, { status });
   };
 
@@ -392,7 +394,14 @@ export function startRelaySocketStandIn(
         replies: new Map(),
       };
       if (srv.upgrade(request, { headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL }, data })) {
-        upgrades.push({ session, token, at: Date.now(), status: 101, why: "" });
+        upgrades.push({
+          session,
+          token,
+          at: Date.now(),
+          status: 101,
+          why: "",
+          proof: request.headers.get("DPoP") ?? "",
+        });
         return undefined;
       }
       return refuse(session, token, 400, "the request is no WebSocket upgrade");
