@@ -42,11 +42,11 @@ type Row struct {
 	Listed []string
 	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
 	// carries the key, empty when the project names none, so this stand-in does too — unless
-	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
-	// carries no such key at all.
+	// OmitSlackChannels, which is a Dispatch from before projects' owners could name Slack
+	// channels, and carries no such key at all.
 	SlackChannels []string
 	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
-	// Dispatch from before #t-a-31 answers.
+	// Dispatch from before owners could name channels answers.
 	OmitSlackChannels bool
 	// SlackChannelsChangedAt is when the owner last changed SlackChannels, or the project turned
 	// private, as Dispatch answers it in slack_channels_changed_at; zero answers null, a list

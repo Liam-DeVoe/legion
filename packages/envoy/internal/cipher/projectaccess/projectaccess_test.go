@@ -46,8 +46,8 @@ func TestAccessReadsTheK3Answer(t *testing.T) {
 	want := projectaccess.Answer{
 		Project: "PRIV", Visibility: "private", Owner: "carol@example.com", Person: "carol@example.com",
 		MemberKind: projectaccess.MemberFull, Visible: true,
-		// The stand-in answers as a Dispatch with dispatch://INFRA-3862's #t-a-31 does: the key is
-		// always there, empty for a project naming no channel.
+		// The stand-in answers as a Dispatch whose projects' owners can name Slack channels does:
+		// the key is always there, empty for a project naming no channel.
 		SlackChannels: []string{}, SlackChannelsPresent: true,
 	}
 	if !reflect.DeepEqual(got, want) || !got.Private() {
