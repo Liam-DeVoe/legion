@@ -208,7 +208,8 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //   - and a claim an operator or the daemon suspended, or a failed or retired one, nothing: the
 //     operator's suspension and the daemon's stand above the hold's.
 //
-// Each stop is one log line naming the issue, the role and the version.
+// Each stop names the version that closed the gate (record.SuperviseRequest.HoldVersion), and is
+// one log line naming the issue, the role and the version.
 func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, document string, version int) error {
 	hold := record.WorkHold{Project: root.Project, Tree: root.Tree, RootGeneration: root.Generation, Step: step,
 		ArtifactID: document, Version: version, ClosedAt: e.now()}
@@ -222,7 +223,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 	reason, workerClose, architectClose := holdReason(hold), workCloseMessage(hold, false), workCloseMessage(hold, true)
 	stopOf := func(c treeClaim) record.SuperviseRequest {
 		return record.SuperviseRequest{Op: "suspend", Tree: c.issue.Tree, Role: c.role, Generation: c.issue.Generation,
-			SuspendedBy: supervise.SuspendedByHold, Reason: reason}
+			SuspendedBy: supervise.SuspendedByHold, Reason: reason, HoldVersion: hold.Version}
 	}
 	told, stopped := 0, 0
 	for _, c := range claims {
@@ -331,7 +332,7 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // (record.SuperviseRequest.Opening): where the claim kept a task of its own, supervise puts those
 // sentences in front of it instead (Machine.EndHold). A claim that already has such a start queued
 // is given no second. Each start is one log line naming the issue, the role and the version that
-// closed the gate.
+// closed the gate: the version closing names, or 0 where closing is nil.
 func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, opening string, closing *record.WorkHold) error {
 	closedAt := 0
 	if closing != nil {
@@ -407,7 +408,8 @@ func openingQueued(run record.RoleRun, root record.Issue) bool {
 //     `merge` or turned the gate off. Every live holder is told so, and each claim the hold
 //     stopped starts with its task;
 //   - and a tree that holds neither starts each claim the hold stopped that no start covers yet,
-//     with no message.
+//     with no message. It has no record, so the log line of each start names no version
+//     (openStoppedClaims with 0).
 //
 // It reads no gate of its own: the gate of each running tree is the one the boot's read holds
 // (phaseOwners.gates), which nothing the boot writes before this moves, and under `merge` no tree
@@ -458,7 +460,7 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 			if _, stops := stopped[root.Key]; !stops {
 				continue
 			}
-			if err := e.openStoppedClaims(ctx, tx, root); err != nil {
+			if err := e.openStoppedClaims(ctx, tx, root, 0); err != nil {
 				return err
 			}
 		}
@@ -467,14 +469,17 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 }
 
 // workHoldOpened is the work hold of a tree found ended under a claim it stopped
-// (intake.WorkHoldOpened): the claim's decision that made the hold's stop read the hold's record
-// before the opening committed, so it made the stop, and the opening read the claims before that
-// stop and started nothing of the claim (openHeldClaims starts only a claim stored stopped by the
-// hold). A decision after the commit reads no record and makes no stop (supervise's
-// dropOpenedHoldStop), so only this order is left. The claim is started now, as the boot starts a
-// claim the hold stopped in a tree that holds no work (openStoppedClaims). A tree that holds work
-// again, one that lingers, and a root the record does not hold are left alone. Under `merge` no
-// tree holds work, so the gate is read under `work` alone.
+// (intake.WorkHoldOpened): the opening read the claims before the hold's stop was made and started
+// nothing of the claim (openHeldClaims starts only a claim stored stopped by the hold), and the
+// stop was made before the opening committed. Two stops are made in that window: a stop whose
+// decision read the hold's record before the commit, and a stop the outbox's row made at once,
+// whose row reads the gate again on its next attempt (internal/daemon's holdStop). A decision
+// after the commit reads no record and makes no stop (supervise's dropOpenedHoldStop). The claim
+// is started now, as the boot starts a claim the hold stopped in a tree that holds no work
+// (openStoppedClaims), and the log line of its start names the version the hold's stop named
+// (intake.WorkHoldOpened.Version). A tree that holds work again, one that lingers, and a root the
+// record does not hold are left alone. Under `merge` no tree holds work, so the gate is read under
+// `work` alone.
 func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.WorkHoldOpened) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Tree)
 	if err != nil || root == nil || !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() {
@@ -491,17 +496,24 @@ func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.Work
 			return intake.Result{}, nil
 		}
 	}
-	return intake.Result{}, e.openStoppedClaims(ctx, tx, *root)
+	return intake.Result{}, e.openStoppedClaims(ctx, tx, *root, fact.Version)
 }
 
 // openStoppedClaims starts each claim of root's tree the hold stopped that no opening start
 // covers yet (openHeldClaims), with no message: the tree holds no work and keeps no record of a
 // hold, so the opening names the hold's own sentence in front, and that the deployment no longer
-// holds the tree's work.
-func (e *Engine) openStoppedClaims(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+// holds the tree's work. version is the version that closed the gate, as the hold's stop named it
+// (workHoldOpened), and the log line of each start names it. The opening's sentences stay the
+// hold's own: the close's sentence also names the step and the document, which no record names
+// now. The boot's call has no record and passes 0 (workHoldBooted, a tree that holds neither).
+func (e *Engine) openStoppedClaims(ctx context.Context, tx pgx.Tx, root record.Issue, version int) error {
 	claims, err := e.treeClaims(ctx, tx, root)
 	if err != nil {
 		return err
 	}
-	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(nil, bootOpenedSentence(root.Key)), nil)
+	var closing *record.WorkHold
+	if version != 0 {
+		closing = &record.WorkHold{Project: root.Project, Tree: root.Tree, Version: version}
+	}
+	return e.openHeldClaims(ctx, tx, root, claims, openingSentences(nil, bootOpenedSentence(root.Key)), closing)
 }

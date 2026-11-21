@@ -108,11 +108,12 @@ func (w holdWords) bootOpening(closedAt int) string {
 
 // stop is the work hold's stop of role of issue at generation, closed at version: the suspend a
 // message carries for the outbox to post once the message reached the claim, and the row a
-// released worker that is not a merger is given at once. The outbox names its deadline.
+// released worker that is not a merger is given at once, each naming the version that closed the
+// gate. The outbox names its deadline.
 func (w holdWords) stop(role claim.Role, generation uint64, version int) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "suspend", Tree: w.tree, Role: role, Generation: generation,
-		SuspendedBy: supervise.SuspendedByHold,
-		Reason:      fmt.Sprintf("the work hold: version %d of the %s document (%s) of %s closed the design gate", version, w.step, w.document, w.tree)}
+		SuspendedBy: supervise.SuspendedByHold, HoldVersion: version,
+		Reason: fmt.Sprintf("the work hold: version %d of the %s document (%s) of %s closed the design gate", version, w.step, w.document, w.tree)}
 }
 
 // noPhaseTask is the work of an opening task to a claim that holds no phase of its issue.
@@ -1155,6 +1156,37 @@ func wantLines(t *testing.T, logged, msg string, claims []heldClaim) {
 			t.Fatalf("no line of %q names %s's %s and version 4:\n%s", msg, c.issue, c.role, strings.Join(lines, "\n"))
 		}
 	}
+}
+
+// H33, for the start the fact of the hold's end writes (intake.WorkHoldOpened). The outbox applies
+// that fact from a stop row that finds its claim stopped after the opening, when the opening has
+// deleted the hold's record already. The fact names the version that closed the gate, as the stop
+// named it. So the one start it writes for the claim the hold stopped begins with the opening's
+// sentences, and the start's log line names that version.
+func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfItsStop(t *testing.T) {
+	rig := newHoldRig(t)
+	engine := rig.engine(config.HoldWork)
+	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
+	if hold := workHoldOf(t, rig.pool, "LEGION-208"); hold != nil {
+		t.Fatalf("the record holds %+v, want none: the opening deleted it", hold)
+	}
+
+	applyMirrored(t, rig.pool, engine, "work-hold-opened", intake.WorkHoldOpened{Tree: "LEGION-208", Version: 4})
+
+	opening := workHoldWords + " The work hold stopped your turn. " + legionHold.bootOpened() +
+		" Check what your turn already did: a tool call may not have finished."
+	want := phaseOpening(storedIssue(t, rig.pool, "LEGION-209"), claim.RoleImplementer, opening)
+	starts := holdStartsOf(t, rig.pool, "LEGION-209")
+	if len(starts) != 1 || !strings.HasPrefix(starts[0].Task, opening+"\n\n") || !reflect.DeepEqual(starts[0], want) {
+		t.Fatalf("the fact wrote the starts\n %s\nwant the implementer's one, its task behind the opening's sentences\n %s", asJSON(starts), asJSON(want))
+	}
+	for _, issue := range []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212"} {
+		if starts := holdStartsOf(t, rig.pool, issue); len(starts) != 0 {
+			t.Fatalf("the fact starts %s of %s, want nothing: the hold stopped no claim of it", asJSON(starts), issue)
+		}
+	}
+	wantLines(t, rig.logged.String(), "workflow: the work hold's opening starts a claim it stopped",
+		[]heldClaim{{"LEGION-209", claim.RoleImplementer}})
 }
 
 // heldWhy is the answer the state gives an issue the work hold holds (H36).

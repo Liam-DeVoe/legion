@@ -3950,15 +3950,29 @@ func (r *outbox) openingQueued(ctx context.Context, payload record.SuperviseRequ
 // holdStop runs the work hold's stop of a claim (a suspend row of the source hold): the close's
 // stop of a released worker that is not a merger, which no message reaches, and the stop a close
 // message carries, which the outbox queued with its deadline once the message reached the claim
-// (postHoldStop). It reads the predicate first (record.TreeGate.HoldsWork, read under `work`
-// alone, since under `merge` no tree holds work): a gate that opened again since makes no stop
-// (holdStopUnmade). Otherwise it posts the stop (supervise.RequestSuspend, By hold) with the
-// deadline and the moment of the message the row stored, which the claim holds for the agent's
-// turn — the one in flight, or the one the message starts in a ready or idle claim — and cuts at
-// the deadline; it answers supervise.ErrSuspendHeld meanwhile, a wait, so the row is asked again
-// on its backoff and a restart posts the same stored deadline again. A released claim the stop
-// takes over keeps its bundle and its pending task; the backstop its release armed is dropped, as
-// every stop that takes a released claim over drops it (takeOverRelease).
+// (postHoldStop). Each attempt reads the predicate first (record.TreeGate.HoldsWork, read under
+// `work` alone, since under `merge` no tree holds work): a gate that opened again since makes no
+// stop (holdStopUnmade). While the gate holds work:
+//
+//   - A claim that stands stopped by the hold already has its stop (stoppedByHold). The row
+//     finishes and posts the stop no more, with one log line.
+//   - Otherwise the row posts the stop (supervise.RequestSuspend, By hold) with the deadline and
+//     the moment of the message the row stored. The claim holds it for the agent's turn — the one
+//     in flight, or the one the message starts in a ready or idle claim — and cuts at the
+//     deadline. It answers supervise.ErrSuspendHeld meanwhile, a wait, so the row is asked again on
+//     its backoff, and a restart, which forgets a held stop, posts the same stored deadline again.
+//   - A stop the claim makes at once — a released worker the stop takes over, or a claim with no
+//     process — answers a wait too, so the row is asked once more on its backoff. The opening's
+//     transaction may read the claim before this stop and commit after it, and the opening starts
+//     only a claim it read stopped by the hold. So the second attempt reads the gate again: an
+//     opening that committed meanwhile takes holdStopUnmade, which starts the claim with the
+//     opening's task, and a gate that still holds work finishes the row by the first case.
+//   - A claim that another source holds, an operator's or the daemon's suspension, which outranks
+//     the hold's, is not stopped by the hold, and the row finishes.
+//
+// A released claim the stop takes over keeps its bundle and its pending task; the backstop its
+// release armed is dropped, as every stop that takes a released claim over drops it
+// (takeOverRelease).
 func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
 	token claim.Token, machine *supervise.Machine) error {
 	holds := false
@@ -3972,12 +3986,29 @@ func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload rec
 	if !holds {
 		return r.holdStopUnmade(ctx, row, payload, issue, token, machine)
 	}
+	if stoppedByHold(machine.Claim()) {
+		r.log.Info("outbox: the work hold's stop finds the claim stopped by the hold; finished without posting it again",
+			"row", row.ID, "issue", issue.Key, "role", payload.Role, "version", payload.HoldVersion)
+		return nil
+	}
 	if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByHold,
 		Deadline: payload.Deadline, TurnAfter: payload.TurnAfter}); err != nil {
 		return fmt.Errorf("stop claim %s for the work hold: %w", token, err)
 	}
 	r.takeOverRelease(ctx, row.Issue, payload.Role)
-	return nil
+	if !stoppedByHold(machine.Claim()) {
+		return nil
+	}
+	return wait.Errorf("the work hold's stop of %s's %s was made at once; the row reads the design gate of %s once more, so an opening that committed meanwhile starts the claim",
+		issue.Key, payload.Role, issue.Tree)
+}
+
+// stoppedByHold is whether c stands stopped by the work hold: suspended, with the hold as its
+// source. A stop the claim holds for its agent's turn is not counted, although Claim.WorkHeld
+// counts it: the claim keeps that stop in memory alone, so the stop's row keeps asking until the
+// stop is made.
+func stoppedByHold(c supervise.Claim) bool {
+	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByHold
 }
 
 // holdStopUnmade is the work hold's stop meeting a tree that no longer holds work: the gate opened
@@ -3989,9 +4020,10 @@ func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload rec
 //
 //   - A stop the claim holds for its agent's turn is dropped, and the turn goes on.
 //   - A claim the stop already stopped is started with the opening's task: the fact of the hold's
-//     end (intake.WorkHoldOpened) has the workflow start each claim of the tree the hold stopped
-//     that no opening start covers. This is a stop whose decision read the hold's record before
-//     the opening committed, and that the opening's read of the claims did not see.
+//     end (intake.WorkHoldOpened), which names the version the stop names, has the workflow start
+//     each claim of the tree the hold stopped that no opening start covers. The stop was made after
+//     the opening read the claims and before the opening committed: by a decision that read the
+//     hold's record before the commit, or at once by this row's last attempt (holdStop).
 //   - Any other claim — a released one the stop never took over, one another source took over —
 //     is left as it is.
 func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
@@ -4005,9 +4037,9 @@ func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, paylo
 			"row", row.ID, "issue", issue.Key, "role", payload.Role)
 	case stopped:
 		r.log.Info("outbox: the work hold's stop was made after the design gate opened again; the hold's opening starts the claim",
-			"row", row.ID, "issue", issue.Key, "role", payload.Role, "tree", issue.Tree)
+			"row", row.ID, "issue", issue.Key, "role", payload.Role, "tree", issue.Tree, "version", payload.HoldVersion)
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("work-hold-opened:%s:%d", token, row.ID),
-			intake.WorkHoldOpened{Tree: issue.Tree}, r.handlers...); err != nil {
+			intake.WorkHoldOpened{Tree: issue.Tree, Version: payload.HoldVersion}, r.handlers...); err != nil {
 			return fmt.Errorf("start the claims the work hold of %s stopped after its opening: %w", issue.Tree, err)
 		}
 	default:

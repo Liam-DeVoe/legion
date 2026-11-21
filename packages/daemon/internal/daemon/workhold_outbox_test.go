@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1099,6 +1101,89 @@ func TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening(t *testing.T) {
 	}
 	if got := r.launches(claim.RoleImplementer); got != launched {
 		t.Fatalf("the runtime started the implementer %d times since the close, want none: its process was never to be stopped", got-launched)
+	}
+}
+
+// Spec step 3, H14: the hold's stop of a released tester is made at once, and its row reads the
+// gate once more before it finishes. The first attempt stops the tester and answers a wait, which
+// the outbox does not count as a failure. While the gate still holds work, the second attempt
+// finds the tester stopped by the hold and finishes the row without posting the stop again.
+func TestWorkHoldFinishesAStopMadeAtOnceOnItsSecondAttempt(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	r.released(claim.RoleTester)
+	r.close(4)
+
+	r.runOnce()
+	r.wantHeld(claim.RoleTester, 0, "after the stop's first attempt")
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 1 {
+		t.Fatalf("after its first attempt the tester's stops are %+v, want its one row waiting to read the gate again", stops)
+	}
+	if waits := loggedMessages(t, logs.String(), "outbox row waits"); len(waits) != 1 || waits[0]["level"] != "INFO" ||
+		!strings.Contains(fmt.Sprint(waits[0]["error"]), "was made at once") {
+		t.Fatalf("the first attempt logged the waits %v, want one wait at INFO naming the stop made at once", waits)
+	}
+	if failed := loggedMessages(t, logs.String(), "outbox row failed"); len(failed) != 0 {
+		t.Fatalf("the first attempt logged %v, want no failure: the second read of the gate is a wait", failed)
+	}
+
+	r.clock.advance(65 * time.Second)
+	r.runOnce()
+	r.wantHeld(claim.RoleTester, 0, "after the stop's second attempt")
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
+		t.Fatalf("after its second attempt the tester's stops are %+v, want the row finished", stops)
+	}
+	finished := loggedMessages(t, logs.String(), "outbox: the work hold's stop finds the claim stopped by the hold")
+	if len(finished) != 1 || finished[0]["role"] != string(claim.RoleTester) || finished[0]["version"] != float64(4) {
+		t.Fatalf("the second attempt logged %v, want one line naming the tester and version 4", finished)
+	}
+}
+
+// Spec step 3 ("A stop that the daemon has not made when the gate opens again is not made"), H33,
+// for a stop the outbox makes at once. The released tester's stop row reads the gate while it
+// holds work. The opening's transaction reads the tree's claims with the tester still released.
+// The row makes the stop, and then the opening commits, so the opening starts nothing of the
+// tester. The row's second attempt reads the gate again and finds it open. It starts the tester
+// with the opening's task, and its log line names the version that closed the gate.
+func TestWorkHoldStartsAStopMadeAtOnceWhileTheOpeningCommits(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	r.released(claim.RoleTester)
+	r.close(4)
+
+	// A person's approval of version 4, applied as r.approve applies it, with one more handler
+	// after the engine's and admission's. That handler runs the stop row's first attempt inside
+	// the opening's transaction: after the opening read the claims, and before it commits.
+	stopBeforeTheCommit := applyFunc(func(context.Context, pgx.Tx, intake.Fact) (intake.Result, error) {
+		r.runOnce()
+		return intake.Result{}, nil
+	})
+	approval := intake.DispatchArtifact{Key: r.tree.key, ArtifactID: r.tree.document, Kind: intake.DispatchArtifactApproved,
+		Version: 4, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 12}}
+	if result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-around-the-stop", approval, r.engine, r.admission,
+		stopBeforeTheCommit); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the approval = %+v, %v", result.Refusal, err)
+	}
+	r.wantHeld(claim.RoleTester, 0, "after the opening committed")
+	if got := r.startsSince(claim.RoleTester, 0); got != 0 {
+		t.Fatalf("the opening queued %d starts of the tester, want none: it read the tester released", got)
+	}
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 1 {
+		t.Fatalf("after the opening the tester's stops are %+v, want its row waiting to read the gate again", stops)
+	}
+
+	r.drain()
+	want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
+		" Check what your turn already did: a tool call may not have finished.\n\nThe issue's other roles may ask you questions."
+	r.wantStarted(claim.RoleTester, 0, want)
+	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
+		t.Fatalf("after the drain the tester's stops are %+v, want the row finished", stops)
+	}
+	started := loggedMessages(t, logs.String(), "outbox: the work hold's stop was made after the design gate opened again")
+	if len(started) != 1 || started[0]["role"] != string(claim.RoleTester) || started[0]["version"] != float64(4) {
+		t.Fatalf("the second attempt logged %v, want one line naming the tester and version 4", started)
 	}
 }
 

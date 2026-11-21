@@ -9,8 +9,9 @@
 -- tree is held before this release, so the table starts empty.
 --
 -- The release before never names work_holds. It does not know the keys the hold writes on an
--- outbox row either: a supervise suspend's `suspendedBy`, `deadline` and `turnAfter`, a start's
--- `opening`, and a role message's `wake` and `stop`. It decodes every payload strictly
+-- outbox row either: a supervise suspend's `suspendedBy`, `deadline`, `turnAfter` and
+-- `holdVersion` (the last on the hold's stop alone), a start's `opening`, and a role message's
+-- `wake` and `stop`. It decodes every payload strictly
 -- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row left carrying one of them is retried
 -- for ever, and record.Postgres.RoleRuns, which decodes every supervise row of the issues an
 -- admission pass reads, fails every pass of its issue with it.

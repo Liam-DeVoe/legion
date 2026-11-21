@@ -139,12 +139,15 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 		SuspendedBy: supervise.SuspendedByHold, Reason: "the work hold"}
 	timed := stop
 	timed.Deadline, timed.TurnAfter = deadline, deadline.Add(-2*time.Minute)
+	versioned := stop
+	versioned.HoldVersion = 4
 	opening := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 4,
 		Task: "The work hold stopped your turn.\n\nThe issue's other roles may ask you questions.", Opening: "The work hold stopped your turn."}
 	t.Run("the hold's rows round-trip", func(t *testing.T) {
 		for _, payload := range []OutboxPayload{
-			stop, timed, opening,
+			stop, timed, versioned, opening,
 			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &stop},
+			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &versioned},
 			RoleMessage{Role: "legion-LEGION-210-merger", Body: "End your turn now.", Wake: true, Stop: &SuperviseRequest{
 				Op: "suspend", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4, SuspendedBy: supervise.SuspendedByHold, Reason: "the work hold"}},
 			RoleMessage{Role: "legion-LEGION-210-merger", Body: "Your phase goes on.", Wake: true},
@@ -179,6 +182,12 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 		openingOnStop.Opening = "The work hold stopped your turn."
 		openingWithoutItsTask := opening
 		openingWithoutItsTask.Task = "The issue's other roles may ask you questions."
+		versionOnAStart := opening
+		versionOnAStart.HoldVersion = 4
+		versionOnAnotherStop := stop
+		versionOnAnotherStop.SuspendedBy, versionOnAnotherStop.HoldVersion = "", 4
+		negativeVersion := versioned
+		negativeVersion.HoldVersion = -4
 		messageStopsTimed := RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &timed}
 		messageStartsIt := RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Stop: &opening}
 		for name, tc := range map[string]struct {
@@ -192,6 +201,9 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 			"a deadline on another stop":       {ungatedDeadline, "hold"},
 			"opening sentences on a stop":      {openingOnStop, "opening"},
 			"opening sentences the task lacks": {openingWithoutItsTask, "opening"},
+			"a version on a start":             {versionOnAStart, "version"},
+			"a version on another stop":        {versionOnAnotherStop, "version"},
+			"a negative version":               {negativeVersion, "negative"},
 			"a message whose stop is timed":    {messageStopsTimed, "stop"},
 			"a message whose stop is a start":  {messageStartsIt, "stop"},
 		} {

@@ -1260,6 +1260,17 @@ type SuperviseRequest struct {
 	SuspendedBy supervise.SuspendSource `json:"suspendedBy,omitempty"`
 	Deadline    time.Time               `json:"deadline,omitzero"`
 	TurnAfter   time.Time               `json:"turnAfter,omitzero"`
+	// HoldVersion is the version of the gated document that closed the gate. Only the work hold's
+	// stop carries it. The workflow writes it on each stop of the close (workflow's workHoldClose),
+	// and the outbox keeps it when it posts the stop a close message carries (postHoldStop). The
+	// opening deletes the hold's record, which names the version too. So a stop row that finds its
+	// claim stopped after the opening gives this version to the fact of the hold's end
+	// (intake.WorkHoldOpened, the outbox's holdStopUnmade), and the log line of the start names
+	// it. A stop that names no version has 0. A negative version is refused.
+	//
+	// The way back of migrations/20261121000254_work_holds.up.sql deletes each stop of the hold and
+	// takes `stop` off every role message, so no row that the release before reads carries this key.
+	HoldVersion int `json:"holdVersion,omitempty"`
 	// Opening is the work hold's opening sentences, on the start the hold's opening writes for a
 	// claim the hold stopped (workflow's openHeldClaims). Task is those sentences, a blank line and
 	// the claim's work, and the outbox hands the sentences apart to supervise.Machine.EndHold, which
@@ -2684,10 +2695,11 @@ func validSuperviseOp(op SuperviseOp) bool {
 }
 
 // validateWorkHoldRequest holds the work hold's keys of a supervise request to the rows the hold
-// writes (`gates.hold: work`): a source on a suspend alone, and only the hold's; a deadline and a
-// turn on the hold's stop alone, and no turn without a deadline, which supervise refuses as a stop
-// that is never made; and opening sentences on a start alone, whose task begins with them, so the
-// one task the claim is given and the sentences the outbox hands supervise apart are the same words.
+// writes (`gates.hold: work`): a source on a suspend alone, and only the hold's; a deadline, a
+// turn and the version that closed the gate on the hold's stop alone, no turn without a deadline,
+// which supervise refuses as a stop that is never made, and no negative version; and opening
+// sentences on a start alone, whose task begins with them, so the one task the claim is given and
+// the sentences the outbox hands supervise apart are the same words.
 func validateWorkHoldRequest(value SuperviseRequest) error {
 	if value.SuspendedBy != "" && value.Op != "suspend" {
 		return fmt.Errorf("a supervise %s names the source %q; only a suspend names one", value.Op, value.SuspendedBy)
@@ -2703,6 +2715,13 @@ func validateWorkHoldRequest(value SuperviseRequest) error {
 	if !value.TurnAfter.IsZero() && value.Deadline.IsZero() {
 		return fmt.Errorf("the work hold's stop waits for the turn of a message that reached the claim at %s and names no deadline, so it would never be made",
 			value.TurnAfter.UTC().Format(time.RFC3339))
+	}
+	if value.HoldVersion != 0 && value.SuspendedBy != supervise.SuspendedByHold {
+		return fmt.Errorf("a supervise %s of the source %q names the version %d that closed the design gate; only the work hold's stop names it, of the source %s",
+			value.Op, value.SuspendedBy, value.HoldVersion, supervise.SuspendedByHold)
+	}
+	if value.HoldVersion < 0 {
+		return fmt.Errorf("the work hold's stop names the version %d that closed the design gate; a version is never negative", value.HoldVersion)
 	}
 	if value.Opening != "" && value.Op != "start" {
 		return fmt.Errorf("a supervise %s carries the work hold's opening sentences; only a start of the hold's opening carries them", value.Op)
