@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,9 @@ type durableConns struct {
 
 	mu     sync.Mutex
 	byName map[string]*bus.Client
+	// subscriber is the connection the listener last bound its durable on, nil before the first
+	// bind (subscribed): the connection whose subscription health is the durable's.
+	subscriber *bus.Client
 }
 
 // durableConnsKey keys the registry by the listener's client and its durable's logical name.
@@ -48,10 +52,55 @@ var listenerDurableConns sync.Map
 
 // connsOf is client's durableConns for durable.
 func connsOf(client *bus.Client, durable string) *durableConns {
-	conns, _ := listenerDurableConns.LoadOrStore(durableConnsKey{client, durable}, &durableConns{
+	key := durableConnsKey{client, durable}
+	if conns, ok := listenerDurableConns.Load(key); ok {
+		return conns.(*durableConns)
+	}
+	conns, _ := listenerDurableConns.LoadOrStore(key, &durableConns{
 		client: client, durable: durable, byName: map[string]*bus.Client{},
 	})
 	return conns.(*durableConns)
+}
+
+// subscribed records conn as the connection the durable is bound on.
+func (d *durableConns) subscribed(conn *bus.Client) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.subscriber = conn
+}
+
+// subscriberOK reports whether the connection the durable is bound on still holds that
+// subscription (bus.Client.SubOK); false before the first bind.
+func (d *durableConns) subscriberOK() bool {
+	d.mu.Lock()
+	subscriber := d.subscriber
+	d.mu.Unlock()
+	return subscriber != nil && subscriber.SubOK()
+}
+
+// drainAll drains every intake connection of every durable of client, each within timeout, so a
+// delivery still in its handler acknowledges before the process exits: the listener's shutdown
+// runs it before it drains client, through which the handlers publish.
+func drainAll(client *bus.Client, timeout time.Duration) []error {
+	var conns []*bus.Client
+	listenerDurableConns.Range(func(key, value any) bool {
+		if key.(durableConnsKey).client == client {
+			d := value.(*durableConns)
+			d.mu.Lock()
+			for _, conn := range d.byName {
+				conns = append(conns, conn)
+			}
+			d.mu.Unlock()
+		}
+		return true
+	})
+	var errs []error
+	for _, conn := range conns {
+		if err := conn.Drain(timeout); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
 }
 
 // machine is the machine id the durable is the listener durable of (bus.ListenerDurable), as the
@@ -77,21 +126,10 @@ func (d *durableConns) open(ctx context.Context, name string) (*bus.Client, erro
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", name, err)
 	}
-	admitted, cancel := context.WithTimeout(ctx, generationAdmittedWithin)
-	defer cancel()
-	for {
-		changed := conn.ConnectionChanged()
-		if conn.Connected() {
-			return conn, nil
-		}
-		select {
-		case <-changed:
-		case <-time.After(50 * time.Millisecond):
-		case <-admitted.Done():
-			conn.Close()
-			return nil, fmt.Errorf("connect %s: not admitted within %s: %w", name, generationAdmittedWithin, admitted.Err())
-		}
+	if err := conn.AwaitAdmitted(ctx, name, generationAdmittedWithin); err != nil {
+		return nil, err
 	}
+	return conn, nil
 }
 
 // intake is the intake connection of the generation physical names, opened when there is none.
@@ -137,13 +175,12 @@ func (d *durableConns) cleanup(ctx context.Context, physical string) (*bus.Clien
 	return d.open(ctx, natsgrant.ListenerCleanupConnection(d.machine(), generation))
 }
 
-// keepOnly closes every intake connection but physical's: once the listener binds a generation,
-// no other is its own.
-func (d *durableConns) keepOnly(physical string) {
+// keepOnly closes every intake connection but those of the names kept.
+func (d *durableConns) keepOnly(keep ...string) {
 	d.mu.Lock()
 	var closing []*bus.Client
 	for name, conn := range d.byName {
-		if name != physical {
+		if !slices.Contains(keep, name) {
 			closing = append(closing, conn)
 			delete(d.byName, name)
 		}
@@ -155,32 +192,12 @@ func (d *durableConns) keepOnly(physical string) {
 }
 
 // reserved is consumernames.Config.Reserved: a candidate is reserved, so its intake connection
-// opens now, before the protocol creates it; an earlier candidate of this call is dropped, since
-// the protocol retires a candidate before it reserves the next. A connection the hub does not
+// opens now, before the protocol creates it, and every other connection the listener holds but its
+// old one's is closed: the protocol reserves a candidate only when the record selects none, or
+// one the server no longer holds, so none of them delivers any more. A connection the hub does not
 // admit ends the call with nothing created.
 func (d *durableConns) reserved(ctx context.Context, _ string, op consumernames.Op) error {
-	d.mu.Lock()
-	var earlier []string
-	for name := range d.byName {
-		if name != op.Candidate && name != op.Old {
-			earlier = append(earlier, name)
-		}
-	}
-	d.mu.Unlock()
-	for _, name := range earlier {
-		d.drop(name)
-	}
+	d.keepOnly(op.Candidate, op.Old)
 	_, err := d.intake(ctx, op.Candidate)
 	return err
-}
-
-// drop closes the intake connection of physical, if the listener holds one.
-func (d *durableConns) drop(physical string) {
-	d.mu.Lock()
-	conn := d.byName[physical]
-	delete(d.byName, physical)
-	d.mu.Unlock()
-	if conn != nil {
-		conn.Close()
-	}
 }

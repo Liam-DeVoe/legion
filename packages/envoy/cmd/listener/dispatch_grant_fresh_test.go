@@ -23,14 +23,15 @@ import (
 // selection bucket's lookup, its leader read and the write of its own record's key, and each fresh
 // generation of its durable on a connection named for it (listener-intake/<machine id>/<generation>).
 // In the fresh mode, after the cutover's conversion, it starts on that grant alone: it binds a fresh
-// generation of its durable and is delivered the stream's messages on it.
+// generation of its durable, its subscription is live (what /healthz reads), and it is delivered the
+// stream's messages on it and acknowledges them.
 //
-// The control is the same row on a grant without the bucket's lookup and leader read, which the
-// start refuses: run it by removing the two entries from natsgrant's listenerSelection (an -overlay
-// of natsgrant.go); the row then fails at its start.
+// Two controls, each an -overlay that makes the row fail: the grant without the bucket's lookup and
+// leader read (natsgrant's listenerSelection), which the start refuses; and the durable bound on the
+// listener's own connection rather than its generation's (startListenerSubscription), whose
+// acknowledgement Dispatch's grant refuses.
 func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testing.T) {
 	hub := startDispatchGrantHub(t)
-	records := hub.records
 	client, err := bus.ConnectOwningStream([]string{hub.url},
 		bus.WithReplicas(1),
 		bus.WithName("envoy-listener"),
@@ -40,13 +41,12 @@ func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testin
 		t.Fatalf("connect the listener as Dispatch: %v", err)
 	}
 	t.Cleanup(client.Close)
-	admin := hub.admin
-	machine := hub.machine
 
-	durable := bus.ListenerDurable(machine)
+	durable := bus.ListenerDurable(hub.machine)
 	delivered := make(chan *natsgo.Msg, 4)
+	acked := make(chan error, 4)
 	sub, err := startListenerSubscription(client, durable, func(msg *natsgo.Msg) {
-		_ = msg.Ack()
+		acked <- msg.AckSync()
 		delivered <- msg
 	})
 	if err != nil {
@@ -56,6 +56,10 @@ func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testin
 	if err := awaitDurableBound(t.Context(), client, durable, 100*time.Millisecond, 10*time.Second); err != nil {
 		t.Fatalf("the durable is not bound: %v", err)
 	}
+	if !durableSubOK(client, durable) {
+		t.Fatal("the durable's subscription is not live, which /healthz reads")
+	}
+	records, admin := hub.records, hub.admin
 	record, _, err := records.Read(t.Context(), consumernames.DurableKey(durable))
 	if err != nil {
 		t.Fatalf("read the durable's record: %v", err)
@@ -76,6 +80,9 @@ func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testin
 	case msg := <-delivered:
 		if msg.Subject != subject {
 			t.Fatalf("delivered %s, want %s", msg.Subject, subject)
+		}
+		if err := <-acked; err != nil {
+			t.Fatalf("the acknowledgement of %s on the generation's connection: %v", subject, err)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the fresh generation %s delivered nothing", record.Current)

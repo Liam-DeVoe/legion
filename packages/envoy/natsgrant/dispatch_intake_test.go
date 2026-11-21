@@ -235,7 +235,12 @@ func TestAListenerIntakeConnectionIsGrantedItsOwnGenerationsExactly(t *testing.T
 	} {
 		require.Equal(t, want, allows(cleanup, subject), "%s for a listener cleanup of %s", subject, oldGen)
 	}
-	// The name's machine is not the grant's: no generation of either machine.
+	// The name's machine is not the grant's: no generation of either machine, for an intake or a
+	// cleanup connection.
+	foreignCleanup := natsgrant.Dispatch(exampleMachine, natsgrant.ParseDispatchConnection(natsgrant.ListenerCleanupConnection("m2", oldGen)))
+	for _, subject := range []string{consumerCall("DELETE", old), consumerCall("DELETE", bus.ListenerDurable("m2")+"~"+oldGen)} {
+		require.False(t, allows(foreignCleanup, subject), "a listener cleanup named for m2 was granted %s", subject)
+	}
 	foreign := natsgrant.Dispatch(exampleMachine, natsgrant.ParseDispatchConnection("listener-intake/m2/"+ownGen+"/"+oldGen))
 	for _, subject := range []string{consumerCall("CREATE", own), consumerCall("CREATE", elsewhere), consumerCall("DELETE", old), consumerCall("DELETE", bus.ListenerDurable("m2")+"~"+oldGen)} {
 		require.False(t, allows(foreign, subject), "a listener intake named for m2 was granted %s", subject)

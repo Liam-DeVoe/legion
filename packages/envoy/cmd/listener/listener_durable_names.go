@@ -138,7 +138,7 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 	if client.ConsumerNames() != consumernames.ModeFresh {
 		return client.JS().ConsumerInfo(bus.Stream, durable, nats.Context(ctx))
 	}
-	names, _ := durableNames(client, durable)
+	names, server := durableNames(client, durable)
 	sel, err := names.Resolve(ctx, consumernames.DurableKey(durable))
 	if err != nil {
 		return nil, err
@@ -146,11 +146,12 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 	if sel.Record.Current == "" {
 		return nil, fmt.Errorf("%w: the selection of %s names no current", nats.ErrConsumerNotFound, durable)
 	}
-	conn, err := connsOf(client, durable).intake(ctx, sel.Record.Current)
-	if err != nil {
+	// On the connection the listener holds for the current, or one opened for this read alone: a
+	// read keeps no connection, so none outlives a rebind that replaced its generation.
+	if _, err := server.Info(ctx, sel.Record.Current); err != nil {
 		return nil, err
 	}
-	return conn.JS().ConsumerInfo(bus.Stream, sel.Record.Current, nats.Context(ctx))
+	return server.native[sel.Record.Current], nil
 }
 
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
@@ -161,8 +162,8 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string, subjects []string) (string, *bus.Client, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
-	conns := connsOf(client, durable)
 	names, server := durableNames(client, durable)
+	conns := server.conns
 	sel, created, err := names.Ensure(ctx, consumernames.DurableKey(durable), consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
 			config := nats.ConsumerConfig{

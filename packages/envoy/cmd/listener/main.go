@@ -610,7 +610,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "nats unavailable"})
 			return
 		}
-		if !d.client.SubOK() {
+		if !durableSubOK(d.client, d.consumer) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "subscription inactive"})
 			return
@@ -2049,6 +2049,11 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 		c.cache.StopWatch()
 	}
 	parts.known.StopWatch()
+	// In the fresh naming mode the durable's deliveries arrive on its generation's own connection:
+	// it drains first, while the main client still carries the publishes its handlers make.
+	for _, err := range drainAll(parts.client, stopClientDrain) {
+		logger.Warn("nats drain error", slog.String("connection", "durable generation"), slog.String("error", err.Error()))
+	}
 	if err := parts.client.Drain(stopClientDrain); err != nil {
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}

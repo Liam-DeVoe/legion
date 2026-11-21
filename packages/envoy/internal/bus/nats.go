@@ -519,6 +519,27 @@ func (c *Client) Sibling(name string) (*Client, error) {
 	return sibling, nil
 }
 
+// AwaitAdmitted waits, up to within or ctx's end, for c's first connection to be admitted, as a
+// client connecting in the background (WithConnectInBackground) is answered before the hub admits
+// it. A client not admitted by then is closed, and its error names name.
+func (c *Client) AwaitAdmitted(ctx context.Context, name string, within time.Duration) error {
+	admitted, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+	for {
+		changed := c.ConnectionChanged()
+		if c.Connected() {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-time.After(50 * time.Millisecond):
+		case <-admitted.Done():
+			c.Close()
+			return fmt.Errorf("connect %s: not admitted within %s: %w", name, within, admitted.Err())
+		}
+	}
+}
+
 // newClient makes the client Connect and ConnectOwningStream return. An owning client ensures the
 // stream (ensureStreamWithConfig) and then starts its keeper (startKeeper): in the constructor
 // once install has returned, or, connecting in the background (WithConnectInBackground), in the

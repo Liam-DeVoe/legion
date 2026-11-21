@@ -267,21 +267,10 @@ func (f *freshNaming) open(ctx context.Context, name string) (*bus.Client, error
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", name, err)
 	}
-	admitted, cancel := context.WithTimeout(ctx, generationConnectWithin)
-	defer cancel()
-	for {
-		changed := client.ConnectionChanged()
-		if client.Connected() {
-			return client, nil
-		}
-		select {
-		case <-changed:
-		case <-time.After(50 * time.Millisecond):
-		case <-admitted.Done():
-			client.Close()
-			return nil, fmt.Errorf("connect %s: not admitted within %s: %w", name, generationConnectWithin, admitted.Err())
-		}
+	if err := client.AwaitAdmitted(ctx, name, generationConnectWithin); err != nil {
+		return nil, err
 	}
+	return client, nil
 }
 
 // reserved is consumernames.Config.Reserved: a candidate is reserved, so the connection its

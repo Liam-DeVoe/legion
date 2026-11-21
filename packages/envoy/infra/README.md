@@ -3978,10 +3978,11 @@ The auth service grants a Dispatch connection more by the connection's own name
 `dispatch-intake/<durable>/<generation>[/<old generation>]` the create, info and acknowledgements
 of `<durable>~<generation>` and the info and delete of `<durable>~<old generation>`, for
 `delivery-events` or `delivery-jobs`; `dispatch-cleanup/<durable>/<generation>` the info and delete
-of that one generation; and `listener-intake/<machine id>/<generation>[/<old generation>]` the same
-calls on the generations of its own listener's durable, `listener-<machine id>~<generation>`, but
-only when the name's machine id is the one the auth service's entry grants: a name never chooses
-the machine. Every other name, and a hub's static user, holds the set above alone.
+of that one generation; and `listener-intake/<machine id>/<generation>[/<old generation>]` and
+`listener-cleanup/<machine id>/<generation>` the same calls on the generations of its own
+listener's durable, `listener-<machine id>~<generation>`, but only when the name's machine id is the
+one the auth service's entry grants: a name never chooses the machine. Every other name, and a
+hub's static user, holds the set above alone.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

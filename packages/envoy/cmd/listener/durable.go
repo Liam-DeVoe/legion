@@ -143,11 +143,15 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		if err != nil {
 			return nil, err
 		}
+		conns := connsOf(client, consumer)
+		// Recorded before the subscribe, as the fixed mode's client records its own: a failed bind
+		// that the connection's reconnect binds later is the bind loop's to see (durableSubOK).
+		conns.subscribed(conn)
 		sub, err := conn.Subscribe("", handler, nats.Bind(bus.Stream, physical), nats.ManualAck())
 		if err != nil {
 			return nil, err
 		}
-		connsOf(client, consumer).keepOnly(physical)
+		conns.keepOnly(physical)
 		return sub, nil
 	}
 	if err := ensureFixedDurable(client, consumer, subjects); err != nil {
@@ -273,7 +277,7 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 		// context), which binds it once the durable is free. Another attempt would replace that
 		// handle with a bind racing the server's release of it, which can be refused with "consumer
 		// is already bound to a subscription".
-		if client.SubOK() {
+		if durableSubOK(client, consumer) {
 			bind.waited = time.Since(start)
 			return bound(true)
 		}
@@ -296,14 +300,21 @@ func durableUnbound(info *nats.ConsumerInfo, client *bus.Client, consumer string
 	if info == nil || !info.PushBound {
 		return true
 	}
-	subscriber := client
-	if client.ConsumerNames() == consumernames.ModeFresh {
-		// The fresh mode binds each generation on its own connection (startListenerSubscription).
-		if held := connsOf(client, consumer).held(info.Name); held != nil {
-			subscriber = held
-		}
+	if client.ConsumerNames() != consumernames.ModeFresh {
+		return info.Config.DeliverSubject != client.SubSubject()
 	}
-	return info.Config.DeliverSubject != subscriber.SubSubject()
+	// The fresh mode binds each generation on its own connection (startListenerSubscription).
+	held := connsOf(client, consumer).held(info.Name)
+	return held == nil || info.Config.DeliverSubject != held.SubSubject()
+}
+
+// durableSubOK reports whether the listener's durable subscription is live: the client's own in
+// the fixed mode, and in the fresh mode that of the connection its generation is bound on.
+func durableSubOK(client *bus.Client, consumer string) bool {
+	if client.ConsumerNames() != consumernames.ModeFresh {
+		return client.SubOK()
+	}
+	return connsOf(client, consumer).subscriberOK()
 }
 
 // durableProbeConfirm is how long durableProbe waits before its confirming read.
