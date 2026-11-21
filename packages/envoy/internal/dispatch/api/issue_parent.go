@@ -112,6 +112,13 @@ const legionOnChainSQL = `exists (
 		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
 	)`
 
+// carriesLegionLabel reports whether labels hold the label legion, in any case it was typed in:
+// legionOnChainSQL's rule, for the labels a write leaves on a row and for those of each issue of a
+// moved subtree (refuseSpecWriterOfIssueWrite, refuseSpecWriterOfMovedSubtree).
+func carriesLegionLabel(labels []string) bool {
+	return slices.ContainsFunc(labels, func(label string) bool { return strings.EqualFold(label, legionLabel) })
+}
+
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
 // above the issue, are read as they stand and are not held still by any lock the caller takes.

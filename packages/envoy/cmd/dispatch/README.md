@@ -4576,10 +4576,12 @@ Each item below names a path with its method and identity, then its purpose.
   - On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
 
   - A move under a parent, after which Legion runs the issue, is `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the new parent or of an issue above it.
-    When Legion runs the issue, or an issue under it, before the move, the move is also `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of each such issue or of an issue above it where it stands.
+    Wherever the new parent is, when Legion runs the issue, or an issue under it, before the move, the move is also `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of each such issue or of an issue above it where it stands.
     Such an issue is the issue itself when Legion runs it, and else each issue under it, at most 32 levels down, that carries the label `legion`.
     So another tree's architect cannot move an issue with no label under its own tree to get the right to write a labelled issue under it.
-    A move out of every tree Legion runs is a `parent` write that takes the issue out of Legion, above.
+    An architect that took the label off its own tree, or moved its own issue out to the root, cannot then move another tree's issue under it either.
+    The session of the project's Legion daemon passes neither check of a move.
+    A move out of every tree Legion runs is also a `parent` write that takes the issue out of Legion, above.
 
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
   decision blocks in its documents, plain asks and requests to approve one of its documents.
@@ -5528,9 +5530,10 @@ Each item below names a status and code, then its meaning.
   a create under a parent, which writes the new issue's spec;
   and a close and a reopen, which write the asks in the spec, a move under a parent, which changes who can write it, and a `labels` or `parent` write that takes the issue out of Legion, after which any session can write it (`PATCH /api/v1/issues/{key}`, `POST /api/v1/issues/{key}/status-change`).
   A create and a move are judged on the issue as the write leaves it, with the architects of the new parent's chain.
-  A move after which Legion runs the issue is also judged, as it stands, on the chain of each issue of the moved subtree that Legion runs before the move: the issue's own chain when Legion runs it, and else the chain of each issue under it that carries the label `legion`.
-  So only a person, or an architect at or above the new parent that is also at or above each of those issues, can make it, and the refusal names the first issue whose chain refuses the writer.
-  The session of the project's Legion daemon, `legion-daemon:<project>`, passes a close, a reopen and a write that takes an issue out of Legion too.
+  Every move under a parent is also judged, wherever the new parent is, as it stands, on the chain of each issue of the moved subtree that Legion runs before the move: the issue's own chain when Legion runs it, and else the chain of each issue under it that carries the label `legion`.
+  So when the moved subtree holds such an issue, only a person, or an architect at or above each of those issues that is also at or above the new parent when Legion runs the issue after the move, can make it, and the refusal names the first issue whose chain refuses the writer.
+  An architect that took the label off its own tree, or moved its own issue out to the root, cannot then move another tree's issue under it to get the right to write it.
+  The session of the project's Legion daemon, `legion-daemon:<project>`, passes a close, a reopen and a write that takes an issue out of Legion too, but it passes neither check of a move.
   While the project's `proven_sessions` is on (`/api/v1/projects/{key}/proven-sessions`, Routes above), an architect's session and the daemon's pass only on a credential that proves that session, a broker token of it.
   The message names the session, the write and the issue, who can make the write, the role the session holds on the issue and each architect session Dispatch records on the chain, and it ends `Propose the change with a suggestion or a comment.`
   A refusal for proof names the project instead, and says that the request's credential does not prove the session.

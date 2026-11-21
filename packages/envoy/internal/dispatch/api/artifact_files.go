@@ -60,14 +60,16 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer 
 // storeArtifact's transaction would make of a file or image upload by writer to target under
 // name, in that transaction's order: a project that does not exist, an artifact the name or slug
 // finds whose kind is not kind, a new artifact whose name or reference key is past its bound, and
-// last the check of who writes an issue's spec or Verification document (refuseSpecWriter). That
-// check judges the row the upload would store or replace as the transaction does: the row the name
-// or slug finds, or a new row with the slug nextArtifactSlug gives it and the role documentRole
-// gives it, so a file named verification.md, whose slug reads as the issue's Verification document
-// (specWriterDocumentName), is refused here before its object is written. It reads as that
-// transaction reads, so the two refuse alike whenever nothing writes the owner's artifacts, or the
-// issue's chain and its role holders, between them; the transaction's check still decides, under
-// the owner's lock.
+// last the check of who writes an issue's spec or Verification document
+// (refuseSpecWriterOfDocument), which passes a row of no issue without a read. That check judges
+// the row the upload would store or replace as the transaction does: the row the name or slug
+// finds, or a new row with the slug nextArtifactSlug gives it and no role, since only a document
+// takes a role (documentRole) and a document writes no object (putUploadedFile). A file is the
+// issue's Verification document only by its slug (specWriterDocumentName), so a file named
+// verification.md, whose slug reads as that document's, is refused here before its object is
+// written. It reads as that transaction reads, so the two refuse alike whenever nothing writes the
+// owner's artifacts, or the issue's chain and its role holders, between them; the transaction's
+// check still decides, under the owner's lock.
 func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, writer specWriter, name, kind string) error {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
@@ -95,12 +97,6 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 			return refusal
 		}
 		artifact = model.Artifact{IssueKey: target.IssueKey, Slug: slug, Name: name, Kind: kind}
-		if role := documentRole(target, kind, slug); role != nil {
-			artifact.Role = *role
-		}
-	}
-	if target.IssueKey == nil {
-		return nil
 	}
 	return refuseSpecWriterOfDocument(ctx, pool, writer, artifact)
 }
