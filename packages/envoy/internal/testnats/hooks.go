@@ -82,9 +82,12 @@ const (
 	ServerDown     Point = "server.down"
 )
 
-// missing are the hold points a hooked server version does not have, each with the reason.
+// missing are the points a hooked server version does not have, each with the reason.
 var missing = map[string]map[Point]string{
-	"2.10.29": {WritePreRename: "it writes a consumer's o.dat in place, with no temporary file and no rename"},
+	"2.10.29": {
+		WritePreRename:               "it writes a consumer's o.dat in place, with no temporary file and no rename",
+		Point("msgget.timeSelected"): "its message get takes no start_time, so no sequence is selected by time",
+	},
 }
 
 // Exists reports whether the linked nats-server has the point, and why not when it has not.
