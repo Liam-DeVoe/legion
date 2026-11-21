@@ -21,8 +21,6 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- A block with no `steps`, or `steps=""`, runs the project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`: `planner implementer tester reviewer acceptance:owner` unless the project sets others.
-
 - This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
   It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
 
@@ -44,11 +42,7 @@ So on a task with no reviewer step and no `acceptance:owner`, such a check holds
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
-A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above and these rules.
-
-- One `plan_task` block, with an id (`:::plan_task{#a …}`), and no `plan_role` block.
-
-- No `needs`, `merges`, `owner` or `part_of` attribute on the block.
+A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
