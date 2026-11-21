@@ -356,8 +356,8 @@ func fieldText(field reportField) string {
 }
 
 // allowText reads a proxy block's allow list as a line of the report, with the two lists that
-// mean something other than what they list in words (airlock.allowOK: a missing list allows any
-// method and path, an empty one allows nothing).
+// mean something other than what they list in words (proxyrules.allowOK: a missing list allows
+// any method and path, an empty one allows nothing).
 func allowText(allow []proxyrules.Allow) string {
 	switch {
 	case allow == nil:
