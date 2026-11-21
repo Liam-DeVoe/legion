@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -343,6 +346,121 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	}
 	takeGone("F7", f7.Address)
 	requireTakenWith("F7", f7.Address, "L7", l7.Address)
+}
+
+// A write on a lens on a removed document, or on a node under that lens, is refused as a write on
+// a gone node is, 409 NODE_GONE naming the node as the request names it, whichever build removed
+// the document (spec v59 R5): gone is final, and a stale node and everything under it are answered
+// as gone ones. The removal deleted the document's row, through which no read finds the issue the
+// lens stands under any more, so the gone check reads the issue the document's address spells
+// (refs.GoneStandingIssueSQL). On reasoningRig's issue alice makes a document D by typing a title,
+// invokes a pre-mortem LD on it, adds a finding FD to LD and writes a risk RD under it, and invokes
+// a trade-off analysis LA on D reserved for herself, which bob may not see; a second document E
+// holds the same nodes, LE, FE, RE and LB. Her DELETE /api/v1/artifacts/{id} of D takes LD, FD, RD
+// and LA gone with it, and E is removed as the release before this one removes it
+// (removeAsTheReleaseBefore): its row deleted and no node written, so LE, FE, RE and LB read live
+// in the store, stale. Then on each document her overtaken through the state route on the lens,
+// the finding, the risk and her own analysis, a finding she adds to the lens and a risk she writes
+// under it each answer 409 NODE_GONE naming the node written on, and a lens she invokes on D
+// answers the same naming D, whose node the removal took gone too. Bob's overtaken on her own
+// analysis, and a finding he adds to it, answer byte for byte once the id is substituted what the
+// same write on a lens nobody wrote answers, 404 NOT_FOUND, on either document. None of the
+// refused writes stores a lens, a part_of tuple or a state tuple.
+func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
+	rig := newReasoningRig(t)
+	// lensed is a document of the rig's issue that alice made by typing a title, at address, with
+	// her pre-mortem lens on it holding a finding she added and a risk she wrote, and her trade-off
+	// analysis hidden on it, reserved for her.
+	type lensed struct {
+		document     model.Artifact
+		address      string
+		lens, hidden lensInvoked
+		finding      lensFinding
+		risk         riskWritten
+	}
+	created := func(name string, response *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+		t.Helper()
+		if response.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s", name, response.Code, response.Body.String())
+		}
+		return response
+	}
+	riskUnder := func(lens string) map[string]any {
+		return map[string]any{"lens": lens, "heading": "The import stalls.", "early_warning": "Rows stop.", "prevention": "Batch it."}
+	}
+	makeLensed := func(name string) lensed {
+		t.Helper()
+		document := emptyDocument(t, rig.handler, rig.issue, name)
+		made := lensed{document: document, address: "dispatch://" + rig.issue + "/artifact/" + document.Slug}
+		made.lens = rig.invoke(made.address, graphstore.LensKindPreMortem, "alice", nil)
+		made.finding = decodeBody[lensFinding](t, created("alice's finding under "+made.lens.Address,
+			rig.post(nodePath(made.lens.Address, "findings"), map[string]any{"text": "The import holds a lock."}, "alice")))
+		made.risk = decodeBody[riskWritten](t, created("alice's risk under "+made.lens.Address,
+			rig.post("/risks", riskUnder(made.lens.Address), "alice")))
+		made.hidden = rig.invoke(made.address, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
+		return made
+	}
+	// requireHeld fails unless each node standing on d reads want in the store: the test's premise.
+	requireHeld := func(when string, d lensed, want string) {
+		t.Helper()
+		for _, address := range []string{d.lens.Address, d.finding.Address, d.risk.Address, d.hidden.Address} {
+			if state := storedNodeOf(t, rig.database, address).State; state != want {
+				t.Fatalf("%s, %s reads %s in the store; the test's premise is %s", when, address, state, want)
+			}
+		}
+	}
+	// requireGoneNamed fails unless response is 409 NODE_GONE whose message names address, the node
+	// as the request named it, as one of its words.
+	requireGoneNamed := func(name string, response *httptest.ResponseRecorder, address string) {
+		t.Helper()
+		refusal := decodeBody[refusalAnswer](t, response)
+		if response.Code != http.StatusConflict || refusal.Code != codeNodeGone || !slices.Contains(strings.Fields(refusal.Error), address) {
+			t.Errorf("%s answers %d %s, want 409 %s naming %s", name, response.Code, response.Body.String(), codeNodeGone, address)
+		}
+	}
+	nobodysID := uuid.NewString()
+	nobodys := refs.StoreRef(graphstore.KindLens, nobodysID)
+	// requireRefusedAsGone holds every write on the nodes standing on d, the document removed when
+	// says, to 409 NODE_GONE naming the node written on, and bob's to the 404 of a lens nobody wrote.
+	requireRefusedAsGone := func(when string, d lensed) {
+		t.Helper()
+		for _, node := range []struct{ name, address string }{
+			{"the pre-mortem", d.lens.Address}, {"its finding", d.finding.Address}, {"its risk", d.risk.Address},
+			{"her own analysis", d.hidden.Address},
+		} {
+			requireGoneNamed(fmt.Sprintf("%s, alice's overtaken on %s %s", when, node.name, node.address),
+				writeStateAs(t, rig.handler, rig.issue, node.address, graphstore.StateOvertaken, "alice"), node.address)
+		}
+		requireGoneNamed(when+", a finding alice adds to the pre-mortem "+d.lens.Address,
+			rig.post(nodePath(d.lens.Address, "findings"), map[string]any{"text": "One more."}, "alice"), d.lens.Address)
+		requireGoneNamed(when+", a risk alice writes under the pre-mortem "+d.lens.Address,
+			rig.post("/risks", riskUnder(d.lens.Address), "alice"), d.lens.Address)
+		requireNobodysAnswer(t, when+", bob's overtaken on alice's own analysis "+d.hidden.Address,
+			writeStateAs(t, rig.handler, rig.issue, d.hidden.Address, graphstore.StateOvertaken, "bob"),
+			writeStateAs(t, rig.handler, rig.issue, nobodys, graphstore.StateOvertaken, "bob"), d.hidden.ID, nobodysID)
+		requireNobodysAnswer(t, when+", a finding bob adds to alice's own analysis "+d.hidden.Address,
+			rig.post(nodePath(d.hidden.Address, "findings"), map[string]any{"text": "Bob's."}, "bob"),
+			rig.post(nodePath(nobodys, "findings"), map[string]any{"text": "Bob's."}, "bob"), d.hidden.ID, nobodysID)
+	}
+
+	d, e := makeLensed("Notes D.md"), makeLensed("Notes E.md")
+	removedDocument(t, rig.handler, d.document.ID)
+	requireHeld("after alice's removal of D", d, graphstore.StateGone)
+	removeAsTheReleaseBefore(t, rig.database, e.document)
+	requireHeld("after E's removal as the release before this one removes it", e, graphstore.StateLive)
+
+	lenses, partOfs := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
+	states := stateTupleCount(t, rig.database)
+	requireRefusedAsGone("after alice's removal of D", d)
+	requireGoneNamed("after alice's removal of D, a lens alice invokes on D",
+		rig.post("/lenses", map[string]any{"on": d.address, "kind": "trade-off"}, "alice"), d.address)
+	requireRefusedAsGone("after E's removal as the release before this one removes it", e)
+	if nodes, tuples := rig.counts(graphstore.KindLens, graphstore.TuplePartOf); nodes != lenses || tuples != partOfs {
+		t.Errorf("the refused writes moved the lenses from %d to %d and the part_of tuples from %d to %d", lenses, nodes, partOfs, tuples)
+	}
+	if after := stateTupleCount(t, rig.database); after != states {
+		t.Errorf("the refused writes moved the state tuples from %d to %d", states, after)
+	}
 }
 
 // A lens on a block that a version removes, or on a document that is retired, or on a block of
