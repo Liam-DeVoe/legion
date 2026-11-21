@@ -20,7 +20,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/handler/rfc9449"
-	"github.com/go-jose/go-jose/v4"
+	"authelia.com/provider/oauth2/token/jose"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
