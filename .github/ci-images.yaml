@@ -76,6 +76,15 @@ images:
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
+  # PgBouncer 1.25.2, the pool the daemon-go job starts in transaction mode in front of its
+  # `services:` Postgres (.github/workflows/ci-job-daemon-go.yaml, "Start PgBouncer in front of
+  # the Postgres service"), which internal/ompsessions' pooled leg runs through. 1.25.2 refuses
+  # search_path as a startup parameter, and 1.26.0 and later accept it, so the row stays at
+  # 1.25.2 while a pool the session database is reached through does.
+  - upstream: docker.io/edoburu/pgbouncer:v1.25.2-p0
+    tag: pgbouncer-v1.25.2-p0-7d7a27d9
+    digest: sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
+
   # NATS: the `services:` NATS of the pi-envoy and pi-legion jobs, both testnats.Image constants,
   # the envoy-client job's pre-pull, nats-server.ts and scripts/e2e/lib/nats-stream.test.ts.
   - upstream: docker.io/library/nats:2.10
