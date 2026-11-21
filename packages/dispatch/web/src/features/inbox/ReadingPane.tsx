@@ -57,7 +57,8 @@ interface PaneFlowProps {
 /** The question's own card, which the column draws for a question in no document and for one
  *  whose document it could not open. One card per question: the card holds the answer the
  *  reader gave in it, so the next question selected is a card of its own rather than this one
- *  showing that answer. */
+ *  showing that answer. Its hand-on, and the answer or decline it sent, are the Inbox's writes,
+ *  by ask, so the card drawn for the question again shows any of them still out or refused. */
 function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswered">): ReactNode {
   return (
     <AskCard

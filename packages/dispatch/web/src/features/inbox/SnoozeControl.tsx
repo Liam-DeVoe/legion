@@ -14,7 +14,7 @@ const NO_BULK_SNOOZING: ReadonlySet<string> = new Set();
  * The asks the selection bar's own Snooze write is over while that write is out
  * (`useInboxSelection`'s `snoozing`), which the bar empties once the write settles - refused or
  * stopped included. The Inbox provides it over every control it draws, a row's and the reading
- * column's head alike. It is a context, as `AskHandOnLiveContext` is, so that neither the row
+ * column's head alike. It is a context, as `AskHandOnWritesContext` is, so that neither the row
  * nor the column's bodies and head pass down one more prop of the list's. With no provider no
  * ask is under the bar.
  */

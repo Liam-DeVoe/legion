@@ -5,6 +5,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -29,6 +30,21 @@ import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers"
 import { invalidateOwnerReads } from "./owner-reads";
 
 /**
+ * What a refused decline says: the server's own words where it gave any - the note is too long,
+ * the ask is an approval request, it is already closed - since each says what to do next. A
+ * decline the reader stopped may have been made, and Decline to answer is a press of its own,
+ * under a key of its own. The dialog says it, and inside an Inbox so do the card drawn for the
+ * ask again and the ask's short row (`AskShortRow`).
+ */
+export function declineRefusal(error: Error): string {
+  return error instanceof SendStoppedError
+    ? stoppedWriteNote("your decline", "made", {
+        anew: "Pressing Decline to answer again sends a new decline.",
+      })
+    : apiErrorMessage(error, "Could not decline this question. Try again.");
+}
+
+/**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
  * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) and adds the
  * count of what they may still write, in the UTF-16 units the server counts
@@ -37,24 +53,28 @@ import { invalidateOwnerReads } from "./owner-reads";
  */
 function DeclineDialog({
   error,
+  initialNote,
   onClose,
   onSubmit,
   saving,
 }: {
   /** What the server answered the last decline with, or null while none was refused. */
   error: Error | null;
+  /** The note the dialog opens with: the refused decline's, so pressing Decline to answer again
+   *  sends the same decline. */
+  initialNote: string;
   onClose: () => void;
   onSubmit: (note: string) => void;
   saving: boolean;
 }): ReactNode {
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(initialNote);
   const noteId = useId();
   const countId = `${noteId}-left`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Every way out of the dialog is this one: Cancel, Escape (`useDialog`) and the backdrop. While
   // the decline is out it closes nothing, as the disabled Cancel button already refused to: the
-  // close lets the Inbox hold go, and this dialog is the one surface the refusal that may follow
-  // is shown on, so a dialog taken away mid-write would lose it.
+  // dialog shows the refusal that may follow over the note it keeps, and outside an Inbox it is
+  // the one surface that refusal is shown on.
   const close = () => {
     if (!saving) onClose();
   };
@@ -106,15 +126,7 @@ function DeclineDialog({
           </p>
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
-              {/* The server's own words where it gave any - the note is too long, the ask is an
-                  approval request, it is already closed - since each says what to do next. A
-                  decline the reader stopped may have been made, and the button below is a press
-                  of its own, under a key of its own. */}
-              {error instanceof SendStoppedError
-                ? stoppedWriteNote("your decline", "made", {
-                    anew: "Pressing Decline to answer again sends a new decline.",
-                  })
-                : apiErrorMessage(error, "Could not decline this question. Try again.")}
+              {declineRefusal(error)}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -154,13 +166,16 @@ interface DeclinePress extends AskPress {
  * writing it here reaches all of them: the Inbox row, the reading pane, the Conversation, a
  * document's decision block, the margin and the Answers page.
  *
- * The write takes the row out of the Inbox the moment it goes, as the answer write does, so the
- * ask is held while the server decides it (`useOutstandingAnswerWrite`): the reading column keeps
- * the question where the reader pressed, and the refusal is shown by the card that wrote it.
- * The hold is that shared store rather than a report up to the Inbox, as `AssignToMe` makes one,
- * or a write the Inbox holds itself, as each row's snooze is (`useAskSnoozeWrites`), for the
- * reason the store exists: this card is drawn on surfaces that take no prop of the Inbox's, and
- * on surfaces outside any Inbox, a document's own decision block among them.
+ * The write takes the row out of the Inbox the moment it goes, as the answer write does
+ * (`useOutstandingAnswerWrite`). Inside an Inbox the Inbox holds the write, by ask, as it holds
+ * each row's snooze (`useAskSnoozeWrites`), and keeps the row where the reader saw it while the
+ * write is out, though the reading column's card goes whenever the reader moves the selection.
+ * The write and its refusal outlive the card: the card drawn for the ask again says the refusal
+ * under Decline to answer, which opens the dialog on the refused decline's note, and the ask's
+ * short row says it too. It reaches the Inbox through the context the Inbox provides, since this
+ * card is drawn on surfaces that take no prop of the Inbox's, a document's own decision block
+ * among them. Outside an Inbox the control makes its own write, and the dialog is the one surface
+ * a refusal is shown on.
  */
 export function DeclineControl({
   ask,
@@ -179,7 +194,7 @@ export function DeclineControl({
   // the shell's indicator carries it only while it is out. Each press carries the ask it
   // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
   // card is drawn for by then.
-  const write = useOutstandingAnswerWrite({
+  const write = useOutstandingAnswerWrite("decline", ask.id, {
     label: (press: DeclinePress) => `Decline of “${press.ask.question}”`,
     method: "POST",
     write: (press: DeclinePress, bounds) => decline(press.ask.id, press.input, bounds),
@@ -210,9 +225,17 @@ export function DeclineControl({
       >
         {write.isPending ? "Declining…" : "Decline to answer"}
       </button>
+      {/* A decline refused while the dialog was not drawn: the Inbox holds the write, and this
+          card was drawn for the ask again after the reader moved away. */}
+      {open || write.error === null ? null : (
+        <div className="mt-2">
+          <QueryError message={declineRefusal(write.error)} />
+        </div>
+      )}
       {open ? (
         <DeclineDialog
           error={write.isError ? write.error : null}
+          initialNote={write.error === null ? "" : (write.variables?.input.note ?? "")}
           onClose={() => {
             write.reset();
             setOpen(false);

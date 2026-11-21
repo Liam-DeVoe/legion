@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
+import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -33,9 +34,10 @@ import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { SnoozeWrites } from "./ask-snooze-fixture";
-import { AskHandOnLiveContext } from "./hand-on-live";
+import { AskHandOnWritesContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
+import { useAskHandOnWrites } from "./useAskHandOn";
 
 installInboxApiMocks();
 
@@ -229,6 +231,23 @@ function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
   };
 }
 
+/** The Inbox's hand-on writes over `children`, as the Inbox provides them to every card it draws
+ *  (`useAskHandOnWrites`), with each set of asks whose hand-on is out handed to `onOut` as it
+ *  changes. */
+function HandOnWrites({
+  children,
+  onOut,
+}: {
+  children: ReactNode;
+  onOut: (out: ReadonlySet<string>) => void;
+}): ReactNode {
+  const writes = useAskHandOnWrites();
+  useEffect(() => {
+    onOut(writes.out);
+  }, [onOut, writes.out]);
+  return <AskHandOnWritesContext value={writes}>{children}</AskHandOnWritesContext>;
+}
+
 function renderPane({
   ask,
   createEditor,
@@ -265,14 +284,17 @@ function renderPane({
   const recordOut = (out: ReadonlySet<string>) => {
     snoozesOut.push([...out]);
   };
-  /** Every registration a card's hand-on made, in order: `[askId, live]`. */
-  const handOnLiveness: (readonly [string, boolean])[] = [];
+  /** Each set of asks whose hand-on was out, in order, as the list holding the writes saw it. */
+  const handOnsOut: string[][] = [];
+  const recordHandOnsOut = (out: ReadonlySet<string>) => {
+    handOnsOut.push([...out]);
+  };
   const tree = (row: InboxRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
-            <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
+            <HandOnWrites onOut={recordHandOnsOut}>
               <SnoozeWrites onOut={recordOut}>
                 <ReadingPane
                   onAnswered={(id) => answered.push(id)}
@@ -280,7 +302,7 @@ function renderPane({
                   viewer="alice"
                 />
               </SnoozeWrites>
-            </AskHandOnLiveContext>
+            </HandOnWrites>
           </MarginProvider>
         </DocumentRuntime.Provider>
       </QueryClientProvider>
@@ -290,7 +312,7 @@ function renderPane({
   return {
     answered,
     client,
-    handOnLiveness,
+    handOnsOut,
     opened,
     rerender: (row: InboxRow) => view.rerender(tree(row)),
     runtime: fake,
@@ -1033,7 +1055,7 @@ test("the head's Snooze writes through the list's snooze writes, so the list kee
   }
 });
 
-test("the column's card registers its hand-on, so the list keeps the row the column is on", async () => {
+test("the column's card hands on through the list's hand-on writes, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
   const row = issueAsk({
@@ -1047,18 +1069,18 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     { login: "alice" },
     { login: "bob" },
   ]);
-  const { handOnLiveness, view } = renderPane({ ask: row });
+  const { handOnsOut, view } = renderPane({ ask: row });
 
   try {
     // The list of people is portalled onto the body, so its option is reached from the screen.
     await user.click(await screen.findByLabelText("Hand this question to"));
     await user.click(await screen.findByRole("option", { name: /^bob\b/ }));
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
-    // The control sits in the card, not in the head, so the registration reaches the list
-    // through the context the Inbox provides rather than through a prop of this column's: the
-    // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
-    // the card that wrote is the only surface a refusal is shown on.
-    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
+    // The control sits in the card, not in the head, so the write reaches the list through the
+    // context the Inbox provides rather than through a prop of this column's: the optimistic
+    // `waiting_on_person` takes the row out of that list as the write starts, and the list
+    // holds the write, and keeps the row while it is out.
+    await waitFor(() => expect(handOnsOut.at(-1)).toEqual(["ask-a"]));
   } finally {
     held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
     view.unmount();

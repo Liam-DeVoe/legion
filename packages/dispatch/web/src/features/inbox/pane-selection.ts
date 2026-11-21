@@ -4,7 +4,6 @@ import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
-import { answerOutstanding } from "./outstanding-answers";
 import type { InboxSection } from "./sections";
 
 /** A row as the reader last saw it: the band it was drawn under and the turn band it sat in,
@@ -108,15 +107,15 @@ export function usePaneSelection({
   // there is nothing below, so the row above names it, and a step reading that as the row
   // which took its place walks up for `j` and over a row for `k`.
   //
-  // One record for every way a row leaves - the reader's own answer, which takes it at once
-  // below, their own snooze, which takes it once the write lands, and the server withdrawing,
-  // resolving or answering the question elsewhere - and read on every commit rather than when
-  // it is wanted, because by then the row has gone. While the selected row's snooze write is out
-  // the read is held, so where they are sent is read off the list as it stood when they
-  // deferred; the list keeps that row where it stood until the write lands, and moves it into
-  // `Later` in the commit it lets go of it. The commit that drops the row holds it for the same
-  // reason: the row is gone from that commit's list, and where it was heading is exactly what the
-  // settling effect is about to read this for.
+  // One record for every way a row leaves - the reader's own answer, which takes it once the
+  // server records it, their own snooze, which takes it once the write lands, and the server
+  // withdrawing, resolving or answering the question elsewhere - and read on every commit rather
+  // than when it is wanted, because by then the row has gone. While the selected row's snooze
+  // write is out the read is held, so where they are sent is read off the list as it stood when
+  // they deferred; the list keeps that row where it stood until the write lands, and moves it
+  // into `Later` in the commit it lets go of it. The commit that drops the row holds it for the
+  // same reason: the row is gone from that commit's list, and where it was heading is exactly
+  // what the settling effect is about to read this for.
   const stoodBetween = useRef<Neighbours>({ above: undefined, below: undefined });
   /** Where the selection goes when the row it is on leaves the bands: the next row the reader
    *  can see after it, else the nearest above it, so the column always shows something they
@@ -147,11 +146,11 @@ export function usePaneSelection({
       if (next !== undefined) select(rowId(next.row));
       return;
     }
-    // The column is holding a question past its row (their unsent answer, or one the server has
-    // not decided yet), so there is no row to step from: the place that row held is read off
-    // the rows it stood between, and the step runs from there rather than from the top of the
-    // list. The row it stood above took its place; where it stood last there is no such row,
-    // and the row it stood below is the one before the place it held.
+    // The column is holding a question past its row (their unsent answer), so there is no row to
+    // step from: the place that row held is read off the rows it stood between, and the step runs
+    // from there rather than from the top of the list. The row it stood above took its place;
+    // where it stood last there is no such row, and the row it stood below is the one before the
+    // place it held.
     const { above, below } = stoodBetween.current;
     const belowAt = visible.findIndex((placed) => rowId(placed.row) === below);
     const aboveAt = visible.findIndex((placed) => rowId(placed.row) === above);
@@ -178,28 +177,22 @@ export function usePaneSelection({
   /**
    * What the column shows this commit, given the selected row among the ones the list renders
    * (none, where it renders none at all). Normally that row, which leaves the column as it
-   * leaves the list. Two things outlive the row, both of them the reader's own answer to a
-   * question:
+   * leaves the list. The reader's unsent answer to a question outlives its row: a question whose
+   * row the server dropped while they had typed one into its box stays in the column - the card
+   * draws its closed state, with that text under it - until they select another row, so an
+   * answer they are in the middle of writing is never taken off the screen under their hands.
    *
-   * Their unsent answer. A question whose row the server dropped while they had typed one into
-   * its box stays in the column - the card draws its closed state, with that text under it -
-   * until they select another row, so an answer they are in the middle of writing is never taken
-   * off the screen under their hands.
-   *
-   * Their sent answer, until the server decides it (`outstanding-answers.ts`). `useAskAnswerForm`
-   * drops the row the moment the answer goes out, and the column hands the selection on when the
-   * server records it (`recordAnswered`), not when the page guesses it will: an answer the server
-   * refuses leaves the question here with the card's own refusal and its Retry under what they
-   * answered - the one surface that refusal is shown on - exactly as it does below this column's
-   * width, where the reader's hand on the row holds it (`heldRow`). This is `snoozing`'s rule for
-   * a deferred row, for the one write whose own optimistic update takes the row out of the Inbox
-   * read rather than merely out of this view.
+   * Their sent answer needs no hold of the column's: the list keeps the row where they saw it
+   * while the answer or a decline is out (`Inbox.tsx`, `heldRow`), though the write takes it out
+   * of the Inbox read, so the selected row is among those the list renders. The column hands the
+   * selection on when the server records the answer (`recordAnswered`), and a refusal leaves the
+   * question here with the card's own refusal and its Retry under what they answered.
    *
    * A kept row is drawn as its row among `candidates` where it is one, else as last seen.
    *
-   * A row held by neither - an ask they have neither typed nor sent an answer to, and every
-   * thread row, which a dismiss takes out of the list under its own optimistic update - leaves
-   * the column as it leaves the list, the first row this list selected for them included.
+   * Any other row - an ask they have typed no answer into, and every thread row, which a dismiss
+   * takes out of the list under its own optimistic update - leaves the column as it leaves the
+   * list, the first row this list selected for them included.
    */
   const paneRow = (listed: InboxListRow | undefined): InboxListRow | undefined => {
     const subject = paneSubject.current;
@@ -215,7 +208,7 @@ export function usePaneSelection({
       paneSubject.current = undefined;
       return undefined;
     }
-    const kept = subject.kept || answerOutstanding(selectedId) || answerDraft(selectedId) !== "";
+    const kept = subject.kept || answerDraft(selectedId) !== "";
     const row = candidates.find((candidate) => rowId(candidate) === selectedId) ?? subject.row;
     paneSubject.current = kept ? { kept: true, row } : undefined;
     return kept ? row : undefined;

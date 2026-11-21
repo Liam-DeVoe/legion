@@ -25,6 +25,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
+import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -72,13 +73,16 @@ import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
+import { AskHandOn } from "./AskHandOn";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
 import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
+import { useInboxWrites } from "./ask-writes";
 import { blockedOnYouText, needsYou, waitingOnHuman } from "./BlockedOnYou";
+import { declineRefusal } from "./DeclineControl";
 import { DismissControl, RowDismissContext } from "./DismissControl";
 import {
   ALL_GROUP_KEY,
@@ -93,7 +97,7 @@ import {
   LATER_GROUP_KEY,
   sortRows,
 } from "./grouping";
-import { AskHandOnLiveContext } from "./hand-on-live";
+import { AskHandOnWritesContext } from "./hand-on-live";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
 import { buildInboxPath, type InboxRoute, useInboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
@@ -109,6 +113,11 @@ import {
 } from "./list-row";
 import { MARK_ALL_REFUSED_TEXT, MARK_ALL_STOPPED_TEXT, useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
+import {
+  AskAnswerWritesContext,
+  AskDeclineWritesContext,
+  useOutstandingAnswerWrites,
+} from "./outstanding-answers";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
@@ -129,6 +138,8 @@ import {
 import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
+import { answerFailure } from "./useAskAnswerForm";
+import { useAskHandOnWrites } from "./useAskHandOn";
 import { AskSnoozeWritesProvider, useAskSnooze, useAskSnoozeWritesAround } from "./useAskSnooze";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
@@ -438,6 +449,26 @@ function ShortRowFrame({
   );
 }
 
+/** What a short row says of its question's answer or decline that the column's card made: why
+ *  it was refused, or that the reader stopped it (`refusal`), else that it is out (`out`), else
+ *  nothing. */
+function RowWriteNote({
+  out,
+  refusal,
+}: {
+  out: string | undefined;
+  refusal: string | undefined;
+}): ReactNode {
+  if (refusal !== undefined) {
+    return (
+      <div className="pl-6">
+        <QueryError message={refusal} />
+      </div>
+    );
+  }
+  return out === undefined ? null : <p className={`pl-6 text-xs ${textMutedOnCanvas}`}>{out}</p>;
+}
+
 /** An open question beside the reading column: its first line, how long it has waited, and the
  *  issue or document it belongs to. */
 function AskShortRow({
@@ -454,6 +485,9 @@ function AskShortRow({
 }: InboxRowProps & ShortRowProps & { ask: InboxRow }): ReactNode {
   const name = controlName(ask, ordinal);
   const snooze = useAskSnooze(ask.id);
+  const handOn = useInboxWrites(AskHandOnWritesContext).of(ask);
+  const answer = useInboxWrites(AskAnswerWritesContext).of(ask.id);
+  const decline = useInboxWrites(AskDeclineWritesContext).of(ask.id);
   return (
     <ShortRowFrame
       age={formatAskAge(rowLastActivityAt(row))}
@@ -480,6 +514,32 @@ function AskShortRow({
             snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
           />
         </div>
+      )}
+      {/* The same for the column's card, which draws the hand-on, the answer and the decline of
+          the question the column shows: each can be out or failed while the column shows
+          another question. The row draws the hand-on control then, with its `Handing on…`, its
+          refusal and its Retry, and a line for an answer or a decline, which says it is out or
+          why it failed. That Retry is the card's, once the column shows the question again. */}
+      {selected || !(handOn.pending || handOn.failed) ? null : (
+        <div className="pl-6">
+          <AskHandOn ask={ask} assignee={ask.issue?.assignee ?? null} />
+        </div>
+      )}
+      {selected ? null : (
+        <>
+          <RowWriteNote
+            out={answer.isPending ? "Answering…" : undefined}
+            refusal={
+              answer.error === null
+                ? undefined
+                : answerFailure({ error: answer.error, method: answer.method }).message
+            }
+          />
+          <RowWriteNote
+            out={decline.isPending ? "Declining…" : undefined}
+            refusal={decline.error === null ? undefined : declineRefusal(decline.error)}
+          />
+        </>
       )}
     </ShortRowFrame>
   );
@@ -651,10 +711,10 @@ function ThreadCardRow({
 }
 
 /** The rows of one band, with each held row - one the server no longer lists here, or lists in
- *  another band, while the reader is still on it or its snooze is still being saved - kept after
- *  the nearest row above it that is still drawn here, so it does not move while they finish.
- *  `held` is in the order the reader last saw the rows, so of two held rows the lower is kept
- *  after the upper. */
+ *  another band, while the reader is still on it or a write of theirs on it is still out - kept
+ *  after the nearest row above it that is still drawn here, so it does not move while they
+ *  finish. `held` is in the order the reader last saw the rows, so of two held rows the lower is
+ *  kept after the upper. */
 function withHeld(
   rows: readonly InboxListRow[],
   held: readonly InboxListRow[],
@@ -680,8 +740,8 @@ function withHeld(
 
 /** `bands` with an empty band for each key of `kept` that none of them has, headed as the reader
  *  last saw it (`previous`, the bands as last drawn) and drawn after the nearest band before it
- *  there that is still drawn: the band a snooze keeps its row in once every other row the list
- *  holds has left it. */
+ *  there that is still drawn: the band a write out keeps its row in once every other row the
+ *  list holds has left it. */
 function withHeldBands(
   bands: readonly InboxGroup[],
   kept: ReadonlySet<string>,
@@ -700,28 +760,30 @@ function withHeldBands(
   return drawn;
 }
 
-/** The row to keep where the reader last saw it (`seen`), if any: the row under their hand
- *  (`inHand`), or one whose snooze write is out (`snoozeOut`) - its own write, which the Inbox
- *  holds (`useAskSnoozeWrites`), or the bar's over the rows the reader marked. Dropped from the
- *  list: the row under their hand is kept where last seen, drawn as `current`, or as last seen
- *  while `current` is undefined. Moved to another band: what the list says about it changed
- *  under the reader's hand or under their snooze, so the listed row is kept in the band they saw
- *  it in. A move into or out of Later is a snooze, the reader's own press, and it is made once
- *  its write lands: the row is kept in its band while that write is out, and moves in the commit
- *  in which the Inbox lets go of it (`snoozing`). Its control's hold lasts through that commit
+/** The row to keep where the reader last saw it (`seen`), if any: one kept for the reader
+ *  (`kept`) - the row under their hand, or one whose hand-on, answer or decline is out, which the
+ *  Inbox holds (`useAskHandOnWrites`, `useOutstandingAnswerWrites`) - or one whose snooze write
+ *  is out (`snoozeOut`) - its own write, which the Inbox holds too (`useAskSnoozeWrites`), or the
+ *  bar's over the rows the reader marked. Dropped from the list: a kept row is kept where last
+ *  seen, drawn as `current`, or as last seen while `current` is undefined - an answer or a
+ *  decline takes its row out of the Inbox's read, and a hand-on can take it out of the reader's
+ *  own list. Moved to another band: what the list says about it changed under the reader's hand,
+ *  their write or their snooze, so the listed row is kept in the band they saw it in. A move into
+ *  or out of Later is a snooze, the reader's own press, and it is made once its write lands: the
+ *  row is kept in its band while that write is out, and moves in the commit in which the Inbox
+ *  lets go of it (`snoozing`). Its control's hold lasts through that commit
  *  (`useHeldThroughAnswer`), so a press on its own control takes its own row away while the
  *  control is held. A refused or stopped write is not out, so the next read places its row. With
- *  no snooze of it out, a move into or out of Later is shown at once, under the reader's hand
- *  too. */
+ *  no snooze of it out, a move into or out of Later is shown at once, for a kept row too. */
 function heldRow(
   seen: PlacedRow,
   listed: InboxListRow | undefined,
   current: InboxListRow | undefined,
   now: string | undefined,
-  { inHand, snoozeOut }: { readonly inHand: boolean; readonly snoozeOut: boolean }
+  { kept, snoozeOut }: { readonly kept: boolean; readonly snoozeOut: boolean }
 ): PlacedRow | undefined {
   if (listed === undefined) {
-    if (!inHand) return undefined;
+    if (!kept) return undefined;
     return current === undefined ? seen : { ...seen, row: current };
   }
   const movedBand =
@@ -804,9 +866,8 @@ export interface InboxProps {
   scroller?: RefObject<HTMLElement | null>;
 }
 
-/** The Inbox under its own snooze writes. Every Snooze it draws shows its ask's one write, which
- *  the Inbox holds (`AskSnoozeWritesProvider`), whichever control pressed it. A write's own steps
- *  re-render the provider alone, and the list re-renders only when the writes change. */
+/** The Inbox under its own ask writes (`InboxAskWrites`). Every control it draws for an ask shows
+ *  that ask's one write of its kind, which the Inbox holds, whichever control pressed it. */
 export function Inbox({
   filter,
   keymapScope,
@@ -815,7 +876,7 @@ export function Inbox({
   scroller,
 }: InboxProps = {}): ReactNode {
   return (
-    <AskSnoozeWritesProvider>
+    <InboxAskWrites>
       <InboxBody
         filter={filter}
         keymapScope={keymapScope}
@@ -823,6 +884,30 @@ export function Inbox({
         pane={pane}
         scroller={scroller}
       />
+    </InboxAskWrites>
+  );
+}
+
+/**
+ * Every write one Inbox holds by ask (`ask-writes.ts`): each row's snooze, and the hand-on, the
+ * answer and the decline of every card the Inbox draws, the document page's own cards in its
+ * reading column included. A control can go while its write is out - the reading column's head
+ * and card go whenever the reader moves the selection - and the write, its row's hold and its
+ * refusal stay. The page's Inbox and the drawer's hold their own. The writes' own steps
+ * re-render this component alone: what it draws re-renders only when the writes it provides
+ * change.
+ */
+function InboxAskWrites({ children }: { children: ReactNode }): ReactNode {
+  const handOns = useAskHandOnWrites();
+  const answers = useOutstandingAnswerWrites();
+  const declines = useOutstandingAnswerWrites();
+  return (
+    <AskSnoozeWritesProvider>
+      <AskHandOnWritesContext value={handOns}>
+        <AskAnswerWritesContext value={answers}>
+          <AskDeclineWritesContext value={declines}>{children}</AskDeclineWritesContext>
+        </AskAnswerWritesContext>
+      </AskHandOnWritesContext>
     </AskSnoozeWritesProvider>
   );
 }
@@ -950,14 +1035,14 @@ function InboxBody({
   // once, and only the reader's hand keeps it.
   const snoozing = useAskSnoozeWritesAround().out;
   /** The rows the reader can see, in the order they see them, as this list last rendered them:
-   *  what the motion hold is read against, what the selection steps through, and which asks a
-   *  hand-on may hold. Written on every render below, and read here as the record of the
-   *  render a registration arrives after. */
+   *  what the motion hold is read against, what the selection steps through, and the rows a
+   *  write out may keep. Written on every render below, and read before that as the record of
+   *  the render before. */
   const presented = useRef<readonly PlacedRow[]>([]);
   /** The bands this list drew at its last render, in order, with their headings, and the layout
-   *  it drew them under - the grouping, or the Dismissed view: the band a snooze keeps its row in
-   *  is drawn from this once no other row the list holds is in it, and a snooze keeps its row
-   *  only under that same layout. Written on every render below. */
+   *  it drew them under - the grouping, or the Dismissed view: the band a write out keeps its row
+   *  in is drawn from this once no other row the list holds is in it, and only under that same
+   *  layout. Written on every render below. */
   const presentedBands = useRef<{
     readonly headings: readonly Omit<InboxGroup, "rows">[];
     readonly layout: string | undefined;
@@ -966,40 +1051,24 @@ function InboxBody({
    *  words it was held under (`searchWords`, joined): it stays held while the reader's words are
    *  those, whatever the server does to the text they search. Written on every render below. */
   const heldUnder = useRef<{ readonly id: string; readonly words: string } | undefined>(undefined);
-  // And the same for a hand-on, whose control sits in the card rather than beside it
-  // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
-  // write starts, so without this the card holding the control would be unmounted before the
-  // server answered and a refusal would come back to a fresh card that never failed. The cards
-  // register through the context this list provides below (`hand-on-live.ts`), since one of
-  // them is the document page's own and takes no prop of this list's.
+  // Every card's hand-on, answer and decline, held by ask around this list (`Inbox`) as each
+  // snooze is, since the card that pressed can go while the write is out: the column's card goes
+  // when the reader moves the selection. An answer or a decline takes its row out of the Inbox's
+  // read the moment it goes, and a hand-on's optimistic `waiting_on_person` can take it out of
+  // the reader's own list, so a row whose write is out is kept where the reader saw it until the
+  // write lands (`heldRow`). A refused or stopped write holds no row: the rollback has put the
+  // row back, and the next read places it, with the refusal shown on it.
   //
-  // Only an ask this list was drawing when the write began is held. That context reaches every
-  // card under the Inbox, and many of them are not a listed row's own: the card of a Reply
-  // row's thread (`ThreadBody`), whose ask is often one the reader's filters hide, and every
-  // ask block of a document open in the column, not only the selected one. Holding one of
-  // those would pull a question the filters hide into the list, and a refusal would leave it
-  // there, since the write stays failed until it is tried again and no card unmounts to
-  // release it. So a registration is held to `presented`, the rows this list last drew: its
-  // own cards are those rows, and the column shows one of them (`pane-selection.ts`,
-  // `showing`) - all but a question whose row has already gone, which it keeps for an unsent
-  // answer and which is no row to hold either. Letting go is never refused, so a hold always
-  // ends with the write that took it.
-  const [handingOn, setHandingOn] = useState<ReadonlySet<string>>(() => new Set());
-  const onHandOnLive = useCallback((askId: string, live: boolean) => {
-    if (
-      live &&
-      !presented.current.some((placed) => placed.row.kind === "ask" && placed.row.ask.id === askId)
-    ) {
-      return;
-    }
-    setHandingOn((current) => {
-      if (current.has(askId) === live) return current;
-      const next = new Set(current);
-      if (live) next.add(askId);
-      else next.delete(askId);
-      return next;
-    });
-  }, []);
+  // Only a row this list drew is kept. The cards reach these writes through the context this
+  // list provides (`hand-on-live.ts`, `outstanding-answers.ts`), since one of them is the
+  // document page's own and takes no prop of this list's, and that context reaches every card
+  // under the Inbox: the card of a Reply row's thread (`ThreadBody`), whose ask is often one the
+  // reader's filters hide, and every ask block of a document open in the column, not only the
+  // selected one. Keeping one of those would pull a question the filters hide into the list. So
+  // a write keeps its ask's row only among `presented`, the rows this list last drew.
+  const handOnsOut = useInboxWrites(AskHandOnWritesContext).out;
+  const answersOut = useInboxWrites(AskAnswerWritesContext).out;
+  const declinesOut = useInboxWrites(AskDeclineWritesContext).out;
   // The row the reader's hand is on (focus or pointer), read from the DOM as last committed. When
   // the server has dropped it (answered or resolved elsewhere) or handed its turn the other way
   // (their own ask-back, an agent's note or reply), it is kept - `held` - where the reader last
@@ -1040,16 +1109,15 @@ function InboxBody({
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
-  // The filters and the typed text both decide what is listed, with two exceptions that
-  // outrank them all: a row whose "Assign to me" write is live stays, and so does one whose
-  // hand-on is. Taking a question under the Unassigned filter is exactly the first case - the
-  // row stops matching the moment the optimistic assignment lands - and handing a question on
-  // in the reader's own list is the second, since the optimistic `waiting_on_person` is read
-  // by this very filter. Unmounting either control would take `Assigning…` or `Handing on…`, a
-  // refusal and its Retry off the screen with it.
+  // The filters and the typed text both decide what is listed, with one exception that outranks
+  // them all: a row whose "Assign to me" write is live stays. Taking a question under the
+  // Unassigned filter is exactly that case - the row stops matching the moment the optimistic
+  // assignment lands - and unmounting the control would take `Assigning…`, a refusal and its
+  // Retry off the screen with it. A hand-on the filters drop keeps its row where the reader saw
+  // it instead (`heldRow`), as an answer and a decline do.
   const narrowed = candidates.filter(
     (row) =>
-      (row.kind === "ask" && (assigning.has(row.ask.id) || handingOn.has(row.ask.id))) ||
+      (row.kind === "ask" && assigning.has(row.ask.id)) ||
       (inAssigneeFilter(row, selection, viewer ?? "") &&
         matchesInboxSearch(row, words) &&
         INBOX_FILTER_FIELDS.every((field) =>
@@ -1144,9 +1212,9 @@ function InboxBody({
   // The refetch a recorded answer triggers returns the list the optimistic removal already
   // produced, so it re-renders nothing on its own; release explicitly. The reader's own answer
   // is one of the ways the selection is handed on, and only while it is still the selected
-  // question: the column holds the question here until the server decides their answer, but a
-  // selection that moved on meanwhile - an approval reviewed from the head, a row they walked
-  // off - must not be pulled back off the row that took its place.
+  // question: the list keeps the row where the reader saw it until the server decides their
+  // answer (`heldRow`), but a selection that moved on meanwhile - an approval reviewed from the
+  // head, a row they walked off - must not be pulled back off the row it moved to.
   const recordAnswered = (id: string) => {
     answered.current = id;
     if (paneShown && paneSelection.selectedNow.current === id) {
@@ -1720,13 +1788,14 @@ function InboxBody({
   }
 
   // Which row the list holds in place while the server moves the list under it: the row the
-  // reader's hand is on (focus or pointer), with or without the reading column. A row the
-  // column is merely showing is not held - the Inbox selects the first row for the reader the
-  // moment it opens, and a question the server withdraws, resolves or answers elsewhere must
-  // not stay in the list on the strength of a selection nobody made. What the column does with
-  // a selected question the server takes away is `paneRow` (`pane-selection.ts`). A row the
-  // reader dismissed under their own hand is not held either: they asked for it to go, as they
-  // do by answering one, so it goes at once and the next row takes its place.
+  // reader's hand is on (focus or pointer), with or without the reading column, and a row whose
+  // hand-on, answer or decline is out, whatever the selection does. A row the column is merely
+  // showing is not held - the Inbox selects the first row for the reader the moment it opens,
+  // and a question the server withdraws, resolves or answers elsewhere must not stay in the list
+  // on the strength of a selection nobody made. What the column does with a selected question
+  // the server takes away is `paneRow` (`pane-selection.ts`). A row the reader dismissed under
+  // their own hand is not held either: they asked for it to go, so it goes at once and the next
+  // row takes its place; and a row they answered goes once the server has recorded the answer.
   //
   // The hold is told which rows the typed text excludes rather than being handed the narrowed
   // list: a row the reader's own typing drops must go at once, even with the pointer resting on
@@ -1752,36 +1821,43 @@ function InboxBody({
   // marked - is held in the band they saw it in until the Inbox lets go of it once the write
   // lands (`heldRow`), while the list still lists it. A refused or stopped write holds nothing.
   // Under the Blocked on you narrowing, which lists no snoozed ask, the row is dropped at once,
-  // and only the reader's hand holds it.
+  // and only the reader's hand holds it. A row whose hand-on, answer or decline is out is held
+  // as the row under the hand is, listed or not, until that write lands.
   // That band is a band of the layout the row was drawn under, so a snooze holds its row only
-  // while the list is still drawn under it - the same grouping, and the same view - and the band
-  // is drawn again though no other row is left in it (`snoozeBands`): a snooze takes its row out
-  // of the band whoever else is there.
+  // while the list is still drawn under it - the same grouping, and the same view. Under that
+  // layout the band a write holds its row in is drawn again though no other row is left in it
+  // (`keptBands`): a snooze takes its row out of the band whoever else is there, and an answer,
+  // a decline or a hand-on the filters drop takes it out of the list.
   const layout = showDismissed ? "dismissed" : groupBy;
   const sameLayout = presentedBands.current.layout === layout;
   const held: PlacedRow[] = [];
-  const snoozeBands = new Set<string>();
+  const keptBands = new Set<string>();
   let handHeld: PlacedRow | undefined;
   for (const placed of presented.current) {
     const id = rowId(placed.row);
     const inHand = seen !== undefined && rowId(seen.row) === id;
     const out = sameLayout && (snoozing.has(id) || bulkSnoozing.has(id));
-    if (!inHand && !out) continue;
+    const written =
+      placed.row.kind === "ask" &&
+      (handOnsOut.has(id) || answersOut.has(id) || declinesOut.has(id));
+    if (!inHand && !out && !written) continue;
     const listed = byId.get(id);
     const kept = heldRow(
       placed,
       listed,
       // A held row dropped from the list is drawn as its candidate, the row as the Inbox holds
       // it now, so a pick in it shows there.
-      inHand && listed === undefined ? candidates.find((row) => rowId(row) === id) : undefined,
+      (inHand || written) && listed === undefined
+        ? candidates.find((row) => rowId(row) === id)
+        : undefined,
       listed === undefined
         ? undefined
         : bands.find(({ rows: banded }) => banded.includes(listed))?.key,
-      { inHand, snoozeOut: out }
+      { kept: inHand || written, snoozeOut: out }
     );
     if (kept === undefined) continue;
     held.push(kept);
-    if (out) snoozeBands.add(kept.group);
+    if (sameLayout && (out || written)) keptBands.add(kept.group);
     if (inHand) handHeld = kept;
   }
   heldUnder.current =
@@ -2276,78 +2352,73 @@ function InboxBody({
   // unmount the whole list, taking the keyboard's focus, the bulk bar and every row's state
   // with it and mounting a fresh one a commit later.
   const page = (listColumn: ReactNode, subject: InboxListRow | undefined): ReactNode => (
-    // Every card this list draws - in the column, and in a row below its width - holds its own
-    // hand-on here while the server decides it (`hand-on-live.ts`), the decision block the
-    // column draws through the document page included, which no prop of this list reaches.
-    <AskHandOnLiveContext value={onHandOnLive}>
-      {/* Every thread this list draws - in the column, and in a card below its width - draws its
-          own Dismiss from here (`DismissControl`). */}
-      <RowDismissContext
-        value={{
-          dismiss: (named) => dismissRows([named]),
-          pending: dismissWrite.pending,
-          show,
-        }}
-      >
-        {/* Every Snooze this list draws - a row's, and the column head's - is held while the
+    // Every thread this list draws - in the column, and in a card below its width - draws its own
+    // Dismiss from here (`DismissControl`).
+    <RowDismissContext
+      value={{
+        dismiss: (named) => dismissRows([named]),
+        pending: dismissWrite.pending,
+        show,
+      }}
+    >
+      {/* Every Snooze this list draws - a row's, and the column head's - is held while the
             bar's own Snooze write is out over its ask (`SnoozeControl`). */}
-        <BulkSnoozingContext value={bulkSnoozing}>
-          {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
+      <BulkSnoozingContext value={bulkSnoozing}>
+        {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
               rather than in it, so the first mark moves no row. */}
-          {selectionBar}
-          <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-            {header}
-            {paneShown ? (
-              // The two columns are a grid of two fractions, so the share the reader dragged the
-              // divider to is exactly the share the pane takes, at any width; the divider is the
-              // column between them and takes its own.
-              //
-              // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
-              // so a long document in the pane would make the row - and with it both columns'
-              // boxes - taller than the page, and neither column would scroll in itself. The page
-              // would scroll instead, which is how the pane came to show a document's top however
-              // far down it the reader's section sat.
-              <div
-                className="grid min-h-0 flex-1"
-                ref={columnsRef}
-                style={{
-                  gridTemplateColumns:
-                    subject === undefined
-                      ? "minmax(0, 1fr)"
-                      : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-                  gridTemplateRows: "minmax(0, 1fr)",
-                }}
-              >
-                {listColumn}
-                {subject === undefined ? null : (
-                  <>
-                    <PaneDivider
-                      columns={columnsRef}
-                      onWidthChange={setPaneWidth}
-                      width={paneWidth}
-                    />
-                    {/* The column names the question it shows, by which the page's rescue tells
+        {selectionBar}
+        <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
+          {header}
+          {paneShown ? (
+            // The two columns are a grid of two fractions, so the share the reader dragged the
+            // divider to is exactly the share the pane takes, at any width; the divider is the
+            // column between them and takes its own.
+            //
+            // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
+            // so a long document in the pane would make the row - and with it both columns'
+            // boxes - taller than the page, and neither column would scroll in itself. The page
+            // would scroll instead, which is how the pane came to show a document's top however
+            // far down it the reader's section sat.
+            <div
+              className="grid min-h-0 flex-1"
+              ref={columnsRef}
+              style={{
+                gridTemplateColumns:
+                  subject === undefined
+                    ? "minmax(0, 1fr)"
+                    : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                gridTemplateRows: "minmax(0, 1fr)",
+              }}
+            >
+              {listColumn}
+              {subject === undefined ? null : (
+                <>
+                  <PaneDivider
+                    columns={columnsRef}
+                    onWidthChange={setPaneWidth}
+                    width={paneWidth}
+                  />
+                  {/* The column names the question it shows, by which the page's rescue tells
                         the next question drawn here from what a press drew in its place
                         (`SHOWN_ITEM_ATTRIBUTE`). */}
-                    {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                    <div
-                      className="min-h-0 min-w-0"
-                      {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
-                      onBlur={forgetPaneReturn}
-                      ref={holdPane}
-                    >
-                      <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : (
-              listColumn
-            )}
-          </div>
-        </BulkSnoozingContext>
-      </RowDismissContext>
-    </AskHandOnLiveContext>
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                  <div
+                    className="min-h-0 min-w-0"
+                    {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
+                    onBlur={forgetPaneReturn}
+                    ref={holdPane}
+                  >
+                    <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            listColumn
+          )}
+        </div>
+      </BulkSnoozingContext>
+    </RowDismissContext>
   );
 
   if (shown.length === 0 && held.length === 0) {
@@ -2377,10 +2448,10 @@ function InboxBody({
   }
 
   // Each held row is drawn in the band the reader saw it in, after the row it then followed; a
-  // band a snooze keeps its row in is drawn where it stood though no other row is left in it
-  // (`snoozeBands`). A band every row has left is empty, and an empty band has nothing to head.
+  // band a write keeps its row in is drawn where it stood though no other row is left in it
+  // (`keptBands`). A band every row has left is empty, and an empty band has nothing to head.
   const heldById = new Map(held.map((placed) => [rowId(placed.row), placed]));
-  const drawn = withHeldBands(bands, snoozeBands, presentedBands.current.headings)
+  const drawn = withHeldBands(bands, keptBands, presentedBands.current.headings)
     .map((band) => {
       const banded = withHeld(
         band.rows.filter((row) => !heldById.has(rowId(row))),

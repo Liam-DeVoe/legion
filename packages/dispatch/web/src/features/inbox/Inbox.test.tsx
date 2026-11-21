@@ -2572,9 +2572,9 @@ test("Assign to me stays held through the commit after its answer, and goes with
 });
 
 // The hand-on's optimistic `waiting_on_person` takes the row out of the reader's own list as
-// the write starts, which would unmount the card holding the control: the card registers its
-// write with the list through the context the list provides (`hand-on-live.ts`), so the
-// refusal is shown where the reader pressed, by the instance that wrote, rather than lost to a
+// the write starts, which would unmount the card holding the control: the list holds the write
+// itself, by ask, through the context it provides (`hand-on-live.ts`), and keeps the row while
+// the write is out, so the refusal is shown where the reader pressed rather than lost to a
 // remount.
 test("a refused hand-on keeps its row in the reader's own list, with the reason and a working Retry", async () => {
   const user = userEvent.setup();
@@ -4565,8 +4565,9 @@ test("the reader's own answer takes its row off the list and selects the next on
 
 // The reader picks an option and presses Answer, and nothing of theirs is typed into the box:
 // the draft that would otherwise keep the question in the column is empty, so this reads the
-// hold the answer itself takes. Reverted, the optimistic removal hands the selection on at once
-// and unmounts the card, which is the only surface the refusal is shown on.
+// hold the answer itself takes. The list keeps the row where the reader saw it while the answer
+// is out, though the write takes it out of the Inbox read, so the column keeps the card, which
+// shows the refusal.
 test("an answer the server refuses keeps its question in the column, and a retry that lands moves on", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
@@ -4588,9 +4589,10 @@ test("an answer the server refuses keeps its question in the column, and a retry
     await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
-    // The optimistic removal takes the row at once; the column keeps the question, because the
-    // answer is still the reader's to finish, and the selection stays on it.
-    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    // The answer takes the row out of the Inbox read at once; the list keeps it where the reader
+    // saw it while the answer is out, and the column keeps the question, the selection on it.
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(address()).toBe("/?item=ask-a");
     expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-a")).toBeTruthy();
     expect(within(screen.getByTestId("inbox-pane")).getByText("Answering…")).toBeTruthy();
@@ -6535,9 +6537,9 @@ test("opening another question arms a placement of its own", async () => {
 // The same refusal, pressed on the card the reading column draws for a question written as a
 // decision block. That card is the document page's own (`ReadingPane` -> `DocumentPane`, in
 // `PaneDocument.tsx`, -> `ProofDocument` -> `AskBlockCard`), so no prop of this list reaches
-// it: the registration it holds its row with is the one it reads from the context the list
-// provides. Without it the optimistic `waiting_on_person` drops the row, the column has
-// nothing selected to draw, and the refusal comes back to no card at all.
+// it: the write it makes is the list's, which it reads from the context the list provides.
+// Without it the optimistic `waiting_on_person` drops the row, the column has nothing selected
+// to draw, and the refusal comes back to no card at all.
 test("a refused hand-on from the column's decision block keeps the row, with the reason on that card", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
@@ -6625,10 +6627,9 @@ test("a refused hand-on from the column's decision block keeps the row, with the
 // no row for. The card of a Reply row's thread is one - the reader replied in a question that
 // waits on somebody else, so her own list holds the thread and hides the ask - and so is every
 // ask block of a document open in the column beside the selected one. A hand-on from one of
-// those must leave the list as it stands: the hold is for a card the list can drop, and
-// nothing here can drop this one. Held anyway, the optimistic `waiting_on_person` would draw
-// the hidden question into her list, and a refusal would leave it there for good - the write
-// stays failed until it is tried again, and no card unmounts to let it go.
+// those must leave the list as it stands: the hold is for a row the list drew, and nothing here
+// is one. Held anyway, the optimistic `waiting_on_person` would draw the hidden question into
+// her list while the write is out.
 test("a refused hand-on from a Reply-thread card leaves the reader's own list as it was", async () => {
   const user = userEvent.setup();
   // Handed to bob on carol's issue, so alice's own list hides the ask itself; she is in its
@@ -7034,6 +7035,259 @@ test("a snooze from the column's head moves its row into Later once it lands aft
     getInbox.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+// A hand-on the column's card makes is the list's write, not the card's: moving the selection
+// takes the card away, and the row stays where the reader saw it while the write is out, though
+// the optimistic `waiting_on_person` takes it out of the reader's own list, with `Handing on…`
+// on the row itself. A refusal shows its reason on that row, and in the card drawn for it again,
+// with its Retry; a Retry that lands after the reader moved on again lets the row go.
+test("a hand-on from the column's card keeps its row while it is out after the selection moves, shows a refusal on the row and in the card drawn again, and lets the row go once it lands", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const mine = inboxIssue("ask-a", "CORE-1", "Which approach?", {
+    asked_of: "alice",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const other = inboxIssue("ask-b", "CORE-2", "Which format?");
+  const handedBack: InboxRow = { ...mine, asked_of: null, waiting_on_person: "bob" };
+  let served: InboxRow[] = [mine, other];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([mine, other]);
+  const getIssue = mockIssueReads();
+  const people = mockPeople();
+  const refusal = Promise.withResolvers<InboxRow>();
+  const landing = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo")
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(() => landing.promise);
+  const { unmount } = renderInbox();
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await handOnTo(user, pane, "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(1));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row is where the reader saw it, though the card that wrote has gone.
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(within(shortRow("ask-a")).getByText("Handing on…")).toBeTruthy();
+
+    await act(async () => {
+      refusal.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(within(shortRow("ask-a")).getByRole("alert")).toHaveTextContent(
+        "only open asks may be handed to another person"
+      )
+    );
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // The card drawn for the question again shows the refusal, with its Retry.
+    await user.click(shortRow("ask-a"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    const refused = within(screen.getByTestId("inbox-pane")).getByRole("alert");
+    expect(refused).toHaveTextContent("only open asks may be handed to another person");
+    await user.click(within(refused).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(2));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+
+    served = [handedBack, other];
+    await act(async () => {
+      landing.resolve(handedBack);
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    expect(handAskTo.mock.calls.map(([askId, askedOf]) => [askId, askedOf])).toEqual([
+      ["ask-a", "bob"],
+      ["ask-a", "bob"],
+    ]);
+  } finally {
+    unmount();
+    narrow();
+    handAskTo.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The same for an answer, which takes its row out of the Inbox read the moment it goes: the list
+// keeps the row where the reader saw it while the answer is out, saying `Answering…` on it, and a
+// refusal puts the row back with its reason on it, and in the card drawn for it again, with its
+// Retry. A Retry that lands after the reader moved on again lets the row go.
+test("an answer from the column's card keeps its row while it is out after the selection moves, shows a refusal on the row and in the card drawn again, and lets the row go once it lands", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?", {
+    options: [{ label: "Ship" }, { label: "Hold" }],
+  });
+  const second = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served: InboxRow[] = [first, second];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([first, second]);
+  const getIssue = mockIssueReads();
+  const refusal = Promise.withResolvers<never>();
+  const landing = Promise.withResolvers<void>();
+  const answerAsk = spyOn(api, "answerAsk")
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(async () => {
+      await landing.promise;
+      served = [second];
+      return {
+        ...first,
+        answer: { at: "2026-09-11T03:00:00Z", selected: ["Ship"], text: "", user: "alice" },
+        state: "answered",
+      };
+    });
+  const { unmount } = renderInbox();
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
+    await user.click(within(pane).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row is where the reader saw it, though the answer took it out of the Inbox read
+    // and the card that wrote has gone.
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(within(shortRow("ask-a")).getByText("Answering…")).toBeTruthy();
+
+    await act(async () => {
+      refusal.reject(new ApiError(400, { error: "Dispatch refused this answer." }));
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(within(shortRow("ask-a")).getByRole("alert")).toHaveTextContent(
+        "Could not save your answer."
+      )
+    );
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // The card drawn for the question again shows the refusal, with its Retry.
+    await user.click(shortRow("ask-a"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    const refused = await within(screen.getByTestId("inbox-pane")).findByRole("alert");
+    expect(refused).toHaveTextContent("Could not save your answer.");
+    await user.click(within(refused).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(2));
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    expect(selectedIds()).toEqual(["ask-b"]);
+    expect(answerAsk.mock.calls.map(([askId]) => askId)).toEqual(["ask-a", "ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The same for a decline. Its dialog is modal, so the reader moves the selection while the
+// decline is out by going Back, which the dialog does not stop; the dialog goes with the card.
+// The list keeps the row where the reader saw it while the decline is out, saying `Declining…`
+// on it, and a refusal puts the row back with its reason on it, and in the card drawn for it
+// again, under Decline to answer, whose dialog sends the refused note again. One that lands lets
+// the row go.
+test("a decline from the column's card keeps its row while it is out after the selection moves, shows a refusal on the row and in the card drawn again, and lets the row go once it lands", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const second = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served: InboxRow[] = [first, second];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([first, second]);
+  const getIssue = mockIssueReads();
+  const refusal = Promise.withResolvers<never>();
+  const declineAsk = spyOn(api, "declineAsk")
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(async () => {
+      served = [second];
+      return { ...first, state: "resolved" };
+    });
+  const { unmount } = renderInbox(["/?item=ask-b", "/?item=ask-a"]);
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.click(await within(pane).findByRole("button", { name: "Decline to answer" }));
+    const dialog = screen.getByRole("dialog", { name: "Decline to answer" });
+    await user.type(within(dialog).getByLabelText("Note (optional)"), "Not mine to say.");
+    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
+    await waitFor(() => expect(declineAsk).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    // Out, the row is where the reader saw it, though the decline took it out of the Inbox read
+    // and the card that wrote has gone.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(within(shortRow("ask-a")).getByText("Declining…")).toBeTruthy();
+
+    await act(async () => {
+      refusal.reject(new ApiError(409, { code: "ASK_CLOSED", error: "This ask is closed." }));
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(within(shortRow("ask-a")).getByRole("alert")).toHaveTextContent("This ask is closed.")
+    );
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // The card drawn for the question again shows the refusal under Decline to answer, which
+    // opens the dialog on the refused decline's note.
+    await user.click(shortRow("ask-a"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    const card = screen.getByTestId("inbox-pane");
+    expect(within(card).getByRole("alert")).toHaveTextContent("This ask is closed.");
+    await user.click(within(card).getByRole("button", { name: "Decline to answer" }));
+    const again = screen.getByRole("dialog", { name: "Decline to answer" });
+    expect(within(again).getByRole("alert")).toHaveTextContent("This ask is closed.");
+    expect(within(again).getByLabelText<HTMLTextAreaElement>("Note (optional)").value).toBe(
+      "Not mine to say."
+    );
+    await user.click(within(again).getByRole("button", { name: "Decline to answer" }));
+
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    expect(declineAsk.mock.calls.map(([askId, input]) => [askId, input])).toEqual([
+      ["ask-a", { note: "Not mine to say." }],
+      ["ask-a", { note: "Not mine to say." }],
+    ]);
+  } finally {
+    unmount();
+    narrow();
+    declineAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
   }
 });
 

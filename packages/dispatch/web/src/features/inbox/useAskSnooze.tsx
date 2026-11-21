@@ -7,8 +7,9 @@ import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
 import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
+import { useAskWrites } from "./ask-writes";
 
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, or what one the reader stopped may have done and
@@ -39,12 +40,9 @@ function snoozeMethod({ until }: AskSnoozePress): WriteMethod {
   return until === null ? "DELETE" : "PUT";
 }
 
-/** The newest press of one ask's snooze. It is out while `failure` is undefined. It has failed
- *  once Dispatch refused it or the reader stopped it, and `failure` is then that error. A press
- *  that lands is let go, and the next press of the ask takes the place of a failed one. */
-interface HeldSnooze {
-  readonly failure: Error | undefined;
-  readonly press: AskSnoozePress;
+/** The ask a press of a snooze is of. */
+function snoozeAsk({ askId }: AskSnoozePress): string {
+  return askId;
 }
 
 /** Every row's snooze write in one Inbox (`useAskSnoozeWrites`). */
@@ -92,40 +90,27 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
  * save settles - the same shape as the issue field writes, without their cross-surface caches: a
  * snooze is on the ask and shows nowhere else.
  *
- * The Inbox holds these writes by ask, and the control that pressed holds none of them. A control
- * can go while its write is out: the reading column's head goes when the reader moves the
- * selection. So the row stays in the band the reader saw it in until its write lands (`out`),
- * and moves into `Later` (or back out) then - save under the Blocked on you narrowing, which
- * lists no snoozed ask and keeps the row only while the reader's hand is on it. A refusal stays
- * with the ask until its next press, and every control drawn for the ask shows it, with its
- * Retry. A refused or stopped write holds no row: the rollback has put the row's moment back,
- * and the next read of the Inbox places it.
+ * The Inbox holds these writes by ask (`useAskWrites`), and the control that pressed holds none
+ * of them. A control can go while its write is out: the reading column's head goes when the
+ * reader moves the selection. So the row stays in the band the reader saw it in until its write
+ * lands (`out`), and moves into `Later` (or back out) then - save under the Blocked on you
+ * narrowing, which lists no snoozed ask and keeps the row only while the reader's hand is on it.
+ * A refusal stays with the ask until its next press, and every control drawn for the ask shows
+ * it, with its Retry. A refused or stopped write holds no row: the rollback has put the row's
+ * moment back, and the next read of the Inbox places it.
  *
  * Each press carries the ask it is of: a Retry runs the newest render's `write` with the press's
- * own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. One write hook
- * makes the presses of every ask, so more than one can be out at once. The Retry of a press the
- * reader stopped finds that press by its own values (`stopped`) and makes it again under its key
- * (`again`). The Retry of a press Dispatch refused is a new press of the same values.
+ * own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. The Retry of a
+ * press the reader stopped makes that press again under its key; the Retry of a press Dispatch
+ * refused is a new press of the same values (`useAskWrites`).
  */
 export function useAskSnoozeWrites(): AskSnoozeWrites {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  const [held, setHeld] = useState<ReadonlyMap<string, HeldSnooze>>(() => new Map());
-  // Dispatch's decision on `press`: a landing (`failure` undefined) lets the press go, and a
-  // refusal or a stop keeps it with its error. Where a newer press of the same ask has taken this
-  // press's place, the decision changes nothing.
-  const decide = (press: AskSnoozePress, failure: Error | undefined) =>
-    setHeld((current) => {
-      if (current.get(press.askId)?.press !== press) return current;
-      const next = new Map(current);
-      if (failure === undefined) next.delete(press.askId);
-      else next.set(press.askId, { failure, press });
-      return next;
-    });
   // A read of the Inbox asked while a snooze is out waits until Dispatch has taken it (its answer
   // or the viewer's snooze event): Dispatch can answer it before, with the row's moment from
   // before the press.
-  const { again, mutate, stopped } = useKeyedWrite({
+  const writes = useAskWrites(snoozeAsk, {
     holds: () => ({ endsOn: snoozeWritten, keys: [inboxKey] }),
     method: snoozeMethod,
     write: (press: AskSnoozePress, bounds) =>
@@ -145,65 +130,41 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
       );
       return previous;
     },
-    onError: (error, press, previous) => {
+    onError: (_error, _press, previous) => {
       for (const [key, data] of previous ?? []) {
         queryClient.setQueryData(key, data);
       }
-      // The rollback is in the cache first. A render reads the cache as it stands, so the render
-      // that lets go of the row draws it with its moment from before the press, in its band.
-      decide(press, error);
     },
-    onSuccess: (_answer, press) => decide(press, undefined),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
   });
-  return useMemo(() => {
-    const out = new Set<string>();
-    for (const [askId, { failure }] of held) {
-      if (failure === undefined) out.add(askId);
-    }
-    // A press is out from the moment it is made: its ask's entry holds it with no failure.
-    const holdOut = (press: AskSnoozePress) =>
-      setHeld((current) => new Map(current).set(press.askId, { failure: undefined, press }));
-    return {
+  return useMemo(
+    () => ({
       of: (askId: string): AskSnoozeWrite => {
-        const entry = held.get(askId);
-        const failure = entry?.failure;
-        const pending = entry !== undefined && failure === undefined;
+        const entry = writes.newest.get(askId);
         return {
           // A save the reader stopped may have been made, and Retry makes it again: the stop is
           // said of the snooze, not in a composer's words of a message.
           error:
-            entry === undefined || failure === undefined
+            entry?.state !== "failed"
               ? undefined
               : (stoppedNote(
-                  { error: failure, method: snoozeMethod(entry.press) },
+                  { error: entry.failure, method: snoozeMethod(entry.press) },
                   entry.press.until === null ? "the un-snooze" : "the snooze",
                   "saved"
-                ) ?? failure.message),
-          failed: failure !== undefined,
-          pending,
-          pendingUntil: pending ? entry.press.until : undefined,
-          retry: () => {
-            if (entry === undefined || failure === undefined) return;
-            const { press } = entry;
-            holdOut(press);
-            const kept = stopped((variables) => variables === press);
-            if (kept === undefined || !again(kept)) mutate(press);
-          },
-          submit: (until) => {
-            const press = { askId, until };
-            // Out from the reader's own press, in the same commit, so the row is held before the
-            // optimistic moment reaches the cache.
-            holdOut(press);
-            mutate(press);
-          },
+                ) ?? entry.failure.message),
+          failed: entry?.state === "failed",
+          pending: entry?.state === "out",
+          pendingUntil: entry?.state === "out" ? entry.press.until : undefined,
+          retry: () => writes.retry(askId),
+          submit: (until) => writes.press({ askId, until }),
         };
       },
-      out,
-    };
-  }, [again, held, mutate, stopped]);
+      out: writes.out,
+    }),
+    [writes]
+  );
 }
 
 /** One ask whose snooze Dispatch did not confirm: one it refused, with the reason it gave - the
