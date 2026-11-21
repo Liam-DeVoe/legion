@@ -162,12 +162,33 @@ func replicaRows(t *testing.T) {
 	})
 }
 
+// savedHoldRow is the hold row's every column as the table holds it, for a database writer to put
+// back (putHoldRowBack).
+func savedHoldRow(t *testing.T, r rig) []any {
+	t.Helper()
+	var gen int64
+	var phase, holdID, reason, updatedBy, sig string
+	var updatedAt, signedAt time.Time
+	if err := r.Pool.QueryRow(context.Background(), `select gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig from nats_hold`).
+		Scan(&gen, &phase, &holdID, &reason, &updatedAt, &updatedBy, &signedAt, &sig); err != nil {
+		t.Fatal(err)
+	}
+	return []any{gen, phase, holdID, reason, updatedAt, updatedBy, signedAt, sig}
+}
+
+// putHoldRowBack writes saved over the hold row, as a database writer other than the operator can.
+func putHoldRowBack(t *testing.T, r rig, saved []any) {
+	t.Helper()
+	if _, err := r.Pool.Exec(context.Background(), `update nats_hold set gen = $1, phase = $2, hold_id = $3, reason = $4, updated_at = $5, updated_by = $6, signed_at = $7, sig = $8`, saved...); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // rowFloorRows are TestTheHoldJournal's rows of the routes' floor of the hold row: a row a
 // database writer puts back below the gen the broker served or wrote, or another verified row at
 // that gen, reads as unknown, no move is made from it, and no refusal hands it out.
 func rowFloorRows(t *testing.T) {
 	ctx := context.Background()
-	const rowColumns = `gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig`
 
 	// replayedPrepare is the reviewer's replay: prepare at gen 2, held at gen 3 with hold set done
 	// and a command's intent pending, both written through the routes; then a database writer puts
@@ -182,12 +203,7 @@ func rowFloorRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var gen int64
-		var phase, savedHoldID, reason, updatedBy, sig string
-		var updatedAt, signedAt time.Time
-		if err := r.Pool.QueryRow(ctx, `select `+rowColumns+` from nats_hold`).Scan(&gen, &phase, &savedHoldID, &reason, &updatedAt, &updatedBy, &signedAt, &sig); err != nil {
-			t.Fatal(err)
-		}
+		saved := savedHoldRow(t, r)
 		if err := c.StartJournal(ctx, holdID, holdrecord.WorkflowCutover, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -204,15 +220,47 @@ func rowFloorRows(t *testing.T) {
 		if _, err := c.Admit(ctx, holdID, cmd("create-bucket"), nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.Pool.Exec(ctx, `update nats_hold set gen = $1, phase = $2, hold_id = $3, reason = $4, updated_at = $5, updated_by = $6, signed_at = $7, sig = $8`,
-			gen, phase, savedHoldID, reason, updatedAt, updatedBy, signedAt, sig); err != nil {
-			t.Fatal(err)
-		}
+		putHoldRowBack(t, r, saved)
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log where gen = $1`, int64(held.Gen)); err != nil {
 			t.Fatal(err)
 		}
 		return r, c, prepared
 	}
+
+	t.Run("a move from a row put back below the log, on a replica that served only that row, is 409 below_floor", func(t *testing.T) {
+		// TN's round-4 case: the second replica served the prepare row alone, so its floor takes
+		// the prepare row put back after the move to held, and the move from it would store gen 3,
+		// which the log already holds. Fails while that collision answers 503 DATABASE_UNAVAILABLE.
+		r := newRig(t)
+		c := r.client(t)
+		current := row(t, c)
+		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, "h-logged", "prepare")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.UseReplica(true)
+		if _, err := c.Row(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r.UseReplica(false)
+		saved := savedHoldRow(t, r)
+		if _, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, "h-logged", "held"); err != nil {
+			t.Fatal(err)
+		}
+		putHoldRowBack(t, r, saved)
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		var refusal *holdrecord.RouteError
+		moved, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseReleased, "h-logged", "release from the put-back row")
+		if !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != "below_floor" {
+			t.Errorf("MoveRow(%d, released) on the second replica answered %+v, %v; want 409 below_floor, read as ErrUnknown", prepared.Gen, moved, err)
+		}
+		var storedGen int64
+		var storedPhase string
+		if err := r.Pool.QueryRow(ctx, `select gen, phase from nats_hold`).Scan(&storedGen, &storedPhase); err != nil || storedPhase != "prepare" || storedGen != int64(prepared.Gen) {
+			t.Errorf("after the refused move the row is %s at gen %d (%v), want the put-back prepare at gen %d", storedPhase, storedGen, err, prepared.Gen)
+		}
+	})
 
 	t.Run("a prepare row put back mid-hold reads as unknown, and no release is moved from it", func(t *testing.T) {
 		// Fails while the routes keep no floor for the row: Row reads prepare at gen 2, and

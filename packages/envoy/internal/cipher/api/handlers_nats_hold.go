@@ -287,7 +287,9 @@ type holdMoveBody struct {
 // moveNATSHold moves the hold row, once its signature verifies over the gen it will store, and
 // only from a row this broker's floor of the row (holdRowFloor) accepts, checked on the row the
 // move's own transaction holds: a move from a row it reads as a replay or a fork, an older row put
-// back or another row at the gen it served, is 409 gen_mismatch with no row.
+// back or another row at the gen it served, is 409 gen_mismatch with no row. A move whose gen the
+// log already holds, from a row put back below the log on a replica whose floor never passed it,
+// is 409 below_floor with no row, which the operator's client reads as unknown.
 func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdMoveBody
 	if !readHoldBody(w, r, &body) {
@@ -315,6 +317,9 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 	case !errors.As(err, &conflict):
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "move the hold row", err)
 		return
+	case errors.Is(err, natshold.ErrGenLogged):
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", err.Error(), nil)
+		return
 	case errors.Is(err, natshold.ErrNoRow):
 		s.writeHoldConflict(w, http.StatusNotFound, "no_row", err.Error(), conflict)
 		return
@@ -341,8 +346,7 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 type holdRestoreBody struct {
 	// The gen to restore at: one above every gen nats_hold_log holds, 1 for an empty log.
 	Gen int64 `json:"gen"`
-	// held inside a hold, or released, which only while the log is empty or its latest entry is
-	// released.
+	// held inside a hold, or released, unless the log's latest entry is held.
 	Phase string `json:"phase"`
 	// The hold's id, which a held row names.
 	HoldID string `json:"hold_id"`

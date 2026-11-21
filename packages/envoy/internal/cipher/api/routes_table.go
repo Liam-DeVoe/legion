@@ -600,16 +600,18 @@ func routes() []apiRoute {
 		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
 		// with the same hold id, which the row keeps. The body is signed by a key of
 		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
-		// A move from a row the floor reads so is 409 gen_mismatch with no row; a gen the row no
-		// longer holds is 409 gen_mismatch and a hold id not the row's 409 hold_mismatch, each with
-		// the row, and any other move 400 bad_transition. The move commits before it answers, so
-		// every decision of the auth service that starts after the answer reads the new phase.
+		// A move from a row the floor reads so is 409 gen_mismatch with no row, and one whose gen
+		// the log already holds (a row put back below the log) 409 below_floor with no row; a gen
+		// the row no longer holds is 409 gen_mismatch and a hold id not the row's 409
+		// hold_mismatch, each with the row, and any other move 400 bad_transition. The move commits
+		// before it answers, so every decision of the auth service that starts after the answer
+		// reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
-		// deleted: held with a hold id, or released, which only while the log is empty or its
-		// latest entry is released (400 bad_transition otherwise, so no restore frees the clients
-		// mid-hold), at one above the highest gen nats_hold_log holds (1 for an empty log), signed
-		// over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
+		// deleted: held with a hold id, or released, unless the log's latest entry is held (400
+		// bad_transition then, so no restore frees the clients mid-hold; after a prepare entry it
+		// frees nobody), at one above the highest gen nats_hold_log holds (1 for an empty log),
+		// signed over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
 		// afresh, since the operator's commands cannot read the log; a row that is there is 409
 		// row_exists.
 		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
