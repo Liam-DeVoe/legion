@@ -272,6 +272,28 @@ func fresh(ctx context.Context) bool {
 	return marked
 }
 
+// cachedOnlyKey marks a context whose person questions are answered from the cache alone
+// (CachedOnly).
+type cachedOnlyKey struct{}
+
+// ErrNotCached is a question asked under CachedOnly that the cache holds no young answer to: no
+// call to Dispatch was made, and nothing is known of the person.
+var ErrNotCached = errors.New("projectaccess: no young answer is cached")
+
+// CachedOnly is ctx for person questions the cache alone answers: Person and MemberKind under it
+// answer a cached answer while it is young, as without it, and ErrNotCached where they would ask
+// Dispatch, which they neither ask nor wait on. It is for a caller with no time left to ask, as
+// the hold gate is for a check whose caller's deadline leaves it none (hold.Gate.CheckUntil).
+func CachedOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cachedOnlyKey{}, true)
+}
+
+// cachedOnly reports whether ctx is one CachedOnly made, or derived from one.
+func cachedOnly(ctx context.Context) bool {
+	marked, _ := ctx.Value(cachedOnlyKey{}).(bool)
+	return marked
+}
+
 // Access is Dispatch's answer for project and person, from the cache while it is younger than
 // CacheTTL, unless ctx is one Fresh made. A person is asked about by their lowercase login; an
 // empty person asks whether the project is public. An answer is aged from before its question was
@@ -415,6 +437,9 @@ func (c *Client) personAnswer(ctx context.Context, person string, keep func(cach
 	}
 	if ok && c.now().Sub(cached.at) < keep(cached) {
 		return cached, nil
+	}
+	if cachedOnly(ctx) {
+		return cachedPerson{}, fmt.Errorf("%w: %s", ErrNotCached, person)
 	}
 	call := c.asks.DoChan(person, func() (any, error) {
 		return c.askPerson(context.WithoutCancel(ctx), person)

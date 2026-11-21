@@ -70,8 +70,9 @@ const writeTimeout = 1 * time.Second
 // alone would end only as the decision did, and the kept answer could no longer be read.
 const readReserve = 500 * time.Millisecond
 
-// errNoTimeToAsk is the cause of a check whose caller had no more time than readReserve left: it
-// asks Dispatch nothing and answers from the kept row, and remembers no failure of Dispatch's.
+// errNoTimeToAsk is the cause of a check whose caller had no more time than readReserve left and
+// whose person the client holds no young answer for: it asks Dispatch nothing and answers from the
+// kept row, and remembers no failure of Dispatch's.
 var errNoTimeToAsk = errors.New("hold: the caller had no time left to ask Dispatch")
 
 // failureMemory is how long a failure to ask is remembered per person.
@@ -180,8 +181,8 @@ func (g *Gate) Check(ctx context.Context, person string) error {
 // logged at ERROR once a minute. Every other failure to ask, the ask's own bound running out among
 // them, is answered from the later, by as_of, of the kept row and a held answer the gate could not
 // write, read in the time the bound left the caller, and is remembered failureMemory unless the
-// caller itself hung up. A caller with no more than readReserve left asks nothing and is answered
-// from the kept row.
+// caller itself hung up. A caller with no more than readReserve left asks nothing: it is answered
+// from the client's young cached answer when there is one (CacheTTL), and else from the kept row.
 //
 // A held answer, fresh or kept, is ErrHeld whatever deadline it carries. A not-held answer, fresh,
 // cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so is
@@ -210,6 +211,11 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 		}
 	}
 	if bound <= 0 {
+		// No time to ask, but a young answer the client already holds is Dispatch's answer, served
+		// as one, with no WARN line and no count; only a person it holds none for is unasked.
+		if answer, err := g.access.Person(projectaccess.CachedOnly(ctx), person); err == nil {
+			return g.answered(ctx, person, answer)
+		}
 		return g.unasked(ctx, person, errNoTimeToAsk)
 	}
 	askCtx, cancel := context.WithTimeout(ctx, bound)

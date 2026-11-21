@@ -220,10 +220,12 @@ const sessionNamePrefix = "session/"
 // Dispatch holds is refused, as every broker route refuses them; a not-held answer whose deadline
 // (not_held_until) has passed by this broker's clock is refused, and the user of one admitted
 // before it expires at it if that comes before the token's expiry, so the connection does not
-// outlive it, as the airlock cuts a call it carries then. Dispatch's unavailable answer, whose
-// deadline is its own as_of, never reaches here as a not-held answer: the gate reads it from
-// those two times and introspection answers it as a gate that cannot tell, which is refused under
-// its own label, apart from a broker that did not answer.
+// outlive it, as the airlock cuts a call it carries then. A not-held answer the gate judged past
+// its deadline, by its own clock or as Dispatch's unavailable answer, whose deadline is its own
+// as_of, reaches here with a not_held_until every clock is past (oauth.Provider's withHold), so it
+// is refused as a deadline passed too. Every other case the gate cannot tell is introspection's
+// *oauth.HoldUncheckableError, refused under its own label, apart from a broker that did not
+// answer.
 func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error) {
 	answer, err := deps.Introspect(ctx, req.Token)
 	if err != nil {
