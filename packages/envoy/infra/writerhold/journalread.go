@@ -18,7 +18,8 @@ import (
 //     exported as a reader of a command's latest state, with stateIntent, stateDone and stateStop
 //     (journal.go) exported;
 //   - priorLeft's cut-run rule: holdrecord's cutRun (journal.go);
-//   - stopLeftOutput: holdrecord's stopLeftKey (journal.go);
+//   - stopLeftOutput and stopReasonOutput: holdrecord's stopLeftKey (journal.go) and the reason
+//     key AppendStop writes (client.go);
 //   - abortLeftPrefix and stopRecords: a reader of the keys holdrecord's withStopRecords
 //     (client.go, Admit's abort inputs) writes;
 //   - journalKind and hasJournal: a typed answer from holdrecord's Journal for a hold with no
@@ -34,6 +35,10 @@ const (
 // stopLeftOutput is the output of a stop entry that holds what its command left (holdrecord's
 // stopLeftKey, which AppendStopLeft writes).
 const stopLeftOutput = "left"
+
+// stopReasonOutput is the output of a stop entry that holds why its command stopped (the reason
+// holdrecord's AppendStop and AppendStopLeft write).
+const stopReasonOutput = "reason"
 
 // abortLeftPrefix begins each input of abort's intent that carries one stop's record of what its
 // command left, `left.<the stop's index in the journal>` (holdrecord's withStopRecords).

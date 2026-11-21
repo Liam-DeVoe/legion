@@ -132,7 +132,11 @@ before it reads or removes anything.
   claim against the newest done prove's disk, and names a proven disk that is gone (a 404, or
   another id under the name). Before it releases, it reconciles each daemon store of the
   `daemon/<P>` cutover rows (`--daemon-database P=<file>`, repeat). It releases only when every
-  store is changed, gone or already consistent; otherwise it stops, naming each store.
+  store is changed, gone or already consistent; otherwise it stops, naming each store. Each store
+  found gone (the server's SQLSTATE 3D000 answer, at the database and instance the daemon's
+  Deployment and the operator's file both name) is recorded in the journal: in the stop's reason
+  beside the stores left unreconciled, and in the done entry as `gone.daemon/<P>`, beside
+  `stream_id.daemon/<P>` for each store it rewrote.
 - A crashed abort's rerun runs the whole abort again. An abort killed after its row move writes its
   `done` entry when rerun.
 

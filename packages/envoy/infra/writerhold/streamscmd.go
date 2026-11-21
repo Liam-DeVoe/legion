@@ -574,7 +574,13 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 	for i, u := range result.Unreconciled {
 		reasons[i] = daemonFamilyPrefix + u.Project + ": " + u.Reason
 	}
-	err = unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: left unreconciled: %s", strings.Join(reasons, "; "))
+	// Each store found gone is named beside the stores left unreconciled, with the server's answer
+	// and its address, so the stop that records this run records them too.
+	gone := ""
+	for _, g := range result.Gone {
+		gone += fmt.Sprintf("; found gone: %s%s: %s", daemonFamilyPrefix, g.Project, outputs["gone."+daemonFamilyPrefix+g.Project])
+	}
+	err = unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: left unreconciled: %s%s", strings.Join(reasons, "; "), gone)
 	if len(changed) > 0 {
 		return nil, &Left{What: strings.Join(changed, "; "), Err: err}
 	}

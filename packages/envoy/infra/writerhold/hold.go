@@ -200,12 +200,13 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 		return cause
 	}
 	hub := d.Workflow == holdrecord.WorkflowHubRestore
+	var outputs map[string]string
 	if hub {
 		if err := abortDisks(ctx, op, d); err != nil {
 			return stop(err)
 		}
 		if _, proved := holdrecord.Proven(d); proved {
-			if err := abortReconcile(ctx, records, op, stores, o, stdout); err != nil {
+			if outputs, err = abortReconcile(ctx, records, op, stores, o, stdout); err != nil {
 				return stop(err)
 			}
 		}
@@ -218,7 +219,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if hub {
 		changed = abortDisks(ctx, op, d)
 	}
-	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
+	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, outputs); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "aborted hold %s in %s: row gen %d, released\n", o.holdID, d.Workflow, moved.Gen)
@@ -250,24 +251,25 @@ func abortPrepared(ctx context.Context, records *holdrecord.Client, row holdreco
 // cmd/envoy-infra passes in (stores). The abort goes on only when the writer's result places every
 // daemon family in exactly one list (StreamIDResult.Covers) and leaves none unreconciled; any other
 // answer, a writer missing among them, is UNKNOWN or a refusal naming each store, and the abort
-// writes its stop. A rerun of a crashed abort runs it again from the start, trusting nothing the
-// crashed run wrote.
-func abortReconcile(ctx context.Context, records *holdrecord.Client, op *Operator, stores StreamIDWriter, o options, stdout io.Writer) error {
+// writes its stop, whose reason names each store found gone with the server's answer and its
+// address. Otherwise it returns the abort's done outputs: stream_id.daemon/<P> for each store it
+// rewrote and gone.daemon/<P> for each found gone, as the census records them. A rerun of a crashed
+// abort runs it again from the start, trusting nothing the crashed run wrote.
+func abortReconcile(ctx context.Context, records *holdrecord.Client, op *Operator, stores StreamIDWriter, o options, stdout io.Writer) (map[string]string, error) {
 	cutovers, err := records.Cutovers(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	families := daemonFamilies(cutovers)
 	if len(families) == 0 {
-		return nil
+		return nil, nil
 	}
 	nc, err := op.Connect(ctx)
 	if err != nil {
-		return unknownf(StepPreflight, err, "connect to reconcile the daemon stores")
+		return nil, unknownf(StepPreflight, err, "connect to reconcile the daemon stores")
 	}
 	defer nc.Close()
-	_, err = reconcileStreamIDs(ctx, nc, stores, KubeDaemonDeployments(op.Hub.Client), families, o.daemonDatabases, stdout)
-	return err
+	return reconcileStreamIDs(ctx, nc, stores, KubeDaemonDeployments(op.Hub.Client), families, o.daemonDatabases, stdout)
 }
 
 // printStopRecords prints what each stopped command left, as abort's latest intent carries it.
