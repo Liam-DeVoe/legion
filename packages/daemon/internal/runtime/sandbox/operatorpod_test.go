@@ -284,6 +284,14 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to https://" + redact.URLWithCredentials + refusal; err == nil || err.Error() != want {
 		t.Errorf("CheckPod(a dashboard URL with userinfo) = %v, want %q", err, want)
 	}
+	// A made-up credential holding a "/" or a "?" written as the user puts an "@" past the host, its
+	// head read as the host: refused, and named as a URL that is not printed.
+	for _, value := range []string{"https://madeUpDashHead0123/madeUpDashTail0123@dispatch.example.org", "https://madeUpDashHead0123?madeUpDashTail0123@dispatch.example.org"} {
+		err := check(value)
+		if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to " + redact.URLNotPrinted + refusal; err == nil || err.Error() != want {
+			t.Errorf("CheckPod(%q) = %v, want %q", value, err, want)
+		}
+	}
 }
 
 // The runtime refuses to start on an operator pod that collides with Legion's own, and on a
