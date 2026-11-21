@@ -4138,7 +4138,10 @@ the first, is restored `released`: take the gen the `RestoreGenError` names and 
 with it, `released` and no hold id (or the ended hold's), which reads no journal and sends the row
 once at that gen. A row lost while the hold is `prepare`, before its journal starts or after, is
 restored the same way, `released` with that hold's id, the row `hold abort` from `prepare` would
-have written; the next hold starts with `hold set` and a new hold id.
+have written. When the journal was written, `hold abort` then runs on the released row: Admit
+admits it while the journal shows prepare (no done `hold set`, no ended entry), the cohort-delete
+route deletes the hold's cohort on that row, and abort's done entry ends the journal. The next
+hold starts with `hold set` and a new hold id.
 The route stores `released` only after a verified `released` or `prepare` entry, since a `prepare`
 row refuses no client, or after a `held` one whose hold's signed journal shows `hold release` or
 `hold abort` done; after any other `held` entry it refuses `bad_transition`, so no restore frees

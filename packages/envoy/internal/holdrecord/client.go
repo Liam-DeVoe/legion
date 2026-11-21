@@ -505,8 +505,10 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 }
 
 // Admit is a command's admission and its `intent` entry in one write. It reads and verifies the
-// row, which must be `held` with holdID, or for CommandSet alone `prepare` with holdID, else
-// ErrNotHeld, and the `done` record. It takes Decide's answer, and on nil writes the command's
+// row, which must be `held` with holdID, or for CommandSet alone `prepare` with holdID, or for
+// CommandAbort alone `released` with holdID, else ErrNotHeld, and the `done` record. It sets
+// Request.RowReleased from the row, so on a released row Decide admits abort only while the
+// journal shows prepare. It takes Decide's answer, and on nil writes the command's
 // `intent` entry, with inputs, by a PutRecord at the `gen` it read, so the decision and the write
 // are one compare-and-swap. A 409 `gen_mismatch` means another write came between, and Admit
 // reads and decides again. The entry sets `complete` to false, except `hold release`'s, which
@@ -525,7 +527,8 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 		if err != nil {
 			return "", err
 		}
-		held := row.Phase == natsgrant.OperatorPhaseHeld || (req.Command == CommandSet && row.Phase == natsgrant.OperatorPhasePrepare)
+		released := req.Command == CommandAbort && row.Phase == natsgrant.OperatorPhaseReleased
+		held := row.Phase == natsgrant.OperatorPhaseHeld || (req.Command == CommandSet && row.Phase == natsgrant.OperatorPhasePrepare) || released
 		if row.HoldID != holdID || !held {
 			return "", wrap(ErrNotHeld, fmt.Sprintf("the row is %s with hold id %s, and %s asks for hold %s", row.Phase, row.HoldID, req.Command, holdID))
 		}
@@ -533,6 +536,7 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 		if err != nil {
 			return "", err
 		}
+		req.RowReleased = released
 		if err := Decide(d, req); err != nil {
 			return d.Workflow, fmt.Errorf("holdrecord: %s in %s: %w", req.Command, d.Workflow, err)
 		}

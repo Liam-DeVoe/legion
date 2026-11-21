@@ -108,6 +108,17 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 					}
 					out = append(out, admit(r, sc, s, k, o))
 				}
+			case 'R':
+				// A row lost in prepare and restored released, with the journal written, left the
+				// hold's cohort and journal: hold abort on the released row, which Admit admits only
+				// while the journal shows prepare (ReleasedPrepareAbort), writes its intent, deletes
+				// the cohort and writes its done entry, which ends the journal.
+				if s.PrepLost == 'O' && a2(s, cmdAbortReleased) &&
+					t.decide(toDone(sc, s), modelRequest{Request: Request{Command: CommandAbort, RowReleased: true}}) == nil {
+					ns := writeIntent(s, CommandAbort)
+					ns.Slots[k] = modelSlot{Cmd: cmdAbortReleased, Step: 1}
+					out = append(out, modelEdge{to: ns, label: cmdAbortReleased + ": admitted, intent written", op: true})
+				}
 			}
 			continue
 		}
@@ -122,6 +133,17 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 		ns := s
 		ns.RowGen++
 		out = append(out, modelEdge{to: ns, label: "outside: the row is lost and restored held at a new gen"})
+	}
+	if r.PrepareRowLoss && s.Row == 'P' && s.RowGen < 1 {
+		// A database admin deletes the row in prepare, and the operator restores it released with
+		// the hold's id, as the restore route admits after a prepare entry. Once hold set's reads
+		// wrote the journal, the hold's cohort and journal stay.
+		ns := s
+		ns.Row, ns.RowGen, ns.PrepLost = 'R', s.RowGen+1, 'N'
+		if s.Rec {
+			ns.PrepLost = 'O'
+		}
+		out = append(out, modelEdge{to: ns, label: "outside: the row is lost in prepare and restored released at a new gen"})
 	}
 	if sc.Hub && s.Row == 'H' {
 		// Assumption A1: no restore lands between hold abort's or hold release's last disk check and
@@ -460,6 +482,14 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			u = "the row is released while another command runs"
 		}
 		return []modelEdge{{to: m, label: "hold abort from prepare: row released", op: true, unsafe: u}}
+	case cmdAbortReleased:
+		if sl.Step == 1 {
+			return []modelEdge{adv(ns, cmdAbortReleased+": cohort deleted")}
+		}
+		ns.Slots[k].Cmd = CommandAbort
+		m := finish(t, sc, ns, k)
+		m.PrepLost = 'E'
+		return []modelEdge{{to: m, label: cmdAbortReleased + ": done, the journal ended", op: true}}
 	}
 	putRow := func(ns modelState, abort bool) (modelState, string) {
 		ns.Row = 'R'

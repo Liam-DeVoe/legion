@@ -55,10 +55,14 @@ type Proof struct {
 
 // Request is what a command asks Admit for. DisksMoved is Moved's answer for the command's own
 // reading of every target, which admits `hold prove` after completion. Every `hold prove` names its
-// targets with `--restored`, so a prove's request always holds restored targets.
+// targets with `--restored`, so a prove's request always holds restored targets. RowReleased says
+// the row is `released` with the hold's id, which Admit sets from the row it reads: Decide then
+// admits `hold abort` alone, and only while the journal shows prepare (a row lost in `prepare` and
+// restored `released`, ReleasedPrepareAbort), and the cohort-delete route asks Decide the same.
 type Request struct {
-	Command    string
-	DisksMoved bool
+	Command     string
+	DisksMoved  bool
+	RowReleased bool
 }
 
 // The errors. Each is wrapped with what it names.
@@ -126,10 +130,14 @@ const CommandProve = "hold prove"
 // stop named and releases over the new epoch's disks. The residual: on this path clients reach the
 // restored and proven hub before its census, until a streams-census hold runs clean. Release stays
 // refused, since hub-restore's completion is its clean census. Abort moves the row to `released`
-// before its `done` entry, which completes the
-// record; its `intent` carries each stop's record of what its command left (Admit).
-// It is refused after completion. From `prepare` it deletes the cohort (DeleteCohort) and moves
-// the row, and writes no entry. Like every command, its own pending intent admits it again, so two
+// before its `done` entry, which completes the record; its `intent` carries each stop's record of
+// what its command left (Admit). It is refused after completion. From `prepare` it deletes the
+// cohort (DeleteCohort) and moves the row, and writes no entry. On a row lost in `prepare` and
+// restored `released` with the hold's id, whose journal shows prepare (no done `hold set`, no
+// ended entry, only `hold set`'s and abort's own entries), Admit admits it (Request.RowReleased,
+// even over `hold set`'s pending intent, which can no longer move the row), it deletes the cohort,
+// which the cohort-delete route admits on that row too, and its `done` entry ends the journal; the
+// row is released already. Like every command, its own pending intent admits it again, so two
 // processes running abort at once are both admitted: the operator runs one command of a hold at a
 // time (assumption A2).
 const CommandAbort = "hold abort"
@@ -261,13 +269,15 @@ func Stoppable(w Workflow, command string) bool { return current.Stoppable(w, co
 func Epochal(w Workflow, command string) bool { return current.Epochal(w, command) }
 
 // Decide is Admit's decision on a verified record. It returns nil when the command may write its
-// `intent` entry, and otherwise the first refusal in this order: ErrAlreadyDone once the hold has
-// ended (a done `hold release` or `hold abort`); ErrBusy; ErrOutOfOrder for `hold release` before
-// completion (or a record whose other entries are not all stops that left nothing changed);
-// ErrAlreadyDone for a second `hold set`; ErrOutOfOrder for any other command before `hold set`'s
-// done entry, but `hold abort`; ErrNotAdmitted; ErrAlreadyDone after completion; ErrExcluded;
-// ErrOutOfOrder for `hold abort` outside `hub-restore` when no command has stopped; ErrOutOfOrder
-// for a required command with no done entry; ErrAlreadyDone.
+// `intent` entry. With Request.RowReleased it admits `hold abort` alone, and only while the journal
+// shows prepare, and refuses anything else ErrNotHeld. Otherwise it returns the first refusal in
+// this order: ErrAlreadyDone once the hold has ended (a done `hold release` or `hold abort`);
+// ErrBusy; ErrOutOfOrder for `hold release` before completion (or a record whose other entries are
+// not all stops that left nothing changed); ErrAlreadyDone for a second `hold set`; ErrOutOfOrder
+// for any other command before `hold set`'s done entry, but `hold abort`; ErrNotAdmitted;
+// ErrAlreadyDone after completion; ErrExcluded; ErrOutOfOrder for `hold abort` outside
+// `hub-restore` when no command has stopped; ErrOutOfOrder for a required command with no done
+// entry; ErrAlreadyDone.
 func Decide(d Done, req Request) error { return current.Decide(d, modelRequest{Request: req}) }
 
 // Proven returns the latest `done` `hold prove` entry's outputs, and false before any `hold prove`

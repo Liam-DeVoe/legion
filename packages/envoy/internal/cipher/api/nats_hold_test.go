@@ -481,11 +481,12 @@ func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 }
 
 // The cohort's delete, hold abort's from prepare, is signed over the cohort's current gen and runs
-// only while the row is prepare with the delete's hold id. In held it is 409 hold_mismatch; with no
-// signature it is 400 bad_signature; signed over an older gen it is refused, 400 bad_signature when
-// it names the current gen and 409 gen_mismatch when it names the older one; each deletes nothing.
-// Signed over the current gen in prepare, it deletes the cohort. Fails if the route deletes on the
-// operator's token alone, or outside prepare.
+// only while the row is prepare with the delete's hold id, or released with it while that hold's
+// journal shows prepare (holdrecord's TestTheHoldJournal rows of a row lost in prepare). In held it
+// is 409 hold_mismatch; with no signature it is 400 bad_signature; signed over an older gen it is
+// refused, 400 bad_signature when it names the current gen and 409 gen_mismatch when it names the
+// older one; each deletes nothing. Signed over the current gen in prepare, it deletes the cohort.
+// Fails if the route deletes on the operator's token alone, or in held.
 func TestTheCohortDeleteIsSignedAndRunsOnlyInPrepare(t *testing.T) {
 	cohorts := func(rig *holdRig) int {
 		return rig.count(`select count(*) from nats_hold_records where kind = 'cohort'`)
