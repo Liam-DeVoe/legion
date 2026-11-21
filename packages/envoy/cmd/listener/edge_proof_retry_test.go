@@ -168,9 +168,11 @@ func (r *edgeLBRig) send(p edgeLBPresentation, peer string) *httptest.ResponseRe
 // token, and not the query or the body: a request that carries a body keeps its proof spent,
 // since a given-back proof would carry another body, and the balancer does not retry it; its
 // client sends it again with a fresh proof. A given-back proof can be presented once more with
-// another query on the same method and path, which needs the token and the proof in plaintext,
-// and the edge is reached over TLS. A request served first keeps its proof spent too. The record
-// is the bucket every replica shares, so the retry reaches the other replica's proxy.
+// another query on the same method and path, which needs the token and the proof in plaintext:
+// TLS covers the client's hop to the balancer alone, and the hop from Google's proxy to the pod is
+// HTTP inside Google's network, so that is the accepted risk. A request served first keeps its
+// proof spent too. The record is the bucket every replica shares, so the retry reaches the other
+// replica's proxy.
 func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
 	rig := newEdgeLBRig(t, true)
 	for _, tc := range []struct {

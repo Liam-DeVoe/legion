@@ -386,7 +386,9 @@ func (s *proofSpend) release(ctx context.Context) error {
 // header (RFC 9449 Section 4.2's htu carries no query). So a given-back proof can be presented
 // once more on the same method and path with another query, a DELETE of a session without the
 // conditions its query carried among them. That is accepted: it takes the token and the proof in
-// plaintext, inside the proof's window, and the edge is reached over TLS. A request that carries a
+// plaintext, inside the proof's window. TLS covers the hop from the client to the balancer only;
+// the hop from Google's proxy to the pod is HTTP inside Google's network, where the token and the
+// proof travel in plaintext, and that replay stays the accepted risk. A request that carries a
 // body keeps its proof spent whatever its status, since a proof given back there would let whoever
 // holds it send another body under it; its client sends it again with a fresh proof, and the
 // balancer does not retry it. A proof presented once more after the retry was served is refused

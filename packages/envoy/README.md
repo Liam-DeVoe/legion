@@ -181,7 +181,8 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   The balancer's retry is then served, and a proof presented again after a request it served is still refused as a replay.
   A `503` says the listener cannot tell whether it acted, and the body-less routes are idempotent, so the retry has the outcome the client's own retry with a fresh proof would have.
   A proof signs the method, the path and the token, and not the query, the body or any other header.
-  So a given-back proof can be presented once more on the same method and path with another query, such as a session's `DELETE` without the conditions its query carried; that takes the token and the proof in plaintext, inside the proof's window, and the edge is reached over TLS.
+  So a given-back proof can be presented once more on the same method and path with another query, such as a session's `DELETE` without the conditions its query carried; that takes the token and the proof in plaintext, inside the proof's window.
+  TLS covers the client's hop to the balancer alone: the hop from Google's proxy to the pod is HTTP inside Google's network, where the token and the proof travel in plaintext, so whoever reads that hop could replay a given-back proof once; that risk is accepted.
   A request with a body keeps its proof spent whatever its status; the balancer does not retry it, and the client sends it again with a fresh proof.
   Four cases still answer the balancer's retry `401`, and the status stays `503` in each, the one every route documents for a fault the client can ask again about:
   - a spent-proof store that did not answer while its write of the proof landed;
