@@ -483,19 +483,25 @@ runtime:
 `
 
 // TestTheBootRefusesAListenerThatRefusesTheDaemonsToken: a listener that answers the daemon's
-// broker token 401, because it takes no broker tokens or because envoy_url is not its
+// broker token 401 or 403, because it takes no broker tokens or because envoy_url is not its
 // ENVOY_PUBLIC_URL, refuses the boot, naming envoy_url and ENVOY_PUBLIC_URL, rather than leave every
-// listener call failing with no line saying why. The control is a listener that answers 503 once,
-// as one starting does, and then that nobody holds the controller role: the boot waits it out and
-// goes on.
+// listener call failing with no line saying why; a 503 before that refusal is waited out first. A
+// 503, as a starting listener answers, is asked again, and the boot goes on once the listener
+// answers that nobody holds the controller role. A 500 is the listener's answer from behind its
+// credential check (only its route handlers write one), so the boot goes on after that one lookup.
+// Each row counts the lookups the boot made.
 func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	for name, tc := range map[string]struct {
 		answers []int
 		refused bool
+		asked   int
 	}{
-		"a 401":                          {[]int{http.StatusUnauthorized}, true},
-		"control: a 503, then no holder": {[]int{http.StatusServiceUnavailable, http.StatusNotFound}, false},
+		"a 401":                                {[]int{http.StatusUnauthorized}, true, 1},
+		"a 403":                                {[]int{http.StatusForbidden}, true, 1},
+		"a 503, then a 401":                    {[]int{http.StatusServiceUnavailable, http.StatusUnauthorized}, true, 2},
+		"control: a 503, then no holder":       {[]int{http.StatusServiceUnavailable, http.StatusNotFound}, false, 2},
+		"control: a 500 from behind the check": {[]int{http.StatusInternalServerError}, false, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			broker := newCredentialBroker(t, mintsTheDaemonsToken)
@@ -512,6 +518,12 @@ func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
 			}))
 			t.Cleanup(listener.Close)
 			_, err := settleCredentials(t.Context(), listenerBrokerConfig(listener.URL), "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			mu.Lock()
+			made := asked
+			mu.Unlock()
+			if made != tc.asked {
+				t.Fatalf("the boot made %d role lookups, want %d", made, tc.asked)
+			}
 			if tc.refused {
 				if err == nil || !strings.Contains(err.Error(), "envoy_url "+listener.URL) || !strings.Contains(err.Error(), "ENVOY_PUBLIC_URL") {
 					t.Fatalf("settleCredentials = %v, want the boot refused naming envoy_url %s and ENVOY_PUBLIC_URL", err, listener.URL)
@@ -519,7 +531,7 @@ func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("settleCredentials after a 503 = %v, want the lookup asked again and the boot on", err)
+				t.Fatalf("settleCredentials = %v, want the boot on", err)
 			}
 		})
 	}

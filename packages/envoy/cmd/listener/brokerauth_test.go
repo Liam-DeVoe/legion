@@ -260,7 +260,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			token:      revokedToken,
 			wantStatus: http.StatusUnauthorized,
 			wantReason: "not_active",
-			wantCode:   brokerTokenNotActive,
+			wantCode:   "BROKER_TOKEN_NOT_ACTIVE",
 		},
 		{
 			name:       "refuses a token the broker never issued",
@@ -269,7 +269,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			token:      unknownToken,
 			wantStatus: http.StatusUnauthorized,
 			wantReason: "not_active",
-			wantCode:   brokerTokenNotActive,
+			wantCode:   "BROKER_TOKEN_NOT_ACTIVE",
 		},
 		{
 			name:       "refuses a proof signed by a key the token is not bound to",

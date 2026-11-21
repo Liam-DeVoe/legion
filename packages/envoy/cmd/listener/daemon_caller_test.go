@@ -16,7 +16,7 @@ import (
 // daemonAnswer is the broker's answer about a Legion daemon's own token: the session the daemon's
 // exchange row fixes, legion-daemon:<project>, that one project under the named scope an account
 // entry mints, and the person the row names, as the real broker answers it for the daemon's pod
-// (ciphertest.DaemonExchangeAccount; packages/daemon's TestPublishPresentsTheDaemonsBrokerToken
+// (ciphertest.DaemonExchangeAccount; packages/daemon's TestTheDaemonsListenerTokenIsItsOwnDaemonToken
 // reads that answer back from the real broker).
 func daemonAnswer(project, person, jkt string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
@@ -110,15 +110,28 @@ func TestADaemonsTokenMakesTheCleanStopOfAnotherSession(t *testing.T) {
 	})
 
 	// A clean stop's moment is the daemon's own clock when the process ended, so it is never far
-	// ahead of this listener's: a moment past the listener's clock by more than the skew it allows
-	// would remove whatever registration stands, which is the unconditional delete under another
-	// name, and is refused as that delete is.
-	t.Run("the daemon's stop naming a moment far past the listener's clock is refused", func(t *testing.T) {
+	// ahead of this listener's: a moment more than five minutes past the listener's clock would
+	// remove whatever registration stands, which is the unconditional delete under another name,
+	// and is refused as that delete is. The bound is written here as five minutes, not read from the
+	// constant, so widening the constant fails this row; the five seconds on each side leave room for
+	// the time between the test's clock read and the handler's.
+	moment := func(ahead time.Duration) string {
+		return strconv.FormatInt(time.Now().Add(ahead).UnixMilli(), 10)
+	}
+	t.Run("the daemon's stop dated just under five minutes ahead removes the registration", func(t *testing.T) {
+		const role = "ses_daemon_near_moment"
+		rig.register(t, role)
+		answer := rig.call(t, rig.handler, http.MethodDelete, daemonToken, "/v1/sessions/"+role+"?if_not_registered_after="+moment(5*time.Minute-5*time.Second), "")
+		if answer.Code != http.StatusOK || !strings.Contains(answer.Body.String(), `"deleted":true`) || registered(role) {
+			t.Fatalf("a clean stop dated 4m55s ahead under the daemon's token: status = %d, body = %s, still registered %v; want 200 and the registration gone",
+				answer.Code, answer.Body.String(), registered(role))
+		}
+	})
+	t.Run("the daemon's stop dated just over five minutes ahead is refused", func(t *testing.T) {
 		const role = "ses_daemon_far_moment"
 		rig.register(t, role)
-		far := strconv.FormatInt(time.Now().Add(daemonCleanStopSkew+time.Hour).UnixMilli(), 10)
-		refused(t, rig.call(t, rig.handler, http.MethodDelete, daemonToken, "/v1/sessions/"+role+"?if_not_registered_after="+far, ""),
-			"a clean stop an hour past the skew under the daemon's token", role)
+		refused(t, rig.call(t, rig.handler, http.MethodDelete, daemonToken, "/v1/sessions/"+role+"?if_not_registered_after="+moment(5*time.Minute+5*time.Second), ""),
+			"a clean stop dated 5m05s ahead under the daemon's token", role)
 	})
 
 	t.Run("the daemon's token removes no other session's interests", func(t *testing.T) {

@@ -1011,12 +1011,15 @@ type listenerCredential struct {
 //
 // Under the broker the boot reads the project's controller role at the listener with that token
 // first, at the boot gate's pacing (readinessRetry), and waits out a listener that does not answer
-// or answers 429 or 5xx, as it waits out Dispatch's whoami. A 401 or 403 refuses the boot, naming
-// envoy_url and ENVOY_PUBLIC_URL: the proof names envoy_url, which the listener checks against its
-// own ENVOY_PUBLIC_URL, and a listener that takes no broker token refuses every one, so otherwise
-// every listener call the daemon makes would fail for ever and no line would say why. Any other
-// answer, a holder or none, or one the lookup cannot read, came past the listener's credential
-// check, which is all the boot reads it for.
+// or answers 429, 502, 503 or 504, as it waits out Dispatch's whoami. A 401 or 403 refuses the boot,
+// naming envoy_url and ENVOY_PUBLIC_URL: the proof names envoy_url, which the listener checks
+// against its own ENVOY_PUBLIC_URL, and a listener that takes no broker token refuses every one, so
+// otherwise every listener call the daemon makes would fail for ever and no line would say why.
+// Any other answer came past the listener's credential check, which is all the boot reads it for,
+// and the boot goes on: a holder or none, a body the lookup cannot read, or a 500, which only the
+// listener's route handlers write, once its credential check has passed (a role claim it cannot
+// decode), and which the boot does not wait out, since asking again changes nothing until an
+// operator mends that claim.
 func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken string, broker *cipherclient.Client, log *slog.Logger) (listenerCredential, error) {
 	if !cfg.ListenerPresentsBrokerToken() {
 		return listenerCredential{bearer: envoyToken}, nil

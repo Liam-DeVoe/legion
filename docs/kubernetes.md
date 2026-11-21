@@ -8604,8 +8604,9 @@ The first trade, its refusals and its renewal are those of the Dispatch credenti
 Each listener call carries `Authorization: DPoP <token>` and a proof of the call's URL (`cipherclient.NewTokenTransport`, `packages/envoy/cipherclient`), and follows no redirect (`notify.NewWithTransport`, `controller.ProberOptions.Transport`).
 The listener checks that URL against its own `ENVOY_PUBLIC_URL`, so `envoy_url` must be that origin, and the listener must take broker tokens (`ENVOY_AGENT_SECRETS_URL` and the settings beside it, `packages/envoy/cmd/listener/brokerauth.go`); a listener without them answers the token `401`.
 So the boot, after its first trade, reads the project's controller role at the listener with the token.
-It waits out a listener that does not answer, or answers `429` or `5xx`, and no boot budget bounds that wait.
+It waits out a listener that does not answer, or answers `429`, `502`, `503` or `504`, and no boot budget bounds that wait.
 A `401` or `403` refuses the boot, naming `envoy_url` and `ENVOY_PUBLIC_URL` (`listenerCredentialOf`).
+Any other answer came past the listener's credential check, and the boot goes on: a `500` among them, which only the listener's route handlers write, after that check.
 Without that check, every listener call the daemon makes would fail and no line would say why.
 The boot then logs `legion daemon's Envoy listener credential` with `credential=broker` and the `session`, and never a token.
 A daemon that presents the bearer logs no such line.
