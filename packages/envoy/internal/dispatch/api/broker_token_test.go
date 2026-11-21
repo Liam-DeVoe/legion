@@ -1511,10 +1511,12 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 // broker token acting for a full member, for a person no people row holds, and for a service that
 // names no person answer GET /api/v1/whoami as they do on the base, whose broker token holds the
 // person scope alone (no broker token gets approve, #4644). Resolving one that names a person
-// costs one statement of Dispatch's store, the read of that person's member kind by the people
-// table's key, and reads no access list; one that names no person reads nothing. The instrument is
-// shown seeing a list read in the same run: a restricted owner's token, which must read one,
-// resolves in two.
+// costs one read of Dispatch's store, the read of that person's member kind by the people table's
+// key, and reads no access list; beside it is the base's one write, the tie of the session to its
+// person (session_owners, access.TieSession), which a server makes once per pair it has not
+// recorded. One that names no person reads and writes nothing. The instrument is shown seeing a
+// list read in the same run: a restricted owner's token, which must read one, resolves in two
+// reads and the tie.
 func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
@@ -1528,20 +1530,21 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 		answer              ciphertoken.Introspection
 		signInOutside       bool
 		statements          int
+		ties                int
 		readsLists          bool
 	}{
 		{"carol, a full member", "carols-broker-token",
 			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
-			rig.personToken(accessCarol), false, 1, false},
+			rig.personToken(accessCarol), false, 1, 1, false},
 		{"a person no people row holds", "nobodys-broker-token",
 			`{"kind":"agent","owner":"nobody@example.com","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
-			rig.personToken(nobody), false, 1, false},
+			rig.personToken(nobody), false, 1, 1, false},
 		{"a service naming no person", "a-service-broker-token",
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
-			serviceOnlyToken(rig.caller.jkt), false, 0, false},
+			serviceOnlyToken(rig.caller.jkt), false, 0, 0, false},
 		{"erin, a restricted member, with outside sign-in on", "erins-broker-token",
 			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
-			rig.personToken(accessErin), true, 2, true},
+			rig.personToken(accessErin), true, 2, 1, true},
 	} {
 		rig.broker.Says(test.token, test.answer)
 		handler := rig.off
@@ -1557,10 +1560,18 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 		before := len(recorder.Statements())
 		actor, _, err := served.brokerTokenActor(request)
 		statements := recorder.Statements()[before:]
-		readsLists := strings.Contains(strings.Join(statements, "\n"), access.Marker)
-		if err != nil || actor.ID != brokerTestSession || len(statements) != test.statements || readsLists != test.readsLists {
-			t.Errorf("%s: the token resolved to %+v, %v in %d statements, reading the lists %t; want its session in %d, reading the lists %t:\n%s",
-				test.name, actor, err, len(statements), readsLists, test.statements, test.readsLists, strings.Join(statements, "\n---\n"))
+		var reads, ties []string
+		for _, statement := range statements {
+			if strings.Contains(statement, "insert into session_owners") {
+				ties = append(ties, statement)
+			} else {
+				reads = append(reads, statement)
+			}
+		}
+		readsLists := strings.Contains(strings.Join(reads, "\n"), access.Marker)
+		if err != nil || actor.ID != brokerTestSession || len(reads) != test.statements || len(ties) != test.ties || readsLists != test.readsLists {
+			t.Errorf("%s: the token resolved to %+v, %v in %d reads and %d ties, reading the lists %t; want its session in %d reads and %d ties, reading the lists %t:\n%s",
+				test.name, actor, err, len(reads), len(ties), readsLists, test.statements, test.ties, test.readsLists, strings.Join(statements, "\n---\n"))
 		}
 	}
 }
