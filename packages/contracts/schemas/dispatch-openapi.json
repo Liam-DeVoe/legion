@@ -1769,7 +1769,8 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
