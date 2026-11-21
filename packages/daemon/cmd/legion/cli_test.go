@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/clitest"
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -26,8 +27,8 @@ var legionBuildDir string
 // invocation table drive. Every test that runs it only runs it, so one build serves them all.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build: %v\n%s", err, out)
+	if _, err := testgo.Output(exec.Command("go", "build", "-o", binary, ".")); err != nil {
+		return "", fmt.Errorf("go build: %w", err)
 	}
 	return binary, nil
 })
