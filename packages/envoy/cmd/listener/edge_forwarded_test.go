@@ -159,6 +159,9 @@ func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
 		{what: "its third, from a third address of its /64", peer: "35.191.7.8:40008", forwarded: "2001:db8:1:2::ff", want: http.StatusTooManyRequests},
 		{what: "a caller of the next /64 through the same proxy", peer: "35.191.7.8:40009", forwarded: "2001:db8:1:3::1", want: http.StatusUnauthorized},
 		{what: "the first stranger written as IPv6, through a proxy written as IPv6", peer: "[::ffff:35.191.7.9]:40010", forwarded: "::ffff:198.51.100.1", want: http.StatusTooManyRequests},
+		{what: "the first stranger through a proxy whose address carries a zone", peer: "[::ffff:35.191.7.10%eth0]:40011", forwarded: "198.51.100.1", want: http.StatusTooManyRequests},
+		{what: "the first stranger through Google's IPv6 proxy range", peer: "[2600:2d00:1:1::5]:40012", forwarded: "198.51.100.1", want: http.StatusTooManyRequests},
+		{what: "a peer just outside that range, forwarded for the first stranger", peer: "[2600:2d00:1:2::5]:40013", forwarded: "198.51.100.1", want: http.StatusUnauthorized},
 	} {
 		if got := sender.send(step.token, step.peer, forwardedFor(step.forwarded)).Code; got != step.want {
 			t.Errorf("%s (peer %s, forwarded for %s): status %d, want %d", step.what, step.peer, step.forwarded, got, step.want)
@@ -222,8 +225,33 @@ func TestEdgeForwardedAddressRefusesWhatGoogleDidNotForward(t *testing.T) {
 			t.Errorf("%s: the refusal logged no line saying why: %s", tc.name, logged.String())
 		}
 	}
-	// The control: the same request with Google's one line is served.
-	if recorder := sender.send(edgeLBToken, "35.191.7.7:40002", forwardedFor("203.0.113.9")); recorder.Code != http.StatusNoContent {
+	// The control: the same request with Google's one line is served, in the form Google writes it,
+	// CLIENT_IP,FORWARDING_RULE_IP with no space.
+	if recorder := sender.send(edgeLBToken, "35.191.7.7:40002", "203.0.113.9,"+edgeLBAddress); recorder.Code != http.StatusNoContent {
 		t.Errorf("Google's own line: status %d body %s, want 204", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A listener that is no edge reads no forwarded address, whoever its peer is: a request from
+// Google's ranges is keyed on its connection, its X-Forwarded-For chooses nothing, and a header of
+// two lines is no refusal.
+func TestEdgeForwardedAddressIsReadByTheEdgeAlone(t *testing.T) {
+	sender := newEdgeLBSender(t, nil)
+	sender.handler = apiAuth(listenerAPIAuth{brokers: edgeLBTokens(t, sender.broker.Server.URL, &spentProofsInMemory{}),
+		logger: logging.NewWithWriter("test-machine", io.Discard)}, noContent)
+	for _, step := range []struct {
+		what        string
+		token, peer string
+		forwarded   []string
+		want        int
+	}{
+		{what: "two lines from Google's range", token: edgeLBToken, peer: "35.191.7.7:40001", forwarded: []string{"198.51.100.9", forwardedFor("203.0.113.9")}, want: http.StatusNoContent},
+		{what: "a junk token forwarded for one address", peer: "35.191.7.8:40002", forwarded: []string{forwardedFor("198.51.100.1")}, want: http.StatusUnauthorized},
+		{what: "a second, forwarded for it again", peer: "35.191.7.8:40003", forwarded: []string{forwardedFor("198.51.100.1")}, want: http.StatusUnauthorized},
+		{what: "a third from the same proxy, forwarded for another address", peer: "35.191.7.8:40004", forwarded: []string{forwardedFor("198.51.100.2")}, want: http.StatusTooManyRequests},
+	} {
+		if got := sender.send(step.token, step.peer, step.forwarded...).Code; got != step.want {
+			t.Errorf("%s (peer %s, X-Forwarded-For %q): status %d, want %d", step.what, step.peer, step.forwarded, got, step.want)
+		}
 	}
 }
