@@ -552,6 +552,24 @@ describe("the driver against the local stack", () => {
     }
   );
 
+  stackRow(
+    "run keeps exactly the session the listener took, mode 0600, and hold and release hold it and end it",
+    () => {
+      // The one registration of the run, which `session` must name, and nothing else.
+      expect(runs.passSession.registered, runs.pass.stderr).toHaveLength(1);
+      const session = runs.passSession.registered[0];
+      expect(session).toMatch(/^outside-e2e-[0-9a-f]{12}$/);
+      expect(runs.passSession.kept).toBe(session);
+      expect(runs.passSession.mode).toBe(0o600);
+      expect(runs.hold.stdout, runs.hold.stderr).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+      expect(runs.hold.code).toBe(0);
+      expect(runs.registeredWhileHeld).toBe(true);
+      expect(runs.release.stdout, runs.release.stderr).toBe(`RELEASED ${session}\n`);
+      expect(runs.release.code).toBe(0);
+      expect(runs.registeredAfterRelease).toBe(false);
+    }
+  );
+
   stackRow("approve approves one more code in the kept browser state", () => {
     expect(runs.approve.stdout).toBe(`APPROVED ${runs.approveCode}\n`);
     expect(runs.approve.code).toBe(0);

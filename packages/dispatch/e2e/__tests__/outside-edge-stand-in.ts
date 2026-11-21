@@ -54,8 +54,10 @@ export interface EdgeStandIn {
   /** The origin of both halves: `OUTSIDE_BROKER_URL` and `OUTSIDE_LISTENER_URL`. */
   readonly url: string;
   readonly relay: RelaySocketStandIn;
-  /** Every session registered and not ended, and every send, in order. */
+  /** Every session registered and not ended; every session a registration named, ended ones
+   *  too, in order; and every send, in order. */
   readonly registered: Set<string>;
+  readonly registrations: string[];
   readonly sends: { readonly from: string; readonly to: string; readonly message: string }[];
   /** Puts one more pending machine login for `person` under `code` into the fake broker: the
    *  tailnet leg's code, which the driver approves beside its own. */
@@ -127,6 +129,7 @@ export function startEdgeStandIn(options: {
   const logins: MachineLogin[] = [];
   const authorizations = new Map<string, Authorization>();
   const registered = new Set<string>();
+  const registrations: string[] = [];
   const sends: EdgeStandIn["sends"] = [];
   let sequence = 0;
 
@@ -317,6 +320,7 @@ export function startEdgeStandIn(options: {
         const session =
           typeof body === "object" && body !== null ? String(Reflect.get(body, "session_id")) : "";
         registered.add(session);
+        registrations.push(session);
         return Response.json({
           session_id: session,
           machine_id: "outside-edge-stand-in",
@@ -342,6 +346,7 @@ export function startEdgeStandIn(options: {
     },
     relay,
     registered,
+    registrations,
     sends,
     addMachineLogin,
     lookup,

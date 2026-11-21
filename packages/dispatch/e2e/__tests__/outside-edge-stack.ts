@@ -11,8 +11,9 @@
  *  each person's link (`POST /api/v1/projects/{key}/access/people/{email}/invitations`). Each
  *  case spends its own link, so each has a person of its own:
  *  - `pass`: carol, on OWN alone, with a second pending code of hers as the tailnet leg's; then
- *    `approve` of a third code of hers, `revoke`, and `t5` twice: while she is listed, and after
- *    the owner took her off OWN.
+ *    `hold` of the session her run kept, ended by `release`, as a check that acts as her session
+ *    holds it; then `approve` of a third code of hers, `revoke`, and `t5` twice: while she is
+ *    listed, and after the owner took her off OWN.
  *  - `secondProject`: bob, on OWN and OTHER: the run must fail step 1 naming OTHER.
  *  - `silentPeer`: dave, on OWN alone, sending to a peer that never answers: step 3 must fail by
  *    timeout, naming that peer. Then `t5` with his kept passkey and a cookie Dispatch refuses,
@@ -22,7 +23,16 @@
  *    must fail, naming the host.
  */
 
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +64,19 @@ export interface DriverRun {
 /** What the child prints. */
 export interface StackRuns {
   readonly pass: DriverRun;
+  /** The session `pass` kept (`<state>/session`) and its mode, null where it kept none, and the
+   *  session each registration the edge took during that run named. */
+  readonly passSession: {
+    readonly kept: string | null;
+    readonly mode: number | null;
+    readonly registered: readonly string[];
+  };
+  /** `hold` of that session and the `release` that ended it, and whether the edge held the
+   *  session registered while it was held and after the release. */
+  readonly hold: DriverRun;
+  readonly release: DriverRun;
+  readonly registeredWhileHeld: boolean;
+  readonly registeredAfterRelease: boolean;
   readonly tailnetCode: string;
   readonly approve: DriverRun;
   readonly approveCode: string;
@@ -157,6 +180,60 @@ async function drive(args: readonly string[], env: Record<string, string>): Prom
   return { code, stdout, stderr };
 }
 
+/** `hold` of the session `run` kept in `state`, started as a check starts it, with
+ *  OUTSIDE_PROJECT, the edge's two URLs and OUTSIDE_EDGE_STATE alone (and
+ *  OUTSIDE_EDGE_ALLOW_HTTP), and `release` once its `held` is there, as the check polls for it
+ *  for 60 s; and whether `registered` held the kept session while it was held and after. */
+async function holdAndRelease(
+  state: string,
+  edge: string,
+  registered: (session: string) => boolean
+): Promise<Pick<StackRuns, "hold" | "release" | "registeredWhileHeld" | "registeredAfterRelease">> {
+  const holding = Bun.spawn(["bun", driver, "hold"], {
+    cwd: dispatchPackage,
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      OUTSIDE_EDGE_ALLOW_HTTP: "1",
+      OUTSIDE_PROJECT: "OWN",
+      OUTSIDE_BROKER_URL: edge,
+      OUTSIDE_LISTENER_URL: edge,
+      OUTSIDE_EDGE_STATE: state,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const ended = Promise.all([
+    holding.exited,
+    new Response(holding.stdout).text(),
+    new Response(holding.stderr).text(),
+  ]);
+  try {
+    const held = join(state, "held");
+    const until = Date.now() + 60_000;
+    while (!existsSync(held) && holding.exitCode === null && Date.now() < until) {
+      await Bun.sleep(100);
+    }
+    const session = existsSync(join(state, "session"))
+      ? readFileSync(join(state, "session"), "utf8")
+      : "";
+    const registeredWhileHeld = existsSync(held) && registered(session);
+    const release = await drive(["release"], { OUTSIDE_EDGE_STATE: state });
+    // The hold ends at release's SIGTERM; one that does not is ended here, and its run says so.
+    const late = setTimeout(() => holding.kill("SIGKILL"), 20_000);
+    const [code, stdout, stderr] = await ended;
+    clearTimeout(late);
+    return {
+      hold: { code, stdout, stderr },
+      release,
+      registeredWhileHeld,
+      registeredAfterRelease: registered(session),
+    };
+  } finally {
+    if (holding.exitCode === null) holding.kill("SIGKILL");
+  }
+}
+
 if (import.meta.main) {
   const scratch = mkdtempSync(join(tmpdir(), "outside-edge-stack-"));
   try {
@@ -241,7 +318,17 @@ if (import.meta.main) {
 
         const tailnetCode = "TLNT-CODE";
         await edge.addMachineLogin(tailnetCode, people.pass);
+        const registeredBefore = edge.registrations.length;
         const pass = await run("pass", { OUTSIDE_TAILNET_USER_CODE: tailnetCode });
+        const sessionFile = join(scratch, "pass", "session");
+        const passSession = {
+          kept: existsSync(sessionFile) ? readFileSync(sessionFile, "utf8") : null,
+          mode: existsSync(sessionFile) ? statSync(sessionFile).mode & 0o777 : null,
+          registered: edge.registrations.slice(registeredBefore),
+        };
+        const held = await holdAndRelease(join(scratch, "pass"), edge.url, (session) =>
+          edge.registered.has(session)
+        );
         const approveCode = "MORE-CODE";
         await edge.addMachineLogin(approveCode, people.pass);
         const state = { OUTSIDE_EDGE_STATE: join(scratch, "pass") };
@@ -286,6 +373,8 @@ if (import.meta.main) {
         });
         const runs: StackRuns = {
           pass,
+          passSession,
+          ...held,
           tailnetCode,
           approve,
           approveCode,

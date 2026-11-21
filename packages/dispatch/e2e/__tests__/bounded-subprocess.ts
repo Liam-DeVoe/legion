@@ -79,6 +79,10 @@
  *   start Chromium against `outside-edge-origin-stand-in.ts` in `outside-edge.test.ts`, six of them
  *   at once, on that developer box at a load average of about 1160 on 2026-11-21. 21.58 s x 3 =
  *   64.74 s, so 75 s.
+ * - `outsideEdgeHold`, against 61.36 s: the hold of `outside-edge-hold.test.ts` that ends at its
+ *   own 60 s, the longest of that file's eight holds, on that developer box at a load average of
+ *   about 380 on 2026-11-21; the others, ended by release or refused, took 9.42 s or less.
+ *   61.36 s x 3 = 184.08 s, so 190 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a driver run against the stand-in origin after
@@ -126,6 +130,9 @@ export const bounds = Object.freeze({
   /** One run of the outside driver that starts Chromium against a stand-in origin and nothing
    *  else: no stack, no Go build. */
   outsideEdgeBrowser: 75_000,
+  /** One `hold` of the outside driver against a stand-in edge, which ends at its own 60 s at the
+   *  longest: no browser, no stack. */
+  outsideEdgeHold: 190_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
@@ -790,7 +797,7 @@ export function named({ argv, env, from }: Child): string {
 /** What one bounded child did. `code` is its exit status and `named` what the cost line called
  *  it, which a caller that refuses a non-zero exit builds its message from. How long the child
  *  took is in the cost line and no caller reads it, so it is no field here. */
-interface BoundedRun {
+export interface BoundedRun {
   readonly code: number;
   readonly named: string;
   readonly stderr: string;

@@ -2,7 +2,7 @@
  *  serves them, on the surface they use. It runs where they would, on a machine of the public
  *  internet, and drives the real pages in a real browser (Chromium, through Playwright), the real
  *  broker client and the real relay client. Run it from packages/dispatch with
- *  `bun e2e/acceptance/outside-edge.ts [run | approve <code> | revoke | t5]`.
+ *  `bun e2e/acceptance/outside-edge.ts [run | approve <code> | revoke | t5 | hold | release]`.
  *
  *  `run`, the default, makes four steps, each a row of its own:
  *    1. sign-in   the owner's link enrolls a virtual passkey (Chromium's virtual authenticator,
@@ -18,7 +18,8 @@
  *                 `APPROVED <code>` (row `tailnet-code`), else fails naming the code.
  *    3. relay     the device login is traded for the session's broker credential, the session
  *                 opens its relay socket at OUTSIDE_LISTENER_URL and registers there
- *                 (`@legion/envoy-client/listener-relay`, `consumer-delivery`), and sends
+ *                 (`@legion/envoy-client/listener-relay`, `relay-registration`), keeps the session
+ *                 it registered in OUTSIDE_EDGE_STATE (`session`), and sends
  *                 `outside-e2e ping <nonce> at <Unix ms>` to OUTSIDE_PEER_SESSION; the peer's
  *                 reply, `outside-e2e pong <nonce> at <Unix ms>`, must reach the session on the
  *                 socket within OUTSIDE_EDGE_REPLY_SECONDS (row `relay`), else the row fails
@@ -45,9 +46,12 @@
  *                           (`browser.json`), its cookie as a Cookie header (`cookie`), the
  *                           person (`person`), the outside origin (`origin`), the passkey the
  *                           virtual authenticator made (`passkey.json`), the device login
- *                           (`device-login.json`) and each code it approved with its credential
- *                           (`approved.tsv`). `approve`, `revoke` and `t5` read them, and so does
- *                           a later step that needs the person's cookie.
+ *                           (`device-login.json`), each code it approved with its credential
+ *                           (`approved.tsv`), and the session step 3 registered at the listener
+ *                           (`session`), kept once the listener accepted its registration,
+ *                           which step 3 ends before the run goes on.
+ *                           `approve`, `revoke` and `t5` read them, and so does a later step
+ *                           that needs the person's cookie or a session of theirs.
  *  Optional: OUTSIDE_TAILNET_USER_CODE (above); OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to
  *  600); OUTSIDE_EDGE_TSV, the file the rows are also written to (`<state>/outside-edge.tsv` when
  *  unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each origin be http://127.0.0.1 or http://localhost,
@@ -73,6 +77,23 @@
  *  answered 401, then tries the kept passkey in a fresh browser; rows `T5-cookie` and
  *  `T5-passkey`, each naming `at=<Unix seconds>` (its own doc says each verdict).
  *
+ *  `hold` registers the session `run` kept (`session`) at OUTSIDE_LISTENER_URL again, as step 3
+ *  did, with that session's broker credential traded for with the kept device login, and holds
+ *  its relay socket and registration live for a check that acts as the person's session. It reads
+ *  OUTSIDE_EDGE_STATE, OUTSIDE_PROJECT, OUTSIDE_BROKER_URL and OUTSIDE_LISTENER_URL (and
+ *  OUTSIDE_EDGE_ALLOW_HTTP), no link and no peer. Once the listener took the registration it
+ *  writes its pid to `held` and prints `HELD <session>`; it holds until SIGTERM, or until
+ *  OUTSIDE_EDGE_HOLD_SECONDS have passed (1200 when unset; 60 to 3600), then unregisters the
+ *  session, writes `released` (`unregistered`, or why not) and prints `RELEASED <session>`: 0, or
+ *  2 where the unregister failed. A registration the listener did not take is
+ *  `UNKNOWN: <why>` (2) with no `held`; a held socket the listener closed is printed with its
+ *  close code, the session is not registered again, and the exit is 2.
+ *
+ *  `release` ends that hold, reading OUTSIDE_EDGE_STATE alone: SIGTERM to the pid `held` names,
+ *  up to 15 s for it to end, then `RELEASED <session>` (0) when `released` says `unregistered`,
+ *  else `UNKNOWN: <why>` (2). No `held` is `UNKNOWN: no session is held`, and a holder still
+ *  running after the 15 s is sent SIGKILL.
+ *
  *  Output: each row as `row<TAB>want<TAB>got<TAB>PASS|FAIL|UNKNOWN` on stdout and in the TSV
  *  file, then the verdict: `PASS` (exit 0) when every row passed, `FAIL: <rows>` (exit 1) when
  *  any failed, else `UNKNOWN: <rows>` (exit 2). It prints no token, cookie or link, and no name
@@ -91,6 +112,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -102,14 +124,17 @@ import {
   startDeviceLogin,
 } from "@legion/cipher-client/device-login";
 import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import type { RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 import {
+  type ConsumerDelivery,
+  type ConsumerFrame,
   createConsumerDelivery,
   type InboundUnavailable,
 } from "@legion/envoy-client/consumer-delivery";
 import { connectListenerRelay, type ListenerRelay } from "@legion/envoy-client/listener-relay";
 import { registerWithRelay } from "@legion/envoy-client/relay-registration";
-import { createEnvoyClient } from "@legion/envoy-client/transport";
+import { createEnvoyClient, type EnvoyClient } from "@legion/envoy-client/transport";
 import { type BrowserContext, chromium, type Page } from "@playwright/test";
 import { addVirtualPasskey } from "../virtual-passkey";
 import { count, counted } from "./outside-edge-count";
@@ -671,28 +696,126 @@ async function tailnetCode(page: Page, code: string, inputs: RunInputs, rows: Ro
   });
 }
 
+/** Where a session of the person's reaches the edge: the broker it trades at, the listener it
+ *  registers at, the person's one project, and the state directory whose device login it trades. */
+type SessionPlace = Pick<RunInputs, "broker" | "listener" | "project" | "state">;
+
+/** A line of the driver's own about a session, on stderr. */
+function log(line: string): void {
+  console.error(`outside-edge: ${line}`);
+}
+
+/** The run's own outage report: each refusal logged, on stderr, as it comes. A session host
+ *  tells its person once per outage (`inboundUnavailable`); a one-shot run has nobody to spare. */
+const outage: InboundUnavailable = {
+  refused: (error) => log(`the relay socket or the registration was refused: ${messageOf(error)}`),
+  accepted: () => undefined,
+};
+
+/** `session`'s broker credential, traded for at the broker with the device login `run` kept. */
+function sessionCredential(place: SessionPlace, session: string): RequestCredential {
+  return brokerCredential(
+    {
+      AGENT_SECRETS_URL: place.broker,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: join(place.state, "device-login.json"),
+      AGENT_SECRETS_PROJECTS: place.project,
+    },
+    session
+  );
+}
+
+/** The relay delivery of `session` over `socket`, each frame handed to `deliver`. */
+function sessionDelivery(
+  session: string,
+  socket: ListenerRelay,
+  deliver: (frame: ConsumerFrame) => void
+): ConsumerDelivery {
+  const encoder = new TextEncoder();
+  return createConsumerDelivery({
+    sessionID: session,
+    ledger: { delivered: () => false, liveFailed: async () => false },
+    persist: () => true,
+    publish: (subject, body) => socket.publish(subject, encoder.encode(body)),
+    host: {
+      deliver,
+      gap: (notice) => log(notice.message),
+      log: (message, error) =>
+        log(error === undefined ? message : `${message}: ${messageOf(error)}`),
+    },
+  });
+}
+
+/** Registers `session` at the listener as a session host does: its relay subject held on its
+ *  open socket first, then the registration, which names the session's own agent subject alone
+ *  and asks for consumer delivery. Throws where the listener did not take it. */
+async function registerSession(
+  session: string,
+  socket: ListenerRelay,
+  client: EnvoyClient,
+  delivery: ConsumerDelivery
+): Promise<void> {
+  const subscription = socket.subscribe(delivery.subject);
+  void (async () => {
+    for await (const message of subscription) delivery.receive(message);
+  })();
+  await socket.flush();
+  await registerWithRelay({
+    relay: delivery,
+    ownAgentSubject: legacyAgentSubject(session),
+    followed: () => [],
+    outage,
+    send: (topics, request) =>
+      client.subscribe({
+        sessionID: session,
+        directory: "/outside-edge-e2e",
+        topics,
+        port: 0,
+        title: "outside-edge-e2e",
+        driving: false,
+        delivery: request,
+        plugin: { name: "outside-edge-e2e", version: "1" },
+      }),
+    answered: (result) => delivery.answered(result.delivery),
+    // The session follows no topic, so a project refusal has nothing of it to drop: one that
+    // names only its own agent subject fails the registration.
+    drop: () => undefined,
+    log,
+  });
+}
+
+/** How long the end of a registration may take. */
+const UNREGISTER_MS = 5_000;
+
+/** Ends `session`'s registration at the listener, waiting at most UNREGISTER_MS: answers
+ *  `unregistered`, or why not. */
+async function unregister(client: EnvoyClient, session: string): Promise<string> {
+  const bound = Promise.withResolvers<never>();
+  const timer = setTimeout(
+    () => bound.reject(new Error(`no answer within ${UNREGISTER_MS / 1000} s`)),
+    UNREGISTER_MS
+  );
+  try {
+    await Promise.race([
+      client.unregisterSession({ sessionID: session, timeoutMs: UNREGISTER_MS }),
+      bound.promise,
+    ]);
+    return "unregistered";
+  } catch (error) {
+    return `the unregister failed: ${messageOf(error).replaceAll(/\s+/g, " ")}`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Step 3: a message to the peer through the listener, and its reply on the relay socket. */
 async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
   const nonce = randomBytes(8).toString("hex");
   const want = `outside-e2e pong ${nonce} from ${inputs.peer} on the relay socket at ${inputs.listener} within ${inputs.replySeconds} s`;
   const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
-  const credential = brokerCredential(
-    {
-      AGENT_SECRETS_URL: inputs.broker,
-      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
-      AGENT_SECRETS_DEVICE_LOGIN_FILE: join(inputs.state, "device-login.json"),
-      AGENT_SECRETS_PROJECTS: inputs.project,
-    },
-    session
-  );
-  const log = (line: string) => console.error(`outside-edge: ${line}`);
-  // The run's own outage report: each refusal logged, on stderr, as it comes. A session host
-  // tells its person once per outage (`inboundUnavailable`); a one-shot run has nobody to spare.
-  const outage: InboundUnavailable = {
-    refused: (error) =>
-      log(`the relay socket or the registration was refused: ${messageOf(error)}`),
-    accepted: () => undefined,
-  };
+  // A session a run before this one kept is no session of this run's.
+  rmSync(join(inputs.state, "session"), { force: true });
+  const credential = sessionCredential(inputs, session);
   let socket: ListenerRelay;
   try {
     socket = await connectListenerRelay(
@@ -709,77 +832,40 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
     return;
   }
   const reply = Promise.withResolvers<string>();
-  const encoder = new TextEncoder();
   const client = createEnvoyClient({
     baseUrl: inputs.listener,
     fetch: globalThis.fetch,
     credential,
   });
-  const delivery = createConsumerDelivery({
-    sessionID: session,
-    ledger: { delivered: () => false, liveFailed: async () => false },
-    persist: () => true,
-    publish: (subject, body) => socket.publish(subject, encoder.encode(body)),
-    host: {
-      deliver(frame) {
-        const envelope = EnvelopeSchema.safeParse(JSON.parse(frame.data));
-        if (envelope.success) {
-          const from = envelope.data.source_session ?? envelope.data.sender?.session_id;
-          const text = (envelope.data.payload ?? envelope.data.payload_summary).trim();
-          // The peer's answers: each its word and the nonce, and ` at <Unix ms>` after them.
-          const says = (word: string) =>
-            text === `outside-e2e ${word} ${nonce}` ||
-            text.startsWith(`outside-e2e ${word} ${nonce} `);
-          if (from === inputs.peer && says("pong")) reply.resolve(text);
-          // The peer then asks too, as it asks the public leg's session; it is answered so it
-          // does not wait, and the row stays the pong's.
-          if (from === inputs.peer && says("hello")) {
-            client
-              .send({
-                sourceSessionID: session,
-                targetSessionID: inputs.peer,
-                message: `outside-e2e reply ${nonce} at ${Date.now()}`,
-              })
-              .catch((error: unknown) =>
-                log(`the reply to the peer's hello failed: ${messageOf(error)}`)
-              );
-          }
-        }
-        frame.done();
-      },
-      gap: (notice) => log(notice.message),
-      log: (message, error) =>
-        log(error === undefined ? message : `${message}: ${messageOf(error)}`),
-    },
+  const delivery = sessionDelivery(session, socket, (frame) => {
+    const envelope = EnvelopeSchema.safeParse(JSON.parse(frame.data));
+    if (envelope.success) {
+      const from = envelope.data.source_session ?? envelope.data.sender?.session_id;
+      const text = (envelope.data.payload ?? envelope.data.payload_summary).trim();
+      // The peer's answers: each its word and the nonce, and ` at <Unix ms>` after them.
+      const says = (word: string) =>
+        text === `outside-e2e ${word} ${nonce}` || text.startsWith(`outside-e2e ${word} ${nonce} `);
+      if (from === inputs.peer && says("pong")) reply.resolve(text);
+      // The peer then asks too, as it asks the public leg's session; it is answered so it
+      // does not wait, and the row stays the pong's.
+      if (from === inputs.peer && says("hello")) {
+        client
+          .send({
+            sourceSessionID: session,
+            targetSessionID: inputs.peer,
+            message: `outside-e2e reply ${nonce} at ${Date.now()}`,
+          })
+          .catch((error: unknown) =>
+            log(`the reply to the peer's hello failed: ${messageOf(error)}`)
+          );
+      }
+    }
+    frame.done();
   });
   try {
-    const subscription = socket.subscribe(delivery.subject);
-    void (async () => {
-      for await (const message of subscription) delivery.receive(message);
-    })();
-    await socket.flush();
-    await registerWithRelay({
-      relay: delivery,
-      ownAgentSubject: legacyAgentSubject(session),
-      followed: () => [],
-      outage,
-      send: (topics, request) =>
-        client.subscribe({
-          sessionID: session,
-          directory: "/outside-edge-e2e",
-          topics,
-          port: 0,
-          title: "outside-edge-e2e",
-          driving: false,
-          delivery: request,
-          plugin: { name: "outside-edge-e2e", version: "1" },
-        }),
-      answered: (result) => delivery.answered(result.delivery),
-      // The session follows no topic, so a project refusal has nothing of it to drop: one that
-      // names only its own agent subject fails the registration, which is this row's FAIL.
-      drop: () => undefined,
-      log,
-    });
+    await registerSession(session, socket, client, delivery);
+    // The session the listener took, for a later step that acts as this person's session.
+    keep(inputs.state, "session", session);
     await client.send({
       sourceSessionID: session,
       targetSessionID: inputs.peer,
@@ -817,13 +903,13 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
 
 /** Leaves the listener: the registration, the delivery and the socket. */
 async function close(
-  delivery: { close(): void },
-  socket: { close(): Promise<void> },
-  client: { unregisterSession(input: { sessionID: string; timeoutMs?: number }): Promise<void> },
+  delivery: ConsumerDelivery,
+  socket: ListenerRelay,
+  client: EnvoyClient,
   session: string
 ): Promise<void> {
   delivery.close();
-  await client.unregisterSession({ sessionID: session, timeoutMs: 5_000 }).catch(() => undefined);
+  await unregister(client, session);
   await socket.close();
 }
 
@@ -1297,6 +1383,244 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
   return rows.finish();
 }
 
+/** What `hold` reads: where the session reaches the edge, the session `run` kept, and how long
+ *  it is held at most. */
+interface HoldInputs extends SessionPlace {
+  readonly session: string;
+  readonly seconds: number;
+}
+
+/** A session `run` keeps (`relay`). */
+const KEPT_SESSION = /^outside-e2e-[0-9a-f]{12}$/;
+/** How long a hold lasts when OUTSIDE_EDGE_HOLD_SECONDS is unset, and the least and most it may
+ *  name: a check that acts as the person's session holds it while it runs. */
+const HOLD_SECONDS = 1200;
+const HOLD_LEAST_SECONDS = 60;
+const HOLD_MOST_SECONDS = 3600;
+/** How long `release` waits for the holder to end after its SIGTERM. */
+const RELEASE_MS = 15_000;
+/** The relay client's line for a socket the listener closed (`ListenerRelay`'s own), which names
+ *  the close code and reason. */
+const CLOSED_LINE = / closed \((.+)\); it opens again in [0-9]+ ms$/;
+
+function holdInputs(env: NodeJS.ProcessEnv): HoldInputs {
+  const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
+  const state = required(env, "OUTSIDE_EDGE_STATE");
+  const project = required(env, "OUTSIDE_PROJECT");
+  if (!PROJECT_KEY.test(project)) throw new Refused("OUTSIDE_PROJECT is no project key");
+  const broker = originOf("OUTSIDE_BROKER_URL", required(env, "OUTSIDE_BROKER_URL"), allowHttp);
+  const listener = originOf(
+    "OUTSIDE_LISTENER_URL",
+    required(env, "OUTSIDE_LISTENER_URL"),
+    allowHttp
+  );
+  const held = (env.OUTSIDE_EDGE_HOLD_SECONDS ?? "").trim() || String(HOLD_SECONDS);
+  const seconds = Number(held);
+  if (!/^[0-9]+$/.test(held) || seconds < HOLD_LEAST_SECONDS || seconds > HOLD_MOST_SECONDS) {
+    throw new Refused(
+      `OUTSIDE_EDGE_HOLD_SECONDS must be a whole number of seconds from ${HOLD_LEAST_SECONDS} to ${HOLD_MOST_SECONDS}`
+    );
+  }
+  const session = kept(state, "session");
+  if (!KEPT_SESSION.test(session)) {
+    throw new Refused("OUTSIDE_EDGE_STATE's session is no session the driver kept");
+  }
+  if (!existsSync(join(state, "device-login.json"))) {
+    throw new Refused("OUTSIDE_EDGE_STATE holds no device-login.json: run the driver first");
+  }
+  return {
+    state,
+    session,
+    project,
+    broker: broker.origin,
+    listener: listener.origin,
+    seconds,
+  };
+}
+
+/** How a hold ended. */
+type HoldEnd = { readonly by: "SIGTERM" | "time" } | { readonly by: "close"; readonly why: string };
+
+/**
+ * `hold`: the session `run` kept, registered at the listener again and held live, for a check that
+ * acts as the person's session. It trades for the session's broker credential with the kept
+ * device login, opens its relay socket and registers it as step 3 does; once the listener took the
+ * registration it writes its pid to `held` and prints `HELD <session>`. At SIGTERM, or once
+ * OUTSIDE_EDGE_HOLD_SECONDS have passed, it unregisters the session (at most UNREGISTER_MS),
+ * closes the socket, writes `released`, `unregistered` or why not, and prints
+ * `RELEASED <session>`: 0, or 2 where the unregister failed. A socket the listener closes ends the
+ * hold too, and the session is not registered again: it prints the close with its code, writes
+ * `released` naming the close, and exits 2.
+ */
+async function hold(env: NodeJS.ProcessEnv): Promise<number> {
+  // Taken from the start: a SIGTERM before the registration was answered ends the hold as soon
+  // as it is.
+  const ended = Promise.withResolvers<HoldEnd>();
+  const terminated = () => ended.resolve({ by: "SIGTERM" });
+  process.on("SIGTERM", terminated);
+  try {
+    let inputs: HoldInputs;
+    try {
+      inputs = holdInputs(env);
+    } catch (error) {
+      if (!(error instanceof Refused)) throw error;
+      console.log(`UNKNOWN: no session held: ${error.message}`);
+      return 2;
+    }
+    const { state, session } = inputs;
+    // A hold before this one wrote these, and they say nothing of this one.
+    rmSync(join(state, "held"), { force: true });
+    rmSync(join(state, "released"), { force: true });
+    const credential = sessionCredential(inputs, session);
+    // The close of the held socket, as the relay client logs it just after it reports the close.
+    let closedWith = "no close code was logged";
+    const logClose = (line: string) => {
+      log(line);
+      const closed = CLOSED_LINE.exec(line);
+      if (closed?.[1] !== undefined) closedWith = closed[1];
+    };
+    let socket: ListenerRelay;
+    try {
+      socket = await connectListenerRelay(
+        { url: inputs.listener, session, credential, outage, log: logClose },
+        AbortSignal.timeout(OPEN_MS)
+      );
+    } catch (error) {
+      console.log(`UNKNOWN: the relay socket of ${session} did not open: ${messageOf(error)}`);
+      return 2;
+    }
+    const statuses = socket.status();
+    void (async () => {
+      for await (const status of statuses) {
+        if (status.type === "disconnect") ended.resolve({ by: "close", why: closedWith });
+      }
+    })();
+    const client = createEnvoyClient({
+      baseUrl: inputs.listener,
+      fetch: globalThis.fetch,
+      credential,
+    });
+    // The held session reads nothing itself: each frame is taken, so none waits on it.
+    const delivery = sessionDelivery(session, socket, (frame) => frame.done());
+    try {
+      await registerSession(session, socket, client, delivery);
+    } catch (error) {
+      await close(delivery, socket, client, session);
+      console.log(`UNKNOWN: the listener did not register ${session}: ${messageOf(error)}`);
+      return 2;
+    }
+    keep(state, "held", String(process.pid));
+    console.log(`HELD ${session}`);
+    const timer = setTimeout(() => ended.resolve({ by: "time" }), inputs.seconds * 1000);
+    const end = await ended.promise;
+    clearTimeout(timer);
+    if (end.by === "close") {
+      // Closed first, so the relay client opens no socket again for the session.
+      await socket.close();
+      delivery.close();
+      const unregistered = await unregister(client, session);
+      keep(state, "released", `the listener closed the held socket (${end.why}); ${unregistered}`);
+      console.log(
+        `UNKNOWN: the listener closed the held socket of ${session} (${end.why}); it was not registered again`
+      );
+      return 2;
+    }
+    log(
+      `the hold of ${session} ends: ${end.by === "time" ? `${inputs.seconds} s passed` : "SIGTERM"}`
+    );
+    delivery.close();
+    const unregistered = await unregister(client, session);
+    await socket.close();
+    keep(state, "released", unregistered);
+    console.log(`RELEASED ${session}`);
+    return unregistered === "unregistered" ? 0 : 2;
+  } finally {
+    process.off("SIGTERM", terminated);
+  }
+}
+
+/** Whether process `pid` runs. One that ended and is not yet reaped, a zombie, does not. */
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return member(error, "code") === "EPERM";
+  }
+  let stat: string;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch (error) {
+    // No /proc to read on this machine: the signal above found the process.
+    return member(error, "code") !== "ENOENT";
+  }
+  // The state is the field after the name, which is in parentheses and may hold either.
+  return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+}
+
+/**
+ * `release`: ends the hold whose pid `held` names. It sends that process SIGTERM and waits up to
+ * RELEASE_MS for it to end, then prints `RELEASED <session>` (0) when `released` says
+ * `unregistered`, else `UNKNOWN: <why>` (2): no `held` at all, `released` naming why the session
+ * was not unregistered, or a holder still running at the end of the wait, which is sent SIGKILL.
+ * A hold that already ended wrote `released`, and its pid is not signalled: it may be another
+ * process's by now.
+ */
+async function release(env: NodeJS.ProcessEnv): Promise<number> {
+  let state: string;
+  let pid: number;
+  let session: string;
+  try {
+    state = required(env, "OUTSIDE_EDGE_STATE");
+    if (!existsSync(join(state, "held"))) {
+      console.log("UNKNOWN: no session is held");
+      return 2;
+    }
+    const named = kept(state, "held");
+    if (!/^[1-9][0-9]*$/.test(named)) {
+      throw new Refused(`OUTSIDE_EDGE_STATE's held names no process: ${named}`);
+    }
+    pid = Number(named);
+    session = kept(state, "session");
+  } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    console.log(`UNKNOWN: ${error.message}`);
+    return 2;
+  }
+  const released = join(state, "released");
+  if (!existsSync(released) && running(pid)) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      console.log(`UNKNOWN: the holder ${pid} of ${session} took no SIGTERM: ${messageOf(error)}`);
+      return 2;
+    }
+    const until = Date.now() + RELEASE_MS;
+    while (running(pid) && Date.now() < until) await Bun.sleep(100);
+    if (running(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // It ended between the read and the kill.
+      }
+      console.log(
+        `UNKNOWN: the holder ${pid} of ${session} still ran ${RELEASE_MS / 1000} s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered`
+      );
+      return 2;
+    }
+  }
+  if (!existsSync(released)) {
+    console.log(`UNKNOWN: the holder ${pid} of ${session} ended and wrote no released`);
+    return 2;
+  }
+  const said = kept(state, "released");
+  if (said !== "unregistered") {
+    console.log(`UNKNOWN: ${session} was not released: ${said}`);
+    return 2;
+  }
+  console.log(`RELEASED ${session}`);
+  return 0;
+}
+
 if (import.meta.main) {
   const [command = "run", argument] = Bun.argv.slice(2);
   const env = process.env;
@@ -1314,9 +1638,15 @@ if (import.meta.main) {
     case "t5":
       code = await t5(env);
       break;
+    case "hold":
+      code = await hold(env);
+      break;
+    case "release":
+      code = await release(env);
+      break;
     default:
       console.log(
-        `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | t5], not ${command}`
+        `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | t5 | hold | release], not ${command}`
       );
       code = 2;
   }
