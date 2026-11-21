@@ -34,7 +34,12 @@ body: |-
   its `on` names the block at the last revision of its item that held it,
   `dispatch://KEY/comment/<id>#b-<id>@v<N>` or `dispatch://KEY/ask/<id>#b-<id>@v<N>`, in the same
   three reads. The lens kinds are a catalogue that two migrations seed with 22 kinds, ten and then
-  twelve more, and `envoy-dispatch lens-kind-add` is its one writer.
+  twelve more, and `envoy-dispatch lens-kind-add` is its one writer. A `dispatch://` reference names
+  a node of these kinds by its own id: `dispatch://lens/<uuid>`, `dispatch://lens/<uuid>#b-<id>`
+  for a finding, `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`,
+  `dispatch://interaction/<uuid>` and `dispatch://lens_kind/<slug>`. The reference reads answer such
+  an address where they answered `400 INVALID_REFERENCE`, and the text reader reads one in text as a
+  reference.
 
   `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
   /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
