@@ -1,19 +1,35 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import type { ReactNode } from "react";
+import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
-import type { IssueAskRow } from "../../../api/types";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  referenceTargetsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
+import type { IssueAskRow, IssueDetails } from "../../../api/types";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
-import { parseIssuePath } from "../../refs/routes";
+import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
+import { presetPath } from "../issue-address";
 import { TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
-import { decision, decisionNode, decisionsRead, issueDetails, KEY } from "./decisions-fixtures";
+import {
+  decision,
+  decisionNode,
+  decisionsRead,
+  issueDetails,
+  KEY,
+  READER,
+} from "./decisions-fixtures";
 
 /** Every read the page's tree is built from, answered with nothing, and who is reading. */
 function stubReads(): { mockRestore(): void }[] {
@@ -284,5 +300,104 @@ test("a write-up's address under words its question does not hold draws the outl
   } finally {
     asks.mockRestore();
     decisions.mockRestore();
+  }
+});
+
+/** The page's stage at the address the router holds, under the page's own providers, as the
+ *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
+ *  render. `held.navigate` moves the router, as a press of a view's control does. */
+function AddressedStage({
+  held,
+  issue,
+}: {
+  held: { navigate?: NavigateFunction };
+  issue: IssueDetails;
+}): ReactNode {
+  const { pathname, search } = useLocation();
+  held.navigate = useNavigate();
+  const route = parseIssuePath(pathname, search);
+  if (route === undefined) throw new Error(`${pathname} names no route`);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <StageSlot issue={issue} route={route} />
+    </ProvidersSlot>
+  );
+}
+
+// The page's reads are refreshed by events, never by their age, and the stage draws the outline
+// anew as the reader comes back to Conversation from a view. Under the app's `staleTime` a read is
+// stale 30 s after it answered (`main.tsx`), each observer judging it by its own options: the
+// outline's tree and its rows each read who is reading, and would ask for it again on a return
+// more than 30 s after the page loaded unless they read it as the tree's own reads are kept fresh
+// (`useIssueTree.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
+test("coming back to the outline from Decisions after the app's staleTime asks who is reading no second time", async () => {
+  const who = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: READER,
+  });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const issue = issueDetails();
+  const answered = { updatedAt: Date.now() - 31_000 };
+  client.setQueryData(
+    whoAmIQuery().queryKey,
+    { event_head: "0", kind: "user", login: READER },
+    answered
+  );
+  client.setQueryData(
+    issueCoverageQuery(KEY).queryKey,
+    { gaps: [], has_plan: false, issue: KEY, requirements: [], spec_artifact_id: "" },
+    answered
+  );
+  client.setQueryData(
+    issueResultsQuery(KEY).queryKey,
+    { checks: [], issue: KEY, verification_artifact_id: "" },
+    answered
+  );
+  client.setQueryData(["decisions", KEY], decisionsRead([]), answered);
+  client.setQueryData(["asks", KEY], [], answered);
+  // The issue holds two threads, so the outline draws rows.
+  client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
+  client.setQueryData(["issue-messages", KEY], [], answered);
+  // The blocks of each of the issue's documents, the spec and the decisions document.
+  for (const { id } of issue.artifacts ?? []) {
+    client.setQueryData(artifactBlocksQuery(id).queryKey, [], answered);
+  }
+  // The names of what the tree's rows name: the issue itself and each of its comments.
+  const named = [
+    buildDispatchReference({ key: KEY, kind: "issue" }),
+    ...TWO_THREADS.map(({ id }) => buildDispatchReference({ id, key: KEY, kind: "comment" })),
+  ];
+  client.setQueryData(referenceTargetsQuery(named).queryKey, { targets: [] }, answered);
+  const held: { navigate?: NavigateFunction } = {};
+  try {
+    const view = render(
+      <MemoryRouter initialEntries={[presetPath(KEY, "decisions")]}>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <AddressedStage held={held} issue={issue} />
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    expect(await emptyLineOf(view)).toBe(EMPTY_STATE_LINES.decisions);
+    expect(who, "the Decisions view asked who is reading").not.toHaveBeenCalled();
+    // The reader leaves the view for the outline, as a press of Conversation does.
+    await act(async () => held.navigate?.(presetPath(KEY, "conversation")));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector('[data-issue-body] [data-node-id="head-b"]'),
+        `the stage drew ${drawnSlot(view)}, with no row of the issue's threads`
+      ).not.toBeNull()
+    );
+    // Long enough for a read the outline's mount started to have been sent.
+    await waitInAct(50);
+    expect(who, "the outline drawn again asked who is reading").not.toHaveBeenCalled();
+  } finally {
+    who.mockRestore();
   }
 });
