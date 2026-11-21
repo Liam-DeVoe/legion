@@ -33,6 +33,7 @@ func withoutGitHub(e *rendering.ListenerEnv) { e.ReviewerAppId, e.MentionTrigger
 // refusals are core's; one row here shows that Check runs it.
 func TestListenerEnvCheck(t *testing.T) {
 	appID := func(v string) *string { return &v }
+	intRef := func(v int) *int { return &v }
 	for _, row := range []struct {
 		name   string
 		mutate func(*rendering.ListenerEnv)
@@ -125,6 +126,16 @@ func TestListenerEnvCheck(t *testing.T) {
 			name:   "five NATS replicas",
 			mutate: func(e *rendering.ListenerEnv) { e.NatsReplicas = 5 },
 		},
+		// The sender limit, core.CheckSenderLimit's rule, whose own refusals are core's.
+		{
+			name:   "a sender limit",
+			mutate: func(e *rendering.ListenerEnv) { e.SenderMessagesPerMinute, e.SenderMessageBurst = intRef(4), intRef(8) },
+		},
+		{
+			name:   "a sender burst with no rate, refused by core.CheckSenderLimit",
+			mutate: func(e *rendering.ListenerEnv) { e.SenderMessageBurst = intRef(8) },
+			input:  "senderMessageBurst", err: "senderMessageBurst is given without senderMessagesPerMinute",
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			e := listenerEnv()
@@ -143,8 +154,9 @@ func TestListenerEnvCheck(t *testing.T) {
 }
 
 // The AWS listener carries ENVOY_PRIVATE_PROJECTS=1 exactly when its deployment may make a
-// Dispatch project private (dispatch://INFRA-3862), so the listener decides a project frame that
-// carries no stamp as private. False leaves Variables what it was before the field existed, for
+// Dispatch project private, which a listener that holds each session to its
+// token's projects reads to decide a project frame that carries no stamp as private. False leaves
+// Variables what it was before the field existed, for
 // the same inputs: the list below, which the merge base's Variables returned (R9), and so every
 // golden under infra/aws/testdata. Negative control, run by hand: copy true into config()
 // whatever the field says; the false row then fails, naming the line.

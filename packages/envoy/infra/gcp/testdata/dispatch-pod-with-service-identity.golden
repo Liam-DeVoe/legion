@@ -2,6 +2,7 @@
   "metadata": {
     "annotations": {
       "checksum/example-dispatch-dispatch": "example-dispatch-dispatch-resource-version",
+      "checksum/example-dispatch-listener": "example-dispatch-listener-resource-version",
       "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
     },
     "labels": {
@@ -111,7 +112,16 @@
           },
           {
             "name": "ENVOY_ACCOUNT_TOKEN_FILE",
-            "value": "/var/run/secrets/envoy-listener/listener-account-token"
+            "value": "/var/run/secrets/envoy-listener/token"
+          },
+          {
+            "name": "ENVOY_TOKEN",
+            "valueFrom": {
+              "secretKeyRef": {
+                "key": "ENVOY_API_TOKEN",
+                "name": "example-dispatch-listener"
+              }
+            }
           }
         ],
         "image": "example.invalid/envoy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -189,7 +199,7 @@
           },
           {
             "mountPath": "/var/run/secrets/envoy-listener",
-            "name": "listener-account-token",
+            "name": "envoy-listener-account-token",
             "readOnly": true
           }
         ]
@@ -275,14 +285,14 @@
         }
       },
       {
-        "name": "listener-account-token",
+        "name": "envoy-listener-account-token",
         "projected": {
           "sources": [
             {
               "serviceAccountToken": {
-                "audience": "example-listener-audience",
+                "audience": "http://example-dispatch-listener.dispatch.svc.cluster.local:9020",
                 "expirationSeconds": 3600,
-                "path": "listener-account-token"
+                "path": "token"
               }
             }
           ]

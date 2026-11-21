@@ -1,6 +1,7 @@
 {
   "metadata": {
     "annotations": {
+      "checksum/example-dispatch-listener": "example-dispatch-listener-resource-version",
       "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
     },
     "labels": {
@@ -54,12 +55,29 @@
             "value": "/var/run/secrets/envoy/nats-token"
           },
           {
+            "name": "ENVOY_API_TOKEN",
+            "valueFrom": {
+              "secretKeyRef": {
+                "key": "ENVOY_API_TOKEN",
+                "name": "example-dispatch-listener"
+              }
+            }
+          },
+          {
             "name": "ENVOY_OIDC_ISSUER",
             "value": "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-dispatch"
           },
           {
             "name": "ENVOY_OIDC_AUDIENCE",
-            "value": "example-listener-audience"
+            "value": "http://example-dispatch-listener.dispatch.svc.cluster.local:9020"
+          },
+          {
+            "name": "ENVOY_OIDC_ACCOUNTS",
+            "value": "system:serviceaccount:dispatch:example-dispatch"
+          },
+          {
+            "name": "ENVOY_DISPATCH_PRINCIPAL",
+            "value": "system:serviceaccount:dispatch:example-dispatch"
           }
         ],
         "image": "example.invalid/envoy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -138,7 +156,7 @@
       }
     ],
     "enableServiceLinks": false,
-    "serviceAccountName": "example-dispatch",
+    "serviceAccountName": "example-dispatch-listener",
     "terminationGracePeriodSeconds": 40,
     "topologySpreadConstraints": [
       {

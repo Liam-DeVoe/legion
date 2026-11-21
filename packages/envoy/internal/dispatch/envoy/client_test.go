@@ -15,7 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
@@ -186,12 +187,13 @@ func TestSessionsSendsEnvoyToken(t *testing.T) {
 	}
 }
 
-// With an account (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), every call to the listener - a read,
-// a send and an unsubscribe alike - presents that account's own token as its bearer, read afresh
-// for each call, so the token the kubelet rewrote in place is the next call's and no restart is
-// needed. A token the client cannot read sends no request at all: the call is ErrUnavailable
-// naming the file, never an unauthenticated call for the listener to refuse, never ErrUnreachable
-// (asking again repeats it) and, for a send that wrote nothing, never a receipt timeout.
+// With an account token file (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), every call to the
+// listener - a read, a send and an unsubscribe alike - presents Dispatch's own token as its
+// bearer, read afresh for each call, so the token the kubelet rewrote in place is the next call's
+// and no restart is needed. A token the client cannot read sends no request at all: the call is
+// ErrAccountToken and ErrUnavailable naming the file, never an unauthenticated call for the
+// listener to refuse, never ErrUnreachable (asking again repeats it) and, for a send that wrote
+// nothing, never a receipt timeout.
 func TestEnvoyClientPresentsTheAccountToken(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
@@ -226,11 +228,9 @@ func TestEnvoyClientPresentsTheAccountToken(t *testing.T) {
 		}
 	}
 	// The file holds a token before the client is built, so a client that read it then rather
-	// than for each call would present that first token every time. A zero TTL opens the file on
-	// every read, as the cache does once its copy lapses, so each rewrite below is the next
-	// call's token.
+	// than for each call would present that first token every time.
 	rotate("account-token-1")
-	client := New(listener.URL, WithAccount(&brokertoken.AccountToken{Path: path}))
+	client := New(listener.URL, WithAccountTokenFile(path))
 	ctx := context.Background()
 	send := SendInput{TargetSession: "s1", Message: "hello", IdempotencyKey: "m1:steer"}
 
@@ -261,8 +261,7 @@ func TestEnvoyClientPresentsTheAccountToken(t *testing.T) {
 	_, sendErr := client.Send(ctx, send)
 	_, unsubscribeErr := client.Unsubscribe(ctx, "s1", []string{"notifications.dispatch.issue.T-1"})
 	for call, err := range map[string]error{"sessions": readErr, "send": sendErr, "unsubscribe": unsubscribeErr} {
-		var unread *brokertoken.AccountTokenError
-		if !errors.Is(err, ErrUnavailable) || !errors.As(err, &unread) || !strings.Contains(err.Error(), path) {
+		if !errors.Is(err, ErrUnavailable) || !errors.Is(err, ErrAccountToken) || !strings.Contains(err.Error(), path) {
 			t.Errorf("%s with the token file gone: err = %v, want ErrUnavailable naming %s", call, err, path)
 		}
 		if errors.Is(err, ErrUnreachable) || errors.Is(err, ErrReceiptTimeout) {
@@ -284,9 +283,9 @@ func TestSessionsReportsUnavailableListener(t *testing.T) {
 		t.Fatalf("500: err = %v, want ErrUnavailable", err)
 	}
 
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-	if _, err := New(closed.URL).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
+	// A port the test holds and nothing listens on: every dial to it is refused.
+	closed := "http://" + testport.Refused(t)
+	if _, err := New(closed).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -305,13 +304,13 @@ func TestListInterestsMapsListenerRowsAndDefaultsMissingTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Interest{
-		{
+	want := []listenerwire.InterestRow{
+		{Interest: listenerwire.Interest{
 			SessionID: "s1",
 			Topics:    []string{"notifications.dispatch.issue.T-1", "notifications.dispatch.issue.T-1.>"},
 			UpdatedAt: 1700000000000,
-		},
-		{SessionID: "s2", Topics: []string{}, UpdatedAt: 1700000000001},
+		}},
+		{Interest: listenerwire.Interest{SessionID: "s2", Topics: []string{}, UpdatedAt: 1700000000001}},
 	}
 	if !reflect.DeepEqual(interests, want) {
 		t.Fatalf("interests = %#v, want %#v", interests, want)
@@ -395,7 +394,7 @@ func TestInterestReturnsOneSessionsTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Interest{SessionID: "s1", Topics: []string{"notifications.dispatch.issue.T-1.>"}, UpdatedAt: 42}
+	want := listenerwire.InterestRow{Interest: listenerwire.Interest{SessionID: "s1", Topics: []string{"notifications.dispatch.issue.T-1.>"}, UpdatedAt: 42}}
 	if !reflect.DeepEqual(interest, want) {
 		t.Fatalf("interest = %#v, want %#v", interest, want)
 	}
@@ -540,7 +539,7 @@ func TestRolePreservesListenerNotFoundText(t *testing.T) {
 
 // dispatch://INFRA-392. The listener's lookup route answers an unresponsive holder with its 404:
 // the role cannot be reached now, its state is named, and claim_released is false because the
-// claim stands (cmd/listener roleHolderError, pinned by its own
+// claim stands (listenerwire.RoleRefusal, pinned by its own
 // TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas). A reader that took that
 // refusal for "the role has no holder" dropped every role-routed message to a session that
 // missed its heartbeats - the failure this change exists to remove - so the holder it names is
@@ -741,10 +740,9 @@ func TestSessionSeparatesNoRecordFromNoAnswer(t *testing.T) {
 // A listener that cannot be reached at all says nothing about the session either, so it is the
 // same "ask again" a 503 is - never grounds to call the session gone.
 func TestSessionReportsAnUnreachableListenerAsUnavailable(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 
-	if _, err := New(closed.URL).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(closed).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	} else if errors.Is(err, ErrNotFound) {
 		t.Fatalf("refused: err = %v, want it not to read as a missing session", err)
@@ -907,19 +905,22 @@ func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 	}
 }
 
-const legionAgentRow = `{"session_id":"ses-old","legion_project":"infra","issue":"INFRA-448","role":"reviewer",` +
-	`"role_token":"legion-infra-infra-448-reviewer","title":"Legion reviewer · INFRA-448","harness":"omp",` +
+const legionAgentRow = `{"session_id":"ses-old","legion_project":"acme","issue":"ACME-448","role":"reviewer",` +
+	`"role_token":"legion-acme-acme-448-reviewer","title":"Legion reviewer · ACME-448","harness":"omp",` +
 	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +
 	`"replaced_by":"ses-new","replaced_at":"2026-10-26T02:00:00Z","added_later":1}`
 
-func wantLegionAgentRow(t *testing.T, got LegionAgent) {
+func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
 	t.Helper()
 	newer, at := "ses-new", "2026-10-26T02:00:00Z"
-	want := LegionAgent{
-		SessionID: "ses-old", LegionProject: "infra", Issue: "INFRA-448", Role: "reviewer",
-		RoleToken: "legion-infra-infra-448-reviewer", Title: "Legion reviewer · INFRA-448", Harness: "omp",
-		StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z", ReplacedBy: &newer, ReplacedAt: &at,
-	}
+	want := listenerwire.LegionAgentAnswer{LegionAgent: listenerwire.LegionAgent{
+		LegionAgentEntry: listenerwire.LegionAgentEntry{
+			SessionID: "ses-old", LegionProject: "acme", Issue: "ACME-448", Role: "reviewer",
+			RoleToken: "legion-acme-acme-448-reviewer", Title: "Legion reviewer · ACME-448", Harness: "omp",
+			StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z",
+		},
+		ReplacedBy: &newer, ReplacedAt: &at,
+	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent = %#v, want %#v", got, want)
 	}
@@ -985,13 +986,13 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		name  string
 		path  string
 		query string
-		call  func(*Client) ([]LegionAgent, error)
+		call  func(*Client) ([]listenerwire.LegionAgentAnswer, error)
 	}{
-		{"by role token", "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "", func(c *Client) ([]LegionAgent, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+		{"by role token", "/v1/legion/agents/roles/legion-acme-acme-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
 		}},
-		{"by issue", "/v1/legion/agents", "issue=INFRA-448", func(c *Client) ([]LegionAgent, error) {
-			return c.IssueAgents(context.Background(), "INFRA-448")
+		{"by issue", "/v1/legion/agents", "issue=ACME-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.IssueAgents(context.Background(), "ACME-448")
 		}},
 	} {
 		for _, listing := range []struct {
@@ -1023,11 +1024,13 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 // or that cannot be reached, is ErrUnavailable: never an empty list a caller would take for no
 // agents.
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
-	calls := map[string]func(*Client) ([]LegionAgent, error){
-		"RoleAgents": func(c *Client) ([]LegionAgent, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+	calls := map[string]func(*Client) ([]listenerwire.LegionAgentAnswer, error){
+		"RoleAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
 		},
-		"IssueAgents": func(c *Client) ([]LegionAgent, error) { return c.IssueAgents(context.Background(), "INFRA-448") },
+		"IssueAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.IssueAgents(context.Background(), "ACME-448")
+		},
 	}
 	for _, tc := range []struct {
 		status int
@@ -1054,10 +1057,9 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 		}
 		listener.Close()
 	}
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		if _, err := call(New(closed.URL)); !errors.Is(err, ErrUnavailable) {
+		if _, err := call(New(closed)); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("%s on an unreachable listener: %v, want ErrUnavailable", name, err)
 		}
 	}
@@ -1083,10 +1085,9 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			return err
 		},
 	}
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		err := call(New(closed.URL))
+		err := call(New(closed))
 		if !errors.Is(err, ErrUnreachable) || !errors.Is(err, ErrUnavailable) ||
 			!strings.HasPrefix(err.Error(), "envoy listener unavailable: ") {
 			t.Errorf("%s refused: err = %v, want ErrUnreachable and ErrUnavailable with ErrUnavailable's text", name, err)

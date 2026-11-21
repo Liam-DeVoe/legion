@@ -14,7 +14,7 @@ import (
 
 // The variables a process names its NATS credential with: its user's nkey seed, as a file holding
 // the seed or as the seed itself, or a service's platform identity token for a hub whose
-// connections the auth service admits (internal/broker/natscallout), as a file holding the token
+// connections the auth service admits (internal/cipher/natscallout), as a file holding the token
 // (a projected Kubernetes ServiceAccount token) or as the audience this VM's Google identity token
 // is minted for. NkeySeedEnvVar and the two service variables are exported for what writes a
 // process's environment.
@@ -34,14 +34,21 @@ const (
 // variables keep the rule they always had, the file winning. Neither set is no credential, as
 // every connection was before servers required one. No error carries a seed or a token.
 func credential(lookup func(string) (string, bool)) (nats.Option, error) {
-	var set []string
-	for _, name := range []string{ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar, nkeySeedFileVariable, NkeySeedEnvVar} {
-		if _, ok := lookup(name); ok {
-			set = append(set, name)
+	set := func(names ...string) []string {
+		var named []string
+		for _, name := range names {
+			if _, ok := lookup(name); ok {
+				named = append(named, name)
+			}
 		}
+		return named
 	}
-	if len(set) >= 2 && (set[0] == ServiceTokenFileEnvVar || set[0] == ServiceGoogleAudienceEnvVar) {
-		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", set[0], set[1])
+	services, seeds := set(ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar), set(nkeySeedFileVariable, NkeySeedEnvVar)
+	switch {
+	case len(services) == 2:
+		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], services[1])
+	case len(services) == 1 && len(seeds) > 0:
+		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], seeds[0])
 	}
 	if file, ok := lookup(ServiceTokenFileEnvVar); ok {
 		if file == "" {
@@ -71,27 +78,17 @@ func keptService(reader natscred.TokenReader) nats.Option {
 
 // keepAlongside runs keeper beside the connection the options it applies to make, from that
 // connection's first connect until it closes: the service's keeper reconnects it with a later
-// token before the user its current one was admitted as expires. The callbacks the options
-// already hold run as before.
+// token before the user its current one was admitted as expires, and ends when the connection
+// closes, by any path (natscred.Keeper), the discard of a replacement that clears the
+// connection's ClosedCB among them (ensureConnWithContext). The ConnectedCB the options already
+// hold runs as before.
 func keepAlongside(keeper natscred.Keeper) nats.Option {
 	return func(o *nats.Options) error {
-		ctx, cancel := context.WithCancel(context.Background())
-		started := false
-		connected, closed := o.ConnectedCB, o.ClosedCB
+		connected := o.ConnectedCB
 		o.ConnectedCB = func(nc *nats.Conn) {
-			// nats.go runs its callbacks one at a time on one goroutine, so started needs no lock.
-			if !started {
-				started = true
-				go keeper.Keep(ctx, nc)
-			}
+			go keeper.Keep(context.Background(), nc)
 			if connected != nil {
 				connected(nc)
-			}
-		}
-		o.ClosedCB = func(nc *nats.Conn) {
-			cancel()
-			if closed != nil {
-				closed(nc)
 			}
 		}
 		return nil

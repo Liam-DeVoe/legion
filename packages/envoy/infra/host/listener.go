@@ -39,12 +39,17 @@ type ListenerArgs struct {
 	Seed          pulumi.StringInput      `pulumi:"seed,optional" provider:"secret"`
 	Watchdog      *WatchdogArgs           `pulumi:"watchdog,optional"`
 	Adopt         *AdoptArgs              `pulumi:"adopt,optional"`
+	// The limit on the messages each agent session sends through the listener: how many a minute,
+	// from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there is no
+	// limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 	// default true; false for a listener whose NATS is not reachable from where the stack is
 	// applied (the container is created and Docker restarts it until it connects)
 	WaitForHealthy *bool `pulumi:"waitForHealthy,optional"`
-	// PrivateProjects says the listener's deployment may make a Dispatch project private
-	// (dispatch://INFRA-3862): ENVOY_PRIVATE_PROJECTS=1, in the container's envs and the watchdog's
-	// env file, which the listener reads once it holds each session to its token's projects
+	// PrivateProjects says the listener's deployment may make a Dispatch project private:
+	// ENVOY_PRIVATE_PROJECTS=1, in the container's envs and the watchdog's env file, which the
+	// listener reads once it holds each session to its token's projects
 	// (core.ListenerConfig.PrivateProjects).
 	// Default false, which renders what the listener rendered before the input existed. A program
 	// sets it from the same value as its hub's privateProjects.
@@ -96,8 +101,8 @@ type listenerPlan struct {
 // It refuses first a name or one of its own string inputs that holds an nkey seed
 // (bus.HoldsSeed), naming it and never the value: the name reaches every refusal and every
 // child's name, and each string input a refusal, a resource's inputs or an alias. machineId is
-// core.ListenerConfig.Check's to refuse, natsUrls Env's, and seed is the one input that is a
-// seed.
+// core.ListenerConfig.Check's to refuse, natsUrls Env's, the sender limit core.CheckSenderLimit's,
+// and seed is the one input that is a seed.
 func resolveListener(name string, args *ListenerArgs) (listenerPlan, error) {
 	if bus.HoldsSeed(name) {
 		return listenerPlan{}, fmt.Errorf("%s: %w", listenerType, core.SeedRefusal("the listener's name"))
@@ -121,6 +126,11 @@ func resolveListener(name string, args *ListenerArgs) (listenerPlan, error) {
 	if args.Port != nil {
 		plan.plain.Port = *args.Port
 	}
+	rate, burst, err := core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst)
+	if err != nil {
+		return listenerPlan{}, fmt.Errorf("%s %s: %w", listenerType, name, err)
+	}
+	plan.plain.SenderMessagesPerMinute, plan.plain.SenderMessageBurst = rate, burst
 	if args.Adopt != nil {
 		plan.adopt = *args.Adopt
 	}

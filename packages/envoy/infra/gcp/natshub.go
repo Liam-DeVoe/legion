@@ -177,7 +177,7 @@ func (p *PermissionsArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "Permi
 // project that holds the seed, and the seed's public key, from which the hub renders the user
 // itself, named after the hub's hostname, the listener's machine id, and granted
 // core.ListenerPermissions for that machine. With authCallout it is the VM's own Google identity
-// token for natsAudience, which the auth service admits it by (dispatch://INFRA-840): the hub
+// token for natsAudience, which the auth service admits it by: the hub
 // renders no user for the listener and fetches no seed, so seedSecret and nkey are refused.
 type HubListenerArgs struct {
 	Image      string `pulumi:"image"`               // pinned: <name>@sha256:<digest>
@@ -193,6 +193,11 @@ type HubListenerArgs struct {
 	// <hostname>.<tailnetDnsName>, which the hub always serves. Each entry is rendered as written,
 	// since the listener normalizes what it reads.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// The limit on the messages each agent session sends through this listener: how many a
+	// minute, from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there
+	// is no limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 	// AgentSecretsUrl, agentSecretsAudience and publicUrl turn on this listener's broker check
 	// together, as agentSecretsUrl and agentSecretsAudience turn on Dispatch's relay: the
 	// secrets broker a caller's broker access token is introspected at
@@ -364,7 +369,8 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 // refusal names listener.agentSecretsUrl, listener.agentSecretsAudience or listener.publicUrl.
 // The listener refuses a partial set when it boots, which the group would answer by recreating
 // the VM that cannot start, so the hub refuses one at preview, naming the input left out; a hub
-// that sets none renders none of the three.
+// that sets none renders none of the three. Its sender limit is core's rule too
+// (core.CheckSenderLimit), naming listener.senderMessagesPerMinute or listener.senderMessageBurst.
 //
 // Its NATS identity was checked against authCallout before the authorization was rendered
 // (listenerIdentity): without authCallout, the seed in listener.seedSecret, which the VM fetches
@@ -398,15 +404,21 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, l.PublicUrl); err != nil {
 		return nil, err
 	}
+	rate, burst, err := core.CheckSenderLimit("listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
+	if err != nil {
+		return nil, err
+	}
 	config := core.ListenerConfig{
-		MachineID:            args.Hostname,
-		Port:                 core.DefaultListenerPort,
-		ListenHost:           "127.0.0.1",
-		AllowedHosts:         append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
-		AgentSecretsURL:      l.AgentSecretsUrl,
-		AgentSecretsAudience: l.AgentSecretsAudience,
-		PublicURL:            l.PublicUrl,
-		PrivateProjects:      args.PrivateProjects,
+		MachineID:               args.Hostname,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "127.0.0.1",
+		AllowedHosts:            append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
+		SenderMessagesPerMinute: rate,
+		SenderMessageBurst:      burst,
+		AgentSecretsURL:         l.AgentSecretsUrl,
+		AgentSecretsAudience:    l.AgentSecretsAudience,
+		PublicURL:               l.PublicUrl,
+		PrivateProjects:         args.PrivateProjects,
 	}
 	if service {
 		config.ServiceGoogleAudience = l.NatsAudience
@@ -468,7 +480,7 @@ func seededInput(args *NatsHubArgs) (string, bool) {
 		}
 	}
 	for _, f := range calloutSeedFields(args.AuthCallout) {
-		fields = append(fields, field{f[0], f[1]})
+		fields = append(fields, f)
 	}
 	for _, f := range fields {
 		if bus.HoldsSeed(f.value) {
@@ -486,11 +498,11 @@ func seedRefused(input string) error {
 // calloutSeedFields are the paths and values of callout's fields, by the hub's own input name,
 // none without a callout: core refuses a seed in each, but would name it by core's field,
 // callout.issuer, and not the hub's, authCallout.issuer.
-func calloutSeedFields(callout *nats.AuthCalloutArgs) [][2]string {
+func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value string } {
 	if callout == nil {
 		return nil
 	}
-	return [][2]string{
+	return []struct{ path, value string }{
 		{"authCallout.issuer", callout.Issuer}, {"authCallout.xkey", callout.XKey}, {"authCallout.serviceUser", callout.ServiceUser},
 	}
 }
@@ -505,7 +517,7 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) [][2]string {
 // Without the callout the listener connects as the user the hub renders for its seed, so
 // natsAudience, which only the auth service reads, is refused, and the seed's inputs are left to
 // the rules that require them. With the callout it connects by its service identity, a platform
-// token for natsAudience, which the auth service admits it by (dispatch://INFRA-840): the hub
+// token for natsAudience, which the auth service admits it by: the hub
 // renders no user for it and hands it no seed, so natsAudience is required and each seed input
 // that is set is refused, since a listener connects as one identity.
 func listenerIdentity(prefix string, callout bool, audience, carrier, brokerVariable string, seed [][2]string) error {

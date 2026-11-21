@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// authConfOf is the auth.conf the clustered hub renders for args.
 func authConfOf(t *testing.T, args *gcp.ClusteredNatsHubArgs) string {
 	t.Helper()
 	s, err := gcp.ResolveClusteredNatsHub(args)

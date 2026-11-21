@@ -39,7 +39,7 @@ func TestAPIAuthAnswersARotationDuringAnIssuerOutage503(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 		request.Host = "127.0.0.1:9020"
 		request.Header.Set("Authorization", authorize)
-		apiAuth("", verifier, nil, nil, logging.NewWithWriter("test-machine", &discard{}), next).ServeHTTP(recorder, request)
+		apiAuth(listenerAPIAuth{verifier: verifier, logger: logging.NewWithWriter("test-machine", &discard{})}, next).ServeHTTP(recorder, request)
 		return recorder
 	}
 

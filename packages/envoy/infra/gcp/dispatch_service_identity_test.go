@@ -13,39 +13,27 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// dispatchNatsAudience is the audience the app's and the listener's projected ServiceAccount token
-// is minted for behind the auth service, the broker's BROKER_NATS_K8S_AUDIENCE, and
-// dispatchListenerAudience the one the app's token for its own listener is minted for, the
-// listener's ENVOY_OIDC_AUDIENCE.
-const (
-	dispatchNatsAudience     = "example-nats-audience"
-	dispatchListenerAudience = "example-listener-audience"
-)
+// dispatchNatsAudience is the audience each pod's projected ServiceAccount token is minted for
+// behind the auth service, the broker's BROKER_NATS_K8S_AUDIENCE.
+const dispatchNatsAudience = "example-nats-audience"
 
 // setNatsAudience moves both NATS clients behind the auth service: natsAudience in
-// natsSeedSecret's place, since a connection presents one identity.
+// natsSeedSecret's place, since a connection presents one credential.
 func setNatsAudience(a *gcp.DispatchArgs) {
 	a.NatsSeedSecret = nil
 	a.NatsAudience = dispatchNatsAudience
 }
 
-// setListenerAudience turns the app's listener calls onto the app's own token.
-func setListenerAudience(a *gcp.DispatchArgs) {
-	a.ListenerAudience = dispatchListenerAudience
-}
-
-// dispatchServiceIdentityArgs is dispatchArgs with both NATS clients behind the auth service and
-// the app calling its listener by its own token: no shared credential of any kind.
+// dispatchServiceIdentityArgs is dispatchArgs with both NATS clients behind the auth service.
 func dispatchServiceIdentityArgs() *gcp.DispatchArgs {
 	args := dispatchArgs()
 	setNatsAudience(args)
-	setListenerAudience(args)
 	return args
 }
 
-// With both inputs set, the app's pod carries Dispatch's two projected tokens, for the NATS
-// audience and for its listener's, and no seed or bearer; the listener's carries its own NATS
-// token and the OIDC pair it verifies the app's token with.
+// With natsAudience, each pod carries its own NATS token and no seed, and the listener
+// credential is today's: the app presents its account token beside the shared bearer, and the
+// listener admits both.
 func TestDispatchPodWithServiceIdentityMatchesGolden(t *testing.T) {
 	m, err := runDispatch(t, dispatchServiceIdentityArgs(), true)
 	require.NoError(t, err)
@@ -78,7 +66,7 @@ func projectedAudience(t *testing.T, template, container map[string]any, file st
 		require.Len(t, sources, 1, "volume %s projects one token", volumeName)
 		token := sources[0].(map[string]any)["serviceAccountToken"].(map[string]any)
 		require.Equal(t, path.Base(file), token["path"], "volume %s writes its token to %s", volumeName, file)
-		require.Equal(t, 3600.0, token["expirationSeconds"], "the auth service admits a platform token living at most an hour")
+		require.Equal(t, 3600.0, token["expirationSeconds"], "the verifiers admit a platform token living at most an hour")
 		return token["audience"].(string)
 	}
 	t.Fatalf("no volume %s in the pod", volumeName)
@@ -108,24 +96,23 @@ func registered(m *pulumitest.Mocks, typ, name string) bool {
 }
 
 // natsAudience moves the app's and the listener's NATS connections behind the auth service: each
-// presents a projected token of the pods' ServiceAccount for natsAudience, read from the file
-// NATS_SERVICE_TOKEN_FILE names, and nothing of the seed is rendered, mounted, classed or granted.
-// listenerAudience moves the app's calls to its listener onto its own token: the app presents a
-// projected token for listenerAudience from the file ENVOY_ACCOUNT_TOKEN_FILE names, the
-// listener verifies it with ENVOY_OIDC_ISSUER, this cluster's own issuer, and
-// ENVOY_OIDC_AUDIENCE, and no shared bearer exists: no ENVOY_TOKEN, no ENVOY_API_TOKEN, no
-// Secret and no generated password for it. Each input moves its own half alone, and the other
-// half renders as it does today.
+// presents a projected token of its own pod's ServiceAccount for natsAudience, the app's
+// <hostname> and the listener's <hostname>-listener, read from the file NATS_SERVICE_TOKEN_FILE
+// names, and nothing of the seed is rendered, mounted, classed or granted to either account.
+//
+// The listener credential moves in no row: in both, the listener admits the shared bearer and the
+// app's projected token, and the app presents its token beside the shared bearer, so no update of
+// this component switches the credential the listener takes and the one the app presents at once
+// (the two Deployments roll apart). Without natsAudience both pods connect by the seed as today.
 func TestDispatchRunsByItsServiceIdentity(t *testing.T) {
 	listenerBearer := map[string]any{"name": "example-dispatch-listener", "key": "ENVOY_API_TOKEN"}
 	for _, row := range []struct {
-		name           string
-		edit           func(*gcp.DispatchArgs)
-		nats, listener bool
+		name string
+		edit func(*gcp.DispatchArgs)
+		nats bool
 	}{
-		{"natsAudience alone", setNatsAudience, true, false},
-		{"listenerAudience alone", setListenerAudience, false, true},
-		{"both", func(a *gcp.DispatchArgs) { setNatsAudience(a); setListenerAudience(a) }, true, true},
+		{"the seed", func(*gcp.DispatchArgs) {}, false},
+		{"natsAudience", setNatsAudience, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -140,13 +127,15 @@ func TestDispatchRunsByItsServiceIdentity(t *testing.T) {
 			listener := containerEnv(t, listenerContainer)
 
 			for _, pod := range []struct {
-				name                string
+				name, account       string
 				template, container map[string]any
 				env                 map[string]any
 			}{
-				{"envoy-dispatch", appTemplate, appContainer, app},
-				{"envoy-listener", listenerTemplate, listenerContainer, listener},
+				{"envoy-dispatch", "example-dispatch", appTemplate, appContainer, app},
+				{"envoy-listener", "example-dispatch-listener", listenerTemplate, listenerContainer, listener},
 			} {
+				require.Equal(t, pod.account, pod.template["spec"].(map[string]any)["serviceAccountName"],
+					"%s runs as its own account, whose projected token is the one it presents", pod.name)
 				if !row.nats {
 					require.Equal(t, "/var/run/secrets/envoy/nats-seed", pod.env["NATS_NKEY_SEED_FILE"], "%s keeps its seed", pod.name)
 					require.NotContains(t, pod.env, "NATS_SERVICE_TOKEN_FILE", pod.name)
@@ -160,34 +149,26 @@ func TestDispatchRunsByItsServiceIdentity(t *testing.T) {
 				require.Equal(t, dispatchNatsAudience, projectedAudience(t, pod.template, pod.container, file), "%s's NATS token is for natsAudience", pod.name)
 			}
 			require.Equal(t, !row.nats, registered(m, "kubernetes:secrets-store.csi.x-k8s.io/v1:SecretProviderClass", "example-dispatch-nats-seed"), "the seed's SecretProviderClass")
-			require.Equal(t, !row.nats, registered(m, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-nats-seed-accessor"), "the seed's grant")
-
-			if !row.listener {
-				require.Equal(t, listenerBearer, app["ENVOY_TOKEN"])
-				require.Equal(t, listenerBearer, listener["ENVOY_API_TOKEN"])
-				require.NotContains(t, app, "ENVOY_ACCOUNT_TOKEN_FILE")
-				for _, absent := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE"} {
-					require.NotContains(t, listener, absent)
-				}
-				require.True(t, registered(m, "kubernetes:core/v1:Secret", "example-dispatch-listener"))
-				require.True(t, registered(m, "random:index/randomPassword:RandomPassword", "example-dispatch-listener-token"))
-				return
+			for _, grant := range []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"} {
+				require.Equal(t, !row.nats, registered(m, "gcp:secretmanager/secretIamMember:SecretIamMember", grant), "the seed's grant %s", grant)
 			}
-			require.NotContains(t, app, "ENVOY_TOKEN", "Dispatch refuses ENVOY_TOKEN beside ENVOY_ACCOUNT_TOKEN_FILE")
+
+			require.Equal(t, listenerBearer, listener["ENVOY_API_TOKEN"], "the listener admits the shared bearer")
+			require.Equal(t, listenerBearer, app["ENVOY_TOKEN"], "the app keeps the shared bearer beside its token")
+			require.True(t, registered(m, "kubernetes:core/v1:Secret", "example-dispatch-listener"))
+			audience, ok := listener["ENVOY_OIDC_AUDIENCE"].(string)
+			require.True(t, ok, "the listener admits the app's projected token")
+			require.Equal(t, azureIssuer, listener["ENVOY_OIDC_ISSUER"], "the listener verifies tokens this cluster minted")
+			require.Equal(t, "system:serviceaccount:dispatch:example-dispatch", listener["ENVOY_OIDC_ACCOUNTS"], "of the app's account alone")
 			file, ok := app["ENVOY_ACCOUNT_TOKEN_FILE"].(string)
 			require.True(t, ok, "the app presents its own token to its listener")
-			require.Equal(t, dispatchListenerAudience, projectedAudience(t, appTemplate, appContainer, file), "the app's listener token is for listenerAudience")
-			require.NotContains(t, listener, "ENVOY_API_TOKEN", "no caller holds a shared bearer")
-			require.Equal(t, azureIssuer, listener["ENVOY_OIDC_ISSUER"], "the listener verifies tokens this cluster minted")
-			require.Equal(t, dispatchListenerAudience, listener["ENVOY_OIDC_AUDIENCE"])
-			require.False(t, registered(m, "kubernetes:core/v1:Secret", "example-dispatch-listener"), "no Secret holds a shared bearer")
-			require.False(t, registered(m, "random:index/randomPassword:RandomPassword", "example-dispatch-listener-token"), "no shared bearer is generated")
+			require.Equal(t, audience, projectedAudience(t, appTemplate, appContainer, file), "the app's listener token is for the listener's audience")
 		})
 	}
 }
 
-// natsAudience is the pods' one NATS identity, so natsSeedSecret beside it is refused, and
-// without it natsSeedSecret stays required. Each audience is held to what a projected token's
+// natsAudience is the pods' one NATS credential kind, so natsSeedSecret beside it is refused, and
+// without it natsSeedSecret stays required. natsAudience is held to what a projected token's
 // audience and an environment variable can carry: no seed, no whitespace, no control character.
 // Each refusal names its input, and nothing registers.
 func TestDispatchServiceIdentityRefusals(t *testing.T) {
@@ -208,12 +189,6 @@ func TestDispatchServiceIdentityRefusals(t *testing.T) {
 		{"a control character in natsAudience", "natsAudience", "natsAudience holds whitespace or a control character", func(a *gcp.DispatchArgs) {
 			setNatsAudience(a)
 			a.NatsAudience = "example\x00nats"
-		}},
-		{"whitespace in listenerAudience", "listenerAudience", "listenerAudience holds whitespace or a control character", func(a *gcp.DispatchArgs) {
-			a.ListenerAudience = "example listener audience"
-		}},
-		{"a control character in listenerAudience", "listenerAudience", "listenerAudience holds whitespace or a control character", func(a *gcp.DispatchArgs) {
-			a.ListenerAudience = "example\x7flistener"
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -237,106 +212,54 @@ func TestDispatchServiceIdentityRefusals(t *testing.T) {
 	require.ErrorContains(t, err, "natsUrl is required")
 }
 
-// A seed in either audience is refused before any other refusal, as a seed in every plain input
-// is (dispatchSeededInput): here ahead of the missing natsUrl, which the resolver refuses before
-// it reads either audience, so the refusal names the seed's input and never the URL.
+// A seed in natsAudience is refused before any other refusal, as a seed in every plain input is
+// (dispatchSeededInput): here ahead of the missing natsUrl, which the resolver refuses before it
+// reads the audience, so the refusal names the seed's input and never the URL.
 func TestDispatchRefusesASeedInAnAudienceFirst(t *testing.T) {
 	seed, _ := testnats.User(t)
-	for input, edit := range map[string]func(*gcp.DispatchArgs){
-		"natsAudience":     func(a *gcp.DispatchArgs) { setNatsAudience(a); a.NatsAudience = seed },
-		"listenerAudience": func(a *gcp.DispatchArgs) { a.ListenerAudience = seed },
-	} {
-		t.Run(input, func(t *testing.T) {
-			args := dispatchArgs()
-			edit(args)
-			args.NatsUrl = nil
-			_, err := gcp.ResolveDispatch(args)
-			require.EqualError(t, err, input+" holds an nkey seed (not echoed)")
-		})
-	}
+	args := dispatchArgs()
+	setNatsAudience(args)
+	args.NatsAudience = seed
+	args.NatsUrl = nil
+	_, err := gcp.ResolveDispatch(args)
+	require.EqualError(t, err, "natsAudience holds an nkey seed (not echoed)")
 }
 
-// listenerAudience is the listener's own, and natsAudience the auth service's. Equal to another
-// audience the app presents a token for or verifies one under, a token minted for that one would
-// be a bearer that verifier admits too, so each such pair is refused, naming both inputs, before
-// anything registers: listenerAudience beside any of the other four, natsAudience beside
-// oidcAudience or the Azure audience. The comparison is of the audiences as their verifiers read
-// them, trimmed, so the other one padded with whitespace on either side is refused too; five
-// distinct audiences resolve.
+// natsAudience is the auth service's. Equal to another audience the app presents a token for or
+// verifies one under, a token minted for that one would be a bearer the auth service admits too,
+// so natsAudience beside oidcAudience or the Azure audience is refused, naming both inputs,
+// before anything registers. The comparison is of the audiences as their verifiers read them,
+// trimmed, so the other one padded with whitespace on either side is refused too; four distinct
+// audiences resolve.
 func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
-	const brokerAudience = "example-broker-audience"
-	setBroker := func(a *gcp.DispatchArgs) {
-		a.AgentSecretsUrl, a.AgentSecretsAudience = "https://example-broker.internal.example", brokerAudience
-	}
 	for _, row := range []struct {
-		name, own, other string
-		edit             func(*gcp.DispatchArgs)
+		name, other string
+		edit        func(*gcp.DispatchArgs)
 	}{
-		{"listenerAudience, natsAudience", "listenerAudience", "natsAudience", func(a *gcp.DispatchArgs) { setNatsAudience(a); a.ListenerAudience = dispatchNatsAudience }},
-		{"listenerAudience, agentSecretsAudience", "listenerAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { setBroker(a); a.ListenerAudience = brokerAudience }},
-		{"listenerAudience, oidcAudience", "listenerAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
-			a.OidcAudience = dispatchOidcAudience
-			a.ListenerAudience = dispatchOidcAudience
-		}},
-		{"listenerAudience, azureFederationAudience", "listenerAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
-			setAzureFederation(a)
-			a.AzureFederationAudience = pulumi.StringRef("api://example-audience")
-			a.ListenerAudience = "api://example-audience"
-		}},
-		{"listenerAudience, agentSecretsAudience padded", "listenerAudience", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
-			setBroker(a)
-			a.AgentSecretsAudience = "  " + brokerAudience + "  "
-			a.ListenerAudience = brokerAudience
-		}},
-		{"listenerAudience, oidcAudience with leading whitespace", "listenerAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
-			a.OidcAudience = " \t" + dispatchOidcAudience
-			a.ListenerAudience = dispatchOidcAudience
-		}},
-		{"listenerAudience, oidcAudience with trailing whitespace", "listenerAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
-			a.OidcAudience = dispatchOidcAudience + " \n"
-			a.ListenerAudience = dispatchOidcAudience
-		}},
-		{"listenerAudience, azureFederationAudience padded", "listenerAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
-			setAzureFederation(a)
-			a.AzureFederationAudience = pulumi.StringRef(" api://example-audience ")
-			a.ListenerAudience = "api://example-audience"
-		}},
-		{"listenerAudience, the keyless Azure sign-in's default audience", "listenerAudience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
-			setAzureFederation(a)
-			a.ListenerAudience = "api://AzureADTokenExchange"
-		}},
-		{"natsAudience, oidcAudience", "natsAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
-			setNatsAudience(a)
-			a.OidcAudience = dispatchNatsAudience
-		}},
-		{"natsAudience, oidcAudience padded", "natsAudience", "oidcAudience", func(a *gcp.DispatchArgs) {
-			setNatsAudience(a)
-			a.OidcAudience = " " + dispatchNatsAudience + "\t"
-		}},
-		{"natsAudience, azureFederationAudience", "natsAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
-			setNatsAudience(a)
+		{"oidcAudience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchNatsAudience }},
+		{"oidcAudience padded", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = " " + dispatchNatsAudience + "\t" }},
+		{"azureFederationAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef(dispatchNatsAudience)
 		}},
-		{"natsAudience, azureFederationAudience padded", "natsAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
-			setNatsAudience(a)
+		{"azureFederationAudience padded", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("\n" + dispatchNatsAudience + " ")
 		}},
-		{"natsAudience, the keyless Azure sign-in's default audience", "natsAudience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
-			setNatsAudience(a)
+		{"the keyless Azure sign-in's default audience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.NatsAudience = "api://AzureADTokenExchange"
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
+			setNatsAudience(args)
 			row.edit(args)
 			_, err := gcp.ResolveDispatch(args)
 			var input *core.InputError
 			require.ErrorAs(t, err, &input)
-			require.Equal(t, row.own, input.Input, "%v", err)
-			require.ErrorContains(t, err, row.own+" is also "+row.other+":")
+			require.Equal(t, "natsAudience", input.Input, "%v", err)
+			require.ErrorContains(t, err, "natsAudience is also "+row.other+":")
 			m, err := runDispatch(t, args, true)
 			require.Error(t, err)
 			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
@@ -344,49 +267,11 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 		})
 	}
 	args := dispatchServiceIdentityArgs()
-	setBroker(args)
+	args.AgentSecretsUrl, args.AgentSecretsAudience = "https://example-broker.internal.example", "example-broker-audience"
 	args.OidcAudience = dispatchOidcAudience
 	setAzureFederation(args)
 	_, err := gcp.ResolveDispatch(args)
-	require.NoError(t, err, "five distinct audiences")
-}
-
-// A listenerAudience that is the cluster's own issuer is the audience of the token every pod
-// mounts by default (kube-apiserver's --api-audiences defaults to the issuer), so the listener
-// would admit any pod's own token: it is refused, naming listenerAudience and the issuer, before
-// any resource registers, as every other audience refusal is (review F2). The cluster's location
-// and name are the component's own region and hostname, so the issuer is known but for the
-// project's id, and an audience naming this cluster under any project is refused. Any other
-// audience renders: one that only begins with the issuer, and another cluster's.
-func TestDispatchRefusesAListenerAudienceThatIsTheClustersIssuer(t *testing.T) {
-	for _, audience := range []string{
-		azureIssuer,
-		"https://container.googleapis.com/v1/projects/another-project/locations/us-central1/clusters/example-dispatch",
-	} {
-		t.Run(audience, func(t *testing.T) {
-			args := dispatchArgs()
-			args.ListenerAudience = audience
-			_, err := gcp.ResolveDispatch(args)
-			require.ErrorContains(t, err, "listenerAudience is this cluster's issuer, "+audience+",")
-			var input *core.InputError
-			require.ErrorAs(t, err, &input)
-			require.Equal(t, "listenerAudience", input.Input)
-			m, err := runDispatch(t, args, true)
-			require.Error(t, err)
-			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
-				"nothing registered beyond the test's providers")
-		})
-	}
-	for _, audience := range []string{
-		azureIssuer + "/other",
-		"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/another-cluster",
-		"https://container.googleapis.com/v1/projects/a/b/locations/us-central1/clusters/example-dispatch",
-	} {
-		args := dispatchArgs()
-		args.ListenerAudience = audience
-		_, err := runDispatch(t, args, true)
-		require.NoError(t, err, "%s is another audience than this cluster's issuer", audience)
-	}
+	require.NoError(t, err, "four distinct audiences")
 }
 
 // Each audience is rendered as its verifier reads it, trimmed: Dispatch's DISPATCH_OIDC_AUDIENCE,
