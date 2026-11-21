@@ -28,11 +28,11 @@ const issueRead = 30 * time.Second
 // webhook would have: the head GitHub holds it at (followHead, and the pushes that reached it), and
 // whether that head can be merged into its base and GitHub's own merge state (applyMergeability),
 // in that order. It reads no review: GitHub's list of a pull request's reviews moves each
-// review's commit_id to the current head (dispatch://INFRA-1557), so a listed review is no
-// evidence of the head it read and decides nothing, and a person's request for changes refuses a
-// head only by its webhook. An issue whose record holds no open pull request is looked up by its
-// branch instead (openPullRequestOn), and the opened its webhook would have carried is applied
-// first, so the reads that follow judge the pull request that leaves.
+// review's commit_id to the current head, so a listed review is no evidence of the head it read
+// and decides nothing, and a person's request for changes refuses a head only by its webhook. An
+// issue whose record holds no open pull request is looked up by its branch instead
+// (openPullRequestOn), and the opened its webhook would have carried is applied first, so the
+// reads that follow judge the pull request that leaves.
 //
 // It is the backstop for a webhook that never arrived: GitHub can fail to deliver one, and
 // Dispatch's redelivery sweep gives up after five attempts, which leaves the record holding a head

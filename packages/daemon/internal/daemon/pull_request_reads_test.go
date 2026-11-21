@@ -30,7 +30,7 @@ import (
 
 // pullRequestStandIn is GitHub's REST API for acme/widgets as the per-issue read reads it:
 // pull request 86 on base main, open on legion/CAPTURE-1 of acme/widgets itself at head, last
-// updated at updated, with no reviews, whose base requires pr-checks-result and is unprotected.
+// updated at updated, whose base requires pr-checks-result and is unprotected.
 // Listed by its branch (GET /pulls?head=acme:legion/CAPTURE-1&state=open), it is the one open pull
 // request there; each such list is counted in listed. Paths match in any case, as GitHub's do.
 func pullRequestStandIn(t *testing.T, head string, updated time.Time, listed *atomic.Int32) *httptest.Server {
@@ -49,8 +49,6 @@ func pullRequestStandIn(t *testing.T, head string, updated time.Time, listed *at
 			w.Write([]byte(`[` + pull + `]`))
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(pull))
-		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
 		case "/repos/acme/widgets/rules/branches/main":
 			w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-checks-result"}]}}]`))
 		case "/repos/acme/widgets/branches/main":
@@ -447,26 +445,16 @@ func activityEntry(branch, kind, before, after, actor string, at time.Time) stri
 
 // activityGitHub is GitHub's REST API for acme/widgets as the per-issue read reads it after push
 // webhooks of legion/CAPTURE-1 were lost: pull request 86 open on that branch at head, last
-// updated at updated, with no reviews, on base main, which requires pr-checks-result and is
-// unprotected; and the branch's activity, newest first, is activity, or GitHub answers
-// activityStatus when it is set. Every request is counted in reads.
+// updated at updated, on base main, which requires pr-checks-result and is unprotected; and the
+// branch's activity, newest first, is activity, or GitHub answers activityStatus when it is set.
+// Every request is counted in reads.
 type activityGitHub struct {
 	mu             sync.Mutex
 	head           string
 	updated        time.Time
 	activity       []string
 	activityStatus int
-	// reviews is the JSON array GET /pulls/86/reviews answers, empty for the cases about the head
-	// alone; a case about what a listed review decides at a read-found head sets its own (lists).
-	reviews string
-	reads   pathReads
-}
-
-// lists has GitHub answer reviews, a JSON array, for pull request 86's reviews.
-func (g *activityGitHub) lists(reviews string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.reviews = reviews
+	reads          pathReads
 }
 
 // moved has GitHub show pull request 86 at head, last updated at updated, and the branch's
@@ -504,12 +492,6 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 			w.Write([]byte("[" + pull + "]"))
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(pull))
-		case "/repos/acme/widgets/pulls/86/reviews":
-			if g.reviews == "" {
-				w.Write([]byte(`[]`))
-				return
-			}
-			w.Write([]byte(g.reviews))
 		case "/repos/acme/widgets/collaborators/a-writer/permission":
 			w.Write([]byte(`{"permission":"write","user":{"login":"a-writer","type":"User"}}`))
 		case "/repos/acme/widgets/rules/branches/main":

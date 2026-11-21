@@ -22,9 +22,8 @@ import (
 // webhook can reach the daemon that long after the events that followed it. A redelivery of a
 // delivery the daemon applied carries that delivery's id and is dropped as a duplicate; the tests
 // here apply a late event whose newer state came from another delivery, or from the daemon's own
-// read of an issue's pull request - the facts that read applies (opened-read, head-read,
-// review-read), each built here as the read builds it - and show that the late event changes no
-// record.
+// read of an issue's pull request - the facts that read applies (opened-read, head-read), each
+// built here as the read builds it - and show that the late event changes no record.
 
 // recordTables is every row of the records a GitHub fact can write - the issues, their phase rows,
 // the pull requests, the production checks and the outbox - as text, to compare before and after a

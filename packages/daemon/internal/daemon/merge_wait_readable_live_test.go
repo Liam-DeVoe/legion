@@ -753,11 +753,11 @@ func mergeWaitShort(sha string) string {
 // request the proof drives answered as GET /pulls/{number} answers one (daemon's
 // githubPullRequest) — its number, its state, the base it sits on, the head it stands at, GitHub's
 // clock for it, its lazily computed `mergeable` and `mergeable_state`, GitHub's own merge state
-// for that head — with its reviews as none, which no read of the daemon asks for, and the branch's open pull requests as
-// none, which is what the per-issue read lists for an issue whose record holds none open. It also
-// answers what a launch reads: any repository, with default branch main, and a GraphQL root that
-// knows no pull request. Anything else is answered 404, so a read this proof did not foresee fails
-// the step that waited on it rather than reaching github.com.
+// for that head — and the branch's open pull requests as none, which is what the per-issue read
+// lists for an issue whose record holds none open. It also answers what a launch reads: any
+// repository, with default branch main, and a GraphQL root that knows no pull request. Anything
+// else is answered 404, so a read this proof did not foresee fails the step that waited on it
+// rather than reaching github.com.
 //
 // Every field a step sets is set under this mutex, which the answer is written under too, so a
 // step that sets a head and a state sets them for every read after it and none before it.
@@ -897,9 +897,6 @@ func (g *mergeWaitGitHub) answer(w http.ResponseWriter, path string) bool {
 	}
 	for number, pull := range g.pulls {
 		switch rest {
-		case fmt.Sprintf("/pulls/%d/reviews", number):
-			g.write(w, []any{})
-			return true
 		case fmt.Sprintf("/pulls/%d", number):
 			if pull.withheld {
 				pull.refused++

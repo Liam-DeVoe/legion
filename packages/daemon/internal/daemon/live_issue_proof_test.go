@@ -423,12 +423,11 @@ func (c *liveClaimant) endTurn() {
 // liveGitHub is GitHub's REST API for acme/widgets as a live proof's daemon reads it: the one
 // pull request at the head the driver last pushed, with its base and the `mergeable` the driver
 // last set, true until it sets one (conflicts; readPullRequest), the `mergeable_state` a proof
-// sets (mergeState), and its reviews as none, which no read of the daemon asks for. It also answers what a launch and a
-// disarm read: any repository, with the proof's base as its default branch, and a GraphQL root
-// that knows no pull request. Anything else is answered 404 unless the proof's also answers it, so
-// a read the proof did not foresee fails the step that waited on it rather than reaching
-// github.com. A liveIssueProof starts it with serveGitHub; late_completion_live_test.go, whose
-// panes are real, starts one of its own.
+// sets (mergeState). It also answers what a launch and a disarm read: any repository, with the
+// proof's base as its default branch, and a GraphQL root that knows no pull request. Anything else
+// is answered 404 unless the proof's also answers it, so a read the proof did not foresee fails
+// the step that waited on it rather than reaching github.com. A liveIssueProof starts it with
+// serveGitHub; late_completion_live_test.go, whose panes are real, starts one of its own.
 type liveGitHub struct {
 	t      *testing.T
 	url    string
@@ -503,8 +502,6 @@ func (g *liveGitHub) answer(w http.ResponseWriter, path string) bool {
 	switch {
 	case rest == "":
 		g.write(w, map[string]any{"full_name": liveRepo, "default_branch": g.base})
-	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
-		g.write(w, []any{})
 	case rest == fmt.Sprintf("/pulls/%d", g.number):
 		pull := map[string]any{
 			"number": g.number, "state": "open", "mergeable": !g.conflicting,

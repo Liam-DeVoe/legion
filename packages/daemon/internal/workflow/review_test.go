@@ -1584,8 +1584,8 @@ func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
 
 // A person's request for changes refuses the head by the commit_id its webhook carried, and the
 // round goes back to implementing. The daemon reads no list of a pull request's reviews, whose
-// commit_id GitHub moves with the pull request (dispatch://INFRA-1557), so the webhook is the one
-// way a person's review reaches a round.
+// commit_id GitHub moves with the pull request, so the webhook is the one way a person's review
+// reaches a round.
 func TestAPersonsRequestForChangesByWebhookRefusesTheHead(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")

@@ -812,9 +812,8 @@ func inputOf(call *paneCall) string {
 // serveGitHub starts the harness's GitHub stand-in (liveGitHub) for this proof's pull request as
 // its daemon reads it, and holds it as the proof's github: the pull request at the implementer's
 // pushed head, open on base main, mergeable and clean (its merge state, which the harness's
-// stand-in answers only where a proof sets one); its reviews as none, since the one review the
-// proof reads is the envelope step 5 publishes; and, beyond the stand-in's own answers (its
-// also), the same pull request listed open on the issue's branch, which is the read the
+// stand-in answers only where a proof sets one); and, beyond the stand-in's own answers (its also),
+// the same pull request listed open on the issue's branch, which is the read the
 // implementer's completion in implementing makes of GitHub (api's implementationPullRequest), and
 // the write access of lateCompletionPerson, an account of type User, which step 5's request for
 // changes is decided by (daemon's reviewerCanWrite).

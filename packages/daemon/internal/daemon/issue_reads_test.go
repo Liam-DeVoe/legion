@@ -211,8 +211,6 @@ func newIssueReadStandIn(t *testing.T, updated time.Time) *issueReadStandIn {
 			w.Write([]byte(pull(86, "CAPTURE-1")))
 		case "/repos/acme/widgets/pulls/87":
 			w.Write([]byte(pull(87, "CAPTURE-2")))
-		case "/repos/acme/widgets/pulls/86/reviews", "/repos/acme/widgets/pulls/87/reviews":
-			w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -267,8 +265,6 @@ func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T)
 				answered = time.Now()
 			}
 			mu.Unlock()
-		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
 		case "/repos/acme/widgets/activity":
 			mu.Lock()
 			if followed.IsZero() {

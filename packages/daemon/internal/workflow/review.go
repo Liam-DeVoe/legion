@@ -618,8 +618,8 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 // delivered by its webhook, which refuses the head; no approval decides at all, since on a head a
 // Legion issue owns only the reviewer's verdict approves it, which is what writes its success. The
 // daemon reads no list of a pull request's reviews: GitHub's list moves each review's commit_id to
-// the pull request's current head (dispatch://INFRA-1557), so a listed review is no evidence of
-// the code it read. The whole rule, in this order:
+// the pull request's current head, so a listed review is no evidence of the code it read. The
+// whole rule, in this order:
 //
 //   - A review written with a token of the one App (Config.AppLogin) decides nothing. Every role
 //     acts as that App, so its login says nothing of who wrote the review, and the reviewer posts
