@@ -14,8 +14,8 @@ import (
 // Answer is the body of an HTTP answer as every client of this repository reads it (ReadAnswer):
 // another party's bytes, which whatever answered in the server's place can have written to echo
 // the request back, credentials and all. It is opaque: its one field is unexported and points at
-// the bytes, so fmt, encoding/json and slog print an address or nothing, and its four methods are
-// the only ways out of it.
+// the bytes through pointers of their own (answer), so fmt, encoding/json and slog print the
+// status, addresses or nothing, and its four methods are the only ways out of it.
 //
 //   - Decode fills a typed value from the body, holding every RemoteText it decodes with the
 //     request's record (Carried) so the value's words print with the request's credentials
@@ -32,13 +32,15 @@ type Answer struct {
 }
 
 // answer is what an Answer holds: the status, the bytes read, and the record of the requests
-// that led to the answer, whose credentials are read once, when Decode or Words needs them.
+// that led to the answer, whose credentials are read once, when Decode or Words needs them. The
+// bytes and the credentials sit behind pointers of their own: a verb fmt cannot apply to an
+// Answer's pointer (%s, %q) prints the answer it points at, and a pointer inside it as an address.
 type answer struct {
 	status int
-	data   []byte
+	data   *[]byte
 	rec    *record
 	once   sync.Once
-	tokens []string
+	tokens *[]string
 }
 
 // ErrAnswerTooLarge is the error ReadAnswer wraps when a body holds more than its limit. The
@@ -61,10 +63,11 @@ func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 		return Answer{a}, err
 	}
 	if int64(len(data)) > limit {
-		a.data = data[:limit]
+		data = data[:limit]
+		a.data = &data
 		return Answer{a}, fmt.Errorf("%w (%d bytes)", ErrAnswerTooLarge, limit)
 	}
-	a.data = data
+	a.data = &data
 	return Answer{a}, nil
 }
 
@@ -112,19 +115,21 @@ func (s *answerStream) Close() error {
 // carried is the credentials the answer's requests carried, read once.
 func (a *answer) carried() []string {
 	a.once.Do(func() {
+		var tokens []string
 		if a.rec != nil {
-			a.tokens = a.rec.tokens()
+			tokens = a.rec.tokens()
 		}
+		a.tokens = &tokens
 	})
-	return a.tokens
+	return *a.tokens
 }
 
 // bytes is the answer's body, empty for the zero Answer.
 func (a Answer) bytes() []byte {
-	if a.a == nil {
+	if a.a == nil || a.a.data == nil {
 		return nil
 	}
-	return a.a.data
+	return *a.a.data
 }
 
 // Status is the answer's HTTP status code, and 0 for the zero Answer.
@@ -142,7 +147,7 @@ func (a Answer) Words() RemoteText {
 	if a.a == nil {
 		return NewRemoteText("")
 	}
-	return NewRemoteText(strings.TrimSpace(string(a.a.data))).WithoutTokens(a.a.carried()...)
+	return NewRemoteText(strings.TrimSpace(string(a.bytes()))).WithoutTokens(a.a.carried()...)
 }
 
 // StreamTo writes the body to w, for a body that is data and never prints: a file the answer

@@ -2,6 +2,7 @@ package redact_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,14 +111,25 @@ func TestAnAnswersWordsAndDecodedBoxesHoldItsRecord(t *testing.T) {
 
 // TestAnAnswerRefusesADestinationThatHoldsItsBodyWhole: a string, a byte slice, a json.RawMessage
 // and an interface value would each hold the body as plain text, and Decode fills none of them.
+// encoding/json fills a byte slice only from a base64 string, so the byte slice's answer is the
+// bearer in base64, which encoding/json decodes: only Decode's own refusal keeps it out.
 func TestAnAnswerRefusesADestinationThatHoldsItsBodyWhole(t *testing.T) {
-	answer := answerOf(t, http.StatusOK, func(auth string) string { return `"` + auth + `"` })
+	quoted := answerOf(t, http.StatusOK, func(auth string) string { return `"` + auth + `"` })
+	encodedBody := func(auth string) string { return `"` + base64.StdEncoding.EncodeToString([]byte(auth)) + `"` }
+	var control []byte
+	if err := json.Unmarshal([]byte(encodedBody("Bearer "+redacttest.Token)), &control); err != nil {
+		t.Fatalf("encoding/json does not fill a byte slice from the byte slice's answer: %v", err)
+	}
+	encoded := answerOf(t, http.StatusOK, encodedBody)
 	var s string
 	var b []byte
 	var raw json.RawMessage
 	var a any
-	for name, v := range map[string]any{"string": &s, "bytes": &b, "raw": &raw, "any": &a} {
-		if err := answer.Decode(v); err == nil {
+	for name, c := range map[string]struct {
+		answer redact.Answer
+		into   any
+	}{"string": {quoted, &s}, "bytes": {encoded, &b}, "raw": {quoted, &raw}, "any": {quoted, &a}} {
+		if err := c.answer.Decode(c.into); err == nil {
 			t.Errorf("Decode filled a %s with the body whole", name)
 		}
 	}
@@ -125,9 +137,13 @@ func TestAnAnswerRefusesADestinationThatHoldsItsBodyWhole(t *testing.T) {
 }
 
 // TestAnAnswerPrintsNothingOfItsBody: an Answer printed by every fmt verb, by encoding/json and by
-// slog prints nothing of the body it holds. Captures redact.answer-printed.
+// slog prints nothing of the body it holds, nor of the credentials its request carried, which
+// Words has read into it: not as text, and not as the bytes fmt prints a byte slice as. A verb fmt
+// cannot apply to a pointer (%s, %q) prints what the pointer points at. Captures
+// redact.answer-printed.
 func TestAnAnswerPrintsNothingOfItsBody(t *testing.T) {
 	answer := answerOf(t, http.StatusOK, func(string) string { return redacttest.Words })
+	_ = answer.Words()
 	var out bytes.Buffer
 	for _, verb := range []string{"%s", "%q", "%v", "%+v", "%#v", "%x", "%X"} {
 		fmt.Fprintf(&out, verb+"\n", answer)
@@ -138,6 +154,11 @@ func TestAnAnswerPrintsNothingOfItsBody(t *testing.T) {
 	slog.New(slog.NewTextHandler(&out, nil)).Info("answer", "answer", answer)
 	slog.New(slog.NewJSONHandler(&out, nil)).Info("answer", "answer", answer)
 	redacttest.RequireNone(t, "redact.answer-printed", out.String())
+	for _, secret := range redacttest.Secrets {
+		if asBytes := strings.Trim(fmt.Sprint([]byte(secret)), "[]"); strings.Contains(out.String(), asBytes) {
+			t.Errorf("REDACT-ASSERT redact.answer-printed: the output prints the secret %q as its bytes: %q", secret, out.String())
+		}
+	}
 }
 
 // TestReadAnswerCutsABodyAtItsLimit: a body longer than the limit is the Answer of its first limit
