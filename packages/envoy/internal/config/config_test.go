@@ -191,6 +191,97 @@ func TestLoadRefusesASettingItsParserRefuses(t *testing.T) {
 	}
 }
 
+// ENVOY_EDGE_PROJECTS is the projects an edge listener serves, read as a broker token's own list
+// is: commas or white space between project keys, sorted, each once; unset or blank is every
+// other listener, which serves none. A list a token could never carry is refused naming the
+// variable, so a misspelt edge stays down rather than serving a project it was not meant to.
+func TestEdgeProjectsAreReadSortedAndRefusedNamingTheVariable(t *testing.T) {
+	t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+	load := func(value string) (Service, error) {
+		t.Setenv("ENVOY_EDGE_PROJECTS", value)
+		return Load(9020)
+	}
+	for _, tc := range []struct {
+		value string
+		want  []string
+	}{
+		{"", nil},
+		{"  ", nil},
+		{"PRIV", []string{"PRIV"}},
+		{"PRIV, INFRA", []string{"INFRA", "PRIV"}},
+		{"OEDGE PRIV", []string{"OEDGE", "PRIV"}},
+	} {
+		service, err := load(tc.value)
+		if err != nil || !slices.Equal(service.EdgeProjects, tc.want) {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: EdgeProjects %q, error %v; want %q", tc.value, service.EdgeProjects, err, tc.want)
+		}
+	}
+	for _, value := range []string{"priv", "PRIV,PRIV", "PRIV,_", "P"} {
+		if _, err := load(value); err == nil || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: error %v, want a refusal naming ENVOY_EDGE_PROJECTS", value, err)
+		}
+	}
+	fixtureenv.Unset(t, "ENVOY_EDGE_PROJECTS")
+	if service, err := Load(9020); err != nil || service.EdgeProjects != nil {
+		t.Errorf("ENVOY_EDGE_PROJECTS unset: EdgeProjects %q, error %v; want none", service.EdgeProjects, err)
+	}
+}
+
+// The listener's two privacy modes, checked at start. Each of the four incomplete forms of the
+// required mode is refused naming its variable, so a required-mode listener with an incomplete
+// configuration exits before it serves: the flag with a blank URL, the flag with no platform
+// identity to read the source as, a URL without the flag, and any value of the flag but true. Only
+// both variables absent load the all-public mode; the flag, the URL and either identity load the
+// required mode.
+func TestARequiredListenerRefusesToStartIncomplete(t *testing.T) {
+	const broker = "https://agent-secrets.example"
+	load := func(t *testing.T, values map[string]string) (Service, error) {
+		t.Helper()
+		t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+		t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+		for _, name := range []string{PrivacyRequiredEnvVar, PrivacyURLEnvVar, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"} {
+			if value, ok := values[name]; ok {
+				t.Setenv(name, value)
+			} else {
+				fixtureenv.Unset(t, name)
+			}
+		}
+		return Load(9020)
+	}
+	for _, tc := range []struct {
+		form   string
+		values map[string]string
+		names  string
+	}{
+		{"the flag with a blank URL", map[string]string{PrivacyRequiredEnvVar: "true", PrivacyURLEnvVar: " ", "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"}, PrivacyURLEnvVar},
+		{"the flag with no platform identity", map[string]string{PrivacyRequiredEnvVar: "true", PrivacyURLEnvVar: broker}, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"},
+		{"a URL without the flag", map[string]string{PrivacyURLEnvVar: broker, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"}, PrivacyRequiredEnvVar},
+		{"a flag that is not true", map[string]string{PrivacyRequiredEnvVar: "yes", PrivacyURLEnvVar: broker, "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"}, PrivacyRequiredEnvVar},
+	} {
+		t.Run(tc.form, func(t *testing.T) {
+			service, err := load(t, tc.values)
+			if err == nil || !strings.Contains(err.Error(), tc.names) {
+				t.Fatalf("%s: Load answered %+v, %v; want a refusal naming %s", tc.form, service, err, tc.names)
+			}
+		})
+	}
+	t.Run("both absent", func(t *testing.T) {
+		service, err := load(t, map[string]string{"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/token"})
+		if err != nil || service.PrivacyRequired || service.PrivacyURL != "" {
+			t.Fatalf("both absent: Load answered required %v, URL %q, %v; want the all-public mode", service.PrivacyRequired, service.PrivacyURL, err)
+		}
+	})
+	for _, identity := range []string{"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"} {
+		t.Run("the flag, the URL and "+identity, func(t *testing.T) {
+			service, err := load(t, map[string]string{PrivacyRequiredEnvVar: "true", PrivacyURLEnvVar: broker, identity: "set"})
+			if err != nil || !service.PrivacyRequired || service.PrivacyURL != broker {
+				t.Fatalf("with %s: Load answered required %v, URL %q, %v; want the required mode reading %s", identity, service.PrivacyRequired, service.PrivacyURL, err, broker)
+			}
+		})
+	}
+}
+
 func TestHostName(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1:9020":            "127.0.0.1",

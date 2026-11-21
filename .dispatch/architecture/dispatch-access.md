@@ -2,7 +2,7 @@
 title: Project access rule
 parent: dispatch-server
 depends_on: [dispatch-model, dispatch-events]
-paths: [packages/envoy/internal/dispatch/access]
+paths: [packages/envoy/internal/dispatch/access, packages/envoy/internal/projectscope]
 ---
 Who may see a project, written once (`access`): each project's one owner and its public or private setting, its access list of people and groups, the groups with their one owner each, and each person's member kind, full or restricted (migration `20261116015736_project_access`). A person sees a project they own, one that lists them or lists a group they are a full member of, or one that is public while they are a full member; a restricted member is admitted only by being named directly, never by a group. An agent credential sees the part of its list of projects its person sees, or with no list the public part; a credential that names no person sees the public projects, within its list when it holds one. A viewer that is neither restricted nor holds a list is open, and reads every row that belongs to no project as every caller did before.
 
@@ -11,3 +11,5 @@ Who may see a project, written once (`access`): each project's one owner and its
 Each project names the Slack channels its credentials may post to, its owner's list, and when that list last changed, the start of the update that changed it (`statement_timestamp()`, after the write's lock waits), null until a write changes the list (`SetSlackChannels`; migrations `20261116035709_projects_slack_channels` and `20261118181230_projects_slack_channels_changed_at`). A channel belongs to at most one private project. Every write of a list takes one advisory lock after the project's row and before it reads any list, and a private project's list naming a channel another private project lists (`SharedSlackChannel`) is refused with `ErrSlackChannelShared`. The refusal names that project only to a caller who sees it by the rule above, resolved for the request's own credential once a share is found (`Resolve`, over the caller the write is handed): an agent credential with no list sees only public projects, so it reads the refusal that names none.
 
 `listed.go` is the outside sign-in's question, whether some project names an email directly as its owner or on its access list (`PersonDirectlyListedSQL`, `Listed`): the rule's direct arm read from the other side, with no group arm, so no group ever admits a person from outside the sign-in domain.
+
+`BrokerTokenAdmits` itself lives in `internal/projectscope`, a package of the standard library alone, and `access.BrokerTokenAdmits` calls it: the Envoy listener's edge mode reads the rule there, so the listener links neither this package's store nor a PostgreSQL driver (`cmd/listener`'s `TestEdgeListenerLinksNoDispatchStore`).

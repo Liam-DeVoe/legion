@@ -74,6 +74,14 @@ const (
 	// projects at all; one grammar serves the form parameter, this claim and
 	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
+	// ClaimRestricted is whether the token's person is a restricted member, who sees only the
+	// projects that name them, as a bool: projectAccess writes it on every exchanged token, false
+	// only where the broker knows the person is a full member (a person's sign-in, which it
+	// verified against BROKER_SIGNIN_DOMAIN, or Dispatch's answer of projectaccess.MemberFull) and
+	// for a token that names no person, which no member list holds. A token without it (one an
+	// earlier broker minted) reads as restricted at every reader, so a reader never widens what a
+	// token sees on a claim nobody decided. An introspection answers it as Restricted.
+	ClaimRestricted = "restricted"
 )
 
 // subjectTokenAlgorithms are the signature algorithms a JWT subject token may be signed with: the
@@ -799,6 +807,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)
 	name, _ := session.Extra[ClaimSession].(string)
+	session.Extra[ClaimRestricted] = p.memberRestricted(ctx, subjectTokenType, person)
 	if person == "" {
 		return nil
 	}
@@ -866,6 +875,22 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	default:
 		return dispatchUnreachable(err)
 	}
+}
+
+// memberRestricted is the token's ClaimRestricted: false for a token that names no person, and for
+// a person's sign-in, which the broker verified as a full member itself; false where Dispatch
+// answers the person a full member (projectaccess.MemberFull); true for every other answer - a
+// restricted member, a person Dispatch holds no row for, a kind it could not be asked, and a broker
+// with no check configured - so a token whose person's kind is not known sees only its own list.
+func (p *Provider) memberRestricted(ctx context.Context, subjectTokenType, person string) bool {
+	if person == "" || subjectTokenType == oauthwire.SubjectTokenTypePerson {
+		return false
+	}
+	if p.exchange.Projects == nil {
+		return true
+	}
+	kind, err := p.exchange.Projects.MemberKind(ctx, person)
+	return err != nil || kind != projectaccess.MemberFull
 }
 
 // claimSession claims the session name decide wrote onto session for the principal it decided,

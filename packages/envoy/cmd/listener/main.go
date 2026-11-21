@@ -95,6 +95,14 @@ type listenerDeps struct {
 	// listener (sender_limit.go). nil is no limit, which is what every test that builds
 	// listenerDeps itself runs with.
 	senderLimit *senderLimit
+	// repositories is the edge listener's reader of the repositories its projects' issues
+	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
+	// listener but an edge one.
+	repositories *edgeRepositories
+	// privacy is the listener's privacy mode and its reader of the privacy source
+	// (project_privacy.go); nil is the all-public mode, which every test that builds listenerDeps
+	// itself runs in.
+	privacy *listenerPrivacy
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -769,7 +777,11 @@ type webhookRoute struct {
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
+//
+// In the required privacy mode the Slack route reads the privacy source at each event
+// (privacy, webhook.WithSlackPrivacy): an event of a channel one private project lists goes on that
+// project's own lane, and an event that cannot be decided is answered 503.
+func webhookRoutes(cfg *webhook.WebhookConfig, privacy *listenerPrivacy) []webhookRoute {
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
@@ -778,6 +790,9 @@ func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
+			if privacy.isRequired() {
+				return webhook.SlackHandler(slack.Secret, publisher, webhook.WithSlackPrivacy(privacy))
+			}
 			return webhook.SlackHandler(slack.Secret, publisher)
 		}})
 	}
@@ -900,13 +915,20 @@ func openV1Routes(gate *startingGate, ready *listenerDeps, served *atomic.Pointe
 // answering it (bus.WithSilentCutDetection). A hub whose packets stop closes nothing. On nats.go's
 // default pings (one every two minutes, two outstanding) the connection reads connected for four
 // to six minutes, and the reconnect that finds a hub which answers starts only once it reads lost.
+//
+// In the required privacy mode each connection's name ends in privacyRequiredSuffix, which a hub
+// rendered private admits a listener by, as the role lane's and the session consumers' do.
 func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
-	return []bus.ConnectOption{
+	options := []bus.ConnectOption{
 		bus.WithReplicas(cfg.NATSReplicas),
 		bus.WithStreamMaxBytes(cfg.StreamMaxBytes),
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
 	}
+	if cfg.PrivacyRequired {
+		options = append(options, bus.WithPrivacyRequired(privacyRequiredSuffix))
+	}
+	return options
 }
 
 // registerListGauges registers the two gauges that count a list /v1 answers: envoy_active_sessions
@@ -1001,6 +1023,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// An edge listener admits a broker token alone, so it refuses to start beside any other
+	// credential, beside webhooks, and without the broker-token settings (validateEdgeMode),
+	// before any of them is read below.
+	if err := validateEdgeMode(cfg.EdgeProjects, os.Environ()); err != nil {
+		log.Fatal(err)
+	}
 	logger := logging.New(cfg.MachineID)
 	// The first lines of the log belong to the settings a deployment still carries and this
 	// listener does not read, before it does any other work, so an operator reading from the top
@@ -1042,12 +1070,19 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
+	// The all-projects callers are read beside the other credentials' settings, so a list it
+	// refuses stops the start before anything is bound.
+	allProjectsAccounts, err := resolveAllProjectsAccounts(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiAuthConfig := listenerAPIAuth{
 		token:        apiToken,
 		verifier:     apiVerifier,
 		accounts:     oidcAccounts,
 		google:       googleCallers,
 		brokers:      brokerTokenAuth,
+		edgeProjects: cfg.EdgeProjects,
 		allowedHosts: cfg.AllowedHosts,
 		logger:       logger,
 	}
@@ -1127,6 +1162,12 @@ func main() {
 		ciLegacyHeld = met.NewGauge("envoy_ci_legacy_records_held", "CI records a head-gated listener left unsettled that the summary loop's last pass held back")
 	}
 	registerListGauges(met, &v1Deps)
+	// The listener's privacy mode: in the required mode its reader of the privacy source, which
+	// reads as the listener's own platform identity, the account its broker tokens are checked as
+	// (config.Load has refused a required mode without one). Its counters are registered at 0 in
+	// both modes.
+	privacy := newListenerPrivacy(cfg, brokerConfig.account(), allProjectsAccounts, met, logger)
+	logger.Info("listener privacy mode", slog.Bool("required", privacy.isRequired()), slog.String("source", cfg.PrivacyURL))
 
 	// Phase 3: Build HTTP mux.
 	mux := http.NewServeMux()
@@ -1153,7 +1194,7 @@ func main() {
 	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
 	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
-	hooks := webhookRoutes(webhookCfg)
+	hooks := webhookRoutes(webhookCfg, privacy)
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}
@@ -1473,6 +1514,7 @@ func main() {
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
+		privacy:           privacy,
 		wakes:             wakes,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
@@ -1526,7 +1568,7 @@ func main() {
 	// group every listener shares, or this machine's group on a hub whose grant predates it. During a
 	// rolling deploy the task being replaced is a member too, and NATS hands each role message to one
 	// member of a group, so opening the lane before the durable binds forwards no message twice.
-	roleLaneClient, roleQueue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
+	roleLaneClient, roleQueue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig), privacy.busOptions()...)
 	if err != nil {
 		logger.Error("core role subscription failed", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1557,7 +1599,7 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, privacy.busOptions()...)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1572,6 +1614,18 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	// An edge listener reads the repositories its projects' issues resolve to from the broker's
+	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub
+	// frame to them. It is set before the relay relays anything, which only the durable binding
+	// below starts.
+	var repositories *edgeRepositories
+	if len(cfg.EdgeProjects) > 0 {
+		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
+		relays.repositories = repositories
+	}
+	// In the required mode the relay decides each project's frame from a fresh privacy read, and
+	// holds what it cannot decide (privacy_hold.go); it is set before the relay relays anything.
+	relays.setPrivacy(privacy)
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{
@@ -1614,6 +1668,8 @@ func main() {
 
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
+		repositories:        repositories,
+		privacy:             privacy,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
@@ -1723,6 +1779,20 @@ func main() {
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
 	// (roleWakeInterval).
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
+
+	// Phase 6b0: An edge listener reads its projects' repositories again every
+	// edgeRepositoryRefresh and removes the interests of a repository that left them
+	// (runEdgeRepositories). It lists the interest bucket, so it stops with the reapers.
+	if repositories != nil {
+		edgeDone := make(chan struct{})
+		go func() {
+			defer close(edgeDone)
+			ticker := time.NewTicker(edgeRepositoryRefresh)
+			defer ticker.Stop()
+			runEdgeRepositories(kvLoopsCtx, ready, cfg.MachineID, ticker.C)
+		}()
+		kvLoopsDone = append(kvLoopsDone, edgeDone)
+	}
 
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
 	// holds. The deregistration route deletes the consumer of a registration it removed, and a

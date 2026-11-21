@@ -65,7 +65,7 @@ func (p *subjectRecorder) all() []recordedSend {
 func missingTheirProject(names []string, project string) []string {
 	var missing []string
 	for _, name := range names {
-		named, _, ok := contracts.SubjectProject(name)
+		named, ok := contracts.SubjectProject(name)
 		if _, legacy := contracts.CanonicalTopic(name); !ok || legacy || named != project {
 			missing = append(missing, name)
 		}

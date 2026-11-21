@@ -625,17 +625,18 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // costs one resolution and one read of the lane past its cursor.
 //
 // One message is not kept at all, and leaves its caller's give-up exactly as it was before the
-// kept lane: one whose role token no claim can name (roles.Valid, the pattern POST /v1/roles/set
-// refuses), which both give-up paths must agree on, and Dispatch's outbox with them
-// (keptOrSkipped, internal/dispatch/outbox/role.go), since a copy kept under such a token waits
-// for a claim that cannot be made and expires unread.
+// kept lane: one whose role no claim can be keyed by (roles.ValidClaimKey: a role token of the
+// pattern POST /v1/roles/set accepts, under the project a free-form role's key names), which both
+// give-up paths must agree on, and Dispatch's outbox with them (keptOrSkipped,
+// internal/dispatch/outbox/role.go), since a copy kept under such a token waits for a claim that
+// cannot be made and expires unread.
 //
 // A sender that keeps a queue of its own and redelivers from it - the Legion daemon's notice
 // queue - opts out on the publish route's own request field instead (keep false, read by
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, bool) {
-	if !roles.Valid(role) {
+	if !roles.ValidClaimKey(role) {
 		return keptRoleCopy{}, false
 	}
 	kept, ok := keepRoleMessage(cfg, role, item)
@@ -947,7 +948,8 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		project, name := contracts.ParseRoleClaimKey(role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.claims(), roleHolderSessions{cfg.sessions}, project, name)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1329,7 +1331,8 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
 // roleLaneClaims keeps the bound on a claim read in one place for both lanes.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	claim, err := roleLaneClaims{cfg.claims()}.RoleClaim(ctx, project, name)
 	if err != nil {
 		return "", err
 	}

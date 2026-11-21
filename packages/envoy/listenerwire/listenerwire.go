@@ -66,6 +66,22 @@ type APIError struct {
 	Expected []string `json:"expected,omitempty"`
 }
 
+// EdgeRefusal is the body of an edge listener's refusal of a request its token's projects do not
+// cover (ENVOY_EDGE_PROJECTS). Reason names the rule: token_not_admitted, topic_not_in_project,
+// repository_not_in_project, repositories_unknown, topic_not_published, role_not_in_project,
+// session_not_in_project or legion_registry_not_written. Refused is set on a registration's 403
+// alone: every topic of the request the edge refused, each once, as the request carried it and in
+// its order, which a client drops before it registers the rest again; nothing of such a
+// registration is stored. Reason is repository_not_in_project when every refused topic is a
+// GitHub topic, and topic_not_in_project when any is not. Expected names the request fields the
+// refusal is about.
+type EdgeRefusal struct {
+	Error    string   `json:"error"`
+	Reason   string   `json:"reason"`
+	Refused  []string `json:"refused,omitempty"`
+	Expected []string `json:"expected,omitempty"`
+}
+
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
 type MessageBody struct {
@@ -95,6 +111,11 @@ type SendRequest struct {
 	// switch at all, and on every send of a message whose agents-route request set it. Absent,
 	// which is every other sender and every older client, nothing changes.
 	ConnectedOnly bool `json:"connected_only,omitempty"`
+	// Project is the project the message is of, a project key or "_" (contracts.NoProject). The
+	// listener takes it when given, and otherwise chooses it as KC1 says: the sender's one listed
+	// project, else the target's one, else "_". In the required privacy mode both the sender and
+	// the target must see it. Absent, which is every older client, chooses.
+	Project string `json:"project,omitempty"`
 }
 
 // PublishRequest is the body of POST /v1/messages/publish: a message for a topic, a role's among
@@ -234,13 +255,14 @@ type SessionInfo struct {
 	Roles          []string `json:"roles"`
 	UpdatedAt      int64    `json:"updated_at"`
 	LastSeen       int64    `json:"last_seen"`
-	// Projects is the sorted list of the projects the session's credential names (K6), which
-	// Dispatch reads to filter its agents list and serves to no caller: [] for a credential that
-	// names none. Nil, and so absent, while the listener records no list for the session, so a
-	// list of sessions from a listener that does not is the bytes it always was. It is a pointer
-	// so that the two stay apart on the wire: a list the listener did not send is one Dispatch does
-	// not know, which it must not read as a credential that names no project
-	// (access.SessionClause), and an empty []string under omitempty would send [] as no key.
+	// Projects is the sorted list of the projects the token that made the session's registration
+	// lists (session.SessionEntry.Projects, K6), which Dispatch reads to filter its agents list and
+	// serves to no caller: [] for a registration whose token listed none or presented no broker
+	// token. A listener in the required privacy mode answers it; one in the all-public mode, or one
+	// that records no list for the session, leaves it out (nil), so its answers are the bytes they
+	// always were. It is a pointer so that the two stay apart on the wire: a list the listener did
+	// not send is one Dispatch does not know, which it must not read as a credential that names no
+	// project (access.SessionClause), and an empty []string under omitempty would send [] as no key.
 	Projects *[]string `json:"projects,omitempty"`
 	// The plugin the session registered through and its build; absent for a session whose plugin
 	// predates the fields.
@@ -412,6 +434,10 @@ type SubscribeResponse struct {
 	// Delivery is the session's delivery, present whenever the registration carried a delivery
 	// object.
 	Delivery *DeliveryAnswer `json:"delivery,omitempty"`
+	// Projects is the projects this registration recorded for the session (K6,
+	// SessionInfo.Projects): the registering broker token's list, the empty list for none. Present
+	// only in the required privacy mode, as SessionInfo.Projects is.
+	Projects *[]string `json:"projects,omitempty"`
 }
 
 // DeliveryAnswer is the delivery field of a registration's answer. Every registration the
@@ -491,8 +517,11 @@ type RoleHolder struct {
 	// always sets, so a reader tells an answer that names it from one that does not.
 	LastSeen  *int64 `json:"last_seen"`
 	MachineID string `json:"machine_id"`
-	Role      string `json:"role"`
-	Title     string `json:"title"`
+	// Projects is the holder's registering token's projects (K6, SessionInfo.Projects), the empty
+	// list for none. Present only in the required privacy mode, as SessionInfo.Projects is.
+	Projects *[]string `json:"projects,omitempty"`
+	Role     string    `json:"role"`
+	Title    string    `json:"title"`
 }
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a

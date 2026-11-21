@@ -267,6 +267,9 @@ type bootConfig struct {
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
 	RoleHolderWindows roles.Windows
+	// ProjectPrivacy is DISPATCH_PROJECT_PRIVACY_REQUIRED (projectPrivacyMode): the privacy mode
+	// the outbox's reader of the role and session buckets resolves a role route's holder in.
+	ProjectPrivacy roles.Mode
 	// Embedder is where meaning search embeds text (DISPATCH_EMBEDDER and DISPATCH_AZURE_*),
 	// checked whole; newEmbedder builds its client.
 	Embedder embedderConfig
@@ -818,22 +821,8 @@ func main() {
 			slog.Error("dispatch: open the events outbox's pool", "error", err)
 			os.Exit(1)
 		}
-		// One reader of the role and session buckets serves both: a role route's holder is read
-		// straight from the buckets on the bus client's connection, with no watcher, and judged
-		// by the windows this deployment gave its listeners (roleHolderWindows).
-		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
-		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
-			KeptLanes:        natsClient,
-			PublishFailures:  outboxPublishFailures,
-			RoleForwardsHeld: outboxRoleForwardsHeld,
-			Metrics:          met,
-		})
+		outboxPublisher = outbox.New(outboxDeps(boot, database.Pool, outboxPool, natsClient, broker,
+			outboxPublishFailures, outboxRoleForwardsHeld, met))
 		outboxStopped = make(chan struct{})
 		go func() {
 			defer close(outboxStopped)
@@ -1429,6 +1418,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	if boot.RoleHolderWindows, err = roleHolderWindows(env); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.ProjectPrivacy, err = projectPrivacyMode(env); err != nil {
 		return bootConfig{}, err
 	}
 	for _, setting := range []struct {

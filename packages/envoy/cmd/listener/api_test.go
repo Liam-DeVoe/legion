@@ -2336,7 +2336,7 @@ func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions?dir=example&title=Release", nil)
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, request)
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
@@ -2374,7 +2374,7 @@ func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -2431,7 +2431,7 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 	}
 
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -2479,7 +2479,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	}`), &placed); err != nil {
 		t.Fatalf("decode the registration that names a pane: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names a pane: %v", err)
 	}
 
@@ -2487,7 +2487,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
 		t.Fatalf("decode the registration that names none: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names none: %v", err)
 	}
 
@@ -3431,7 +3431,7 @@ func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -3471,7 +3471,7 @@ func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -3527,7 +3527,7 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
@@ -4157,7 +4157,7 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 	state := &listenerDeps{registry: registry, sessions: sessions}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
@@ -4719,7 +4719,7 @@ func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *test
 	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}

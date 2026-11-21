@@ -195,6 +195,18 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
+	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
+	// one, which relays every frame as it always has. Set before the first relay starts and
+	// read-only after.
+	repositories *edgeRepositories
+	// privacy is the listener's privacy mode (project_privacy.go): in the required mode each frame
+	// of a project is decided against a fresh privacy read, and held while the read is unknown
+	// (privacy_hold.go); nil, or not required, relays every frame as before the modes existed.
+	// Set before the first relay starts and read-only after.
+	privacy *listenerPrivacy
+	// holds is the frames held for each session while their project's privacy is unknown.
+	holds *privacyHolds
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -986,6 +998,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
 		reason := relayCancelledFor(ctx)
 		whole, failed := relayHandOverLines(reason)
+		// The frames this listener held for a session it relays no more are lost with it; the
+		// record's held marker tells the listener the session moves to.
+		if reason == relayCancelNotOurs || reason == relayCancelSessionGone {
+			m.forgetHeld(sessionID)
+		}
 		// The run writes its hand-over line itself rather than the loop that cancelled it: only
 		// once the run's goroutine has given the messages back is it true that this listener
 		// relays the session no more, so a reader, and a test waiting for the hand-over, can
@@ -1017,13 +1034,28 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		return relayRetry
 	}
 	streamID, gap := start.StreamID, start.Gap
+	// A predecessor's held frames, which its record's marker names, are lost to this listener:
+	// the first frame this relay sends carries the hold's gap.
+	m.startHeld(ctx, sessionID)
 	for {
+		// The privacy hold's frames are decided again, or dropped at their limit, when they are
+		// due, between pulls (privacy_hold.go).
+		if due, held := m.heldDue(sessionID); held && !time.Now().Before(due) {
+			if err := m.publishFrames(ctx, run, m.redecideHeld(ctx, sessionID), streamID, &gap); err != nil {
+				return m.publishFailed(ctx, sessionID, err)
+			}
+			continue
+		}
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
-		if deadline, waiting := m.receiptDeadline(run); waiting {
-			if !time.Now().Before(deadline) {
-				return relayPaused
-			}
+		deadline, waiting := m.receiptDeadline(run)
+		if waiting && !time.Now().Before(deadline) {
+			return relayPaused
+		}
+		if due, held := m.heldDue(sessionID); held && (!waiting || due.Before(deadline)) {
+			deadline, waiting = due, true
+		}
+		if waiting {
 			next, cancelNext = context.WithDeadline(ctx, deadline)
 		}
 		msg, err := pull.Next(next)
@@ -1038,20 +1070,81 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
-		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
-			if ctx.Err() != nil {
-				return relayEnded
+		// At the edge a GitHub event reaches the session only while a fresh answer of its
+		// token's projects names the repository the event itself names (relayVerdict). One that
+		// does not is acknowledged undelivered and counted, and while no such answer can be read
+		// the session's next frame carries the gap mark, since the events withheld then are ones
+		// the session may have been owed.
+		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
+			if reason == withheldAnswerUnknown {
+				gap = true
 			}
-			m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-			return relayRetry
+			continue
 		}
-		gap = false
+		// In the required privacy mode each frame of a project is decided against the session's
+		// stored scope and a fresh privacy read: relayed, withheld or held (privacy_hold.go).
+		frames := []bus.SessionMessage{msg}
+		if m.holds != nil {
+			frames = m.decideFrame(ctx, sessionID, msg)
+		}
+		if err := m.publishFrames(ctx, run, frames, streamID, &gap); err != nil {
+			return m.publishFailed(ctx, sessionID, err)
+		}
 	}
 }
 
+// publishFrames publishes each of frames in order (publishFrame), the first carrying the stream's
+// gap mark when gap is set, which it then clears, and each carrying the privacy hold's gap when
+// the hold dropped a frame of the session's since its last relayed frame.
+func (m *sessionRelays) publishFrames(ctx context.Context, run *relayRun, frames []bus.SessionMessage, streamID string, gap *bool) error {
+	for _, frame := range frames {
+		mark := relayGap{set: *gap}
+		if m.takeGap(run.sessionID) {
+			mark = relayGap{set: true, reason: privacyHoldGap}
+		}
+		if err := m.publishFrame(ctx, run, frame, streamID, mark); err != nil {
+			return err
+		}
+		*gap = false
+	}
+	return nil
+}
+
+// publishFailed is the outcome of a relay whose publish of a frame failed with err.
+func (m *sessionRelays) publishFailed(ctx context.Context, sessionID string, err error) relayOutcome {
+	if ctx.Err() != nil {
+		return relayEnded
+	}
+	m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	return relayRetry
+}
+
+// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why, and when
+// it does, acknowledges the message undelivered, counts it and logs it: the consumer holds it no
+// longer, and nothing else is ever sent for it. Every other listener withholds nothing.
+func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
+	if m.repositories == nil {
+		return false, ""
+	}
+	entry, _ := m.sessions.Lookup(sessionID)
+	withhold, reason := m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
+	if !withhold {
+		return false, ""
+	}
+	m.repositories.withheld.Inc([2]string{"reason", reason})
+	if err := msg.Ack(); err != nil {
+		m.logger.Warn("edge listener could not acknowledge a GitHub event it withholds; the consumer delivers it again",
+			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
+		return true, reason
+	}
+	m.logger.Info("edge listener withheld a GitHub event from a session",
+		slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason))
+	return true, reason
+}
+
 // publishFrame publishes msg as a frame on the session's relay subject, its reply subject a token
-// of its own under the listener's reply inbox.
-func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
+// of its own under the listener's reply inbox, with gap's mark.
+func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap relayGap) error {
 	token := strconv.FormatUint(m.nextToken.Add(1), 36)
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
@@ -1068,8 +1161,11 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	header.Set(relayHeaderStreamID, streamID)
 	header.Set(relayHeaderDelivered, strconv.FormatUint(msg.Delivered, 10))
 	header.Set(relayHeaderStoredAt, msg.StoredAt.UTC().Format(time.RFC3339Nano))
-	if gap {
+	if gap.set {
 		header.Set(relayHeaderGap, "true")
+		if gap.reason != "" {
+			header.Set(relayHeaderGapReason, gap.reason)
+		}
 	}
 	return m.delivery.consumers.Publish(ctx, &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),
