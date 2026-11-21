@@ -31,11 +31,6 @@ export interface ClaimSession {
    * registers), or in a session that boots no claim of its own, such as the controller's, which
    * claims its role for itself (`src/controller-session.ts`). */
   readonly firstTurnStarted: () => void;
-  /** This pane's session is shutting down (`legion.ts` calls it from `session_shutdown`, never for
-   * a `task` subagent's event): a role claim the boot is still making again (after a 503, or while
-   * the session holds no relay subject) waits no more and claims no more, so no claim lands after
-   * the session ended and none is refused for a session that is gone. */
-  readonly shutdown: () => void;
 }
 
 /**
@@ -89,6 +84,13 @@ export function createClaimSession(deps: {
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
   readonly exitProcess: (code: number) => never;
+  /** Aborted at this pane's `session_shutdown` (`legion.ts`, never for a `task` subagent's
+   *  event): a role claim the boot is still making again (after a 503, or while the session holds
+   *  no relay subject) waits no more and claims no more. */
+  readonly signal: AbortSignal;
+  /** The first wait before a role claim is made again (`claimRoleAgain`); undefined keeps its own.
+   *  A test sets it short. */
+  readonly roleClaimRetryFirstDelayMs: () => number | undefined;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
@@ -100,7 +102,6 @@ export function createClaimSession(deps: {
   // reported, which does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
   let reportFirstTurn: (() => void) | undefined;
   let turnStarted = false;
-  const shuttingDown = new AbortController();
 
   const boot = async (
     context: SessionContext,
@@ -137,7 +138,8 @@ export function createClaimSession(deps: {
       // The pane's own bound, read from its environment as both watches of this entry read
       // theirs (`stallLimits` in `extensions/legion.ts`).
       firstTurnBoundMs: claimFirstTurnBoundMs(process.env, logger),
-      signal: shuttingDown.signal,
+      signal: deps.signal,
+      roleClaimRetryFirstDelayMs: deps.roleClaimRetryFirstDelayMs(),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",
@@ -167,6 +169,5 @@ export function createClaimSession(deps: {
       turnStarted = true;
       reportFirstTurn?.();
     },
-    shutdown: () => shuttingDown.abort(),
   };
 }

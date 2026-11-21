@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { NoRelaySubjectError } from "@legion/envoy-client/consumer-delivery";
@@ -8,9 +8,10 @@ import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./clai
 import { createLegionDaemonClient } from "./daemon-client";
 import {
   bootLegionClaim,
+  claimAgainCures,
+  claimAgainReason,
   claimRoleAgain,
   type LegionClaimHost,
-  whyClaimAgain,
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
@@ -464,19 +465,88 @@ test("each claim again waits out the wait it logged before it claims", async () 
 });
 
 test("why a claim is made again: the listener's 503 and a missing relay, and nothing else", () => {
-  expect(whyClaimAgain(claimAnswered503())).toBe("was answered 503");
-  expect(whyClaimAgain(new NoRelaySubjectError(NO_RELAY))).toContain("holds no relay subject yet");
-  expect(whyClaimAgain(new Error(NO_RELAY))).toBeUndefined();
-  expect(
-    whyClaimAgain(
-      new EnvoyApiError({
-        method: "POST",
-        url: "http://listener.test/v1/roles/set",
-        status: 409,
-        responseBody: JSON.stringify({ error: "envoy: the role is held by a live session" }),
-      })
+  const conflict = new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 409,
+    responseBody: JSON.stringify({ error: "envoy: the role is held by a live session" }),
+  });
+  expect(claimAgainReason(claimAnswered503())).toBe("busy");
+  expect(claimAgainReason(new NoRelaySubjectError(NO_RELAY))).toBe("no-relay");
+  expect(claimAgainReason(new Error(NO_RELAY))).toBeUndefined();
+  expect(claimAgainReason(conflict)).toBeUndefined();
+  expect(claimAgainCures(claimAnswered503())).toBe(true);
+  expect(claimAgainCures(new NoRelaySubjectError(NO_RELAY))).toBe(true);
+  expect(claimAgainCures(conflict)).toBe(false);
+});
+
+// The steady wait of a pane whose NATS stays down: the wait doubles from 1 s and stops at 30 s.
+// Fake timers drive it, since the real waits would take minutes.
+test("a claim made again waits 1, 2, 4, 8 and 16 s, then 30 s at most, however long the relay stays missing", async () => {
+  jest.useFakeTimers();
+  try {
+    const lines: string[] = [];
+    let tries = 0;
+    const claimed = claimRoleAgain(
+      async () => {
+        if (++tries < 9) throw new NoRelaySubjectError(NO_RELAY);
+      },
+      "implementer",
+      { log: (line) => lines.push(line) }
+    );
+    for (let turn = 0; turn < 8; turn++) {
+      for (let flush = 0; flush < 5; flush++) await Promise.resolve();
+      jest.advanceTimersByTime(30_000);
+    }
+    await claimed;
+    expect(tries).toBe(9);
+    expect(lines.map((line) => /claiming it again in (\d+) ms/.exec(line)?.[1])).toEqual([
+      "1000",
+      "2000",
+      "4000",
+      "8000",
+      "16000",
+      "30000",
+      "30000",
+      "30000",
+    ]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a host that stopped before the first claim claims nothing", async () => {
+  const stopped = new AbortController();
+  stopped.abort();
+  let tries = 0;
+  await expect(
+    claimRoleAgain(
+      async () => {
+        tries += 1;
+      },
+      "implementer",
+      { log: () => {}, signal: stopped.signal }
     )
-  ).toBeUndefined();
+  ).rejects.toThrow("the host stopped first");
+  expect(tries).toBe(0);
+});
+
+// A host that stops before the session's first turn and long before the bound: the bound's timer
+// goes with the stop, and the claim step settles at the stop, having claimed nothing, rather than
+// waiting out the bound for a session the host ended.
+test("a host that stops before the first turn settles its claim step at the stop, and claims nothing", async () => {
+  const stopping = new AbortController();
+  const { host, steps } = claimHost({ overrides: { signal: stopping.signal } });
+  const booted = await bootLegionClaim(host);
+  stopping.abort();
+  // The bound is the helper's 600 s, so only the stop can settle the step inside this window.
+  const settled = await Promise.race([
+    booted.claimed.then(() => "settled"),
+    Bun.sleep(1_000).then(() => "still waiting"),
+  ]);
+  expect(settled).toBe("settled");
+  expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([]);
+  expect(steps).not.toContain("stop");
 });
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {

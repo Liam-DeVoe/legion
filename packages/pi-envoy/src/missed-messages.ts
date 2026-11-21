@@ -228,17 +228,15 @@ export function heldReplayNotices(entries: readonly unknown[]): HeldReplayNotice
   return notices;
 }
 
-/** Whether the newest `INBOUND_OUTAGE_ENTRY` that parses says the session was told it receives
- *  nothing; false for a session whose entries hold none. */
+/** Whether the newest `INBOUND_OUTAGE_ENTRY` says the session was told it receives nothing; false
+ *  for a session whose entries hold none. A newest entry that does not parse reads as not told,
+ *  and is never passed over for an older one: the older entry is no longer what the session was
+ *  last told, and a told record read in its place tells the session the end of an outage whose
+ *  end it may already have been told, where a record misread as not told costs at most a second
+ *  outage notice. */
 export function inboundOutageTold(entries: readonly unknown[]): boolean {
-  const states = customEntries(entries, INBOUND_OUTAGE_ENTRY);
-  for (let index = states.length - 1; index >= 0; index -= 1) {
-    const state = states[index];
-    const told =
-      typeof state === "object" && state !== null ? Reflect.get(state, "told") : undefined;
-    if (typeof told === "boolean") return told;
-  }
-  return false;
+  const newest = customEntries(entries, INBOUND_OUTAGE_ENTRY).at(-1);
+  return typeof newest === "object" && newest !== null && Reflect.get(newest, "told") === true;
 }
 
 /** What a session's entries record for `sessionID` to restore its consumer delivery with

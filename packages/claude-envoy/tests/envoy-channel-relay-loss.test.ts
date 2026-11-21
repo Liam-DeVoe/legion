@@ -9,6 +9,10 @@
 // - the connection closes for good between a `/clear`'s deregistration of the old id and its
 //   registration of the new one: the credential move must wait for the connection that replaces
 //   it, and the outage is told, naming the close;
+// - a `/clear` waits to be taken up while the server still registers under the id Claude Code
+//   left: the connection closed for good before any heartbeat took the `/clear` up, or the
+//   listener refused the old id's DELETE on the new connection; what that registration's answer
+//   would tell is the old id's, and is told to neither conversation;
 // - the relay subscription ends as the session shuts down, with a registration still queued for
 //   it: the leaving session is told no outage, and nothing registers behind the DELETE.
 import { expect, test } from "bun:test"
@@ -24,6 +28,7 @@ import {
   noInterest,
   recordingClient,
   sessionOptions,
+  settled,
   useScratchState,
   waitFor,
 } from "./channel-session-harness"
@@ -43,6 +48,13 @@ function notices(notifier: FakeNotifier, heading: string): string[] {
   return notifier.notifications
     .filter((written) => written.eventId === undefined && written.content.includes(heading))
     .map((written) => written.content)
+}
+
+/** What session `id`'s state file under `directory` says it was last told of its inbound; nothing
+ *  when the file is missing or cannot be read. */
+async function toldInFile(directory: string, id: string): Promise<boolean | undefined> {
+  return (await readReplayState(replayStateFile(directory, id)).catch(() => undefined))
+    ?.inboundOutageTold
 }
 
 test("a relay subscription the server ends with an error is told as an outage naming why, and the next heartbeat takes it again at a new epoch", async () => {
@@ -281,9 +293,7 @@ test("a connection closed for good between a /clear's deregistration and its reg
     // while no connection is live: a server Claude Code starts again on the new id meanwhile
     // tells it the outage's end.
     await waitFor(
-      async () =>
-        (await readReplayState(replayStateFile(directory, NEXT)).catch(() => undefined))
-          ?.inboundOutageTold === true,
+      async () => (await toldInFile(directory, NEXT)) === true,
       "the new id's file recording its outage before the connection is back",
       () => JSON.stringify({ moves, registered }),
     )
@@ -330,9 +340,6 @@ test("a /clear made after the connection closed for good tells the new conversat
   const notifier = new FakeNotifier()
   const reopened = Promise.withResolvers<void>()
   const registered: string[] = []
-  const told = async (id: string): Promise<boolean | undefined> =>
-    (await readReplayState(replayStateFile(directory, id)).catch(() => undefined))
-      ?.inboundOutageTold
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
       connection: first,
@@ -355,7 +362,7 @@ test("a /clear made after the connection closed for good tells the new conversat
   try {
     await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
     await waitFor(
-      async () => (await told(SESSION)) === true,
+      async () => (await toldInFile(directory, SESSION)) === true,
       "the old id told its outage, and its file recording it",
       () => JSON.stringify({ registered }),
     )
@@ -387,9 +394,163 @@ test("a /clear made after the connection closed for good tells the new conversat
     )
     expect(notices(notifier, "Envoy inbound restored")).toEqual([])
     expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
-    expect(await told(SESSION)).toBe(true)
-    expect(await told(NEXT)).not.toBe(true)
+    expect(await toldInFile(directory, SESSION)).toBe(true)
+    expect(await toldInFile(directory, NEXT)).not.toBe(true)
   } finally {
+    await session.shutdown()
+  }
+}, 30_000)
+
+// The `/clear` comes first, and the connection closes for good before any heartbeat takes it up:
+// the registration the close sends still goes out under the id Claude Code left, and is refused
+// for want of a relay subject. Claude Code is on the new conversation already, so the old id's
+// outage told there would reach a conversation that never had it, be recorded in the old id's
+// file as told to a conversation that never saw it, and leave the new id never told its end. The
+// `/clear` waits for the new connection (`handoffWaiting`), and nothing is told meanwhile.
+test("a /clear not yet taken up when the connection closes for good tells the new conversation no outage of the old id's, and records none", async () => {
+  const SESSION = "ses_clear_then_closed"
+  const NEXT = "ses_clear_then_closed_next"
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 785)
+  await writeSessionHandoff(handoff, SESSION)
+  const first = new FakeNats()
+  const second = new FakeNats()
+  const notifier = new FakeNotifier()
+  const reopenAsked = Promise.withResolvers<void>()
+  const reopened = Promise.withResolvers<void>()
+  const registered: string[] = []
+  // A registration the row holds at the listener while the `/clear` is written and the connection
+  // closes, so no heartbeat can take the `/clear` up on the live connection in between.
+  let hold: PromiseWithResolvers<void> | undefined
+  const holding = Promise.withResolvers<void>()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: first,
+      followSession: async () => undefined,
+      notifier,
+      handoffPid: 785,
+      reopen: async () => {
+        reopenAsked.resolve()
+        await reopened.promise
+        return { connection: second, followSession: async () => undefined }
+      },
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          registered.push(input.sessionID)
+          const held = hold
+          hold = undefined
+          if (held !== undefined) {
+            holding.resolve()
+            await held.promise
+          }
+          return noInterest(input.sessionID)
+        },
+      }),
+    }),
+  )
+  const released = Promise.withResolvers<void>()
+  try {
+    hold = released
+    const following = session.follow(["notifications.team.deploy"]).catch(() => [])
+    await holding.promise
+    await writeSessionHandoff(handoff, NEXT)
+    await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
+    // The close is taken up (`connectionClosed`): its registration waits behind the held one.
+    await reopenAsked.promise
+    released.resolve()
+    await following
+    // One more registration through the chain, so the close's own, under the old id and refused,
+    // has run, and a notice it told has been shown, before the new connection opens.
+    await session.follow(["notifications.team.deploy"]).catch(() => [])
+    await settled()
+    reopened.resolve()
+    await waitFor(
+      async () => registered.includes(NEXT) && second.subscriptions.has(deliverSubject(NEXT)),
+      "the /clear completed on the new connection",
+      () => JSON.stringify({ registered }),
+    )
+    expect(notices(notifier, "Envoy inbound unavailable")).toEqual([])
+    expect(notices(notifier, "Envoy inbound restored")).toEqual([])
+    expect(await toldInFile(directory, SESSION)).not.toBe(true)
+    expect(await toldInFile(directory, NEXT)).not.toBe(true)
+  } finally {
+    released.resolve()
+    reopened.resolve()
+    await session.shutdown()
+  }
+}, 30_000)
+
+// The connection closes for good, the session is told it receives nothing, and a `/clear` lands.
+// On the new connection the `/clear` is taken up first, and the listener refuses the old id's
+// DELETE once: the take-up fails before the id switch, and the registration after it goes out
+// under the old id and is accepted. The end of the old id's outage told there would reach the
+// conversation Claude Code moved to, and the old id's file would record an end its own
+// conversation never saw. The `/clear` waits (`handoffWaiting`) for the next heartbeat.
+test("a /clear whose old id's DELETE is refused once on the new connection tells the new conversation no end of the old id's outage, and the old id's file keeps it told", async () => {
+  const SESSION = "ses_closed_clear_refused"
+  const NEXT = "ses_closed_clear_refused_next"
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 787)
+  await writeSessionHandoff(handoff, SESSION)
+  const first = new FakeNats()
+  const second = new FakeNats()
+  const notifier = new FakeNotifier()
+  const reopened = Promise.withResolvers<void>()
+  const registered: string[] = []
+  let deleteRefusals = 0
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: first,
+      followSession: async () => undefined,
+      notifier,
+      heartbeatMs: 25,
+      handoffPid: 787,
+      reopen: async () => {
+        await reopened.promise
+        return { connection: second, followSession: async () => undefined }
+      },
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          registered.push(input.sessionID)
+          return noInterest(input.sessionID)
+        },
+        // The old id's first DELETE is refused: the take-up on the new connection's registration.
+        unregisterSession: async ({ sessionID }) => {
+          if (sessionID !== SESSION || deleteRefusals > 0) return
+          deleteRefusals += 1
+          throw new Error("listener unavailable")
+        },
+      }),
+    }),
+  )
+  try {
+    await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
+    await waitFor(
+      async () => (await toldInFile(directory, SESSION)) === true,
+      "the old id told its outage, and its file recording it",
+      () => JSON.stringify({ registered }),
+    )
+    expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+    await writeSessionHandoff(handoff, NEXT)
+
+    // No registration reaches the listener while no connection is live: the next is the reopen's.
+    const reopenedAt = registered.length
+    reopened.resolve()
+    await waitFor(
+      async () => registered.includes(NEXT) && second.subscriptions.has(deliverSubject(NEXT)),
+      "the /clear completed on the new connection",
+      () => JSON.stringify({ registered, deleteRefusals }),
+    )
+    // The old id's DELETE was refused, and the old id registered on the new connection, accepted,
+    // before the next heartbeat took the `/clear` up.
+    expect(deleteRefusals).toBe(1)
+    expect(registered.slice(reopenedAt, registered.indexOf(NEXT))).toContain(SESSION)
+    expect(notices(notifier, "Envoy inbound restored")).toEqual([])
+    expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+    expect(await toldInFile(directory, SESSION)).toBe(true)
+    expect(await toldInFile(directory, NEXT)).not.toBe(true)
+  } finally {
+    reopened.resolve()
     await session.shutdown()
   }
 }, 30_000)

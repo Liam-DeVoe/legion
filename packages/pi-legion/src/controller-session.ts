@@ -8,7 +8,7 @@ import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
-import { claimRoleAgain, whyClaimAgain } from "@legion/pi-shared/legion-claim-core";
+import { claimAgainCures, claimRoleAgain } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import {
@@ -39,7 +39,7 @@ interface ClaimProgress {
 
 /** Who started a claim: the controller's own claim at `session_start` or after a session change
  * (`daemon`), or a command a person typed (`typed`). It decides how long an answer a later claim
- * cures (`whyClaimAgain`) is waited out. */
+ * cures (`claimAgainCures`) is waited out. */
 type ClaimStarter = "daemon" | "typed";
 
 export interface ControllerSession {
@@ -50,17 +50,13 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
-  /** This session is shutting down (`legion.ts` calls it from `session_shutdown`, never for a
-   * `task` subagent's event): a role claim still being made again waits no more and claims no
-   * more, and the daemon-launched controller does not exit for a claim the shutdown ended. */
-  readonly shutdown: () => void;
 }
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
 const CLAIM_WIDGET = "legion-controller-claim";
 
 /** How many tries a person's controller claim makes while its answer is one a later claim cures
- * (`whyClaimAgain`): four waits of 1, 2, 4 and 8 seconds, then the command fails with the last
+ * (`claimAgainCures`): four waits of 1, 2, 4 and 8 seconds, then the command fails with the last
  * answer. */
 export const CONTROLLER_CLAIM_BUSY_ATTEMPTS = 5;
 
@@ -83,14 +79,15 @@ export function createControllerSession(deps: {
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
   readonly exitProcess: (code: number) => never;
+  /** Aborted at this session's `session_shutdown` (`legion.ts`, never for a `task` subagent's
+   *  event): a role claim still being made again waits no more and claims no more, and the
+   *  daemon-launched controller does not exit for a claim the shutdown ended. */
+  readonly signal: AbortSignal;
   /** The first wait before a role claim is made again (`claimRoleAgain`); undefined keeps its own.
    *  A test sets it short. */
   readonly roleClaimRetryFirstDelayMs: () => number | undefined;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
-  // Aborted at this session's `session_shutdown` (`shutdown`): a role claim still being made again
-  // makes no more, and the daemon-launched controller does not exit for a claim it ended.
-  const shuttingDown = new AbortController();
   // The session the daemon last registered as the controller and the grant minter for its
   // registration's secret, set as soon as that registration is in: the `legion` tool answers for
   // that session from then on, the start turn included, whatever the rest of the claim does.
@@ -250,7 +247,7 @@ export function createControllerSession(deps: {
 
   // A claim of the daemon-launched controller that fails exits Oh My Pi, so the daemon launches it
   // again, except a command a person typed there whose role claim gave up, after its counted
-  // tries, on an answer a later claim cures (`whyClaimAgain`, `claimWith`, `roleClaimGaveUp`): that
+  // tries, on an answer a later claim cures (`claimAgainCures`, `claimWith`, `roleClaimGaveUp`): that
   // command fails where the person reads it, and the process, which still holds what it held,
   // stays. Any other failure of a typed claim, a 503 to its controller-topic subscription after the
   // role landed included, exits as the daemon's own claim does, so a controller never stays up
@@ -266,9 +263,10 @@ export function createControllerSession(deps: {
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
+      // Checked first: a typed claim the shutdown ended is no failure to answer on screen either.
+      if (deps.signal.aborted) return;
       if (startedBy === "typed" && error instanceof Error && roleClaimGaveUp.has(error))
         throw error;
-      if (shuttingDown.signal.aborted) return;
       logger.error(
         `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
       );
@@ -381,7 +379,7 @@ export function createControllerSession(deps: {
       }
       startMessageSent = true;
     }
-    // Two answers to the role claim are cured by a later claim (`whyClaimAgain`): the listener's
+    // Two answers to the role claim are cured by a later claim (`claimAgainCures`): the listener's
     // 503, which wrote nothing - every try met a conflict, or the takeover record a claim writes
     // first did not store - and the session's own refusal because it holds no relay subject yet,
     // its NATS connection not open. Either is made again after a growing wait (`claimRoleAgain`),
@@ -421,27 +419,27 @@ export function createControllerSession(deps: {
       await claimRoleAgain(
         () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
         registration.claimToken,
-        supervised && startedBy === "daemon"
-          ? {
-              log: (line) => {
-                logger.warn(`[legion] ${line}`);
-                showWaiting(line);
-              },
-              firstDelayMs: deps.roleClaimRetryFirstDelayMs(),
-              signal: shuttingDown.signal,
-            }
-          : {
-              log: (line) => {
-                logger.warn(`[legion] ${line}`);
-                const notice = `legion: ${line}`;
-                waitNotices.add(notice);
-                ui.notify(notice, "info");
-                if (ui.setWidget !== undefined) showWaiting(line);
-              },
-              firstDelayMs: deps.roleClaimRetryFirstDelayMs(),
-              signal: shuttingDown.signal,
-              maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
-            }
+        {
+          firstDelayMs: deps.roleClaimRetryFirstDelayMs(),
+          signal: deps.signal,
+          ...(supervised && startedBy === "daemon"
+            ? {
+                log: (line: string) => {
+                  logger.warn(`[legion] ${line}`);
+                  showWaiting(line);
+                },
+              }
+            : {
+                log: (line: string) => {
+                  logger.warn(`[legion] ${line}`);
+                  const notice = `legion: ${line}`;
+                  waitNotices.add(notice);
+                  ui.notify(notice, "info");
+                  if (ui.setWidget !== undefined) showWaiting(line);
+                },
+                maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
+              }),
+        }
       );
     } catch (error) {
       // A claim that gave up, met any other refusal, or was ended by the session's shutdown takes
@@ -454,7 +452,7 @@ export function createControllerSession(deps: {
       // An answer a later claim cures, thrown here, is the role claim giving up after its counted
       // tries or at the session's shutdown, the one failure a typed claim of the daemon-launched
       // controller is answered on screen for (`claimOnce`).
-      if (error instanceof Error && whyClaimAgain(error) !== undefined) roleClaimGaveUp.add(error);
+      if (error instanceof Error && claimAgainCures(error)) roleClaimGaveUp.add(error);
       throw error;
     }
     // The role is held: the waiting line comes down now, so a step after it that fails (the
@@ -573,6 +571,9 @@ export function createControllerSession(deps: {
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
+        // A claim the session's shutdown ended is no failure to show: the session it claimed for
+        // is gone, and its last claim met the Envoy instance the shutdown took away.
+        if (deps.signal.aborted) return;
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
         // Refused before the send: the start `session_start` marked due is not coming, so the
@@ -741,6 +742,5 @@ export function createControllerSession(deps: {
     startCommand,
     isClaimedSession,
     mintGrant,
-    shutdown: () => shuttingDown.abort(),
   };
 }

@@ -8,8 +8,11 @@ body: |-
   outage. A claim a person types (`/legion-claim-controller`, `/legion-controller-start`) tries 5
   times on this refusal too, and then fails on screen; in a controller the daemon launched, the
   process now stays up, where before it exited. Neither a pane's claim nor the controller's makes
-  more claims once its session shuts down, and the controller no longer logs a failed claim and
-  exits 1 for a claim its shutdown ended.
+  more claims once its session shuts down, and no controller logs a failed claim or exits 1 for a
+  claim its shutdown ended; a `task` subagent's shutdown ends none of them. A relay that never
+  opens now leaves the pane running without its role, instead of relaunching it until
+  `launch_failure_limit`: the lasting outage shows as the claim's log line at each wait (every 30 s
+  at most) and as the session's "Envoy inbound unavailable" notice.
 time: 2026-11-20T14:07:49Z
 custom:
     Issue: pr4617

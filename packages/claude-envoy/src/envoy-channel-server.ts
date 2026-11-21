@@ -16,9 +16,6 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
-  inboundRestoredNoticeText,
-  inboundUnavailable,
-  inboundUnavailableNoticeText,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
@@ -46,6 +43,12 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import {
+  type InboundUnavailable,
+  inboundRestoredNoticeText,
+  inboundUnavailable,
+  inboundUnavailableNoticeText,
+} from "@legion/envoy-client/inbound-outage"
 import { machineID } from "@legion/envoy-client/machine"
 import {
   type SessionConfigFile,
@@ -914,6 +917,14 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   let handoffDeliveryPending = false
 
   /**
+   * Whether a `/clear` waits to be taken up (`adoptHandoff`): it was read while the connection was
+   * closed for good, or its take-up failed before the id switch. Claude Code is on the new
+   * conversation already, while the server still registers under the id it left, so meanwhile a
+   * registration tells the outage report nothing (`handoffWaitingOutage`).
+   */
+  let handoffWaiting = false
+
+  /**
    * What this session was already shown, and the notice naming a frame it could not be shown
    * (`@legion/envoy-client/delivery-ledger`), with its state in the session id's file.
    */
@@ -946,11 +957,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   /**
    * Binds the current id's state file: the ledger's record, the file's writer, and the consumer
-   * delivery state its relay opens with (`restoreDelivery`, or `register` after a handoff). A file
-   * that cannot be read starts the session's record over; its next write replaces the file. What
-   * the file says the session was last told of its inbound is read into the outage report
-   * (`inboundOutage.recordRead`), which is the bound id's from here: an outage an earlier process
-   * of this server told and did not live to end (Claude Code started the server again
+   * delivery state its relay opens with (`openBoundRelay`, at the start, or in `register` after a
+   * handoff). A file that cannot be read starts the session's record over; its next write replaces
+   * the file. What the file says the session was last told of its inbound is read into the outage
+   * report (`inboundOutage.recordRead`), which is the bound id's from here: an outage an earlier
+   * process of this server told and did not live to end (Claude Code started the server again
    * mid-session) is taken up, so its first accepted registration tells the session it receives
    * again; a file that says nothing of one leaves the id untold, so its own refusal tells it, and
    * the end of an outage the id it left was told is never told to it. A `/clear` binds the new
@@ -978,19 +989,19 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
-   * Binds the current id's state file (`bindStateFile`) and opens the id's relay on the consumer
-   * delivery state it holds, whose subject it subscribes (`openRelay`). Returns the topics it
-   * followed that a restore follows again (`rememberedTopics`).
+   * Opens the current id's relay on the consumer delivery state its file held (`openRelay`). Each
+   * caller binds that file first (`bindStateFile`): the start, and a `/clear` (`adoptHandoff`),
+   * whose relay opens at the first registration on a live connection (`register`). A relay opened
+   * on another id's file would record what one id is shown in another id's file, so a bound file
+   * that is not the current id's is a broken invariant, and is thrown rather than opened.
    */
-  const restoreDelivery = async (): Promise<readonly string[]> => {
-    const snapshot = await bindStateFile()
-    openBoundRelay()
-    return rememberedTopics(snapshot.state?.topics)
-  }
-
-  /** Opens the bound id's relay on the consumer delivery state its file held (`openRelay`). */
   const openBoundRelay = (): void => {
-    if (bound !== undefined) openRelay(bound.sessionId, bound.writer, bound.consumer)
+    if (bound?.sessionId !== identity.id) {
+      throw new Error(
+        `internal error: the relay of ${identity.id} was to open on the state file of ${bound?.sessionId ?? "no session"}, but each caller binds the current id's file first (bindStateFile)`,
+      )
+    }
+    openRelay(bound.sessionId, bound.writer, bound.consumer)
   }
 
   /**
@@ -1357,32 +1368,48 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       process.stderr.write(
         `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
       )
-      const addressed = identity.id
-      delivery.notice(inboundUnavailableNoticeText(why), addressed).then(
-        () => recordInboundOutage(addressed, true),
-        (noticeError: unknown) => {
-          process.stderr.write(
-            `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
-          )
-        },
-      )
+      showInboundNotice(inboundUnavailableNoticeText(why), true)
     },
     () => {
       if (shuttingDown) return
       process.stderr.write(
         "envoy-channel: this session receives again: its registration was accepted\n",
       )
-      const addressed = identity.id
-      delivery.notice(inboundRestoredNoticeText(), addressed).then(
-        () => recordInboundOutage(addressed, false),
-        (noticeError: unknown) => {
-          process.stderr.write(
-            `envoy-channel: the session could not be told that it receives again — ${messageFor(noticeError)}\n`,
-          )
-        },
-      )
+      showInboundNotice(inboundRestoredNoticeText(), false)
     },
   )
+
+  /**
+   * The outage report a registration carries while a `/clear` waits (`handoffWaiting`): a refusal
+   * or an acceptance under the id Claude Code left tells nothing and leaves the report as it was.
+   * Told now, it would reach the conversation Claude Code moved to, which never heard of the old
+   * id's outage, and would be recorded in the old id's file as told to a conversation that never
+   * saw it. The new id's own record is read into the report when the `/clear` is taken up
+   * (`bindStateFile`), and a refusal after that tells the new id.
+   */
+  const handoffWaitingOutage: InboundUnavailable = {
+    refused: () => undefined,
+    accepted: () => undefined,
+    recordRead: (told) => inboundOutage.recordRead(told),
+  }
+
+  /**
+   * Shows the session one notice of its inbound (`inboundOutage`): the outage when `told` is true,
+   * its end when false. The notice is addressed to the id that is current as it is said, and is
+   * recorded as what that id was last told only once it was shown (`recordInboundOutage`); one
+   * that could not be shown is logged and records nothing.
+   */
+  function showInboundNotice(text: string, told: boolean): void {
+    const addressed = identity.id
+    delivery.notice(text, addressed).then(
+      () => recordInboundOutage(addressed, told),
+      (noticeError: unknown) => {
+        process.stderr.write(
+          `envoy-channel: the session could not be told that it receives ${told ? "nothing" : "again"} — ${messageFor(noticeError)}\n`,
+        )
+      },
+    )
+  }
 
   /**
    * Records what session `sessionId` was last told of its inbound, once the notice that told it
@@ -1427,9 +1454,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       await followSession?.()
       if (shuttingDown) return
       // A refused subscription is closed by nats.js, not restored by its next reconnect, so no
-      // new relay opens until the connection has been admitted as this session. The id's file
-      // was bound at the handoff (`adoptHandoff`).
-      if (bound?.sessionId !== identity.id) await bindStateFile()
+      // new relay opens until the connection has been admitted as this session. It opens on the
+      // delivery state of the id's file, which the handoff bound (`adoptHandoff`).
       openBoundRelay()
       handoffDeliveryPending = false
       // Confirm the new relay before asking the listener to deliver to it. A stalled flush is
@@ -1483,7 +1509,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       ownAgentSubject: directSubject,
       followed: followedTopics.topics(),
       roles: heldRole === undefined ? [] : [heldRole],
-      outage: inboundOutage,
+      outage: handoffWaiting ? handoffWaitingOutage : inboundOutage,
       send: (topics, deliveryRequest) => {
         const registering = options.client.subscribe({
           sessionID,
@@ -1742,13 +1768,20 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const adoptHandoff = async (): Promise<void> => {
     if (handoffFile === undefined) return
     const next = await readSessionHandoff(handoffFile)
-    if (next === undefined || next === identity.id) return
+    if (next === undefined || next === identity.id) {
+      handoffWaiting = false
+      return
+    }
     // While the connection is closed for good the handoff waits for the one that replaces it,
     // whose registration takes it up (`reopenFor`): the old id keeps what it was told of its
     // inbound, in its own file, and the conversation Claude Code moved to is told nothing of an
-    // outage it never heard of. Taken up here instead, on a connection a reopen has set but not
-    // yet admitted, the new id would be told a refusal and its end in the same breath.
-    if (connectionLost !== undefined) return
+    // outage it never heard of (`handoffWaiting`). Taken up here instead, on a connection a reopen
+    // has set but not yet admitted, the new id would be told a refusal and its end in the same
+    // breath.
+    if (connectionLost !== undefined) {
+      handoffWaiting = true
+      return
+    }
     const previous = identity.id
     const previousSubject = directSubject
     const nextSubject = legacyAgentSubject(next)
@@ -1768,11 +1801,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     } catch (error) {
       // The session stays on the old id until a later tick retries, so the new
       // subject leaves the topic list; otherwise the next registration would
-      // advertise it under the old id.
+      // advertise it under the old id. The handoff still waits (`handoffWaiting`).
       followedTopics.unfollow([nextSubject])
+      handoffWaiting = true
       throw error
     }
     identity.set(next)
+    handoffWaiting = false
     options.adopted?.(previous, next)
     // The last call for the old id has been made (its deregistration above; the role moves to
     // the new id under the new id's own credential, `restoreRole`), so the key pair and
@@ -1809,9 +1844,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * record it as told in a file whose conversation never saw it. A handoff that fails before the
    * id switch (its flush is refused on a connection closed for good, or the listener refuses the
    * old id's DELETE) leaves this registration to the id the server is still on, as before the
-   * handoff was read, and the heartbeat takes the handoff up again and reports its failure. One
-   * that fails after the switch already sent the new id's registration, so its error is this
-   * registration's. Runs only inside `serialized`.
+   * handoff was read, but tells its answer to no one (`handoffWaiting`), and the heartbeat takes
+   * the handoff up again and reports its failure. One that fails after the switch already sent
+   * the new id's registration, so its error is this registration's. Runs only inside
+   * `serialized`.
    */
   const registerCurrent = async (): Promise<void> => {
     const before = identity.id
@@ -2011,7 +2047,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // relay comes with it too, restored and subscribed before the first registration asks for it;
   // on a connection already closed for good it is subscribed on the one that replaces it
   // (`subscribeRelay`), as the flush below finds.
-  const remembered = await restoreDelivery()
+  const restored = await bindStateFile()
+  openBoundRelay()
+  const remembered = rememberedTopics(restored.state?.topics)
   // What this session has already done with the messages Dispatch sent it, before any frame can
   // arrive: an attempt a process before this one spent must not be spent again.
   await restoreTurns()

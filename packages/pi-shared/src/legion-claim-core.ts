@@ -27,7 +27,7 @@ export interface LegionClaimHost {
    * has answered, at the session's first turn (`onFirstTurn`) or at the bound, whichever comes
    * first — at once where the turn started while ready was still being retried. Throws when the
    * role cannot be held, which is logged and stops the session; an answer a later claim cures
-   * (`whyClaimAgain`) is claimed again instead (`claimRoleAtFirstTurn`). */
+   * (`claimAgainReason`) is claimed again instead (`claimRoleAtFirstTurn`). */
   readonly claimRole: (role: string) => Promise<void>;
   /** Hands the host `started`, the signal to call once the session's first turn has started —
    * whatever started it: the daemon's task, a card, a reminder. It is called as soon as
@@ -56,9 +56,9 @@ export interface LegionClaimHost {
    * reads from its own environment and which holds the default. */
   readonly firstTurnBoundMs: number;
   /** The first wait before the role is claimed again after an answer a later claim cures
-   * (`whyClaimAgain`), doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset,
+   * (`claimAgainReason`), doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset,
    * `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`; a test sets it short. */
-  readonly roleClaimRetryFirstDelayMs?: number;
+  readonly roleClaimRetryFirstDelayMs?: number | undefined;
   /** Aborts when the host stops: a claim is not made again after it, and a wait under way ends. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
@@ -79,7 +79,7 @@ export interface LegionClaimBoot {
    * stopped, or the claim ended by the host's stop (`signal`) with nothing logged and no stop —
    * and at once for a boot that stopped before it ever reached the step. It never rejects: a
    * claim the listener refuses is the host's `stop`, not this promise's failure, and an answer a
-   * later claim cures (`whyClaimAgain`: the listener's 503, or the session's own refusal for want
+   * later claim cures (`claimAgainReason`: the listener's 503, or the session's own refusal for want
    * of a relay subject) is claimed again until it lands, is refused, or the host stops. */
   readonly claimed: Promise<void>;
 }
@@ -217,7 +217,7 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
  * registration takes. Two answers are no refusal, because a later claim cures them
- * (`whyClaimAgain`): the listener's 503, and the session's own refusal because it holds no relay
+ * (`claimAgainReason`): the listener's 503, and the session's own refusal because it holds no relay
  * subject yet. The claim is made again after a wait that starts at `roleClaimRetryFirstDelayMs`
  * and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log line per wait, until it lands,
  * is refused, or the host stops (`signal`). The session stays up meanwhile and its first turn
@@ -236,6 +236,7 @@ function claimRoleAtFirstTurn(
     if (ran) return;
     ran = true;
     clearTimeout(bound);
+    host.signal?.removeEventListener("abort", stopped);
     void (async () => {
       try {
         await claimRoleAgain(() => host.claimRole(role), role, {
@@ -249,8 +250,18 @@ function claimRoleAtFirstTurn(
       done.resolve();
     })();
   };
+  // The host stopped before the step ran: the bound's timer goes with it, and the step answers
+  // having claimed nothing, so no claim is made for a session the host ended.
+  const stopped = (): void => {
+    if (ran) return;
+    ran = true;
+    clearTimeout(bound);
+    done.resolve();
+  };
   const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
+  if (host.signal?.aborted) stopped();
+  else host.signal?.addEventListener("abort", stopped, { once: true });
   firstTurn(claim);
   return done.promise;
 }
@@ -261,7 +272,7 @@ const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
  * Makes `claim`, a claim of Envoy role `role`, and makes it again while its answer is one a later
- * claim cures (`whyClaimAgain`): the listener's 503, or the session's own refusal because it
+ * claim cures (`claimAgainReason`): the listener's 503, or the session's own refusal because it
  * holds no relay subject yet. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS`
  * unset) and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the
  * attempt, why it is made again, and the answer; the timer is unref'd, so it holds no process
@@ -281,15 +292,23 @@ export async function claimRoleAgain(
     readonly maxAttempts?: number | undefined;
   }
 ): Promise<void> {
+  // A host that stopped before the first claim claims nothing: there is no answer yet to throw.
+  if (options.signal?.aborted) {
+    throw new Error(`claim of Envoy role ${role} was not made: the host stopped first`);
+  }
   let wait = options.firstDelayMs ?? ROLE_CLAIM_RETRY_FIRST_DELAY_MS;
   for (let attempt = 1; ; attempt++) {
     try {
       await claim();
       return;
     } catch (error) {
-      const why = whyClaimAgain(error);
-      if (why === undefined || options.signal?.aborted) throw error;
+      const reason = claimAgainReason(error);
+      if (reason === undefined || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
+      const why =
+        reason === "busy"
+          ? "was answered 503"
+          : "was refused before the listener was asked, because this session holds no relay subject yet,";
       options.log(
         `claim of Envoy role ${role} ${why} at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
       );
@@ -309,23 +328,30 @@ export async function claimRoleAgain(
   }
 }
 
+/** Why a role claim's failure is one a later claim cures (`claimAgainReason`). */
+export type ClaimAgainReason = "busy" | "no-relay";
+
 /**
- * Why `error`, a role claim's failure, is one a later claim cures, as the claim's log line says
- * it; undefined for every other failure. Two are:
- * - The listener's 503 (`listenerAskedToClaimAgain`): it wrote no claim - every try of its write
- *   met a conflict, or the takeover record a claim writes first, for the holder it takes the
+ * Why `error`, a role claim's failure, is one a later claim cures; undefined for every other
+ * failure. Two are:
+ * - `busy`, the listener's 503 (`listenerAskedToClaimAgain`): it wrote no claim - every try of its
+ *   write met a conflict, or the takeover record a claim writes first, for the holder it takes the
  *   role from, did not store - and asks for the claim again (`Retry-After`).
- * - The session's own refusal before the listener was asked, because it holds no relay subject
- *   yet (`isNoRelaySubjectRefusal`): its NATS connection is not open. pi-envoy dials NATS again
- *   on its own, and each claim of a session it has not yet established runs a pass of its own
- *   that dials again (`establishForBridge`), so a later claim finds the subject once NATS answers.
+ * - `no-relay`, the session's own refusal before the listener was asked, because it holds no relay
+ *   subject yet (`isNoRelaySubjectRefusal`): its NATS connection is not open. pi-envoy dials NATS
+ *   again on its own, and each claim of a session it has not yet established runs a pass of its
+ *   own that dials again (`establishForBridge`), so a later claim finds the subject once NATS
+ *   answers.
  */
-export function whyClaimAgain(error: unknown): string | undefined {
-  if (listenerAskedToClaimAgain(error)) return "was answered 503";
-  if (isNoRelaySubjectRefusal(error)) {
-    return "was refused before the listener was asked, because this session holds no relay subject yet,";
-  }
+export function claimAgainReason(error: unknown): ClaimAgainReason | undefined {
+  if (listenerAskedToClaimAgain(error)) return "busy";
+  if (isNoRelaySubjectRefusal(error)) return "no-relay";
   return undefined;
+}
+
+/** Whether a later claim cures `error`, a role claim's failure (`claimAgainReason`). */
+export function claimAgainCures(error: unknown): boolean {
+  return claimAgainReason(error) !== undefined;
 }
 
 /**

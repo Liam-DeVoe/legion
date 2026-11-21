@@ -9,8 +9,6 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
-  inboundRestoredNoticeText,
-  inboundUnavailable,
   NoRelaySubjectError,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
@@ -19,6 +17,7 @@ import {
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
+import { inboundRestoredNoticeText, inboundUnavailable } from "../inbound-outage";
 import type { DeliveryAnswer } from "../transport";
 
 const SESSION = "ses_a";
@@ -1154,6 +1153,32 @@ describe("one registration", () => {
     };
   }
 
+  /**
+   * One session's outage report (`inboundUnavailable`), and a registration under it that the
+   * listener refuses (`no_grant`) or accepts, as the row says. `told` lists what the report told
+   * the session, in order: the listener's reason for an outage, and `restored` for its end.
+   */
+  function outageHarness() {
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    const register = (answer: "refused" | "accepted") =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () =>
+          answer === "refused"
+            ? Promise.reject(new Error("no_grant"))
+            : Promise.resolve("registered"),
+        answered: () => undefined,
+      }).catch(() => undefined);
+    return { told, outage, register };
+  }
+
   test("carries the topics the listener will store, and takes the answer", async () => {
     const relay = fakeRelay();
     const told: string[] = [];
@@ -1258,130 +1283,54 @@ describe("one registration", () => {
   });
 
   test("a registration accepted after an outage tells the session once that it receives again", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
-    let refuse = true;
-    const register = () =>
-      registerWithRelay({
-        relay: fakeRelay(),
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: () =>
-          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
-        answered: () => undefined,
-      }).catch(() => undefined);
+    const { told, register } = outageHarness();
 
-    await register();
-    await register();
-    refuse = false;
-    await register();
+    await register("refused");
+    await register("refused");
+    await register("accepted");
     // A heartbeat that is accepted again says nothing: the session already knows.
-    await register();
+    await register("accepted");
     expect(told).toEqual(["no_grant", "restored"]);
     // A second outage is told again, and its end too.
-    refuse = true;
-    await register();
-    refuse = false;
-    await register();
+    await register("refused");
+    await register("accepted");
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
     expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
   });
 
   test("an outage an earlier process told is ended by this process's first accepted registration", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
-    let refuse = true;
-    const register = () =>
-      registerWithRelay({
-        relay: fakeRelay(),
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: () =>
-          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
-        answered: () => undefined,
-      }).catch(() => undefined);
+    const { told, outage, register } = outageHarness();
 
     // The session's record says it was told it receives nothing: a refusal tells it nothing new,
     // and the first accepted registration tells it the outage ended.
     outage.recordRead(true);
-    await register();
-    refuse = false;
-    await register();
-    await register();
+    await register("refused");
+    await register("accepted");
+    await register("accepted");
     expect(told).toEqual(["restored"]);
   });
 
   test("a take-up is the bound session's: a session whose record is not told is never told the end of another's outage", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
-    let refuse = true;
-    const register = () =>
-      registerWithRelay({
-        relay: fakeRelay(),
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: () =>
-          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
-        answered: () => undefined,
-      }).catch(() => undefined);
+    const { told, outage, register } = outageHarness();
 
     // Session B's record is told and is taken up; a refusal under it tells nothing. The host then
     // binds session C, whose record is not told, before any registration is accepted.
     outage.recordRead(true);
-    await register();
+    await register("refused");
     outage.recordRead(false);
-    refuse = false;
-    await register();
+    await register("accepted");
     expect(told).toEqual([]);
   });
 
   test("an outage this process told one session is that session's: the session bound after it is told its own outage and its end, and never the other's end", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
-    let refuse = true;
-    const register = () =>
-      registerWithRelay({
-        relay: fakeRelay(),
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: () =>
-          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
-        answered: () => undefined,
-      }).catch(() => undefined);
+    const { told, outage, register } = outageHarness();
 
     // Session A is told the outage. The host then binds session B, whose record says nothing:
     // B's own refusal tells B, and the accepted registration ends B's outage.
-    await register();
+    await register("refused");
     outage.recordRead(false);
-    await register();
-    refuse = false;
-    await register();
+    await register("refused");
+    await register("accepted");
     expect(told).toEqual(["no_grant", "no_grant", "restored"]);
-    // Session A again, its outage taken up from its record; then C, before anything is accepted.
-    // C was told nothing, so the accepted registration tells it nothing.
-    told.length = 0;
-    refuse = true;
-    outage.recordRead(true);
-    await register();
-    outage.recordRead(false);
-    refuse = false;
-    await register();
-    expect(told).toEqual([]);
   });
 });

@@ -79,14 +79,13 @@ export function replayStateWriter(file: string, restored: ReplayStateFile): Repl
     return run
   }
   return {
-    ledger: (snapshot) =>
-      write({
-        ...snapshot,
-        ...(current.consumer === undefined ? {} : { consumer: current.consumer }),
-        ...(current.inboundOutageTold === undefined
-          ? {}
-          : { inboundOutageTold: current.inboundOutageTold }),
-      }),
+    ledger: (snapshot) => {
+      // Every part but the ledger's is kept as it stands, without naming it, so a part added to
+      // the file later is kept too. The ledger's snapshot replaces `state` and `ledger` whole
+      // (`LedgerSnapshotSchema` holds only those), and one without a `state` leaves none.
+      const { ledger: _ledger, state: _state, ...others } = current
+      return write({ ...others, ...snapshot })
+    },
     consumer: (snapshot) => write({ ...current, consumer: snapshot }),
     inboundOutage: (told) => write({ ...current, inboundOutageTold: told }),
     idle: () => writing,

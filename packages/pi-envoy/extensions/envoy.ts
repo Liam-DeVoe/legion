@@ -40,9 +40,6 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
-  inboundRestoredNoticeText,
-  inboundUnavailable,
-  inboundUnavailableNoticeText,
   NoRelaySubjectError,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
@@ -100,6 +97,11 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings";
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
+import {
+  inboundRestoredNoticeText,
+  inboundUnavailable,
+  inboundUnavailableNoticeText,
+} from "@legion/envoy-client/inbound-outage";
 import { machineID } from "@legion/envoy-client/machine";
 import {
   connectNats,

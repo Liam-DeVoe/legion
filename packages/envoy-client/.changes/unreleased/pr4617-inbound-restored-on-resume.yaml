@@ -7,7 +7,9 @@ body: |-
   tells it, and it is never told the end of an outage another session was told.
   `NoRelaySubjectError` is named `NoRelaySubjectError`, and `isNoRelaySubjectRefusal` (`./errors`)
   tells it by that name, following its `cause` chain, across the copies of this package each plugin
-  bundles.
+  bundles. The outage report (`inboundUnavailable`, `InboundUnavailable`,
+  `inboundUnavailableNoticeText` and `inboundRestoredNoticeText`) moves from `./consumer-delivery`
+  to its own export, `./inbound-outage`.
 time: 2026-11-20T14:07:49Z
 custom:
     Issue: pr4617

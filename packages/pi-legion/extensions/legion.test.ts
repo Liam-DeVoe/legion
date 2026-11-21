@@ -103,7 +103,7 @@ import type {
   setLegionCapabilityBudgetsForTests as SetLegionCapabilityBudgetsForTests,
   setLegionCapabilityHostForTests as SetLegionCapabilityHostForTests,
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
-  setLegionControllerClaimRetryDelayForTests as SetLegionControllerClaimRetryDelayForTests,
+  setLegionClaimRetryDelayForTests as SetLegionClaimRetryDelayForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
 
@@ -309,7 +309,7 @@ let setLegionBootstrapExitForTests: typeof SetLegionBootstrapExitForTests;
 let setLegionCapabilityBudgetsForTests: typeof SetLegionCapabilityBudgetsForTests;
 let setLegionCapabilityHostForTests: typeof SetLegionCapabilityHostForTests;
 let setLegionCapabilitySendTimeoutForTests: typeof SetLegionCapabilitySendTimeoutForTests;
-let setLegionControllerClaimRetryDelayForTests: typeof SetLegionControllerClaimRetryDelayForTests;
+let setLegionClaimRetryDelayForTests: typeof SetLegionClaimRetryDelayForTests;
 let setLegionStallProcessesForTests: typeof SetLegionStallProcessesForTests;
 
 beforeAll(async () => {
@@ -332,8 +332,7 @@ beforeAll(async () => {
   setLegionCapabilityBudgetsForTests = legionEntry.setLegionCapabilityBudgetsForTests;
   setLegionCapabilityHostForTests = legionEntry.setLegionCapabilityHostForTests;
   setLegionCapabilitySendTimeoutForTests = legionEntry.setLegionCapabilitySendTimeoutForTests;
-  setLegionControllerClaimRetryDelayForTests =
-    legionEntry.setLegionControllerClaimRetryDelayForTests;
+  setLegionClaimRetryDelayForTests = legionEntry.setLegionClaimRetryDelayForTests;
   setLegionStallProcessesForTests = legionEntry.setLegionStallProcessesForTests;
   // The suite's baseline is "not a Legion pane": every key above except HOME starts unset, and
   // `beforeEach` deletes them again before each test and hands on the Envoy entry's file as
@@ -487,7 +486,7 @@ afterEach(async () => {
   // The same for the bound on one `claims/ready` the schedule sends: back to the real 10 s.
   setLegionCapabilitySendTimeoutForTests(undefined);
   // And the controller's first wait before it claims again: back to `claimRoleAgain`'s own 1 s.
-  setLegionControllerClaimRetryDelayForTests(undefined);
+  setLegionClaimRetryDelayForTests(undefined);
   // And the stall watch's process half: back to the real `/proc` reader and `process.kill`, which
   // no test may be left pointing at.
   setLegionStallProcessesForTests(undefined);
@@ -1364,6 +1363,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       natsConnectGates.set("omp-ses_pane_norelay", async () => {
         throw new Error("nats: connection refused");
       });
+      // A short first wait (20 ms, doubling), so the window below holds several waits.
+      setLegionClaimRetryDelayForTests(20);
       const pane = await claimPane({ role: "implementer", sessionId: "ses_pane_norelay" });
       const lines: string[] = [];
       try {
@@ -1381,9 +1382,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
             1
           );
           await pane.handlers.get("session_shutdown")?.({}, pane.context);
-          // The first wait is 1 s; a claim after it would have run and stopped the pane well
-          // inside this window, and the waits only lengthen under load.
-          await new Promise((resolve) => setTimeout(resolve, 2_500));
+          // The waits are 20, 40, 80 and 160 ms: a claim after any of them would have run and
+          // stopped the pane well inside this window. An absence needs the time to pass.
+          await Bun.sleep(500);
         } finally {
           errorLog.mockRestore();
         }
@@ -1392,6 +1393,44 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         expect(lines.filter((line) => line.includes("holds no relay subject yet"))).toHaveLength(1);
       } finally {
         natsConnectGates.delete("omp-ses_pane_norelay");
+      }
+    });
+
+    // A `task` subagent's session ends inside the pane's process, and the host hands its
+    // `session_shutdown` to the pane's instance too. It ends only the subagent: the pane's own
+    // claim, made again while the session holds no relay subject, goes on and claims again. Only
+    // legion.ts's own handler is driven (the last bound): the Envoy entry is not the subject here.
+    test("a subagent's session_shutdown leaves the worker's role claim made again for want of a relay subject going", async () => {
+      natsConnectGates.set("omp-ses_pane_sub_shutdown", async () => {
+        throw new Error("nats: connection refused");
+      });
+      setLegionClaimRetryDelayForTests(20);
+      const pane = await claimPane({ role: "implementer", sessionId: "ses_pane_sub_shutdown" });
+      const lines: string[] = [];
+      const waits = (): number =>
+        lines.filter((line) => line.includes("holds no relay subject yet")).length;
+      try {
+        await pane.start();
+        const errorLog = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+          lines.push(args.map(String).join(" "));
+        });
+        try {
+          await pane.handlers.get("agent_start")?.({}, pane.context);
+          for (let turn = 0; turn < 2_000 && waits() === 0; turn++) await Bun.sleep(5);
+          expect(waits()).toBeGreaterThan(0);
+          const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+          await pane.handlersFor("session_shutdown").at(-1)?.({}, subagent);
+          const after = waits();
+          for (let turn = 0; turn < 2_000 && waits() <= after; turn++) await Bun.sleep(5);
+        } finally {
+          errorLog.mockRestore();
+        }
+        expect(waits()).toBeGreaterThan(1);
+        expect(pane.exits).toEqual([]);
+        expect(lines.filter((line) => line.includes("claim boot failed"))).toEqual([]);
+      } finally {
+        natsConnectGates.delete("omp-ses_pane_sub_shutdown");
+        await pane.handlers.get("session_shutdown")?.({}, pane.context);
       }
     });
 
@@ -5769,7 +5808,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         throw new Error("nats: connection refused");
       }
     });
-    setLegionControllerClaimRetryDelayForTests(1);
+    setLegionClaimRetryDelayForTests(1);
     const controller = await launchedController({
       sessionId: "ses_controller_six",
       stateFixture: "state-controller-claim.json",
@@ -5947,6 +5986,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     delete process.env.LEGION_CONTROLLER_START_MESSAGE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     process.env.LEGION_SLACK_CHANNELS = "";
+    setLegionClaimRetryDelayForTests(1);
     const notices: CommandNotice[] = [];
     let failure: unknown;
     try {
@@ -6036,6 +6076,42 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect((shown.at(-1)?.lines ?? []).filter((line) => line.includes("was answered 503"))).toEqual(
       []
     );
+  });
+
+  // `/legion-controller-start` in an operator's controller whose role claim waits out a 503 when
+  // Oh My Pi quits: the shutdown ends the claim, and the command shows no failure and logs none,
+  // since the session it claimed for is gone.
+  test("an operator controller's start command whose role claim the session's shutdown ended shows and logs no failed claim", async () => {
+    let claims = 0;
+    const sessionId = "ses_controller_start_shutdown";
+    const controller = await launchedController({
+      sessionId,
+      roleClaim: () => {
+        claims += 1;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    // A first wait long enough that the shutdown below lands inside it.
+    setLegionClaimRetryDelayForTests(5_000);
+    const context = controller.context(sessionId);
+    await controller.handlers.get("session_start")?.({}, context);
+    const { value: notices, errors } = await loggedErrors(async () => {
+      const started = runStartCommand(controller, context);
+      for (let turn = 0; turn < 2_000 && claims < LISTENER_CALL_ATTEMPTS; turn++) {
+        await Bun.sleep(5);
+      }
+      await controller.handlers.get("session_shutdown")?.({}, context);
+      return started;
+    });
+    expect(claims).toBeGreaterThanOrEqual(LISTENER_CALL_ATTEMPTS);
+    expect(errors.filter((line) => line.includes("the controller claim failed"))).toEqual([]);
+    expect(
+      notices.filter((notice) => notice.message.includes("the controller claim failed"))
+    ).toEqual([]);
+    expect(controller.exits).toEqual([]);
   });
 
   // A typed claim in the daemon-launched controller stays up only when its role claim gave up on
