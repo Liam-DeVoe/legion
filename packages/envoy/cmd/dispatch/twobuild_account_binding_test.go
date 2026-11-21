@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,8 +41,8 @@ import (
 // with, there is no overlap to test, and it skips (accountBindingRowSkip).
 
 // accountBindingRowSkip answers whether the account binding row skips beside a previous build that
-// registers account binding binding, and the reason it skips with: 0 is a build without the
-// binding, and the row runs; store.AccountBindingProtocol is a build with it, and the row skips.
+// registers the account binding value binding, and the reason it skips with: 0 is a build without
+// the binding, and the row runs; store.AccountBindingProtocol is a build with it, and the row skips.
 // No row states a case for any other value, so for one it answers an error, which fails the row
 // rather than skipping it.
 func accountBindingRowSkip(binding int) (reason string, skip bool, err error) {
@@ -261,6 +262,47 @@ func unboundRegistrations(t *testing.T, database *store.Store) int {
 // holds.
 var previousRegistration = regexp.MustCompile(`insert into server_processes`)
 
+// mintByToken mints a personal token named name on p with token as its bearer, as an agent does,
+// and returns its plaintext.
+func mintByToken(t *testing.T, p *dispatchProcess, token, name string) string {
+	t.Helper()
+	answer := p.send(t, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"`+name+`"}`,
+		http.Header{"Authorization": {"Bearer " + token}, "Content-Type": {"application/json"}})
+	var minted struct {
+		Token string `json:"token"`
+	}
+	if answer.status != http.StatusCreated || json.Unmarshal(answer.body, &minted) != nil || !strings.HasPrefix(minted.Token, "dsp_") {
+		t.Fatalf("mint %s by a token: %s", name, answer)
+	}
+	return minted.Token
+}
+
+// keptReplacements is how many replacements the database keeps as made while the binding was off
+// (account_binding_replacements).
+func keptReplacements(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from account_binding_replacements`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+// owedSubjects is the accounts bindingPerson's owed broker revocations name, sorted.
+func owedSubjects(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(),
+		`select subject from broker_revocations where email = $1 and done_at is null order by subject`, bindingPerson)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return subjects
+}
+
 // A replaced account's credentials act on nothing once the account binding holds, and the binding
 // holds only while no build without it is in the fleet. One row walks a rolling update through
 // both builds on one database, carol@example.com signing in on this tree under four Google
@@ -271,20 +313,27 @@ var previousRegistration = regexp.MustCompile(`insert into server_processes`)
 //  2. The previous build boots and publishes its dashboard, and its registration is held (the test
 //     holds server_processes in SHARE mode): the window between a boot's first write and its
 //     registration, which server_processes alone does not see. b signs in on this tree, which
-//     revokes nothing and owes nothing; a's token acts on it; a token b's cookie mints records no
-//     account.
+//     revokes nothing and owes nothing; a's token acts on it, and mints a token through this tree
+//     that records no account; a token b's cookie mints records no account.
 //  3. Both builds serve. c signs in on this tree, again revoking and owing nothing; a's token and
-//     b's, made before c's recording, act on both builds; a token c's cookie mints records none.
+//     b's act on both builds; a's token mints a token through the previous build, which records no
+//     account; a token c's cookie mints records none. The database keeps the two replacements.
 //  4. The previous build stops, as a rollout's last old pod does: its registration is gone, and
 //     its mark holds the binding off until it ages out (store.OwnerLockMarkWindow, which the test
-//     moves past rather than waiting an hour). Then this tree refuses a's token (it records a,
-//     and people records c) and b's (it records none and was made before c's recording) with 401
-//     TOKEN_REVOKED, admits c's (made after it), and d's sign-in revokes the address's tokens and
-//     owes c's revocation, the row's control that it can see the binding replace.
+//     moves past rather than waiting an hour). Then this tree refuses, with 401 TOKEN_REVOKED, a's
+//     token (it records a, and people records c), the two tokens a's token minted in the overlap
+//     through either build, b's and c's own (each records none and was made after a kept
+//     replacement). Its revocation loop catches the kept replacements up: those four tokens are
+//     revoked, a's token, which records an account, is left as it is, the broker is owed a's and
+//     b's revocations, and nothing stays kept. c's cookie then mints a token that records c, which
+//     acts, and d's sign-in revokes the address's tokens and owes c's revocation, the row's control
+//     that it can see the binding replace.
 //
 // Controls, run by hand: AccountBindingHoldsSQL answering true (the gate removed) fails step 2,
 // naming the state the previous build leaves unchecked; account_binding_fleet_read reading
-// server_processes alone fails step 2 too, the window before the previous build registers.
+// server_processes alone fails step 2 too, the window before the previous build registers; the
+// trigger people_account_binding_replacement dropped (the catch-up removed) fails step 4, where
+// the tokens a's token minted in the overlap act.
 func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.T) {
 	build := openPreviousBuild(t)
 	if reason, skip, err := accountBindingRowSkip(previousBuildAccountBinding(t, build)); err != nil {
@@ -349,6 +398,10 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 		t.Errorf("%s: the current build's mint by account-b's cookie records %q; want no account, as the %s's mint records. %s",
 			window, subject, builds.previousName(), bindingState(t, database))
 	}
+	aThroughCurrent := mintByToken(t, current, tokenA, "a-through-current")
+	if subject, _ := tokenRecord(t, database, "a-through-current"); subject != "" {
+		t.Errorf("%s: the current build's mint by account-a's token records %q; want no account. %s", window, subject, bindingState(t, database))
+	}
 	if err := hold.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +421,13 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 	tokenC := mintToken(t, current, sessionC, "token-c")
 	if subject, _ := tokenRecord(t, database, "token-c"); subject != "" {
 		t.Errorf("%s: the current build's mint by account-c's cookie records %q; want no account. %s", both, subject, bindingState(t, database))
+	}
+	aThroughPrevious := mintByToken(t, previous, tokenA, "a-through-previous")
+	if subject, _ := tokenRecord(t, database, "a-through-previous"); subject != "" {
+		t.Errorf("%s: the %s's mint by account-a's token records %q; want no account. %s", both, builds.previousName(), subject, bindingState(t, database))
+	}
+	if kept := keptReplacements(t, database); kept != 2 {
+		t.Errorf("%s: the database keeps %d replacements; want account-a's and account-b's. %s", both, kept, bindingState(t, database))
 	}
 	for _, name := range []string{"token-a", "token-b"} {
 		if _, revoked := tokenRecord(t, database, name); revoked {
@@ -392,17 +452,48 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 		t.Fatal(err)
 	}
 	after := "once no build without the binding is in the fleet"
-	for name, token := range map[string]string{"account-a's token, which records account-a,": tokenA, "account-b's token, which records none and was made before account-c's recording,": tokenB} {
+	for name, token := range map[string]string{
+		"account-a's token, which records account-a,":                             tokenA,
+		"the token account-a's token minted through the current build":            aThroughCurrent,
+		"the token account-a's token minted through the " + builds.previousName(): aThroughPrevious,
+		"account-b's token, which records none,":                                  tokenB,
+		"account-c's token, which records none and was made in the overlap,":      tokenC,
+	} {
 		if answer := tokenUse(t, current, token); answer.status != http.StatusUnauthorized || answer.code() != "TOKEN_REVOKED" {
 			t.Errorf("%s: the current build answered %s %s; want 401 TOKEN_REVOKED. %s", after, name, answer, bindingState(t, database))
 		}
 	}
-	if answer := tokenUse(t, current, tokenC); answer.status != http.StatusOK {
-		t.Errorf("%s: the current build answered account-c's token, made after its recording, %s; want 200. %s", after, answer, bindingState(t, database))
+	caughtUp := false
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		if keptReplacements(t, database) == 0 {
+			caughtUp = true
+			break
+		}
+	}
+	if !caughtUp {
+		t.Fatalf("%s: the current build's revocation loop kept the replacements 60s; want them caught up. %s", after, bindingState(t, database))
+	}
+	if owed := owedSubjects(t, database); !slices.Equal(owed, []string{"account-a", "account-b"}) {
+		t.Errorf("%s: the catch-up owes the broker the revocations of %q; want account-a's and account-b's. %s", after, owed, bindingState(t, database))
+	}
+	for _, name := range []string{"a-through-current", "a-through-previous", "token-b", "token-c"} {
+		if _, revoked := tokenRecord(t, database, name); !revoked {
+			t.Errorf("%s: the catch-up left %s live; want every token that records no account made since the first kept replacement revoked. %s", after, name, bindingState(t, database))
+		}
+	}
+	if _, revoked := tokenRecord(t, database, "token-a"); revoked {
+		t.Errorf("%s: the catch-up revoked token-a, which records account-a; want it left as it is. %s", after, bindingState(t, database))
+	}
+	tokenC2 := mintToken(t, current, sessionC, "token-c2")
+	if subject, _ := tokenRecord(t, database, "token-c2"); subject != "account-c" {
+		t.Errorf("%s: the current build's mint by account-c's cookie records %q; want account-c. %s", after, subject, bindingState(t, database))
+	}
+	if answer := tokenUse(t, current, tokenC2); answer.status != http.StatusOK {
+		t.Errorf("%s: the current build answered account-c's new token %s; want 200. %s", after, answer, bindingState(t, database))
 	}
 	signInAccount(t, current, issuer, "account-d")
-	if _, revoked := tokenRecord(t, database, "token-c"); !revoked || owedRevocations(t, database) != 1 {
-		t.Errorf("control: %s, account-d's sign-in revoked account-c's token %t and owes %d broker revocations; want it revoked and account-c's revocation owed. %s",
-			after, revoked, owedRevocations(t, database), bindingState(t, database))
+	if _, revoked := tokenRecord(t, database, "token-c2"); !revoked || !slices.Equal(owedSubjects(t, database), []string{"account-a", "account-b", "account-c"}) {
+		t.Errorf("control: %s, account-d's sign-in revoked account-c's token %t and the broker is owed %q; want it revoked and account-c's revocation owed beside the two caught up. %s",
+			after, revoked, owedSubjects(t, database), bindingState(t, database))
 	}
 }

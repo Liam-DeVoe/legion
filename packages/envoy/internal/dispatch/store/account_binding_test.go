@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -327,9 +329,11 @@ func TestAnArrivalWithoutTheBindingWaitsForATransactionThatFoundItHolding(t *tes
 
 // A sign-in beside a build without the binding records the account and moves the recording time,
 // as the database's triggers do for any write of sub, and revokes and owes nothing, as that
-// build's sign-in does; once no such build is in the fleet, the next replacement revokes the
-// address's tokens and owes the replaced account's revocation (the control, in the test, that the
-// rows it reads can show the binding's writes).
+// build's sign-in does, while the database keeps the replacement (account_binding_replacements);
+// once no such build is in the fleet, the next replacement catches the kept one up first (account-a
+// is owed, account-b holding the address) and then revokes the address's tokens and owes the
+// account it replaces itself, leaving no replacement kept (the control, in the test, that the rows
+// it reads can show the binding's writes).
 func TestASignInBesideABuildWithoutTheBindingRevokesAndOwesNothing(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -373,6 +377,9 @@ func TestASignInBesideABuildWithoutTheBindingRevokesAndOwesNothing(t *testing.T)
 	if n := owed(); n != 0 {
 		t.Errorf("account-b's sign-in beside a build without the binding owes %d broker revocations; want none", n)
 	}
+	if kept := keptReplacements(t, database, email); !slices.Equal(kept, []string{"account-a"}) {
+		t.Errorf("account-b's sign-in beside a build without the binding left the replacements %q kept; want account-a's", kept)
+	}
 
 	if _, err := database.Pool.Exec(ctx, `delete from server_processes`); err != nil {
 		t.Fatal(err)
@@ -384,7 +391,160 @@ func TestASignInBesideABuildWithoutTheBindingRevokesAndOwesNothing(t *testing.T)
 			t.Errorf("control: account-c's sign-in with no build without the binding in the fleet left %s live; want it revoked", name)
 		}
 	}
-	if n := owed(); n != 1 {
-		t.Errorf("control: account-c's sign-in with no build without the binding in the fleet owes %d broker revocations; want account-b's", n)
+	if got := owedSubjects(t, database, email); !slices.Equal(got, []string{"account-a", "account-b"}) {
+		t.Errorf("control: account-c's sign-in with no build without the binding in the fleet owes the broker revocations of %q; want account-a's, which it caught up, and account-b's, which it replaced", got)
+	}
+	if kept := keptReplacements(t, database, email); len(kept) != 0 {
+		t.Errorf("account-c's sign-in with the binding holding left the replacements %q kept; want none", kept)
+	}
+}
+
+// keptReplacements answers the accounts the database keeps as replaced at email while the binding
+// was off (account_binding_replacements), in the order they were replaced.
+func keptReplacements(t *testing.T, s *Store, email string) []string {
+	t.Helper()
+	rows, err := s.Pool.Query(context.Background(), `select replaced_subject from account_binding_replacements where email = $1 order by replaced_at`, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kept
+}
+
+// owedSubjects answers the accounts email's owed broker revocations name, in the order they were
+// recorded.
+func owedSubjects(t *testing.T, s *Store, email string) []string {
+	t.Helper()
+	rows, err := s.Pool.Query(context.Background(), `select subject from broker_revocations where email = $1 and done_at is null order by recorded_at`, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return subjects
+}
+
+// A replacement made while the binding is off is kept, whichever build makes it, and caught up
+// once the binding holds (CatchUpAccountBindingOf): account-b replaces account-a through this
+// build and account-c replaces account-b through a build without the binding (its sign-in's
+// update of sub, spelled here), and between them tokens recording no account are made. While the
+// binding is off the catch-up writes nothing. Once it holds, it revokes every token of the address
+// that records no account made since the first replacement, leaves the token that records
+// account-a, owes the broker a revocation of account-a and of account-b, each naming account-c as
+// the holder, and deletes the kept rows; a second catch-up does nothing.
+//
+// Control, run by hand: with the trigger people_account_binding_replacement dropped, nothing is
+// kept, so nothing is revoked or owed and the row fails.
+func TestAReplacementMadeWhileTheBindingIsOffIsCaughtUpOnceItHolds(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := brokerPeople(database)
+	const email = "binding-catch-up@example.com"
+	signInAll(t, people, email, "account-a")
+	tokenA := mintToken(t, database.Pool, email, "token-a", "account-a")
+
+	registerFleetProcess(t, database, OwnerLockProtocol, 0)
+	signInAll(t, people, email, "account-b")
+	madeByA := mintToken(t, database.Pool, email, "made-in-the-overlap", "")
+	if _, err := database.Pool.Exec(ctx, `update people set signed_in_at = now(), confirmed_at = now(), sub = 'account-c' where email = $1`, email); err != nil {
+		t.Fatalf("account-c's sign-in through a build without the binding: %v", err)
+	}
+	madeLater := mintToken(t, database.Pool, email, "made-after-the-second", "")
+	if kept := keptReplacements(t, database, email); !slices.Equal(kept, []string{"account-a", "account-b"}) {
+		t.Fatalf("the replacements kept are %q; want account-a's and account-b's, whichever build made them", kept)
+	}
+	if held, caught, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer); err != nil || held || len(caught.Replaced) != 0 {
+		t.Fatalf("a catch-up while the binding is off answered held %t, %+v, %v; want nothing done", held, caught, err)
+	}
+	if got := owedSubjects(t, database, email); len(got) != 0 {
+		t.Fatalf("a catch-up while the binding is off owes %q; want nothing", got)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `delete from server_processes`); err != nil {
+		t.Fatal(err)
+	}
+	ageBindingMark(t, database, OwnerLockMarkWindow+time.Minute)
+	held, caught, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer)
+	if err != nil || !held {
+		t.Fatalf("the catch-up once the binding holds answered held %t, %v", held, err)
+	}
+	want := AccountBindingCatchUp{Replaced: []string{"account-a", "account-b"}, TokensRevoked: 2, Owed: []string{"account-a", "account-b"}, Holder: "account-c"}
+	if !reflect.DeepEqual(caught, want) {
+		t.Errorf("the catch-up did %+v; want %+v", caught, want)
+	}
+	for name, id := range map[string]string{"made-in-the-overlap": madeByA, "made-after-the-second": madeLater} {
+		if _, revoked := tokenState(t, database.Pool, id); !revoked {
+			t.Errorf("the catch-up left %s, which records no account and was made after a kept replacement, live; want it revoked", name)
+		}
+	}
+	if _, revoked := tokenState(t, database.Pool, tokenA); revoked {
+		t.Error("the catch-up revoked token-a, which records account-a; want it left as it is")
+	}
+	var holders []string
+	rows, err := database.Pool.Query(ctx, `select holder_subject from broker_revocations where email = $1 order by recorded_at`, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holders, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatal(err)
+	}
+	if got := owedSubjects(t, database, email); !slices.Equal(got, []string{"account-a", "account-b"}) || !slices.Equal(holders, []string{"account-c", "account-c"}) {
+		t.Errorf("the catch-up owes the broker revocations of %q naming the holders %q; want account-a's and account-b's, each naming account-c", got, holders)
+	}
+	if kept := keptReplacements(t, database, email); len(kept) != 0 {
+		t.Errorf("the catch-up left the replacements %q kept; want none", kept)
+	}
+
+	readGenerations := func() string {
+		t.Helper()
+		var g string
+		if err := database.Pool.QueryRow(ctx, `select coalesce(string_agg(subject || '@' || generation, ',' order by subject), '') from broker_revocations where email = $1`, email).Scan(&g); err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	generations := readGenerations()
+	held, again, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer)
+	if err != nil || !held || !reflect.DeepEqual(again, AccountBindingCatchUp{}) {
+		t.Errorf("a second catch-up answered held %t, %+v, %v; want nothing done", held, again, err)
+	}
+	if got := readGenerations(); got != generations {
+		t.Errorf("a second catch-up moved the broker revocations from %q to %q; want them as they were", generations, got)
+	}
+}
+
+// An account that takes its address back while the binding is off holds it, so the catch-up owes
+// the broker nothing for it: account-b replaces account-a, and account-a takes the address back
+// through a build without the binding; once the binding holds, the catch-up owes account-b's
+// revocation alone, naming account-a as the holder.
+func TestACatchUpOwesNothingToTheAccountThatHoldsTheAddressAgain(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := brokerPeople(database)
+	const email = "binding-take-back@example.com"
+	signInAll(t, people, email, "account-a")
+	registerFleetProcess(t, database, OwnerLockProtocol, 0)
+	signInAll(t, people, email, "account-b")
+	if _, err := database.Pool.Exec(ctx, `update people set signed_in_at = now(), confirmed_at = now(), sub = 'account-a' where email = $1`, email); err != nil {
+		t.Fatalf("account-a's sign-in through a build without the binding: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from server_processes`); err != nil {
+		t.Fatal(err)
+	}
+	ageBindingMark(t, database, OwnerLockMarkWindow+time.Minute)
+	held, caught, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer)
+	if err != nil || !held {
+		t.Fatalf("the catch-up answered held %t, %v", held, err)
+	}
+	if !slices.Equal(caught.Owed, []string{"account-b"}) || caught.Holder != "account-a" {
+		t.Errorf("the catch-up owes %q naming the holder %q; want account-b's alone, naming account-a", caught.Owed, caught.Holder)
+	}
+	if got := owedSubjects(t, database, email); !slices.Equal(got, []string{"account-b"}) {
+		t.Errorf("the broker is owed the revocations of %q; want account-b's alone", got)
 	}
 }
