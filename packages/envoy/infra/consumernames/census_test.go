@@ -3,8 +3,8 @@ package consumernames
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,38 +19,108 @@ import (
 
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/streams"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/internal/holdrecord/holdrecordtest"
+	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// censusCommand runs `envoy-infra streams census` in the stack as envoy-infra's main runs it, with
-// this package's reader of the recorded consumers (RecordedSessionConsumers), under hold holdID,
-// with the stack's hub, the operator's token, the broker and its verify key, and extra: the
-// census's --family, --listener-machine-id and --daemon-consumer flags. It writes no journal
-// entry, as the command writes none. It returns the exit code and the output.
+// censusCommand runs the census step of `envoy-infra streams census` in the stack, with this
+// package's reader of the recorded consumers (RecordedSessionConsumers), under hold holdID, on the
+// stack's hub as the operator, and extra: the census's --family, --listener-machine-id and
+// --daemon-consumer flags. It writes no journal entry. It returns the exit code and the output.
 func (h *stack) censusCommand(holdID string, extra ...string) (int, string, string) {
 	h.t.Helper()
 	return h.censusCommandWith(RecordedSessionConsumers, holdID, extra...)
 }
 
-// censusCommandWith is censusCommand with recorded as the census's reader; nil reads none.
-func (h *stack) censusCommandWith(recorded streams.RecordsReader, holdID string, extra ...string) (int, string, string) {
+// censusCommandWith is censusCommand with recorded as the census's reader; nil reads none, which
+// t-10's word refuses as writerhold.ErrNoRecordReader, UNKNOWN.
+//
+// It is the census step of t-10's word, writerhold's heldStreams, run on the stack: the word reads
+// the signing key and the hub through writerhold's real environment, which a test outside that
+// package cannot replace, so this runs the same streams.Census with the same input the word builds
+// (its families, its declared consumers, the broker's cutover rows, the hold's barrier and
+// recorded), prints the report as the word prints it, and answers the report's exit code, or 1
+// with the census's refusal on stderr. The word's RunHeld journal entries around it are not
+// written here.
+func (h *stack) censusCommandWith(recorded writerhold.RecordedSessionConsumers, holdID string, extra ...string) (int, string, string) {
 	h.t.Helper()
-	token := filepath.Join(h.t.TempDir(), "operator-token")
-	require.NoError(h.t, os.WriteFile(token, []byte(holdrecordtest.OperatorToken), 0o600))
-	args := append([]string{"census", "--nats-url", h.s.Cluster.URL(), "--token-file", token,
-		"--broker-url", h.s.Broker.URL, "--hold-verify-keys", base64.RawURLEncoding.EncodeToString(h.s.Broker.VerifyKey),
-		"--hold-id", holdID}, extra...)
+	var families, machineIDs []string
+	var daemons []streams.ConsumerShape
+	for i := 0; i < len(extra); i += 2 {
+		require.Less(h.t, i+1, len(extra), "the census flag %s has no value", extra[i])
+		switch value := extra[i+1]; extra[i] {
+		case "--family":
+			families = append(families, value)
+		case "--listener-machine-id":
+			machineIDs = append(machineIDs, value)
+		case "--daemon-consumer":
+			name, filters, ok := strings.Cut(value, "=")
+			require.True(h.t, ok, "--daemon-consumer %q is not <name>=<filter>[,<filter>...]", value)
+			daemons = append(daemons, streams.ConsumerShape{Stream: bus.Stream, Name: name,
+				FilterSubjects: strings.Split(filters, ","), AckPolicy: nats.AckExplicitPolicy})
+		default:
+			h.t.Fatalf("the census takes no flag %s", extra[i])
+		}
+	}
+	ctx := context.Background()
+	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.OperatorCredential()...)
+	require.NoError(h.t, err)
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	require.NoError(h.t, err)
+	replicas, err := bus.ParseNATSReplicas("")
+	require.NoError(h.t, err)
+	maxBytes, err := bus.ParseStreamMaxBytes("")
+	require.NoError(h.t, err)
+	maxAge, err := bus.ParseSessionMaxAge("")
+	require.NoError(h.t, err)
+	records := h.records()
+	report, err := streams.Census(ctx, nc, streams.CensusInput{
+		Settings: streamset.Settings{Replicas: replicas, StreamMaxBytes: maxBytes, SessionMaxAge: maxAge},
+		Phase: func(ctx context.Context) (natsgrant.OperatorPhase, error) {
+			row, err := records.Row(ctx)
+			return row.Phase, err
+		},
+		Families: families,
+		Cutovers: func(ctx context.Context) (map[string]string, error) {
+			rows, err := records.Cutovers(ctx)
+			if err != nil {
+				return nil, err
+			}
+			states := make(map[string]string, len(rows))
+			for _, row := range rows {
+				states[row.Family] = row.State
+			}
+			return states, nil
+		},
+		Barrier: func(ctx context.Context, bucket string) error {
+			return holdrecord.Barrier(ctx, js, bucket, holdID)
+		},
+		Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: machineIDs, Daemons: daemons}),
+		RecordedSessionConsumers: func(ctx context.Context) ([]streams.ConsumerShape, error) {
+			if recorded == nil {
+				return nil, writerhold.ErrNoRecordReader
+			}
+			return recorded(ctx, nc)
+		},
+	})
 	var stdout, stderr bytes.Buffer
-	code := streams.CommandWith(context.Background(), args, &stdout, &stderr, recorded)
-	h.t.Logf("envoy-infra streams %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
+	for _, line := range report.Lines() {
+		fmt.Fprintln(&stdout, line)
+	}
+	code := report.ExitCode()
+	if err != nil {
+		fmt.Fprintf(&stderr, "envoy-infra %v\n", err)
+		code = 1
+	}
+	h.t.Logf("envoy-infra streams census %s: exit %d\n%s%s", strings.Join(extra, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
 }
 
@@ -423,7 +493,7 @@ const censusWaitingEnv = "CONSUMERNAMES_RUN_WAITING_CENSUS_ROWS"
 // which takes a set per family: it reads every declared family's store first, so a family it
 // cannot read makes the census UNKNOWN, and then answers RecordedSessionConsumers' shapes, the
 // input today's census takes.
-func censusSetsReader(families []string, dispatchFile string, daemons []string) streams.RecordsReader {
+func censusSetsReader(families []string, dispatchFile string, daemons []string) writerhold.RecordedSessionConsumers {
 	return func(ctx context.Context, conn *nats.Conn) ([]streams.ConsumerShape, error) {
 		if _, err := ReadRecordedNames(ctx, conn, families, dispatchFile, daemons); err != nil {
 			return nil, err
@@ -433,7 +503,7 @@ func censusSetsReader(families []string, dispatchFile string, daemons []string) 
 }
 
 // censusCreateConfig creates, as the operator on nc, a consumer of the notification stream with a
-// configuration in nats.go's older form (delivery.ConsumerConfigs gives that form), through the
+// configuration in nats.go's older form (bus.DispatchDeliveryConsumer gives that form), through the
 // one create the operator's grant names (writeConsumer).
 func censusCreateConfig(t *testing.T, nc *nats.Conn, config nats.ConsumerConfig) {
 	t.Helper()
@@ -499,7 +569,7 @@ func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
 
-	events := delivery.ConsumerConfigs()[0]
+	events := bus.DispatchDeliveryConsumer()
 	recordedD, strayD := selection.FreshName(events.Durable), selection.FreshName(events.Durable)
 	for _, name := range []string{recordedD, strayD} {
 		config := events

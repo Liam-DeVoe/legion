@@ -8,7 +8,6 @@ import (
 
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )
 
 // The cutover families, as the broker's cutover rows name them (holdrecord.Client.PutCutover):
@@ -98,13 +97,10 @@ func classify(name string) (member, bool) {
 	return member{}, false
 }
 
-// dispatchDurables are Dispatch's two durables' names (delivery.ConsumerConfigs).
+// dispatchDurables are Dispatch's two durables' names (bus.DispatchDeliveryDurable,
+// bus.DispatchJobDurable), the names its intakes bind.
 func dispatchDurables() []string {
-	var names []string
-	for _, config := range delivery.ConsumerConfigs() {
-		names = append(names, config.Durable)
-	}
-	return names
+	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
 }
 
 // store is family's selection store on the run's reach: the selection bucket for the session

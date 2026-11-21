@@ -1,11 +1,13 @@
 // Command envoy-infra is envoy-infra's command line. seed writes a NATS nkey user seed into a
 // secret store and checks and verifies the one stored there (package seed); render prints what the
-// AWS components register, for a program that needs it outside Pulumi (package render); streams
-// checks, makes and censuses the JetStream streams Envoy declares beside the NATS auth service
-// (package streams); buckets creates and recreates the KV buckets a listener copies (package
-// buckets); hold sets, proves and releases the NATS writer hold on the clustered hub (package
-// writerhold); consumer-names runs the operator's commands of the fresh consumer names' selection
-// records (package consumernames); and `envoy-infra --version` prints the release it was built as.
+// AWS components register, for a program that needs it outside Pulumi (package render); buckets
+// creates and recreates the KV buckets a listener copies (package buckets); hold sets, proves and
+// releases the NATS writer hold on the clustered hub (package writerhold); streams check reads the
+// JetStream streams Envoy declares beside the NATS auth service, and streams ensure makes and
+// repairs ENVOY_MEASURE (package streams), while streams update and streams census are the writer
+// hold's held commands; consumer-names runs the operator's commands of the fresh consumer names'
+// selection records (package consumernames); and `envoy-infra --version` prints the release it was
+// built as.
 package main
 
 import (
@@ -47,14 +49,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	if len(args) > 0 && args[0] == "render" {
 		return render.Command(args[1:], stdout, stderr)
 	}
-	if len(args) > 0 && args[0] == "streams" {
-		return streams.CommandWith(ctx, args[1:], stdout, stderr, consumernames.RecordedSessionConsumers)
-	}
 	if len(args) > 0 && args[0] == "buckets" {
 		return buckets.Command(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "hold" {
 		return writerhold.Command(ctx, args[1:], stdout, stderr)
+	}
+	// The writer hold's two stream commands run inside a hold (package writerhold); streams.Command
+	// takes only check and ensure. The census reads the consumers the selection records name, and
+	// brings each daemon store's stream identity to the stream's, through consumer-names' reader
+	// and writer, the one package that reads those records.
+	if len(args) > 1 && args[0] == "streams" && (args[1] == "update" || args[1] == "census") {
+		return writerhold.StreamsCommand(ctx, args[1:], stdout, stderr, consumernames.RecordedSessionConsumers, consumernames.ReconcileDaemonStreamIDs)
+	}
+	if len(args) > 0 && args[0] == "streams" {
+		return streams.Command(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "consumer-names" {
 		return consumernames.Command(ctx, args[1:], stdout, stderr)
@@ -74,9 +83,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	fmt.Fprintln(stderr, "usage: envoy-infra --version")
 	seed.Command(ctx, []string{"--help"}, stdout, stderr, stores)
 	render.Command([]string{"--help"}, stdout, stderr)
-	streams.Command(ctx, []string{"--help"}, stdout, stderr)
 	buckets.Command(ctx, []string{"--help"}, stdout, stderr)
 	writerhold.Command(ctx, []string{"--help"}, stdout, stderr)
+	streams.Command(ctx, []string{"--help"}, stdout, stderr)
 	consumernames.Command(ctx, []string{"--help"}, stdout, stderr)
 	if help {
 		return 0

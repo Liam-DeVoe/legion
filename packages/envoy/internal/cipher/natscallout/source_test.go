@@ -55,8 +55,9 @@ type sourceAttack struct {
 // turn, each create or update its kind's grant named, of a stream sourcing ENVOY_NOTIFICATIONS
 // with that republish, and a create of a stream no grant names, is refused with a publish
 // permissions violation and draws no answer, and the connection receives nothing. The control row
-// is the measurement itself: the measurement job answered with Measure() as natsgrant builds it,
-// unnarrowed, creates ENVOY_MEASURE so and receives the private message.
+// is the measurement itself: the measurement job answered with the grant it held before it
+// configured no stream (measureGrantBefore), unnarrowed, creates ENVOY_MEASURE so and receives the
+// private message.
 func requireNoGrantSourcesTheNotificationStream(t *testing.T, start func(testnats.CalloutKeys, ...testnats.StaticUser) string) {
 	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
@@ -81,12 +82,12 @@ func requireNoGrantSourcesTheNotificationStream(t *testing.T, start func(testnat
 	}
 	a := newSession(t, "ses_a", 15*time.Minute)
 	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens)}
-	// unnarrowed answers the measurement job with its grant as natsgrant builds it, every other
-	// connection as the service does: the control row's answer, the grant before this change.
+	// unnarrowed answers the measurement job with the grant it held before it configured no
+	// stream, every other connection as the service does: the control row's answer.
 	unnarrowed := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		decision, err := Decide(ctx, deps, services, req)
 		if err == nil && strings.HasPrefix(decision.Name, string(KindMeasure)+"/") {
-			decision.Grant = natsgrant.Measure()
+			decision.Grant = measureGrantBefore()
 		}
 		return decision, err
 	}
@@ -119,10 +120,10 @@ func requireNoGrantSourcesTheNotificationStream(t *testing.T, start func(testnat
 		{name: "dispatch", connect: service("dispatch-token"), raw: natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}), inbox: "_INBOX.attack.dispatch", src: ">", reply: "_INBOX.reply.dispatch"},
 		{name: "listener", connect: service("listener-token"), raw: natsgrant.Listener("example-hub"), inbox: "_INBOX.attack.listener", src: ">", reply: "_INBOX.reply.listener"},
 		{name: "daemon", connect: service("daemon-token"), raw: natsgrant.Daemon(), inbox: "_INBOX.attack.daemon", src: ">", reply: "_INBOX.reply.daemon"},
-		{name: "measure", connect: service("measure-token"), raw: natsgrant.Measure(), inbox: "_INBOX_envoy_measure.attack", src: ">", reply: "_INBOX_envoy_measure.reply"},
+		{name: "measure", connect: service("measure-token"), raw: measureGrantBefore(), inbox: "_INBOX_envoy_measure.attack", src: ">", reply: "_INBOX_envoy_measure.reply"},
 	}
 
-	t.Run("control: the measurement job's grant before the service narrowed it reads the private message", func(t *testing.T) {
+	t.Run("control: the measurement job's grant before it configured no stream reads the private message", func(t *testing.T) {
 		startService(t, url, keys, deps, unnarrowed)
 		errs := make(chan error, 16)
 		nc := service("measure-token")(t, url, errs)
@@ -196,6 +197,16 @@ func requireNoGrantSourcesTheNotificationStream(t *testing.T, start func(testnat
 			})
 		}
 	})
+}
+
+// measureGrantBefore is the measurement job's grant before it configured no stream: Measure() with
+// the create, update and delete of ENVOY_MEASURE it once held. The control row reads the private
+// message under it, and the measure row tries its creates under the service's answer.
+func measureGrantBefore() natsgrant.Permissions {
+	grant := natsgrant.Measure()
+	grant.Publish = append(slices.Clone(grant.Publish),
+		"$JS.API.STREAM.CREATE.ENVOY_MEASURE", "$JS.API.STREAM.UPDATE.ENVOY_MEASURE", "$JS.API.STREAM.DELETE.ENVOY_MEASURE")
+	return grant
 }
 
 // attackTargets are the streams raw names a create or an update of, and ATTACK, which no grant

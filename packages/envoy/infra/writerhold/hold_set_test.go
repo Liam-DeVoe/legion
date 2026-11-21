@@ -17,29 +17,24 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// seedProtectedStreams makes every protected stream the preflight reads by name, three copies
-// each, as the hub holds them: the operator makes them under a hold of its own (the held grant is
-// the one that creates a protected stream), which it then releases with nothing changed.
+// seedProtectedStreams makes every protected stream the preflight reads by name, as the hub holds
+// them (holdtest's SeedProtectedStreams), and checks that they are what the preflight protects.
 func (h *heldStack) seedProtectedStreams() {
 	h.t.Helper()
-	ctx := context.Background()
-	id := h.prepared(holdrecord.WorkflowStreamsUpdate)
-	h.heldWithoutTheSteps(id)
-	nc, err := h.op.Connect(ctx)
-	require.NoError(h.t, err)
-	defer nc.Close()
-	js, err := jetstream.New(nc)
-	require.NoError(h.t, err)
-	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Replicas: 3})
-	require.NoError(h.t, err, "create %s", bus.Stream)
-	buckets := append([]string{bus.SessionConsumersBucket, bus.LegionAgentBucket, bus.DPoPProofBucket, bus.WebhookRedeliveryBucket}, bus.CopiedBuckets()...)
-	for _, bucket := range buckets {
-		_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3})
-		require.NoError(h.t, err, "create bucket %s", bucket)
+	h.s.SeedProtectedStreams(h.t)
+	want := ProtectedStreams()
+	var seeded []string
+	for _, bucket := range holdtest.ProtectedBuckets() {
+		seeded = append(seeded, kvStreamPrefix+bucket)
 	}
-	nc.Close()
-	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "the streams are made")
-	require.Zero(h.t, code)
+	require.ElementsMatch(h.t, want, append([]string{bus.Stream}, seeded...), "holdtest seeds other streams than the preflight protects")
+}
+
+// awaitStreamLeaders waits until every member sees a leader for every protected stream
+// (holdtest's AwaitStreamLeaders).
+func (h *heldStack) awaitStreamLeaders() {
+	h.t.Helper()
+	h.s.AwaitStreamLeaders(h.t, ProtectedStreams())
 }
 
 // listener connects a listener entry of machine, reconnecting as a listener does, and returns it

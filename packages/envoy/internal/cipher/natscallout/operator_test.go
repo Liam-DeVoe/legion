@@ -1054,7 +1054,7 @@ func TestNoOneButTheOperatorGetsTheOperatorGrant(t *testing.T) {
 	r.makeStreams(t, 1, 16, 0)
 	listener := connectService(t, r.cluster.URL(), hourLong(listenerAccount), "")
 	decided := r.decisions.after(t, listenerName, 0)
-	require.Equal(t, natsgrant.Listener("example-hub"), decided.Grant, "the listener %s was not decided with its own grant", listenerAccount)
+	require.Equal(t, natsgrant.ForCallout(natsgrant.Listener("example-hub")), decided.Grant, "the listener %s was not decided with its own grant", listenerAccount)
 	listener.refused(t, "$JS.API.STREAM.DELETE."+kvBucket(bus.SessionBucket), nil)
 
 	_, err := connectSession(t, r.cluster.URL(), a, nil)

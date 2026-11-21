@@ -11,7 +11,6 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -75,8 +74,9 @@ type ConsumerSet struct {
 // DeclaredConsumers are the consumer shapes the declared set names but the recorded ones: each
 // listener's fixed durable (bus.ListenerDurable) by its exact name, a push consumer of every
 // notification subject the build carries, acknowledged one at a time, whose fresh names only the
-// selection records declare; Dispatch's two durables (delivery.ConsumerConfigs); set's daemons';
-// and on each declared bucket, its watchers' ordered consumers.
+// selection records declare; Dispatch's two durables, in the shape its intakes build them on
+// (bus.DispatchDeliveryConsumer, bus.DispatchJobConsumer); set's daemons'; and on each declared
+// bucket, its watchers' ordered consumers.
 func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 	var shapes []ConsumerShape
 	for _, stream := range streamset.Declared(streamset.Settings{}) {
@@ -91,7 +91,7 @@ func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 			Push: true, AckPolicy: nats.AckExplicitPolicy,
 		})
 	}
-	for _, config := range delivery.ConsumerConfigs() {
+	for _, config := range []nats.ConsumerConfig{bus.DispatchDeliveryConsumer(), bus.DispatchJobConsumer()} {
 		shapes = append(shapes, ConsumerShape{
 			Stream: bus.Stream, Name: config.Durable, FilterSubjects: filterSubjects(config),
 			Push: config.DeliverSubject != "", DeliverGroup: config.DeliverGroup, AckPolicy: config.AckPolicy,

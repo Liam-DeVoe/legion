@@ -21,13 +21,16 @@ const (
 	WorkflowHubRestore        Workflow = "hub-restore"
 	WorkflowStreamsCensus     Workflow = "streams-census"
 	// WorkflowEnroll enrols a store made after the window: its one command, `consumer-names
-	// enroll`, writes the store's marker and the family's broker cutover record.
+	// enroll`, writes the store's marker and the family's broker cutover record. Its stop records
+	// what every run of it left (AppendStopLeft): LeftUnchanged lets `hold release` end the hold,
+	// anything else leaves enroll's rerun or `hold abort` as the way out.
 	WorkflowEnroll Workflow = "enroll"
 )
 
 // Operation is one journal entry. State is `intent`, `done` or `stop`. An `intent` entry carries
 // the command's inputs, a `done` entry its outputs, and a `stop` entry its reason in
-// Outputs["reason"].
+// Outputs["reason"] and, when AppendStopLeft wrote it, what the command left in Outputs["left"]:
+// LeftUnchanged, or what it changed.
 type Operation struct {
 	Command string            `json:"command"`
 	State   string            `json:"state"`
@@ -87,15 +90,17 @@ var (
 )
 
 // CommandRelease is `hold release`, which every workflow admits once the record is complete, or
-// while it holds no entry but `hold set`'s and its own, so nothing changed.
+// while every entry but `hold set`'s and its own is a `stop` that left nothing changed
+// (LeftUnchanged) or that stop's `intent`, so nothing changed. It trusts each stop's record, which
+// by LeftUnchanged's rule names what every run of its command in the hold left, so it never moves
+// the row over a change a crashed run made outside the journal.
 const CommandRelease = "hold release"
 
 // CommandSet is `hold set`, the first command of every workflow. Its `intent` is the one entry
 // Admit writes with the row `prepare`, after its preflight passes and before it moves the row to
 // `held`, and in `hub-restore` it carries the restore's inputs. Its `done` follows the steps it runs
 // in `held`. Every workflow admits it while it has no `done` entry, it is Stoppable in every
-// workflow, and every other command but CommandRelease and `hub-restore`'s `hold abort` requires
-// its `done` entry.
+// workflow, and every other command but CommandRelease and CommandAbort requires its `done` entry.
 const CommandSet = "hold set"
 
 // CommandProve is `hold prove`, `hub-restore`'s proof of the disks a restore landed on, which names
@@ -104,11 +109,31 @@ const CommandSet = "hold set"
 // completion it is admitted only when a disk moved from the expected one (Request.DisksMoved).
 const CommandProve = "hold prove"
 
-// CommandAbort is `hold abort`. In `hub-restore` it is final and Stoppable, it needs no `hold set`
-// `done` entry, and a `done` CommandProve entry excludes it; it moves the row to `released` before
-// its `done` entry. From `prepare` it deletes the cohort (DeleteCohort) and moves the row, and writes
-// no entry.
+// CommandAbort is `hold abort`, every workflow's way out of a held hold. It is final and Stoppable
+// in every workflow, it needs no `hold set` `done` entry, and like every command it is refused
+// ErrBusy while another command's `intent` is pending. Outside `hub-restore` it is admitted only
+// once a command's latest entry is a `stop`, a command that stopped and has not run again since,
+// and refused ErrOutOfOrder ("no command has stopped") otherwise, so it is the way out of a failed
+// command, not a way to end a workflow that is going well. In `hub-restore` it keeps its own
+// rules: a `done` CommandProve entry excludes it, so a census that stops after a done prove is not
+// ended by abort, but by another prove and census, the restore's own way on. It moves the row to
+// `released` before its `done` entry, which completes the record; its `intent` carries each stop's
+// record of what its command left (Admit). It is refused after completion. From `prepare` it
+// deletes the cohort (DeleteCohort) and moves the row, and writes no entry.
 const CommandAbort = "hold abort"
+
+// LeftUnchanged is what a stop records (AppendStopLeft) when no run of its command in this hold
+// changed anything outside the journal: it records `unchanged` only when this run changed nothing,
+// and no earlier run of the command in this hold recorded a change or ended with no entry (an
+// intent with no stop or done after it, a run cut by a crash, whose change no entry records).
+// Otherwise the stop names what those runs left, or that what a run cut after its intent left is
+// unknown, which counts as changed. Only stops that record it leave a hold that CommandRelease can
+// end without completion; a stop that records anything else, or nothing (AppendStop), counts as
+// changed, and the way out is CommandAbort.
+const LeftUnchanged = "unchanged"
+
+// stopLeftKey is the key of a stop's Outputs that holds what its command left.
+const stopLeftKey = "left"
 
 // The three states of a journal entry, as the `done` record stores them.
 const (
@@ -138,10 +163,14 @@ func Excludes(w Workflow, command string) []string { return current.Excludes(w, 
 // command is Repeatable once in each epoch.
 func Repeatable(w Workflow, command string) bool { return current.Repeatable(w, command) }
 
-// Stoppable reports whether the command writes a `stop` entry when its own check refuses. Each
-// Stoppable command is either needed again later, or leaves nothing that a later step must
-// finish. `hold release` is Stoppable in every workflow: its disk check in `hub-restore` refuses
-// before its PUT.
+// Stoppable reports whether the command writes a `stop` entry when its own check refuses. Every
+// command of every workflow is Stoppable, since any command's own check can refuse after its intent
+// (a streams update that differs otherwise, a census that cannot read a stream, a restore whose
+// snapshot never arrives), and a command that could not stop would hold its intent pending for
+// good, which ErrBusy would let neither release nor abort end. A command's stop records what it
+// left (AppendStopLeft), and the operator ends the hold with `hold abort`, or with `hold release`
+// when every stop left nothing changed. `hold release` is Stoppable in every workflow too: its disk
+// check in `hub-restore` refuses before its PUT.
 func Stoppable(w Workflow, command string) bool { return current.Stoppable(w, command) }
 
 // Epochal reports whether the command counts only the entries of its epoch.
@@ -260,6 +289,21 @@ func pending(d Done) []string {
 		}
 	}
 	return out
+}
+
+// anyStopped reports whether some command's latest entry is a `stop`: a command that stopped and
+// has not run again since.
+func anyStopped(ops []Operation) bool {
+	latest := map[string]string{}
+	for _, o := range ops {
+		latest[o.Command] = o.State
+	}
+	for _, state := range latest {
+		if state == stateStop {
+			return true
+		}
+	}
+	return false
 }
 
 func wrap(err error, what string) error { return fmt.Errorf("%w: %s", err, what) }

@@ -553,10 +553,14 @@ func Host(machineID string) Permissions {
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
-// _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
-// deliveries and request replies arrive, so it reads no message of another client.
+// reads the account's JetStream state and the listener's lease keys in KV_envoy_listener, and
+// publishes on its own cutover inbox, _INBOX_envoy_measure.cutover.>, under which a probe sends a
+// numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
+// changes and removes no stream: a create or an update carries a configuration of the caller's
+// choosing, and a source or a republish in it would read every stream of the account, so
+// ENVOY_MEASURE is the operator's to make (envoy-infra streams ensure). It subscribes only its own
+// inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push
+// consumer deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -568,14 +572,14 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
-			jsAPI + "STREAM.CREATE.ENVOY_MEASURE",
-			jsAPI + "STREAM.UPDATE.ENVOY_MEASURE",
-			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",
-			"envoy-measure.>",
+			measureInbox + ".cutover.>",
 		},
-		Subscribe: []string{"_INBOX_envoy_measure.>"},
+		Subscribe: []string{measureInbox + ".>"},
 	}
 }
+
+// measureInbox is the measurement job's own inbox prefix.
+const measureInbox = "_INBOX_envoy_measure"
 
 // streamConfigurationCalls are the JetStream API calls that make a stream, change its
 // configuration or remove it: a create, an update, a delete, and a restore, which makes the stream
@@ -603,10 +607,10 @@ var streamConfigurationCalls = []string{
 //
 // A bucket's writer (KVWrite) keeps its stream info, its direct and stream gets, its key writes,
 // its watchers' consumer calls and their flow-control replies; the listener's grant keeps the
-// notification stream's info and stored-message get; Measure keeps its stream infos and its
-// publishes to envoy-measure.>. No grant of this package holds a wildcard that reaches one of the
-// calls, so none of them is answered with a deny. The static sets stay as they are: a hub that
-// runs no auth service renders them, and its programs make their own streams.
+// notification stream's info and stored-message get. Measure holds no stream call to remove. No
+// grant of this package holds a wildcard that reaches one of the calls, so none of them is answered
+// with a deny. The static sets stay as they are: a hub that runs no auth service renders them, and
+// its programs make their own streams.
 func ForCallout(p Permissions) Permissions {
 	var publish []string
 	if p.Publish != nil {
@@ -714,11 +718,13 @@ func otherDeclaredStreams() []string {
 
 // operatorReleased is the operator's publish list outside a hold: JetStream's account info, the
 // read-only infos of the notification stream, the session consumers' records and each copied
-// bucket, the backup of each copied bucket (its snapshot request and the acknowledgements of its
-// chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT and $JS.SNAPSHOT.ACK), consumer-names
+// bucket, the backup of each copied bucket and of the session consumers' records (its snapshot
+// request and the acknowledgements of its chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT
+// and $JS.SNAPSHOT.ACK), consumer-names
 // status's reads (the records walked by sequence, the notification stream's consumer names and
 // infos), and the create and info of ENVOY_MEASURE. Its one mutation is that create of the one
-// unprotected stream: a backup only reads.
+// unprotected stream: a backup only reads. Released's own grant adds ENVOY_MEASURE's update
+// (operatorEnsure), which prepare and held, built on this list, do not hold.
 func operatorReleased() []string {
 	publish := []string{
 		jsAPI + "INFO",
@@ -731,6 +737,10 @@ func operatorReleased() []string {
 	for _, bucket := range copiedBuckets() {
 		publish = append(publish, jsAPI+"STREAM.SNAPSHOT."+kvStream+bucket, "$JS.SNAPSHOT.ACK."+kvStream+bucket+".>")
 	}
+	// The session consumers' records are backed up as the copied buckets are, for the restore
+	// consumer-names create-bucket --after-loss --backup makes inside a hold.
+	publish = append(publish,
+		jsAPI+"STREAM.SNAPSHOT."+kvStream+sessionConsumerRecordsBucket, "$JS.SNAPSHOT.ACK."+kvStream+sessionConsumerRecordsBucket+".>")
 	return append(publish,
 		jsAPI+"STREAM.MSG.GET."+kvStream+sessionConsumerRecordsBucket,
 		jsAPI+"CONSUMER.NAMES."+bus.Stream,
@@ -806,12 +816,13 @@ func operatorHeld() []string {
 // Operator is the grant of the deployment's one operator identity (the BROKER_NATS_SERVICES entry
 // of kind operator), one function of the hold row's phase: OperatorPhaseReleased's outside a hold,
 // OperatorPhasePrepare's while a hold is prepared, and OperatorPhaseHeld's, the full list, while a
-// hold is set. Each phase's list holds the one before it. A phase outside the three is answered
-// with released's, the least. Every phase subscribes the operator's own inbox prefix
-// (OperatorInbox) alone, and names only $JS. and _INBOX_envoy_operator. subjects and the copied
-// buckets' $KV. barrier keys, so NamesSystemSubject is false for each. The server installs a
-// connection's permissions at its authorization, so a process that changes the phase reconnects to
-// be given the new phase's grant.
+// hold is set. Each phase's list holds the one before it (operatorReleased), and released's alone
+// holds ENVOY_MEASURE's update too (operatorEnsure). A phase outside the three is answered with
+// released's, the least. Every phase subscribes the operator's own inbox prefix (OperatorInbox)
+// alone, and names only $JS. and _INBOX_envoy_operator. subjects and the copied buckets' $KV.
+// barrier keys, so NamesSystemSubject is false for each. The server installs a connection's
+// permissions at its authorization, so a process that changes the phase reconnects to be given the
+// new phase's grant.
 func Operator(phase OperatorPhase) Permissions {
 	var publish []string
 	switch phase {
@@ -820,9 +831,17 @@ func Operator(phase OperatorPhase) Permissions {
 	case OperatorPhaseHeld:
 		publish = operatorHeld()
 	default:
-		publish = operatorReleased()
+		publish = append(operatorReleased(), operatorEnsure()...)
 	}
 	return Permissions{Publish: publish, Subscribe: []string{OperatorInbox + ".>"}}
+}
+
+// operatorEnsure is the update of ENVOY_MEASURE, which envoy-infra streams ensure sends to bring a
+// deployed ENVOY_MEASURE to its declared settings, its copies among them, as the operator alone may:
+// the configuration it sends is the build's. Released alone holds it, since ensure runs only outside
+// a hold; prepare and held, which build on operatorReleased, do not.
+func operatorEnsure() []string {
+	return []string{jsAPI + "STREAM.UPDATE." + measureStream}
 }
 
 // holdProbeSubject is the hold probe's one subject, which nothing else uses.

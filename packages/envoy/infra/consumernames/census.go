@@ -22,10 +22,10 @@ import (
 )
 
 // RecordedSessionConsumers is `envoy-infra streams census`'s reader of the selection bucket
-// (streams.RecordsReader), which the census calls after its barrier on the bucket: every key of
-// the bucket (statusSelectionKeys), and for each record, every physical name it holds (its
-// current, its open operation's candidate, and its retired names, which the census keeps until
-// cleanup deletes them; censusNamesOf), each by its exact name in its family's shape.
+// (writerhold.RecordedSessionConsumers), which the census calls after its barrier on the bucket:
+// every key of the bucket (statusSelectionKeys), and for each record, every physical name it holds
+// (its current, its open operation's candidate, and its retired names, which the census keeps
+// until cleanup deletes them; censusNamesOf), each by its exact name in its family's shape.
 //
 //   - A session's record (a key selection.CheckKey accepts) names session consumers: pull
 //     consumers acknowledged one at a time with no deliver group (bus.SessionConsumers'
@@ -187,6 +187,34 @@ func ReadRecordedNames(ctx context.Context, conn *nats.Conn, families []string, 
 		return nil, fmt.Errorf("the recorded names: %s", strings.Join(unread, "; "))
 	}
 	return names, nil
+}
+
+// RecordedFreshNames is ReadRecordedNames in the form the census's input takes
+// (streams.CensusInput.RecordedFreshNames): family to the fresh names the records hold, each list
+// sorted, for the listener durables, Dispatch's durables and each daemon's. The session consumers'
+// names are left out: the census declares them by their records' shapes
+// (RecordedSessionConsumers). A read ReadRecordedNames refuses is refused, and the census is then
+// UNKNOWN and removes nothing.
+func RecordedFreshNames(ctx context.Context, conn *nats.Conn, families []string, dispatchDatabaseFile string, daemonDatabases []string) (map[string][]string, error) {
+	names, err := ReadRecordedNames(ctx, conn, families, dispatchDatabaseFile, daemonDatabases)
+	if err != nil {
+		return nil, err
+	}
+	fresh := make(map[string][]string, len(names))
+	for family, set := range names {
+		if family == recordedSessions {
+			continue
+		}
+		list := make([]string, 0, len(set))
+		for name := range set {
+			if strings.Contains(name, "~") {
+				list = append(list, name)
+			}
+		}
+		slices.Sort(list)
+		fresh[family] = list
+	}
+	return fresh, nil
 }
 
 // censusStoreNames is every name family's intake_consumers records hold, read through the

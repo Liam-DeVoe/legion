@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -120,7 +121,7 @@ func readStep1(ctx context.Context, op *Operator) (map[string]string, error) {
 // prepare with a new hold id and the hold's journal inserted for its workflow. Clients are still
 // admitted. It prints the hold id.
 func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
-	if err := PreflightMinters(ctx, op.Hub.Client, o.mintersReport, now); err != nil {
+	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
 		return err
 	}
 	id, err := startHold(ctx, records, op, holdrecord.Workflow(o.workflow), o.reason)
@@ -132,12 +133,16 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 }
 
 // abort is `hold abort`. From prepare it deletes the hold's cohort record, then moves the row to
-// released under its hold id; the thresholds a prepare raised stay. A held row is refused in every
-// workflow but hub-restore, where abort is admitted while no `hold prove` is done and every claim
-// is still on its step-1 disk: its intent, the disks read again, the row moved to released, the
-// disks read once more (a restore that lands between the last check and the move is a restore
-// outside any hold, which it names), then its done entry. A row already released under this hold
-// id is the abort's whole effect: a rerun after the move changes nothing.
+// released under its hold id; the thresholds a prepare raised stay. A held row is aborted through
+// the hold's table (holdrecord.Admit): in every workflow once a command has stopped and no intent
+// is pending, the way out of a command that cannot succeed, and refused while a command's intent
+// is pending or before any command has stopped ("no command has stopped"). Its intent carries each
+// stop's record of what its command left, which it prints, so the operator ends the hold knowing
+// the state. In hub-restore it also needs every claim still on its step-1 disk while no `hold
+// prove` is done: the disks read again, the row moved to released, the disks read once more (a
+// restore that lands between the last check and the move is a restore outside any hold, which it
+// names), then its done entry. A row already released under this hold id is the abort's whole
+// effect: a rerun after the move changes nothing.
 func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -165,34 +170,64 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	if err != nil {
 		return err
 	}
-	if d.Workflow != holdrecord.WorkflowHubRestore {
-		return refusef(StepPreflight, "hold %s is held in workflow %s, where abort is refused: release it with nothing changed, or finish the workflow", o.holdID, d.Workflow)
-	}
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
 		return err
 	}
+	after, _, err := records.Journal(ctx, o.holdID)
+	if err != nil {
+		return err
+	}
+	printStopRecords(stdout, after)
 	stop := func(cause error) error {
 		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandAbort, cause.Error()); err != nil {
 			return errors.Join(cause, err)
 		}
 		return cause
 	}
-	if err := onStep1Disks(ctx, op, d); err != nil {
-		return stop(err)
+	hub := d.Workflow == holdrecord.WorkflowHubRestore
+	if hub {
+		if err := onStep1Disks(ctx, op, d); err != nil {
+			return stop(err)
+		}
 	}
 	moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
 	if err != nil {
 		return err
 	}
-	after := onStep1Disks(ctx, op, d)
+	var changed error
+	if hub {
+		changed = onStep1Disks(ctx, op, d)
+	}
 	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "aborted hold %s in hub-restore: row gen %d, released\n", o.holdID, moved.Gen)
-	if after != nil {
-		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", after)
+	fmt.Fprintf(stdout, "aborted hold %s in %s: row gen %d, released\n", o.holdID, d.Workflow, moved.Gen)
+	if changed != nil {
+		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", changed)
 	}
 	return nil
+}
+
+// printStopRecords prints what each stopped command left, as abort's latest intent carries it
+// (holdrecord.Admit's left.<index> inputs).
+func printStopRecords(stdout io.Writer, d holdrecord.Done) {
+	for i := len(d.Ops) - 1; i >= 0; i-- {
+		op := d.Ops[i]
+		if op.Command != holdrecord.CommandAbort || op.State != "intent" {
+			continue
+		}
+		keys := make([]string, 0, len(op.Inputs))
+		for k := range op.Inputs {
+			if strings.HasPrefix(k, "left.") {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(stdout, "left by a stopped command: %s\n", op.Inputs[k])
+		}
+		return
+	}
 }
 
 // readDisks is every claim's disk id now, by target (claim name), with the claims' bindings.
@@ -327,7 +362,7 @@ func onExpectedDisks(ctx context.Context, op *Operator, d holdrecord.Done) error
 // stop entry, so `hold set`'s rerun, `hold abort` in hub-restore, or `hold release` with nothing
 // changed is admitted. A rerun that finds the row held under its hold id runs the held steps again.
 func set(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
-	if err := PreflightMinters(ctx, op.Hub.Client, o.mintersReport, now); err != nil {
+	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
 		return err
 	}
 	id := o.holdID
@@ -665,6 +700,40 @@ func proveServers(ctx context.Context, op *Operator, holdID string, bindings map
 	if err != nil {
 		return nil, err
 	}
+	if _, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, bindings); err != nil {
+		return nil, err
+	}
+	return Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
+}
+
+// RestartProveAndBarrier runs §3a's steps 3 to 5 on the hub inside hold holdID: every declared
+// server restarted, one eviction at a time, and proved (a new server id, the probe refused on it,
+// its routes, image, revision and claim on the disk it is bound to now), then the meta barrier. It
+// returns the restarted servers, each with its new /varz. A command that must leave nothing a
+// server accepted before its own step (t-7's `restore --finish`) runs it first.
+func RestartProveAndBarrier(ctx context.Context, op *Operator, holdID string) (Declared, error) {
+	nc, err := op.Connect(ctx)
+	if err != nil {
+		return nil, unknownf(StepRestart, err, "connect to the hub as the operator")
+	}
+	defer func() { nc.Close() }()
+	render, err := Precondition(ctx, op.Hub)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := Discover(ctx, op.Hub)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := ReadClaims(ctx, op.Hub, render, op.Disks)
+	if err != nil {
+		return nil, err
+	}
+	return restartProveAndBarrier(ctx, op, nc, render, declared, holdID, claims)
+}
+
+// restartProveAndBarrier is steps 3 to 5 on nc, each claim held to bindings.
+func restartProveAndBarrier(ctx context.Context, op *Operator, nc *nats.Conn, render *Render, declared Declared, holdID string, bindings map[string]ClaimBinding) (Declared, error) {
 	restart := Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, Probe: op.Probe,
 		Bind: func(ctx context.Context, pod string, step1, now Varz) error {
 			if err := CheckReload(StepProof, pod, step1, now); err != nil {
@@ -683,5 +752,5 @@ func proveServers(ctx context.Context, op *Operator, holdID string, bindings map
 	if err := (MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}).Run(ctx, nc, nil); err != nil {
 		return nil, err
 	}
-	return Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
+	return after, nil
 }

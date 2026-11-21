@@ -140,9 +140,10 @@ func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
 	require.NotContains(t, natsgrant.Host("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
 }
 
-// Measure is the measurement job's grant as the deployment repository deploys it today
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there
-// goes when the job moves to the auth service, and this test with it.
+// Measure is the measurement job's grant as the deployment repository deploys it
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe, once the measurement user
+// configures no stream): eight JetStream reads and its own cutover inbox. The copy there goes when
+// the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
 	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
@@ -302,6 +303,10 @@ func operatorReleased() []string {
 	for _, b := range copiedBuckets {
 		publish = append(publish, "$JS.API.STREAM.SNAPSHOT.KV_"+b, "$JS.SNAPSHOT.ACK.KV_"+b+".>")
 	}
+	// The selection bucket's backup, which consumer-names create-bucket --after-loss --backup
+	// restores inside a hold: a backup only reads, so it needs no hold.
+	publish = append(publish,
+		"$JS.API.STREAM.SNAPSHOT.KV_envoy_session_consumers", "$JS.SNAPSHOT.ACK.KV_envoy_session_consumers.>")
 	return append(publish,
 		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
 		"$JS.API.CONSUMER.NAMES.ENVOY_NOTIFICATIONS",
@@ -368,19 +373,30 @@ func operatorHeld() []string {
 	return publish
 }
 
+// measureUpdate is the update of ENVOY_MEASURE, which envoy-infra streams ensure sends to bring a
+// deployed ENVOY_MEASURE to its declared settings. Released alone holds it: ensure runs only
+// outside a hold.
+const measureUpdate = "$JS.API.STREAM.UPDATE.ENVOY_MEASURE"
+
 // Operator's three phases and HoldProbe are each exactly the lists the plan writes, entry for
 // entry and in order, so a subject added to any phase, or a phase that grants another's entry, fails
-// here naming it. Every operator connection subscribes its own inbox prefix alone.
+// here naming it: released's list is the plan's and then ENVOY_MEASURE's update, which prepare and
+// held do not hold. Every operator connection subscribes its own inbox prefix alone.
 func TestOperatorIsExactly(t *testing.T) {
 	inbox := []string{"_INBOX_envoy_operator.>"}
+	require.NotContains(t, natsgrant.Operator(natsgrant.OperatorPhasePrepare).Publish, measureUpdate, "prepare holds ensure's update")
+	require.NotContains(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld).Publish, measureUpdate, "held holds ensure's update")
 	for phase, want := range map[natsgrant.OperatorPhase][]string{
-		natsgrant.OperatorPhaseReleased: operatorReleased(),
+		natsgrant.OperatorPhaseReleased: append(operatorReleased(), measureUpdate),
 		natsgrant.OperatorPhasePrepare:  operatorPrepare(),
 		natsgrant.OperatorPhaseHeld:     operatorHeld(),
 	} {
 		got := natsgrant.Operator(phase)
 		for _, entry := range got.Publish {
 			require.Contains(t, want, entry, "Operator(%s) publishes %q, which the plan's list does not hold", phase, entry)
+		}
+		for _, entry := range want {
+			require.Contains(t, got.Publish, entry, "Operator(%s) does not publish %q, which the plan's list holds", phase, entry)
 		}
 		require.Equal(t, natsgrant.Permissions{Publish: want, Subscribe: inbox}, got, "Operator(%s)", phase)
 	}
@@ -465,9 +481,9 @@ func TestOnlyTheOperatorCreatesOrChangesAStream(t *testing.T) {
 }
 
 // ForCallout removes the stream configuration calls and nothing else, and returns lists of its
-// own: a bucket's writer keeps its reads, its key writes and its watchers' calls, and the
-// measurement job keeps its stream infos and its publishes, losing its stream create, update and
-// delete. An entry the calls contain goes; a wildcard that reaches them and other subjects too
+// own: a bucket's writer keeps its reads, its key writes and its watchers' calls, losing its stream
+// create and update, and the measurement job's grant, which holds no stream call, is answered as it
+// is. An entry the calls contain goes; a wildcard that reaches them and other subjects too
 // stays, beside a deny of each call it reaches, so it still allows every other subject.
 func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 	for name, grant := range grantTable(t) {
@@ -490,20 +506,7 @@ func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 		"$JS.FC.KV_b.>",
 	}, natsgrant.ForCallout(natsgrant.Permissions{Publish: natsgrant.KVWrite("b")}).Publish)
 
-	require.Equal(t, natsgrant.Permissions{
-		Publish: []string{
-			"$JS.API.INFO",
-			"$JS.API.STREAM.NAMES",
-			"$JS.API.STREAM.LIST",
-			"$JS.API.STREAM.INFO.*",
-			"$JS.API.CONSUMER.NAMES.*",
-			"$JS.API.CONSUMER.LIST.*",
-			"$JS.API.CONSUMER.INFO.*.*",
-			"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.>",
-			"envoy-measure.>",
-		},
-		Subscribe: []string{"_INBOX_envoy_measure.>"},
-	}, natsgrant.ForCallout(natsgrant.Measure()))
+	require.Equal(t, natsgrant.Measure(), natsgrant.ForCallout(natsgrant.Measure()), "the measurement job's grant holds a stream call to remove")
 
 	wide := natsgrant.Permissions{
 		Publish:     []string{"$JS.API.>", "$JS.API.STREAM.*.X", "$JS.API.STREAM.INFO.X", ">", "$JS.API.STREAM.RESTORE.X"},

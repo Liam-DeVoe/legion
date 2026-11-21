@@ -197,6 +197,51 @@ func TestNoAnswerCreatesOrChangesAStream(t *testing.T) {
 	require.Empty(t, offenders, "an answer of the auth service may make, change or remove a stream")
 }
 
+// Every service's answer is what scopeGrant decides for its entry, less any stream create, update,
+// delete or restore: the kind and the projects are scopeGrant's, read first, and
+// natsgrant.ForCallout is applied to what it returns, never in its place. A daemon entry held to its
+// projects ("-") is answered as scopeGrant answers it: refused, naming why, where the service reads
+// no exchange projects, and natsgrant.WithinProjects of the daemon's grant less stream calls where
+// it does; neither the narrowing nor anything before it refuses an entry scopeGrant admits.
+func TestAServiceAnswerIsItsScopedGrantLessStreamCalls(t *testing.T) {
+	const heldDaemon = "system:serviceaccount:legion:held-daemon"
+	now := time.Now()
+	services := append(slices.Clone(exampleServices), ServiceEntry{Kind: KindDaemon, Account: heldDaemon})
+	tokens := map[string]platformToken{
+		"dispatch-token":    {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":    {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"daemon-token":      {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"measure-token":     {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+		"held-daemon-token": {account: heldDaemon, issued: now, expiry: now.Add(time.Hour)},
+	}
+	deps := Deps{ServiceToken: serviceTokens(tokens)}
+	narrowed := 0
+	for raw, token := range tokens {
+		t.Run(raw, func(t *testing.T) {
+			var entry ServiceEntry
+			for _, candidate := range services {
+				if candidate.Account == token.account && candidate.Google == token.google {
+					entry = candidate
+				}
+			}
+			require.NotEmpty(t, entry.Kind, "no entry lists %s", token.account)
+			scoped, scopeErr := scopeGrant(t.Context(), deps, entry, serviceGrant(entry, ""), "")
+			decision, err := Decide(t.Context(), deps, services, serviceRequest(raw))
+			if scopeErr != nil {
+				require.Error(t, err, "%s was admitted where scopeGrant refuses it", entry.name())
+				require.Equal(t, scopeErr.Error(), err.Error(), "%s was refused for another reason than scopeGrant's", entry.name())
+				return
+			}
+			require.NoError(t, err, "%s was refused where scopeGrant admits it", entry.name())
+			require.Equal(t, natsgrant.ForCallout(scoped), decision.Grant, "%s's answer is not its scoped grant less stream calls", entry.name())
+			if !slices.Equal(scoped.Publish, decision.Grant.Publish) {
+				narrowed++
+			}
+		})
+	}
+	require.Positive(t, narrowed, "no row's scoped grant held a stream call, so the narrowing above was read nowhere")
+}
+
 // The operator is the one service whose answer keeps its stream calls: its entry is answered with
 // natsgrant.Operator of the hold's phase whole, the create of ENVOY_MEASURE among them, while a
 // listener listed beside it is answered without any (TestNoAnswerCreatesOrChangesAStream).
@@ -548,7 +593,7 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 				want Decision
 			}{
 				{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}},
-				{"a listener", serviceRequest("listener-token"), Decision{Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}},
+				{"a listener", serviceRequest("listener-token"), Decision{Name: "listener/example-hub", Grant: natsgrant.ForCallout(natsgrant.Listener("example-hub")), Expires: now.Add(time.Hour)}},
 				{"the hold probe", serviceRequest("probe-token"), Decision{Name: "probe/" + probeAccount, Grant: natsgrant.HoldProbe(), Expires: now.Add(time.Hour)}},
 			}
 			for _, other := range others {

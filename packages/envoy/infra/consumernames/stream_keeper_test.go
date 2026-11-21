@@ -9,7 +9,6 @@ import (
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -49,7 +48,7 @@ func TestTheOldStreamKeepersListingUpdatesNoNewConsumer(t *testing.T) {
 		{Durable: selection.FreshName("legion-go-KEEP-dispatch"), FilterSubjects: []string{"notifications.dispatch.issue.>"}, AckPolicy: nats.AckExplicitPolicy},
 		{Durable: selection.FreshName("legion-go-KEEP-wake"), FilterSubject: bus.LegionWakeTopic, AckPolicy: nats.AckExplicitPolicy},
 	}
-	for _, config := range delivery.ConsumerConfigs() {
+	for _, config := range []nats.ConsumerConfig{bus.DispatchDeliveryConsumer(), bus.DispatchJobConsumer()} {
 		config.Durable = selection.FreshName(config.Durable)
 		fresh = append(fresh, config)
 	}

@@ -15,30 +15,9 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// scopeGrant is grant, entry's kind's grant, as the service answers entry's connection: held to the
-// projects entry may reach (heldToProjects), and, for every kind but the operator, without any
-// stream create, update, delete or restore (natsgrant.ForCallout), so no service the auth service
-// admits but the operator makes, changes or removes a stream. The operator (KindOperator) is the
-// one client that does: it makes every stream at deploy time (envoy-infra streams), and its grant
-// is held to the hold's phase instead (natsgrant.Operator).
-func scopeGrant(ctx context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
-	scoped, err := heldToProjects(ctx, deps, entry, grant, connection)
-	if err != nil || entry.Kind == KindOperator {
-		return scoped, err
-	}
-	return natsgrant.ForCallout(scoped), nil
-}
-
-// sessionScope is grant, a session's own (natsgrant.Session), as the service answers the session's
-// connection: without any stream create, update, delete or restore (natsgrant.ForCallout), as every
-// service's answer but the operator's is (scopeGrant). A session's grant holds none today; the
-// narrowing is here so every answer the service makes passes it, whatever a session's grant comes
-// to hold.
-func sessionScope(grant natsgrant.Permissions) natsgrant.Permissions {
-	return natsgrant.ForCallout(grant)
-}
-
-// heldToProjects is grant, entry's kind's grant, held to the projects entry may reach.
+// scopeGrant is grant, entry's kind's grant, held to the projects entry may reach. Decide answers
+// every connection but the operator's with what it returns less any stream create, update, delete
+// or restore (natsgrant.ForCallout).
 //
 // Dispatch's grant gains the write of the private-projects bucket (bus.PrivateProjectsBucket),
 // which Dispatch keeps, and a listener's its read, which a listener holds each session to its
@@ -76,7 +55,7 @@ func sessionScope(grant natsgrant.Permissions) natsgrant.Permissions {
 // projects' wakes for the stream's 72-hour retention after the last listener moves. The change
 // that lists daemon entries with "-" waits on that gate, with both readings quoted in its pull
 // request.
-func heldToProjects(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
+func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
 	switch entry.Kind {
 	case KindDispatch:
 		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVWrite(bus.PrivateProjectsBucket)...)

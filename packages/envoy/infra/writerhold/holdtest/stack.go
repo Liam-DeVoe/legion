@@ -34,6 +34,8 @@ import (
 const (
 	OperatorAccount = holdrecordtest.OperatorAccount
 	ProbeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+	// MeasureAccount is the measurement job's, which runs `envoy-infra streams check`.
+	MeasureAccount = "system:serviceaccount:envoy:envoy-measure"
 	// ListenerMachines are the machine ids of the listener entries the stack lists; a test
 	// connects a listener of each through ConnectListener.
 	listenerAccountPrefix = "system:serviceaccount:holdtest:listener-"
@@ -102,13 +104,35 @@ func (tt *tokenTable) verify(_ context.Context, raw string) (string, bool, time.
 	return account, false, issued, issued.Add(tt.life), nil
 }
 
-// The raw tokens of the stack's probe and listeners. The operator's is holdrecordtest's.
-const probeToken = "holdtest-probe-token"
+// The raw tokens of the stack's probe, measurement job and listeners. The operator's is
+// holdrecordtest's.
+const (
+	probeToken   = "holdtest-probe-token"
+	measureToken = "holdtest-measure-token"
+)
+
+// MeasureToken is the measurement job's platform token, which `envoy-infra streams check` presents
+// as user `service`.
+const MeasureToken = measureToken
 
 func listenerToken(machine string) string { return "holdtest-listener-" + machine + "-token" }
 
+// Options change what Start runs.
+type Options struct {
+	// NoHoldRead starts the auth service as a broker whose BROKER_NATS_HOLD_READ is false: it reads
+	// no hold row and decides every client as if the row held released, the control that shows
+	// what the hold rule refuses.
+	NoHoldRead bool
+}
+
 // Start runs the stack, stopped when t ends.
 func Start(t testing.TB) *Stack {
+	t.Helper()
+	return StartWith(t, Options{})
+}
+
+// StartWith runs the stack with opts, stopped when t ends.
+func StartWith(t testing.TB, opts Options) *Stack {
 	t.Helper()
 	broker := holdrecordtest.Start(t)
 	var schema string
@@ -118,8 +142,9 @@ func Start(t testing.TB) *Stack {
 	tokens := &tokenTable{accounts: map[string]string{
 		holdrecordtest.OperatorToken: OperatorAccount,
 		probeToken:                   ProbeAccount,
+		measureToken:                 MeasureAccount,
 	}, life: 50 * time.Minute}
-	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount}
+	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount, "measure/-/*=" + MeasureAccount}
 	for _, machine := range ListenerMachines {
 		account := listenerAccountPrefix + machine
 		tokens.accounts[listenerToken(machine)] = account
@@ -149,6 +174,12 @@ func Start(t testing.TB) *Stack {
 		return path
 	}
 	pool := broker.Pool
+	holdRead := func(ctx context.Context) (natshold.Reading, bool, error) {
+		return natshold.Read(ctx, pool, schema)
+	}
+	if opts.NoHoldRead {
+		holdRead = nil
+	}
 	auth, err := natscallout.Start(context.Background(), natscallout.Settings{
 		URLs:           cluster.URLs(),
 		SeedFile:       write("service.seed", keys.ServiceSeed),
@@ -157,11 +188,9 @@ func Start(t testing.TB) *Stack {
 		Services:       services,
 	}, natscallout.Deps{
 		ServiceToken: tokens.verify,
-		HoldRead: func(ctx context.Context) (natshold.Reading, bool, error) {
-			return natshold.Read(ctx, pool, schema)
-		},
-		HoldKeys:   []ed25519.PublicKey{broker.VerifyKey},
-		Introspect: sessions.introspect,
+		HoldRead:     holdRead,
+		HoldKeys:     []ed25519.PublicKey{broker.VerifyKey},
+		Introspect:   sessions.introspect,
 	})
 	if err != nil {
 		t.Fatalf("holdtest: start the auth service: %v", err)
