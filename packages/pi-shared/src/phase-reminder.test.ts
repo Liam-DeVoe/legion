@@ -18,6 +18,9 @@ import {
 } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 const implementer = {
   sessionID: "ses_implementer",
   tree: "LEGION-208",
@@ -93,7 +96,7 @@ function overDaemon(answer: typeof fetch) {
     return answer(input, init);
   }) as typeof fetch;
   const daemon = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: 60,
+    pluginContract: CONTRACT,
     fetch: recording,
   });
   const reminder = createPhaseReminder({
@@ -256,7 +259,7 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
   };
   for (const [failure, fetchFn] of Object.entries(failures)) {
     const client = createLegionDaemonClient("http://daemon.test", {
-      pluginContract: 60,
+      pluginContract: CONTRACT,
       fetch: fetchFn,
     });
     // The bound is the reminder's own, cut short so the hang is over in 20ms.
@@ -285,7 +288,7 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
 // read among them, is no such answer and nudges.
 test("a daemon that answers 200 that the claim owes nothing is reminded of nothing", async () => {
   const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: 60,
+    pluginContract: CONTRACT,
     fetch: (async () => Response.json(OWES_NOTHING)) as unknown as typeof fetch,
   });
   const { reminder, timers, sent, asked } = rig({
@@ -327,7 +330,7 @@ test("a read that times out produces a nudge that names no phase and produces no
     },
   });
   try {
-    const client = createLegionDaemonClient(daemon.url.href, { pluginContract: 60 });
+    const client = createLegionDaemonClient(daemon.url.href, { pluginContract: CONTRACT });
     const { reminder, timers, sent, published } = rig({
       owed: (input, signal) => {
         asked += 1;

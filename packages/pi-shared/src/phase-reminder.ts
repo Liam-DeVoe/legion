@@ -187,7 +187,8 @@ function roleUnheld(error: unknown): boolean {
 
 /** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
  * handed is aborted so what it started does not outlive the bound (`withinBudget` in
- * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw). */
+ * `pi-legion/src/capability-report.ts` is the same shape, with a fallback answer in place of the
+ * throw). */
 async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
   const controller = new AbortController();
   const deadline = Promise.withResolvers<T>();

@@ -2833,10 +2833,8 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves `shapedAnswersContract` in shaping.go with it, and that one constant
-// alone: it is the number the three keys of this entry are served down below, it is what
-// answers.go gives the two answers this change adds as their arrival, and it is the last number
-// of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.)
+// alone: it is the number the three keys of this entry are served down below, and it is what
+// answers.go gives the two answers this change adds as their arrival.)
 //
 // 202: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
@@ -2879,12 +2877,13 @@ package api
 // table (request_shapes_test.go's pluginRequests), so 202's request records hold its three
 // fields and a later type that stops reading one of them is red.
 //
-// The daemon ships four store migrations with it. `20261112012123_issue_repository_correction.up.sql`
-// adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, the third
-// restore outcome `refused_repository`, and the table `workspace_bundles_refused` a bundle of that
-// outcome is moved to. An older daemon binary put back on this schema writes none of them and
-// reads none of them, and it carries the write-once guard this change removes, so it refuses a
-// corrected repository as it always did while a correction this release applied stands.
+// The daemon ships four store migrations with it.
+// `20261112012123_issue_repository_correction.up.sql` adds the four `issues` columns the keys are
+// read from, `workspace_bundles.repo`, the third restore outcome `refused_repository`, and the
+// table `workspace_bundles_refused` a bundle of that outcome is moved to. An older daemon binary
+// put back on this schema writes none of them and reads none of them, and it carries the
+// write-once guard this change removes, so it refuses a corrected repository as it always did
+// while a correction this release applied stands.
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is

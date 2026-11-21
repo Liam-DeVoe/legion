@@ -115,9 +115,9 @@ var FailureCauses = []FailureCause{
 // turn in the wake pacing has come (reserveWake). Whether o charges is the policy's (Charges).
 // Where it does, one launch failure is counted (chargeLaunch) and the relaunch waits the backoff
 // for the failures charged so far (backOff), or the claim fails when the budget is spent. Where it
-// does not — the end of a process an earlier release started, or of a resume Oh My Pi made by the
-// session's id that did not register (endOutcome) — nothing is counted and no backoff is waited:
-// the backoff spaces out the failures charged against the claim, and this end is none of them.
+// does not, nothing is counted and no backoff is waited (Charges says which ends those are): the
+// backoff spaces out the failures charged against the claim, and this end is none of them. That
+// relaunch is launch itself, with the one lifecycle check and the retry every launch has.
 //
 // A relaunch the tree lifecycle refuses (its cleanup reserved) is checked before the charge, so
 // it costs none; one whose process is already stopped is relaunchRefused's. That check is a guard
@@ -138,20 +138,20 @@ var FailureCauses = []FailureCause{
 // already (registrationDeadline). It is the record's words and no outcome: what the policy reads
 // is o alone.
 func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string) error {
+	if !Charges(o) {
+		return m.launch(ctx, ending)
+	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
 			return m.relaunchAfterFailure(ctx, o, ending)
 		}, err)
 	}
-	charged := Charges(o)
-	if charged {
-		cause := failureCause(o)
-		m.claim.PendingCause = cause
-		if m.chargeLaunch(o) {
-			return m.fail(ctx, cause, "launch failures ran out")
-		}
+	cause := failureCause(o)
+	m.claim.PendingCause = cause
+	if m.chargeLaunch(o) {
+		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, charged, false, ending)
+	return m.launchAfter(ctx, true, false, ending)
 }
 
 // chargeLaunch counts one launch failure where the policy charges o (Charges), and reports whether

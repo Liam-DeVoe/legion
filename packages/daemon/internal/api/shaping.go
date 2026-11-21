@@ -951,16 +951,15 @@ const pauseContract = 178
 // the daemon has not applied and why. A plugin before it is served every issue without the four
 // (withoutRepositoryCorrection): one built before sjawhar/legion#2788 reads the state with a
 // strict schema and would refuse the whole body for a key it does not name, and one built after
-// strips the key instead, so the band keeps the body its own contract's record describes rather
-// than what keeps such a caller reading at all. A pod's reading counts no claim at
-// shapedAnswersContract or above (podContracts), so a caller from shapedAnswersContract to below
-// this contract meets the band by the contract its header states. The same contract added the
-// claim route `POST /legion/v1/claims/owed` with its answer (answers.go's AnswerOwed), which no
-// contract below it records.
+// strips the key instead, so the band keeps the body its own contract's record describes. A pod's
+// reading counts no claim at shapedAnswersContract or above (podContracts), so a caller from
+// shapedAnswersContract to below this contract meets the band by the contract its header states.
+// The same contract added the claim route `POST /legion/v1/claims/owed` with its answer
+// (answers.go's AnswerOwed), which no contract below it records.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
-// this change's own number, and the arrival of the owed answer moves with it.
+// dispatch://INFRA-3136's own number, and the arrival of the owed answer moves with it.
 const repositoryCorrectionContract = 202
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the

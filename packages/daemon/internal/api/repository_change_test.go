@@ -4,6 +4,10 @@ import (
 	"testing"
 )
 
+// repositoryCorrectionKeys is the four keys repositoryCorrectionContract added to each issue, as
+// the wire names them.
+var repositoryCorrectionKeys = []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"}
+
 // What the record holds about a correction of an issue's repository reaches an architect through
 // the state route, which is what every worker's `read_record` reads: the repository the issue
 // left and the moment the daemon applied the correction, and, for a change Dispatch has named
@@ -80,7 +84,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	}
 
 	// LEGION-211 is an issue no correction and no waiting change has reached.
-	for _, field := range []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"} {
+	for _, field := range repositoryCorrectionKeys {
 		if value, carried := issues["LEGION-211"][field]; carried {
 			t.Errorf("LEGION-211, whose repository nothing changed, carries %s = %v", field, value)
 		}
@@ -114,7 +118,7 @@ func TestTheRepositoryCorrectionContractIsTheContractThatAddedTheKeys(t *testing
 	}
 	for caller, body := range behind {
 		for key, view := range issueViews(t, body) {
-			for _, field := range []string{"repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"} {
+			for _, field := range repositoryCorrectionKeys {
 				if value, carried := view[field]; carried {
 					t.Errorf("the issue %s served to %s carries %s = %v", key, caller, field, value)
 				}

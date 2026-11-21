@@ -226,9 +226,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// below it is not.
 		pause bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record (repositoryCorrectionContract), the contract that added the four keys,
-		// so a pod at it is served them and every pod below it is not, whatever else the contracts
-		// it does reach give it.
+		// left on its record (repositoryCorrectionContract), the contract that added the four keys:
+		// a caller at it is served them, and a caller below it that its header places, or a pod
+		// whose claims record a contract below shapedAnswersContract, is not. A pod whose claims
+		// record shapedAnswersContract up to below repositoryCorrectionContract is in no pod
+		// reading (podContracts), so it is served them.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},

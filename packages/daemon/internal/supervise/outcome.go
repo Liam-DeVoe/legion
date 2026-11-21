@@ -38,7 +38,7 @@ import (
 // or a resume Oh My Pi made by the session's id (runtime.OutcomeResumeByAgentUnregistered,
 // dispatch://INFRA-4108): the first is that release's agent and not the claim's, and the second is
 // a resume whose session the pod's launcher cannot look up, so its end cannot tell a session that
-// is gone from an agent that failed, and the next try forgets the session (endOutcome).
+// is gone from an agent that failed, and the next try forgets the session (resumeByID).
 //
 // The guards that are not outcome questions stay at their sites: the lifecycle
 // check before a relaunch and before a retirement (checkLaunch), an operator's suspension held

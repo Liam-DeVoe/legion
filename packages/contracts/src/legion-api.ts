@@ -2158,10 +2158,9 @@ export const LegionChildRequest = z.strictObject({
 });
 
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
- * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
- * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * issue's phase and its open check for `handoff_complete`, and the controller's `read_state`
+ * summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot, design gate,
+ * and the state and both turn times of the architect's claim and of every worker's.
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2246,11 +2245,12 @@ const ISSUE_RECORD_READS = [
  * as any read is.
  */
 export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
-  // The three readers of an issue's record ask the record route for it (dispatch://INFRA-2694),
-  // and the controller's `read_state` summary reads the project's admission line, its
-  // capability report and each issue's own fields. `daemon` and `daemon.project` stood
-  // here until the controller's boot check read the project from the health answer instead
-  // (`pi-legion/src/controller-session.ts`), and both are optional above.
+  // The record route's readers, `legion-phase-ops.ts`'s `read_record` and `handoff_complete`, ask
+  // it for an issue's record (dispatch://INFRA-2694), and the controller's `read_state` summary
+  // reads the project's admission line, its capability report and each issue's own fields.
+  // `daemon` and `daemon.project` stood here until the controller's boot check read the project
+  // from the health answer instead (`pi-legion/src/controller-session.ts`), and both are optional
+  // above.
   LegionStateResponse: [
     "issues",
     ...ISSUE_RECORD_READS.map((field) => `issues{}.${field}`),

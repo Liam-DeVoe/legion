@@ -203,10 +203,10 @@ export default function legionExtension(pi: PiApi): void {
   // before any capability exists). Restored from the transcript at session_start and appended to
   // it on every change.
   //
-  // The runner's timers and its record check run outside every hook, so the pane's own session
-  // context is kept here (`paneContext`, set at session_start and after every session change):
-  // one Oh My Pi process holds one claim for its whole life, and this is the session that claim
-  // is on.
+  // The runner's timers fire outside every hook, so the pane's own session context is kept here
+  // (`paneContext`, set at session_start and after every session change): the timers are armed
+  // on it, and the owed check they run reads the claim of the session it is on (`paneClaim`). One
+  // Oh My Pi process holds one claim for its whole life, and this is the session that claim is on.
   let paneContext: SessionContext | undefined;
   const phaseWorkerSession = (context: SessionContext): boolean => {
     const role = claimSession.capability(context.sessionManager.getSessionId())?.role;
@@ -613,8 +613,8 @@ export default function legionExtension(pi: PiApi): void {
     // root/worker boot and its failure would exit the parent process. See isSubagentSession.
     if (await checkSubagentSession(context)) return;
     await titleSession(context);
-    // The session this pane's claim is on, for the reminder's timers and its record check, which
-    // run outside every hook.
+    // The session this pane's claim is on: the reminder's timers, which fire outside every hook,
+    // are armed on it, and the owed check they run reads its claim.
     paneContext = context;
     const branch = context.sessionManager.getBranch?.() ?? [];
     // A worker the daemon relaunched with --resume keeps its reminder's rhythm and count, and the

@@ -2470,17 +2470,16 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		o := m.endOutcome(runtime.OutcomeNeverRegistered, "the registration deadline")
-		if !Charges(o) {
-			// An end the policy charges nothing counts against no budget, so its line names none.
-			m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-			return m.relaunchAfterFailure(ctx, o, noEnd)
-		}
 		// The line names the claim (the machine's logger carries it), what its agent never did, and
 		// the launch this retirement counts against its budget (relaunchAfterFailure counts it next),
 		// so a controller whose role claim waits out its registration deadline shows in the daemon's
-		// log as that, attempt by attempt.
-		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
-			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
+		// log as that, attempt by attempt. An end the policy charges nothing counts against no
+		// budget, so its line names none.
+		args := []any{"incarnation", incarnation}
+		if Charges(o) {
+			args = append(args, "launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
+		}
+		m.log.Warn("supervise: the agent "+never+"; retired its process", args...)
 		return m.relaunchAfterFailure(ctx, o, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }

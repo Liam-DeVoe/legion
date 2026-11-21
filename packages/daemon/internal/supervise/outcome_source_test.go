@@ -15,21 +15,20 @@ import (
 )
 
 // The policy that decides whether a claim's failure charges a budget (Charges) has a chokepoint:
-// the charge functions — chargePrompt, chargeDeath and chargeLaunch, through which
-// relaunchAfterFailure counts — each ask it, so no site that reaches one can charge what the
-// policy waives. But the Go type system cannot require that a failing path call one of them at
-// all, and a busy path that decides the busy answer itself, from the agent's words, never reaches
-// a charge function. Nor can a type keep a site from reading those words: they reach the daemon as
-// an error and as strings, which it must hold to log a failure and to keep a delivery's last send
-// error, and the text of either is open to any function that holds it. Of the Claude Code
-// bridge's busy refusal, whose words the bridge keeps for a daemon rolled back to the release
-// before this one, the compiler holds one part: the words are a constant the bridge does not
-// export (claudebridge's busyWords), so no other package can name them. It cannot keep a package
-// from writing them out, nor the bridge from using its constant for anything but that refusal.
-// So this test reads the source and holds the five things the compiler cannot: every member of
-// the set (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site
-// matches a refusal's words — not in this package, nor in internal/runtime, which reads them from
-// a send's error (RefusalReason), internal/stream, which mints the outcome where the frame is
+// the charge functions (chargeFunctions, below) each ask it, so no site that reaches one can
+// charge what the policy waives. But the Go type system cannot require that a failing path call
+// one of them at all, and a busy path that decides the busy answer itself, from the agent's words,
+// never reaches a charge function. Nor can a type keep a site from reading those words: they reach
+// the daemon as an error and as strings, which it must hold to log a failure and to keep a
+// delivery's last send error, and the text of either is open to any function that holds it. Of
+// the Claude Code bridge's busy refusal, whose words the bridge keeps for a daemon rolled back to
+// the release before this one, the compiler holds one part: the words are a constant the bridge
+// does not export (claudebridge's busyWords), so no other package can name them. It cannot keep a
+// package from writing them out, nor the bridge from using its constant for anything but that
+// refusal. So this test reads the source and holds the five things the compiler cannot: every
+// member of the set (runtime.Outcome, declared in internal/runtime) has a row in the policy; no
+// site matches a refusal's words — not in this package, nor in internal/runtime, which reads them
+// from a send's error (RefusalReason), internal/stream, which mints the outcome where the frame is
 // read, or internal/claudebridge, which writes the busy refusal; no site holds the busy refusal's
 // words but the refusal itself — none in this package, the stream or the runtime, and none in the
 // bridge but its constant and the refusal it writes; every charge names a declared member; and no
