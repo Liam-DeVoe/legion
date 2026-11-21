@@ -504,7 +504,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
 	for _, r := range roles {
-		_, _, owed, err := openPodResume(ctx, tx, project, issue, r.role)
+		_, _, owed, err := openPodResume(ctx, tx, project, issue, r.role, r.token)
 		if err != nil {
 			return err
 		}

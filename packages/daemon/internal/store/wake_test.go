@@ -112,15 +112,15 @@ func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 	records := podRecords(t, store)
 	at := time.Now().UTC().Truncate(time.Millisecond)
 	inTx(t, store, func(tx pgx.Tx) error {
-		first, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at, 0)
+		first, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, at, 0)
 		if err != nil || !first {
 			t.Fatalf("the implementer's first wake = %t, %v; want it taken", first, err)
 		}
-		again, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeRoleMessage, at, 0)
+		again, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeRoleMessage, at, 0)
 		if err != nil || again {
 			t.Fatalf("a second wake of the implementer = %t, %v; want it refused: its pod is coming back", again, err)
 		}
-		other, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeRoleMessage, at, 0)
+		other, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, "legion-legion-legion-208-architect", pods.WakeRoleMessage, at, 0)
 		if err != nil || !other {
 			t.Fatalf("the architect's wake = %t, %v; want it taken: a wake resumes one claim", other, err)
 		}
@@ -131,7 +131,7 @@ func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 		t.Fatalf("stamp the implementer's first turn: %v", err)
 	}
 	inTx(t, store, func(tx pgx.Tx) error {
-		next, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at, 0)
+		next, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, at, 0)
 		if err != nil || !next {
 			t.Fatalf("a wake after the first turn = %t, %v; want it taken: that resume is closed", next, err)
 		}
@@ -316,7 +316,7 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 	}
 	// The resume is the one a pod-ready and a first-turn observation stamp, and it is no longer
 	// open once its first turn is in.
-	id, pause, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer)
+	id, pause, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer, releasedToken)
 	if err != nil || !found || id != records.Resumes[0].ID || pause != 0 {
 		t.Fatalf("OpenPodResume = %d, pause %d, %t, %v; want the resume the wake recorded, %d, which no pause held",
 			id, pause, found, err, records.Resumes[0].ID)
@@ -324,7 +324,7 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 	if err := store.MarkPodResumeFirstTurn(ctx, id, at.Add(time.Minute)); err != nil {
 		t.Fatalf("stamp the first turn: %v", err)
 	}
-	if _, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer); err != nil || found {
+	if _, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer, releasedToken); err != nil || found {
 		t.Fatalf("OpenPodResume after the first turn = %t, %v; want none", found, err)
 	}
 }
@@ -350,7 +350,7 @@ func TestClosingAResumeWritesNoFirstTurnAndFreesTheRole(t *testing.T) {
 		return CloseOpenResumes(ctx, tx, "legion", rootIssue)
 	})
 
-	if _, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer); err != nil || found {
+	if _, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer, releasedToken); err != nil || found {
 		t.Fatalf("OpenPodResume after the close = %t, %v; want none", found, err)
 	}
 	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeBackstop, at.Add(time.Hour), 0); err != nil || !taken {

@@ -262,7 +262,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		return made, nil
 	}
 	if first {
-		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Role, at); err != nil {
+		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Role, c.Token, at); err != nil {
 			return made, err
 		}
 	}
@@ -273,7 +273,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if !owed {
 		return made, nil
 	}
-	taken, err := p.pods.TakePodWake(ctx, tx, c.Issue, c.Role, pods.WakePause, at, held.ID)
+	taken, err := p.pods.TakePodWake(ctx, tx, c.Issue, c.Role, c.Token, pods.WakePause, at, held.ID)
 	if err != nil || !taken {
 		return made, err
 	}

@@ -53,11 +53,11 @@ type Pods interface {
 	// Every daemon reads the report and only the one holding a released claim of that name acts.
 	ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
 	ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
-	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
-	// a wake another pass already took, which is already bringing the pod back. pause is the
-	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
-	// no release (decision 15 of dispatch://INFRA-3759).
-	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
+	// TakePodWake takes one wake of issue's role for the claim token it brings back, and answers
+	// whether this call took it; false is a wake another pass already took, which is already
+	// bringing the pod back. pause is the project pause that holds the wake, 0 for none: a held
+	// wake records its pause and pairs with no release (decision 15 of dispatch://INFRA-3759).
+	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, token claim.Token, kind string, at time.Time, pause int64) (bool, error)
 	// PauseOfWake is which pause holds a wake of the claim token, issue's role, by the store's one
 	// rule of it (store's PodRecords.PauseOfWake), and which pause stopped the claim. mark is the
 	// pause that held the outbox row the wake is taken for, which a wake of this package, taken
@@ -455,7 +455,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
-	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at, pause)
+	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, released.Token, kind, at, pause)
 	if err != nil || !taken {
 		return false, err
 	}
