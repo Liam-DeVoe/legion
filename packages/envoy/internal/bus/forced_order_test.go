@@ -352,20 +352,15 @@ func (r *forcedRig) heldSession(t *testing.T, id string, point testnats.Point) *
 	return s
 }
 
-// forcedHoldPoints are the predecessor's write holds every site row runs: before the write's I/O.
-// The predecessor's write held before its rename does not land in a replacement of the same name:
-// the delete removes the temporary file with the consumer's directory, and the rename answers
-// ENOENT (measured here, on nats-server v2.15.1). The rename hold is the replacement's own write's
-// instead, in the create-error order (TestForcedOrderARelayRestartInTheCreateErrorOrderDeliversEveryRequestedMessage).
-func forcedHoldPoints(*testing.T) []testnats.Point {
-	return []testnats.Point{testnats.WritePreIO}
-}
-
 // The create-error order (10012): the predecessor's write is held before its I/O, the
 // replacement's creation write is held before its rename, then the predecessor's write is released
 // into the directory and the replacement's rename after it. Of the same name, the replacement's
 // create fails or keeps the predecessor's state; of a fresh name, the two writes touch different
-// files. The replacement must deliver every message after the predecessor's floor.
+// files. Every other row holds the predecessor's write before its I/O only: held before its rename,
+// it does not land in a replacement of the same name, since the delete removes the temporary file
+// with the consumer's directory and the rename answers ENOENT (measured on nats-server v2.15.1), so
+// the rename hold is the replacement's own write's, here. The replacement must deliver every
+// message after the predecessor's floor.
 func TestForcedOrderARelayRestartInTheCreateErrorOrderDeliversEveryRequestedMessage(t *testing.T) {
 	if ok, why := testnats.WritePreRename.Exists(); !ok {
 		t.Logf("nats-server %s has no %s, so no create-error order: %s", natsserver.VERSION, testnats.WritePreRename, why)
@@ -414,26 +409,22 @@ func TestForcedOrderARelayRestartInTheCreateErrorOrderDeliversEveryRequestedMess
 // the sequence after its floor. The held write of the predecessor's last ack must not reach the
 // replacement, which must deliver every message after that floor again.
 func TestForcedOrderARelayRestartUnderAHeldWriteDeliversEveryRequestedMessage(t *testing.T) {
-	for _, point := range forcedHoldPoints(t) {
-		t.Run(string(point), func(t *testing.T) {
-			r := newForcedRig(t)
-			r.sameNameControl(t, point)
-			s := r.heldSession(t, "ses_forced_restart", point)
-			mark := r.hooks.Mark()
-			restarted, err := r.consumers.RestartAtFloor(context.Background(), s.id, []string{s.agent})
-			if err != nil {
-				t.Fatalf("restart: %v", err)
-			}
-			if restarted.StartSeq != s.seqs[forcedAcked+1] {
-				t.Fatalf("the restart starts at %d, want %d", restarted.StartSeq, s.seqs[forcedAcked+1])
-			}
-			r.awaitReplacementWrite(t, mark, s.gen)
-			r.releaseAndLand(t, s.hold, s.gen)
-			r.restart(t)
-			got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, restarted, s.id) })
-			requireDelivered(t, got, s.seqs[forcedAcked+1:], "the restarted consumer")
-		})
+	r := newForcedRig(t)
+	r.sameNameControl(t, testnats.WritePreIO)
+	s := r.heldSession(t, "ses_forced_restart", testnats.WritePreIO)
+	mark := r.hooks.Mark()
+	restarted, err := r.consumers.RestartAtFloor(context.Background(), s.id, []string{s.agent})
+	if err != nil {
+		t.Fatalf("restart: %v", err)
 	}
+	if restarted.StartSeq != s.seqs[forcedAcked+1] {
+		t.Fatalf("the restart starts at %d, want %d", restarted.StartSeq, s.seqs[forcedAcked+1])
+	}
+	r.awaitReplacementWrite(t, mark, s.gen)
+	r.releaseAndLand(t, s.hold, s.gen)
+	r.restart(t)
+	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, restarted, s.id) })
+	requireDelivered(t, got, s.seqs[forcedAcked+1:], "the restarted consumer")
 }
 
 // The predecessor's held write released after the replacement's store is made and before it loads
@@ -475,31 +466,27 @@ func TestForcedOrderARelayRestartWhoseReplacementLoadsAfterTheHeldWriteDeliversE
 // SessionConsumers.Delete) creates the session's consumer again at the floor the delete recorded.
 // The held write of the deleted consumer's last ack must not reach it.
 func TestForcedOrderARegistrationAfterADeleteUnderAHeldWriteDeliversEveryRequestedMessage(t *testing.T) {
-	for _, point := range forcedHoldPoints(t) {
-		t.Run(string(point), func(t *testing.T) {
-			r := newForcedRig(t)
-			r.sameNameControl(t, point)
-			s := r.heldSession(t, "ses_forced_reregister", point)
-			ctx := context.Background()
-			floor, err := r.consumers.Delete(ctx, s.id, nil)
-			if err != nil || floor != s.seqs[forcedAcked] {
-				t.Fatalf("Delete = %d, %v; want the floor %d", floor, err, s.seqs[forcedAcked])
-			}
-			mark := r.hooks.Mark()
-			again, err := r.consumers.Ensure(ctx, s.id, []string{s.agent}, 0)
-			if err != nil {
-				t.Fatalf("register again: %v", err)
-			}
-			if again.StartSeq != s.seqs[forcedAcked+1] {
-				t.Fatalf("the registration after the delete starts at %d, want %d", again.StartSeq, s.seqs[forcedAcked+1])
-			}
-			r.awaitReplacementWrite(t, mark, s.gen)
-			r.releaseAndLand(t, s.hold, s.gen)
-			r.restart(t)
-			got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, again, s.id) })
-			requireDelivered(t, got, s.seqs[forcedAcked+1:], "the consumer registered after the delete")
-		})
+	r := newForcedRig(t)
+	r.sameNameControl(t, testnats.WritePreIO)
+	s := r.heldSession(t, "ses_forced_reregister", testnats.WritePreIO)
+	ctx := context.Background()
+	floor, err := r.consumers.Delete(ctx, s.id, nil)
+	if err != nil || floor != s.seqs[forcedAcked] {
+		t.Fatalf("Delete = %d, %v; want the floor %d", floor, err, s.seqs[forcedAcked])
 	}
+	mark := r.hooks.Mark()
+	again, err := r.consumers.Ensure(ctx, s.id, []string{s.agent}, 0)
+	if err != nil {
+		t.Fatalf("register again: %v", err)
+	}
+	if again.StartSeq != s.seqs[forcedAcked+1] {
+		t.Fatalf("the registration after the delete starts at %d, want %d", again.StartSeq, s.seqs[forcedAcked+1])
+	}
+	r.awaitReplacementWrite(t, mark, s.gen)
+	r.releaseAndLand(t, s.hold, s.gen)
+	r.restart(t)
+	got := delivered(t, func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, r.consumers, again, s.id) })
+	requireDelivered(t, got, s.seqs[forcedAcked+1:], "the consumer registered after the delete")
 }
 
 // A registration after the server removed the session's consumer (an inactivity removal, played by
