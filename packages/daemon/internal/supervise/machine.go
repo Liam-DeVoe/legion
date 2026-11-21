@@ -1492,15 +1492,10 @@ type Machine struct {
 	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
 	// at Warn.
 	unansweredAsks int
-	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
-	// (holdSuspendUntilReady), nil for none.
+	// held is the suspension held for the agent's turn (holdSuspension), behind the wait for the
+	// report of its take's turn (reportwait.go), or for a launch's ready (holdSuspendUntilReady),
+	// nil for none.
 	held *RequestSuspend
-	// heldForReport is whether the held suspension waits past the end of its take's turn for the
-	// report that settles the task (turnEnded, reportSettles): that report's finish runs it
-	// (afterTurn), and its deadline bounds the wait (suspendAtTimeout). A hold whose stop the
-	// runtime refused waits for no report: it is tried again at the probe interval (suspendHeld).
-	// It goes with the hold (dropHeld, letGo), and is memory only, as the hold is.
-	heldForReport bool
 	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
 	// keeps until the agent says ready — and false whenever held is nil: it is set with held and
 	// cleared with it (dropHeld, letGo). A project pause's stop owes the role that launch at the
@@ -1509,12 +1504,12 @@ type Machine struct {
 	// rather than a field of the request, because the request is the event the daemon posts and
 	// carries nothing a caller may not set.
 	heldLaunch bool
-	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, or for the
-	// report of the take's turn that ended (relaunchWaitsForReport), naming the pass that found
-	// the claim ("boot", "sweep", "wake"); nil for none. Relaunching a stale claim where it stands
-	// would end a turn whose worker the stale-plugin lane asked nothing of, or take back as a cut
-	// turn a task whose turn ran whole, so the relaunch waits for the turn and for that report
-	// (refreshPlugin, turnEnded, afterTurn). It is memory only, as the held suspension's
+	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, or behind the
+	// wait for the report of the take's turn (relaunchWaitsForReport, reportwait.go), naming the
+	// pass that found the claim ("boot", "sweep", "wake"); nil for none. Relaunching a stale claim
+	// where it stands would end a turn whose worker the stale-plugin lane asked nothing of, or take
+	// back as a cut turn a task whose turn ran whole, so the relaunch waits for the turn and for that
+	// report (refreshPlugin, turnEnded, afterTurn). It is memory only, as the held suspension's
 	// deadline timer is: the daemon's boot pass and every orphan sweep post StalePlugin again for
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
@@ -2718,13 +2713,13 @@ func (m *Machine) fence(ev Event) (bool, error) {
 
 // timesADelivery is whether a timer of kind waits on one delivery rather than on the claim or
 // its process: the end-frame bound a task's turn's end arms (finishTask), the ladder's wait a
-// provider error arms (providererror.go), R5's two bounds (waits.go), and the bound of a
-// stale-plugin relaunch's wait for a take's report (relaunchWaitsForReport). Each is fenced on the
-// claim's pending delivery as well as on the id the arming recorded, so one that fires after the
-// task it was armed for was replaced decides nothing about the task that replaced it.
+// provider error arms (providererror.go), R5's two bounds (waits.go), and the bound of the wait
+// for a take's report (reportwait.go). Each is fenced on the claim's pending delivery as well as
+// on the id the arming recorded, so one that fires after the task it was armed for was replaced
+// decides nothing about the task that replaced it.
 func timesADelivery(kind TimerKind) bool {
 	switch kind {
-	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart, TimerReportWait:
+	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart, TimerReport:
 		return true
 	default:
 		return false
@@ -3540,9 +3535,12 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // (recordEnd): the process is gone whatever this decision goes on to do, every fact the record
 // reads is still as the death left it, and the relaunch that lets the process go can be a wake's
 // turn away. A task whose take's turn was running is still taken there, so the record says its
-// turn was cut off; one whose turn ended with its report still to come is finished rather than
-// taken back (interrupted). The let-go that follows — the launch, the held suspension's or the
-// failure's — finds this launch's record standing and adds none.
+// turn was cut off. One whose turn ended with its report still to come is settled by its claim's
+// contract (interrupted): below TaskTakeContract, or where a report's finish the store refused is
+// owed, it is finished rather than taken back; for a plugin that names its number, whose report
+// alone finishes it, it is taken back with the note of a cut turn. The let-go that follows — the
+// launch, the held suspension's or the failure's — finds this launch's record standing and adds
+// none.
 //
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart

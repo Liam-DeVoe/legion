@@ -153,11 +153,12 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
-	// TimerReportWait is the bound of a stale-plugin relaunch's wait for the report of the pending
-	// take's turn, which ended with that report still to come (relaunchWaitsForReport): the stop
-	// timeout, the bound the operator's suspension has. When it passes the task is taken back with
-	// the note of a cut turn and the relaunch runs (reportWaitOver). Armed on the pending task's id.
-	TimerReportWait TimerKind = "report_wait"
+	// TimerReport is the bound of the wait for the report of the pending take's turn, which ended
+	// with that report still to come while work waits for it (reportwait.go, armReportWait): R5's
+	// second bound, Timeouts.TurnStart, armed whole where that wait began. When it passes the task
+	// is taken back with the note of a cut turn, and what waited runs (reportBoundOver). Armed on
+	// the pending task's id.
+	TimerReport TimerKind = "report"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -723,8 +724,8 @@ const (
 	onTurnStartTimer eventKind = timerPrefix + eventKind(TimerTurnStart)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
-	// The bound of a stale-plugin relaunch's wait for a take's report (relaunchWaitsForReport).
-	onReportWaitTimer eventKind = timerPrefix + eventKind(TimerReportWait)
+	// The bound of the wait for a take's report (reportwait.go).
+	onReportTimer eventKind = timerPrefix + eventKind(TimerReport)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1144,15 +1145,15 @@ func fillTable(t *builder) {
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
-	// The bound of a stale-plugin relaunch's wait for the report of the take's turn. It is armed
-	// only over a claim whose agent is ready, idle or working, and goes with the task (the fence
-	// on its delivery) and with the process (letGo). Where it takes the task back the relaunch
-	// runs, or the held suspension that waits for the same report, or the turn running runs them
-	// at its end.
-	t.row(onReportWaitTimer, "the stale-plugin relaunch's wait for the take's report is over: take the task back with the note of a cut turn, then relaunch", reportWaitOver,
+	// The bound of the wait for the report of the take's turn (reportwait.go). It is armed only
+	// over a claim whose agent is ready, idle or working — working for a compaction, since a turn
+	// running disarms it — and goes with the task (the fence on its delivery) and with the process
+	// (letGo). Where it takes the task back, what waited for the report runs: the held suspension's
+	// stop, or the relaunch; a compaction runs it at its end.
+	t.row(onReportTimer, "the wait for the take's report is over: take the task back with the note of a cut turn, then run what waited for the report", reportBoundOver,
 		[]ClaimState{StateLaunching, StateSuspended, StateFailed}, StateReady, StateIdle, StateWorking)
-	t.ignore(onReportWaitTimer, "no take's turn awaits its report", unready...)
-	t.ignore(onReportWaitTimer, "no take's turn awaits its report", gone...)
+	t.ignore(onReportTimer, "no take's turn awaits its report", unready...)
+	t.ignore(onReportTimer, "no take's turn awaits its report", gone...)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
@@ -1786,15 +1787,19 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // came within the RPC timeout (endFrameFinishes, TimerFinish, finishAtTurnsEnd). A suspension
 // held for the turn of such a claim's task runs at this end, and the settle after its stop
 // finishes the task by this end. A suspension held for the turn of a task whose plugin names its
-// number waits for the report instead (reportSettles): the claim goes idle holding it, and the
-// report's finish runs it (reportedTask, afterTurn); its own deadline bounds that wait
-// (TimerSuspend), where its stop takes the task back as a cut turn (suspendAtTimeout). Run at
-// this end, its stop would come before the report, which the suspended claim ignores, and settle
-// would take back a task whose turn ran whole, to run again on resume.
+// number waits for the report instead, behind the wait for the take's report (reportwait.go,
+// reportOwed): the claim goes idle holding it, and the report's finish runs it (reportedTask,
+// afterTurn); that wait's bound (TimerReport) and the hold's own deadline (TimerSuspend) bound it,
+// whichever is first, and either takes the task back as a cut turn before the stop (reportMissed).
+// Run at this end, its stop would come before the report, which the suspended claim ignores, and
+// settle would take back a task whose turn ran whole, to run again on resume. So does a hold over
+// a take a report put back while this turn ran (putBack): it waits for the take's own turn, or for
+// R5's second bound.
 //
 // A stale-plugin relaunch held for this turn (refreshPlugin) runs once the turn is over for its
 // task too (afterTurn): here for a turn that was no task's, and at the task's finish for a task's
-// turn. The claim's process speaks a plugin contract that cannot answer an update round, so it is
+// turn, behind the same wait for the take's report.
+// The claim's process speaks a plugin contract that cannot answer an update round, so it is
 // replaced now that its worker has finished the turn, and the task waiting behind it is taken by
 // the process the relaunch starts rather than by the one it replaces. Waiting for the finish is
 // what has the turn's own task retire before the relaunch rather than be taken back and given
@@ -1875,12 +1880,12 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	p := m.claim.Pending
 	finishes := p != nil && p.turnStarted()
 	if m.held != nil {
-		if m.reportSettles() {
-			// The task's turn is over and only its report settles it: the hold waits for that
-			// report, whose finish runs it (reportedTask, afterTurn), or for its own deadline
-			// (TimerSuspend, suspendAtTimeout).
-			m.claim.State, m.heldForReport = StateIdle, true
-			m.log.Info(heldForReportLine, "task", p.Number, "by", m.held.By, "deadline", m.held.Deadline)
+		if m.reportOwed() {
+			// The take's turn is over, or a report put the take back while this turn ran, and
+			// only the take's report settles it: the hold waits behind the wait for that report
+			// (reportwait.go), whose finish runs it (reportedTask, afterTurn), or behind its bound.
+			m.claim.State = StateIdle
+			m.log.Info(reportWaitsLine, "task", p.Number, "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
 			return m.persist(ctx)
 		}
 		// Where this turn was a task's, the settle that follows the stop finishes the task, by
@@ -1908,32 +1913,37 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return err
 	}
 	if finishes {
-		// The task's turn is over and its report is what finishes it, or the end-frame bound
-		// for a plugin that names no number; what is held for the turn runs at its finish
-		// instead (finishTask, reportedTask, finishAtTurnsEnd). A stale-plugin relaunch held for
-		// the turn of a task only its report settles now waits for that report, under the bound
-		// such a wait has (relaunchWaitsForReport).
 		m.armEndFrameBound(p.ID)
-		if held := m.staleRelaunch; held != nil && m.reportSettles() {
-			m.relaunchWaitsForReport(*held)
+	}
+	if finishes || m.reportOwed() {
+		// The task's turn is over and its report is what finishes it, or the end-frame bound for
+		// a plugin that names no number; what is held for the turn runs at its finish instead
+		// (finishTask, reportedTask, finishAtTurnsEnd). A stale-plugin relaunch held for the
+		// turn of a take only its report settles now waits for that report, and one held over a
+		// take a report put back while this turn ran waits for that take's own turn
+		// (reportwait.go).
+		if held := m.staleRelaunch; held != nil && m.reportOwed() {
+			m.log.Info(reportWaitsLine, "task", p.Number, "held", "relaunch", "trigger", *held)
 		}
 		return nil
 	}
-	return m.afterTurn(ctx)
+	return m.afterTurn(ctx, false)
 }
 
 // afterTurn runs what the machine held for the agent's turn, once that turn is over for the task
-// too: its end seen, and the task it was the turn of finished (finishTask). What it holds reads
-// the worker's hands — the stale-plugin relaunch would take an unfinished task back from the
-// process it replaces (refreshPlugin) — so it may not run while the task whose turn just ended is
-// still unfinished. The offer of a refused take runs last, as it does from every other decision.
+// too: its end seen, and the task it was the turn of settled — finished (finishTask), or taken back
+// by a provider error's report, by the bound of the wait for its report, or by R5's second bound
+// over a take a report put back (reportwait.go). What it holds reads the worker's hands — the
+// stale-plugin relaunch would take an unfinished task back from the process it replaces
+// (refreshPlugin) — so it may not run while the task whose turn just ended is still unsettled. The
+// offer of a refused take runs last, as it does from every other decision.
 //
-// A suspension held for the turn of a task that only its report settles, which waited past the
-// turn's end for that report (Machine.heldForReport, turnEnded), runs first and instead of the
-// rest: its stop ends the process the held relaunch was for, which letGo drops with it, and
-// leaves no take to offer. A stop the runtime refuses keeps it held and tries it again at the
-// probe interval (suspendHeld), the claim idle meanwhile, as a refused stop at a turn's end
-// leaves it.
+// A held suspension that waited for the report this decision settled runs first and instead of
+// the rest (heldWaited, which its caller read before it settled the take: heldWaits): its stop ends
+// the process the held relaunch was for, which letGo drops with it, and leaves no take to offer. A
+// stop the runtime refuses keeps it held and tries it again at the probe interval (suspendHeld),
+// the claim idle meanwhile, as a refused stop at a turn's end leaves it; a hold whose stop was
+// refused before is left to that retry here.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran, or while the relaunch waited for the report of
@@ -1946,9 +1956,8 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
 // The mark is not re-armed for that: it waits for a turn or a report, and both are over. The
 // offer does not wait on the answer either: it runs whichever way the gate answered.
-func (m *Machine) afterTurn(ctx context.Context) error {
-	if m.held != nil && m.heldForReport {
-		m.heldForReport = false
+func (m *Machine) afterTurn(ctx context.Context, heldWaited bool) error {
+	if heldWaited && m.held != nil {
 		return m.suspendHeld(ctx)
 	}
 	if held := m.staleRelaunch; held != nil {
@@ -2252,15 +2261,16 @@ func finishReady(m *Machine, ctx context.Context) error {
 // stop the runtime refused at a turn's end, the claim idle meanwhile. Two holds do not run here,
 // both for what they wait on. One held over a claim that is working waits for the end of its turn
 // or its compaction (holdSuspension, turnEnded, compactEnded): run here, its stop would cut off
-// that turn, which is what the hold exists to keep whole. And one that waits past the end of its
-// take's turn for the report that settles the task: run here, its stop would come before that
-// report, and settle would take back as a cut turn a task whose turn ran whole
-// (Machine.heldForReport); the report's finish runs it (afterTurn), or its deadline
+// that turn, which is what the hold exists to keep whole. And one that waits for the report of its
+// take's turn (reportwait.go, heldWaits): run here, its stop would come before that report, and
+// settle would take back as a cut turn a task whose turn ran whole, or, over a take a report put
+// back, cut off a turn whose start may be on its way; that report's finish runs it (afterTurn), or
+// the bound of its wait (reportBoundOver, turnStartBoundOver), or its own deadline
 // (suspendAtTimeout). The ready is answered as any other is meanwhile, the take a hold refuses
 // refused still (claimHold). pi-legion sends its ready again from its capability schedule while it
 // reads its session idle, and a turn can start before that ready reaches the daemon.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && !m.heldForReport && m.claim.State != StateWorking {
+	if m.held != nil && m.claim.State != StateWorking && !m.heldWaits() {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)

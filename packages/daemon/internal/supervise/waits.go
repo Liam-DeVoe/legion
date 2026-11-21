@@ -103,7 +103,8 @@ func (m *Machine) resetPromptBudgets() bool {
 // where it was. A bound is always armed whole (Timeouts.Take, Timeouts.TurnStart), so the moment
 // its clock started is the moment it was armed, which the armed timer records (Machine.timers,
 // its due less the bound). The claim is listed as unseen only while its first wait is still on a
-// value nobody reported seeing.
+// value nobody reported seeing. The bound of the wait for a take's report is kept the same way
+// (armReportWait, reportwait.go).
 func (m *Machine) armWaits() {
 	first, waiting := m.firstWaitNow()
 	if !waiting || !first.unseen {
@@ -124,6 +125,7 @@ func (m *Machine) armWaits() {
 		m.secondFor = takenAt
 		m.arm(TimerTurnStart, m.deps.Timeouts.TurnStart, m.claim.Pending.ID)
 	}
+	m.armReportWait()
 }
 
 // firstWaitNow is the first wait the claim is in now, and false for none. Its agent is up — ready,
@@ -171,12 +173,23 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 // a hold, or inside a run the daemon gave the take, is charged (dispatch://INFRA-2811, R5 and
 // decision 8's put-back). The moment is recorded where the bound is armed, as the first wait's
 // restart is (Machine.timers, TimerTurnStart).
+//
+// One hold does not stop it: work that waits behind a take a report put back, a held suspension
+// or a held stale-plugin relaunch (reportwait.go). That work is no hold over the take but waits
+// on it, for its own turn or for this bound, whichever is first (decision 8), so the bound is
+// armed from the put-back as for any take awaiting its turn, and it runs the work once it has
+// taken the take back (turnStartBoundOver). Left unarmed, as for a hold, the daemon's own
+// suspension, which names no deadline, would wait for a turn the worker may never start.
 func (m *Machine) secondWaitNow() (time.Time, bool) {
 	p := m.claim.Pending
 	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || p == nil || !p.awaitsTurn() {
 		return time.Time{}, false
 	}
-	if m.claimHold() != "" {
+	switch hold := m.claimHold(); {
+	case hold == "":
+	case (hold == HoldSuspension || hold == HoldStalePlugin) && m.workHeld() && m.reportHolds():
+		// The hold is the work waiting behind the take (reportwait.go), which this bound bounds.
+	default:
 		return time.Time{}, false
 	}
 	return p.ConfirmedAt, true
@@ -232,7 +245,9 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // number, so the next take of it is decided afresh; where the charge left the process in place,
 // the value is written again (offerPending, which logs it as the retake it is), since the worker
 // asked at the revision it holds. A charge that retired the process leaves the value to the
-// relaunched worker, whose registration reads it.
+// relaunched worker, whose registration reads it. Work that waited behind the take after a report
+// put it back — a held suspension, a held stale-plugin relaunch — runs once the take is taken back
+// (afterTurn, reportwait.go): the bound is that wait's end, as R5 says the second wait ends.
 func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	armedFor := m.secondFor
 	m.secondFor = time.Time{}
@@ -240,7 +255,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	if !waiting || !takenAt.Equal(armedFor) {
 		return nil
 	}
-	number := m.claim.Pending.Number
+	number, heldWaited := m.claim.Pending.Number, m.heldWaits()
 	m.log.Warn("supervise: no turn started within the second bound after the accepted take; the worker is charged and the task taken back",
 		"task", number, "takenAt", takenAt, "bound", m.deps.Timeouts.TurnStart)
 	if err := m.chargePrompt(ctx, WaitTurnStart, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
@@ -254,8 +269,9 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 		return err
 	}
 	// A charge that retired the process leaves a claim no take can reach, which offerPending's
-	// holds refuse (claimHold), so the value is written again only where the process stays.
-	return m.offerPending(ctx)
+	// holds refuse (claimHold), so the value is written again only where the process stays; and
+	// work that waited behind the take runs first, a held suspension instead of the offer.
+	return m.afterTurn(ctx, heldWaited)
 }
 
 // reconnectDeadline is the reconnect deadline of a claim a daemon start restored with its agent

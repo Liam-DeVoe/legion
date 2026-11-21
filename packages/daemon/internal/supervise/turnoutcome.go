@@ -426,6 +426,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 		}
 		return m.notTheTakesTurn(ctx, r)
 	}
+	heldWaited := m.heldWaits()
 	var started error
 	if p.awaitsTurn() {
 		started = m.startedUnseen(ctx, r)
@@ -449,7 +450,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 	if (m.claim.State != StateReady && m.claim.State != StateIdle) || m.compacting != nil {
 		return nil
 	}
-	return m.afterTurn(ctx)
+	return m.afterTurn(ctx, heldWaited)
 }
 
 // reachesLadder is whether a turn-outcome report is of the turn of the task a take of this claim
@@ -490,13 +491,15 @@ const takesTurnMovedLine = "supervise: a turn's report names no task of the take
 // turn. No end-frame bound stands over such a claim's task to finish it meanwhile
 // (endFrameFinishes): its report is what finishes it. R5's second wait is on the take again
 // from this decision (secondWaitNow, armWaits), and the claim counts as in a turn for another
-// role's adoption until that turn ends (Claim.InTurn).
+// role's adoption until that turn ends (Claim.InTurn). Work held for the report of the turn given
+// the take goes on waiting, now for the take's own turn or for that second wait's bound
+// (reportwait.go, putBack).
 //
 // Where the turn after the one the take was given has started by the time the report comes — it
 // runs, or it has ended too, which the turns counted say (turnCount.ended) — that turn is the
 // take's, and nothing is undone: the take's turn stays started, and is that later turn
 // (turnCount.take), so its own report, naming the take's number, is what settles the task, and a
-// let-go at or after its end waits for that report (reportSettles) rather than give the task back
+// let-go at or after its end waits for that report (reportwait.go) rather than give the task back
 // as never run. Put back instead, the take would await a turn it already had: a suspension held
 // over that turn would stop the claim at its end and give the task back unstarted, a death would
 // give it back with no note, and the turn that starts next — the take's turn already reported or
@@ -542,7 +545,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	if !p.turnStarted() || count.take == 0 || r.Sequence != count.take {
 		return nil
 	}
-	if count.ended > count.take || (count.ended == count.take && m.inTurn()) {
+	if m.startedSince(count.take) {
 		count.take++
 		m.log.Info(takesTurnMovedLine, "task", p.Number, "sequence", count.take)
 		return nil
@@ -550,14 +553,24 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	return m.putBack(ctx, "count")
 }
 
-// putBack puts the pending take back to awaiting its turn (notTheTakesTurn, heldUnrun): the
-// delivery's turn start is undone, the text it was answered kept, and the next turn that starts
-// is the take's. by names what said the turn given was not the take's, for the line: "count",
-// the count of the process's turns, or "held", the producer's word.
+// putBack puts the pending take back to awaiting its turn (notTheTakesTurn, heldUnrun,
+// bindRestoredAnchor): the delivery's turn start is undone, the text it was answered kept, and the
+// next turn that starts is the take's. by names what said the turn given was not the take's, for
+// the line: "count", the count of the process's turns, or "held", the producer's word.
+//
+// It decides the wait for the take's report again rather than end it (reportwait.go): no report
+// of the run given the take is owed any more, but the take's own turn's is, and that turn may
+// already have started, its start frame on its way behind the report. So work held for the
+// report — a held suspension, a stale-plugin relaunch — goes on waiting, for that turn's start
+// or for R5's second bound, which this decision arms from here (secondWaitNow), and the wait's
+// own bound goes (armReportWait).
 func (m *Machine) putBack(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	m.log.Info(notTheTakesTurnLine, "task", p.Number, "by", by)
 	p.TurnStarted, m.turns.take = false, 0
+	if m.workHeld() {
+		m.log.Info(putBackWaitsLine, "task", p.Number, "suspension", m.held != nil, "relaunch", m.staleRelaunch != nil)
+	}
 	return m.putPending(ctx)
 }
 
@@ -565,6 +578,30 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // a compaction alone (Machine.compacting, whose inTurn is a turn started under it).
 func (m *Machine) inTurn() bool {
 	return m.claim.State == StateWorking && (m.compacting == nil || m.compacting.inTurn)
+}
+
+// turnsStarted is how many turns of the claim's process the machine has seen start in the launch
+// generation it counts (turnCount): every turn whose end it counted, and the one running, if one
+// runs (inTurn). A compaction alone is no turn: the producer numbers the turns that end, and a
+// compaction with no turn started under it ends none. It reads the count as it stands, so its
+// callers hold the claim's current generation's (counted).
+func (m *Machine) turnsStarted() uint64 {
+	if m.inTurn() {
+		return m.turns.ended + 1
+	}
+	return m.turns.ended
+}
+
+// startedSince is whether a turn has started since the given one, the given-th the machine saw
+// start as its count numbers them: the one rule every reading of "a later turn started" goes by
+// — the move of a take's turn to the run after the one it was given (notTheTakesTurn), the
+// producer's word read against the turns since the given one (sinceGiven), and the placement of a
+// count and its check (learnTurns, checkPlacedCount). A compaction after the given turn's end is
+// no later turn, for each of them alike: it starts no turn the producer numbers, so the turn after
+// the given one, if it comes, is still the next start, and a placement that stands through a
+// compaction is no more off by one than one that stands through an idle claim.
+func (m *Machine) startedSince(given uint64) bool {
+	return m.turnsStarted() > given
 }
 
 // heldPassedOverLine is the line of a turn's start the daemon gives no take, at Info, with the
@@ -643,16 +680,13 @@ func (m *Machine) heldUnrun(ctx context.Context, r RequestTurnOutcome) error {
 // sinceGiven is how many turn starts the machine has seen after the one it gave the pending take
 // (takeAnchor.given), and whether that take has a given turn standing: its turn started, and a
 // start of it the anchor placed. A turn running counts as started, a compaction alone does not
-// (inTurn).
+// (turnsStarted, startedSince).
 func (m *Machine) sinceGiven() (uint64, bool) {
 	p, a := m.claim.Pending, m.turns.anchor
 	if p == nil || !p.turnStarted() || a.given == 0 {
 		return 0, false
 	}
-	seen := m.turns.ended
-	if m.inTurn() {
-		seen++
-	}
+	seen := m.turnsStarted()
 	if seen < a.given {
 		return 0, false
 	}
@@ -951,9 +985,11 @@ func (m *Machine) anchorTake(first bool) {
 //     from the take on reached the machine in the order the shim wrote it, none dropped from the
 //     backlog of a shim with no daemon to send to, so of the turns that started after the take,
 //     or after the last turn passed over, that first turn's start is the first the machine sees;
-//   - no start has come since the one the daemon gave the take (takeAnchor.given), at the report
-//     and again at the agent's answer to the ask the placement makes (checkPlacedCount): the claim
-//     works the given turn, its end still to come, or that end has come and nothing after it.
+//   - no start has come since the one the daemon gave the take (takeAnchor.given, startedSince),
+//     at the report and again at the agent's answer to the ask the placement makes
+//     (checkPlacedCount): the claim works the given turn, its end still to come, or that end has
+//     come and nothing after it but, perhaps, a compaction, which starts no turn the producer
+//     numbers.
 //
 // The last is what tells the given turn from a start that reached the machine late, of a turn
 // that ended before the take: one a shim replays behind its hello, of a turn that ran while no
@@ -986,8 +1022,7 @@ func (m *Machine) learnTurns(ctx context.Context, r RequestTurnOutcome) {
 		return
 	}
 	conn, connected := m.deps.Conns.Conn(m.claim.Token)
-	alone := count.ended < anchor.given || (count.ended == anchor.given && m.claim.State != StateWorking)
-	if !connected || conn.Sequence() != anchor.conn || !alone || r.Sequence != anchor.reported+1 || r.Sequence < anchor.given {
+	if !connected || conn.Sequence() != anchor.conn || m.startedSince(anchor.given) || r.Sequence != anchor.reported+1 || r.Sequence < anchor.given {
 		return
 	}
 	offset := r.Sequence - anchor.given
@@ -1022,7 +1057,7 @@ func (m *Machine) checkPlacedCount(answer StreamTurnAnswered) {
 		count.lose()
 		return
 	}
-	if count.ended > placed.sequence || (count.ended == placed.sequence && m.claim.State == StateWorking) {
+	if m.startedSince(placed.sequence) {
 		m.log.Info(turnsPlacementTakenBackLine, "sequence", placed.sequence, "why", "a turn started after the one given the take")
 		count.lose()
 		return

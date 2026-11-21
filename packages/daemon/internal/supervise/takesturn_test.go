@@ -132,7 +132,7 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 // finishes the task. R2's start was seen, so none is left to come for it, and the next task's
 // turn is that task's: its start line names it, and its take's turn is started (startTakesTurn).
 // The second case is the first with a suspension held over R2: R2's end leaves the hold waiting
-// for R2's report (reportSettles), which finishes the task once before the stop. The third is R1's
+// for R2's report (reportOwed), which finishes the task once before the stop. The third is R1's
 // report landing only after R2 ended: R2 ran the take whole, so the take's turn is R2's and over,
 // and a suspension then waits for R2's report. The fourth case is a run's report sent late, after
 // the take's own turn started: the take was accepted after R1 ended, R2 is its turn, and R1's
@@ -716,7 +716,7 @@ func (h *harness) wantTakenNoMore(number uint64, next func(*harness)) {
 
 // A suspension that reaches an idle claim whose take's turn has ended with its report still to
 // come, and finds no hold, waits for that report as a suspension held over the turn does
-// (suspend, holdSuspension, Machine.heldForReport): the report finishes the task once, and the
+// (suspend, holdForReport, reportHolds): the report finishes the task once, and the
 // stop runs after it. That includes the daemon's suspension its row asks again after a restart,
 // which forgot the hold the first ask made. With no report by the suspension's own deadline the
 // stop runs then, and takes the task back with the note of a cut turn first.
@@ -774,7 +774,7 @@ func TestASuspensionOfAClaimWhoseReportIsToComeWaitsForIt(t *testing.T) {
 }
 
 // A ready the agent sends again while a held suspension waits past its take's turn for the report
-// leaves that hold waiting (reready, Machine.heldForReport): the report finishes the task once, and
+// leaves that hold waiting (reready, reportOwed): the report finishes the task once, and
 // the stop runs after it; with no report, the hold's deadline stops the claim and takes the task
 // back with the note of a cut turn first. pi-legion sends its ready again from its capability
 // schedule while its session is idle.
@@ -814,7 +814,7 @@ func TestAReadySentAgainLeavesTheHoldWaitingForTheReport(t *testing.T) {
 }
 
 // A suspension held over a compaction that started after the take's turn ended waits at the
-// compaction's end for the report of that turn (compactEnded, reportSettles), as one held over the
+// compaction's end for the report of that turn (compactEnded, reportOwed), as one held over the
 // turn waits at the turn's end: the claim is given back idle, held, and the compaction is answered
 // that the hold took it (ErrCompactSuspended); the report finishes the task once and the stop runs
 // after it; with no report, the hold's deadline stops the claim and takes the task back with the
@@ -861,21 +861,27 @@ func TestACompactionsEndLeavesTheHoldWaitingForTheReport(t *testing.T) {
 }
 
 // The stale-plugin relaunch of a claim whose take's turn ended with its report still to come, on a
-// plugin that names its task's number, waits for that report (refreshPlugin, reportSettles), and a
+// plugin that names its task's number, waits for that report (refreshPlugin, reportHolds), and a
 // sweep that posts it again meanwhile changes nothing: the report finishes the task once, and the
-// relaunch runs after it. With no report by the stop timeout (TimerReportWait, the bound the
-// operator's suspension has), the task is taken back with the note of a cut turn and the relaunch
-// runs, and the relaunched process takes the task once behind that note. A claim is stale on a
-// plugin at TaskTakeContract only once a later daemon raises its contract, which is the daemon
-// here.
+// relaunch runs after it. A report slower than the stop timeout, held up by an attempt the daemon
+// left unanswered for the producer's 5 minutes and the longest wait before the next attempt
+// (pi-shared's DAEMON_ANSWER_TIMEOUT_MS, DAEMON_RESTART_MAX_DELAY_MS), still finishes the task.
+// With no report by R5's second bound (TimerReport, Timeouts.TurnStart), the task is taken back
+// with the note of a cut turn and the relaunch runs, and the relaunched process takes the task
+// once behind that note. A claim is stale on a plugin at TaskTakeContract only once a later daemon
+// raises its contract, which is the daemon here.
 //
-// The negative control is refreshPlugin relaunching an idle claim at once (before this change):
-// the relaunch takes the task back as a cut turn before its report, and the relaunched process
-// runs a task whose turn ran whole.
+// The negative controls: refreshPlugin relaunching an idle claim at once (before INFRA-2811's
+// round 2) takes the task back as a cut turn before its report, and the relaunched process runs a
+// task whose turn ran whole; the wait bounded by the stop timeout (TimerReportWait at 7ade1c0c)
+// takes back the task whose report is only slow, and the relaunched process runs it again.
 func TestAStalePluginRelaunchWaitsForTheReportOfItsTakesTurn(t *testing.T) {
 	staleOverAReportToCome := func(t *testing.T) (*harness, uint64, int) {
 		t.Helper()
-		h, number, stops := reportToComeOfACurrentPlugin(t)
+		h := newHarnessOf(t, queuedClaim(), withWaits, currentPlugin)
+		h.reach(StateReady)
+		h.takesTurnEndsWithItsReportToCome()
+		number, stops := h.pending().Number, len(h.calls("Suspend"))
 		h.deps.PluginContract, h.m.deps.PluginContract = TaskTakeContract+1, TaskTakeContract+1
 		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 		h.wantStillAwaitingItsReport(number, stops)
@@ -893,9 +899,21 @@ func TestAStalePluginRelaunchWaitsForTheReportOfItsTakesTurn(t *testing.T) {
 		h.wantFinishedOnce(finishedByReport)
 		h.wantTakenNoMore(number, relaunchedToReady)
 	})
+	t.Run("a report slower than the stop timeout, inside the producer's schedule", func(t *testing.T) {
+		h, number, stops := staleOverAReportToCome(t)
+		h.advance(5*time.Minute + 30*time.Second)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.mustReport(nil)
+
+		h.wantState(StateLaunching)
+		h.wantCalls("Resume", 1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, relaunchedToReady)
+	})
 	t.Run("no report by the bound", func(t *testing.T) {
 		h, number, stops := staleOverAReportToCome(t)
-		h.advance(testStop - time.Second)
+		h.advance(turnStartBound - time.Second)
 		h.wantStillAwaitingItsReport(number, stops)
 
 		h.advance(time.Second)
@@ -904,6 +922,299 @@ func TestAStalePluginRelaunchWaitsForTheReportOfItsTakesTurn(t *testing.T) {
 		h.wantCalls("Resume", 1)
 		h.wantTakenBackWithItsNote(number)
 		h.wantTakenOnceMore(number, relaunchedToReady)
+	})
+}
+
+// heldBehindTheTake is work held over the run the daemon gave a take: the stale-plugin relaunch
+// the lane holds for that run's end (holdStaleRelaunch), or the daemon's own suspension held for
+// it, which names no deadline (holdSuspension). hold asks for it while the run runs; idle holds
+// that it has not run; ran holds that it has, once; next brings the claim's next process up, its
+// worker taking whatever value it is given.
+type heldBehindTheTake struct {
+	name            string
+	hold, idle, ran func(h *harness)
+	next            func(h *harness)
+}
+
+// daemonSuspension is the daemon's own suspension of the claim, the workflow's linger or close,
+// which names no deadline (RequestSuspend.Deadline).
+func daemonSuspension(h *harness) RequestSuspend {
+	return RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "the issue's tree lingers"}
+}
+
+var (
+	staleRelaunchHeld = heldBehindTheTake{
+		name: "the stale-plugin relaunch held",
+		hold: func(h *harness) {
+			h.t.Helper()
+			h.deps.PluginContract, h.m.deps.PluginContract = TaskTakeContract+1, TaskTakeContract+1
+			h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+			if h.m.staleRelaunch == nil {
+				h.t.Fatal("no relaunch is held for the run given the take")
+			}
+		},
+		idle: func(h *harness) { h.t.Helper(); h.wantCalls("Resume", 0) },
+		ran: func(h *harness) {
+			h.t.Helper()
+			h.wantState(StateLaunching)
+			h.wantCalls("Resume", 1)
+		},
+		next: func(h *harness) { h.t.Helper(); h.worker.manual = false; relaunchedToReady(h) },
+	}
+	daemonSuspensionHeld = heldBehindTheTake{
+		name: "the daemon's suspension held",
+		hold: func(h *harness) {
+			h.t.Helper()
+			if err := h.handle(daemonSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
+				h.t.Fatalf("the daemon's suspension during the run given the take answered %v, want it held", err)
+			}
+		},
+		idle: func(h *harness) { h.t.Helper(); h.wantCalls("Suspend", 0) },
+		ran: func(h *harness) {
+			h.t.Helper()
+			h.wantState(StateSuspended)
+			h.wantCalls("Suspend", 1)
+		},
+		next: func(h *harness) { h.t.Helper(); h.worker.manual = false; resumedByTheOperator(h) },
+	}
+)
+
+// runGivenTheTakeUnderHeldWork is a claim whose plugin names its task's number, R5's bounds set,
+// whose worker took a task while a run of the host's own, G, was starting: the daemon gives G to
+// the take, held asks for its work while G runs, and G ends with its report still to come. It
+// answers the task's number and the sequence the producer numbers G with; the take's own turn, T,
+// is the one after it.
+func runGivenTheTakeUnderHeldWork(t *testing.T, held heldBehindTheTake) (h *harness, number, g uint64) {
+	t.Helper()
+	h = waitsHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	number = h.takeOf("implement the plan")
+	h.must(StreamTurnStart{Claim: h.token})
+	if p := h.pending(); !p.turnStarted() {
+		t.Fatalf("the run that started after the take is %+v, want it given to the take", p)
+	}
+	held.hold(h)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.wantState(StateIdle)
+	held.idle(h)
+	return h, number, h.worker.sequence + 1
+}
+
+// wantTakesTurnStanding holds that the take of task number still stands with its turn started:
+// nothing took it back, as a cut turn or otherwise.
+func (h *harness) wantTakesTurnStanding(number uint64, when string) {
+	h.t.Helper()
+	if p := h.pending(); p.Number != number || !p.turnStarted() || p.Interrupted {
+		h.t.Fatalf("%s the claim holds %+v, want task %d's take standing with its turn started", when, p, number)
+	}
+}
+
+// Work held over a run of the host's own that the daemon gave a take, G — the stale-plugin
+// relaunch a contract raise holds for G's end, or the daemon's suspension held for it — runs once
+// the take's own turn, T, is settled by its report, in each order G's report, T's start and T's
+// report can reach the daemon (decision 8 and rule two of T3 of dispatch://INFRA-2811). pi-legion
+// starts the held text as T at G's agent_end, before it sends G's report, so the start frame and
+// the reports travel apart:
+//
+//   - G's report first, ahead of T's start: the take awaits its turn again, and the held work
+//     waits for that turn (putBack), so T's start is the take's turn, and T's report finishes it;
+//   - T's start first: G's report moves the take's turn to T, which runs, and nothing bounds the
+//     wait while it runs: the bound of the wait for the report (R5's second bound) starts only at
+//     T's end, and T's report finishes the take;
+//   - T's report first: it finishes the take, the held work runs then, and G's report, naming no
+//     task, finds no take.
+//
+// Each runs the task once: one finish, by T's report, and nothing of it taken by the next process.
+//
+// The negative control is 7ade1c0c, where the stale-plugin relaunch's wait for the report, armed
+// at G's end for the stop timeout, takes back as a cut turn the take whose turn T is running, in
+// the first two orders, and the relaunched worker runs the task again (R3-1 of review round 3).
+func TestHeldWorkOverARunGivenTheTakeRunsAfterTheTakesOwnTurn(t *testing.T) {
+	for _, held := range []heldBehindTheTake{staleRelaunchHeld, daemonSuspensionHeld} {
+		t.Run(held.name+", G's report first", func(t *testing.T) {
+			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
+			h.reportOf(g, 0)
+			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+				t.Fatalf("after G's report the claim holds %+v, want task %d's take awaiting its turn again", p, number)
+			}
+			held.idle(h)
+
+			h.must(StreamTurnStart{Claim: h.token})
+			h.wantTakesTurnStanding(number, "once T started")
+			h.advance(2 * turnStartBound)
+			h.wantState(StateWorking)
+			h.wantTakesTurnStanding(number, "two second bounds into T")
+			held.idle(h)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			held.idle(h)
+			h.reportOf(g+1, number)
+
+			held.ran(h)
+			h.wantFinishedOnce(finishedByReport)
+			h.wantTakenNoMore(number, held.next)
+		})
+		t.Run(held.name+", T's start first", func(t *testing.T) {
+			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
+			h.must(StreamTurnStart{Claim: h.token})
+			h.reportOf(g, 0)
+			h.wantTakesTurnStanding(number, "after G's report, T running,")
+
+			h.advance(2 * turnStartBound)
+			h.wantState(StateWorking)
+			h.wantTakesTurnStanding(number, "two second bounds into T")
+			held.idle(h)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.advance(turnStartBound - time.Second)
+			h.wantState(StateIdle)
+			h.wantTakesTurnStanding(number, "a second bound less a second after T's end")
+			held.idle(h)
+			h.reportOf(g+1, number)
+
+			held.ran(h)
+			h.wantFinishedOnce(finishedByReport)
+			h.wantTakenNoMore(number, held.next)
+		})
+		t.Run(held.name+", T's report first", func(t *testing.T) {
+			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
+			generation := h.generation()
+			h.must(StreamTurnStart{Claim: h.token})
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.reportOf(g+1, number)
+			held.ran(h)
+			h.wantFinishedOnce(finishedByReport)
+
+			var refused *RefusedError
+			if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: generation, Sequence: g}); err != nil && !errors.As(err, &refused) {
+				t.Fatalf("G's report after T's = %v, want it applied to nothing", err)
+			}
+			h.m.Wait()
+
+			held.ran(h)
+			h.wantFinishedOnce(finishedByReport)
+			h.wantTakenNoMore(number, held.next)
+		})
+	}
+}
+
+// A report that gives a take its turn back while work is held for that take's report — the
+// daemon's suspension, which names no deadline, or the stale-plugin relaunch — leaves that work
+// waiting for the take's own turn or for R5's second bound, armed from the put-back, whichever
+// comes first (decision 8 of dispatch://INFRA-2811): a suspension asked again meanwhile joins the
+// hold, and with no turn started by the bound the worker is charged, the take is taken back as R5
+// says, and the held work runs then: the suspension lands, or the relaunch runs, and the next
+// process takes the task once, with no note of a cut turn, since no turn of it ran.
+//
+// The negative control is 7ade1c0c, where the put-back leaves the suspension waiting for a report
+// no longer owed (heldForReport), and both holds keep R5's second wait from arming (claimHold): no
+// bound ever ends them, and the claim stays idle and held (R3-2 of review round 3).
+func TestAPutBackLeavesHeldWorkToTheTakesTurnOrTheSecondBound(t *testing.T) {
+	for _, held := range []heldBehindTheTake{daemonSuspensionHeld, staleRelaunchHeld} {
+		t.Run(held.name, func(t *testing.T) {
+			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
+			h.reportOf(g, 0)
+			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+				t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
+			}
+			if held.name == daemonSuspensionHeld.name {
+				if err := h.handle(daemonSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("the daemon's suspension asked again after the put-back answered %v, want it joining the hold", err)
+				}
+			}
+
+			h.advance(turnStartBound - time.Second)
+			h.wantState(StateIdle)
+			h.wantCharges()
+			held.idle(h)
+			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+				t.Fatalf("a second bound less a second after the put-back the claim holds %+v, want task %d's take still awaiting its turn", p, number)
+			}
+
+			h.advance(time.Second)
+
+			h.wantCharges(WaitTurnStart)
+			held.ran(h)
+			if p := h.pending(); p.Number != number || p.taken() || p.Interrupted {
+				t.Fatalf("after the second bound the claim holds %+v, want task %d taken back with no note of a cut turn", p, number)
+			}
+			sent := len(h.prompts())
+			held.next(h)
+			var again []taken
+			for _, took := range h.prompts()[sent:] {
+				if took.Number == number {
+					again = append(again, took)
+				}
+			}
+			if len(again) != 1 {
+				t.Fatalf("the next process took task %d %d times (%+v), want once", number, len(again), again)
+			}
+		})
+	}
+}
+
+// A wake whose turn comes while a held suspension waits on a take is spent into the hold where no
+// turn runs (wakeNow, reportHolds): over a take a report put back, the hold keeps the process for
+// the take's own turn, whose start may be on its way, and stops it, owing the wake's launch, only
+// at R5's second bound. Where the take's own turn runs — moved to the run after the one the daemon
+// gave it — the wake ends the hold as it ends every hold over a running turn (endHeld): the turn
+// is cut off, and the task taken back with the note of a cut turn (rule one of T3 of
+// dispatch://INFRA-2811: a wake's turn that cuts a turn mid-run takes its task back with its note).
+// The wake is a replacement for a stale address, which the pacing parked over the live process
+// before the take's run started (repoint, reserveWake).
+//
+// The negative control is 7ade1c0c: after the put-back no bound ever stops the claim, since the
+// hold keeps R5's second wait from arming (claimHold); while the take's turn runs, the hold's mark
+// left by the run given the take (heldForReport) spends the wake into the hold.
+func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testing.T) {
+	parkedUnderAHold := func(t *testing.T) (h *harness, number, g uint64, due time.Time) {
+		t.Helper()
+		h = pacedHarness(t, wakeRate, currentPlugin, withWaits)
+		h.manualTakes()
+		h.reach(StateReady)
+		number = h.takeOf("implement the plan")
+		h.observe(runtime.StaleAddress)
+		due = h.wantWaitingWake(WakeLaunch).At
+		h.must(StreamTurnStart{Claim: h.token})
+		if p := h.pending(); !p.turnStarted() {
+			t.Fatalf("the run that started in the wait is %+v, want it given to the take", p)
+		}
+		daemonSuspensionHeld.hold(h)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		return h, number, h.worker.sequence + 1, due
+	}
+	t.Run("after a put-back", func(t *testing.T) {
+		h, number, g, due := parkedUnderAHold(t)
+		h.reportOf(g, 0)
+
+		h.advance(due.Sub(h.clock.Now()))
+
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
+		h.wantCalls("Resume", 0)
+		if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+			t.Fatalf("after the wake's turn the claim holds %+v, want task %d's take awaiting its turn", p, number)
+		}
+		h.advance(turnStartBound)
+		h.wantCharges(WaitTurnStart)
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", 1)
+		h.wantCalls("Resume", 0)
+	})
+	t.Run("while the take's own turn runs", func(t *testing.T) {
+		h, number, g, due := parkedUnderAHold(t)
+		h.must(StreamTurnStart{Claim: h.token})
+		h.reportOf(g, 0)
+		h.wantTakesTurnStanding(number, "after the report of the run given the take, its own turn running,")
+
+		h.advance(due.Sub(h.clock.Now()))
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", 1)
+		h.wantCalls("Resume", 0)
+		if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+			t.Fatalf("after the wake's turn the claim holds %+v, want task %d taken back with the note of a cut turn", p, number)
+		}
 	})
 }
 

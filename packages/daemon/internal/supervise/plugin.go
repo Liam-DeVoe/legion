@@ -2,7 +2,6 @@ package supervise
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -196,13 +195,14 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		m.holdStaleRelaunch(trigger)
 		return nil
 	}
-	// A claim idle over a take whose turn ended with its report still to come, on a plugin that
-	// names its task's number, is relaunched once that report settles the task (reportSettles),
-	// as a suspension is held for it (holdForReport): relaunched now, the process would take that
-	// report with it, the relaunch would take the task back as a cut turn (interrupted), and the
-	// relaunched worker would run again a task whose turn ran whole. The controller's claim is no
-	// exception, since what it is spared is the wait for its turn, not the run of a task twice.
-	if m.claim.State != StateWorking && m.reportSettles() {
+	// A claim idle while the report of its take's turn is owed, on a plugin that names its task's
+	// number, is relaunched once that report settles the task, behind the wait for it
+	// (reportwait.go, reportHolds), as a suspension is held for it (holdForReport): relaunched now,
+	// the process would take that report with it, the relaunch would take the task back as a cut
+	// turn (interrupted), and the relaunched worker would run again a task whose turn ran whole.
+	// The controller's claim is no exception, since what it is spared is the wait for its turn,
+	// not the run of a task twice.
+	if m.claim.State != StateWorking && m.reportHolds() {
 		m.relaunchWaitsForReport(trigger)
 		return nil
 	}
@@ -258,58 +258,22 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 	m.staleRelaunch = &trigger
 }
 
-// relaunchWaitsForReportLine is the line of a stale-plugin relaunch that waits for the report of
-// the take's turn (relaunchWaitsForReport), at Info, with the task's number and the pass that
-// asked for it.
-const relaunchWaitsForReportLine = "supervise: the turn of the task ended with its report still to come; the stale-plugin relaunch waits for that report"
-
-// relaunchReportMissedLine is the line of a stale-plugin relaunch whose bound came before the
-// report it waited for (reportWaitOver), at Warn, with the task's number: the task goes back as a
-// cut turn before the relaunch.
-const relaunchReportMissedLine = "supervise: the stale-plugin relaunch's bound came before the report of the task's turn; the task is taken back and the process relaunched"
-
-// relaunchWaitsForReport leaves the stale-plugin relaunch waiting for the report of the pending
-// take's turn, which has ended (refreshPlugin, turnEnded): the report's finish runs it, or its
-// provider error's take-back (reportedTask, afterTurn), and runs it through refreshPlugin as the
-// claim stands then, as the relaunch held for a turn is run. The wait is bounded by the stop
-// timeout from the first that asked for it, the bound the operator's suspension has
-// (TimerReportWait, reportWaitOver), so a report that never comes — lost by a worker that gave up
-// on it — leaves no claim on a stale plugin for ever. A pass that posts the claim again meanwhile
-// replaces the trigger and moves the bound nothing. Like the relaunch held for a turn, it is
-// memory only: a restart forgets it, and the restarted daemon's own stale-plugin pass asks again.
+// relaunchWaitsForReport leaves the stale-plugin relaunch waiting behind the wait for the report
+// of the pending take's turn (reportwait.go; refreshPlugin, runWake): the report's finish runs it,
+// or its provider error's take-back (reportedTask, afterTurn), or the wait's bound — R5's second
+// bound, armed whole where the relaunch began to wait, at which the task is taken back with the
+// note of a cut turn first (reportBoundOver) — and runs it through refreshPlugin as the claim
+// stands then, as the relaunch held for a turn is run. So a report that never comes, lost by a
+// worker that gave up on it, leaves no claim on a stale plugin for ever, and a report that is only
+// slow lands inside the bound. A pass that posts the claim again meanwhile replaces the trigger
+// and moves the bound nothing. Like the relaunch held for a turn, it is memory only: a restart
+// forgets it, and the restarted daemon's own stale-plugin pass asks again.
 func (m *Machine) relaunchWaitsForReport(trigger string) {
-	p := m.claim.Pending
-	if a, armed := m.timers[TimerReportWait]; !armed || a.deliveryID != p.ID {
-		m.log.Info(relaunchWaitsForReportLine, "task", p.Number, "trigger", trigger,
+	if m.staleRelaunch == nil {
+		m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "relaunch", "trigger", trigger,
 			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
-		m.arm(TimerReportWait, m.deps.Timeouts.Stop, p.ID)
 	}
 	m.staleRelaunch = &trigger
-}
-
-// reportWaitOver is the bound of the stale-plugin relaunch's wait for the report of the take's
-// turn (TimerReportWait): no report came, so the task is taken back with the note of a cut turn,
-// as for a process that dies before its report (interrupted), and the relaunch runs, behind the
-// held suspension that waits for the same report where one stands (afterTurn). A claim working a
-// turn that started meanwhile runs them at that turn's end (turnEnded), and one being compacted at
-// the compaction's (compactEnded). A report that came first settled the task and ran the relaunch,
-// so a bound that finds no relaunch waiting, or the task settled, does nothing. A take-back the
-// store refused is tried again at the probe interval.
-func reportWaitOver(m *Machine, ctx context.Context, _ Event) error {
-	held := m.staleRelaunch
-	if held == nil || !m.reportSettles() {
-		return nil
-	}
-	p := m.claim.Pending
-	m.log.Warn(relaunchReportMissedLine, "task", p.Number, "trigger", *held)
-	if err := m.interrupted(ctx, "the stale-plugin relaunch's wait for the report of the task's turn ran out", ordinaryEnd); err != nil {
-		m.arm(TimerReportWait, m.deps.Timeouts.Probe, p.ID)
-		return fmt.Errorf("take back the task of %s before its stale-plugin relaunch: %w", m.claim.Token, err)
-	}
-	if m.claim.State == StateWorking || m.compacting != nil {
-		return nil
-	}
-	return m.afterTurn(ctx)
 }
 
 // relaunchStale replaces the claim's process now, onto this daemon's plugin: the one act of the

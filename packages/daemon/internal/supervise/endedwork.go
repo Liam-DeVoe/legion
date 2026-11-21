@@ -51,9 +51,9 @@ type EndedWork struct {
 	// cut off: a let-go finishes it by its end frame rather than take it back (finishTask), as
 	// settle finishes the task of the held stop at a turn's end and the task an idle claim's
 	// let-go leaves it (suspendNow). For a plugin that names its number only the report finishes
-	// it, and every let-go that can wait for the report waits instead (reportSettles); one that
-	// does not — a held suspension's deadline, a stale-plugin relaunch's bound — takes it back
-	// first, as a cut turn, and its mark says so (Machine.cutTurnOf), while a death or a
+	// it, and every let-go that can wait for the report waits instead (reportwait.go); one that
+	// does not — a held suspension's deadline, the bound of that wait — takes it back first, as a
+	// cut turn (reportMissed), and its mark says so (Machine.cutTurnOf), while a death or a
 	// displacement records its end before it takes the task back, and names no task's turn.
 	Turn     bool `json:"turn,omitempty"`
 	TaskTurn bool `json:"taskTurn,omitempty"`
