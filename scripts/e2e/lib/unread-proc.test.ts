@@ -1,23 +1,20 @@
-import { afterEach, expect, onTestFinished, setDefaultTimeout, test } from "bun:test";
+import { afterEach, expect, onTestFinished, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
-// Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
-// rowWaitSeconds from the shell's start, never by the wait's own seconds: on a loaded host the
-// kernel's end of a signalled process can take longer than a proof's bound. The file sets its rows'
-// bound itself (rowBoundMs), first, so every row and every runner reads it, whatever its command
-// line; Bun ends a row at its bound and kills what the row's shell left running, so a shell's wait
-// must give up first to name what it waited for: 20 s before the row's bound. 200 s is about twice
-// the slowest row of this directory measured with 8 busy loops on the two CPUs it ran on (98.5 s,
-// 2026-11-20).
-const rowBoundMs = 200_000;
-setDefaultTimeout(rowBoundMs);
-const rowWaitSeconds = rowBoundMs / 1000 - 20;
+// Each wait of a row, its shell's (until_true) and the TypeScript side's (untilRunning), ends on the
+// event it waits for, and is bounded only by the row's bound, 20 s before it (lib/row-waits.ts),
+// never by the wait's own seconds: on a loaded host the kernel's end of a signalled process can
+// take longer than a proof's bound. The file sets its rows' bound itself (rowWaits), first, so
+// every row and every runner reads it, whatever its command line; Bun ends a row at its bound and
+// kills what the row's shell left running, so a wait must give up first to name what it waited for.
+const waits = rowWaits(libRowBoundMs);
 
 // Every walk of the rig helpers that cannot read the processes it walks must say why and fail, so
 // no caller reads a walk that saw nothing as one that found nothing: a proc root that lists no
@@ -214,11 +211,11 @@ evidence=$work
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/rig.sh"
-until_true_deadline=$((SECONDS + ${rowWaitSeconds}))`;
+until_true_deadline=$((SECONDS + ${waits.seconds}))`;
 test("stop_pid and signal_group leave alone a process whose start is not the one recorded for its pid", async () => {
   const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   killed.push(stranger.pid);
-  await untilRunning(stranger.pid, "sleep");
+  await untilRunning(stranger.pid, "sleep", waits.end());
   const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
     .replace(/^[\s\S]*\) /, "")
     .split(" ")[19];
@@ -405,7 +402,7 @@ unspawn "$daemon_pid"`;
     expect(stderr).toBe("");
     expect(stdout).toBe("stranger alive\n");
   },
-  rowBoundMs
+  libRowBoundMs
 );
 
 // run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), its $work
@@ -515,7 +512,7 @@ const broker = scriptFunctions(join(root, "docs/site/media/broker/rig.sh"));
 test("the broker rig holds a helper pid it reads late to the start the helper wrote, so a stranger given that pid is left running", async () => {
   const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   killed.push(stranger.pid);
-  await untilRunning(stranger.pid, "sleep");
+  await untilRunning(stranger.pid, "sleep", waits.end());
   const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
     .replace(/^[\s\S]*\) /, "")
     .split(" ")[19];

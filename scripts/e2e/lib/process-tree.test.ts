@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { rowWaits, untilGone } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // lib/process-tree.sh (sourced through lib/rig.sh): how a proof knows a process it started by the
@@ -38,14 +39,14 @@ beforeAll(() => {
 // a process group of its own (ownGroup): the rows stop what they end, and a stopped member of the
 // test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
 //
-// Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
-// rowWaitSeconds from the shell's start, never by the wait's own seconds: a loaded host took more
-// than 10 s to deliver a zombie (2026-11-20, main d36289cb84, 8 busy loops on two CPUs). Every row
-// passes `slow` as its own bound, which every runner reads whatever its command line; Bun ends a
-// row at its bound and kills what the row's shell left running, so a shell's wait gives up 20 s
-// before the row's bound, to name what it waited for.
+// Each wait of a row, its shell's (until_true) and the TypeScript side's (untilGone,
+// lib/row-waits.ts), ends on the event it waits for, and is bounded only by the row's bound, 20 s
+// before it, never by the wait's own seconds: a loaded host took more than 10 s to deliver a zombie
+// (2026-11-20, main d36289cb84, 8 busy loops on two CPUs). Every row's bound is `slow`, which
+// every runner reads whatever its command line; Bun ends a row at its bound and kills what the
+// row's shell left running, so a wait gives up first, to name what it waited for.
 const slow = 60_000;
-const rowWaitSeconds = slow / 1000 - 20;
+const waits = rowWaits(slow);
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
@@ -54,7 +55,7 @@ work=$(mktemp -d "$DIR/work.XXXXXX") evidence=$work timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
-until_true_deadline=$((SECONDS + ${rowWaitSeconds}))
+until_true_deadline=$((SECONDS + ${waits.seconds}))
 scratch=$(mktemp -d "$DIR/run.XXXXXX")
 started=()
 # The shell's own "Killed" notice of each job the trap stops goes nowhere: it is no output of a row.
@@ -80,25 +81,6 @@ ${body}`;
     env: { PATH: process.env.PATH ?? "", DIR: dir, PROGRAM: program, OTHER: other },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
-}
-
-// gone says whether PID has ended, a zombie counting as ended, within five seconds: what a row
-// started must not outlive it. A SIGKILL's delivery and the end of the process it hits are the
-// kernel's, and no fake clock drives them, so this polls the process itself, as the role-kill rows do.
-async function gone(pid: number): Promise<boolean> {
-  for (let i = 0; i < 100; i++) {
-    let state: string;
-    try {
-      state = readFileSync(`/proc/${pid}/stat`, "utf8")
-        .replace(/^.*\) /, "")
-        .slice(0, 1);
-    } catch {
-      return true;
-    }
-    if (state === "Z" || state === "X") return true;
-    await Bun.sleep(50);
-  }
-  return false;
 }
 
 describe.skipIf(skip)("record_pid_sh and recorded_pid", () => {
@@ -174,7 +156,7 @@ found=$(launched "$top" "$program")
       const found = /^found the program (\d+)$/.exec(r.out.trim());
       expect(found).not.toBeNull();
       // The row's own end stops the whole line: the program two levels below what it started too.
-      expect(await gone(Number(found?.[1]))).toBe(true);
+      await untilGone(Number(found?.[1]), "the program below the line", waits.end());
     },
     slow
   );
@@ -205,9 +187,9 @@ echo "one child: status $st: $why"
         lines[1] ?? ""
       );
       expect(two).not.toBeNull();
-      expect(await gone(Number(found?.[1]))).toBe(true);
-      expect(await gone(Number(two?.[1]))).toBe(true);
-      expect(await gone(Number(two?.[2]))).toBe(true);
+      await untilGone(Number(found?.[1]), "the program beside the helper", waits.end());
+      await untilGone(Number(two?.[1]), "a child of the program's parent", waits.end());
+      await untilGone(Number(two?.[2]), "a child of the program's parent", waits.end());
     },
     slow
   );
@@ -254,8 +236,8 @@ echo "line: status $st: $why"
           `^line: status 1: no process below \\d+ runs ${literalPattern(program)}; below it: \\d+ ${literalPattern(other)}$`
         )
       );
-      expect(await gone(Number(two?.[2]))).toBe(true);
-      expect(await gone(Number(two?.[3]))).toBe(true);
+      await untilGone(Number(two?.[2]), "one of the two programs", waits.end());
+      await untilGone(Number(two?.[3]), "one of the two programs", waits.end());
     },
     slow
   );
@@ -328,7 +310,7 @@ if native_program "$scratch/mise" >/dev/null; then echo "mise itself: named"; el
           "a mise shim: status 1",
           "mise itself: named",
         ]);
-        expect(await gone(Number(kid?.[1]))).toBe(true);
+        await untilGone(Number(kid?.[1]), "the other program, the child", waits.end());
       },
       slow
     );
@@ -423,7 +405,9 @@ echo "calls: [\${calls//$'\\n'/;}]"
         "a pid that runs nothing: []",
         "calls: []",
       ]);
-      for (const pid of stopped?.slice(1) ?? []) expect(await gone(Number(pid))).toBe(true);
+      for (const pid of stopped?.slice(1) ?? []) {
+        await untilGone(Number(pid), "a process of the tree stop_tree ended", waits.end());
+      }
     },
     slow
   );
@@ -485,7 +469,9 @@ echo "scratch: $scratch"
         listed: [],
         readsStat: true,
       });
-      for (const pid of asked.slice(0, 3)) expect(await gone(Number(pid))).toBe(true);
+      for (const pid of asked.slice(0, 3)) {
+        await untilGone(Number(pid), "a process of the tree the traced shell stopped", waits.end());
+      }
     },
     slow
   );
@@ -581,7 +567,7 @@ echo "pid $pid"
           "stopped already, its check fails once stopped: 1, sent -STOP, stopped\n" +
           `its check holds: 0, sent -STOP,-TERM,-CONT\npid ${pid}\n`
       );
-      expect(await gone(pid)).toBe(true);
+      await untilGone(pid, "the program freeze_if sent TERM", waits.end());
     },
     slow
   );
@@ -742,7 +728,7 @@ echo "agent $agent"
       expect(r.out).toBe(
         `another pane's ticks: status 1, agent S\nits own ticks: killed\nagent ${agent}\n`
       );
-      expect(await gone(agent)).toBe(true);
+      await untilGone(agent, "the agent kill_the_agent killed", waits.end());
     },
     slow
   );
