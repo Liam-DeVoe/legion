@@ -2031,7 +2031,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
     heldOutboxRows: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: ["acme"], mapped: [], refused: [], withoutWebhookApp: [], caches: [] },
+    repositories: { live: [], withoutWebhookApp: [], caches: [] },
     consumers: [],
     settings: { review_round_cap: 3, worker_boot_timeout_seconds: 900 },
     ...overrides,
@@ -2588,7 +2588,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 });
 
 // A spec step open on an ancestor's approval holds in `designGate.approvedVersion` the version its
-// root registered, which no person approved (contract 203): the summary names it as its entry in
+// root registered, which no person approved (contract 207): the summary names it as its entry in
 // `gatedSteps` does, by its status word and the ancestor's version, and so the step that waits on
 // the ancestor's request; a step on no basis keeps its approved line.
 test("read_state's summary names a step on an ancestor's basis by its gatedSteps entry, not as approved", async () => {

@@ -30,7 +30,7 @@ body: |-
   the pull request's base branch once it carries the children's merges, in a checkout of its own,
   and to record each result with that base commit. Migration `20261114232555_awaiting_children`
   adds the phase, the held start with `children_wait_children`, `children_waited_at` and
-  `phases.entry_from`. A caller below daemon API contract 203 is served such a parent's `phase` as
+  `phases.entry_from`. A caller below daemon API contract 207 is served such a parent's `phase` as
   `admitted` and its held word as `children_first`. `docs/kubernetes.md` says how to roll the
   release back.
 custom:

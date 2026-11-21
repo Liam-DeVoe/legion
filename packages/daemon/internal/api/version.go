@@ -2926,7 +2926,60 @@ package api
 // request declares. Read the base's own number and every open pull request again at every forward
 // merge rather than from this line.)
 //
-// 203: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 202: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
+// in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
+// entry for each repository a live record names, under the name the records keep, sorted by its
+// lowercased `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the
+// rename rule serves it under that one; `apps`, each role App's installation on the name it is
+// served under, once GitHub answered both reads; `readError`, why GitHub's last read did not name
+// it; and `cache`, its repository cache under the Kubernetes runtime; each but `repo` absent until
+// it holds something. `caches` is unchanged: the caches of repositories no live record names.
+// `withoutWebhookApp` is kept in 152's shape for every caller, `{repo, reason}` for each live
+// repository Dispatch's webhook App is not known to be installed on, under the name the records
+// keep, in `live`'s order and never null, and it is the block's one report of the webhook App: no
+// `live` entry carries a copy of it. The operator's `legion state` states no contract and asks from
+// no pod, so it is served the new block, and a `legion state` of 152 reads its webhook App lines
+// from this list, so without it that binary would print that no repository lacks the webhook App
+// whatever the live records hold. `owners`, `mapped` and `refused` are gone, and with them each
+// entry's `default`, which the daemon no longer knows. A plugin of 152 reads the block with a
+// schema that requires those three keys and would refuse the whole state without them, so a
+// caller below 202 is served the block in 152's shape, written from the same entries (shaping.go's
+// repositoriesLiveContract and withoutRepositoriesLive, its row of stateNarrowings): `owners` and
+// `mapped` are the entries both role Apps are installed on, under the name each is served under,
+// every `default` false; `refused` is each other entry with its `readError`, the App not installed
+// on it, or "GitHub has not answered for it yet"; and `withoutWebhookApp` is the same list as on
+// the new block. A caller below 152 is also below 202, and is served that block with no `apps` on
+// either list, as 193 serves it (withoutRepositoryApps, whose flag the older block reads). The
+// caller is placed as 193 places every caller of the state: by the contract its
+// `Legion-Plugin-Contract` header states, else by the claims of its pod, else at this contract. So
+// a plugin from 193 to 198, which states its contract, is served 193's keys and the block in 152's
+// shape; one from 199 to 201 is served 199's keys, since neither 200 nor 201 has an entry, and the
+// same block, 199's keys being 193's on this route since 199 moved no shape of an answer; a pod
+// whose claims record 178 to 192 and that states nothing is served the pause and that block; and a
+// caller that states nothing from no pod — the operator's `legion state`, `legion controller
+// start` — is served the new block. A tmux pane's plugin states its own contract, which the boot
+// gate and `legion probe-image` keep at this one.
+// The records of `contract-shapes.json` take the step as they take every band: 202's records hold
+// the new block's key paths, and every record below 202 keeps the older block's. One enumerated
+// field arrives with the block, the cache's `state` at `repositories.live.*.cache.state`, whose
+// five words answers.go records at this contract (liveCacheStates), so every record of the state
+// below 202 holds that key path's domain empty, as domainsOf writes it, and no other domain moves.
+// `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
+// `state-narrowed-repositories.json` is the body served a caller that states 201, the contract
+// before this one, which is served at 199, the recorded contract below it: 199's keys, which are
+// 193's, the pause and the block in 152's shape.
+// (This change takes 202, the lowest number above main's 199 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 301 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T23:09:18Z to 23:19:17Z, which named above
+// main's 199: 200 (#4065 and #4580) and 201 (#4553 and #4611). This entry stood at 167, 169, 173,
+// 182, 189, 190, 191, 195, 196 and 200 before, each the number it took at an earlier census and no
+// head's for good. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 207: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2964,7 +3017,7 @@ package api
 // whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
-// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 203 — one
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 207 — one
 // that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
 // claims record one — the shape its own contract describes, by 193's serving rule, and this
 // entry adds one band and three value strips to that serving. The band is the row of
@@ -2974,13 +3027,15 @@ package api
 // 193's entry says of them: a caller below 178 is served the state without `paused` and
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
-// on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the band of
-// 193 stands between them, so a caller at 193 through 202 is served the pause and the keys 193
-// added and none of this entry's keys and words (a caller that states 194 to 198 is served 193's
-// shape and one that states 199 to 202 199's, the nearest recorded contract below it, and 199's is
-// 193's, since 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the
-// pause and neither, and a caller at 146 through 177 the entry times and neither the pause nor
-// this entry's.
+// on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
+// of 193 and 202 stand between them, so a caller at 202 through 206 is served the pause, the keys
+// 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
+// caller that states 203 to 206 is served 202's shape, the nearest recorded contract below it), a
+// caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
+// 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
+// 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
+// block in 152's shape and neither 193's keys nor this entry's, and a caller at 146 through 177
+// the entry times and none of the pause, 193's keys and this entry's.
 // The strip of `gatedSteps` is not for the key's sake alone: every plugin from 55 on reads
 // `status` with a strict enum of the four words and refuses the whole body for a fifth, and no
 // word of the four is true of such a step — `waiting` would send its architect to ask a person
@@ -2990,7 +3045,7 @@ package api
 // (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
 // states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
 // `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
-// `gatedSteps`. Every reader from 203 on takes `treeRuns` and `basis` as optional and reads the
+// `gatedSteps`. Every reader from 207 on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
 // `20261119185013_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
@@ -3001,7 +3056,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller below 203 knows neither word — its phase enum and its held
+// `LEGION_HELD_REASONS` names. A caller below 207 knows neither word — its phase enum and its held
 // words are the ones before this change — so the daemon serves it that issue's `phase` as
 // `admitted`, the status that names no worker's phase, and that held entry's `reason` as
 // `children_first`, the word a started parent's wait took over. Both are value strips, rows of
@@ -3010,7 +3065,7 @@ package api
 // `withoutUnadmittedPhases` and `withoutUnadmittedHeldReasons`. `heldFrom` and
 // `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
 // as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
-// the word for a caller below 203; the daemon writes the word in neither, since `heldFrom` is null
+// the word for a caller below 207; the daemon writes the word in neither, since `heldFrom` is null
 // in the phase and a hold never comes from it, and no task is queued for a phase no role works.
 // The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
 // and the parent's held start to the issues table; it moves the daemon's own record and is no part
@@ -3102,7 +3157,12 @@ package api
 // each of the 321 open heads' file between 2026-11-21T00:28Z and 00:30Z found 200 (#4049 and
 // #4065), 201 (#4553 and #4611) and 202 (#4432, #4493, #4580 and #4590) declared by other heads,
 // so this change moved 196 → 203, the lowest number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21a-md). Read the base's own number and
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21a-md). At the forward merge of
+// 2026-11-21 that brought main in at 1cdf5b9ceba6, main carried 202, which its #4493 took, and a
+// REST raw read of each of the 341 open heads' file between 2026-11-21T03:27Z and 03:30Z found
+// 203 (six heads), 204 (#3831 and #4030), 205 (#4573) and 206 (#4540) declared by other heads, so
+// this change moved 203 → 207, the lowest number above main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21b-md). Read the base's own number and
 // every open head again, by a REST raw read of each head's file, at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 203
+const DaemonAPIVersion = 207

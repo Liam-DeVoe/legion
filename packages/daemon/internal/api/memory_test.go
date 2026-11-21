@@ -228,6 +228,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// pauseContract added beside `lastPause`, so a pod at it or above is served the key and
 		// every pod below it is not.
 		pause bool
+		// repos is whether the caller is served the repositories block repositoriesLiveContract
+		// writes, `live` beside `caches` and `withoutWebhookApp`, so a caller at it or above is
+		// served that block and every caller below it the block in contract 152's shape, from the
+		// same entries. No pod's claims place a caller at it (callerKind.reaches), so the rows
+		// served it are the three this daemon serves its own body.
+		repos bool
 		// basis is whether the caller is served what gateBasisContract added, this daemon's own
 		// contract: every root's `treeRuns`, and the gated steps of a root one of whose steps
 		// stands open or pending on an ancestor's basis (withoutGateBasis, and the strip of the
@@ -317,12 +323,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// are held back, at the band's foot and at its top alike.
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: repositoryAppsContract},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract - 1},
-		// The band from pauseContract to below this daemon's own: the project's pause is served too,
-		// and every key a later row of stateNarrowings adds is held back.
+		// The band from pauseContract to below shapedAnswersContract, the last a pod's claims
+		// place a caller in (callerKind.reaches): the project's pause is served too, and every key
+		// a later row of stateNarrowings adds is held back, the repositories block written in the
+		// shape contract 152 gave it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: DaemonAPIVersion, basis: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: DaemonAPIVersion, basis: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: DaemonAPIVersion, basis: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion, basis: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion, basis: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion, basis: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -443,8 +451,15 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// caller's own recorded contract decides rather than the state, and the baseline,
 			// asked from no pod, is told the daemon's number as its caller's where a caller at
 			// a contract is told its own (narrowing_test.go).
+			// The repositories block of a caller below repositoriesLiveContract is written in
+			// contract 152's shape from the same entries (withoutRepositoriesLive), which
+			// state_caller_test's withRepositoriesAt152 states and this reads.
+			base := full
+			if !tc.repos {
+				base = withRepositoriesAt152(t, full)
+			}
 			var want, got map[string]any
-			if err := json.Unmarshal(full, &want); err != nil {
+			if err := json.Unmarshal(base, &want); err != nil {
 				t.Fatal(err)
 			}
 			if !tc.wakes {
