@@ -331,10 +331,8 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 // arm of this experiment. A mode other than off over one variant is refused: a draw among one arm
 // measures nothing, so the file is missing the arm it compares against.
 //
-// An experiment one of whose arms names `plan` sets how its issues are done, so every arm of it
-// names `plan`, since an arm with none would leave its issues' way of working to no word; and it
-// draws for each issue, since how an issue is done is read from the draw recorded against that
-// issue itself, and a tree's draw is recorded against the tree's root alone.
+// The rules of `plan` are checkExperimentPlans', which runs after checkExperimentMemory, so the one
+// experiment that may never set `plan`, `memory`, is refused by its own rule first.
 func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	if value.Kind != yaml.MappingNode {
 		return Experiment{}, fmt.Errorf("%s must be a mapping", key)
@@ -384,16 +382,6 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 		return Experiment{}, fmt.Errorf("%s is on and names no on_variant: mode on gives every unit one variant, so name the one it gives (%s)", key, strings.Join(names, ", "))
 	case experiment.OnVariant != "" && !slices.Contains(names, experiment.OnVariant):
 		return Experiment{}, fmt.Errorf("%s.on_variant names %q, which is no variant of the experiment (%s)", key, experiment.OnVariant, strings.Join(names, ", "))
-	}
-	if experiment.SetsPlan() {
-		for _, variant := range experiment.Variants {
-			if variant.Plan == "" {
-				return Experiment{}, fmt.Errorf("%s.variants.%s names no plan: each variant of an experiment that sets plan names how its issues are done", key, variant.Name)
-			}
-		}
-		if experiment.Unit != ExperimentIssue {
-			return Experiment{}, fmt.Errorf("%s sets plan and is unit %s: an experiment that sets how an issue is done draws for each issue, so write unit: issue", key, experiment.Unit)
-		}
 	}
 	return experiment, nil
 }
@@ -543,14 +531,18 @@ func variantNames(variants []Variant) []string {
 // and every other name of the key allows, which is why they are read here rather than in
 // readExperiments, which reads every name alike: a project that writes the `memory` block and
 // declares the experiment too, since the two are one experiment spelled twice and the daemon would
-// draw for it twice; an `experiments.memory` whose variants are not exactly memory and none, which
-// would serve every pod of the project a state body it refuses (MemoryVariantNames); and one whose
-// unit is not the tree. A draw of the experiment named memory is served as the issue state's
-// three memory fields (internal/projection's memoryOf), which are the draw of the issue's tree and
-// the same for every issue of it (packages/contracts/src/legion-api.ts, legionIssue's
-// memoryGroup), so an issue unit would serve each issue an answer of its own under fields that
-// promise its tree's. Every other name of the key declares whatever variants and unit it likes,
-// but for one whose arms name `plan`, which draws for each issue (readExperiment).
+// draw for it twice; an `experiments.memory` whose variants name `plan`, since its draw is the
+// tree's memory group and never says how an issue is done; an `experiments.memory` whose variants
+// are not exactly memory and none, which would serve every pod of the project a state body it
+// refuses (MemoryVariantNames); and one whose unit is not the tree. A draw of the experiment named
+// memory is served as the issue state's three memory fields (internal/projection's memoryOf),
+// which are the draw of the issue's tree and the same for every issue of it
+// (packages/contracts/src/legion-api.ts, legionIssue's memoryGroup), so an issue unit would serve
+// each issue an answer of its own under fields that promise its tree's. It runs before
+// checkExperimentPlans, so `plan` on `experiments.memory` gets this one refusal and never that
+// check's advice to write `unit: issue`, which the unit rule here would refuse. Every other name of
+// the key declares whatever variants and unit it likes, but for one whose arms name `plan`, which
+// draws for each issue (checkExperimentPlans).
 func checkExperimentMemory(experiments []Experiment, blockWritten bool, key string) error {
 	index := slices.IndexFunc(experiments, func(e Experiment) bool { return e.Name == MemoryExperimentName })
 	if index < 0 {
@@ -558,6 +550,9 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 	}
 	if blockWritten {
 		return fmt.Errorf("%s.memory and %s.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both", key, key)
+	}
+	if experiments[index].SetsPlan() {
+		return fmt.Errorf("%s.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own", key)
 	}
 	// The two names, in whichever order the operator wrote them: the key declares the same
 	// experiment either way round, so both sides are sorted rather than this comparison resting
@@ -570,6 +565,30 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 	if unit := experiments[index].Unit; unit != ExperimentTree {
 		return fmt.Errorf("%s.experiments.memory is unit %s: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it",
 			key, unit)
+	}
+	return nil
+}
+
+// checkExperimentPlans refuses an experiment that sets `plan` in a shape no issue could be drawn
+// into: an arm that names no `plan` beside one that does, since an arm with none would leave its
+// issues' way of working to no word; and a unit other than the issue, since how an issue is done is
+// read from the draw recorded against that issue itself, and a tree's draw is recorded against the
+// tree's root alone. It runs after checkExperimentMemory (stage3's project reader), whose own rule
+// refuses `plan` on `experiments.memory`.
+func checkExperimentPlans(experiments []Experiment, key string) error {
+	for _, experiment := range experiments {
+		if !experiment.SetsPlan() {
+			continue
+		}
+		block := key + ".experiments." + experiment.Name
+		for _, variant := range experiment.Variants {
+			if variant.Plan == "" {
+				return fmt.Errorf("%s.variants.%s names no plan: each variant of an experiment that sets plan names how its issues are done", block, variant.Name)
+			}
+		}
+		if experiment.Unit != ExperimentIssue {
+			return fmt.Errorf("%s sets plan and is unit %s: an experiment that sets how an issue is done draws for each issue, so write unit: issue", block, experiment.Unit)
+		}
 	}
 	return nil
 }

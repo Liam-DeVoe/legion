@@ -265,6 +265,12 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: "projects.DEMO.experiments.memory names the variants memory, nothing: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse"},
 		{name: "experiments.memory drawn for each issue", block: "{memory: {unit: issue, variants: [{name: memory}, {name: none}]}}",
 			want: "projects.DEMO.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it"},
+		// experiments.memory naming plan gets the one refusal of its own, whatever its unit, and
+		// never the plan rules' advice to write unit: issue, which the memory rule would refuse next.
+		{name: "experiments.memory naming plan, unit left out", block: "{memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}",
+			want: "projects.DEMO.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own"},
+		{name: "experiments.memory naming plan, drawn for each issue", block: "{memory: {mode: random, unit: issue, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}",
+			want: "projects.DEMO.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own"},
 		{name: "a variant's overlays beside a role on claude",
 			block: "{alpha: {mode: random, variants: [{name: only, config_files: [/etc/a.yml]}, {name: other}]}}",
 			extra: "worker_backends: {implementer: claude}\n",

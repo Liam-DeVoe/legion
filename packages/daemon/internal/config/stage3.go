@@ -272,7 +272,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
