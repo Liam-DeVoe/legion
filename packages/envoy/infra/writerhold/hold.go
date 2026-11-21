@@ -142,7 +142,10 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 // 1's), and names a proven disk that is gone: the disks read again, the row moved to released, the
 // disks read once more (a restore that lands between the last check and the move is a restore
 // outside any hold, which it names), then its done entry. On a row already released under this
-// hold id it sends no move, and writes the done entry an abort killed after its move left unwritten.
+// hold id it sends no move: while the journal shows prepare (a row lost in prepare and restored
+// released) it is admitted, deletes the cohort record and writes its done entry, which ends the
+// hold (abortReleasedPrepare); otherwise it writes the done entry an abort killed after its move
+// left unwritten.
 func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores StreamIDWriter, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -165,6 +168,14 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 		return err
 	}
 	if row.Phase == natsgrant.OperatorPhaseReleased {
+		// A row restored released with the hold's id while its journal shows prepare (no done hold
+		// set, and not ended): a row lost in prepare, or after an abort from prepare. The table
+		// admits abort on that row alone (holdrecord's Request.RowReleased, which Admit sets from the
+		// row); it deletes the cohort record, which the route deletes on that row too, and its done
+		// entry ends the journal. Its rerun after a crash is admitted on its own pending intent.
+		if endedBy(d) == "" && latestState(d, holdrecord.CommandSet) != stateDone {
+			return abortReleasedPrepare(ctx, records, row, o, stdout)
+		}
 		// An abort killed between its move and its done entry left its intent pending: the rerun
 		// sends no move and writes the done entry, which completes the record and ends the hold.
 		if latestState(d, holdrecord.CommandAbort) == stateIntent {
@@ -226,6 +237,22 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if changed != nil {
 		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", changed)
 	}
+	return nil
+}
+
+// abortReleasedPrepare ends hold o.holdID, whose row reads released with its hold id and whose
+// journal shows prepare: its admission, the cohort record deleted, then its done entry.
+func abortReleasedPrepare(ctx context.Context, records *holdrecord.Client, row holdrecord.Row, o options, stdout io.Writer) error {
+	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
+		return err
+	}
+	if err := records.DeleteCohort(ctx, o.holdID); err != nil {
+		return err
+	}
+	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "aborted hold %s, whose row reads released (gen %d) and whose journal shows prepare: its cohort record is deleted and the hold has ended\n", o.holdID, row.Gen)
 	return nil
 }
 

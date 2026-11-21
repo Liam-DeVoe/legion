@@ -137,23 +137,38 @@ before it reads or removes anything.
   Deployment and the operator's file both name) is recorded in the journal: in the stop's reason
   beside the stores left unreconciled, and in the done entry as `gone.daemon/<P>`, beside
   `stream_id.daemon/<P>` for each store it rewrote.
+- On a row restored `released` with its hold id while its journal shows `prepare` (no done
+  `hold set`, not ended), it is admitted, deletes the cohort record and writes its `done` entry,
+  which ends the hold.
 - A crashed abort's rerun runs the whole abort again. An abort killed after its row move writes its
   `done` entry when rerun.
 
 ## Restore
 
-`hold restore` writes a lost row back at the log's next gen:
+`hold restore` writes a lost row back at the log's next gen. It sends `released` first, and `held`
+only when the broker refuses `released` with 400 `bad_transition`: the broker's signed row log
+decides, not the journal.
 
-- `--hold ID` of a hold whose journal holds a `hold set` entry, done or not, and that has not
-  ended: the row comes back `held` with its id. A set that stopped or crashed after its move left
-  the row `held` before its done entry, and the journal cannot tell whether the move happened, so
-  the restore fails closed. The hold's way out then works as before: set's rerun, `hold abort`
-  after a stop, or `hold release` with nothing changed.
-- `--hold ID` of a hold lost in `prepare` (no `hold set` entry) or that has ended, or no `--hold`:
-  the row comes back `released`. After `prepare`, the output names the cohort record that stays,
-  and the next step, `hold abort` or a new `hold prepare`.
-- The broker refuses a `released` row mid-hold (400 `bad_transition`); the refusal names `--hold`.
+- The broker refuses `released` after a `held` row of a hold that has not ended, a row lost
+  mid-hold. With `--hold ID` the row then comes back `held` with its id, and the hold's way out
+  works as before: set's rerun, `hold abort` after a stop, or `hold release` with nothing changed.
+  With no `--hold` the refusal names `--hold`, and no row is written.
+- After any other entry the row comes back `released`: with the hold's id when `--hold` names a hold
+  that has not ended (a row lost in `prepare`, before `hold set`'s move, or after an abort from
+  `prepare`), and the output names the cohort record that stays and the next step, `hold abort` or
+  a new `hold prepare`; with no hold id for a hold that has ended, or with no `--hold`.
 - `--bootstrap` writes the first row, and only into an empty log.
+
+## Stated residuals
+
+- The command bounds no restore gen of its own. `holdrecord.RestoreRow` checks the broker's
+  `restore_gen` only for a `held` restore with a hold id, and only once its client has verified a
+  row. After a row loss the broker's per-replica floor of the row and its signature check are the
+  guards.
+- A prepared hold with no journal takes abort's `prepare` path. After a broker restart, whose floor
+  of the records starts empty, a database admin who deletes a set hold's journal and puts back its
+  signed `prepare` row makes the abort release it. This is the plan's stated residual for the
+  database admin (§3a, "A stated residual").
 
 ## Refusals and exit codes
 

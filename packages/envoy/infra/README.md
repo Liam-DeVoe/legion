@@ -3359,13 +3359,15 @@ disk that is gone (a 404, or another id under its name) is named in its stop, an
 another disk and a new prove follow. Before it releases, it reconciles each daemon store of the
 cutover rows' `daemon/<P>` families (`--daemon-database P=<file>`, repeat) and stops, naming each
 store, unless every one is changed, gone or already consistent. Once `hold release` or `hold abort` is done, no command is
-admitted in that hold. `hold restore --hold ID` puts a row lost in a set hold back held, a hold
-whose journal holds a `hold set` entry, done or not, since a set that stopped or crashed after its
-move left the row held; it restores released for a hold that has ended or was lost in prepare,
-naming `hold abort` or a new `hold prepare` for the cohort record that stays; `hold restore` with
-neither flag writes the
-released row at the log's next gen, refused mid-hold; `hold restore --bootstrap` writes the first
-row into an empty log only. A journal or
+admitted in that hold. `hold restore` sends a lost row back released first, and held only when the
+broker refuses released with 400 `bad_transition`, so the broker's signed row log decides, not
+the journal: after a held row of a hold that has not ended, `hold restore --hold ID` puts the row
+back held; after any other entry the row comes back released, with the hold's id for a hold that
+has not ended (a row lost in prepare, which `hold abort` then ends, naming the cohort record that
+stays), and with none for an ended hold or no `--hold`, which is refused mid-hold. `hold restore
+--bootstrap` writes the first row into an empty log only. The command bounds no restore gen of its
+own: after a row loss the broker's per-replica floor of the row and its signature check are the
+guards (writerhold/README.md, "Stated residuals"). A journal or
 row the broker answers below its floor (an older signed record put back into its database) is
 UNKNOWN. Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a reading that
 is not whole, which is never a pass.

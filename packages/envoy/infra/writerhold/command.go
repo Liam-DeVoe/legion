@@ -326,19 +326,20 @@ func mapLine(label string, m map[string]string) string {
 }
 
 // restore writes a lost hold row back through POST /v1/nats-hold/restore, at the log's next gen,
-// which the route names (holdrecord.RestoreRow signs a held row afresh there). --bootstrap writes
-// the first row, gen 1 released (holdrecord.Client.Bootstrap), and only into an empty log; a log
-// with entries is refused, naming its next gen and `hold restore`. Otherwise it reads the journal
-// first. With --hold of a hold whose journal holds a `hold set` entry, done or not, and which has
-// not ended, the row comes back held with its id, so the hold goes on closed: a set that stopped or
-// crashed after its row move left the row held before its done entry, and the journal cannot tell
-// whether the move happened. With --hold of a hold lost in prepare (no `hold set` entry; the route
-// stores no prepare row), of a hold that has ended (a done `hold release` or `hold abort`), or with
-// no --hold, the row comes back released with no hold id; after prepare the output says the hold's
-// cohort record stays and names `hold abort` or a new `hold prepare`. The route stores a released
-// row only while the log's latest entry allows it, and refuses it 400 bad_transition after a held
-// entry, a row lost mid-hold, which a released row never replaces: that refusal names `hold restore
-// --hold`, and nothing is written, so no row reads released and every writer stays refused.
+// which the route names (restoreAt). --bootstrap writes the first row, gen 1 released
+// (holdrecord.Client.Bootstrap), and only into an empty log; a log with entries is refused, naming
+// its next gen and `hold restore`. Otherwise it sends released first, and held only when the route
+// refuses released with 400 bad_transition: the route's signed row log decides, not the journal.
+// The route refuses released after a held entry of a hold that has not ended, a row lost mid-hold,
+// so the row comes back held with its hold id and the hold goes on closed. After any other entry
+// (released, or prepare: a row lost in prepare, before hold set's move or after an abort from
+// prepare) the route stores released, with the hold's id when --hold names a hold that has not
+// ended, so `hold abort` can end it (the table admits abort on a released row whose journal shows
+// prepare), and with none for an ended hold or no --hold. With no --hold a refused released row
+// names `hold restore --hold`, and nothing is written, so no row reads released and every writer
+// stays refused. The command bounds no gen of its own: holdrecord.RestoreRow follows the route's
+// restore_gen for a held row with its hold id only, and only after its client verified a row; after
+// a row loss the route's per-replica floor of the row and its signature check are the guards.
 func restore(ctx context.Context, records *holdrecord.Client, o options, stdout io.Writer) error {
 	var lost *holdrecord.RestoreGenError
 	var refused *holdrecord.RouteError
@@ -355,37 +356,47 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		fmt.Fprintln(stdout, "wrote the first row: gen 1, phase released")
 		return nil
 	}
-	phase, holdID, prepared := natsgrant.OperatorPhaseReleased, "", false
+	holdID := ""
 	if o.holdID != "" {
 		d, _, err := records.Journal(ctx, o.holdID)
 		if err != nil {
 			return err
 		}
-		switch {
-		case endedBy(d) != "":
-		case latestState(d, holdrecord.CommandSet) != "":
-			phase, holdID = natsgrant.OperatorPhaseHeld, o.holdID
-		default:
-			// A hold lost in prepare: the route stores no prepare row, so the row comes back
-			// released, and the hold's cohort record stays for its next step.
-			prepared = true
+		if endedBy(d) == "" {
+			holdID = o.holdID
 		}
 	}
-	row, err := records.RestoreRow(ctx, 1, phase, holdID, o.reason)
-	if phase != natsgrant.OperatorPhaseHeld && errors.As(err, &lost) {
-		row, err = records.RestoreRow(ctx, lost.RestoreGen, phase, holdID, o.reason)
-	}
+	row, gen, err := restoreAt(ctx, records, natsgrant.OperatorPhaseReleased, holdID, o.reason)
 	if errors.As(err, &refused) && refused.Code == "bad_transition" {
-		return refusef(StepPreflight, "the log's latest entry is held or prepare, so the row was lost mid-hold and is not restored %s: restore it with `hold restore --hold <its hold id>`", phase)
+		if holdID == "" {
+			return refusef(StepPreflight, "the log's latest entry is a held row, so the row was lost mid-hold and is not restored released: restore it with `hold restore --hold <its hold id>`")
+		}
+		// The route's log holds a held row of this hold, which has not ended: the row was lost
+		// mid-hold, and comes back held at the gen the route named for the released one.
+		row, err = records.RestoreRow(ctx, gen, natsgrant.OperatorPhaseHeld, holdID, o.reason)
 	}
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "restored the row: gen %d, phase %s, hold %q\n", row.Gen, row.Phase, row.HoldID)
-	if prepared {
+	if row.Phase == natsgrant.OperatorPhaseReleased && holdID != "" {
 		fmt.Fprintf(stdout, "hold %s was lost in prepare: its cohort record is still in the broker's database; end it with `hold abort --hold %s`, or begin again with a new `hold prepare`\n", o.holdID, o.holdID)
 	}
 	return nil
+}
+
+// restoreAt sends the restore of a row of phase and holdID at gen 1, and again at the gen the
+// route names when it refuses gen 1 (a log with entries), and returns the row, the gen it sent last
+// and its error. It is the command's one place for the restore's gen.
+func restoreAt(ctx context.Context, records *holdrecord.Client, phase natsgrant.OperatorPhase, holdID, reason string) (holdrecord.Row, uint64, error) {
+	gen := uint64(1)
+	row, err := records.RestoreRow(ctx, gen, phase, holdID, reason)
+	var lost *holdrecord.RestoreGenError
+	if errors.As(err, &lost) {
+		gen = lost.RestoreGen
+		row, err = records.RestoreRow(ctx, gen, phase, holdID, reason)
+	}
+	return row, gen, err
 }
 
 // keygen makes the operator's hold signing key: an Ed25519 pair, whose private half, the seed as

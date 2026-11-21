@@ -2,7 +2,6 @@ package writerhold
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -95,23 +94,27 @@ func TestHoldARowLostOutsideAHoldIsRestoredReleased(t *testing.T) {
 	requireReleased("after the completed hold")
 }
 
-// A hold row lost in prepare is restored released, since the route stores no prepare row, and the
-// output names the cohort record that stays and the next step, `hold abort` or a new `hold
-// prepare`. Waiting for #4679's next push, which lets the route store released after a prepare
-// entry: until it lands the route refuses the row 400 bad_transition, and the row skips, naming it.
+// A hold row lost in prepare, before `hold set`'s intent, is restored released with the hold's id,
+// since the route stores no prepare row and its log's latest entry is the prepare row; the output
+// names the cohort record that stays and the next step, `hold abort` or a new `hold prepare`. `hold
+// abort` then ends the hold (requireAbortEndsTheReleasedHold). The control is the restore and the
+// abort as they stood at 5fd43c72eb: the row came back with no hold id, so the abort was refused
+// ("released under hold , not <id>") and the journal never ended.
 func TestHoldARowLostInPrepareIsRestoredReleased(t *testing.T) {
 	h := newHeldStack(t)
 	ctx := context.Background()
 	id := h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
-	_, err := h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
+	_, err := h.s.Records.PutRecord(ctx, id, "cohort", "cohort", 0, []byte(`{"boundary":1}`))
+	require.NoError(t, err)
+	_, err = h.s.Broker.Pool.Exec(ctx, `delete from nats_hold`)
 	require.NoError(t, err)
 	code, stdout, stderr := h.run(actionRestore, "--hold", id, "--reason", "the row is gone in prepare")
-	if code != 0 && strings.Contains(stderr, "is not restored released") {
-		t.Skipf("waiting for #4679's next push (the route stores released after a prepare entry): %s", stderr)
-	}
 	require.Zero(t, code, "a restore of a hold lost in prepare: %s", stderr)
 	require.Contains(t, stdout, "phase released")
 	require.Contains(t, stdout, "cohort record is still")
 	require.Contains(t, stdout, "hold abort --hold "+id)
-	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+	row := h.row()
+	require.Equal(t, natsgrant.OperatorPhaseReleased, row.Phase)
+	require.Equal(t, id, row.HoldID)
+	h.requireAbortEndsTheReleasedHold(id)
 }
