@@ -36,8 +36,8 @@
 #
 #   IOC_CACHE       the cache root, everything below is under it
 #   IOC_CLONES      the clone root: the three clones at the commits sources.json pins, and
-#                   agent-infra, the private repository rows read with git, fetched
-#                   blobless at the commits its private_repositories entry pins
+#                   deployment, the deployment repository, which rows read with git,
+#                   fetched blobless at the commits its private_repositories entry pins
 #   IOC_EVID        the absolute path of the committed evidence/ directory
 #   IOC_DESIGN      the design under check, dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md
 #   IOC_COMMENT     the reconciliation under check, dispatch://INFRA-3134/comment/326a044a-…
@@ -65,7 +65,8 @@
 #                   author alone, and the row counts only the bodies submitted by its instant.
 #   IOC_GITHUB_AUTH_LEGION IOC_GITHUB_AUTH_PRIVATE  the header files of the token the
 #                   machine's git credential helper gives for cybermonklabs/legion and for
-#                   theorem-labs/agent-infra, each empty when it gives none
+#                   the deployment repository, which IOC_DEPLOYMENT_REPO names as
+#                   <owner>/<name>, each empty when it gives none
 #                   (ioc_env_github_table); every recorded curl of GitHub's REST API sends
 #                   the one of the repository it reads with -H @"$<variable>". check.sh
 #                   --replay writes both under its run's scratch before it sources env.sh;
@@ -92,7 +93,7 @@
 #
 #   entry                                   kept whole by
 #   each clone, IOC_CLONES/<name>           a stamp, .git/ioc-complete, naming the pinned
-#                                           commit, or for agent-infra the pinned commits
+#                                           commit, or for deployment the pinned commits
 #                                           and paths; a clone without it is cloned again
 #   ioc-design.md, comment-326a.md          a temporary name, <file>.part, renamed when the
 #                                           read ended well; only when run on its own
@@ -126,10 +127,12 @@
 # ioc-concord wheel is the sha256 of the files and the clone commit it was built from, so a
 # venv or a wheel that predates the hashed files is never used.
 #
-# It needs uv, git, jq, curl, python3 and dispatch, and it needs the three clones and
-# agent-infra's, which it clones at the commits sources.json pins when they are missing or
-# not whole. It reads GitHub through git and the REST API and never through gh, which in a
-# Legion pod is scoped to this project's owners alone. It refuses,
+# It needs uv, git, jq, curl, python3 and dispatch, and it needs the three clones and the
+# deployment repository's, which it clones at the commits sources.json pins when they are
+# missing or not whole. It reads which repository that is from IOC_DEPLOYMENT_REPO alone,
+# written <owner>/<name>, since this tree is public and names it nowhere, and refuses by
+# that name when it is not set. It reads GitHub through git and the REST API and never
+# through gh, which in a Legion pod is scoped to this project's owners alone. It refuses,
 # with a line naming what it could not prepare and a non-zero status, rather than leaving a
 # variable pointing at something that is not there.
 
@@ -193,8 +196,11 @@ ioc_env_clone() {
 # for a repository gets git's refusal and never a prompt.
 ioc_env_git() { GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='' git "$@"; }
 
-# The private repository rows read with git, theorem-labs/agent-infra, as a fourth
-# clone under IOC_CLONES, by its entry of sources.json's private_repositories. It is fetched
+# The deployment repository, the private repository rows read with git, as a fourth clone
+# under IOC_CLONES, by its entry of sources.json's private_repositories. The entry names no
+# url: its repository_from names the variable that holds the repository as <owner>/<name>,
+# IOC_DEPLOYMENT_REPO, the url is https://github.com/<owner>/<name>, and a variable that is
+# not set is refused by its name. It is fetched
 # blobless (--filter=blob:none), with no checkout, at exactly the commits the entry pins;
 # then the blobs of the paths the entry names, at each of those commits, are fetched by
 # their ids in one request, so each row reads every file it reads from the clone and none
@@ -202,13 +208,17 @@ ioc_env_git() { GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='' git "$@"; }
 # written last, names those commits and paths; any other, one a fetch that was killed
 # part-way left among them, is removed and fetched again.
 ioc_env_clone_private() {
-    local name="$1" entry url commits paths dir stamp want commit
+    local name="$1" entry from repository url commits paths dir stamp want commit
     entry="$(jq -c --arg n "$name" '.private_repositories[]? | select(.name==$n)' "$IOC_ENV_HERE/sources.json")"
-    url="$(printf '%s' "$entry" | jq -r '.url // empty')"
+    from="$(printf '%s' "$entry" | jq -r '.repository_from // empty')"
     commits="$(printf '%s' "$entry" | jq -r '.commits[]?')"
     paths="$(printf '%s' "$entry" | jq -r '.paths[]?')"
-    [ -n "$url" ] && [ -n "$commits" ] && [ -n "$paths" ] ||
-        ioc_env_refuse "the clone $name" "sources.json pins no such private repository, with its commits and its paths" || return 1
+    [[ "$from" =~ ^[A-Z_][A-Z0-9_]*$ ]] && [ -n "$commits" ] && [ -n "$paths" ] ||
+        ioc_env_refuse "the clone $name" "sources.json pins no such private repository, with the variable that names it, its commits and its paths" || return 1
+    repository="${!from:-}"
+    [ -n "$repository" ] ||
+        ioc_env_refuse "the clone $name" "the variable $from, which names its repository as <owner>/<name>, is not set" || return 1
+    url="https://github.com/$repository"
     dir="$IOC_CLONES/$name"
     stamp="$dir/.git/ioc-complete"
     want="$(printf '%s\n' "$commits" "$paths")"
@@ -238,11 +248,12 @@ ioc_env_clone_private() {
 # <variable>|<owner>/<repo>: the variable names the header file of that repository's token,
 # which the row sends with curl -H @"$<variable>", and env.sh's read of the review corpus
 # sends the first. One file per repository, since a Legion pod's helper gives a token per
-# repository.
+# repository. The second is the deployment repository, which this tree names nowhere: its
+# line reads it from IOC_DEPLOYMENT_REPO.
 ioc_env_github_table() {
-    cat <<'TABLE'
+    cat <<TABLE
 IOC_GITHUB_AUTH_LEGION|cybermonklabs/legion
-IOC_GITHUB_AUTH_PRIVATE|theorem-labs/agent-infra
+IOC_GITHUB_AUTH_PRIVATE|${IOC_DEPLOYMENT_REPO:-}
 TABLE
 }
 
@@ -978,6 +989,10 @@ ioc_env_main() {
     ioc_env_need uv git jq curl python3 dispatch || return 1
     mkdir -p "$IOC_CACHE" || ioc_env_refuse "the cache" "mkdir $IOC_CACHE failed" || return 1
     [ -d "$IOC_EVID" ] || ioc_env_refuse "IOC_EVID" "$IOC_EVID is not a directory" || return 1
+    # The deployment repository is named by IOC_DEPLOYMENT_REPO alone: the header file of
+    # its token and its clone read it, so a run without it builds nothing.
+    [ -n "${IOC_DEPLOYMENT_REPO:-}" ] ||
+        ioc_env_refuse "IOC_DEPLOYMENT_REPO" "it is not set: export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from" || return 1
     # check.sh --replay writes the GitHub header files under its run's scratch before it
     # sources env.sh; run on its own, env.sh writes them under IOC_ENV_SCRATCH, its own.
     [ -z "${IOC_ENV_SCRATCH:-}" ] || ioc_env_github_auth || return 1
@@ -986,7 +1001,7 @@ ioc_env_main() {
     for name in mas-lab scope cognition-protocols; do
         ioc_env_clone "$name" || return 1
     done
-    ioc_env_clone_private agent-infra || return 1
+    ioc_env_clone_private deployment || return 1
 
     ioc_env_enforce || return 1
     ioc_env_records || return 1

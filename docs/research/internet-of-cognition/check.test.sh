@@ -2364,7 +2364,7 @@ for form in 'gone|select(.id != "s-model-checksum")|claims\.jsonl holds no row s
         printf 'FAIL the row env.sh reads could not be planted %s in a copy of claims.jsonl\n' "$planted"
         exit 1
     }
-    out="$(IOC_EVIDENCE="$copy" DISPATCH_URL=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 no_proxy= NO_PROXY= gate_run "$HERE/check.sh" --replay)"
+    out="$(IOC_EVIDENCE="$copy" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" DISPATCH_URL=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 no_proxy= NO_PROXY= gate_run "$HERE/check.sh" --replay)"
     evidence_stop_result "--replay whose row env.sh reads is $planted fails claim-form alone, naming the row, and stops before it reads a source or builds anything, exit 1" "$detail" "$out"
 done
 out="$(bash -c '. "$1" && claims_parsed && env_functions && env_rows_judge claim-form && printf "it reported nothing\n"' _ "$HERE/check.sh" 2>&1)"
@@ -3112,48 +3112,49 @@ done
 
 # 115. A row that reads a private repository cannot run where git cannot read it (test round
 # 37, and R11 of round 38, under which the gate reads GitHub through git and the REST API and
-# never through gh). Rows read theorem-labs/agent-infra, a private repository: most from
-# the clone env.sh fetches with git, and a few its pull requests through the REST API. A
-# reader whose git cannot read that repository would see env.sh refuse its clone, or each
-# row's read fail, a FAIL of replay-command that is no verdict on the deliverable. --replay
-# reads the repository with git ls-remote through live_read before the GitHub budget and
-# before env.sh builds anything (private_repository_read), so such a reader gets check.sh
-# cannot run, exit 2, naming the repository and the rows. The case runs --replay over this
-# directory with a git of the case's own first on PATH, which refuses ls-remote of
-# theorem-labs/agent-infra with exit 128, as git does for a repository its credential cannot
-# read, and runs the real git for everything else; the run must end exit 2, its last line
-# naming theorem-labs/agent-infra and the rows, with no FAIL line. A curl of the case's own,
-# also first on PATH, answers nothing, so a gate that read the repository after the budget,
-# or not at all, would end at the budget's read, which names neither, and never start the
-# whole replay. Both reads are the case's own plants, GitHub's, so the run's reason is read as
-# planted when it is either, and a run that ends at the budget's read fails the case rather
-# than reading as one that could not run.
+# never through gh). Rows read the deployment repository, a private repository
+# IOC_DEPLOYMENT_REPO names: most from the clone env.sh fetches with git, and a few its pull
+# requests through the REST API. A reader whose git cannot read that repository would see
+# env.sh refuse its clone, or each row's read fail, a FAIL of replay-command that is no
+# verdict on the deliverable. --replay reads the repository with git ls-remote through
+# live_read before the GitHub budget and before env.sh builds anything
+# (private_repository_read), so such a reader gets check.sh cannot run, exit 2, naming the
+# repository and the rows. The case runs --replay over this directory with
+# IOC_DEPLOYMENT_REPO the placeholder FIXTURE_DEPLOYMENT_REPO and a git of the case's own
+# first on PATH, which refuses ls-remote of that repository with exit 128, as git does for a
+# repository its credential cannot read, and runs the real git for everything else; the run
+# must end exit 2, its last line naming the placeholder and the rows, with no FAIL line. A
+# curl of the case's own, also first on PATH, answers nothing, so a gate that read the
+# repository after the budget, or not at all, would end at the budget's read, which names
+# neither, and never start the whole replay. Both reads are the case's own plants, GitHub's,
+# so the run's reason is read as planted when it is either, and a run that ends at the
+# budget's read fails the case rather than reading as one that could not run.
 PRIVATE="$WORK/private-repository"
 mkdir -p "$PRIVATE/bin"
 cat >"$PRIVATE/bin/git" <<'STUB'
 #!/bin/sh
 case " $* " in
-*" ls-remote "*theorem-labs/agent-infra*)
-    printf 'remote: Repository not found.\nfatal: repository '\''https://github.com/theorem-labs/agent-infra.git/'\'' not found\n' >&2
+*" ls-remote "*THE_DEPLOYMENT_REPO*)
+    printf 'remote: Repository not found.\nfatal: repository '\''https://github.com/THE_DEPLOYMENT_REPO.git/'\'' not found\n' >&2
     exit 128
     ;;
 esac
 exec REAL_GIT "$@"
 STUB
-sed -i "s|REAL_GIT|'$(command -v git)'|" "$PRIVATE/bin/git"
+sed -i -e "s|REAL_GIT|'$(command -v git)'|" -e "s|THE_DEPLOYMENT_REPO|$FIXTURE_DEPLOYMENT_REPO|g" "$PRIVATE/bin/git"
 cat >"$PRIVATE/bin/curl" <<'STUB'
 #!/bin/sh
 printf 'curl: (7) the stub curl of case 115 answers no %s\n' "$*" >&2
 exit 7
 STUB
 chmod +x "$PRIVATE/bin/git" "$PRIVATE/bin/curl"
-out="$(PATH="$PRIVATE/bin:$PATH" gate_run "$HERE/check.sh" --replay)"
-private_case="--replay whose git cannot read theorem-labs/agent-infra cannot run, exit 2, naming the repository and the rows that read it, and prints no FAIL"
+out="$(PATH="$PRIVATE/bin:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
+private_case="--replay whose git cannot read the deployment repository cannot run, exit 2, naming the repository and the rows that read it, and prints no FAIL"
 if grep -q '^FAIL' "$out/text"; then
     case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
 else
     ending_result "$private_case" 2 \
-        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of theorem-labs/agent-infra, the private repository the rows n-collector-keep-keys, [^,]*(, [a-z0-9-]+)* read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/theorem-labs/agent-infra\\.git/' not found" "$out" \
+        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of $FIXTURE_DEPLOYMENT_REPO, the deployment repository IOC_DEPLOYMENT_REPO names, which the rows n-collector-keep-keys, [^,]*(, [a-z0-9-]+)* read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/$FIXTURE_DEPLOYMENT_REPO\\.git/' not found" "$out" \
         '^check\.sh cannot run --replay: GitHub'
 fi
 
@@ -3173,7 +3174,7 @@ NO_GH="$WORK/no-gh"
 mkdir -p "$NO_GH"
 cp "$HERE/claims.jsonl" "$HERE/env.sh" "$NO_GH/"
 ln -s "$HERE/evidence" "$NO_GH/evidence"
-printf '%s\n' '{"claim": "theorem-labs/agent-infra names its commit 6908f072 by its id.", "command": "gh api repos/theorem-labs/agent-infra/commits/6908f07257629dfb202b91c35c2fc2c70753b3a7 --jq .sha", "evidence": {"surface": "cli"}, "expect": {"equals": "6908f07257629dfb202b91c35c2fc2c70753b3a7"}, "id": "f-gh-read", "kind": "behaviour", "mark": "verified", "note": "planted by case 116", "output": "6908f07257629dfb202b91c35c2fc2c70753b3a7", "requirement": "r7", "source": "the case"}' \
+printf '%s\n' '{"claim": "The deployment repository names its commit 6908f072 by its id.", "command": "gh api repos/example-owner/deployment/commits/6908f07257629dfb202b91c35c2fc2c70753b3a7 --jq .sha", "evidence": {"surface": "cli"}, "expect": {"equals": "6908f07257629dfb202b91c35c2fc2c70753b3a7"}, "id": "f-gh-read", "kind": "behaviour", "mark": "verified", "note": "planted by case 116", "output": "6908f07257629dfb202b91c35c2fc2c70753b3a7", "requirement": "r7", "source": "the case"}' \
     >>"$NO_GH/claims.jsonl"
 one_failure_result "--admitted over a row that runs gh fails admitted-rows alone, naming the row and gh" admitted-rows \
     '^1 of 4 assertions failed: admitted-rows$' '^FAIL admitted-rows: the row f-gh-read is refused: gh, ' \
@@ -3185,9 +3186,9 @@ gh_calls() {
         xargs -0 grep -nE '(^|[^a-z_.-])gh( |$)' /dev/null | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#'
 }
 mkdir -p "$WORK/gh-planted"
-printf '#!/bin/sh\n# gh api in a comment is no call\ngh api repos/theorem-labs/agent-infra --jq .full_name\n' >"$WORK/gh-planted/planted.sh"
+printf '#!/bin/sh\n# gh api in a comment is no call\ngh api repos/example-owner/deployment --jq .full_name\n' >"$WORK/gh-planted/planted.sh"
 calls="$(gh_calls "$WORK/gh-planted")"
-if [ "$calls" = "$WORK/gh-planted/planted.sh:3:gh api repos/theorem-labs/agent-infra --jq .full_name" ]; then
+if [ "$calls" = "$WORK/gh-planted/planted.sh:3:gh api repos/example-owner/deployment --jq .full_name" ]; then
     case_passed "gh_calls names a script's call of gh by its file and line, and not gh in a comment"
 else
     case_failed "gh_calls names a script's call of gh by its file and line, and not gh in a comment" "it printed: $(printf '%s' "$calls" | head -3 | tr '\n' ' ')"
@@ -3483,7 +3484,7 @@ fi
 # The specification's R9 lists the eleven things a page carries, among them "the landing
 # component, which is Legion, Envoy or Dispatch". At 3df528a3 the page 'An execution record
 # under the gen_ai. names' reads "Legion, for the phase key, and the spend collector, for its
-# keep-list and a view", and the spend collector is a program of theorem-labs/agent-infra,
+# keep-list and a view", and the spend collector is a program of the deployment repository,
 # none of the three; --shape passed it, since page-parts holds only that the line is there.
 # The case writes that line into the first page of the fixture's judgement whose landing
 # component is Legion, and runs --shape, which must fail, naming the page and its landing
@@ -5105,6 +5106,36 @@ for form in mistyped honest; do
         ;;
     honest) honest_result "a dotted name whose file holds each component of its prefix and its local part, Engine.match, passes citation-our-code" citation-our-code "$out" ;;
     esac
+done
+
+# 173. The deployment repository is an input of --replay, never a name in this tree (the
+# architect's ruling of round 46 on AGENTS.md's rule for this public repository: name
+# neither the repository Legion is deployed from nor the company that runs it, and make a
+# value a live script needs a required input). At c7ba7ee3 check.sh, env.sh, sources.json
+# and the rows wrote that repository's owner and name; now IOC_DEPLOYMENT_REPO holds it as
+# <owner>/<name>, a variable of --replay's prerequisites whose form the prerequisite step
+# reads, a / between two words of letters, digits, ".", "_" and "-" (REPOSITORY_FORM). The
+# case runs --replay over the fixture twice, with the variable unset and with it holding
+# not-a-repo (FIXTURE_DEPLOYMENT_REPO, which fixture_run passes as IOC_DEPLOYMENT_REPO, set
+# empty and then to that word); each must end exit 2, cannot run, every assertion of the
+# kind prerequisite and none failed, its last line naming IOC_DEPLOYMENT_REPO, what is
+# wrong with it and what provides it. At c7ba7ee3 each passed every assertion.
+for form in unset malformed; do
+    case "$form" in
+    unset) value='' missing='the variable IOC_DEPLOYMENT_REPO is not set' ;;
+    malformed) value='not-a-repo' missing="the variable IOC_DEPLOYMENT_REPO holds 'not-a-repo', which is no GitHub repository written <owner>/<name>" ;;
+    esac
+    dir="$(fresh "deployment-repo-$form")"
+    out="$(FIXTURE_DEPLOYMENT_REPO="$value" fixture_run "$dir" --replay)"
+    deployment_case="--replay with IOC_DEPLOYMENT_REPO $form cannot run, exit 2, of the kind prerequisite, naming the variable and what provides it"
+    ending_read "$out"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] &&
+        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay: $missing; provided by: export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = prerequisite ]; then
+        case_passed "$deployment_case"
+    else
+        case_failed "$deployment_case" "exit $RUN_STATUS, last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+    fi
 done
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====

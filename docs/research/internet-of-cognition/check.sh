@@ -236,8 +236,9 @@
 # scoped to this project's owners and refuses ioc-project; so does every recorded command
 # and every script one runs, and --admitted refuses a row that runs gh, since ADMITTED holds
 # no entry for it. A repository's files are read from a clone at the commits sources.json
-# pins, with git show, git log and git grep: the three projects' clones and agent-infra's,
-# a private repository env.sh fetches blobless through the machine's git credential helper
+# pins, with git show, git log and git grep: the three projects' clones and the deployment
+# repository's, a private repository IOC_DEPLOYMENT_REPO names, since this public tree names
+# it nowhere, which env.sh fetches blobless through the machine's git credential helper
 # (env.sh's ioc_env_clone_private). What only the REST API answers, a pull request's reviews,
 # its times and its size, is read with curl, sending the header file of the token git
 # credential fill gives for that repository ("The GitHub tokens stand on no command line"
@@ -299,9 +300,11 @@
 #             GOTOOLCHAIN, by which go reaches a module (FIXTURE_CARRIED)
 #   set       IOC_ROOT, IOC_EVIDENCE and IOC_JUDGEMENT to the fixture's tree and judgement,
 #             IOC_NO_ENV=1, IOC_PUBLISHED_COMMIT to the fixture's head, IOC_ENDING to the
-#             record of that one run, and IOC_CACHE to the fixture's own directory cache/,
+#             record of that one run, IOC_CACHE to the fixture's own directory cache/,
 #             which the runs over that one fixture share and no run over another fixture
-#             reads
+#             reads, and IOC_DEPLOYMENT_REPO to FIXTURE_DEPLOYMENT_REPO, a placeholder, since
+#             the fixture reads no deployment repository and a fixture's run never reads
+#             the caller's
 #   cleared   every other variable: IOC_HISTORY_REF, IOC_OUR_TREE, every variable env.sh
 #             exports and every cache of its table among them, so the fixture reads its
 #             own history and keeps its caches in its own IOC_CACHE
@@ -582,6 +585,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # fixture reads one only from a case that sets it on its own command.
 FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR IOC_CLONES http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
 FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE IOC_CHILD_BOUND UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+# The deployment repository a fixture's run is given as IOC_DEPLOYMENT_REPO, a placeholder
+# and never the caller's value: the fixture reads no deployment repository, and this tree
+# names the real one nowhere. A case of check.test.sh sets FIXTURE_DEPLOYMENT_REPO on its
+# own command to run a fixture with another value, or empty to run it with none
+# (fixture_run), and gives it to a run of its own over this tree, as case 115's.
+FIXTURE_DEPLOYMENT_REPO=example-owner/deployment
 if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${1:-}" = --self-test ]; then
     # shellcheck disable=SC2086
     unset $FIXTURE_INPUTS
@@ -619,7 +628,11 @@ EVIDENCE="${IOC_EVIDENCE:-$HERE}"
 #                  The slowest measured is tm-our-count, 338 s, cold, then m-ctl-our-row-count,
 #                  149 s, of the 644 rows that tester's --replay had run by 17:31Z, each from
 #                  the time it wrote the row's command to the time it wrote its status, 1014 s
-#                  three times over; --landed's proofs ran inside its 21 s.
+#                  three times over. The implementer's cold --replay of a fresh clone of
+#                  c7ba7ee3 in the issue pod, from 22:25Z on 2026-11-21, measured all 656 rows
+#                  it ran the same way: tm-our-count again the slowest, 212 s, and the 20 rows
+#                  the tester's run had not reached at most 53 s. --landed's proofs ran inside
+#                  its 21 s.
 #   BOUND_COUNT    coordination/count.py: 904 s, from 16:18:15Z to 16:33:19Z of that same
 #                  --replay, 2712 s three times over; it ran 721 s on 2026-11-18, and it walks
 #                  the whole feed, which grows.
@@ -854,15 +867,18 @@ usage() {
 # needs its lines and those of the four modes it runs (prerequisite_rows). The last column
 # is what a reader runs to provide it, and may hold a |. How each kind is checked:
 #   tool       the program is on PATH
-#   variable   the variable is set, and one whose name ends _FILE names a readable file
+#   variable   the variable is set, one whose name ends _FILE names a readable file, and one
+#              whose name ends _REPO holds a GitHub repository written <owner>/<name>, a /
+#              between two words of letters, digits, ".", "_" and "-" (REPOSITORY_FORM)
 #   history    the history ref, IOC_HISTORY_REF or else HEAD, names a commit of this
 #              repository
 #   clone      the directory IOC_CLONES names can be made, under which the mode clones each
 #              repository at the commit sources.json pins; a fetch that fails is a live
 #              source that did not answer
+REPOSITORY_FORM='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
 prerequisite_table() {
     cat <<'TABLE'
-replay|tool|git|reads our own history, reads the private repository rows read with git ls-remote, clones it through the machine's credential helper with env.sh, and runs the recorded git commands|apt-get install git, with a credential helper that answers for https://github.com/theorem-labs/agent-infra.git, as a Legion pod's legion git-credential does
+replay|tool|git|reads our own history, reads the deployment repository, the private repository rows read, with git ls-remote, clones it through the machine's credential helper with env.sh, and runs the recorded git commands|apt-get install git, with a credential helper that answers for https://github.com/<owner>/<name>.git, the repository IOC_DEPLOYMENT_REPO names, as a Legion pod's legion git-credential does
 replay|tool|jq|reads claims.jsonl and runs the recorded jq commands|apt-get install jq
 replay|tool|python3|runs the reader of every recorded command, the recorded python3 commands and coordination/count.py, which takes the count again|apt-get install python3
 replay|tool|curl|reads the GitHub budget and the review corpus env.sh fetches, and runs the recorded reads of the Dispatch API and of GitHub's REST API|apt-get install curl
@@ -871,7 +887,8 @@ replay|tool|go|runs the two recorded commands that count rows of our own table|c
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
-replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and agent-infra under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+replay|variable|IOC_DEPLOYMENT_REPO|the deployment repository, as <owner>/<name>, which this public tree names nowhere: git ls-remote reads it first, env.sh clones it under IOC_CLONES/deployment and writes the header file of its token, and the rows that read it name it by this variable|export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from
+replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and the deployment repository under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 replay|tool|timeout|ends the mode, and each child of it the mode bounds, rows and count.py among them, at its bound, in a process group of its own (the header's "Every child the gate waits on ends")|apt-get install coreutils
 shape|tool|git|reads the history of this pull request|apt-get install git
 shape|tool|jq|reads sources.json|apt-get install jq
@@ -936,6 +953,8 @@ prerequisite_missing() {
             printf 'the variable %s is not set' "$name"
         elif [[ "$name" == *_FILE ]] && [ ! -r "$value" ]; then
             printf 'the variable %s names %s, which is no readable file' "$name" "$value"
+        elif [[ "$name" == *_REPO ]] && ! [[ "$value" =~ $REPOSITORY_FORM ]]; then
+            printf "the variable %s holds '%s', which is no GitHub repository written <owner>/<name>" "$name" "$value"
         else
             return 1
         fi
@@ -2096,7 +2115,7 @@ prepare_env() {
 #   for loop                          21  for NAME in words; do list; done
 #   assignment before a command       29  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
-#   command substitution in a word    12  $( ) in a word, its code admitted by this table
+#   command substitution in a word    15  $( ) in a word, its code admitted by this table
 #   assigns ACCORD_MODEL_DIR          16  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
 #   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
@@ -2117,7 +2136,7 @@ prepare_env() {
 #   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
 #   program curl                      35  wrapped in a function that records its status
-#   program cut                        5  wrapped in a function that records its status
+#   program cut                        8  wrapped in a function that records its status
 #   program dispatch                  76  wrapped in a function that records its status
 #   program echo                      31  wrapped in a function that records its status
 #   program git                      388  wrapped in a function that records its status
@@ -2126,10 +2145,10 @@ prepare_env() {
 #   program jq                        74  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
-#   program printf                    12  wrapped in a function that records its status
+#   program printf                    15  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      308  wrapped in a function that records its status
+#   program sed                      311  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      33  wrapped in a function that records its status
@@ -2154,9 +2173,9 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 453  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 454  a parameter, its name in braces or not
 #   $?                                27  the status of the last command
-#   $( )                              12  a command substitution
+#   $( )                              15  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
 #
 # Each program the table names is wrapped in a function of that name that records its
@@ -2532,7 +2551,7 @@ failed_read() {
 # would read GitHub's refusal as a claim that no longer holds. So the budget is read after
 # github_headers has written the header files and before env.sh builds anything, with curl
 # sending the file of cybermonklabs/legion, IOC_GITHUB_AUTH_LEGION, which env.sh's read of
-# the corpus and every row's curl but the reads of theorem-labs/agent-infra's pull requests
+# the corpus and every row's curl but the reads of the deployment repository's pull requests
 # send. The budget read is the token's when git credential fill gave one, and this
 # address's unauthenticated one when it gave none and the file is empty, which GitHub
 # answers with a limit of 60. A run with fewer requests left than the mode makes stops
@@ -2573,19 +2592,21 @@ github_budget() {
 
 # private_repository_read
 #
-# Rows of claims.jsonl read theorem-labs/agent-infra, a private repository: most with git,
-# from the clone env.sh fetches through the machine's git credential helper, and a few its
-# pull requests through the REST API, with the token the same helper gives. A reader whose
-# git cannot read that repository would see env.sh refuse its clone, or each such row's read
-# fail, a FAIL of replay-command that is no verdict on the deliverable. So the repository is
-# read first, with git ls-remote through live_read, before the budget and before env.sh
-# builds anything, and a run whose git cannot read it stops here, naming the repository and
-# the rows that read it, taken from claims.jsonl and not from a list kept here, rather than
-# printing a failure nobody should act on.
+# Rows of claims.jsonl read the deployment repository, a private repository that
+# IOC_DEPLOYMENT_REPO names as <owner>/<name>, since this public tree names it nowhere: most
+# with git, from the clone env.sh fetches under IOC_CLONES/deployment through the machine's
+# git credential helper, and a few its pull requests through the REST API, with the token
+# the same helper gives. A reader whose git cannot read that repository would see env.sh
+# refuse its clone, or each such row's read fail, a FAIL of replay-command that is no
+# verdict on the deliverable. So the repository is read first, with git ls-remote through
+# live_read, before the budget and before env.sh builds anything, and a run whose git
+# cannot read it stops here, naming the repository and the rows that read it, each row
+# whose command reads the clone or the repository's REST API, taken from claims.jsonl and
+# not from a list kept here, rather than printing a failure nobody should act on.
 private_repository_read() {
-    local name=theorem-labs/agent-infra file="$RUN_SCRATCH/private-repository" rows what
-    rows="$(claims 2>/dev/null | jq -r 'select((.command // "") | test("agent-infra")) | .id' 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
-    what="GitHub's answer to git ls-remote of theorem-labs/agent-infra, the private repository the rows ${rows:-of claims.jsonl} read,"
+    local name="$IOC_DEPLOYMENT_REPO" file="$RUN_SCRATCH/private-repository" rows what
+    rows="$(claims 2>/dev/null | jq -r 'select((.command // "") | test("IOC_CLONES/deployment|repos/\\$IOC_DEPLOYMENT_REPO/")) | .id' 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
+    what="GitHub's answer to git ls-remote of $name, the deployment repository IOC_DEPLOYMENT_REPO names, which the rows ${rows:-of claims.jsonl} read,"
     # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
     [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
     env_functions || cannot_run gate " --replay: env.sh, which holds the git that never prompts, did not load."
@@ -4662,8 +4683,8 @@ mode_replay() {
     fi
     # The scratch of the rows, each row's output and its own empty TMPDIR, is under the
     # run's scratch, which the EXIT trap removes however the run ends, and this function
-    # removes it at its end too. env.sh clones the three repositories and agent-infra at
-    # the commits sources.json pins, so nothing clones them here.
+    # removes it at its end too. env.sh clones the three repositories and the deployment
+    # repository at the commits sources.json pins, so nothing clones them here.
     # The private repository a row reads is read first, then the GitHub header files are
     # written and the budget is read, all before the live inputs below and before the
     # environment is prepared, so a run that cannot carry GitHub's reads refuses at once
@@ -5985,7 +6006,7 @@ report_unchecked_parts() {
 #   a dispatch:// reference and a web address: each names a source, which
 #     citation-dispatch and citation-published resolve;
 #   a file path, a path:line citation and a bare line range continuing one, as `:188-196`,
-#     and any token holding a slash, as theorem-labs/agent-infra#4173: each names a place
+#     and any token holding a slash, as cybermonklabs/legion#4283: each names a place
 #     in a tree, which citation-our-code and citation-project-code resolve;
 #   a token glued to a letter or an underscore, as R12, Q1, v14, gen_ai, INFRA-3134,
 #     8a4092b0 or check.sh:4761: it is a name, of a requirement, a question, a version, a
@@ -7380,14 +7401,16 @@ fixture_run() {
     # rows read its own repository alone, so it needs nothing env.sh prepares and skips it.
     # It runs in an environment of its own, as the header's "The fixture of --self-test"
     # states: FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is set, the fixture's own
-    # tree, judgement and head, the run's own record, and an IOC_CACHE of its own unless a
-    # case names one; no other variable of the caller's. The run is a child the caller waits
-    # on, under BOUND_RUN (the header's "Every child the gate waits on ends"): one that a
-    # signal or its bound ended holds the record bound_record writes for it.
+    # tree, judgement and head, FIXTURE_DEPLOYMENT_REPO as IOC_DEPLOYMENT_REPO unless it is
+    # empty, the run's own record, and an IOC_CACHE of its own unless a case names one; no
+    # other variable of the caller's. The run is a child the caller waits on, under
+    # BOUND_RUN (the header's "Every child the gate waits on ends"): one that a signal or its
+    # bound ended holds the record bound_record writes for it.
     local dir="$1" mode="$2" name carried=() run status
     for name in $FIXTURE_CARRIED $FIXTURE_INPUTS; do
         [ -n "${!name+set}" ] && carried+=("$name=${!name}")
     done
+    [ -z "$FIXTURE_DEPLOYMENT_REPO" ] || carried+=("IOC_DEPLOYMENT_REPO=$FIXTURE_DEPLOYMENT_REPO")
     run="$(mktemp -d "$dir/run.XXXXXX")" || return 1
     bounded_run "$BOUND_RUN" env -i "${carried[@]}" \
         IOC_ROOT="$dir/repo" \

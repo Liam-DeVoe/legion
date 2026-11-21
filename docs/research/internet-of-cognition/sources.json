@@ -34,8 +34,8 @@
   ],
   "private_repositories": [
     {
-      "name": "agent-infra",
-      "url": "https://github.com/theorem-labs/agent-infra",
+      "name": "deployment",
+      "repository_from": "IOC_DEPLOYMENT_REPO",
       "commits": [
         "99537cbcba7bb2894f8f3359a8f27c42d48cb26b",
         "bc2d618f6e5c2392c9a15a6105b917d9ea97d978",
@@ -45,7 +45,7 @@
       ],
       "paths": ["spend"],
       "read": "2026-11-19",
-      "comment": "The private repository rows of claims.jsonl read: most with git, and a few its pull requests through the REST API. env.sh clones it under IOC_CLONES/agent-infra blobless, with no checkout, at exactly these commits, and then fetches the blobs under paths at each of them, every file those rows read, through the machine's git credential helper, which in a Legion pod answers for the repository's path. a0ccd32ea96b24555efe7fe54cc8ce8963835a07 is the head of pull request 3176 as read on 2026-11-19, which GitHub serves by its id. --replay reads the repository with git ls-remote before it builds anything, and a machine whose git cannot read it cannot run --replay."
+      "comment": "The deployment repository, the private repository the deployment applies from, which rows of claims.jsonl read: most with git, and a few its pull requests through the REST API. This tree, which is public, does not name it: repository_from names the variable that holds it as <owner>/<name>, IOC_DEPLOYMENT_REPO, which --replay needs, and env.sh clones https://github.com/<owner>/<name> from that variable. env.sh clones it under IOC_CLONES/deployment blobless, with no checkout, at exactly these commits, and then fetches the blobs under paths at each of them, every file those rows read, through the machine's git credential helper, which in a Legion pod answers for the repository's path. a0ccd32ea96b24555efe7fe54cc8ce8963835a07 is the head of pull request 3176 as read on 2026-11-19, which GitHub serves by its id. --replay reads the repository with git ls-remote before it builds anything, and a machine whose git cannot read it cannot run --replay."
     }
   ],
   "python_environment": {
