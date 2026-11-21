@@ -2017,7 +2017,7 @@
   {
     "id": "change-31",
     "kind": "change",
-    "words": "give the open OPS backup issues to dana",
+    "words": "give the open OPS issues labelled backup to dana",
     "page": "/projects/OPS/issues",
     "mode": "ask",
     "level": "fast",
