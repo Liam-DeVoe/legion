@@ -26,7 +26,7 @@ else
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
-  declare -A seen_groups=() seen_accounts=() pattern_matched=()
+  declare -A seen_accounts=() pattern_matched=()
   accounts=0 agents=0
   while IFS="$US" read -r -u 3 ns name bound; do
     if system_namespace "$ns"; then
@@ -43,10 +43,7 @@ else
         pattern_matched[$pattern]=1
       fi
     done
-    if [ "$is_agent" = true ]; then
-      agents=$((agents + 1))
-      seen_groups[system:serviceaccounts]=1 seen_groups[system:serviceaccounts:$ns]=1 seen_groups[system:authenticated]=1
-    fi
+    [ "$is_agent" != true ] || agents=$((agents + 1))
     # The Google service account a ServiceAccount is bound to acts as a User of its email; the
     # operator's own is allowed, as k8s_subject says.
     if [ -n "$bound" ]; then
@@ -64,10 +61,12 @@ else
   while IFS= read -r bound; do
     printf 'serviceAccount:%s\x1f%s\x1fsystem:authenticated\n' "$bound" "$bound" >>"$WORK/principals.rec"
   done < <(printf '%s\n' ${seen_accounts[@]+"${!seen_accounts[@]}"} | sed '/^$/d' | sort)
-  while IFS= read -r group; do
-    printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
-  done < <(printf '%s\n' ${seen_groups[@]+"${!seen_groups[@]}"} | sed '/^$/d' | sort)
+  namespace_groups
   bound_subjects "$KUBE" || unknown "$step" "$BOUND_ERROR"
+  # Groups that are not Kubernetes' own, judged by where this cluster takes its groups from, and
+  # every binding of system:masters but the bootstrap one.
+  groups_verdict "$step" "${GROUPS_CONFIG["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+  masters_bindings "$step" "" "cluster:$CLUSTER"
   # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
   # and user by name, and escalate, bind, update or patch each role bound to a reviewed principal.
   named_rights
@@ -80,7 +79,7 @@ else
     RBAC_OK=true
     follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER"
     if unchanged; then
-      pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]} + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed"
+      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed"
     fi
   fi
 fi

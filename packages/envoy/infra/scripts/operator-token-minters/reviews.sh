@@ -156,12 +156,13 @@ custom_rights() {
   [ -z "$CUSTOM_ERROR" ]
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
-# to $WORK/principals.rec: each User subject of its ClusterRoleBindings and RoleBindings that
-# k8s_subject does not allow and that the file does not hold already, with system:authenticated
-# (system:anonymous with system:unauthenticated). A person's User subject, every Group subject and
-# every ServiceAccount subject are left out. Sets BOUND to how many it added, and BINDINGS_OK to
-# whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
-# server refused the list or answered no JSON.
+# to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject
+# does not allow, with system:authenticated (system:anonymous with system:unauthenticated), and each
+# Group subject that is one of Kubernetes' own (own_group), alone. A person's User subject, a Group
+# subject that is not Kubernetes' own (groups_verdict judges those) and system:masters
+# (masters_bindings) are left out, and so is a ServiceAccount subject. Sets BOUND to how many it
+# added, and BINDINGS_OK to whether $WORK/bindings.json holds this cluster's bindings; returns 1 with
+# BOUND_ERROR when the API server refused the list or answered no JSON.
 bound_subjects() {
   local kind name label
   local -A held=()
@@ -170,7 +171,7 @@ bound_subjects() {
     BOUND_ERROR="the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings, container.clusterRoleBindings.list and container.roleBindings.list on GKE): $(first_line "$WORK/bindings.err")"
     return 1
   fi
-  if ! jq -r "$JQ_REC"'[.items[]?.subjects[]? | select(.kind == "User") | [.kind, .name]] | unique[] | rec' \
+  if ! jq -r "$JQ_REC"'[.items[]?.subjects[]? | select(.kind == "User" or .kind == "Group") | [.kind, .name]] | unique[] | rec' \
     "$WORK/bindings.json" >"$WORK/bindings.rec" 2>"$WORK/bindings.err"; then
     BOUND_ERROR="the API server's list of bindings is not JSON: $(first_line "$WORK/bindings.err")"
     return 1
@@ -178,6 +179,14 @@ bound_subjects() {
   BINDINGS_OK=true
   while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
   while IFS="$US" read -r -u 7 kind name; do
+    if [ "$kind" = Group ]; then
+      own_group "$name" || continue
+      [ -z "${held[group:$name]:-}" ] || continue
+      held[group:$name]=1
+      printf 'group:%s\x1f\x1f%s\n' "$name" "$name" >>"$WORK/principals.rec"
+      BOUND=$((BOUND + 1))
+      continue
+    fi
     k8s_subject "$kind" "" "$name"
     [ "$SUBJECT_OK" != true ] || continue
     case "$SUBJECT" in system:serviceaccount:*) continue ;; esac
@@ -190,6 +199,69 @@ bound_subjects() {
     fi
     BOUND=$((BOUND + 1))
   done 7<"$WORK/bindings.rec"
+}
+# namespace_groups: Kubernetes' own groups, each reviewed alone and added to $WORK/principals.rec:
+# system:authenticated, system:serviceaccounts, and system:serviceaccounts:<namespace> for the
+# namespace of each reviewed ServiceAccount outside the system namespaces (a system namespace's
+# ServiceAccounts are seeds, reviewed with that group). A binding to one reaches every member
+# Kubernetes gives it, whatever Google Groups for RBAC says. Sets GROUPS_ADDED.
+namespace_groups() {
+  local group
+  GROUPS_ADDED=0
+  while IFS= read -r group; do
+    printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
+    GROUPS_ADDED=$((GROUPS_ADDED + 1))
+  done < <({
+    printf '%s\n' system:authenticated system:serviceaccounts
+    cut -d"$US" -f1 "$WORK/principals.rec" | sed -n 's/^system:serviceaccount:\([^:]*\):.*/system:serviceaccounts:\1/p'
+  } | sort -u)
+}
+# masters_bindings STEP SUFFIX RESOURCE: every binding of $WORK/bindings.json that names the group
+# system:masters is a finding, but the bootstrap cluster-admin ClusterRoleBinding (matched by its
+# name, its roleRef ClusterRole cluster-admin and its label kubernetes.io/bootstrapping=rbac-defaults):
+# its members come from client certificates, which no review can enumerate, so another binding hands
+# its role to every holder of one. The bootstrap binding's own grant is why reviews of system:masters
+# are always allowed (the witness), so this group is read from the bindings, not reviewed.
+masters_bindings() {
+  local id role
+  [ "$BINDINGS_OK" = true ] || return 0
+  while IFS="$US" read -r -u 7 id role; do
+    finding "group:system:masters" "bound by $id to $role$2, so every holder of a system:masters certificate takes it" \
+      "$role" "$3" "" "$id"
+  done 7< <(jq -r "$JQ_REC"'.items[]?
+      | select(any(.subjects[]?; .kind == "Group" and .name == "system:masters"))
+      | select((.kind == "ClusterRoleBinding" and .metadata.name == "cluster-admin" and .roleRef.kind == "ClusterRole"
+                and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults") | not)
+      | [(if .kind == "RoleBinding" then "RoleBinding \(.metadata.namespace)/\(.metadata.name)" else "ClusterRoleBinding \(.metadata.name)" end),
+         "\(.roleRef.kind) \(.roleRef.name)"] | rec' "$WORK/bindings.json")
+}
+# groups_verdict STEP MODE: the Group subjects of $WORK/bindings.json that are not Kubernetes' own
+# (none starts system:), judged by where the cluster takes its groups from. MODE `off`: Google Groups
+# for RBAC is off, so the API server gives no request such a group, and they are no finding. MODE
+# `on:<security group>`: Google Groups for RBAC is on, so each gives its Google group's members its
+# rights, which this check neither lists nor judges: UNKNOWN for the cluster, whether one is bound
+# now or not. MODE `own`: a cluster that is no GKE cluster takes its users and groups from its own
+# authenticator: UNKNOWN when one is bound. MODE `unknown:<why>`: UNKNOWN when one is bound.
+groups_verdict() {
+  local step="$1" mode="$2" groups=""
+  if [ "$BINDINGS_OK" = true ]; then
+    groups="$(jq -r '[.items[]?.subjects[]? | select(.kind == "Group" and ((.name | startswith("system:")) | not)) | .name] | unique | join(", ")' \
+      "$WORK/bindings.json")"
+  fi
+  case "$mode" in
+    off) ;;
+    on:*)
+      unknown "$step" "Google Groups for RBAC is on (security group ${mode#on:}), so a Group subject gives its Google group's members its rights, which this check neither lists nor judges (Group subjects bound now: ${groups:-none})"
+      ;;
+    own)
+      [ -z "$groups" ] ||
+        unknown "$step" "it takes its users and groups from its own authenticator, not Google, so the Group subjects bound here ($groups) name members this check cannot list"
+      ;;
+    unknown:*)
+      [ -z "$groups" ] ||
+        unknown "$step" "whether Google Groups for RBAC is on is unknown (${mode#unknown:}), so the Group subjects bound here ($groups) cannot be judged"
+      ;;
+  esac
 }
 # named_rights: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster whose
 # bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate groups

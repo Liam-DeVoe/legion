@@ -8,13 +8,15 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE: on the cluster KUBE names, no guarded pair's namespace may
-# exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the cluster's
-# system namespaces, and no binding subject, may hold a right of GUARD_RIGHTS (each a finding, its
-# right followed by WHERE). The reviews carry the witness. PASS when it recorded neither a finding
-# nor an UNKNOWN.
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS: on the cluster KUBE names, no guarded pair's
+# namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
+# cluster's system namespaces, none of Kubernetes' own groups, and no binding subject may hold a
+# right of GUARD_RIGHTS (each a finding, its right followed by WHERE); every binding of
+# system:masters but the bootstrap one is a finding, and its other Group subjects are judged by
+# GROUPS, where the cluster takes its groups from (groups_verdict). The reviews carry the witness.
+# PASS when it recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -49,7 +51,10 @@ read_other_cluster() {
     accounts=$((accounts + 1))
     sa_record "$ns" "$name" >>"$WORK/principals.rec"
   done 3<"$WORK/serviceaccounts.rec"
+  namespace_groups
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
+  groups_verdict "$cstep" "$groups_mode"
+  masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
   named_rights
   guard_rights="$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$NAMED_RIGHTS")"
@@ -60,7 +65,7 @@ read_other_cluster() {
   elif judge_reviews "$cstep" "$where" "$principal"; then
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
-      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, or hold an escalation right"
+      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, or hold an escalation right"
   fi
 }
 
@@ -90,7 +95,7 @@ else
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
-    read_other_cluster "$cstep" "cluster:$label" " on cluster $label"
+    read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
   done 5<"$WORK/clusters.tsv"
 fi
 
@@ -194,7 +199,8 @@ else
         unknown "$cstep" "$KUBE_ERROR"
         continue
       fi
-      read_other_cluster "$cstep" "cluster:$label" " on cluster $label"
+      groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
+      read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE"
     else
       here=$((here + 1))
       label="$POOL_PROJECT/$location/$id"
@@ -203,7 +209,7 @@ else
         unknown "$cstep" "$KUBE_ERROR"
         continue
       fi
-      read_other_cluster "$cstep" "membership:$label" " on fleet member $label"
+      read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
     fi
   done 6<"$WORK/fleet.rec"
   if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then

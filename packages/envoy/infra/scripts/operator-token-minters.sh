@@ -57,11 +57,11 @@
 #                     the principals being every ServiceAccount outside the system namespaces
 #                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
 #                     groups the API server gives it (system:serviceaccounts,
-#                     system:serviceaccounts:<namespace>, system:authenticated), the groups of the
-#                     agent namespaces (--agent-namespace) each alone, the Google service account
-#                     each is bound to (its iam.gke.io/gcp-service-account annotation) with
-#                     system:authenticated, the cluster's binding subjects (below), and anyone
-#                     unauthenticated (system:anonymous with system:unauthenticated), always. The
+#                     system:serviceaccounts:<namespace>, system:authenticated), Kubernetes' own
+#                     groups each alone (below), the Google service account each is bound to (its
+#                     iam.gke.io/gcp-service-account annotation) with system:authenticated, the
+#                     cluster's binding subjects (below), and anyone unauthenticated
+#                     (system:anonymous with system:unauthenticated), always. The
 #                     rights are the list below for each guarded pair, and create on each custom
 #                     resource the API server's discovery (`kubectl api-resources --namespaced
 #                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
@@ -164,29 +164,36 @@
 #                     administrator's, released only when a person approves and never decided by a
 #                     model judge. No such secret is a finding too.
 #
-# Binding subjects. The Google identities a cluster's RBAC names are principals of that cluster
-# too: GKE authenticates a Google account as a User of its email, so `grade-ci@<p>.iam.
-# gserviceaccount.com` bound to cluster-admin on a member of the pool's fleet can make the
-# operator's namespace and ServiceAccount there. On the operator's cluster and on each other
-# cluster of the pool, every User subject of its ClusterRoleBindings and RoleBindings
-# (`kubectl get clusterrolebindings,rolebindings -A`) that is not a person is reviewed with
-# system:authenticated (system:anonymous with system:unauthenticated): a Google service account,
-# or any User the RBAC rule below does not allow, can be a finding. A person's email User subject
-# is never reviewed, so never a finding, as iam_verdict never makes a `user:` member one and the
-# accepted list names no person. A ServiceAccount subject is left out: the cluster's own
-# ServiceAccounts are reviewed with their groups already, and one named but not made does not exist
-# to act. A refused list of bindings is UNKNOWN, naming the permission.
+# Binding subjects. The identities a cluster's RBAC names are principals of that cluster too: GKE
+# authenticates a Google account as a User of its email, so `grade-ci@<p>.iam.gserviceaccount.com`
+# bound to cluster-admin on a member of the pool's fleet can make the operator's namespace and
+# ServiceAccount there. On the operator's cluster and on each other cluster of the pool, every User
+# subject of its ClusterRoleBindings and RoleBindings (`kubectl get clusterrolebindings,rolebindings
+# -A`) that is not a person is reviewed with system:authenticated (system:anonymous with
+# system:unauthenticated). A person is a User that is an email outside gserviceaccount.com; a Google
+# service account, and a User that is no email (a bare name such as deployer-bot, a principal://
+# name), are reviewed and can be findings. A person's User subject is never reviewed, so never a
+# finding, as iam_verdict never makes a `user:` member one and the accepted list names no person.
+# A refused list of bindings is UNKNOWN, naming the permission.
 #
-# Group subjects. A Group other than Kubernetes' own system groups is never reviewed, so never a
-# finding, in the code step as in the live steps. That holds while GKE's Google Groups for RBAC is
-# off on the cluster: the API server then gives no request a Google group, so such a Group names no
-# one who can act. The system groups that hold ServiceAccounts or anyone (system:serviceaccounts,
-# system:serviceaccounts:<namespace>, system:authenticated, system:unauthenticated) are reviewed,
-# each alone. When Google Groups for RBAC is turned on (a cluster's --security-group), a Group
-# subject naming a Google group's email gives its members its rights. Then change this step: list
-# each such group's members (`gcloud identity groups memberships list --group-email`, through
-# nested groups), review each member that is not a person as a User of its email, and make an
-# unreadable group UNKNOWN, as Policy Analyzer's expanded groups are judged by their members.
+# Group and User subjects. Kubernetes' own groups take their members from Kubernetes, whatever
+# Google Groups for RBAC says: system:authenticated, system:serviceaccounts and
+# system:serviceaccounts:<namespace> (for each namespace of a reviewed ServiceAccount, and each one
+# a binding names) are reviewed alone on every cluster, and a right one holds is a finding, since it
+# reaches every member. system:masters takes its members from client certificates, which no review
+# can enumerate, and every review of it is allowed by the bootstrap cluster-admin ClusterRoleBinding
+# (matched by its name, its roleRef ClusterRole cluster-admin and its label
+# kubernetes.io/bootstrapping=rbac-defaults): every other binding that names it is a finding, and so
+# is a render's. Any other Group is judged by where the cluster takes its groups from: on a GKE
+# cluster with Google Groups for RBAC off (authenticatorGroupsConfig, read from the cluster list or
+# `gcloud container clusters describe`) the API server gives no request such a group, so it is no
+# finding; with it on, the cluster is UNKNOWN, a Group subject bound or not, since a Google group's
+# members are neither listed nor judged here; on a fleet member that is no GKE cluster, read through
+# the Connect gateway, its groups come from its own authenticator, and a Group subject bound there is
+# UNKNOWN; where whether it is on cannot be read, a Group subject bound there is UNKNOWN. The code
+# step reads no cluster's setting and judges another Group as off; the live step of the cluster says
+# UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
+# allowed.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; Google's own service agents

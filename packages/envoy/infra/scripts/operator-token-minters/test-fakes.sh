@@ -69,6 +69,18 @@ case "${words[*]}" in
     printf 'cluster: %s\n' "$cluster" >"$KUBECONFIG"
     echo "Fetching cluster endpoint and auth data." >&2
     ;;
+  "container clusters describe "*)
+    # A cluster of the project's own list, or a GKE member of the fleet (its `groups`, Google Groups
+    # for RBAC, from fleet.json), as GKE describes it: authenticatorGroupsConfig when it is set.
+    cluster="${words[3]}"
+    [ ! -e "$world/refuse-describe-$cluster" ] ||
+      refuse container.clusters.describe "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."
+    jq -e --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" --slurpfile fleet "$world/fleet.json" '
+      first((if $p == $project then .[] | select(.name == $c and .location == $l) else empty end),
+            ($fleet[0].memberships[] | select(.gke == {project: $p, location: $l, cluster: $c}) | {name: $c, location: $l} + (if .groups then {authenticatorGroupsConfig: .groups} else {} end)))
+      // error("no such cluster")' "$world/clusters.json" ||
+      { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
+    ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
     id="${words[4]}"
@@ -205,7 +217,8 @@ case "${args[*]}" in
     # The built-in cluster-admin binding, and one binding of each grant, naming its subject.
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
     jq '{apiVersion: "v1", kind: "List", items: (
-      [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding", metadata: {name: "cluster-admin"},
+      [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
+        metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
         subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]}]
       + [to_entries[] | .key as $i | .value as $g | {

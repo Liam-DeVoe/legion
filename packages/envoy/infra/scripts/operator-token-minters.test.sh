@@ -76,8 +76,9 @@
 #        incomplete each exit 2 with UNKNOWN; --pool-project naming another pool cannot read clean;
 #   (s)  a binding subject on a fleet member: grade-ci, a Google service account, bound to
 #        cluster-admin on a GKE member in another project exits 1 naming grade-ci and create
-#        namespaces; a person's email bound the same way, and a Group bound the same way, exit 0;
-#        a refused list of bindings exits 2 with UNKNOWN;
+#        namespaces; a person's email bound the same way, and a Group bound the same way while the
+#        member has Google Groups for RBAC off, exit 0; a refused list of bindings exits 2 with
+#        UNKNOWN;
 #   (t)  grade-ci holding roles/container.admin on that member's project exits 1, since GKE
 #        authorizes IAM beside RBAC;
 #   (u)  a binding subject on the operator's own cluster: grade-ci bound to create the operator's
@@ -103,8 +104,9 @@
 #   (ad) container.replicationControllers.create and update and container.nodes.proxy, each held on
 #        the project by an agent's Google service account, exit 1 (their RBAC rights are row b's);
 #   (ae) a CI account holding roles/gkehub.admin on the pool project exits 1;
-#   (af) a render binding the Group cluster-admins@example.com to cluster-admin exits 0: a Group
-#        other than the system ones is no finding in the code step, as in the live steps;
+#   (af) a render binding the Group cluster-admins@example.com to cluster-admin exits 0 while the
+#        operator's cluster has Google Groups for RBAC off: a Group other than Kubernetes' own is
+#        judged by where the cluster takes its groups from, as in the live steps;
 #   (ag) an agent's Google service account holding roles/iam.serviceAccountTokenCreator on a holder
 #        of roles/container.admin is a finding naming the chain, through one service account and
 #        through two;
@@ -146,7 +148,18 @@
 #        escalation permissions, nodes.proxy and the IAM writers) exits 1;
 #   (au) a holder of setIamPolicy on the folder above that member's project exits 1;
 #   (av) grade-ci holding roles/resourcemanager.projectIamAdmin, or a role with
-#        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1.
+#        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1;
+#   (aw) a User that is no email is reviewed: deployer-bot bound to cluster-admin on a non-GKE fleet
+#        member, a principal:// User allowed to create pods in envoy-operator, and a render binding
+#        deployer-bot to cluster-admin each exit 1 naming it;
+#   (ax) Kubernetes' own groups are findings: system:authenticated or system:serviceaccounts:apps
+#        allowed to create pods in envoy-operator on another cluster, system:serviceaccounts on the
+#        operator's, a live binding of system:masters other than the bootstrap one, and a render
+#        binding system:masters to cluster-admin each exit 1;
+#   (ay) any other Group reads UNKNOWN where the cluster takes its groups from elsewhere: the Group
+#        ci-deployers bound to cluster-admin on a non-GKE fleet member, a Group on another cluster
+#        or a GKE fleet member with Google Groups for RBAC on, a GKE fleet member whose describe is
+#        refused, and the operator's cluster with Google Groups for RBAC on and no Group bound.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -1091,7 +1104,7 @@ if row s; then
   run
   want_status 0 "a Group bound to cluster-admin on a fleet member"
   [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a Group bound to cluster-admin on a fleet member: a finding"
-  passed "(s) a Group bound to cluster-admin on a fleet member is no finding"
+  passed "(s) a Group bound to cluster-admin on a fleet member with Google Groups for RBAC off is no finding"
 
   base_world
   grade_member
@@ -1346,7 +1359,7 @@ if row af; then
   run
   want_status 0 "a render binding the Group cluster-admins@example.com to cluster-admin"
   [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a render binding the Group cluster-admins@example.com to cluster-admin: a finding"
-  passed "(af) a render binding a Group other than the system ones to cluster-admin exits 0, as the live steps judge it"
+  passed "(af) a render binding a Group other than Kubernetes' own to cluster-admin exits 0 while Google Groups for RBAC is off, as the live steps judge it"
 fi
 
 # --- (ag) IAM impersonation: who can become a holder holds what it holds. ---
@@ -1715,6 +1728,128 @@ if row au; then
   want_line "FINDING serviceAccount:$grade_ci: resourcemanager.folders.setIamPolicy on //cloudresourcemanager.googleapis.com/folders/200 through roles/resourcemanager.folderIamAdmin, granted at //cloudresourcemanager.googleapis.com/folders/200" \
     "grade-ci holding roles/resourcemanager.folderIamAdmin on the folder above a fleet member's project"
   passed "(au) a holder of setIamPolicy on the folder above a fleet member's project exits 1"
+fi
+
+# --- (aw) A User that is no email is reviewed, not taken for a person. ---
+principal_user="principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/ci/subject/runner"
+user_row() {
+  local want
+  base_world
+  case "$1" in
+    member)
+      edge_member
+      cluster_admin edge-cluster "$(user_subject deployer-bot)"
+      want="FINDING user:deployer-bot: create namespaces cluster-wide on fleet member $project/global/edge"
+      ;;
+    principal)
+      subject_grant operator-cluster "$(user_subject "$principal_user")" create "" pods "" envoy-operator ""
+      want="FINDING user:$principal_user: create pods in envoy-operator"
+      ;;
+    code)
+      refuse_live
+      edit "$world/render.json" '.items += [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+        metadata: {name: "bot", namespace: "envoy-operator"},
+        roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
+        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "User", name: "deployer-bot"}]}]'
+      want="FINDING user:deployer-bot: create serviceaccounts/token envoy-operator in envoy-operator, declared by RoleBinding envoy-operator/bot"
+      ;;
+  esac
+  run
+  want_status 1 "a User that is no email ($1)"
+  want_line "$want" "a User that is no email ($1)"
+}
+if row aw; then
+  each user_row member principal code
+  passed "(aw) a User that is no email (deployer-bot on a non-GKE fleet member, a principal:// name, a render's deployer-bot) is reviewed and exits 1 naming it"
+fi
+
+# --- (ax) Kubernetes' own groups, whatever Google Groups for RBAC says. ---
+own_group_row() {
+  local want planted
+  base_world
+  case "$1" in
+    authenticated)
+      add_cluster other-cluster us-east1
+      subject_grant other-cluster "$(group_subject system:authenticated)" create "" pods "" envoy-operator ""
+      want="FINDING group:system:authenticated: create pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster $project/us-east1/other-cluster"
+      ;;
+    namespace)
+      add_cluster other-cluster us-east1
+      subject_grant other-cluster "$(group_subject system:serviceaccounts:apps)" create "" pods "" envoy-operator ""
+      want="FINDING group:system:serviceaccounts:apps: create pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster $project/us-east1/other-cluster"
+      ;;
+    serviceaccounts)
+      subject_grant operator-cluster "$(group_subject system:serviceaccounts)" create "" pods "" envoy-operator ""
+      want="FINDING group:system:serviceaccounts: create pods in envoy-operator"
+      ;;
+    masters)
+      # The fake binds each grant by RoleBinding planted-<its index> to ClusterRole planted-<its index>.
+      planted="planted-$(jq length "$world/clusters/operator-cluster/grants.json")"
+      subject_grant operator-cluster "$(group_subject system:masters)" get "" configmaps "" legion ""
+      want="FINDING group:system:masters: bound by RoleBinding legion/$planted to ClusterRole $planted, so every holder of a system:masters certificate takes it"
+      ;;
+    masters-code)
+      refuse_live
+      edit "$world/render.json" '.items += [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+        metadata: {name: "masters", namespace: "envoy-operator"},
+        roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
+        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "system:masters"}]}]'
+      want="FINDING group:system:masters: create serviceaccounts/token envoy-operator in envoy-operator, declared by RoleBinding envoy-operator/masters"
+      ;;
+  esac
+  run
+  want_status 1 "Kubernetes' own group ($1)"
+  want_line "$want" "Kubernetes' own group ($1)"
+}
+if row ax; then
+  each own_group_row authenticated namespace serviceaccounts masters masters-code
+  passed "(ax) system:authenticated, system:serviceaccounts, system:serviceaccounts:apps, a non-bootstrap live binding of system:masters, and a render's system:masters binding each exit 1"
+fi
+
+# --- (ay) Any other Group, judged by where the cluster takes its groups from. ---
+readonly security_group=gke-security-groups@example.com
+other_group_row() {
+  local want
+  base_world
+  case "$1" in
+    member)
+      edge_member
+      cluster_admin edge-cluster "$(group_subject ci-deployers)"
+      want="UNKNOWN live: Workload Identity on fleet member edge: it takes its users and groups from its own authenticator, not Google, so the Group subjects bound here (ci-deployers) name members this check cannot list"
+      ;;
+    google-on)
+      add_cluster other-cluster us-east1
+      edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {authenticatorGroupsConfig: {enabled: true, securityGroup: $g}} else . end)' \
+        --arg g "$security_group"
+      cluster_admin other-cluster "$(group_subject devs@example.com)"
+      want="UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: Google Groups for RBAC is on (security group $security_group), so a Group subject gives its Google group's members its rights, which this check neither lists nor judges (Group subjects bound now: devs@example.com)"
+      ;;
+    google-on-member)
+      grade_member
+      edit "$world/fleet.json" '.memberships |= map(if .id == "grade" then . + {groups: {enabled: true, securityGroup: $g}} else . end)' \
+        --arg g "$security_group"
+      cluster_admin grade-cluster "$(group_subject devs@example.com)"
+      want="UNKNOWN $grade_step: Google Groups for RBAC is on (security group $security_group), so a Group subject gives its Google group's members its rights, which this check neither lists nor judges (Group subjects bound now: devs@example.com)"
+      ;;
+    describe-refused)
+      grade_member
+      : >"$world/refuse-describe-grade-cluster"
+      cluster_admin grade-cluster "$(group_subject devs@example.com)"
+      want="UNKNOWN $grade_step: whether Google Groups for RBAC is on is unknown (gcloud container clusters describe grade-cluster was refused (it needs container.clusters.get)"
+      ;;
+    google-on-operator)
+      edit "$world/clusters.json" 'map(if .name == "operator-cluster" then . + {authenticatorGroupsConfig: {enabled: true, securityGroup: $g}} else . end)' \
+        --arg g "$security_group"
+      want="UNKNOWN live: RBAC on operator-cluster: Google Groups for RBAC is on (security group $security_group), so a Group subject gives its Google group's members its rights, which this check neither lists nor judges (Group subjects bound now: none)"
+      ;;
+  esac
+  run
+  want_status 2 "another Group ($1)"
+  want_text "$want" "another Group ($1)"
+}
+if row ay; then
+  each other_group_row member google-on google-on-member describe-refused google-on-operator
+  passed "(ay) a Group other than Kubernetes' own reads UNKNOWN on a non-GKE member, where Google Groups for RBAC is on, where whether it is on is unknown, and on the operator's cluster with it on"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

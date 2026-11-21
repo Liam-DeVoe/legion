@@ -11,8 +11,9 @@
 step="live: clusters"
 CLUSTERS_LISTED=false CLUSTERS_COMPLETE=false OPERATOR_FOUND=false OPERATOR_LOCATION="$LOCATION"
 # PROJECT_CLUSTERS: <project>/<location>/<name> of each cluster the project's list holds, which the
-# Workload Identity step reads, so its fleet part does not read one twice.
-declare -A PROJECT_CLUSTERS=()
+# Workload Identity step reads, so its fleet part does not read one twice. GROUPS_CONFIG: the same
+# key's Google Groups for RBAC, `on:<security group>` or `off` (groups_verdict).
+declare -A PROJECT_CLUSTERS=() GROUPS_CONFIG=()
 mark
 if [ -z "$PROJECT" ]; then
   unknown "$step" "no --project: the project that runs the operator's cluster is not named"
@@ -28,9 +29,12 @@ elif [ ! -s "$WORK/clusters.tsv" ]; then
   unknown "$step" "the project lists no cluster, so the operator's cluster cannot be read"
 else
   CLUSTERS_LISTED=true
-  while IFS=$'\t' read -r name location; do
+  while IFS=$'\t' read -r name location groups; do
     PROJECT_CLUSTERS["$PROJECT/$location/$name"]=1
-  done <"$WORK/clusters.tsv"
+    GROUPS_CONFIG["$PROJECT/$location/$name"]="$groups"
+  done < <(jq -r '.[] | [.name, .location,
+      (if .authenticatorGroupsConfig.enabled == true then "on:" + (.authenticatorGroupsConfig.securityGroup // "") else "off" end)] | @tsv' \
+    "$WORK/clusters.json")
   clusters_text="$(awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$WORK/clusters.tsv")"
   same_name="$(awk -F'\t' -v c="$CLUSTER" '$1 == c { n++; l = l (n > 1 ? ", " : "") $2 } END { print n + 0 "\t" l }' "$WORK/clusters.tsv")"
   if [ -n "$LOCATION" ]; then
@@ -69,6 +73,20 @@ kube_for() {
     KUBE_ERROR="gcloud container clusters get-credentials $1 --location $2 --project $3 was refused (it needs container.clusters.get): $(first_line "$WORK/credentials.err")"
     return 1
   fi
+}
+# groups_config_of NAME LOCATION PROJECT: sets GROUPS_MODE, the GKE cluster's Google Groups for RBAC
+# as GROUPS_CONFIG holds it: from a cluster list, or else `gcloud container clusters describe`, whose
+# refusal is `unknown:<why>`.
+groups_config_of() {
+  GROUPS_MODE="${GROUPS_CONFIG["$3/$2/$1"]:-}"
+  [ -z "$GROUPS_MODE" ] || return 0
+  if ! gcloud container clusters describe "$1" --location="$2" --project="$3" --format=json --quiet >"$WORK/describe.json" 2>"$WORK/describe.err"; then
+    GROUPS_MODE="unknown:gcloud container clusters describe $1 was refused (it needs container.clusters.get): $(first_line "$WORK/describe.err")"
+  elif ! GROUPS_MODE="$(jq -r 'if .authenticatorGroupsConfig.enabled == true then "on:" + (.authenticatorGroupsConfig.securityGroup // "") else "off" end' \
+    "$WORK/describe.json" 2>"$WORK/describe.err")"; then
+    GROUPS_MODE="unknown:gcloud container clusters describe $1 answered no JSON: $(first_line "$WORK/describe.err")"
+  fi
+  GROUPS_CONFIG["$3/$2/$1"]="$GROUPS_MODE"
 }
 # kube_for_membership ID LOCATION: the same for a member of the pool project's fleet that is no GKE
 # cluster, through the Connect gateway.
