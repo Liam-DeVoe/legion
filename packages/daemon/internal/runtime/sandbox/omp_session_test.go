@@ -131,13 +131,12 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 	}
 }
 
-// A claim that records a session id and no file is resumed by that id as `--resume=<id>`, one
-// argv word (agentArgv), in a pod that trades as in one that trades nothing. An id of a shape
-// sessionIDFault names, such as one that begins with `-`, passes in that word as any other does,
-// so a pod that trades either starts it as a pod that trades nothing does, or refuses it naming
-// the session id the claim recorded as the id's source. The refusal never names a file: such a
-// claim records none, and its words "no `--resume <id>` can pass it" describe the two-word form
-// this resume does not use.
+// A claim that records a session id and no file is resumed by that id: a pod that trades and one
+// that trades nothing both start the resume with the one word `--resume=<id>` (agentArgv), and
+// neither refuses it, an id that begins with `-` included. Only the two-word `--resume <id>` is
+// refused for an id of a shape sessionIDFault names
+// (TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed), and such a claim records no file a
+// refusal could name.
 func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *testing.T) {
 	const id = "-" + resumeSessionID
 	untraded := newRig(t, nil, withResumesBySession())
@@ -155,10 +154,7 @@ func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *tes
 	first = g.spawn(workerSpec(t))
 	resumed, err := g.r.Resume(g.ctx, &first, spec)
 	if err != nil {
-		if msg := err.Error(); strings.Contains(msg, "the name of") || !strings.Contains(msg, "the session id its claim recorded") {
-			t.Fatalf("a pod that trades refuses the resume of the recorded session %q naming a file the claim does not record, where it must name the session id the claim recorded: %v", id, err)
-		}
-		return
+		t.Fatalf("a pod that trades refuses the resume of the recorded session %q, which it must start as `--resume=%s`: %v", id, id, err)
 	}
 	if got, want := sessionWords(lastStart(t, g, workerToken).Argv), []string{"--resume=" + id}; !slices.Equal(got, want) {
 		t.Errorf("a pod that trades names its session as %q, want %q", got, want)
