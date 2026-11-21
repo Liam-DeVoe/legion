@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1030,6 +1031,34 @@ func TestEndpointURLKeepsAPath(t *testing.T) {
 	}
 }
 
+// The nats_urls lists the unquoted-item and mixing rules leave alone load: a quoted item and a
+// block list carrying a user name (neither is split at a comma), an all-ws and an all-nats list, and
+// the quoted password a withNATSPassword row writes.
+func TestNatsURLsThatLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       []string
+	}{
+		{"a quoted item with a user name", `nats_urls: ["nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"]` + "\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"a block list with a user name", "nats_urls:\n  - nats://127.0.0.1:4222\n  - nats://madeUpNatsUser@127.0.0.1:4223\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"an all-ws list", "nats_urls: [ws://127.0.0.1:8080, wss://127.0.0.1:8443]\n", []string{"ws://127.0.0.1:8080", "wss://127.0.0.1:8443"}},
+		{"an all-nats list", "nats_urls: [nats://127.0.0.1:4222, tls://127.0.0.1:4223]\n", []string{"nats://127.0.0.1:4222", "tls://127.0.0.1:4223"}},
+		{"a quoted password", withNATSPassword("madeUpNatsPassword", "127.0.0.1:4222"), []string{"nats://legion:madeUpNatsPassword" + "@127.0.0.1:4222"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n", tc.line, 1)), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !slices.Equal(cfg.NatsURLs, tc.want) {
+				t.Fatalf("NatsURLs = %q, want %q", cfg.NatsURLs, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1167,13 +1196,34 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			// An unquoted flow list splits a credential at its comma into two entries before any
-			// entry holds a comma: the made-up token's head becomes the first entry's host and its
-			// tail the second entry's user name under a scheme no NATS server is written with. The
-			// list's tail rule refuses the second entry by position, so boot never dials the head.
+			// entry holds a comma, the made-up token's head the first entry's host. The second,
+			// unquoted and carrying a user name, is refused by position, whatever its scheme.
 			name: "nats_urls unquoted list that splits a credential at its comma",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://madeUpNatsTokenHead,nats://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		{
+			name: "nats_urls unquoted list that splits a credential at its comma, a foreign scheme after it",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				"nats_urls: [nats://madeUpNatsTokenHead,x://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		{
+			// Quoted, the same two entries pass the unquoted-item rule; the list's tail rule still
+			// refuses the second for its scheme.
+			name: "nats_urls quoted list whose later entry carries a user name and a foreign scheme",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://madeUpNatsTokenHead", "x://madeUpNatsTokenTail@127.0.0.1:4222"]`+"\n", 1),
 			want: `nats_urls entry 2 cannot be read: it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; in a nats or tls list such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// The NATS client refuses a list that mixes websocket and other servers at boot; the
+			// loader refuses it first, by position.
+			name: "nats_urls list that mixes nats and ws",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", "ws://127.0.0.1:8080"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind`,
 		},
 		{
 			// A websocket entry whose path stops parsing once decoded, as the NATS client's handshake

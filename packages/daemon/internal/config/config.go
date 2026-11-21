@@ -690,20 +690,32 @@ func namesKey(value *yaml.Node, name string) bool {
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once. An entry the NATS client would read
 // other than as written once the entries are joined with commas is refused too, with natsurl's
 // reason (natsurl.EntryRefusal: a comma, an "@" after its host, a websocket path that stops parsing
-// once decoded), and so is a list natsurl.Check refuses (its tail rule: a later entry with a user
-// name and none of the schemes nats, tls, ws and wss, which is what a comma in a credential leaves
-// when an unquoted YAML list splits the credential into two entries before any entry holds a
-// comma). Every refusal names its entry by its position alone (`nats_urls entry 2`), never by any
-// of its text: a credential holding a "/", "?", "#", space or comma ends url.Parse's authority
-// early, so the entry does not parse, or parses with a part of the credential as its host, and
-// nothing that reads a URL finds such a credential to cut; a query can hold a token too.
+// once decoded), and so are:
+//
+//   - a plain (unquoted) item of a flow list, `[...]`, that carries a user name or password: YAML
+//     splits a plain flow item at every comma, so a credential holding a comma, `,nats://` among
+//     them, reaches here as two entries that each parse, and the daemon would dial the
+//     credential's head as a host and print it; a block list or a quoted item is never split;
+//   - a list that mixes websocket (ws, wss) and other schemes, which the NATS client refuses at
+//     boot, so `legion config check` and boot refuse the same list;
+//   - a list natsurl.Check refuses (its tail rule: a later entry with a user name and none of the
+//     schemes nats, tls, ws and wss, what a comma in a quoted or block credential leaves).
+//
+// Every refusal names its entry by its position alone (`nats_urls entry 2`), never by any of its
+// text: a credential holding a "/", "?", "#", space or comma ends url.Parse's authority early, so
+// the entry does not parse, or parses with a part of the credential as its host, and nothing that
+// reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
 		return read, err
 	}
+	flow := value.Kind == yaml.SequenceNode && value.Style&yaml.FlowStyle != 0
 	urls := make([]string, 0, len(read))
 	for index, raw := range read {
+		if flow && value.Content[index].Style == 0 && strings.Contains(raw, "@") {
+			return nil, fmt.Errorf("%s entry %d carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list", key, index+1)
+		}
 		// A comma first, so an entry that lists two servers, or a credential holding a comma, gets
 		// the comma's reason, which says how to write it, whatever else of it would not parse.
 		if strings.Contains(raw, ",") {
@@ -719,11 +731,23 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 			urls = append(urls, raw)
 		}
 	}
+	for index := 1; index < len(read); index++ {
+		if websocketURL(read[index]) != websocketURL(read[0]) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind", key, index+1)
+		}
+	}
 	// readStrings refuses an empty entry, so Check's position is the entry's in the file.
 	if _, position, why := natsurl.Check(read); why != "" {
 		return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, position, why)
 	}
 	return urls, nil
+}
+
+// websocketURL reports whether raw, a nats_urls entry endpointURL accepted, names ws or wss, as the
+// NATS client reads a server's scheme (isWebsocketScheme).
+func websocketURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (strings.EqualFold(parsed.Scheme, "ws") || strings.EqualFold(parsed.Scheme, "wss"))
 }
 
 // dispatchBase is `dispatch_url`: a base URL, never its clients' `/mcp` endpoint, which the clients
