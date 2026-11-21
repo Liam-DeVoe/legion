@@ -233,8 +233,10 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 //
 // A head that moves off the one a merge forward was asked of is that merge landing, in whatever
 // phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
-// head as the merge's, and the phase's worker and, past the review, the reviewer are told. It is
-// recorded before the phase's own handling below, which goes on as it would for any move.
+// head as the merge's, and the phase's worker and, past the review, the reviewer are told. Past
+// the review, any other move of the head asks the round's recorded reviewer for its verdict at the
+// new head too (askVerdict), since the head it left is the one legion-verdict stands on (spec R5).
+// Both are recorded before the phase's own handling below, which goes on as it would for any move.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -272,8 +274,14 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		return intake.Result{}, err
 	}
 	if moved {
-		if err := e.mergeForwardLanded(ctx, tx, *issue, pr); err != nil {
+		landed, err := e.mergeForwardLanded(ctx, tx, *issue, pr)
+		if err != nil {
 			return intake.Result{}, err
+		}
+		if !landed {
+			if err := e.askVerdict(ctx, tx, *issue, pr, prior.HeadSHA); err != nil {
+				return intake.Result{}, err
+			}
 		}
 	}
 	switch issue.Phase {

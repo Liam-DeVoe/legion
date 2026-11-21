@@ -1745,8 +1745,9 @@ const (
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
-	// MergeForwardReview asks the reviewer to read the merge that landed on an issue standing
-	// past its review, and to approve the new head or request changes.
+	// MergeForwardReview asks the round's recorded reviewer of an issue standing past its review
+	// for its verdict at the head a push left there: a merge forward's landing, or any other push
+	// (workflow's askVerdict), whose review row names no Why.
 	MergeForwardReview MergeForwardStep = "review"
 )
 
@@ -1774,7 +1775,11 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
 // worker of the phase the issue stays in to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
-// the reviewer of an issue past its review to read the merge (MergeForwardReview).
+// the reviewer of an issue past its review for its verdict at the new head (MergeForwardReview).
+// The review is also the ask of any other push past review, from the head it left (Head) to the
+// head it made (Landed), with no Why (workflow's askVerdict): the verdict it asks for is the same
+// whatever moved the head, and a row of another kind or with another key is one the release before
+// it cannot read.
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
 // to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
@@ -1838,14 +1843,17 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
 // conflict and `git diff --stat` against the merge's first parent for the files the base brought
 // in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
-// pull request or put it in the merge queue at the new head only once the reviewer's approval of
-// that head is on the pull request: in merging the landing asks the reviewer for that review, and
-// the merger's task says the same (workflow's task). The review names both heads and the phase,
-// tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
-// its review's Legion footer naming that head, or to request changes, with no handoff and no
-// completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (the implementer in retro, the merger in merging; the
-// architect alone in accepting).
+// pull request or put it in the merge queue at the new head only once legion-verdict at that head
+// is success: in merging the landing asks the reviewer for its verdict there, from which the
+// daemon writes that check, and the merger's task says the same (workflow's task). The review
+// names both heads and the phase, and what moved the head: the merge of the base forward where the
+// row names a Why, any other push where it names none. It tells the reviewer to read what changed
+// the same way, and to send its verdict on the new head with review_verdict: approve or changes,
+// the new head as the commit, and testedCommit, the commit of the tester's pass, only where no
+// commit since that pass changes code that runs (spec R4, R5). It posts its findings as a COMMENT
+// review, writes no handoff and makes no completion, and then tells what it decided, on their role
+// topics, to the architect and to the worker of the phase the issue stands in (the implementer in
+// retro, the merger in merging; the architect alone in accepting).
 func (p MergeForwardMessage) Message(issue, repo string) string {
 	pull := fmt.Sprintf("pull request %s#%d", repo, p.PullRequest)
 	switch p.Step {
@@ -1876,7 +1884,7 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 	case MergeForwardLanded:
 		merge := ""
 		if p.Role == claim.RoleMerger && p.Phase == phase.Merging {
-			merge = fmt.Sprintf(" Merge the pull request or put it in the merge queue at head %s only once the reviewer's approval of that head is on the pull request.", p.Landed)
+			merge = fmt.Sprintf(" Merge the pull request or put it in the merge queue at head %s only once legion-verdict at that head is success.", p.Landed)
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s. The old head is %s, and the new head is %s."+
 			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
@@ -1889,16 +1897,23 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 		case phase.Merging:
 			tell = "the architect and the merger, each on its own role topic"
 		}
-		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
-			" Read what the merge changed since the old head: %s"+
-			" Then approve the new head %s by its SHA, with the Legion footer of your review naming that head, or request changes."+
-			" Write no handoff and make no completion for this review. Then tell %s what you decided.",
-			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
+		moved := fmt.Sprintf("a push moved the head of %s", pull)
+		read := "Read what changed since the old head: "
+		if p.Why != "" {
+			moved = fmt.Sprintf("the merge of %s forward landed on %s", p.Base, pull)
+			read = "Read what the merge changed since the old head: "
+		}
+		return fmt.Sprintf("%s: %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
+			" %s%s"+
+			" Then send your verdict on the new head with review_verdict: verdict approve or changes, commit %s,"+
+			" and testedCommit set to the commit of the tester's pass only where no commit since that pass changes code that runs."+
+			" Post your findings as a COMMENT review. Write no handoff and make no completion for this verdict. Then tell %s, what you decided.",
+			issue, moved, p.Phase, p.Head, p.Landed, read, p.readMerge(), p.Landed, tell)
 	}
 }
 
-// readMerge is how the landed and the review tell their role to read what a landed merge forward
-// changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
+// readMerge is how the landed and the review tell their role to read what changed since the old
+// head (Message): `git diff` from the old head to the new, and, for a merge of the base,
 // `git show --remerge-diff` and `git diff --stat` against the merge's first parent.
 func (p MergeForwardMessage) readMerge() string {
 	return fmt.Sprintf("run `git diff %s %s`."+

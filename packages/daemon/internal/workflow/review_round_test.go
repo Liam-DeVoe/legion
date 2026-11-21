@@ -102,7 +102,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, _, _ := reviewRoundOne(t)
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1)." +
-					" Tester's verdict: pass. Pull request: #42."
+					" Handoff commit: " + headOne + ". Tester's verdict: pass. Pull request: #42."
 			},
 		},
 		{

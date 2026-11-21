@@ -134,6 +134,34 @@ func TestDecideIsR4sTable(t *testing.T) {
 	}
 }
 
+// PassCounts is the one rule of whether a tester's pass counts at a head, which Decide reads and
+// the workflow sends an issue back to testing by: a pass recorded at the head, or at the commit the
+// reviewer's verdict at the head names as its testedCommit. No other verdict, no recorded commit,
+// no testedCommit and a testedCommit that is not the pass's own carry nothing.
+func TestPassCountsOnlyAtItsCommitOrWhereTheTestedCommitNamesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tester Tester
+		tested string
+		want   bool
+	}{
+		{"a pass at the head", passAtH, "", true},
+		{"a pass at H1, which the verdict at H names", Tester{Verdict: TesterPass, Commit: h1}, h1, true},
+		{"a pass at H1, and a verdict at H naming no testedCommit", Tester{Verdict: TesterPass, Commit: h1}, "", false},
+		{"a pass at H1, and a verdict at H naming H0", Tester{Verdict: TesterPass, Commit: h1}, h0, false},
+		{"a fail at the head", Tester{Verdict: TesterFail, Commit: h}, "", false},
+		{"a fail at H1, which the verdict at H names", Tester{Verdict: TesterFail, Commit: h1}, h1, false},
+		{"a pass that names no commit", Tester{Verdict: TesterPass}, "", false},
+		{"no tester's completion", Tester{}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PassCounts(tc.tester, h, tc.tested); got != tc.want {
+				t.Errorf("PassCounts(%+v, H, %q) = %t, want %t", tc.tester, tc.tested, got, tc.want)
+			}
+		})
+	}
+}
+
 // Decide takes each author's last review by the order the record orders reviews by
 // (record.ReviewOrder.After): this package writes that rule out, since it imports no record, and
 // each pair here, in both directions, is ordered by the two alike. The pairs are record's own:

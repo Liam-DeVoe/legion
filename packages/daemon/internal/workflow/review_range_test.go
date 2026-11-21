@@ -284,14 +284,15 @@ func reviewRoundOne(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.F
 	return pool, engine, apply
 }
 
-// entersRoundOne is the tester's pass that takes LEGION-208, seeded in testing, into its first
-// review round.
+// entersRoundOne is the tester's pass at headOne that takes LEGION-208, seeded in testing, into its
+// first review round. It names the commit it tested, as the completion route requires of every
+// tester's verdict (api's VERDICT_COMMIT_REQUIRED), so the reviewer's approve of headOne counts it.
 func entersRoundOne(t *testing.T, pool *pgxpool.Pool) (*Engine, func(string, intake.Fact) intake.Result) {
 	t.Helper()
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
 	apply("round-one-tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1})
+		Summary: "tested", Verdict: "pass", Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 1 the issue is in %s, want reviewing", got)
 	}

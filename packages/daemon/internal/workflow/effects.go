@@ -251,25 +251,28 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 }
 
 // moveReason is what a move's status write posts on the issue, for the one move nothing else on
-// Dispatch explains: a worker's backward move (TriggerBackward, request_backward_move). The request
-// reaches the daemon's API and no Dispatch record, so an architect's send-back from accepting
-// showed a bare status change, with its reason only in the notice and the next role's task over
-// Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
+// Dispatch explains: a backward move (TriggerBackward), which by asked for. A worker's own move
+// (request_backward_move) reaches the daemon's API and no Dispatch record, so an architect's
+// send-back from accepting showed a bare status change, with its reason only in the notice and the
+// next role's task over Envoy; and the carry's move back to testing on a reviewer's approve that
+// carries no tester's pass (testAgain) follows a verdict past review that writes no Dispatch record
+// either. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
 // reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
 // does not go on the issue a second time. A person reads this text on the issue, so a backward
 // move's names the role that asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+func moveReason(trigger TriggerKind, from, to phase.Phase, by claim.Role, reason string) string {
 	if trigger != TriggerBackward {
 		return ""
 	}
-	return backwardMoveReason(from, to, reason)
+	return backwardMoveReason(from, to, by, reason)
 }
 
-// backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
-// it went to, the role that asked (the role running the phase left, which backward holds the
-// requester to) and that role's own words, or that it gave none.
-func backwardMoveReason(from, to phase.Phase, reason string) string {
-	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+// backwardMoveReason is a backward move as the issue shows it: the phase it left, the one it went
+// to, the role that asked (by: the role running the phase left, which backward holds a worker's
+// requester to, or the reviewer for the carry's move) and that role's own words, or that it gave
+// none.
+func backwardMoveReason(from, to phase.Phase, by claim.Role, reason string) string {
+	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, by)
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return asked + ", which gave no reason."
@@ -289,7 +292,7 @@ func backwardMoveReason(from, to phase.Phase, reason string) string {
 // sentence under its marker (record.LongestPost), read by the server's own reader
 // (dispatchbody.Check), so the daemon refuses exactly what Dispatch refuses.
 func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string) {
-	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, reason)))
+	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, phase.RoleFor(from), reason)))
 	if over == nil {
 		return "", ""
 	}
@@ -1020,12 +1023,12 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // the reviewer's changes reads it as the reviewer's.
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
-// review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
-// to merge that head only once the reviewer's approval of it is on the pull request: the daemon
-// records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
-// merger's task is built at retro's completion, the one move into merging, and at the retry of a
-// held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
-// the record holds.
+// verdict that landing asked of the reviewer stands owed for that head (mergeForwardReviewOwed), is
+// told to merge that head only once legion-verdict at that head is success: under one App no
+// review on GitHub approves a Legion head, and the daemon writes that check from the reviewer's
+// verdict there (spec R4, R5). The merger's task is built at retro's completion, the one move into
+// merging, and at the retry of a held merging (retryPhase); each reads the pull request in its own
+// transaction, so pr says what the record holds.
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -1042,7 +1045,7 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
 	}
 	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
-		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
+		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked for its verdict on it: merge head %s only once legion-verdict at that head is success.",
 			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
 	}
 	if reason != "" {

@@ -1168,3 +1168,48 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
 	}
 }
+
+// The review asks the round's recorded reviewer for its verdict at the new head with
+// review_verdict, whatever moved the head there: a merge forward's landing, whose row names a Why,
+// or any other push past review, whose row names none (workflow's askVerdict). It says which, names
+// both heads and the phase, and asks for no GitHub approval or request for changes, which under one
+// App the author of the pull request cannot give. The landed holds a merger in merging to
+// legion-verdict at the new head.
+func TestTheReviewAsksForTheVerdictWhateverMovedTheHead(t *testing.T) {
+	push := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
+		Phase: phase.Retro, PullRequest: 42}
+	landing := push
+	landing.Why = ConflictMergeNext
+	const asked = " Then send your verdict on the new head with review_verdict: verdict approve or changes, commit d00d," +
+		" and testedCommit set to the commit of the tester's pass only where no commit since that pass changes code that runs." +
+		" Post your findings as a COMMENT review. Write no handoff and make no completion for this verdict." +
+		" Then tell the architect and the implementer, each on its own role topic, what you decided."
+	for _, tc := range []struct {
+		name    string
+		message MergeForwardMessage
+		opens   string
+	}{
+		{"a push past review", push, "LEGION-208: a push moved the head of pull request acme/widgets#42, and the issue stands in retro." +
+			" The old head is c0de, and the new head is d00d. Read what changed since the old head: run `git diff c0de d00d`."},
+		{"a merge forward's landing", landing, "LEGION-208: the merge of main forward landed on pull request acme/widgets#42, and the issue stands in retro." +
+			" The old head is c0de, and the new head is d00d. Read what the merge changed since the old head: run `git diff c0de d00d`."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.message.Message("LEGION-208", "acme/widgets")
+			if !strings.HasPrefix(got, tc.opens) || !strings.HasSuffix(got, asked) {
+				t.Fatalf("the review reads %q, want it to open %q and end %q", got, tc.opens, asked)
+			}
+			for _, gone := range []string{"request changes", "Legion footer", "approve the new head"} {
+				if strings.Contains(got, gone) {
+					t.Fatalf("the review reads %q, which asks for a GitHub review (%q)", got, gone)
+				}
+			}
+		})
+	}
+	landed := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main",
+		Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}
+	const held = " Merge the pull request or put it in the merge queue at head d00d only once legion-verdict at that head is success."
+	if got := landed.Message("LEGION-208", "acme/widgets"); !strings.HasSuffix(got, held) {
+		t.Fatalf("the merger's landed reads %q, want it to end %q", got, held)
+	}
+}

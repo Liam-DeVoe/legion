@@ -315,6 +315,15 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
 				}
 			}}},
+		// The recorded reviewer's verdict past review (workflow's reviewVerdict): an approve that
+		// carries no tester's pass to the head sends the issue back to testing, which ends its
+		// step's run, and a changes moves no phase, so the run stays open.
+		"ReviewVerdict": {
+			{name: "the recorded reviewer's approve that carries no pass sends the accepting child back to testing", arrange: reviewedAccepting,
+				fact: intake.ReviewVerdict{Issue: inAccepting, Claim: "review-claim", Verdict: "approve", Commit: "head-6", Summary: "read the push"}, leaves: inAccepting},
+			{name: "the recorded reviewer's changes keeps the accepting child in its step", arrange: reviewedAccepting,
+				fact: intake.ReviewVerdict{Issue: inAccepting, Claim: "review-claim", Verdict: "changes", Commit: "head-6", Summary: "the push breaks it"}, keeps: inAccepting},
+		},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -388,6 +397,30 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 			t.Fatalf("the unknown way out left %s in %s, want it done", planning, got.Phase)
 		}
 		assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, "the unknown way out", fixedNow, false)
+	})
+}
+
+// reviewedAccepting gives the finishing tree's member in accepting its open pull request #6 at
+// head-6, a push past head-5, the commit its tester passed and its reviewer approved under the
+// claim review-claim, and the rows of that pass and that approve. Its arguments are a row's
+// arrange's.
+func reviewedAccepting(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		records := record.NewStore()
+		if err := records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: inAccepting, Repo: "acme/widgets", Number: 6,
+			Branch: claim.IssueBranch(inAccepting), Base: "main", State: record.PullRequestOpen, HeadSHA: "head-6", Failing: []string{}}); err != nil {
+			t.Fatalf("seed the pull request of %s: %v", inAccepting, err)
+		}
+		for _, row := range []record.PhaseRow{
+			{Issue: inAccepting, Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass", HandoffCommit: "head-5"},
+			{Issue: inAccepting, Role: claim.RoleReviewer, Claim: "review-claim", Verdict: "approve", HandoffCommit: "head-5",
+				Decision: &record.ReviewDecision{State: "approved", Head: "head-5"}},
+		} {
+			if err := records.PutPhase(context.Background(), tx, row); err != nil {
+				t.Fatalf("seed the %s's row of %s: %v", row.Role, inAccepting, err)
+			}
+		}
 	})
 }
 
