@@ -130,12 +130,17 @@ function listedWords(
  *
  * Otherwise, words that left the document by any other edit: the live text read every open
  * document keeps (`liveTextQueryOptions`, `ProofDocument`), which the page reads again after an
- * event of a comment anchored there (`eventRefreshTargets`). Only a read that landed after
- * `anchoredAt`, when the draft's compose took the words, says they left. No keystroke and no
- * update from a collaborator reads the text again, so a read from before then can lack words the
- * reader had just typed and selected, which are on screen. A draft with no such time - one an
- * older release kept - counts as taken before every read. Gone only where the page holds such a
- * read of the document's text and it does not hold the words.
+ * event of a comment anchored there (`eventRefreshTargets`). For words that name a list of
+ * inserts, only a read that landed after `anchoredAt`, when the draft's compose took the words,
+ * says they left. No keystroke and no update from a collaborator reads the text again, so a read
+ * from before then can lack words the reader had just typed and selected, which are on screen;
+ * this build names a list for every selection the editor makes (`insertMarksIn`), so such words
+ * name one. A draft with no such time - one an older release kept - counts as taken before every
+ * read. Words that name no list of inserts - a draft or held send an older build kept, or a
+ * selection the editor held no document for - are judged by the read's words alone, however old
+ * it is: they may lie in an insert whose comment is deleted, and a composer that mounts at them
+ * with an empty field takes its mount as their time, later than a read that lacks them. Gone
+ * only where the page holds such a read of the document's text and it does not hold the words.
  *
  * Until then the words are drawn only once the page holds an answer that can check them: that
  * text read, or the comment list the margin of the draft's `owner` reads (`useMarginItems`),
@@ -182,12 +187,12 @@ export function useQuoteInDocument(
     if (listed === "deleted") return "gone";
     if (words !== undefined) {
       return words === null ||
-        (anchoredAt !== undefined && dataUpdatedAt <= anchoredAt) ||
+        (insertMarks !== undefined && anchoredAt !== undefined && dataUpdatedAt <= anchoredAt) ||
         words.includes(spaced(quote))
         ? "held"
         : "gone";
     }
     if (listed === "read") return "held";
     return textFailed && listed === "failed" ? "unchecked" : "loading";
-  }, [anchoredAt, dataUpdatedAt, listed, quote, textFailed, words]);
+  }, [anchoredAt, dataUpdatedAt, insertMarks, listed, quote, textFailed, words]);
 }

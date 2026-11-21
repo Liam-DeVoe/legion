@@ -294,11 +294,13 @@ test("a draft's words the document still holds are drawn, across a block break t
 // document, and the reader selected them: that read lacks them, and nothing has read the text
 // since. It is older than each compose that took the words - the open one, and the one that kept
 // a draft for them a second ago - so no surface takes it to say the words left: they are on
-// screen.
+// screen. The words lie in no insert, which this build's selection bar names by an empty list
+// (`insertMarksIn`); words that name no list are a row near the end of this file.
 test("words typed after the page last read the document are drawn though that read lacks them", () => {
   const now = Date.now();
   const { client, view } = renderSurfaces(QUOTE, textRead(AFTER), {
     awayAt: now - 1_000,
+    insertMarks: [],
     offeredAt: now - 1_000,
     readAt: now - 60_000,
   });
@@ -696,6 +698,15 @@ const UNCHECKED = {
     "You wrote this draft for other words, which cannot be checked now. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
 };
 
+/** What `drawnQuotes` reads once a read of the document's text that can say so lacks the words. */
+const GONE = {
+  composer: "The words this draft was for are no longer in the document.",
+  drawn: 0,
+  kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+  offered:
+    "You wrote this draft for other words, which are no longer in the document. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+};
+
 // The architect's ruling of 2026-11-21 00:17Z on dispatch://INFRA-1523 (census rows RM.1-RM.3 and
 // 11.9). After a reload the page holds no read of the document's text and none of the margin's
 // comment list, and neither the time gate nor the deleted insert's fact can speak. While the
@@ -811,13 +822,7 @@ test("a draft an older build kept, which names no list of inserts, draws no word
     act(() => land(client, textRead(AFTER)));
     expect({ failed, gone: drawnQuotes(view.container), reading }).toEqual({
       failed: UNCHECKED,
-      gone: {
-        composer: "The words this draft was for are no longer in the document.",
-        drawn: 0,
-        kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
-        offered:
-          "You wrote this draft for other words, which are no longer in the document. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
-      },
+      gone: GONE,
       reading: LOADING,
     });
   } finally {
@@ -860,6 +865,31 @@ test("a draft naming an empty list of inserts draws its quote as soon as the pag
     empty: { listed: DRAWN, textFailed: LOADING, textLanded: DRAWN },
     older: { listed: UNCHECKED, textFailed: UNCHECKED, textLanded: DRAWN },
   });
+});
+
+// The same ruling, carried to the time gate. The gate is for words a person has just selected in
+// a live editor, which this build names a list of inserts for (`insertMarksIn`): a read from
+// before the compose took them can lack them while they are on screen. Words that name no list -
+// a draft or held send an older build kept, or a selection the editor held no document for - may
+// lie in an insert whose comment is deleted, and a composer that mounts at them with an empty
+// field takes its mount as their time, later than a read that lacks them. Under the reads of the
+// row "words typed after the page last read the document …" - a read a minute old that lacks the
+// words, a composer mounted now, and two drafts whose composes took them a second ago - no
+// surface takes that read to be older than words that name no list: each says they are no longer
+// in the document, and draws none of them.
+test("words that name no list of inserts are gone on every surface once the page's read of the document lacks them, however old that read is", () => {
+  const now = Date.now();
+  const { client, view } = renderSurfaces(QUOTE, textRead(AFTER), {
+    awayAt: now - 1_000,
+    offeredAt: now - 1_000,
+    readAt: now - 60_000,
+  });
+  try {
+    expect(drawnQuotes(view.container)).toEqual(GONE);
+  } finally {
+    view.unmount();
+    client.clear();
+  }
 });
 
 // The same ruling: absent is not empty anywhere on the way, the tab's storage too. The tab keeps a
