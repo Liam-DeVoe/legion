@@ -19,13 +19,13 @@
 #     (executePhaseOp) is taken and returns task a to its step 1;
 #   - control-client-return-to-refused: return_to 2, the tester's own place, throws 409
 #     RETURN_REFUSED and moves nothing; the tester's pass after it is taken;
-#   - older-client-reads (run before any other issue is held, since the state is one body): a
-#     tester's claim whose recorded contract is set to the release before's while no daemon runs (a
-#     pane registered under that release that outlives the upgrade, within its turn; this daemon
-#     refuses a new registration at any other contract and relaunches such a pane when its turn
-#     ends) reads, through that release's client, state(), TASK_STOPPED after its owner's stop, and
-#     its own registration at its contract, refused 409; both clients' state reads of the held
-#     issue are printed;
+#   - older-client-reads: a tester's claim whose recorded contract is set to the release before's
+#     while no daemon runs (a pane registered under that release that outlives the upgrade, within
+#     its turn; this daemon refuses a new registration at any other contract and relaunches such a
+#     pane when its turn ends) reads, through that release's client, state(), TASK_STOPPED after its
+#     owner's stop, and its own registration at its contract, refused 409. Its read of the issue held
+#     task-stopped must parse in that release's own schema and carry no hold reason that release
+#     does not know: the daemon serves each client the shape of the contract its request states;
 #   - client-stop-task: taskStop of task a with the architect's grant answers 200 {} and the issue
 #     stands held task-stopped; a task the plan does not hold fails the same check;
 #   - client-stopped-report-refused: the stopped task's tester's handoff_complete throws 409

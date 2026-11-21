@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	planwords "github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // clientPlan is the plan every issue of the run is given: one task a, the implementer then the
@@ -71,6 +72,45 @@ func (o clientOutcome) String() string {
 		return "answered " + string(o.Answer)
 	}
 	return fmt.Sprintf("threw %s %d %s: %s", o.Error, o.Status, o.Code, o.Message)
+}
+
+// heldOlder is nil when outcome, the state read of the release before's client of an issue held
+// task-stopped, is what that release can read: its own schema parsed the body (the read answered),
+// the issue is in it held from testing, and neither the issue's holdReason nor a row of
+// admission.held names a reason that arrived at api.OwnerPlanContract, which a contract below it
+// does not know. The daemon serves such a caller the issue with no holdReason and the row as
+// unclassified (api's withoutUnadmittedHoldReason and withoutUnadmittedHeldWords).
+func heldOlder(outcome clientOutcome, contract int) error {
+	if !outcome.OK {
+		return fmt.Errorf("it %s; the release before's own schema must parse what this daemon serves it", outcome)
+	}
+	var read struct {
+		Issue *struct {
+			HoldReason string `json:"holdReason"`
+			HeldFrom   string `json:"heldFrom"`
+		} `json:"issue"`
+		Held []struct {
+			Reason string `json:"reason"`
+		} `json:"held"`
+	}
+	if err := json.Unmarshal(outcome.Answer, &read); err != nil {
+		return fmt.Errorf("decode its answer %s: %w", outcome.Answer, err)
+	}
+	if read.Issue == nil || read.Issue.HeldFrom != string(phase.Testing) {
+		return fmt.Errorf("it answered %s, want the issue held from testing", outcome.Answer)
+	}
+	if contract >= api.OwnerPlanContract {
+		return nil
+	}
+	if reason := read.Issue.HoldReason; reason == string(record.HoldTaskStopped) || reason == string(record.HoldForChildren) {
+		return fmt.Errorf("it answered %s: holdReason %q arrived at contract %d, which contract %d does not know", outcome.Answer, reason, api.OwnerPlanContract, contract)
+	}
+	for _, row := range read.Held {
+		if row.Reason == string(record.HeldTaskStopped) || row.Reason == string(record.HeldChildrenBeforeRetro) {
+			return fmt.Errorf("it answered %s: the held word %q arrived at contract %d, which contract %d does not know", outcome.Answer, row.Reason, api.OwnerPlanContract, contract)
+		}
+	}
+	return nil
 }
 
 func TestOwnerStepsClientLive(t *testing.T) {
@@ -176,9 +216,10 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// outlives the upgrade, within the turn it was in: the tester registers and takes its task, its
 	// claim's recorded contract is set to the release before's while no daemon runs, as that release
 	// left it, and within that one turn its client, of that release's tree, reads this daemon's
-	// answers. It reads the state before any issue of the run is held: the state is one body for
-	// every issue, and this daemon's runtime runs no pods, so no row of stateNarrowings narrows it
-	// for any caller (api's stateFor).
+	// answers. The daemon serves each client the shape of the contract its request states
+	// (api's shapeAnswer and valueStrips): the release before reads an issue's holdReason with the
+	// one value `escalated`, so its read of the issue held task-stopped must parse in its own schema
+	// and carry no hold reason that arrived at api.OwnerPlanContract (heldOlder).
 	l.check("older-client-reads", func() {
 		l.on(older)
 		l.givePlan(clientPlan...)
@@ -217,7 +258,10 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		head := l.client(l.root, tester, "state", map[string]any{"issue": older, "project": l.cfg.Project}, nil)
 		l.note("this contract's client state() of the held issue: %s", head)
 		heldState := l.client(l.oldTree, tester, "state", map[string]any{"issue": older, "project": l.cfg.Project}, nil)
-		l.note("contract %d client state() of the held issue, served by a daemon whose runtime runs no pods (so it narrows for no caller): %s", l.oldContract, heldState)
+		if err := heldOlder(heldState, l.oldContract); err != nil {
+			t.Fatalf("the contract %d client's state read of %s, held task-stopped: %v", l.oldContract, older, err)
+		}
+		l.note("contract %d client state() of the held issue, shaped by the daemon to the contract the client states: %s", l.oldContract, heldState)
 		// The pane's own boot token and session, as it registered before the restart (a new session
 		// on that boot token is refused for that before its contract is read); the daemon that runs
 		// now launched nothing for it (each boot gets a fresh fake runtime).
