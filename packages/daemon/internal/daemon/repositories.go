@@ -2847,18 +2847,18 @@ func (w *workflowRuntime) correctionReads(ctx context.Context, key, resolved str
 // from Dispatch names another repository than the record holds, the fact carries what GitHub
 // answers for that repository now (correctionReads), which the correction admission's hand-over
 // makes is written from (admit's consumeHandover); one that names the record's repository, or
-// none, reads nothing, and so does one whose Dispatch read is older than the record, which that
-// correction leaves as it stands. Reads GitHub did not answer ask for a follow of the issue
-// (requestFollowOf), as an event's do: the hand-over is applied whatever its correction writes,
-// so nothing else would read the change again. It runs outside the fact lock, as every
-// preparation does, since the fact's apply performs no I/O.
+// none, reads nothing, and so does one whose Dispatch read is older than the record
+// (record.Issue.Outdates), which that correction leaves as it stands. Reads GitHub did not answer
+// ask for a follow of the issue (requestFollowOf), as an event's do: the hand-over is applied
+// whatever its correction writes, so nothing else would read the change again. It runs outside
+// the fact lock, as every preparation does, since the fact's apply performs no I/O.
 func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.Handover) (intake.Handover, error) {
 	if handover.ResolvedRepo == "" {
 		return handover, nil
 	}
 	recorded, err := w.recordOf(ctx, handover.Issue)
 	if err != nil || recorded == nil || w.repositories.same(handover.ResolvedRepo, recorded.Repo) ||
-		handover.Seq > 0 && handover.Seq < recorded.LastDispatchSeq {
+		recorded.Outdates(record.ReadSeq, handover.Seq) {
 		return handover, err
 	}
 	answer := w.correctionReads(ctx, handover.Issue, handover.ResolvedRepo)
@@ -3072,7 +3072,7 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 		held := recordsByKey(current)
 		for _, issue := range follow {
 			stored := held[issue.Key]
-			if stored == nil || issue.Seq > 0 && issue.Seq < stored.LastDispatchSeq {
+			if stored == nil || stored.Outdates(record.ReadSeq, issue.Seq) {
 				continue
 			}
 			if err := w.engine.ApplyRepositoryChange(scoped, tx, *stored, issue); err != nil {
@@ -3150,7 +3150,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
 	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
 	// by the keys as Dispatch gave them.
-	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || recorded.Outdates(record.EventSeq, issue.Seq)) {
 		return issue, nil
 	}
 	var roots []record.Issue

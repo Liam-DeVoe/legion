@@ -223,3 +223,36 @@ func TestAHandOverWhoseReadIsOlderThanTheRecordCorrectsNothing(t *testing.T) {
 		})
 	}
 }
+
+// A hand-over whose Dispatch read is at the record's own sequence is no older than the record
+// (record.Issue.Outdates, as of a read): the read says the issue's log ran no further than the
+// event the record took last, and it carries what Dispatch resolves the issue to as of the read,
+// which a move of the project's default repository changes with no event of the issue. Here the
+// record took sequence 4 on acme/widgets and the outbox read the child at sequence 4 resolved to
+// acme/tools, so the child comes back on acme/tools, at that repository's default branch, with
+// nothing said. Control: with consumeHandover asking whether its read is older as of an event,
+// the child comes back on acme/widgets.
+func TestAHandOverWhoseReadIsAtTheRecordsSequenceCorrectsTheRecord(t *testing.T) {
+	pool := migratedPool(t)
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	seedHandOverFence(t, pool, "acme/widgets", "main")
+	seq := issue(t, pool, fencedChild).LastDispatchSeq
+
+	consumeHandOverRead(t, pool, admission, "acme/tools", seq)
+
+	got := issue(t, pool, fencedChild)
+	assertReadmitted(t, got)
+	if got.Repo != "acme/tools" || got.DefaultBranch != "release/v7.1" || got.GitHubRepo != "acme/tools" {
+		t.Fatalf("the re-admitted child is on %s at %s, spelled %s; want acme/tools at release/v7.1, where Dispatch resolves it at the record's own sequence %d",
+			got.Repo, got.DefaultBranch, got.GitHubRepo, seq)
+	}
+	if c := got.RepoCorrection; c == nil || c.Before != "acme/widgets" {
+		t.Fatalf("the correction = %+v, want acme/widgets left", c)
+	}
+	if got.RepoChange != nil {
+		t.Fatalf("the waiting change after the correction = %+v, want none: the correction applied it", got.RepoChange)
+	}
+	if messages := handOverMessages(t, pool); len(messages) != 0 {
+		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
+	}
+}

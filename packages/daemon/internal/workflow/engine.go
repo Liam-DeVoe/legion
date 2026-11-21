@@ -344,7 +344,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// repository (ApplyRepositoryChange). This runs before any fence below: an edit of the
 	// repository alone changes no status. So does the telling of a root a person has made a child
 	// of a live tree (tellReparented), which is a parent change and often no status change at all.
-	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
+	if !issue.Outdates(record.EventSeq, fact.Seq) {
 		if err := e.ApplyRepositoryChange(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
@@ -361,10 +361,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	//
 	// This is the sequence fence, which the engine and admission both keep: an event the record
 	// has already applied — a redelivery, or one older than the newest the record took — teaches
-	// the record nothing, so nothing below here runs for it. The engine's own reaction waits
-	// behind a second fence, the status one, and that fence stands below the mark: an event the
-	// record has not applied is news of the issue whether or not it moves its status.
-	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq {
+	// the record nothing (record.Issue.Outdates), so nothing below here runs for it. The engine's
+	// own reaction waits behind a second fence, the status one, and that fence stands below the
+	// mark: an event the record has not applied is news of the issue whether or not it moves its
+	// status.
+	if issue.Outdates(record.EventSeq, fact.Seq) {
 		return intake.Result{}, nil
 	}
 	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the eleven

@@ -1076,7 +1076,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		}
 		return a.putNewRoot(ctx, tx, summary, false)
 	}
-	if summary.Seq > 0 && summary.Seq < stored.LastDispatchSeq {
+	if stored.Outdates(record.ReadSeq, summary.Seq) {
 		return nil
 	}
 	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
@@ -1099,7 +1099,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		// engine's own transition table first — leave/beginLinger out of the workflow, or
 		// ReenterChild for a live tree's child moved back to todo — exactly as that event would.
 		// Engine.dispatchIssue already makes this same newer-or-not decision on its own sequence
-		// fence (fact.Seq <= issue.LastDispatchSeq); pre-filtering by status here to
+		// fence (record.Issue.Outdates, as of an event); pre-filtering by status here to
 		// OutOfWorkflow alone left a parked child's own re-entry unreached, stranding it recorded
 		// todo at phase done under a live tree. Left to recordObservation alone, the record would
 		// move to the snapshot's status with no suspend and no linger, and the record's
@@ -1156,7 +1156,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 // label taken off or put back at the same status moves the waiting line at once. A todo on a
 // lingering or closed root handed to Legion is a re-admission.
 func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, observation intake.DispatchIssue) error {
-	if observation.Seq != 0 && observation.Seq <= stored.LastDispatchSeq {
+	if stored.Outdates(record.EventSeq, observation.Seq) {
 		return nil
 	}
 	handed := observation.HandedOver
@@ -1239,13 +1239,12 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	// (intake.Handover.RepositoryRead, RepositoryRefusal), as an event's is, and a hand-over that
 	// read nothing — the outbox's read of GitHub did not answer — corrects nothing, its change read
 	// again at the issue's next event or at the next boot. Nor does a hand-over whose Dispatch read
-	// is older than the record (intake.Handover.Seq below its LastDispatchSeq): the event the
-	// record took since carried Dispatch's newer resolution, which the engine acted on then, and
-	// the outbox's reads of GitHub between its Dispatch read and this apply leave time for a
-	// person's change of the repository to land first, which the older read would undo. The follow
-	// pass leaves a record a later event carried past its listing the same way (the daemon's
-	// followListing).
-	if fact.ResolvedRepo != "" && (fact.Seq == 0 || fact.Seq >= stored.LastDispatchSeq) {
+	// is older than the record (record.Issue.Outdates, as of a read): the event the record took
+	// since carried Dispatch's newer resolution, which the engine acted on then, and the outbox's
+	// reads of GitHub between its Dispatch read and this apply leave time for a person's change of
+	// the repository to land first, which the older read would undo. The follow pass leaves a
+	// record a later event carried past its listing the same way (the daemon's followListing).
+	if fact.ResolvedRepo != "" && !stored.Outdates(record.ReadSeq, fact.Seq) {
 		change := intake.DispatchIssue{
 			Key:                   fact.Issue,
 			ResolvedRepo:          fact.ResolvedRepo,

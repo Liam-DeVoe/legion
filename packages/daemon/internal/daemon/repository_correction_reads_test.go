@@ -745,3 +745,79 @@ func TestAFollowThatMovesARecordOffARepositoryReadsTheLiveRecordsAgain(t *testin
 		return !cached(answeredNamed) && !w.repositories.isLive(left) && cached(strangerNamed)
 	})
 }
+
+// sequenceKey is the issue the two tests of a Dispatch fact at the record's own sequence move.
+const sequenceKey = "LEGION-1121"
+
+// followAtTheRecordsSequence records sequenceKey on acme/widgets and applies its live event at
+// sequence 2, still on acme/widgets, so the record takes that sequence. Then Dispatch resolves
+// the issue to strangerRepo at that same sequence, as a move of the project's default repository
+// does, which Dispatch sends no event of the issue for, and the follow runs over that listing
+// (requestFollow). It answers the runtime and the record as the follow left it.
+func followAtTheRecordsSequence(t *testing.T) (*workflowRuntime, record.Issue) {
+	t.Helper()
+	w, client, _ := changingRig(t, &installations{})
+	recordCorrectionRoot(t, w.pool, w.records, sequenceKey, sequenceKey, 0)
+	deliver(t, w, client, issue(sequenceKey, "acme/widgets", "in_progress", true, "", 2))
+	if got := onWidgets(t, w, sequenceKey); got.LastDispatchSeq != 2 {
+		t.Fatalf("after its event %s is at Dispatch sequence %d, want the event's 2", sequenceKey, got.LastDispatchSeq)
+	}
+	client.show(issue(sequenceKey, strangerRepo, "in_progress", true, "", 2))
+	w.requestFollow()
+	follows := w.followRequested.Load()
+	testwait.Eventually(t, "the follow applied", func() bool { return w.followApplied.Load() >= follows })
+	return w, *recordedIssue(t, w, sequenceKey)
+}
+
+// A follow's listing at the record's own sequence is no older than the record
+// (record.Issue.Outdates, as of a read): the listing says the issue's log ran no further than the
+// event the record took, and it is Dispatch's resolution of the issue as of the listing, which
+// the project's default repository moved with no event of the issue. So the follow corrects the
+// record onto the repository Dispatch resolves it to now, with nothing said, and the record's
+// sequence stays the event's. Control: with the follow asking whether its listing is older as of
+// an event, the record stays on acme/widgets.
+func TestAFollowAtTheRecordsOwnSequenceCorrectsTheRecord(t *testing.T) {
+	w, got := followAtTheRecordsSequence(t)
+	onStranger(t, w, sequenceKey, "trunk")
+	if got.LastDispatchSeq != 2 {
+		t.Fatalf("after the follow %s is at Dispatch sequence %d, want the event's 2: a correction moves no sequence", sequenceKey, got.LastDispatchSeq)
+	}
+	if notes := repositoryNotes(t, w, sequenceKey); len(notes) != 0 {
+		t.Fatalf("notes on %s = %q, want none: its record followed Dispatch onto a repository both Apps are installed on", sequenceKey, notes)
+	}
+}
+
+// A live event at the record's own sequence is that event delivered again: the event is Dispatch
+// as of its own sequence, which the record took when the event was applied, so it moves nothing
+// (record.Issue.Outdates, as of an event). It reaches the handlers again under another processed
+// id where two doors apply one event, as a route's own status write and its echo from the
+// consumer do (intake.OwnStatusWrite). Here the event at sequence 2 still resolves the issue to
+// acme/widgets, which the follow at that sequence has since moved the record off
+// (followAtTheRecordsSequence): the record stays on strangerRepo with the follow's correction,
+// at sequence 2, with nothing waiting and nothing said. Control: with the engine's fence asking
+// whether the event is older as of a read, the event moves the record back onto acme/widgets.
+func TestAnEventDeliveredAgainAtTheRecordsSequenceLeavesTheFollowsCorrection(t *testing.T) {
+	w, followed := followAtTheRecordsSequence(t)
+	onStranger(t, w, sequenceKey, "trunk")
+	event := intake.DispatchIssue{Key: sequenceKey, Seq: 2, Type: "issue.updated", Status: "in_progress", Title: sequenceKey,
+		Rank: "A" + sequenceKey, HandedOver: true, ResolvedRepo: "acme/widgets"}
+	prepared, err := prepareAsDelivered(t, w, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := intake.ApplyFact(context.Background(), w.pool, "dispatch", sequenceKey+"-delivered-again", prepared, w.handlers...); err != nil {
+		t.Fatal(err)
+	}
+
+	onStranger(t, w, sequenceKey, "trunk")
+	got := recordedIssue(t, w, sequenceKey)
+	if c := got.RepoCorrection; !c.At.Equal(followed.RepoCorrection.At) {
+		t.Fatalf("the correction of %s = %+v, want the follow's %+v: no later correction", sequenceKey, c, followed.RepoCorrection)
+	}
+	if got.LastDispatchSeq != 2 {
+		t.Fatalf("%s is at Dispatch sequence %d, want 2", sequenceKey, got.LastDispatchSeq)
+	}
+	if notes := repositoryNotes(t, w, sequenceKey); len(notes) != 0 {
+		t.Fatalf("notes on %s = %q, want none", sequenceKey, notes)
+	}
+}
