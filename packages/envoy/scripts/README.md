@@ -723,15 +723,18 @@ batch, and the broker reads Dispatch, so each read is one listener â†’ broker â†
 packages/envoy/scripts/project-privacy-measure.sh run \
   --source <the broker's base URL, the listener's ENVOY_AGENT_SECRETS_URL> \
   --token-file <a projected token of the broker's audience> \
-  --metrics-url http://<a listener replica>:9020/metrics [--metrics-url ...]
+  --metrics-url <pod>=http://<the pod's address>:9020/metrics [--metrics-url ...]
 packages/envoy/scripts/project-privacy-measure.sh verdict <the log a run printed>
 packages/envoy/scripts/project-privacy-measure.sh job --run <id> --image <the listener's image> \
   --source <the broker's base URL> --audience <the broker's token audience> \
-  --metrics-url http://<a listener replica>:9020/metrics [--metrics-url ...]
+  --metrics-url <pod>=http://<the pod's address>:9020/metrics [--metrics-url ...]
 ```
 
 `run` reads for at least an hour (`--minutes`, 60 by default, and a run asked for less is refused
-with exit 2). Each second it reads the listener's counters at every `--metrics-url` and spreads
+with exit 2). Each `--metrics-url` is `NAME=URL`, `NAME` the listener pod's name, or a bare URL
+that names itself. In the required mode both the webhook listener (`envoy-listener`) and the
+clustered hub's session listener (`envoy-nats-listener`) hold and decide frames, so a production
+run names every pod of both. Each second it reads the counters at every `--metrics-url` and spreads
 one decision for each increment over the next second: by default `envoy_messages_received_total`,
 every message the listener's consumer takes, and `envoy_listener_requests_total`, every `/v1`
 request it admits (`--counter`, repeatable, names others). That counts each decision as a batch
@@ -741,9 +744,11 @@ decision that arrives during a read waits for the next one, as the listener's re
 read sends the token file's current token as its bearer, read again before every read, and is
 timed by curl from its start to its last byte, a new connection each time.
 
-It prints tab-separated lines a later `verdict` reads back: `start`, `batches` for each second that
-counted decisions, `read` for each read (its time in microseconds, its status and the decisions it
-served), `minute`, `end`, and the verdict. The first read that fails (no answer within
+It prints tab-separated lines a later `verdict` reads back: `start`, a `listener` line naming each
+pod and its URL, `batches` for each second that counted decisions (with each pod's share,
+`NAME=count`), `read` for each read (its time in microseconds, its status and the decisions it
+served), `minute`, `end`, and the verdict, which also prints `decisions by listener:` with each pod's
+count. The first read that fails (no answer within
 `--max-time`, no connection, a status other than 200, or a body that is not a whole
 `{"projects":[...]}` answer) and the first counter read that fails, a counter the listener does not
 expose among them, end the run.
@@ -784,7 +789,9 @@ read, and counters that never move are UNKNOWN with no read made. A run there ta
 100 ms (`PROJECT_PRIVACY_MEASURE_MINUTE_MS`, read by the test alone); a run records its minute and
 a verdict refuses a log whose minute is not its own, so such a run never sets a bound. It also
 holds `job`'s manifest to the account `project-privacy-measure` in `envoy`, with the same check
-run over that manifest with the pods moved to `envoy-listener` as its control, which must fail.
+run over that manifest with the pods moved to `envoy-listener` as its control, which must fail. A
+run over a webhook listener and a session listener names both and counts each one's decisions; its
+control, the same run without the session listener, must fail naming it.
 CI runs it in the `envoy-go-checks` job, whose steps are in
 `.github/workflows/ci-job-envoy-go-checks.yaml`.
 

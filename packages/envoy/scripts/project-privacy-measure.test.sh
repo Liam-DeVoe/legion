@@ -54,7 +54,7 @@ import time
 port_file, metrics_mode, step, privacy_mode, at, slow_ms = sys.argv[1:7]
 step, at, slow_ms = int(step), int(at), int(slow_ms)
 lock = threading.Lock()
-state = {"scrapes": 0, "reads": 0, "inflight": 0, "inflight_max": 0}
+state = {"scrapes": 0, "session_scrapes": 0, "reads": 0, "inflight": 0, "inflight_max": 0}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -70,10 +70,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path == "/metrics":
+        # /session/metrics is a second listener, the session listener, whose counters rise twice as
+        # fast and are counted on their own.
+        if self.path in ("/metrics", "/session/metrics"):
+            key = "session_scrapes" if self.path == "/session/metrics" else "scrapes"
             with lock:
-                state["scrapes"] += 1
-                value = state["scrapes"] * step
+                state[key] += 1
+                value = state[key] * step * (2 if key == "session_scrapes" else 1)
             lines = [
                 "# HELP envoy_messages_received_total Total messages received by the listener",
                 "# TYPE envoy_messages_received_total counter",
@@ -380,10 +383,71 @@ expect_text 'the counter envoy_listener_requests_total is not exposed there' "a 
 [[ "$(fake_count reads)" == 0 ]] || fail "a counter not exposed: the fake saw $(fake_count reads) reads"
 printf 'PASS: a counter the listener does not expose is UNKNOWN (exit 3)\n'
 
+# check_both_listeners FILE prints why the run whose output is FILE does not name and count both
+# listeners' pods, or nothing: a listener line for each, and in the verdict a count of each one's
+# decisions, each above zero and together the run's.
+check_both_listeners() {
+  local file="$1" why="" line total listener sum=0
+  for listener in envoy-listener-a envoy-nats-listener-0; do
+    grep -Fq "$(printf 'listener\t0\t%s\thttp://' "$listener")" "$file" || why+="no listener line names ${listener}; "
+  done
+  line="$(grep '^decisions by listener: ' "$file")" || {
+    printf 'no "decisions by listener" line; %s' "$why"
+    return
+  }
+  for listener in envoy-listener-a envoy-nats-listener-0; do
+    if [[ "$line" =~ (^|[:,]\ )${listener}\ ([0-9]+)(,|$) ]] && ((BASH_REMATCH[2] > 0)); then
+      sum=$((sum + BASH_REMATCH[2]))
+    else
+      why+="${listener} counted no decision; "
+    fi
+  done
+  total="$(sed -n 's/^reads: .* of \([0-9]*\) decisions.*/\1/p' "$file")"
+  if [[ -z "$why" && "$sum" != "$total" ]]; then
+    why+="the listeners' decisions add to ${sum}, not the run's ${total}; "
+  fi
+  printf '%s' "$why"
+}
+
+# both_listeners_run [NAME=URL...] runs the script against the fake's two listeners as the production
+# command names them, envoy-listener-a's /metrics and the session listener envoy-nats-listener-0's,
+# or against the ones given.
+both_listeners_run() {
+  local -a urls=("$@")
+  ((${#urls[@]} > 0)) || urls=("envoy-listener-a=http://127.0.0.1:${port}/metrics" "envoy-nats-listener-0=http://127.0.0.1:${port}/session/metrics")
+  local -a args=()
+  local url
+  for url in "${urls[@]}"; do
+    args+=(--metrics-url "$url")
+  done
+  status=0
+  PROJECT_PRIVACY_MEASURE_MINUTE_MS="$test_minute_ms" bash "$driver" run --source "http://127.0.0.1:${port}" \
+    --token-file "$token_file" "${args[@]}" >"$output_file" 2>&1 || status=$?
+}
+
+# (c8) The production command reads both workloads' pods, the webhook listener's and the session
+# listener's, which holds and decides frames in the required mode too: the run names each and counts
+# each one's decisions.
+start_fake counting 1 ok 0 0
+both_listeners_run
+expect_status 0 "a run over both listeners"
+listeners_why="$(check_both_listeners "$output_file")"
+[[ -z "$listeners_why" ]] || fail "a run over both listeners: ${listeners_why}"
+printf 'PASS: a run over both listeners names each pod and counts each one'"'"'s decisions\n'
+
+# (c9) Control: the same run with the session listener left out fails the check, naming it.
+start_fake counting 1 ok 0 0
+both_listeners_run "envoy-listener-a=http://127.0.0.1:${port}/metrics"
+expect_status 0 "a run over the webhook listener alone"
+listeners_why="$(check_both_listeners "$output_file")"
+[[ "$listeners_why" == *"no listener line names envoy-nats-listener-0"* && "$listeners_why" == *"envoy-nats-listener-0 counted no decision"* ]] ||
+  fail "control: a run without the session listener passed the check (${listeners_why:-no reason})"
+printf 'PASS: control - a run without the session listener fails the check, naming it\n'
+
 # check_job_account FILE prints why the manifest in FILE does not run under the measurement's own
 # account, or nothing: the ServiceAccount project-privacy-measure and the Job, both in namespace
 # envoy, the Job's pods running as that account and carrying the label the broker's ingress admits,
-# and the listener's account and label named nowhere.
+# and the listener's account and label on nothing (its pods' names in the /metrics URLs may name it).
 check_job_account() {
   local file="$1" why=""
   grep -Fqx 'kind: ServiceAccount' "$file" || why+="no ServiceAccount; "
@@ -392,7 +456,8 @@ check_job_account() {
   grep -Fqx '      serviceAccountName: project-privacy-measure' "$file" || why+="the Job's pods do not run as project-privacy-measure; "
   grep -Fqx '      labels: {app.kubernetes.io/name: project-privacy-measure, project-privacy-measure/run: "r1"}' "$file" ||
     why+="the Job's pods do not carry app.kubernetes.io/name: project-privacy-measure; "
-  ! grep -Fq 'envoy-listener' "$file" || why+="it names envoy-listener; "
+  ! grep -Eq 'serviceAccountName: envoy-listener|app: envoy-listener|name: envoy-listener$' "$file" ||
+    why+="it runs as, or is named or labelled, envoy-listener; "
   printf '%s' "$why"
 }
 
@@ -400,13 +465,18 @@ check_job_account() {
 # reader, never the listener's.
 readonly job_file="${temporary_dir}/job.yaml"
 status=0
-bash "$driver" job --run r1 --image registry.test/envoy@sha256:0123 --source https://broker.test \
-  --audience broker.test --metrics-url http://10.0.0.5:9020/metrics >"$job_file" 2>"$output_file" || status=$?
+bash "$driver" job --run r1 --image registry.test/envoy@sha256:0123 --source https://broker.test --audience broker.test \
+  --metrics-url envoy-listener-a=http://10.0.0.5:9020/metrics --metrics-url envoy-nats-listener-0=http://10.0.0.7:9020/metrics \
+  >"$job_file" 2>"$output_file" || status=$?
 expect_status 0 "rendering the production run's manifest"
 account_why="$(check_job_account "$job_file")"
 [[ -z "$account_why" ]] || {
   cat "$job_file" >>"$output_file"
   fail "the production run's manifest: ${account_why}"
+}
+grep -Fq '"--metrics-url", "envoy-listener-a=http://10.0.0.5:9020/metrics", "--metrics-url", "envoy-nats-listener-0=http://10.0.0.7:9020/metrics"' "$job_file" || {
+  cat "$job_file" >>"$output_file"
+  fail "the production run's manifest does not pass both listeners' named /metrics to the run"
 }
 printf 'PASS: the production run runs as the ServiceAccount project-privacy-measure in namespace envoy\n'
 
@@ -414,7 +484,7 @@ printf 'PASS: the production run runs as the ServiceAccount project-privacy-meas
 # naming both the account and the listener.
 sed 's/^      serviceAccountName: project-privacy-measure$/      serviceAccountName: envoy-listener/' "$job_file" >"${temporary_dir}/job-control.yaml"
 account_why="$(check_job_account "${temporary_dir}/job-control.yaml")"
-[[ "$account_why" == *"do not run as project-privacy-measure"* && "$account_why" == *"names envoy-listener"* ]] ||
+[[ "$account_why" == *"do not run as project-privacy-measure"* && "$account_why" == *"runs as, or is named or labelled, envoy-listener"* ]] ||
   fail "control: a manifest running as envoy-listener passed the account check (${account_why:-no reason})"
 printf 'PASS: control - a manifest running as envoy-listener fails the account check\n'
 

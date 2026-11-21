@@ -56,7 +56,9 @@ run:
   --source       the broker's base URL; each read is GET <source>/v1/project-privacy
   --token-file   the listener's platform identity, a projected service-account token of the
                  broker's audience, read again before every read
-  --metrics-url  a listener's /metrics; give one per listener replica
+  --metrics-url  [NAME=]URL of a listener's /metrics, NAME its pod's name (a lower-case DNS
+                 label); give one per listener pod. The output names each, and counts each
+                 one's decisions
   --counter      a counter family whose increments are decisions; repeatable. Default:
                  envoy_messages_received_total and envoy_listener_requests_total
   --minutes      how long to run; at least 60 (default 60)
@@ -119,16 +121,30 @@ one_line() {
 verdict() {
   local log="$1"
   [[ -r "$log" ]] || die_usage "cannot read the log $log"
-  local kind elapsed a b c d e
+  local kind elapsed a b c d e pair
   local starts=0 log_minute="" ended="" end_why="" reads=0 served=0 batches=0
-  local -a times=() unknown=()
+  local -a times=() unknown=() listeners=()
+  local -A by_listener=()
   while IFS=$'\t' read -r kind elapsed a b c d e; do
     case "$kind" in
     start)
       starts=$((starts + 1))
       log_minute="$elapsed"
       ;;
-    batches) batches=$((batches + a)) ;;
+    listener)
+      listeners+=("$a")
+      by_listener[$a]=0
+      ;;
+    batches)
+      batches=$((batches + a))
+      # b is each listener's share, name=count separated by commas.
+      local -a shares=()
+      IFS=, read -r -a shares <<<"$b"
+      for pair in "${shares[@]}"; do
+        [[ "$pair" =~ ^([^=]+)=([0-9]+)$ ]] || continue
+        by_listener[${BASH_REMATCH[1]}]=$((${by_listener[${BASH_REMATCH[1]}]:-0} + BASH_REMATCH[2]))
+      done
+      ;;
     read)
       if [[ "$a" == ok ]]; then
         reads=$((reads + 1))
@@ -162,6 +178,13 @@ verdict() {
 
   printf 'reads: %d answered, serving %d of %d decisions, over %s (minute = %d ms)\n' \
     "$reads" "$served" "$batches" "$(duration "${ended:-0}")" "$minute_ms"
+  if ((${#listeners[@]} > 0)); then
+    local name line=""
+    for name in "${listeners[@]}"; do
+      line+="${line:+, }${name} ${by_listener[$name]}"
+    done
+    printf 'decisions by listener: %s\n' "$line"
+  fi
   if ((reads > 0)); then
     local -a sorted
     mapfile -t sorted < <(printf '%s\n' "${times[@]}" | sort -n)
@@ -312,9 +335,24 @@ run() {
   [[ -n "$token_file" ]] || die_usage "--token-file is required"
   [[ -r "$token_file" ]] || die_usage "cannot read the token file $token_file"
   ((${#metrics_urls[@]} > 0)) || die_usage "--metrics-url is required"
-  local url name
-  for url in "${metrics_urls[@]}"; do
-    [[ "$url" =~ ^https?://[^[:space:]]+$ ]] || die_usage "--metrics-url must be an http(s) URL, got ${url:-nothing}"
+  # Each --metrics-url is NAME=URL, the name a listener's pod (any lower-case DNS label), or a bare
+  # URL, which names itself. The run names each in its output, and counts each one's decisions.
+  local url name entry i
+  local -a names=() urls=()
+  for entry in "${metrics_urls[@]}"; do
+    name=""
+    url="$entry"
+    if [[ "$entry" =~ ^([a-z0-9][a-z0-9.-]{0,62})=(.*)$ ]]; then
+      name="${BASH_REMATCH[1]}"
+      url="${BASH_REMATCH[2]}"
+    fi
+    [[ "$url" =~ ^https?://[^[:space:],=]+$ ]] || die_usage "--metrics-url must be [NAME=]an http(s) URL with no comma or =, got ${entry:-nothing}"
+    name="${name:-$url}"
+    for i in "${!names[@]}"; do
+      [[ "${names[i]}" != "$name" ]] || die_usage "--metrics-url names ${name} twice"
+    done
+    names+=("$name")
+    urls+=("$url")
   done
   ((${#counters[@]} > 0)) || counters=(envoy_messages_received_total envoy_listener_requests_total)
   for name in "${counters[@]}"; do
@@ -348,14 +386,17 @@ run() {
   start="$(now_us)"
   local -r tick_us=$((minute_ms * 1000 / 60)) run_us=$((minutes * minute_ms * 1000))
   emit start "$minute_ms" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$read_url"
-  printf '# counters: %s; listeners: %s\n' "${counters[*]}" "${metrics_urls[*]}"
+  printf '# counters: %s\n' "${counters[*]}"
+  for i in "${!names[@]}"; do
+    emit listener 0 "${names[i]}" "${urls[i]}"
+  done
 
   # The decisions one tick counted are spread evenly over the next: the k-th (from 0) is due at
   # sched_start + k * sched_step. overdue counts decisions due and not yet served from a schedule a
   # newer tick replaced.
   local -A previous=()
   local sched_start=0 sched_step=0 sched_count=0 sched_next=0 overdue=0
-  local next_tick="$start" counted=0 now due due_k wake delta total elapsed
+  local next_tick="$start" counted=0 now due due_k wake delta total elapsed shares
   local minute=0 minute_batches=0 minute_reads=0 minute_longest=0 why="done" code=0
   while true; do
     now="$(now_us)"
@@ -376,22 +417,24 @@ run() {
     fi
     if ((now >= next_tick)); then
       total=0
-      for url in "${metrics_urls[@]}"; do
-        if ! scrape "$url"; then
-          emit scrape "$elapsed" failed "$url" "$scrape_error"
+      shares=""
+      for i in "${!urls[@]}"; do
+        if ! scrape "${urls[i]}"; then
+          emit scrape "$elapsed" failed "${names[i]} (${urls[i]})" "$scrape_error"
           why=failed
           break 2
         fi
         if ((counted)); then
-          delta=$((scraped - previous[$url]))
+          delta=$((scraped - previous[$i]))
           # A counter below its last reading restarted with its listener: all of it is new.
           ((delta >= 0)) || delta="$scraped"
           total=$((total + delta))
+          ((delta == 0)) || shares+="${shares:+,}${names[i]}=${delta}"
         fi
-        previous[$url]="$scraped"
+        previous[$i]="$scraped"
       done
       if ((counted && total > 0)); then
-        emit batches "$elapsed" "$total"
+        emit batches "$elapsed" "$total" "$shares"
         minute_batches=$((minute_batches + total))
       fi
       counted=1
@@ -477,7 +520,8 @@ job() {
   [[ "$audience" =~ ^[^[:space:]\"\\]+$ ]] || die_usage "--audience is required and holds no space, quote or backslash"
   ((${#metrics[@]} > 0)) || die_usage "--metrics-url is required"
   for url in "${metrics[@]}"; do
-    [[ "$url" =~ ^https?://[^[:space:]\"\\]+$ ]] || die_usage "--metrics-url must be an http(s) URL, got ${url:-nothing}"
+    [[ "$url" =~ ^([a-z0-9][a-z0-9.-]{0,62}=)?https?://[^[:space:]\",=\\]+$ ]] ||
+      die_usage "--metrics-url must be [NAME=]an http(s) URL, got ${url:-nothing}"
   done
   if ! [[ "$minutes" =~ ^[0-9]+$ ]] || ((minutes < hour_minutes)); then
     die_usage "--minutes is ${minutes}: a run shorter than an hour sets no bound, so it is refused"
