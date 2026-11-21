@@ -1036,12 +1036,13 @@ the fills' session of the project a direct message, and prints
 full member's own feed within `SWEEP_WRITE_EVERY` seconds (at least 5, at most that 15) or do not;
 `<began>` is read before the comment is asked for and `<ended>` once the direct message is
 answered (UTC). The runner's live check holds only once a delivered write falls strictly inside
-its window, `<began>` after W0 and `<ended>` before W1, which whoever ran both joins: a comment
-committed before the member's feed subscribed counts for no window. The writer sends the
-project's session `SWEEP_WRITE_SECONDS / SWEEP_WRITE_EVERY` direct messages (40 by default), each a
-`btw` note that says it is the sweep's probe, which a live session takes at its next turn; no route
-deletes a direct message, so a shorter `SWEEP_WRITE_SECONDS`, one that covers the runner's window,
-sends fewer. The verdict is always a run's last line.
+its window, `<began>` after W0, `<ended>` before W1 and `<began>` no later than `<ended>`, each
+`YYYY-MM-DDTHH:MM:SSZ`, which whoever ran both joins: a comment committed before the member's
+feed subscribed counts for no window, and a line of another shape counts for none. The writer
+sends the project's session `SWEEP_WRITE_SECONDS / SWEEP_WRITE_EVERY` direct messages (40 by
+default), each a `btw` note that says it is the sweep's probe, which a live session takes at its
+next turn; no route deletes a direct message, so a shorter `SWEEP_WRITE_SECONDS`, one that covers
+the runner's window, sends fewer. The verdict is always a run's last line.
 
 ```bash
 SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_FULL_TOKEN=... \

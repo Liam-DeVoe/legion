@@ -47,7 +47,13 @@ import {
   routeIndexSha256,
   sweepScript,
 } from "./restricted-sweep-index";
-import { noReadCheckBase, printedRuns, type StackRuns, worker } from "./restricted-sweep-stack";
+import {
+  noReadCheckBase,
+  printedRuns,
+  type StackRuns,
+  worker,
+  writesInside,
+} from "./restricted-sweep-stack";
 
 /** The script run alone, with these variables and PATH and TMPDIR, as a child that starts nothing. */
 function script(env: Readonly<Record<string, string | undefined>>) {
@@ -520,6 +526,31 @@ describe.skipIf(hostTool("git") === null)("the commit the control builds", () =>
   });
 });
 
+// The join of a writer's writes with a runner's live window, which the split's stack row reads: a
+// write counts only where both its times are a UTC second as the writer prints one and
+// W0 < began <= ended < W1. Compared as text, a stamp of another shape (`9999`, `0000`) sorts
+// after W0 and before W1, and a write that began after W1 but ended inside the window, which only
+// a clock stepped back could print, would count.
+test("a writer's write counts inside a live window only with both times well-formed and in order inside it", () => {
+  const comment = "11111111-1111-4111-8111-111111111111";
+  const message = "22222222-2222-4222-8222-222222222222";
+  const [w0, w1] = ["2026-11-21T10:00:00Z", "2026-11-21T10:00:15Z"];
+  const line = (began: string, ended: string, state = "delivered") =>
+    `write ${began} ${ended} ${comment} ${message} ${state}`;
+  const inside = line("2026-11-21T10:00:01Z", "2026-11-21T10:00:02Z");
+  const writes = [
+    inside,
+    line("9999", "0000"),
+    line("2026-11-21T10:00:20Z", "2026-11-21T10:00:05Z"),
+    line("2026-11-21T10:00:00Z", "2026-11-21T10:00:02Z"),
+    line("2026-11-21T10:00:01Z", "2026-11-21T10:00:15Z"),
+    line("2026-11-21T10:00:01Z", "2026-11-21T10:00:02Z", "not delivered"),
+  ];
+  expect(writesInside(writes.join("\n"), w0, w1)).toEqual([inside]);
+  expect(writesInside(writes.slice(1).join("\n"), w0, w1)).toEqual([]);
+  expect(writesInside(inside, "0000", w1)).toEqual([]);
+});
+
 const pgProvider = ["DISPATCH_E2E_PG_BIN", "DISPATCH_E2E_PG_IMAGE"].filter(
   (variable) => (process.env[variable] ?? "").trim() !== ""
 );
@@ -801,10 +832,8 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       );
       expect(delivered, writer?.stdout).toEqual(writes);
       // A write counts only where it began after the member's feed subscribed, so its comment was
-      // committed after it too, and ended before the window's end.
-      const inside = delivered
-        .map((line) => line.split(" "))
-        .filter(([, began = "", ended = ""]) => began > w0 && ended < w1);
+      // committed after it too, and ended before the window's end (`writesInside`).
+      const inside = writesInside(writer?.stdout ?? "", w0, w1);
       expect(inside.length, `${writer?.stdout}\nwindow ${w0} ${w1}`).toBeGreaterThan(0);
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })

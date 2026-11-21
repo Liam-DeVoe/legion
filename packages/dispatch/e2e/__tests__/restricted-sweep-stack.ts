@@ -685,6 +685,27 @@ function sweep(origin: string, project: string, credentials: Credentials): Promi
   });
 }
 
+/** A UTC instant to the whole second, as the writer stamps a write and the runner its window. */
+const utcSecond = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
+
+/** The writer's delivered writes, of what it printed (`writerOut`), that fall strictly inside a
+ *  runner's live window `w0 w1`, as the acceptance's tailnet leg joins them: each a whole line
+ *  whose two times are UTC seconds with W0 < began <= ended < W1. Those times compare as text only
+ *  in that one shape, so a line or a window of another counts nothing, and a write that ended
+ *  before it began, which only a clock stepped back prints, counts for no window. */
+export function writesInside(writerOut: string, w0: string, w1: string): string[] {
+  if (!utcSecond.test(w0) || !utcSecond.test(w1)) return [];
+  return writerOut
+    .split("\n")
+    .filter((line) => /^write \S+ \S+ [0-9a-f-]{36} [0-9a-f-]{36} delivered$/.test(line))
+    .filter((line) => {
+      const [, began = "", ended = ""] = line.split(" ");
+      return (
+        utcSecond.test(began) && utcSecond.test(ended) && w0 < began && began <= ended && ended < w1
+      );
+    });
+}
+
 /** The split of `project` against `origin`, as `SplitRuns` says: the fills, written under
  *  `scratch`, then the writer, writing every second from the fills, and the runner, which holds no
  *  full member's credential; the writer is stopped once the runner ends. The runner reads its feed
