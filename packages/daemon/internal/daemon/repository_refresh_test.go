@@ -1416,6 +1416,62 @@ func TestARecoveryRecordsAnIssueOnAPairsFromThatItsRecordedToAnswersFor(t *testi
 	}
 }
 
+// A labelled todo root on a repository GitHub has not answered for is recorded once an entry
+// another issue's read wrote answers for that repository, though no read of GitHub for it ever
+// answers: GitHub answered that other issue's name, stranger/old-tools, with a 301 to
+// stranger/tools, and the read is kept under both names (prepareRead, recordRepository), while
+// stranger/tools' own installation reads keep failing under both spellings (the rig's
+// installations match a failing name by its exact case), so neither the refresher's read of the
+// live record's repository nor the root's own preparation drops its marker. The root stays todo
+// in the listing, so every pass defers it and notes it silent, and no pass lets the repository
+// go. Only the recovery's deferral, which finds the entry, drops the marker (deferUnreadIssues,
+// readAnswered), and the pass it wakes records the root through the entry. The refresher starts
+// only once both roots were delivered, so no recovery pass runs before the test has seen the
+// marker held with the entry beside it. Before, every pass deferred the root again and left
+// stranger/tools unread, so the root was never recorded.
+func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing.T) {
+	quickInstallReads(t)
+	github := newNamedGitHub(t, map[string]string{
+		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", "orbit/gadgets": "orbit/gadgets@main",
+		"stranger/old-tools": "301 stranger/tools", strangerRepo: strangerNamed + "@trunk",
+	})
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo, "implement "+strangerNamed)
+	w, client, _, _, _ := bootingRepositoryRig(t, installs, func(w *workflowRuntime) {
+		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
+	})
+	const a, b = "LEGION-1550", "LEGION-1551"
+	deliver(t, w, client, issue(a, strangerRepo, "todo", true, "", 1))
+	if got := recordedIssue(t, w, a); got != nil {
+		t.Fatalf("%s recorded as %+v while %s's installation reads fail", a, got, strangerRepo)
+	}
+	deliver(t, w, client, issue(b, "stranger/old-tools", "todo", true, "", 1))
+	if got := recordedIssue(t, w, b); got == nil || got.Repo != strangerNamed {
+		t.Fatalf("%s = %+v, want it recorded on %s, the name GitHub redirects stranger/old-tools to", b, got, strangerNamed)
+	}
+	if !recordsOn(w, strangerRepo) {
+		t.Fatalf("no entry answers for %s once GitHub's redirect from stranger/old-tools was read", strangerRepo)
+	}
+	w.recoveringMu.Lock()
+	_, held := w.unread[strangerRepo]
+	w.recoveringMu.Unlock()
+	if !held {
+		t.Fatalf("%s's marker is not held before the refresher starts (unread %q, to recover %q): %s's preparation drops only stranger/old-tools'",
+			strangerRepo, w.unreadReasons(), w.recoveringReasons(), b)
+	}
+	startRefresher(t, w)
+	if !within(10*time.Second, func() bool {
+		got := recordedIssue(t, w, a)
+		return got != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	}) {
+		t.Fatalf("%s = %+v, unread %q, to recover %q; want it recorded on %s through the entry GitHub's redirect left, and nothing left unread or to recover",
+			a, recordedIssue(t, w, a), w.unreadReasons(), w.recoveringReasons(), strangerNamed)
+	}
+	if got := recordedIssue(t, w, a); got.Repo != strangerNamed {
+		t.Fatalf("%s recorded on %s, want it on %s, GitHub's spelling of the repository the entry answers with", a, got.Repo, strangerNamed)
+	}
+}
+
 // A repository's recovery tells the architect that owns each child's parent, else the tree root's
 // architect, once, which children a release_children left for the repository the recovery still
 // did not record, with what to release: here C, todo under a backlog parent P, which the recovery

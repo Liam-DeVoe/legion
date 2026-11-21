@@ -9,4 +9,9 @@ body: |-
   an issue and records nothing, and the next pass, whose listing is read after the answer, records
   it. Where another recorded repository already answers for that repository, as the `to` of a
   pair in `repository_renames` answers for its `from`, the pass lets the next pass record the issue
-  through that repository at once.
+  through that repository at once. Another entry of this release says the daemon lets go of a
+  repository GitHub did not answer for once the issues the daemon records answer for it, and tells
+  each tree whose `release_children` released a child onto it that the daemon no longer waits for
+  GitHub to answer. Such a repository is now recovered instead, as one GitHub answered for: its
+  issues are recorded through the repository that answers for it, and a child still unrecorded is
+  named with what to release again.
