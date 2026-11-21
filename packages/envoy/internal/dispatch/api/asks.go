@@ -278,7 +278,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (graphstore.Created).
 	nodes[0] = graphstore.Created(nodes[0])
 	askNode := graphstore.PlanUncaused(nodes, facts)
-	if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -300,7 +303,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	var followed graphstore.Uncaused
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		var err error
-		followed, err = follow.Queue(r.Context(), b, graphstore.NoEvent)
+		followed, err = follow.Queue(b, graphstore.NoEvent)
 		return err
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -352,10 +355,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(r.Context(), b, askNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		return graphstore.QueueCaused(r.Context(), b, followed, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -365,6 +367,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
+	// The review the issue's specification already carries, reported beside the advice above.
+	// It is read here, in the read phase after every write of this ask is queued, so it answers
+	// for the specification as this write leaves it: a version the anchor's snapshot queued of
+	// that document, and a review that version's carry queued, come off the ledger, and the rest
+	// from the table. It is about the document rather than about this session, so it is read for
+	// a person's question as for an agent's, and it rides the advice the write already answers
+	// rather than a read of its own. A question on a project document has no issue and so no
+	// specification, and a write whose advice read failed carries nothing to hang it on; both
+	// report no review.
+	if advice != nil && owner.IssueKey != nil {
+		advice.StandingReview = s.standingReviewAdvice(
+			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
+		)
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -605,7 +621,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
+	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -618,33 +634,36 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// An edit of an ask's words made for a run (graphstore.WithRun, which withinGoingRun puts on
-	// a request naming its run) names the ask as changed by that run where it changed them
-	// (dispatch://INFRA-1950/spec#b-r-interaction): its question, or the words of an option
+	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the ask as changed by that run where it changed them
+	// (spec requirement r-interaction): its question, or the words of an option
 	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
 	// holds of the ask and no words of it, and names no change. Nothing else this route writes
-	// reaches the ask's node, so under a run it writes that node as the create and the backfill
-	// write it (graphstore.AskNode): in the project, or between the parties, of what it is asked
-	// on (graphstore.ScopeOf), made by its asker at its created_at, and marked changed. The node
-	// restates the ask, so a node already there keeps the state, the visibility, the made_at and
-	// the made_by the store holds and moves nothing else, and an ask a process of the release
-	// before created gets here the node the backfill would give it. The changed_by_run is this
-	// edit's, dated at its edited_at and signed by its writer (graphstore.Node's ChangedAt and
-	// ChangedBy). It is the last node row this transaction takes, after the ask's row and its
-	// document, a step of the write phase queued after theirs, and what it states waits for
-	// ask.edited (graphstore.QueueCaused), as an issue's own field write does (patchIssue). A
-	// write made for no run writes no node and sends no statement more than it did.
+	// reaches the ask's node, so it writes that node as the create and the backfill write it
+	// (graphstore.AskNode): in the project, or between the parties, of what it is asked on
+	// (graphstore.ScopeOf, read here in the read phase), made by its asker at its created_at, and
+	// names it changed at its edited_at by its writer (graphstore.PlanChangedForRun, which reads
+	// and plans nothing for no run). The node write is queued after the row's update and the
+	// parts the edit queued above, and what it states right after ask.edited
+	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
+	// (patchIssue).
 	var askNode graphstore.Uncaused
-	if graphstore.MadeForRun(documentCtx) && askWordsChanged(previous, ask) {
-		project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+	if askWordsChanged(previous, ask) {
+		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
+			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+			if err != nil {
+				return graphstore.Node{}, err
+			}
+			return graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt), nil
+		})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		node := graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt)
-		node.Changed, node.ChangedAt, node.ChangedBy = true, editedAt, actor
-		askNode = graphstore.PlanUncaused([]graphstore.Node{node}, nil)
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, askNode) }); err != nil {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, askNode)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -658,10 +677,11 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The ask's node, where a run's edit wrote it, learns the ask.edited event the step before
-	// appended.
+	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
+	// still names ask.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(documentCtx, b, askNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

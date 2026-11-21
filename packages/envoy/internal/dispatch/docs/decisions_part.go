@@ -2,7 +2,7 @@ package docs
 
 import (
 	"maps"
-	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -67,9 +67,12 @@ func hasDecisionsPart(tree *pmdoc.Node) bool {
 }
 
 // withoutDecisionsPartBlocks is a copy of tree without each top-level block of its `## Decisions`
-// part drop names, and without the part's heading where the part then holds nothing else, and
-// whether it took anything out. tree itself, and every node it keeps, is left as it was.
-func withoutDecisionsPartBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, bool) {
+// part drop names, and, where stepsHeading - the heading is the decisions step's doing
+// (carryInput.stepsOwnHeading) - without the heading too once the part holds nothing else, and
+// whether it took anything out. Every other heading stays whatever the part holds: an empty part a
+// person approved is the person's, and a write that deletes it changes what they approved. tree
+// itself, and every node it keeps, is left as it was.
+func withoutDecisionsPartBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool, stepsHeading bool) (*pmdoc.Node, bool) {
 	start, end := decisionsPart(tree)
 	if start < 0 {
 		return tree, false
@@ -83,11 +86,11 @@ func withoutDecisionsPartBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (
 		}
 	}
 	took := len(part) < end-start-1
-	if len(part) > 0 {
+	if stepsHeading && len(part) == 0 {
+		took = true
+	} else {
 		kept = append(kept, tree.Children[start])
 		kept = append(kept, part...)
-	} else {
-		took = true
 	}
 	kept = append(kept, tree.Children[end:]...)
 	if !took {
@@ -211,10 +214,11 @@ func decidedAskBlocks(shown versionAsks) map[string]bool {
 // restore's write added (written, decisionStepCases.restored), and that restoreCase takes out of
 // both versions, whatever its ask's state - an answered ask returned, or an ask block of the
 // decisions document moved, open ones among them (D1): one the approved version does not hold
-// under its id, and one it holds under that id with the words the person approved - the question,
-// the options, multiple and urgency (sameAskWording). A block whose words moved since is not among
-// them, so the restore that returns it is a difference no case carries (R7), and neither is a
-// block an agent wrote there.
+// under its id, and one it holds under that id byte for byte as the person approved it
+// (sameAskBytes) - its question and options with every link, code span and sub-list they hold,
+// multiple and urgency. A block whose words or bytes moved since is not among them, so the
+// restore that returns it is a difference no case carries (R7) and the restore reports the
+// approval superseded, and neither is a block an agent wrote there.
 func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) map[string]bool {
 	start, end := decisionsPart(version)
 	if start < 0 {
@@ -227,7 +231,7 @@ func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) m
 		if child.Type != "ask" || !written[id] {
 			continue
 		}
-		if held, approvedHeld := before[id]; approvedHeld && !sameAskWording(held, child) {
+		if held, approvedHeld := before[id]; approvedHeld && !sameAskBytes(held, child) {
 			continue
 		}
 		restored[id] = true
@@ -235,16 +239,31 @@ func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) m
 	return restored
 }
 
-// sameAskWording reports whether two ask blocks ask the same thing, as settlement reads each
-// (parseAskBlock): the same question, options, multiple and urgency.
-func sameAskWording(a, b *pmdoc.Node) bool {
-	first, err := parseAskBlock(a)
+// sameAskBytes reports whether two ask blocks render byte for byte the same once each is cut to
+// what a person approves of an ask (askBytes).
+func sameAskBytes(a, b *pmdoc.Node) bool {
+	first, err := askBytes(a)
 	if err != nil {
 		return false
 	}
-	second, err := parseAskBlock(b)
-	return err == nil && first.question == second.question && reflect.DeepEqual(first.options, second.options) &&
-		first.multiple == second.multiple && first.urgency == second.urgency
+	second, err := askBytes(b)
+	return err == nil && first == second
+}
+
+// askBytes is node, an ask block, as a document holding it alone renders it, without what other
+// cases weigh or what no approval covers: the server-owned attributes (askServerAttributeNames,
+// attributeRemovalCase's), its `shaped` pointers (the conversion's ties, outside what an approval
+// of a spec covers: conversionCase) and the readings it closes with (readingCase's). What is left
+// is what the person read - its question and options, each link, code span and sub-list among
+// them, urgency and multiple - under its id.
+func askBytes(node *pmdoc.Node) (string, error) {
+	attrs := maps.Clone(node.Attrs)
+	for _, name := range askServerAttributeNames {
+		delete(attrs, name)
+	}
+	delete(attrs, shapedAttribute)
+	content, _ := pmdoc.TypedContent(node)
+	return blockMarkdown(&pmdoc.Node{Type: node.Type, Attrs: attrs, Children: content})
 }
 
 // blockMarkdown is node's markdown as a document holding it alone renders it: what a pointer line
@@ -255,12 +274,24 @@ func blockMarkdown(node *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
 }
 
-// citesDocument reports whether node is a paragraph citing one of documents, by ref_key, as the
-// document itself (a reference to one of its blocks is not one), read from the paragraph's
-// markdown as every reader of a citation reads it (text.Extract): a pointer line of a spec's
-// `## Decisions` part to the issue's decisions document. A paragraph that cites a section of that
-// document is the person's prose, which the step keeps.
-func citesDocument(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
+// pointerLineLead is the words a spec's pointer line to its issue's decisions document holds
+// before the citation, case folded and its whitespace collapsed: none, `see`, or one clause naming
+// the decisions and saying they are in the cited document, as the release before's spec skill had
+// an agent write the line ("The decisions are in" and the decisions document's dispatch://
+// address), with no sentence break among its words.
+//
+// kept for one release: decisions-step
+var pointerLineLead = regexp.MustCompile(`^(see|(the )?decisions( [^.;:!?]*)? (are|live) (in|at))?$`)
+
+// isPointerLine reports whether node is the pointer line of a spec's `## Decisions` part to the
+// issue's decisions document, one of documents by ref_key: a paragraph whose one content is the
+// citation of the document itself (a reference to one of its blocks is not one), read from the
+// paragraph's markdown as every reader of a citation reads it (text.Extract). That citation is the
+// paragraph's one reference and its last word, with nothing after it but a full stop and nothing
+// before it but a lead naming the decisions (pointerLineLead). Every other paragraph is a person's
+// prose, which the step keeps: one that cites the document among other words, or that cites a
+// section of it.
+func isPointerLine(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
 	if node.Type != "paragraph" || len(documents) == 0 {
 		return false
 	}
@@ -268,10 +299,13 @@ func citesDocument(node *pmdoc.Node, documents map[string]bool, serverURL string
 	if err != nil {
 		return false
 	}
-	for _, ref := range text.Extract(markdown, serverURL) {
-		if ref.Kind == "artifact" && documents[text.TargetID(ref)] {
-			return true
-		}
+	cited := text.Extract(markdown, serverURL)
+	if len(cited) != 1 || cited[0].Kind != "artifact" || !documents[text.TargetID(cited[0])] {
+		return false
 	}
-	return false
+	words := strings.Fields(strings.TrimSuffix(strings.TrimSpace(markdown), "."))
+	if len(words) == 0 || len(text.Extract(words[len(words)-1], serverURL)) != 1 {
+		return false
+	}
+	return pointerLineLead.MatchString(strings.ToLower(strings.Join(words[:len(words)-1], " ")))
 }

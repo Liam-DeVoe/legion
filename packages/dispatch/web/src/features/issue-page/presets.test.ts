@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 
-import type { DisplayTree } from "../../api/types";
+import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView, rowKindsOf } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
+import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -376,28 +377,28 @@ test("the words filter matches the words a node draws, never its stored source",
   expect(markup.root.children).toEqual([]);
 });
 
-/** One node of a view read, marked as the query's or as context. */
+/** One node of a view read, the query's or context, under the issue unless the case names
+ *  another parent, its words its name. */
 function viewNode(
   id: string,
   supertag: string,
-  mark: NonNullable<TreeAnswerNode["mark"]>,
-  extra: Partial<TreeAnswerNode> = {}
+  role: TreeAnswerNode["role"],
+  {
+    parent = "CORE-1",
+    ...extra
+  }: TreeNodeExtra & { readonly parent?: string | IssueTreeParent | null } = {}
 ): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    mark,
-    parent: "CORE-1",
-    rank: null,
-    state: "live",
-    supertag,
-    text: id,
-    visibility: "project",
-    ...extra,
-  };
+  return treeNode(id, supertag, parent, { role, text: id, ...extra });
 }
+
+/** The spec's statement a1 as a view names the parent of a node the view holds but not that
+ *  parent: by its store id, kind, supertag and first line. */
+const SPEC_STATEMENT: IssueTreeParent = {
+  first_line: "The spec's statement.",
+  id: "CORE-1/spec#a1",
+  kind: "block",
+  supertag: "requirement",
+};
 
 // Once the Spec view read is held on the issue's node, Spec draws the nodes its query took of
 // R2's kinds, each as the tree's node of that id. The memo callout the
@@ -405,31 +406,25 @@ function viewNode(
 // never rows: each is a line of the row its tie names, a decision by its `shaped` tuple and a
 // constraint by the row's `constrained_by` tuple. The control counts the view's own statements.
 test("a view answer's decisions and constraints are lines, never rows", () => {
-  const spec: TreeAnswer = {
-    converted: true,
-    cursor: null,
-    nodes: [
-      viewNode("summary", "callout", "query"),
-      viewNode("r1", "requirement", "query"),
-      viewNode("r2", "requirement", "query"),
-      viewNode("d1", "decision", "context", { text: "Keep the model pure." }),
+  const spec: TreeAnswer = treeAnswer(
+    [
+      viewNode("summary", "callout", "query", { in: "spec" }),
+      viewNode("r1", "requirement", "query", { in: "spec" }),
+      viewNode("r2", "requirement", "query", { in: "spec" }),
+      viewNode("d1", "decision", "context", { in: "decisions-md", text: "Keep the model pure." }),
       viewNode("k1", "constraint", "context", { text: "Ship on Fridays only." }),
     ],
-    tree: "artifact-tree",
-    tuples: [
-      { from: "d1", kind: "shaped", to: "r1" },
-      { from: "r1", kind: "constrained_by", to: "k1" },
-    ],
-    view_of: null,
-  };
+    [treeTuple("shaped", "d1", "r1"), treeTuple("constrained_by", "r1", "k1")],
+    { converted: true, tree: "artifact-tree", view: "spec" }
+  );
   const root = node(
     "CORE-1",
     "issue",
     [
-      node("spec#b-summary", "callout", [], { readId: "summary" }),
-      node("spec#b-r1", "requirement", [], { readId: "r1" }),
-      node("spec#b-r2", "requirement", [], { readId: "r2" }),
-      node("decisions-md#b-d1", "decision", [], { readId: "d1" }),
+      node("spec#b-summary", "callout", [], { readId: "CORE-1/spec#summary" }),
+      node("spec#b-r1", "requirement", [], { readId: "CORE-1/spec#r1" }),
+      node("spec#b-r2", "requirement", [], { readId: "CORE-1/spec#r2" }),
+      node("decisions-md#b-d1", "decision", [], { readId: "CORE-1/decisions-md#d1" }),
     ],
     { views: { spec } }
   );
@@ -452,25 +447,29 @@ test("a view answer's decisions and constraints are lines, never rows", () => {
 // document, never as the other document's block that shares its read id, though the tree holds
 // that one first.
 test("a view draws its own document's block where two documents share a block id", () => {
-  const view = (supertag: string, slug: string): TreeAnswer => ({
-    converted: false,
-    cursor: null,
-    nodes: [
-      viewNode("a1", supertag, "query", {
-        document: { artifact_id: `artifact-${slug}`, position: 0, slug },
-      }),
-    ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  });
+  const view = (supertag: string, slug: string): TreeAnswer =>
+    treeAnswer(
+      [
+        viewNode("a1", supertag, "query", {
+          document: { artifact_id: `artifact-${slug}`, position: 0, slug },
+        }),
+      ],
+      [],
+      { view: slug === "spec" ? "spec" : "plan" }
+    );
   const tree = (views: TreeNode["views"]) =>
     node(
       "CORE-1",
       "issue",
       [
-        node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
-        node("spec#b-a1", "requirement", [], { readId: "a1", text: "The spec's statement." }),
+        node("plan-md#b-a1", "plan_task", [], {
+          readId: "CORE-1/plan-md#a1",
+          text: "The plan's step.",
+        }),
+        node("spec#b-a1", "requirement", [], {
+          readId: "CORE-1/spec#a1",
+          text: "The spec's statement.",
+        }),
       ],
       { views }
     );
@@ -480,27 +479,23 @@ test("a view draws its own document's block where two documents share a block id
 });
 
 // Two documents share the block id a1: a plan task t1 hangs under the spec's statement a1, and
-// the plan holds a task a1 of its own. The Plan view names t1's parent by that bare id, beside
-// the parent's kind (`parent_line`), so Plan draws t1 as a row of its own with the statement as
-// its line, as the outline places it, never nested under the plan's task a1.
+// the plan holds a task a1 of its own. The Plan view names t1's parent by its store id, kind and
+// first line (`parent`), so Plan draws t1 as a row of its own with the statement as its line, as
+// the outline places it, never nested under the plan's task a1.
 test("a view places a node by the parent kind its view names where two documents share the parent's id", () => {
-  const plan: TreeAnswer = {
-    converted: false,
-    cursor: null,
-    nodes: [
+  const plan: TreeAnswer = treeAnswer(
+    [
       viewNode("a1", "plan_task", "query", {
         document: { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" },
       }),
       viewNode("t1", "plan_task", "query", {
         document: { artifact_id: "artifact-plan-md", position: 1, slug: "plan-md" },
-        parent: "a1",
-        parent_line: { id: "a1", line: "The spec's statement.", supertag: "requirement" },
+        parent: SPEC_STATEMENT,
       }),
     ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+    [],
+    { view: "plan" }
+  );
   const root = node(
     "CORE-1",
     "issue",
@@ -508,10 +503,18 @@ test("a view places a node by the parent kind its view names where two documents
       node(
         "spec#b-a1",
         "requirement",
-        [node("plan-md#b-t1", "plan_task", [], { readId: "t1", text: "The second step." })],
-        { readId: "a1", text: "The spec's statement." }
+        [
+          node("plan-md#b-t1", "plan_task", [], {
+            readId: "CORE-1/plan-md#t1",
+            text: "The second step.",
+          }),
+        ],
+        { readId: SPEC_STATEMENT.id, text: "The spec's statement." }
       ),
-      node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+      node("plan-md#b-a1", "plan_task", [], {
+        readId: "CORE-1/plan-md#a1",
+        text: "The plan's step.",
+      }),
     ],
     { views: { plan } }
   );
@@ -529,35 +532,39 @@ test("a view places a node by the parent kind its view names where two documents
   });
 });
 
-// The Plan view holds no node of t1's parent's id a1, and the tree holds the plan's task a1
-// before the spec's statement a1, which t1 hangs under. The view names that parent's kind
-// beside its id (`parent_line`), so t1's row carries the statement's line, never the line of the
-// plan's task the tree holds first.
+// The Plan view holds no node of t1's parent, the spec's statement a1, and the tree holds the
+// plan's task a1 before it. The view names that parent by its store id beside its kind
+// (`parent`), so t1's row carries the statement's line, never the line of the plan's task the
+// tree holds first.
 test("a view's row carries the line of the parent of the kind its view names where the tree holds another node of its id first", () => {
-  const plan: TreeAnswer = {
-    converted: false,
-    cursor: null,
-    nodes: [
+  const plan: TreeAnswer = treeAnswer(
+    [
       viewNode("t1", "plan_task", "query", {
         document: { artifact_id: "artifact-plan-md", position: 1, slug: "plan-md" },
-        parent: "a1",
-        parent_line: { id: "a1", line: "The spec's statement.", supertag: "requirement" },
+        parent: SPEC_STATEMENT,
       }),
     ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+    [],
+    { view: "plan" }
+  );
   const root = node(
     "CORE-1",
     "issue",
     [
-      node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+      node("plan-md#b-a1", "plan_task", [], {
+        readId: "CORE-1/plan-md#a1",
+        text: "The plan's step.",
+      }),
       node(
         "spec#b-a1",
         "requirement",
-        [node("plan-md#b-t1", "plan_task", [], { readId: "t1", text: "The second step." })],
-        { readId: "a1", text: "The spec's statement." }
+        [
+          node("plan-md#b-t1", "plan_task", [], {
+            readId: "CORE-1/plan-md#t1",
+            text: "The second step.",
+          }),
+        ],
+        { readId: SPEC_STATEMENT.id, text: "The spec's statement." }
       ),
     ],
     { views: { plan } }

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -43,7 +43,7 @@ type identityRow struct {
 // the server proved a person's, which needs the secrets broker's DPoP-bound token, and a role
 // that person's session held, which needs a claim store this pod's fake Envoy does not have.
 // Here the session is proved through the server's own broker-token path, with an ES256 key the
-// test makes (brokertokentest.NewCaller), and the role's holder comes from a claim store the
+// test makes (ciphertokentest.NewCaller), and the role's holder comes from a claim store the
 // outbox is handed (outbox.Deps.RoleClaims), so both rows are written through the real paths.
 //
 // The test carries its own table of identities, each row naming the person it must resolve to
@@ -87,7 +87,7 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 	// thing a session wrote stays that session's, so the comment is on no person's page
 	// (personNodesHeld), and alice holds no node another person may see yet. Her page then answers
 	// another person exactly what a login nobody holds answers, byte for byte, so it tells nobody
-	// that she exists or wrote anything (R1 of dispatch://INFRA-1950, which changes this branch's
+	// that she exists or wrote anything (R1 of the spec, which changes this branch's
 	// own earlier reading, a 200 here); it answers alice herself 200.
 	if _, found, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindPerson, brokerTestPerson); err != nil || !found {
 		t.Fatalf("the store holds no person node of %s once her proved session has written (%v), so her page would answer what a login nobody holds by the earlier rule too", brokerTestPerson, err)
@@ -320,13 +320,13 @@ func newIdentityRig(t *testing.T) *identityRig {
 // and its attempts settle queued (queued_delivery_store_test.go).
 func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 	t.Helper()
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	handler, database, deps := newTestServer(t, testServerOptions{
 		envoyURL: envoyURL,
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			verifier, err := brokertoken.New(brokertoken.Options{
+		brokerTokens: func(database *store.Store) *ciphertoken.Verifier {
+			verifier, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: broker.Server.URL,
-				Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
 				Origin:    testServerURL,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   auth.ForwardedAddress,

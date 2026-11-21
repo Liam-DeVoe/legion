@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives a type of the store read in the write's own transaction (dispatch://INFRA-1950's
-# c-schema-bump, dispatch://INFRA-1950/spec#b-r-lens-catalogue). A type is a `supertag` row of the
+# Drives a type of the store read in the write's own transaction (check c-schema-bump, spec
+# requirement r-lens-catalogue). A type is a `supertag` row of the
 # store, so a write of a node checks the node's type against the store inside its own transaction
 # and no process holds a list of types read at boot. This driver starts one Dispatch server over an
 # empty database of the run's own, which the server migrates at boot, and then, with that one
@@ -49,7 +49,7 @@ set +x
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/infra_1950_schema?sslmode=disable \
+Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/lens_schema?sslmode=disable \
          [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] [DEV_SIGNIN_LOGIN=alice] lens-schema.sh
        (DATABASE_URL names an empty database on this machine, which the server migrates)
 USAGE

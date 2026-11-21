@@ -12,7 +12,7 @@ import (
 var visibilityStateProjections = []projection{
 	baseAttributeCensus(graphstore.KindInteraction, graphstore.KindInteraction, nil, graphstore.VisibilityAuthor),
 	baseAttributeCensus(graphstore.KindLens, graphstore.KindLens, nil, ""),
-	baseAttributeCensus("finding", refs.BlockNodeKind, lensBlockID, ""),
+	baseAttributeCensus("finding", refs.BlockNodeKind, graphstore.FindingIDSQL, ""),
 	baseAttributeCensus(graphstore.KindRisk, graphstore.KindRisk, nil, ""),
 	baseAttributeCensus(graphstore.KindConstraint, graphstore.KindConstraint, nil, ""),
 	baseAttributeCensus(graphstore.KindLensKind, graphstore.KindLensKind, nil, graphstore.VisibilityProject),
@@ -22,7 +22,7 @@ var visibilityStateProjections = []projection{
 // run, a lens, a finding, a risk, a constraint or a lens kind - carries, name the kind as the
 // report names it and nodeKind the kind the store keys its nodes by, narrowed by narrow over a
 // node id where it is not nil (a finding is a block node whose id names its lens). A node's row is
-// the projection of its own base-attribute tuples (dispatch://INFRA-1149's R8), and no table
+// the projection of its own base-attribute tuples (cybermonklabs/legion#3178's R8), and no table
 // projects these kinds, so the store's own record stands on the row side: for each node that
 // states either attribute, the newest tuple of each, read as graphstore.CurrentValue reads one,
 // against the node row's visibility and state columns. A column with no tuple behind it is a node

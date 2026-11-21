@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -161,16 +162,18 @@ func sessionCloser(name, id string) closer {
 }
 
 // Closing an issue withdraws its open asks, on each ask's node and its row, and the documents'
-// text, which renders each ask's state from the store, shows their blocks resolved; on a fleet of
-// one build the close changes no byte of any document, nor does a reopen's restoration, so the
-// settlement after it, on the closed issue, saves no version and changes no ask row, no answer or
-// review, and
-// appends no ask event. Reopening restores exactly the withdrawn asks, the text shows their blocks
-// open again, and the settlement after the reopen saves no version either. The settle delay is an
-// hour, so the test runs each settlement itself (SettleIssueDocuments, as the timer, the room's
-// next load or the resumption would), and each read in between meets the issue as the write
-// before it left it. The reopen is sent against a read taken after the closed issue's settlement,
-// as a client that reads the issue before it writes sends it.
+// text, which renders each ask's state from the store, shows their blocks resolved. The close
+// writes the withdrawn blocks' resolved state into each document, as a version keeps the state of
+// an ask that is not open for the release before's readers, so the settlement after it, on the
+// closed issue, saves one version of each document, differing from the one before only in those
+// blocks' openers and appending only its quiet artifact.version event; it changes no ask row, no
+// answer or review, and appends no ask event. Reopening restores exactly the withdrawn asks, the
+// text shows their blocks open again, and the settlement after the reopen saves one more version
+// of each document, the blocks' state taken off again and a copy keeping its source. The settle
+// delay is an hour, so the test runs each settlement itself (SettleIssueDocuments, as the timer,
+// the room's next load or the resumption would), and each read in between meets the issue as the
+// write before it left it. The reopen is sent against a read taken after the closed issue's
+// settlement, as a client that reads the issue before it writes sends it.
 func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T) {
 	for _, closer := range closers {
 		t.Run(closer.name, func(t *testing.T) {
@@ -187,8 +190,11 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			}
 			settledRows := askRowTexts(t, f.database, f.answeredAsk, f.retractedAsk)
 			versions := map[string][]string{}
+			latestBefore := map[string]int{}
 			for _, document := range documents {
 				versions[document] = versionHashes(t, f.database, document)
+				stored := documentVersions(t, f.handler, document)
+				latestBefore[document] = stored[len(stored)-1].Number
 			}
 			reviews := reviewCount(t, f.database, f.spec, f.copy)
 			decisions := decisionEventCount(t, f.database, f.issue)
@@ -254,13 +260,16 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 				t.Fatalf("settle the closed issue's documents: %v", err)
 			}
 			awaitSettled(t, f.database, documents...)
+			closedAt := map[string]int{}
 			for _, document := range documents {
-				if got := versionHashes(t, f.database, document); !reflect.DeepEqual(got, versions[document]) {
-					t.Fatalf("the closed issue's settlement saved versions of %s:\n%v\nwant\n%v", document, got, versions[document])
+				closedAt[document] = requireStateVersionsPast(t, f.handler, f.database, document, latestBefore[document], 1)
+				if stored := versionMarkdown(t, f.handler, document, closedAt[document]); !closeDecisionState.MatchString(stored) ||
+					closeDecisionState.FindStringSubmatch(stored)[1] != "resolved" {
+					t.Fatalf("the version the closed issue's settlement saved of %s = %s, want the decision's opener showing it resolved", document, stored)
 				}
 				requireLiveText(t, f.handler, document, resolved[document])
 			}
-			requireQuietVersionEvents(t, f.database, f.issue, response.LastSeq, 0)
+			requireQuietVersionEvents(t, f.database, f.issue, response.LastSeq, len(documents))
 			if got := askRowTexts(t, f.database, asks...); !reflect.DeepEqual(got, rows) {
 				t.Fatalf("the closed issue's settlement changed the asks:\n%v\nwant them as the close left them\n%v", got, rows)
 			}
@@ -327,22 +336,29 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			if inbox := inboxAskIDs(t, f.handler); !containsAll(inbox, f.open()) {
 				t.Fatalf("inbox after the reopen = %v, want every restored ask %v", inbox, f.open())
 			}
-			// The settlement the reopen's write left owed saves no version: the blocks were never
-			// written resolved.
+			// The settlement the reopen's write left owed saves one more version of each document:
+			// the reopen takes the decision's state off again, as a version keeps no state of an
+			// open ask, and the copy keeps its source.
 			if err := f.documents.SettleIssueDocuments(ctx, f.issue); err != nil {
 				t.Fatalf("settle the reopened issue's documents: %v", err)
 			}
 			awaitSettled(t, f.database, documents...)
 			for _, document := range documents {
-				if got := versionHashes(t, f.database, document); !reflect.DeepEqual(got, versions[document]) {
-					t.Fatalf("the reopened issue's settlement saved versions of %s:\n%v\nwant\n%v", document, got, versions[document])
+				reopenedAt := requireStateVersionsPast(t, f.handler, f.database, document, closedAt[document], 1)
+				stored := versionMarkdown(t, f.handler, document, reopenedAt)
+				if closeDecisionState.MatchString(stored) {
+					t.Fatalf("the version the reopened issue's settlement saved of %s = %s, want the decision's opener holding no state", document, stored)
 				}
-				_, version := documentTexts(t, f.handler, document)
-				requireNoAnswerAttributes(t, "the latest version of "+document, version)
+				if document == f.copy && !strings.Contains(stored, `copied_from="`+f.blockAsk+`"`) {
+					t.Fatalf("the version the reopened issue's settlement saved of the copy = %s, want its source kept", stored)
+				}
 			}
 		})
 	}
 }
+
+// closeDecisionState finds the state the close-decision block's opener holds in a stored version.
+var closeDecisionState = regexp.MustCompile(`#close-decision[^}\n]* state="([a-z]+)"`)
 
 // failingSettlement is a document service whose settlement of an issue's documents before its
 // close fails, leaving the blocks written since the last settlement without an ask.

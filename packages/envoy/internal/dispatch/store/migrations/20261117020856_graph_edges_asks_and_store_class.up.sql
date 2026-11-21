@@ -1,6 +1,6 @@
 -- 20261117020856_graph_edges_asks_and_store_class.up.sql
 --
--- INFRA-1950: graph_edges answers the relations the node and tuple store holds with no projection
+-- graph_edges answers the relations the node and tuple store holds with no projection
 -- row behind them. The kinds this child adds to the store - an interaction, a lens, a risk and a
 -- constraint - are tied by tuples no table projects: a node a run changed points at the run's
 -- interaction (`changed_by_run`), a lens at its lens kind (`has_kind`) and at the lens that
@@ -11,7 +11,7 @@
 -- is null, so before this migration the view answers none of these.
 --
 -- This is the one migration of this child that states graph_edges. It re-states the arm list of
--- 20261116094101_graph_edges_asks (dispatch://INFRA-1150) - its `node_kind is null` tests on the
+-- 20261116094101_graph_edges_asks (cybermonklabs/legion#4173) - its `node_kind is null` tests on the
 -- two asks arms and the ask_followers arm, and the tuple arm's cases and joins for an ask's
 -- relations - with two changes:
 --

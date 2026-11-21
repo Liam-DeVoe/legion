@@ -4,7 +4,7 @@
 
 package main
 
-// dispatch://INFRA-1950's c-read-cost: the reads this child touches get no slower over four
+// Check c-read-cost: the reads this child touches get no slower over four
 // shapes, read at this head and at the base build in one run.
 //
 // The test is TestThePredicateAndTheLensReadsGetNoSlower at the end of this file; everything above
@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +29,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testbaseline"
 )
 
 const (
@@ -90,11 +93,10 @@ const (
 	predicateCostDropInbound = "drop-inbound-indexes"
 )
 
-// predicateCostInboundIndexes are the indexes the check's negative control drops. The check
-// names graph_tuples_inbound alone, but graph_tuples_as_of_in keys the same (to_kind, to_id,
-// kind) under the same partial predicate (migration 20261109013400_graph_store), so a run that
-// dropped the first would read the second and pay one sort more: the control drops both.
-var predicateCostInboundIndexes = []string{"graph_tuples_inbound", "graph_tuples_as_of_in"}
+// predicateCostInboundIndexes are the indexes the check's negative control drops:
+// graph_tuples_as_of_in alone, which migration 20261109013400_graph_store declares, the one index
+// of the store's set that serves a read into a node.
+var predicateCostInboundIndexes = []string{"graph_tuples_as_of_in"}
 
 // predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its
 // node id, read as a value before the read as readEdgeRows reads it: the edges of graph_edges into
@@ -646,7 +648,7 @@ func requirePredicateCostAuthorNodes(t *testing.T, head *costArm) {
 // dropPredicateCostInboundIndexes is the check's negative control on this head's database: it
 // drops predicateCostInboundIndexes, and prints the plan of the lookup the tuples-into-a-node read
 // makes of the node of shape before the drop and after it, so the run shows the read losing the
-// index rather than assuming it. A plan that read neither index before the drop would make the
+// index rather than assuming it. A plan that read none of them before the drop would make the
 // drop no control of this read, and fails the run.
 func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predicateCostShape) {
 	t.Helper()
@@ -663,7 +665,7 @@ func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predica
 	t.Logf("%s=%s: %s's plan of the tuples into %s, the node of %q, before the drop (it reads %v):\n%s",
 		predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, shape.name, reads(before), before)
 	if len(reads(before)) == 0 {
-		t.Fatalf("%s=%s: %s's plan of the tuples into %s reads neither of %v before the drop, so dropping them is no control of that read",
+		t.Fatalf("%s=%s: %s's plan of the tuples into %s reads none of %v before the drop, so the drop is no control of that read",
 			predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, predicateCostInboundIndexes)
 	}
 	for _, index := range predicateCostInboundIndexes {
@@ -672,7 +674,7 @@ func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predica
 		}
 	}
 	after := predicateCostInboundPlan(t, head, node)
-	t.Logf("%s=%s: %s's plan of the tuples into %s after %v were dropped from its database:\n%s",
+	t.Logf("%s=%s: %s's plan of the tuples into %s after the drop of %v from its database:\n%s",
 		predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, predicateCostInboundIndexes, after)
 	if left := reads(after); len(left) != 0 {
 		t.Fatalf("%s=%s: %s's plan of the tuples into %s still reads %v after the drop", predicateCostControlEnv, predicateCostDropInbound,
@@ -704,8 +706,19 @@ type predicateCostRead struct {
 	// headOnly marks the read the base build does not serve at all, which this child adds: it
 	// has no reading at the base build, so it is printed and bound nothing.
 	headOnly bool
-	path     func(shape *predicateCostShape) string
+	// cutAtBase is the code of the one refusal the base build may answer this read with, a read
+	// it cut at a bound of its own: such a reading counts as predicateCostClosureBound, the least
+	// the read took there, so it can only lower the base build's p50 and tighten the bound on
+	// this head. Any other refusal at the base build, and any refusal at this head, fails.
+	cutAtBase string
+	path      func(shape *predicateCostShape) string
 }
+
+// predicateCostClosureBound is the bound main's #4554 puts on an issue's reference closure walk
+// (api's referencesClosureBound): a GET of an issue's references whose walk runs past it answers
+// 503 REFERENCES_TIMEOUT. The base build's walk read 1.8 to 2.3 s over these shapes before that
+// bound, so it is cut there; this head reads the same references in milliseconds.
+const predicateCostClosureBound = 2 * time.Second
 
 func predicateCostReads() []predicateCostRead {
 	return []predicateCostRead{
@@ -731,7 +744,7 @@ func predicateCostReads() []predicateCostRead {
 		{name: "the coverage read (GET /api/v1/issues/{key}/coverage)", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue + "/coverage"
 		}},
-		{name: "the references panel read (GET /api/v1/issues/{key}/references)", path: func(shape *predicateCostShape) string {
+		{name: "the references panel read (GET /api/v1/issues/{key}/references)", cutAtBase: "REFERENCES_TIMEOUT", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue + "/references"
 		}},
 	}
@@ -805,8 +818,12 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // tuples into a node, the backlink counts, the issue tree (the list of the shape's issue's
 // children, each shape's issue holding predicateCostChildren), GET /api/v1/lenses with its chains,
 // the coverage read and the references panel read, each named with its route. The base build is the
-// commit BASELINE_SHA names (baseBuild),
-// serving a database of its own (startCostArms). Both builds are read in one loop, one reading on
+// commit BASELINE_SHA names, which c-read-cost's run string sets, where it is unset, to the merge
+// base with the branch of cybermonklabs/legion#4173, the release this child lands after; a base
+// whose tree holds no migration 20261109013400 (graph_store) is refused before anything is
+// built, naming the base (predicateCostBaseHoldsTheStore), since a base with no store measures
+// nothing this child changed.
+// The base serves a database of its own (startCostArms). Both builds are read in one loop, one reading on
 // each in each turn, the build that goes first alternating, after one warm-up reading on each that
 // is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
 // backfill (costArm.vacuumAnalyze), and the block-index lease of each build is held while the
@@ -830,6 +847,7 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 	}
 	sizes := predicateCostSizesOf(t)
 	control := predicateCostControlOf(t)
+	predicateCostBaseHoldsTheStore(t)
 	t.Log(costGVisorNote)
 	t.Log("how each build is driven: both are server processes of their own build, each serving a " +
 		"database of its own which that build migrated at boot, and each is driven over its own HTTP " +
@@ -896,12 +914,31 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 			if read.headOnly || shape.headOnly {
 				measured = []*costArm{head}
 			}
-			taken := costInterleaved(t, read.name, shape.name, sizes.readings, measured, func(subject *costArm, _ int) time.Duration {
+			cut := 0
+			taken := costInterleaved(t, read.name, shape.name, sizes.readings, measured, func(subject *costArm, run int) time.Duration {
 				subject.ready(t)
 				path := read.path(shapes[subject][index])
-				reading, _ := subject.timed(t, http.MethodGet, path, "", http.StatusOK)
+				if subject != base || read.cutAtBase == "" {
+					reading, _ := subject.timed(t, http.MethodGet, path, "", http.StatusOK)
+					return reading
+				}
+				reading, answer := subject.timedAnswer(t, http.MethodGet, path, "")
+				if answer.status == http.StatusServiceUnavailable && answer.code() == read.cutAtBase {
+					if run >= 0 {
+						cut++
+					}
+					return predicateCostClosureBound
+				}
+				if answer.status != http.StatusOK {
+					t.Fatalf("%s: GET %s: status %d, want 200 or 503 %s: %s", subject.name, path, answer.status, read.cutAtBase, answer.body)
+				}
 				return reading
 			})
+			if read.cutAtBase != "" && slices.Contains(measured, base) {
+				t.Logf("%s over %q: the base build cut %d of its %d readings at its %s bound (%s), each counted as %s; its p50 with them %.1f ms",
+					read.name, shape.name, cut, sizes.readings, predicateCostClosureBound, read.cutAtBase, predicateCostClosureBound,
+					costMilliseconds(taken[base].p50()))
+			}
 			for _, subject := range measured {
 				readings = append(readings, taken[subject])
 				held[cell(read.name, index, subject)] = taken[subject]
@@ -958,4 +995,33 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 		t.Skipf("%s=%g: this run wrote and read that share of the check's sizes, a smoke of this test whose readings are printed above "+
 			"and no reading of c-read-cost", predicateCostScaleEnv, sizes.scale)
 	}
+}
+
+// predicateCostStoreMigration is the migration that made the store, which every base this check
+// measures against holds.
+const predicateCostStoreMigration = "packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql"
+
+// holdsTheStore reports whether commit's tree holds the migration that made the store
+// (predicateCostStoreMigration). git reads <commit>:<path> from the repository's root whatever
+// directory it runs in.
+func holdsTheStore(commit string) bool {
+	return exec.Command("git", "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run() == nil
+}
+
+// predicateCostBaseHoldsTheStore refuses a base build whose tree holds no store
+// (predicateCostStoreMigration), naming the base: `git merge-base origin/main HEAD`, the base a
+// branch that lands on main names in BASELINE_SHA, is such a base while the branches this child
+// stacks on are unmerged, and over it every reading of a read this child changed would compare the
+// store with no store. It reads the base baseBuild builds (testbaseline.Commit), and it is not
+// in baseBuild, whose other callers (cybermonklabs/legion#3178's census and cost tests) measure the
+// store against a base from before it.
+func predicateCostBaseHoldsTheStore(t *testing.T) {
+	t.Helper()
+	commit := testbaseline.Commit(t)
+	named := fmt.Sprintf("the commit %s=%s names", testbaseline.Variable, strings.TrimSpace(os.Getenv(testbaseline.Variable)))
+	if !holdsTheStore(commit) {
+		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with the branch of cybermonklabs/legion#4173",
+			commit, named, predicateCostStoreMigration, testbaseline.Variable)
+	}
+	t.Logf("the base %s (%s) holds the migration that made the store, %s", commit, named, predicateCostStoreMigration)
 }

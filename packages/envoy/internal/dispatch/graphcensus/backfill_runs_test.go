@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -51,8 +52,8 @@ func appendOlderPodFrame(t *testing.T, database *store.Store, run string, sequen
 }
 
 // giveRunItsNode writes the interaction node of a run an older pod recorded, from its row, as this
-// build's first frame of the run does before it takes the node (api's lockGoingRun): WriteRun, in
-// a transaction of its own.
+// build's first frame of the run does before it takes the node (api's lockGoingRun):
+// graphstore.WriteRun, in a transaction of its own.
 func giveRunItsNode(t *testing.T, database *store.Store, run string) {
 	t.Helper()
 	ctx := context.Background()
@@ -61,8 +62,8 @@ func giveRunItsNode(t *testing.T, database *store.Store, run string) {
 		t.Fatalf("begin the node of run %s: %v", run, err)
 	}
 	defer tx.Rollback(ctx)
-	if held, err := WriteRun(ctx, tx, run); err != nil || !held {
-		t.Fatalf("write the node of run %s: held %t, %v", run, held, err)
+	if written, err := graphstore.WriteRun(ctx, tx, run); err != nil || !written.Held {
+		t.Fatalf("write the node of run %s: held %t, %v", run, written.Held, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the node of run %s: %v", run, err)
@@ -87,7 +88,7 @@ func runFrameValues(t *testing.T, database *store.Store, run string) int64 {
 // anti-join, row by row (backfillRuns, backfillRunFrames, backfillGoneRuns):
 //
 //   - a run it recorded, with two frames, and no node: the backfill writes its node, its authored_by
-//     and a frame value of each frame, through WriteRun;
+//     and a frame value of each frame, through graphstore.WriteRun;
 //   - a frame it appended to a run this build gave its node: the backfill writes that frame's value
 //     and no second value of the frame the node held already;
 //   - a run whose row it deleted an hour old, frames with it, whose node this build had written: the
@@ -202,6 +203,57 @@ func hasDifference(found []Difference, at, cause string) bool {
 		}
 	}
 	return false
+}
+
+// requireTheOwedRunLockOrder holds writeOwedRun to its steps. A run stands under no owner row, so
+// the writer takes none. It takes the run's going_requests row `for no key update` first, as the
+// one writer of a run's node from its row does (graphstore.WriteRun), and has read nothing of the
+// store or of going_events while it waits there; then it writes the run's interaction node and its
+// asker's person node in one statement, in ascending (kind, id), each held as the same key a
+// transaction still open inserted, and appends their tuples after both, in a later statement of the
+// same write phase. That phase is sent as one batch whose statements are all parsed before the
+// first runs, so the append's table is locked while the node write waits, as every store write's
+// is, and no graph_tuples lock is read for it here. The run is one an older pod recorded with one
+// frame and no node, asked by a person no write has recorded. The test follows the pass alone
+// (backfillRuns), so a lock another pass of Backfill takes is not read as this batch's.
+func requireTheOwedRunLockOrder(t *testing.T) {
+	database := storetest.Open(t)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	run := olderPodRun(t, database, alice, "", "who answers this?", "One ")
+	request := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the run's going_requests row", Step: lockstep.StepProjection, Taken: true,
+		Statement: "select id::text, author, project, words, created_at, ends_at from going_requests",
+		Unlocked:  []string{"going_events", "graph_nodes", "graph_tuples"},
+	}, `select 1 from going_requests where id = $1::uuid for update`, run)
+	now := time.Now()
+	interaction := holdWrite(t, database, &lockstep.Hold{
+		Name: "the run's interaction node row", Step: lockstep.StepNode, Taken: true,
+		Kind: graphstore.KindInteraction, ID: run, Statement: "insert into graph_nodes (",
+	}, []graphstore.Node{{
+		Kind: graphstore.KindInteraction, ID: run, Supertag: graphstore.KindInteraction,
+		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+		MadeAt: now, MadeBy: alice, SourceEvent: graphstore.NoEvent,
+	}}, nil)
+	asker := holdWrite(t, database, &lockstep.Hold{
+		Name: "person alice's node row", Step: lockstep.StepNode, Taken: true,
+		Kind: graphstore.KindPerson, ID: alice.ID, Statement: "insert into graph_nodes (",
+	}, []graphstore.Node{graphstore.PersonNode(alice.ID, alice, now, graphstore.NoEvent)}, nil)
+
+	report := followTheRun(t, database, "writeOwedRun", func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+		done, err := backfillRuns(ctx, database)
+		return BackfillReport{Kinds: []KindBackfill{done}}, err
+	}, []*lockstep.Hold{request, interaction, asker})
+	if done := reportedKind(t, report, graphstore.KindInteraction); done.Rows != 1 || !done.Complete {
+		t.Errorf("the backfill reports %#v for runs with no node, want 1 and the kind complete", done)
+	}
+	if node, held, err := graphstore.ReadNode(context.Background(), database.Pool, graphstore.KindInteraction, run); err != nil || !held ||
+		node.MadeBy.ID != alice.ID || node.Visibility != graphstore.VisibilityAuthor {
+		t.Errorf("the run reads node %+v (held %t, %v) after the backfill, want alice's, reserved for her: the run the test followed is not one that committed",
+			node, held, err)
+	}
+	if values := runFrameValues(t, database, run); values != 1 {
+		t.Errorf("the run holds %d frame values after the backfill, want its one frame", values)
+	}
 }
 
 // requireTheRunFramesLockOrder holds writeRunFrames to its steps. A run stands under no owner row,

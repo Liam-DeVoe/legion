@@ -364,11 +364,10 @@ func DecisionWords(decision *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
 
-// TypedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
-// rendering writes it (pmdoc.BlockPointers).
+// TypedBlockID is a typed block's id as the block index keys it (storedBlockID).
 func TypedBlockID(node *pmdoc.Node) string {
 	id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-	return strings.ReplaceAll(id, "\x00", "\uFFFD")
+	return storedBlockID(id)
 }
 
 // decisionOf is decision block node as decisionFact holds it.
@@ -643,10 +642,20 @@ func (f TypedFacts) pairs(pairs []blockPair) []blockPair {
 
 // typedPairs is the pairs of the facts' own ties: each decision's and ask block's shaped and each
 // decision's from_ask, paired as the block index pairs a pointer (pointerPairs), and its
-// decided_by (pairs).
-func (f TypedFacts) typedPairs() []blockPair {
+// decided_by (pairs), each pointer's far end resolved, through q, to the node it resolves to now,
+// as PlanBlocks resolves the pairs it reconciles (resolvePointerPairs): a `dispatch://KEY/spec#b-…`
+// tie names the block of the spec's issue room once the spec is a fragment of that room (T17 of
+// this branch's plan), and the blocks the facts were read of, at their addresses under the
+// document artifactID the pass indexes, are the ones a pass writes.
+func (f TypedFacts) typedPairs(ctx context.Context, q Queryer, artifactID string) ([]blockPair, error) {
 	paired, _ := pointerPairs(f.nodes, slices.Concat(f.shaped, f.ties))
-	return f.pairs(paired)
+	written := make([]string, 0, len(f.nodes))
+	for position, node := range f.nodes {
+		if f.fits[position] {
+			written = append(written, blockNodeAddress(f.document.RefKey, node.ID))
+		}
+	}
+	return resolvePointerPairs(ctx, q, artifactID, written, f.pairs(paired))
 }
 
 // typedScope is the rows of block_refs the facts' own ties are: those of typedKinds held by the
@@ -879,10 +888,14 @@ func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockI
 	}
 	writer := document.Writer
 	_, newest := facts.versions.Newest(d.artifactID)
+	pairs, err := facts.typedPairs(ctx, q, d.artifactID)
+	if err != nil {
+		return err
+	}
 	d.blocks = BlockIndexing{
 		artifactID: d.artifactID, refKey: document.RefKey, version: d.version, versionAt: newest.At,
 		versions: facts.versions, documentOf: facts.documents,
-		pairs: facts.typedPairs(), scope: facts.typedScope(),
+		pairs: pairs, scope: facts.typedScope(),
 	}
 	only := make(map[string]struct{}, len(facts.typed))
 	for _, id := range facts.typed {
@@ -943,9 +956,7 @@ func (d DecisionIndexing) Held() BlockIndex {
 // (queueRoomTypedBlocks) and the reconcile of its ties' rows, each of which names a node that
 // write wrote or the store holds.
 func (d DecisionIndexing) Queue(batch *store.WriteBatch) error {
-	if err := graphstore.QueueNodes(batch, d.stated); err != nil {
-		return fmt.Errorf("write the decisions and readings of version %d of %s: %w", d.version, d.artifactID, err)
-	}
+	graphstore.QueueNodes(batch, d.stated)
 	if d.blocks.scope == nil {
 		return nil
 	}
@@ -1013,33 +1024,37 @@ func (d DecisionIndexing) heldRooms(index BlockIndex) map[string]string {
 }
 
 // unheldTypedNodes is the node of each decision and reading the store holds present in document
-// artifactID, at any state but gone (a proposed, settled or overtaken node is as present as a
-// live one), that the version's blocks no longer hold as one, written at versionAt: stated gone,
-// with the supertag it holds, where the version holds no block of its id, and restated with the
-// supertag block where it holds the block under another type, as PlanBlocks writes the node of a
-// retyped block, which keeps the state it holds (blockNode). supertags is each block the version
-// holds as a decision or a reading (TypedFacts.supertags), whose node the typed-node pass writes
-// itself.
+// artifactID, at any state but gone (the spec's R12: a proposed, settled or overtaken
+// node is as present as a live one), that the version's blocks no longer hold as one, written at
+// versionAt: stated gone, with the supertag it holds, where the version holds no block of its id,
+// and restated with the supertag block where it holds the block under another type, as
+// PlanBlocks writes the node of a retyped block, which keeps the state it holds (blockNode).
+// supertags is each block the version holds as a decision or a reading (TypedFacts.supertags),
+// whose node the typed-node pass writes itself.
 //
 // It reads only what the store places in the document, each by its own key: the decisions and
 // readings its document_blocks rows hold, the block nodes whose current part_of is the document's
 // own node (graph_tuples_as_of_in) and those its block_refs rows name, which is where the typed-node
 // pass above the deferral bound places them; and the readings whose current part_of is one of
 // those decisions or an ask whose block the document holds. A node outside the document - the
-// reading of a copy of one of its asks on another document - is no node of it. The read is the
-// plan's, in its write's read phase.
+// reading of a copy of one of its asks on another document - is no node of it, and neither is a
+// block of a retired document of an issue room, nor an ask of one, which the room's passes keep as
+// the retirement left them (BlockIndexing.retained). The read is the plan's, in its write's read
+// phase.
 func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, document IndexedVersion, versionAt time.Time, blocks []model.ArtifactBlock, supertags map[string]string) ([]graphstore.Node, error) {
 	refKey := document.RefKey
 	rows, err := q.Query(ctx, `
 		with candidates as (
 			select d.node_address as id from document_blocks d
 			where d.artifact_id = $1::uuid and d.node_kind = $3 and d.type = any($4::text[])
+			  and not `+retiredDocumentSQL(roomBlockRowSQL("d.artifact_id", "d.block_id"))+`
 			union
 			select part.from_id from (`+graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
 		`t.to_kind = 'artifact' and t.to_id = $2 and t.kind = '`+graphstore.TuplePartOf+`'`)+`) part
 			where part.asserted and part.from_kind = $3
 			union
 			select r.node_address from block_refs r where r.artifact_id = $1::uuid and r.node_kind = $3
+			  and not `+retiredDocumentSQL(roomBlockRowSQL("r.artifact_id", "r.block_id"))+`
 		),
 		typed as (
 			select node.id, node.supertag from candidates c
@@ -1053,6 +1068,7 @@ func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, documen
 			select $3::text as kind, id from typed where supertag = $6
 			union all
 			select $7::text, q.id::text from asks q where q.block_artifact_id = $1::uuid
+			  and not `+retiredDocumentSQL(RoomBlockDocumentSQL("q.block_artifact_id", "q.block_id"))+`
 		)
 		select id, supertag from typed
 		union
@@ -1157,8 +1173,12 @@ func PlanOpenedAskTies(ctx context.Context, q Queryer, index BlockIndex, artifac
 	if len(own) == 0 {
 		return plan, nil
 	}
+	typed, err := facts.typedPairs(ctx, q, artifactID)
+	if err != nil {
+		return OpenedAskTies{}, err
+	}
 	var pairs []blockPair
-	for _, pair := range facts.typedPairs() {
+	for _, pair := range typed {
 		if _, mine := own[pair.blockID]; mine && pair.kind == TupleShaped {
 			pairs = append(pairs, pair)
 		}

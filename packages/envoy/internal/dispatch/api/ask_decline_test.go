@@ -289,9 +289,9 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 
 	// A declined ask whose question is a document's ask block leaves that block closed, as
 	// every other resolution leaves it: the asks member of the document's text, as an agent reads
-	// it, shows the block resolved, read from the ask's node, and the
-	// decline changes no byte of the document. It runs on a server whose documents settle fast
-	// enough to watch.
+	// it, shows the block resolved, read from the ask's node, and the decline writes one version,
+	// which changes only the server-owned attributes of the ask's block: `state` (R3). It runs on
+	// a server whose documents settle fast enough to watch.
 	t.Run("a declined block ask reads resolved in its document", func(t *testing.T) {
 		handler, database := blockAskHandler(t)
 		issue, askID := seedBlockAsk(t, handler, "Declined block", "decision", transportAsk, "Which transport?")
@@ -303,7 +303,11 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 		}
 		awaitTextShows(t, handler, issue.PrimaryArtifactID, `the block reading state="resolved"`,
 			contains(`#decision state="resolved"`), nil)
-		requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, before[len(before)-1].Number)
+		// The decline writes one version, the block's kept state (R3): state="resolved" and nothing more.
+		latest := requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, before[len(before)-1].Number, 1)
+		if stored := versionMarkdown(t, handler, issue.PrimaryArtifactID, latest); !strings.Contains(stored, ` state="resolved"}`) {
+			t.Fatalf("the decline's version = %s, want the block's opener showing it resolved", stored)
+		}
 	})
 }
 

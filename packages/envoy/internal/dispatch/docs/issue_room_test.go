@@ -652,6 +652,13 @@ func requireRoomCensus(t *testing.T, database *store.Store, what string) {
 // whole, under the tree artifact: a block of another fragment whose row was lost comes back, no
 // fragment's block goes, no row is keyed by a converted document, and every mark of the room is
 // cleared.
+//
+// Each pass over the room records each document it covers stated at the version it covers, by
+// this build's rule (refs.BlockIndexMarkingRule), in the statement of its fence. A retired
+// document of the room is a document the pass covers no version of: once the backfill has marked
+// it as a document no pass of this rule stated, the room's reconciliation clears its mark with the
+// marks of the room and states it at the version it leaves it at, so neither the backfill nor a
+// tick marks it again.
 func TestARoomBlockKnowsItsDocumentAndAReconciliationReadsTheRoom(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -765,6 +772,33 @@ func TestARoomBlockKnowsItsDocumentAndAReconciliationReadsTheRoom(t *testing.T) 
 	requireRoomBlocks(t, database, room, "a mark on the tree artifact", versions, holds)
 	requireNoMarkOfTheRoom(t, database, room, "a mark on the tree artifact")
 	requireRoomCensus(t, database, "a mark on the tree artifact")
+	for document, version := range versions {
+		requireStatedByThisRule(t, database, document, version, "the room's passes")
+	}
+
+	func() {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the retirement: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := RetireDocument(ctx, tx, room.verification, model.Actor{Kind: "user", ID: "alice"}, "The checks moved to the plan."); err != nil {
+			t.Fatalf("retire the Verification document: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the retirement: %v", err)
+		}
+	}()
+	// The row as the backfill leaves a document no pass of this rule has stated: marked, and
+	// stated by no pass.
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`,
+		room.verification); err != nil {
+		t.Fatalf("mark the retired Verification document as the backfill marks it: %v", err)
+	}
+	reconcile("a mark on the retired document")
+	requireNoMarkOfTheRoom(t, database, room, "a mark on the retired document")
+	requireStatedByThisRule(t, database, room.verification, versions[room.verification], "a mark on the retired document")
 }
 
 // joinIssueRoom writes, by SQL, a document of room's issue under slug, with an empty first version
@@ -789,6 +823,24 @@ func joinIssueRoom(t *testing.T, database *store.Store, room issueRoom, slug str
 		t.Fatalf("join %s to the issue room: %v", slug, err)
 	}
 	return document
+}
+
+// requireStatedByThisRule fails unless the document_block_versions row of artifactID records a
+// pass of this build's rule at version: stated_version version and stated_rule
+// refs.BlockIndexMarkingRule.
+func requireStatedByThisRule(t *testing.T, database *store.Store, artifactID string, version int, what string) {
+	t.Helper()
+	var statedVersion, statedRule string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(stated_version::text, 'null'), coalesce(stated_rule::text, 'null')
+		from document_block_versions where artifact_id = $1::uuid
+	`, artifactID).Scan(&statedVersion, &statedRule); err != nil {
+		t.Fatalf("%s: read the pass that last stated %s: %v", what, artifactID, err)
+	}
+	if statedVersion != strconv.Itoa(version) || statedRule != strconv.Itoa(refs.BlockIndexMarkingRule) {
+		t.Errorf("%s: document %s reads stated_version %s and stated_rule %s, want version %d by rule %d",
+			what, artifactID, statedVersion, statedRule, version, refs.BlockIndexMarkingRule)
+	}
 }
 
 // An update built on a document's own room is refused once the document moved into its issue's
@@ -1066,44 +1118,53 @@ func TestARecheckClosesAResidentIssueRoomWhoseDocumentsChanged(t *testing.T) {
 
 // An issue's tree that no document has joined yet is the only fragment of its room, and a mark on
 // it reconciles it as its own document (indexOwedDocument): the tick indexes it and clears the
-// mark, where a room with no joined fragment to part leaves the tree owed on every tick.
+// mark, where a room with no joined fragment to part leaves the tree owed on every tick, and
+// records it stated at the version it indexed by this build's rule (refs.BlockIndexMarkingRule).
+// A tree that holds no version yet, marked as the backfill marks a document no pass of this rule
+// stated, has nothing to index: the tick clears its marks and states it at version 0, so it is no
+// longer owed and neither the backfill nor a tick marks it again.
 func TestAnIssuesTreeNoDocumentJoinedReconcilesAsItsOwnDocument(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
-	var tree string
+	var tree, bare string
 	if err := database.Pool.QueryRow(ctx, `
 		with project as (
 			insert into projects (key, name, default_assignee) values ('DOC', 'Documents', 'alice')
 			on conflict (key) do nothing
 		), issue as (
 			insert into issues (key, project_key, number, title, created_by, rank)
-			values ('DOC-1', 'DOC', 1, 'Issue room', '{"kind":"user","id":"alice"}', 'U')
+			values ('DOC-1', 'DOC', 1, 'Issue room', '{"kind":"user","id":"alice"}', 'U'),
+			       ('DOC-2', 'DOC', 2, 'Issue room with no version', '{"kind":"user","id":"alice"}', 'V')
 		), tree as (
 			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-			values ('DOC-1', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-			returning id
+			values ('DOC-1', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}'),
+			       ('DOC-2', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+			returning id, issue_key
 		), first as (
 			insert into artifact_versions (artifact_id, number, markdown, authors)
-			select id, 1, '', '[{"kind":"user","id":"alice"}]' from tree
+			select id, 1, '', '[{"kind":"user","id":"alice"}]' from tree where issue_key = 'DOC-1'
 		), held as (
-			insert into issue_trees (issue_key, artifact_id) select 'DOC-1', id from tree
+			insert into issue_trees (issue_key, artifact_id) select issue_key, id from tree
+		), marked as (
+			insert into document_block_versions (artifact_id, store_owed_at) select id, now() from tree where issue_key = 'DOC-2'
 		)
-		select id::text from tree`).Scan(&tree); err != nil {
-		t.Fatalf("create the issue's tree: %v", err)
+		select (select id::text from tree where issue_key = 'DOC-1'), (select id::text from tree where issue_key = 'DOC-2')`).Scan(&tree, &bare); err != nil {
+		t.Fatalf("create the issues' trees: %v", err)
 	}
-	owed := func() bool {
+	owed := func(artifactID string) bool {
 		t.Helper()
 		var owes bool
 		if err := database.Pool.QueryRow(ctx, `
 			select coalesce((select version is null or store_owed_at is not null from document_block_versions where artifact_id = $1), false)
-		`, tree).Scan(&owes); err != nil {
-			t.Fatalf("read the tree's mark: %v", err)
+		`, artifactID).Scan(&owes); err != nil {
+			t.Fatalf("read the mark of %s: %v", artifactID, err)
 		}
 		return owes
 	}
-	if !owed() {
-		t.Fatalf("the tree's first version left it owing no block index: the case proves nothing")
+	if !owed(tree) || !owed(bare) {
+		t.Fatalf("the tree's first version left it owing %t and the marked tree with no version %t, want both owed: the case proves nothing",
+			owed(tree), owed(bare))
 	}
 	indexed := 0
 	for range 3 {
@@ -1113,9 +1174,14 @@ func TestAnIssuesTreeNoDocumentJoinedReconcilesAsItsOwnDocument(t *testing.T) {
 		}
 		indexed += tick.Documents
 	}
-	if owed() || indexed == 0 {
-		t.Errorf("after three ticks the tree owes its block index %t, with %d documents indexed, want it indexed and its mark cleared", owed(), indexed)
+	if owed(tree) || indexed == 0 {
+		t.Errorf("after three ticks the tree owes its block index %t, with %d documents indexed, want it indexed and its mark cleared", owed(tree), indexed)
 	}
+	requireStatedByThisRule(t, database, tree, 1, "after the tree's ticks")
+	if owed(bare) {
+		t.Errorf("after three ticks the tree that holds no version still owes its block index, want its marks cleared: it has nothing to index")
+	}
+	requireStatedByThisRule(t, database, bare, 0, "after the ticks over the tree that holds no version")
 }
 
 // A document moved into its issue's room leaves the compaction sweep's list: the sweep deletes its
@@ -1563,5 +1629,134 @@ func TestARetiredDocumentOfAnIssueRoomClosesTheRoomAndTakesNoVersion(t *testing.
 	}
 	if number, markdown := latest(room.spec); number != 2 || markdown != "The spec's own words.\n" {
 		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
+	}
+}
+
+// A retired document of an issue room leaves the room (roomLayoutSQL): the room's layout names no
+// fragment of it, the room reloads without one, and a paragraph a peer of the room types into the
+// retired Verification document's fragment is versioned and indexed under no document, while the
+// spec's fragment typed beside it is versioned and indexed. The room's block index keeps what it
+// recorded of the retired document's blocks before the retirement - their rows, their record in the
+// room, their texts and their nodes - as they stood (refs.PlanBlocks).
+func TestARetiredDocumentLeavesItsIssueRoomAndKeepsItsIndex(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	runRoomSync(t, newRoomSync(service))
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	// settle sends peer's write into the room and settles the room once the update is stored.
+	settle := func(peer *docstest.Peer, write func(*crdt.Transaction)) {
+		t.Helper()
+		stored := roomUpdateCount(t, database, room.tree)
+		if _, err := peer.Send(write); err != nil {
+			t.Fatalf("type into the room: %v", err)
+		}
+		waitForStoredUpdates(t, database, room.tree, stored)
+		if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
+			t.Fatalf("wait for the room's appends: %v", err)
+		}
+		if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+			t.Fatalf("settle the issue's room: %v", err)
+		}
+	}
+	// retiredIndex is what the room's block index holds of the Verification document's blocks:
+	// each block's room record, row, texts and node state, one line a block.
+	retiredIndex := func() []string {
+		t.Helper()
+		rows, err := database.Pool.Query(ctx, `
+			select r.block_id || ' row=' || coalesce(b.text_sha256 || '@' || b.changed_version, 'none')
+			       || ' texts=' || coalesce((select string_agg(x.version || ':' || coalesce(x.text, '<none>'), ',' order by x.version)
+			                                 from document_block_texts x where x.artifact_id = r.tree_artifact_id and x.block_id = r.block_id), '')
+			       || ' node=' || coalesce((select n.state from graph_nodes n where n.kind = 'block' and n.id = tree.ref_key || '#' || r.block_id), 'none')
+			from issue_room_blocks r
+			join artifacts tree on tree.id = r.tree_artifact_id
+			left join document_blocks b on b.artifact_id = r.tree_artifact_id and b.block_id = r.block_id
+			where r.tree_artifact_id = $1 and r.document_id = $2
+			order by r.block_id`, room.tree, room.verification)
+		if err != nil {
+			t.Fatalf("read the room's index of the Verification document: %v", err)
+		}
+		held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the room's index of the Verification document: %v", err)
+		}
+		return held
+	}
+	before := connectPeer(t, server.URL, room.spec, "alice")
+	if err := before.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	settle(before, writeParagraph(before.Doc, room.verification, "The check the retirement keeps."))
+	kept := retiredIndex()
+	if len(kept) != 1 || !strings.Contains(kept[0], "node=live") {
+		t.Fatalf("before the retirement the room indexes %v of the Verification document, want its one block, live", kept)
+	}
+	func() {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
+			t.Fatalf("retire the Verification document: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the retirement: %v", err)
+		}
+	}()
+	select {
+	case <-before.Ended:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the spec's socket on the issue's room is still open %v after the Verification document's retirement, want the room closed", roomWait(t))
+	}
+	if layout, err := readRoomLayout(ctx, database.Pool, room.tree); err != nil || slices.Contains(layout, room.verification) {
+		t.Errorf("after the retirement the room's layout is %v (%v), want no fragment of the retired Verification document %s", layout, err, room.verification)
+	}
+
+	peer := connectPeer(t, server.URL, room.spec, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	if live := service.srv.GetDoc(room.tree); live == nil || slices.Contains(service.layoutOf(live), room.verification) {
+		t.Errorf("the room reloaded after the retirement holds the fragments of %v, want none of the retired Verification document %s",
+			service.layoutOf(live), room.verification)
+	}
+	retired, own := writeParagraph(peer.Doc, room.verification, "Typed after the retirement."), writeParagraph(peer.Doc, room.spec, "The spec's own words.")
+	settle(peer, func(txn *crdt.Transaction) {
+		retired(txn)
+		own(txn)
+	})
+	latest := func(document string) (int, string) {
+		t.Helper()
+		var number int
+		var markdown string
+		if err := database.Pool.QueryRow(ctx, `
+			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, document).Scan(&number, &markdown); err != nil {
+			t.Fatalf("read the latest version of %s: %v", document, err)
+		}
+		return number, markdown
+	}
+	if number, markdown := latest(room.verification); number != 2 || markdown != "The check the retirement keeps.\n" {
+		t.Errorf("the retired Verification document stands at version %d holding %q, want the version 2 it held at its retirement", number, markdown)
+	}
+	if number, markdown := latest(room.spec); number != 2 || markdown != "The spec's own words.\n" {
+		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
+	}
+	var typed, ownWords int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and excerpt like 'Typed after the retirement%')
+		     + (select count(*) from document_block_texts where artifact_id = $1 and text like '%Typed after the retirement%')
+		     + (select count(*) from issue_room_blocks r join document_blocks b on b.artifact_id = r.tree_artifact_id and b.block_id = r.block_id
+		        where r.tree_artifact_id = $1 and b.excerpt like 'Typed after the retirement%'),
+		       (select count(*) from document_blocks where artifact_id = $1 and excerpt like 'The spec''s own words%')
+	`, room.tree).Scan(&typed, &ownWords); err != nil {
+		t.Fatalf("read the room's index: %v", err)
+	}
+	if typed != 0 || ownWords != 1 {
+		t.Errorf("the room indexes %d row(s) of the paragraph typed into the retired fragment and %d block(s) of the spec's own words, want none and one", typed, ownWords)
+	}
+	if got := retiredIndex(); !slices.Equal(got, kept) {
+		t.Errorf("after the retirement the room indexes the Verification document's blocks as\n%v\nwant them as the retirement left them:\n%v", got, kept)
 	}
 }

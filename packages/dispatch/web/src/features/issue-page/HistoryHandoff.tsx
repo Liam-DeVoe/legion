@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import {
   pageInkText,
   pageMarkBg,
@@ -28,12 +29,12 @@ interface FieldRow extends HandoffField {
 }
 
 /**
- * The disclosure on a handoff's line in the issue's history (dispatch://INFRA-1196 R15, R19:
- * "the conversation's handoff cards ... the history in the panel"): Show fields opens the
+ * The disclosure on a handoff's line in the issue's history, which took over the conversation's
+ * handoff cards: Show fields opens the
  * version's body under the line - each top-level field a labelled row, the `proof` list one row
  * per entry, as the old conversation's handoff card drew it - and Hide fields closes it. The
  * body is read when the reader opens it, and a version never changes once written, so the read
- * is kept for the page's life.
+ * is kept for the page's life: it is never stale, and closing the fields never lets it go.
  */
 export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode {
   const [expanded, setExpanded] = useState(false);
@@ -55,71 +56,118 @@ export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode 
   );
 }
 
+/** A handoff's opened fields, or the line that says they are being read, or that the read
+ *  failed; `id` names whichever of them stands in the fields' place. */
 function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
   const handoff = useQuery({
+    gcTime: Number.POSITIVE_INFINITY,
     queryKey: ["handoff", handoffId],
     queryFn: () => api.getHandoff(handoffId),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const failure = useRef<HTMLSpanElement>(null);
+  // A focus on a line that goes - the Retry of the failure line, or the loading line - goes on to
+  // what the reader's press asked for, where no Enter undoes it: the Retry of a failure line drawn
+  // again, else what stands in the fields' place, the loading line while the read is out and the
+  // fields once it lands. The toggle above them would not do: a second press of the Retry's key -
+  // a key that repeated, or a reader who saw nothing happen and pressed again - would land on it
+  // and shut the fields.
+  const handOff = useFocusHandOff(
+    () => failure.current?.querySelector<HTMLElement>("button") ?? document.getElementById(id)
+  );
   const fields = useMemo(
     () => (handoff.data === undefined ? undefined : fieldRows(handoff.data.body)),
     [handoff.data]
   );
   if (handoff.isPending) {
     return (
-      <span className={`mt-1 block text-xs ${pageQuietText}`} id={id} {...pageChrome}>
+      <span
+        className={`mt-1 block text-xs outline-none ${pageQuietText}`}
+        id={id}
+        ref={handOff}
+        role="status"
+        tabIndex={-1}
+        {...pageChrome}
+      >
         {ANSWER_LINES.loading_handoff}
       </span>
     );
   }
-  if (handoff.isError) {
-    return (
-      <span className="mt-1 block" id={id}>
-        <DetailsErrorLine
-          message={ANSWER_LINES.handoff_unreadable}
-          onRetry={() => void handoff.refetch()}
-          retrying={handoff.isFetching}
-        />
-      </span>
-    );
-  }
+  // The fields hold the body whatever the last read's outcome, as the history holds its log: an
+  // invalidation of every read after a write reads the body again, and a read that fails then
+  // says so with its Retry above the fields, never in their place. The line stands alone only
+  // while no body is held.
+  const failed = handoff.isError ? (
+    <span className="mt-1 block" id={handoff.data === undefined ? id : undefined} ref={failure}>
+      <DetailsErrorLine
+        failure={handoff.errorUpdateCount}
+        message={ANSWER_LINES.handoff_unreadable}
+        // The Retry goes with its line: at once where no body is held, as the read it sends
+        // draws the loading line in this one's place, else once that read lands. The press moves
+        // no focus, and the line's going hands it on (`handOff`). A press while that read is out
+        // joins it rather than ending it and sending another (`cancelRefetch: false`), so a
+        // second press made before React draws the first one's read sends nothing more.
+        onRetry={() => void handoff.refetch({ cancelRefetch: false })}
+        retryRef={handOff}
+        retrying={handoff.isFetching}
+      />
+    </span>
+  ) : null;
+  if (handoff.data === undefined) return failed;
   if (fields === undefined) {
     return (
-      <pre className={handoffPre} data-handoff-raw id={id} {...authorText}>
-        {handoff.data.body}
-      </pre>
+      <>
+        {failed}
+        <pre
+          className={`${handoffPre} outline-none`}
+          data-handoff-raw
+          id={id}
+          tabIndex={-1}
+          {...authorText}
+        >
+          {handoff.data.body}
+        </pre>
+      </>
     );
   }
   return (
-    <dl className={`mt-1 flex flex-col gap-2 text-xs ${pageInkText}`} id={id} {...authorText}>
-      {fields.map(({ entry, field, json, label, text }) => {
-        const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
-        // The element keeps the field's key, which a reader of the page selects by; the label
-        // is the page's name for the field, or the words its key spells.
-        return (
-          <div data-handoff-field={field} key={`${field}/${label}`}>
-            <dt className={`font-medium ${pageMutedText}`}>
-              {entry !== undefined ? (
-                <span {...pageChrome}>
-                  {CONTROL_LABELS.handoff_fields.proof} <span {...authorText}>{entry}</span>
-                </span>
-              ) : known !== undefined ? (
-                <span {...pageChrome}>{known}</span>
-              ) : (
-                <span {...authorText}>{keyWords(field)}</span>
-              )}
-            </dt>
-            <dd className="min-w-0">
-              {json ? (
-                <pre className={handoffPre}>{text}</pre>
-              ) : (
-                <span className="break-words whitespace-pre-wrap">{text}</span>
-              )}
-            </dd>
-          </div>
-        );
-      })}
-    </dl>
+    <>
+      {failed}
+      <dl
+        className={`mt-1 flex flex-col gap-2 text-xs outline-none ${pageInkText}`}
+        id={id}
+        tabIndex={-1}
+        {...authorText}
+      >
+        {fields.map(({ entry, field, json, label, text }) => {
+          const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
+          // The element keeps the field's key, which a reader of the page selects by; the label
+          // is the page's name for the field, or the words its key spells.
+          return (
+            <div data-handoff-field={field} key={`${field}/${label}`}>
+              <dt className={`font-medium ${pageMutedText}`}>
+                {entry !== undefined ? (
+                  <span {...pageChrome}>
+                    {CONTROL_LABELS.handoff_fields.proof} <span {...authorText}>{entry}</span>
+                  </span>
+                ) : known !== undefined ? (
+                  <span {...pageChrome}>{known}</span>
+                ) : (
+                  <span {...authorText}>{keyWords(field)}</span>
+                )}
+              </dt>
+              <dd className="min-w-0">
+                {json ? (
+                  <pre className={handoffPre}>{text}</pre>
+                ) : (
+                  <span className="break-words whitespace-pre-wrap">{text}</span>
+                )}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+    </>
   );
 }
 

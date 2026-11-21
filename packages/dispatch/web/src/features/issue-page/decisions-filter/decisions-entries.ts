@@ -121,8 +121,8 @@ export function useDecisionsEntries({
     [refetchAsks, refetchDecisions]
   );
   const changes = useMemo(
-    () => decisionChanges(decisions, comments, issue.artifacts, undefined),
-    [decisions, comments, issue.artifacts]
+    () => decisionChanges(decisions, comments, issue, undefined),
+    [decisions, comments, issue]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by

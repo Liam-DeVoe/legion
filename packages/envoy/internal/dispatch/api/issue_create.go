@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -402,24 +403,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	// The issue's row and its spec's artifacts row are both written below, after the document
-	// work, so what they will hold is recorded for the reads of this transaction that need it.
-	// The address is the key the spec's insert names - the issue's key and the 'spec' slug -
-	// the issue itself, whose own row this transaction writes in the same phase, which is why
-	// the parent goes with it, and the spec's own dispatch:// address
-	// (refs.DocumentAddress). A block pointer of the seeded spec is held to that address
-	// (docs.addressOfDocument), and a spec citing the issue it opens, by key or at that
-	// address, resolves to the two rows (refs.Pending). parentKey is "" for a root issue, the
-	// null parent_key the insert below writes.
-	ledger.RegisterPendingIssue(key)
-	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
-		RefKey:        key + "/spec",
-		IssueKey:      key,
-		Ref:           refs.ArtifactRef(&key, input.Project, nil, "spec", "doc", true),
-		PendingParent: parentKey,
-		Project:       input.Project,
-		Band:          refs.DocumentBand(&key, "doc", true, nil, "spec"),
-	})
 	// An issue is born converted - its spec a fragment of the issue's room from its first write,
 	// and a query node - only while every live process serves the issue room (decision 7 of
 	// this branch's plan, R5): a process of the release before would admit the spec's
@@ -431,6 +414,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The issue's row and its spec's artifacts row are both written below, after the document
+	// work, so what they will hold is recorded for the reads of this transaction that need it.
+	// The address is the key the spec's insert names - the issue's key and the 'spec' slug -
+	// the issue itself, whose own row this transaction writes in the same phase, which is why
+	// the parent goes with it, and the spec's own dispatch:// address
+	// (refs.DocumentAddress). A block pointer of the seeded spec is held to that address
+	// (docs.addressOfDocument), and a spec citing the issue it opens, by key or at that
+	// address, resolves to the two rows (refs.Pending). parentKey is "" for a root issue, the
+	// null parent_key the insert below writes. The spec's node is a query node where the issue
+	// is born converted.
+	ledger.RegisterPendingIssue(key)
+	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
+		RefKey:        key + "/spec",
+		IssueKey:      key,
+		Ref:           refs.ArtifactRef(&key, input.Project, nil, "spec", "doc", true),
+		PendingParent: parentKey,
+		Project:       input.Project,
+		Band:          refs.DocumentBand(&key, "doc", true, nil, "spec"),
+	}, bornConverted)
 	var room convertedIssueRoom
 	if bornConverted {
 		if room, err = s.planConvertedIssueRoom(documentCtx, tx, ledger, key, input.Project, parentKey, artifactID, actor); err != nil {
@@ -440,6 +442,26 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// An issue born converted under a parent is a view on the spec of the nearest issue of its
+	// parent's chain that holds requirements and is no view itself, while that issue is not done,
+	// and a view takes no requirement of its own, as a write to one of its documents takes none
+	// (docs' RefuseRequirementOnView): a requirement of its spec is refused with that issue's name.
+	// The new issue's row is not written yet, so the chain is read from its parent
+	// (docs.RefuseRequirementUnder). Nothing of the create is written: every write of it so far is
+	// queued or in this transaction, which the refusal rolls back. A spec let through holding a
+	// requirement block marks the new issue's spec its own on this create's ledger, so a create
+	// whose block index the reconciliation takes up later keeps the mark too.
+	spec := ledger.ReadBackOf(artifactID, markdown)
+	if spec == nil {
+		if spec, err = pmdoc.ParseRendering(markdown); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if err := docs.RefuseRequirementUnder(documentCtx, tx, key, parentKey, bornConverted, spec); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -467,9 +489,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The spec's first version is the projection of its version node, queued after the spec's
 	// block nodes and caused by the issue's own event with them (docs.WriteVersionNode). The spec's
-	// node is written below as a document's.
-	specVersionNode, err := docs.WriteVersionNode(documentCtx, tx, graphstore.VersionOwner{RefKey: specRef, Project: input.Project},
-		specVersion.Number, actor, specVersion.CreatedAt)
+	// node is written below, a query node where the issue is born converted, so this version is
+	// then a query version holding the query's definition version.
+	specOwner := graphstore.VersionOwner{RefKey: specRef, Project: input.Project}
+	if bornConverted {
+		specOwner.Query, specOwner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
+	}
+	specVersionNode, err := docs.WriteVersionNode(documentCtx, tx, specOwner, specVersion.Number, actor, specVersion.CreatedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -525,7 +551,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
-	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
+	// (R16 of this branch's spec); what that write states waits for the issue.created event
 	// below (graphstore.QueueCaused). It is one of the create's inline writes, before the
 	// ledger's: the spec's version and block index run at Commit, and the index's projection rows
 	// name the spec's node. Each row names its node in the same transaction. Both are nodes this
@@ -542,8 +568,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		specNode = graphstore.Created(graphstore.QueryNode(specRef, input.Project, graphstore.QuerySpec, actor, createdAt))
 		specFacts = graphstore.AttributeFacts(specFacts, specNode)
 	}
-	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode}, specFacts)
-	if err != nil {
+	issueNodes := graphstore.PlanUncaused([]graphstore.Node{issueNode, specNode}, specFacts)
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, issueNodes)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -682,12 +711,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if room.tree != "" {
 			refs.QueueStamp(b, "artifact", room.tree)
 		}
-		if err := graphstore.QueueCaused(r.Context(), b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent); err != nil {
-			return err
-		}
-		if err := graphstore.QueueCaused(r.Context(), b, specBlocks, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent)
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
 		return queueIssueRelations(b, relations, actor)
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -972,8 +997,8 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 			Band: refs.DocumentBand(&key, kind, false, nil, slug),
 		}
 	}
-	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"))
-	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"))
+	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"), false)
+	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"), true)
 	ledger.RegisterPendingRoom(specID, room.tree)
 	if err := docs.AnnounceDocumentRooms(ctx, tx, room.tree, specID); err != nil {
 		return convertedIssueRoom{}, err
@@ -1000,7 +1025,8 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 		return convertedIssueRoom{}, fmt.Errorf("write the decisions query's first version: %w", err)
 	}
 	decisionsVersionNode, err := docs.WriteVersionNode(ctx, tx, graphstore.VersionOwner{
-		RefKey: graphstore.ArtifactRefKey(key, project, "", room.decisionsSlug), Project: project, Query: true,
+		RefKey: graphstore.ArtifactRefKey(key, project, "", room.decisionsSlug), Project: project,
+		Query: true, DefinitionVersion: graphstore.QueryDefinitionVersion,
 	}, decisionsVersion.Number, actor, decisionsVersion.CreatedAt)
 	if err != nil {
 		return convertedIssueRoom{}, err
@@ -1015,14 +1041,14 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 
 // createConvertedIssueRoom queues, at the head of ledger's write phase (docs.Ledger.QueueFirst),
 // the rows room planned beside the spec's row specID, which the caller has written by then: the
-// tree artifact's node and rows (createIssueTree); the spec's document_rooms row naming the tree,
-// ahead of every statement the read phase queued, which resolve the spec's room through it, and
-// announced in the read phase (planConvertedIssueRoom); and the decisions query's node and row
-// (createDecisionsQuery), each node before the row naming it. They steer nothing the route
-// answers, so they run in the write phase's batch and not inline inside the transaction's id
-// window. The caller holds the new issue's owner lock, which every writer of a document_rooms row
-// holds first. It answers what the node writes and the read phase's document work state, which the
-// caller causes under its event.
+// tree artifact's node and rows, and the issue's row of issue_views saying it was born converted
+// (createIssueTree); the spec's document_rooms row naming the tree, ahead of every statement the
+// read phase queued, which resolve the spec's room through it, and announced in the read phase
+// (planConvertedIssueRoom); and the decisions query's node and row (createDecisionsQuery), each
+// node before the row naming it. They steer nothing the route answers, so they run in the write
+// phase's batch and not inline inside the transaction's id window. The caller holds the new
+// issue's owner lock, which every writer of a document_rooms row holds first. It answers what the
+// node writes and the read phase's document work state, which the caller causes under its event.
 func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, specID string, room convertedIssueRoom, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
 	tree := issueTreeWrite(room.treeSlug, key, project, actor, at)
 	decisions := decisionsQueryWrite(room.decisionsSlug, key, project, actor, at)
@@ -1099,9 +1125,7 @@ func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Un
 	if err != nil {
 		return err
 	}
-	if err := graphstore.QueueNodes(b, written); err != nil {
-		return fmt.Errorf("write the decisions query's node: %w", err)
-	}
+	graphstore.QueueNodes(b, written)
 	b.Queue("create the decisions query", `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, 'doc', false, $6, $7, $8)

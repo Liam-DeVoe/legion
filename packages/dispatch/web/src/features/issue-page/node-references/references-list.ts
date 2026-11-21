@@ -11,9 +11,8 @@ import { drawnLine, firstLineOf } from "../issue-tree";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
- * What references one node, as Details draws it (dispatch://INFRA-1196 R14, R19): one row per
- * node that points at the focused one, in the order the graph read answers them, which is
- * newest first.
+ * What references one node, as Details draws it: one row per node that points at the focused
+ * one, in the order the graph read answers them, which is newest first.
  *
  * The old page drew this per block of a document, as a disclosure on the Spec, Verification and
  * Plan tabs (`features/refs/ReferencedBy.tsx`'s `BlockReferences`): what serves the block, what
@@ -25,11 +24,11 @@ import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-referen
  * A row is named by words the page already holds for the citing node, and never by the read's
  * own text: the read's excerpt is the stored text, the markdown its author typed with every
  * `dispatch://` address of it, where the page draws a node by the words of the server's reading
- * of it (R20, R22). The page holds those words for the comments, messages and questions of the
+ * of it. The page holds those words for the comments, messages and questions of the
  * focused node's own issue, which the outline reads (`issueItemWords`); a reference in them is
  * named as the outline's row names it, from the page's one batched read of what its references
  * point at; every other node is named by the word of its tie or of its kind, with its issue and
- * its time (D4 of dispatch://INFRA-3948/artifact/plan-md).
+ * its time.
  *
  * Pure, so the rows are read without a browser: the component draws them and holds the reads.
  */
@@ -43,15 +42,15 @@ const NO_NAMES: ReadonlyMap<string, string> = new Map();
 /** One node that references the focused one. */
 export interface ReferenceRow {
   /** When the reference was made (`GraphEdge.created_at`), which the old panel drew on each
-   *  edge (R19). */
+   *  edge. */
   readonly at: string;
   /** What the citing node does for the focused one, as the graph names the edge's kind:
    *  `serves`, `needs`, `answers`, `mentions` and the rest. The component draws the page's
-   *  word for it, never this token (R22). */
+   *  word for it, never this token. */
   readonly kind: string;
   /** The first line of the citing item's words, where it is a comment, a message or a question
    *  of the focused node's own issue and the page holds its words (`issueItemWords`), as every
-   *  place that draws one line for a node draws it (R1, `firstLineOf`, `drawnLine`), with each
+   *  place that draws one line for a node draws it (`firstLineOf`, `drawnLine`), with each
    *  reference it writes named (`itemLine`); `""` for every other node, which the component
    *  names by its word. Never the read's own text. */
   readonly line: string;
@@ -175,8 +174,8 @@ export function referenceRows(
  * outline's row names it (`rowReferenceWords`): an issue by its key and its title, anything else
  * by its target's words. The server's reading of a bare `dispatch://` reference is a link whose
  * words are the address itself, so the words write it as typed; a line holding a reference the
- * read has not named is `""`, and the row is named by its word, since an address is no name (R8,
- * R22). `issues` is `knownIssueKeys(names)`.
+ * read has not named is `""`, and the row is named by its word, since an address is no name.
+ * `issues` is `knownIssueKeys(names)`.
  */
 function itemLine(
   words: string,

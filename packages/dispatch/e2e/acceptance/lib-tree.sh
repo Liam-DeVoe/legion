@@ -349,12 +349,12 @@ tree_stop_head() {
 
 # tree_wait_backfill SECTION [LOG]: waits for the backfill, as the Verification preamble states it.
 # Every 2 s it reads, with the database's clock_timestamp(), the count of document_block_versions
-# whose version is null and the owed counts of comment_block_state, message_block_state and
-# ask_block_state (rows whose owed_at is not null), prints them on one line, and reads LOG (by
-# default the log of the server tree_boot_head booted) for tree_backfill_end. It passes once all
-# four read 0 and that line is in the log, and fails after 300 s naming each count that stayed above
-# zero and the line, where the log holds none. It never waits on a fixed sleep. Inputs:
-# `database_url`, and tree_head_log or LOG.
+# owed a block index by either mark (version null, or this build's mark store_owed_at set) and the
+# owed counts of comment_block_state, message_block_state and ask_block_state (rows whose owed_at is
+# not null), prints them on one line, and reads LOG (by default the log of the server
+# tree_boot_head booted) for tree_backfill_end. It passes once all four read 0 and that line is in
+# the log, and fails after 300 s naming each count that stayed above zero and the line, where the
+# log holds none. It never waits on a fixed sleep. Inputs: `database_url`, and tree_head_log or LOG.
 tree_wait_backfill() {
   local section="$1" log="${2:-$tree_head_log}" deadline=$((SECONDS + tree_wait_seconds))
   local at unindexed comments messages asks ended stayed
@@ -362,7 +362,7 @@ tree_wait_backfill() {
   while true; do
     query "$section" "read what the backfill still owes" "
       select clock_timestamp(),
-             (select count(*) from document_block_versions where version is null),
+             (select count(*) from document_block_versions where version is null or store_owed_at is not null),
              (select count(*) from comment_block_state where owed_at is not null),
              (select count(*) from message_block_state where owed_at is not null),
              (select count(*) from ask_block_state where owed_at is not null)"
@@ -371,7 +371,7 @@ tree_wait_backfill() {
     if grep -qF -- "$tree_backfill_end" "$log"; then
       ended=yes
     fi
-    printf 'backfill at %s: document_block_versions_version_null=%s comment_block_state_owed=%s message_block_state_owed=%s ask_block_state_owed=%s boot_backfill_ended=%s\n' \
+    printf 'backfill at %s: document_block_versions_owed=%s comment_block_state_owed=%s message_block_state_owed=%s ask_block_state_owed=%s boot_backfill_ended=%s\n' \
       "$at" "$unindexed" "$comments" "$messages" "$asks" "$ended"
     if [[ "$unindexed" == 0 && "$comments" == 0 && "$messages" == 0 && "$asks" == 0 && "$ended" == yes ]]; then
       pass "$section" "the backfill owes nothing and has logged its end"
@@ -379,7 +379,7 @@ tree_wait_backfill() {
     fi
     if ((SECONDS >= deadline)); then
       stayed=""
-      [[ "$unindexed" == 0 ]] || stayed+=" document_block_versions_version_null=$unindexed"
+      [[ "$unindexed" == 0 ]] || stayed+=" document_block_versions_owed=$unindexed"
       [[ "$comments" == 0 ]] || stayed+=" comment_block_state_owed=$comments"
       [[ "$messages" == 0 ]] || stayed+=" message_block_state_owed=$messages"
       [[ "$asks" == 0 ]] || stayed+=" ask_block_state_owed=$asks"

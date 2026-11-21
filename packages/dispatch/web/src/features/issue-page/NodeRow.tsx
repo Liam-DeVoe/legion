@@ -1,3 +1,4 @@
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
   type CSSProperties,
   type ReactNode,
@@ -32,7 +33,7 @@ import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
-import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
+import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
@@ -148,11 +149,14 @@ export function NodeRow({
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
   /** The document this row's node is a block of, which its body writes against: a decision's
-   *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
-   *  no block of a document of this issue. */
+   *  Keep and Change are writes on the document its `decision` block stands in, the spec or
+   *  another of the issue's (R7). Undefined for a node that is no block of a document of this
+   *  issue. */
   document?: Artifact;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
-   *  place and draws such a row its own way. False unless the view passes it. */
+   *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
+   *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
+   *  view passes it. */
   editable?: boolean;
   /** The document this row's own text lives in, while the reader is editing it here: its
    *  editor is drawn in place of the row's words and the caret is in this node's block. */
@@ -203,7 +207,7 @@ export function NodeRow({
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing, STAGE_IN_ROW);
+  const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
@@ -226,7 +230,8 @@ export function NodeRow({
       ? node.state === "answered" && !node.waiting
       : author.kind !== "person" && node.type !== "issue" && node.type !== "child_issue");
   // What `RowText` draws the words from: a later read that brings other words - a statement's,
-  // which its document's blocks draw before the coverage read brings them - draws them cut.
+  // which its document's blocks draw before the coverage read brings them - draws them cut, and
+  // one that brings the same words in new objects leaves the row as it stands (`useClamp`).
   const clamp = useClamp(words, cuttable, node.tree ?? node.text);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
@@ -579,15 +584,19 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "comment":
     case "message":
       return author === "person" ? "person" : "agent";
+    // A criterion is what a person wants to be able to do, in their own words (`page-words`), a
+    // node only a person writes: it takes a person's ink.
+    case "criterion":
+      return "person";
     case "decision":
       return "decision";
-    case "plan_task":
-      return "step";
-    // A reading is what an agent read under a decision it made: the agent's tone.
+    // A reading is an agent's reading of a person's answer, inside the ask or the decision it
+    // reads, and always an agent's words: it takes an agent's quiet grey, never the colour of the
+    // question or the decision it reads, so it never reads as the person's decision itself (R9).
     case "reading":
       return "agent";
-    // A criterion is a sentence that must be true of the software, as a requirement is.
-    case "criterion":
+    case "plan_task":
+      return "step";
     case "requirement":
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
       // document is a block and nothing more, in a block's colour (decision 246).
@@ -1364,11 +1373,15 @@ export function MoreWords({
  * outside the view, and again when its width or its words change or the page's typeface
  * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
  * wholly outside the view, save where it draws other words: `drawnFrom` is what the words are
- * drawn from, and where a commit changes it, a row measured before is measured again in that
- * commit as one that mounts, before the page is painted (`clampRedrawn`). A caller that cannot
- * say what its words are drawn from passes nothing. Undefined where the words are drawn whole,
- * or not measured yet; a row the reader scrolled away from keeps the cut it last had, save one
- * measured on the fallback face, which is measured again once the typeface arrives.
+ * drawn from, and where a commit draws them from other words, a row measured before is measured
+ * again in that commit as one that mounts, before the page is painted (`clampRedrawn`). Other
+ * words are words of another value, as TanStack Query's `replaceEqualDeep` compares two answers of
+ * a read (`api/queries.ts`): a later read answers the same words in objects of its own - a names
+ * read under a new key, which a new comment on the issue starts, shares none with the last - and
+ * a row drawn from them draws nothing new, so it keeps its length. A caller that cannot say what
+ * its words are drawn from passes nothing. Undefined where the words are drawn whole, or not
+ * measured yet; a row the reader scrolled away from keeps the cut it last had, save one measured
+ * on the fallback face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
@@ -1388,10 +1401,11 @@ export function useClamp(
   // measured them yet, and leaves them to the mount's own pass.
   const drawn = useRef(drawnFrom);
   useLayoutEffect(() => {
-    if (drawn.current === drawnFrom) return;
+    // `replaceEqualDeep` gives back the old value where the new one holds the same values.
+    const same = replaceEqualDeep(drawn.current, drawnFrom) === drawn.current;
     drawn.current = drawnFrom;
     const element = words.current;
-    if (cuttable && element !== null) clampRedrawn(element);
+    if (!same && cuttable && element !== null) clampRedrawn(element);
   }, [cuttable, drawnFrom, words]);
   return cuttable ? clamp : undefined;
 }

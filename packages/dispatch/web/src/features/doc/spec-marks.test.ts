@@ -62,6 +62,7 @@ function entry(blockId: string, shaped: DecisionLink[], replaced = false): Decis
       block_id: blockId,
       ref: "dispatch://CORE-1/artifact/choices-md",
     },
+    from_ask: [],
     kept: null,
     kept_by: null,
     kept_text_sum: null,
@@ -272,5 +273,7 @@ test("the editor's block marks: stale blocks with their title, changed blocks wi
     { blockId: "p-intro", className: changedSinceReadMark },
     { blockId: "p-plan", className: changedSinceReadMark },
   ]);
-  expect(STALE_BLOCK_TITLE).toBe("A decision that shaped this block changed after it.");
+  // A block is marked for its own text changing after a decision tied it (`shapedNodeChanged`),
+  // so the title names that change and not one of the decision's.
+  expect(STALE_BLOCK_TITLE).toBe("This block changed after a decision that shaped it.");
 });

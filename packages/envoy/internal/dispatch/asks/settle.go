@@ -106,7 +106,7 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 //
 // Every fact it states goes out of the ask's node and changes it (graphstore.Tuple's Changes), so
 // a settle made for a run of the command bar - an answer, a resolution, a decline, an issue's
-// close or reopen - names the ask as changed by that run (graphstore.WithRun); the person node of
+// close or reopen - names the ask as changed by that run (store.WithRun); the person node of
 // whoever answered is never marked.
 //
 // Settle runs the write at once, for a transaction that queues no write phase: it locks the ask's
@@ -128,7 +128,7 @@ func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return settled.Queue(ctx, b) }); err != nil {
+	if err := store.RunWrite(ctx, tx, settled.Queue); err != nil {
 		return model.Ask{}, err
 	}
 	return settled.Ask, nil
@@ -272,16 +272,11 @@ func leftBy(held heldAnswer, ask model.Ask, tuples []graphstore.Tuple) heldAnswe
 // its facts for a later event, those facts under that cause, then the asks row. The row's update
 // names the state the change answers from where it names one (Change.From), and a row no longer
 // in it is refused with ErrStateMoved as the batch reads the update's result, which stops the
-// write phase there. ctx is the write's own, whose run the facts name the ask changed by
-// (graphstore.WithRun).
-func (s Settled) Queue(ctx context.Context, b *store.WriteBatch) error {
-	if err := graphstore.QueueNodes(b, s.Held); err != nil {
-		return fmt.Errorf("state the answer of ask %s: %w", s.askID, err)
-	}
+// write phase there.
+func (s Settled) Queue(b *store.WriteBatch) error {
+	graphstore.QueueNodes(b, s.Held)
 	if s.change.Held == nil {
-		if err := graphstore.QueueCaused(ctx, b, s.Held, s.change.Event); err != nil {
-			return fmt.Errorf("state the answer of ask %s: %w", s.askID, err)
-		}
+		graphstore.QueueCaused(b, s.Held, s.change.Event)
 	}
 	b.Queue("write the answer state of ask "+s.askID, `
 		update asks

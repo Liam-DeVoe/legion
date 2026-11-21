@@ -701,8 +701,8 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 	}
 }
 
-// A node the store addresses by its own id carries no issue key in its address (D7 of
-// dispatch://INFRA-1950): `dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`,
+// A node the store addresses by its own id carries no issue key in its address (D7 of the
+// plan): `dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`,
 // `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`, the uuid as the store writes it,
 // `dispatch://lens_kind/<slug>`, and a finding of a lens, `dispatch://lens/<uuid>#b-<id>`, which no
 // pin names. A request (ParseRef) and text (Extract) read each the same way, and each target id is

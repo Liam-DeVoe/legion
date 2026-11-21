@@ -631,7 +631,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var withdrawn []model.Ask
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
-		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, ledger, key, closingAsks, actor); err != nil {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(ledger, key, closingAsks, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -708,45 +708,50 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
 		}
 	}
-	// An issue's own field write made for a run (graphstore.WithRun, which withinGoingRun puts on
-	// a request naming its run) names the issue as changed by that run when it changed a field of
-	// it (dispatch://INFRA-1950/spec#b-r-interaction), as changedFields, which compares every field
+	// An issue's own field write made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the issue as changed by that run when it changed a field of
+	// it (spec requirement r-interaction), as changedFields, which compares every field
 	// this route writes, says; a write that sent only values the issue already held appends its
 	// event with nothing changed and names no change. Under a run it writes the issue's node as the
-	// create and the backfill write it (graphstore.IssueNode), marked changed: made by the issue's
-	// creator at its created_at, the two columns of the issue's row the backfill reads them from
-	// (graphcensus/projects.go's objectKinds), so an issue created before its node existed gets
-	// here the node the backfill would give it, which the backfill, writing only a node the store
-	// lacks, then leaves as it is. A write that states a relation of the issue (queueIssueRelations)
-	// writes the same node unmarked, for no run, since graph_edges answers a relation out of a node
-	// the store holds. The node restates the issue, so a node already there keeps the state and
-	// the visibility the store holds and its own made_at and made_by, and moves nothing else. The
-	// changed_by_run tuple is this write's, dated now and signed by its writer (graphstore.Node's
-	// ChangedAt and ChangedBy). It is the last node row this transaction takes, after every row and
-	// document above and after the node of the item filed_from names where the store held none
-	// (stateFiledFromNode): a step of the write phase queued after the documents' own, and what it
-	// states waits for the issue's own event (graphstore.QueueCaused), as the create's does. A write
-	// made for no run that states no relation writes no node and sends no statement more than it
-	// did.
+	// create and the backfill write it (graphstore.IssueNode), made by the issue's creator at its
+	// created_at, the two columns of the issue's row the backfill reads them from
+	// (graphcensus/projects_backfill.go's objectKinds), and names it changed now by its writer
+	// (graphstore.PlanChangedForRun, which plans nothing for no run). A write that states a
+	// relation of the issue (queueIssueRelations) writes the same node unmarked, for no run, since
+	// graph_edges answers a relation out of a node the store holds. The node write is queued here,
+	// after every row and document write the patch queued above and after the node of the item
+	// filed_from names where the store held none (stateFiledFromNode), and what it states right
+	// after the issue's own event (graphstore.QueueCaused over graphstore.LatestEvent), as the
+	// create's is. A write made for no run that states no relation writes no node and sends no
+	// statement more than it did.
 	if err := stateFiledFromNode(r.Context(), tx, filedFrom); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	forRun := graphstore.MadeForRun(r.Context()) && len(changedFields) > 0
 	var issueNode graphstore.Uncaused
-	if forRun || len(relations.claims) > 0 || len(relations.tuples) > 0 {
-		// The backfill decodes created_by into a model.Actor, so a stored JSON null is the zero
-		// actor there, and here.
-		var creator model.Actor
-		if before.CreatedBy != nil {
-			creator = *before.CreatedBy
+	// The backfill decodes created_by into a model.Actor, so a stored JSON null is the zero actor
+	// there, and here.
+	var creator model.Actor
+	if before.CreatedBy != nil {
+		creator = *before.CreatedBy
+	}
+	if len(changedFields) > 0 {
+		issueNode, err = graphstore.PlanChangedForRun(r.Context(), time.Now().UTC(), actor, func() (graphstore.Node, error) {
+			return graphstore.IssueNode(key, before.Project, creator, before.CreatedAt), nil
+		})
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
-		node := graphstore.IssueNode(key, before.Project, creator, before.CreatedAt)
-		if forRun {
-			node.Changed, node.ChangedAt, node.ChangedBy = true, time.Now().UTC(), actor
-		}
-		issueNode = graphstore.PlanUncaused([]graphstore.Node{node}, nil)
-		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, issueNode) }); err != nil {
+	}
+	if len(issueNode.Nodes) == 0 && (len(relations.claims) > 0 || len(relations.tuples) > 0) {
+		issueNode = graphstore.PlanUncaused([]graphstore.Node{graphstore.IssueNode(key, before.Project, creator, before.CreatedAt)}, nil)
+	}
+	if len(issueNode.Nodes) > 0 {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, issueNode)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -759,9 +764,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The issue's node and the relations this write states learn the issue's own event the step
 	// before appended (queueIssueRelations).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(r.Context(), b, issueNode, graphstore.LatestEvent); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
 		return queueIssueRelations(b, relations, actor)
 	}); err != nil {
 		s.writeHandlerError(w, err)

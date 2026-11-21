@@ -25,7 +25,8 @@ const (
 // takes a person's answered decision out of a spec or moves it. Each of an agent's three writes -
 // an edit that drops the ask's block, a whole-document replacement that leaves the block out, and
 // a retype of the block - is refused 409 ANSWERED_ASK_KEPT, quoting the ask's question and naming
-// its node and its block's address. The document's version is unchanged, and the answer is still in
+// its node and its block's address. The document's version is unchanged from the one the answer
+// wrote, which changed only the block's server-owned attributes (R3), and the answer is still in
 // the spec when it is read back, and the ask's node holds no removal. The same three writes by the
 // person are taken, whether they are made at a browser or through the person's own token, which
 // holds the person scope that the refusal reads (docs.WithPersonScope), and each leaves one
@@ -40,6 +41,9 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 		// path is the route the write goes to, on the issue and its spec.
 		path func(issueKey, artifactID string) string
 		body map[string]any
+		// upload is set on a whole-document replacement, which names the token of the version it
+		// replaces (storeArtifact).
+		upload bool
 		// refusal is what the refusal says after its ask's node and question, %s being the block's
 		// address.
 		refusal string
@@ -60,6 +64,7 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 			name:    "a whole-document replacement that leaves the block out",
 			path:    func(issueKey, _ string) string { return "/api/v1/issues/" + issueKey + "/artifacts" },
 			body:    map[string]any{"name": "spec.md", "content": keptAskContext},
+			upload:  true,
 			refusal: "an agent cannot remove its ask block %s from this document",
 			taken:   http.StatusCreated,
 			holds:   keptAskContext,
@@ -97,10 +102,16 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 				issue := createInteractionIssue(t, handler, project, "An answered decision", original)
 				askID := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"chosen": keptAskQuestion})["chosen"]
 				answerDecisionBlock(t, handler, askID, "alice", []string{"Keep"}, keptAskAnswer, nil)
+				// The answer writes one version, the block's kept state alone (R3); the agent's write
+				// is read against the document as that version left it.
+				requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 1, 1)
 				path := write.path(issue.Key, issue.PrimaryArtifactID)
 				body := map[string]any{"actor": sessionActor()}
 				for name, value := range write.body {
 					body[name] = value
+				}
+				if write.upload {
+					body["precondition"] = uploadBase(t, handler, issue.PrimaryArtifactID)
 				}
 
 				before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
@@ -146,7 +157,10 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 
 				// The person writes the ask's block back; the settlement that binds the ask's row to
 				// it retracts the removal.
-				back := person.send(t, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"actor": sessionActor(), "name": "spec.md", "content": original})
+				back := person.send(t, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+					"actor": sessionActor(), "name": "spec.md", "content": original,
+					"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
+				})
 				if back.Code != http.StatusCreated {
 					t.Fatalf("the person's upload of the ask's block back: status=%d body=%s", back.Code, back.Body.String())
 				}

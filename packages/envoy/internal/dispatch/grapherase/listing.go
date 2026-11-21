@@ -120,24 +120,48 @@ func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRea
 	return nil
 }
 
-// readSearch lists the search rows that stand on a version the run deletes: the search row of the
-// document the block stands in (erasedRead.versioned), and the issue's search vector where that
-// document is its spec (restateSearch).
+// readSearch lists the search rows the run deletes or writes again: the node's own rows of the
+// keyword table, every version of its text the keyword fill wrote, which go; and for a document a
+// version of which the run deletes - the document the block stands in (erasedRead.versioned) -
+// that document's own search row, the issue's search vector where that document is its spec
+// (restateSearch), and the vector of each keyword row of that issue that names a version the run
+// deletes, which is written again without it (restateKeywordVersions). The keyword rows are listed
+// by their key, each set in event_seq order.
 func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	if len(read.artifacts) == 0 {
-		return nil
+	if len(read.artifacts) > 0 {
+		var searched bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
+			read.versioned.artifact).Scan(&searched); err != nil {
+			return fmt.Errorf("read the search row of %s: %w", read.versioned.refKey, err)
+		}
+		if searched {
+			read.listing.search = append(read.listing.search, "rewrite document_search of "+read.versioned.refKey)
+		}
+		if issue := read.versioned.specIssue(); issue != "" {
+			read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
+		}
 	}
-	var searched bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
-		read.versioned.artifact).Scan(&searched); err != nil {
-		return fmt.Errorf("read the search row of %s: %w", read.versioned.refKey, err)
+	document := ""
+	if read.versioned != nil {
+		document = read.versioned.artifact
 	}
-	if searched {
-		read.listing.search = append(read.listing.search, "rewrite document_search of "+read.versioned.refKey)
+	rows, err := tx.Query(ctx, `
+		select line from (
+			select 0 as arm, v.event_seq, 'delete search_text_versions ' || v.kind || ' ' || v.id || ' event_seq ' || v.event_seq as line
+			from search_text_versions v where v.kind = $1 and v.id = $2
+			union all
+			select 1, v.event_seq, 'rewrite search_text_versions.search of issue ' || v.id || ' event_seq ' || v.event_seq
+			from search_text_versions v
+			where v.kind = 'issue' and v.id = $3 and v.spec_artifact_id = nullif($4, '')::uuid and v.spec_version = any($5::integer[])
+		) listed order by arm, event_seq`, e.Kind, e.ID, read.versioned.specIssue(), document, read.numbers)
+	if err != nil {
+		return fmt.Errorf("read the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	if issue := read.versioned.specIssue(); issue != "" {
-		read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
+	read.listing.search = append(read.listing.search, lines...)
 	return nil
 }
 
@@ -200,14 +224,15 @@ type derivedRows struct {
 // derivedTables is every table holding rows that derive from a node and may hold its text, by
 // name, each with the rows of it that do. It is the same derivation apply writes by, row set for
 // row set: the node's own rows, its tuples, its projections, its own document's rows, its
-// embedding rows, the events about it and its project's term statistics, which the run counts
-// again. The rows that cannot exist without a projection row are added by leftDerived, from the
-// foreign keys into the projections. A run of the command bar's own rows (runTables) are here
-// too, by the run's uuid, which is its node's id (runDerived): its going_requests row holds the
-// words readTexts reads off its node, and its going_events rows its answer, and apply deletes
-// both with the node. A block's rows are keyed by bound.document, its room's tree for a block of
-// an issue room, and its versions, search rows and windows by bound.versioned, the document it
-// stands in (erasedRead.versioned).
+// embedding rows, its keyword versions and the search vector of each keyword version of its spec
+// issue that names a version the run deletes, the events about it and its project's term
+// statistics, which the run counts again. The rows that cannot exist without a projection row are
+// added by leftDerived, from the foreign keys into the projections. A run of the command bar's own
+// rows (runTables) are here too, by the run's uuid, which is its node's id (runDerived): its
+// going_requests row holds the words readTexts reads off its node, and its going_events rows its
+// answer, and apply deletes both with the node. A block's rows are keyed by bound.document, its
+// room's tree for a block of an issue room, and its versions, search rows, keyword versions and
+// Keep by bound.versioned, the document it stands in (erasedRead.versioned), as its windows are.
 var derivedTables = runDerived(map[string][]derivedRows{
 	"graph_nodes": {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {
@@ -221,13 +246,18 @@ var derivedTables = runDerived(map[string][]derivedRows{
 	"comments": {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_blocks": {
 		{where: `held.node_kind = bound.kind and held.node_address = bound.id`},
-		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.ancestors)`},
+		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.excerpt_blocks)`},
 	},
 	"block_refs":           {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
-	"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or held.block_id = any(bound.ancestors))`}},
+	"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or exists (select 1 from unnest(bound.text_blocks, bound.text_versions) as rewritten (block_id, version) where rewritten.block_id = held.block_id and rewritten.version = held.version))`}},
+	"decision_keeps":       {{where: `held.artifact_id = nullif(bound.versioned, '')::uuid and held.block_id = bound.block`}},
 	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.versioned, '')::uuid and held.number = any(bound.numbers)`}},
 	"document_search":      {{where: `held.artifact_id = nullif(bound.versioned, '')::uuid and cardinality(bound.numbers) > 0`}},
 	"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},
+	"search_text_versions": {
+		{where: `held.kind = bound.kind and held.id = bound.id`},
+		{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue and held.spec_artifact_id = nullif(bound.versioned, '')::uuid and held.spec_version = any(bound.numbers)`},
+	},
 	"embeddings": {{where: `(held.kind = bound.kind and held.id = bound.id)
 		or (bound.window_kind <> '' and held.kind = bound.window_kind and split_part(held.id, '#', 1) = bound.owner_key)
 		or (bound.versioned <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.versioned)
@@ -252,19 +282,29 @@ func runDerived(tables map[string][]derivedRows) map[string][]derivedRows {
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
-// each binds the same fifteen parameters whichever of them its table's predicate names.
+// each binds the same eighteen parameters whichever of them its table's predicate names.
 const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::text[] as texts, $4::text as document,
 	$5::text as block, $6::text[] as ancestors, $7::bigint[] as events, $8::int[] as numbers, $9::text as window_kind,
 	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories,
-	$14::text as document_ref, $15::text as versioned)`
+	$14::text as document_ref, $15::text as versioned, $16::text[] as text_blocks, $17::int[] as text_versions,
+	$18::text[] as excerpt_blocks)`
 
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
 // and the columns holding them - as a row the run leaves as it is. Those rows are another node's
-// text, which an operator erases by a run of that node, and the run writes none of them. It lists
-// as well an event about the node whose payload holds the texts in its structural values alone:
-// the redaction rewrites no such value (structuralKey), so the run leaves that row whole, and the
-// listing says so.
+// text, which an operator erases by a run of that node, and the run writes none of them.
+//
+// An event about the node is passed over only where the redaction leaves its payload holding
+// none of the texts (cleanedEvents). One that still holds one in a value the redaction does not
+// take it out of - a structural value, which it never rewrites (structuralKey), or a value that
+// quotes another node, which it rewrites only where a text stands as a block of its own
+// (quotedFields) - is searched as any other row is, so the listing names it as a row the run
+// leaves holding those bytes, beside the line naming it redacted. The text of a block holding the
+// node's block is passed over only at a version the redaction rewrites (readAncestorTexts): at a
+// version the node's block did not stand in, the same words are that block's own, which the run
+// leaves. Its row of document_blocks is passed over only where the redaction rewrites its excerpt
+// (readAncestorExcerpts): an excerpt cut from such a version is left as it is, and searched as
+// any other row is.
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json
@@ -290,16 +330,26 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 	if read.document != nil {
 		document, documentRef, versioned = read.document.artifact, read.document.refKey, read.versioned.artifact
 	}
-	eventIDs := make([]int64, len(read.events))
-	for index, event := range read.events {
-		eventIDs[index] = event.id
+	eventIDs, err := cleanedEvents(ctx, tx, read)
+	if err != nil {
+		return err
+	}
+	textBlocks := make([]string, len(read.blockTexts))
+	textVersions := make([]int32, len(read.blockTexts))
+	for index, text := range read.blockTexts {
+		textBlocks[index], textVersions[index] = text.blockID, text.version
+	}
+	excerptBlocks := make([]string, len(read.excerpts))
+	for index, excerpt := range read.excerpts {
+		excerptBlocks[index] = excerpt.blockID
 	}
 	histories := make([]string, 0, len(read.margins)+1)
 	for _, replaced := range read.replacedHistories() {
 		histories = append(histories, replaced.document.artifact)
 	}
 	args := []any{e.Kind, e.ID, read.texts, document, read.blockID, read.ancestors, eventIDs, read.numbers,
-		windowKind, ownerKey, read.versioned.specIssue(), read.project, histories, documentRef, versioned}
+		windowKind, ownerKey, read.versioned.specIssue(), read.project, histories, documentRef, versioned,
+		textBlocks, textVersions, excerptBlocks}
 	held := map[string][]string{}
 	for _, column := range columns {
 		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {
@@ -347,6 +397,36 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 	return nil
 }
 
+// cleanedEvents answers the ids of the events about the node that the redaction leaves holding
+// none of the erased texts, which the search for the rows the run leaves passes over as rows the
+// run rewrites. It tests each payload as the redaction leaves it, cast to the jsonb the run writes
+// back, by the test that search reads a json column with (holdsText), so an event it answers is
+// one that search would find nothing in once the run is done, and every other is searched and
+// listed as the rows the run leaves are.
+func cleanedEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) ([]int64, error) {
+	ids := make([]int64, len(read.events))
+	payloads := make([]string, len(read.events))
+	for index, event := range read.events {
+		ids[index], payloads[index] = event.id, string(event.payload)
+	}
+	rows, err := tx.Query(ctx, `with bound as (select $1::text[] as texts)
+		select redacted.id from bound, unnest($2::bigint[], $3::text[]) as redacted (id, payload)
+		cross join lateral (select redacted.payload::jsonb as payload) held
+		where not `+holdsText(textColumn{name: "payload", dataType: "jsonb"})+`
+		order by redacted.id`, read.texts, ids, payloads)
+	if err != nil {
+		return nil, fmt.Errorf("read which redacted events hold none of the erased text: %w", err)
+	}
+	cleaned, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, fmt.Errorf("read which redacted events hold none of the erased text: %w", err)
+	}
+	if cleaned == nil {
+		cleaned = []int64{}
+	}
+	return cleaned, nil
+}
+
 // readKeptMargins lists every margin record that holds an erased text and that the seed of a
 // replaced history keeps (docs.KeptMarginQuoting): a suggestion whose replacement, or a comment
 // whose body, quotes the erased text. Each is that comment's text, another node's, which the run
@@ -358,8 +438,9 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 // (refs.DocumentRoomSQL), which is its own document for a document of a one-document room.
 //
 // It reads the stored history without taking the document's owner row or its room lock, as the
-// rest of the listing reads, so a run without --confirm lists them in its read-only transaction;
-// a confirmed run reads it again under its locks with the rest of its listing.
+// rest of the listing reads, so a run without --confirm lists them in its read-only transaction,
+// and a confirmed run lists them with the rest of its search for the rows it leaves, before it
+// takes any lock (searchLeft).
 func (e *Erasure) readKeptMargins(ctx context.Context, tx pgx.Tx, read *erasedRead) ([]string, error) {
 	var lines []string
 	for _, replaced := range read.replacedHistories() {
@@ -416,7 +497,7 @@ var rowNames = map[string]string{
 // node's and refuses the run (readBlockers).
 func leftDerived(ctx context.Context, tx pgx.Tx) (map[string][]derivedRows, error) {
 	derived := maps.Clone(derivedTables)
-	for _, held := range projectedTables {
+	for _, held := range graphstore.ProjectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
 			return nil, err
@@ -436,8 +517,14 @@ func leftDerived(ctx context.Context, tx pgx.Tx) (map[string][]derivedRows, erro
 
 // textColumns reads every column of every table a text can be written into, as graph-erase.sh's
 // held_anywhere reads them: a column of a type that holds no text - a number, a time, a uuid - is
-// left out. Each comes with the key its table names a row by: its primary key, or where it has
-// none its first unique index over columns alone with no predicate, as artifact_versions'
+// left out. So is a pgvector `vector`, which held_anywhere searches: it holds the numbers an
+// embedder made of a text and never the text, so the erased bytes stand in its text form only
+// where a text is itself made of digits and the marks a vector is written with, which is no copy
+// of that text, and the search would spell every row's numbers out as text to find nothing. A
+// tsvector stays: a text of one word the parser keeps as written is one of its lexemes, spelled
+// as the text spells it, which is how graph-erase.sh finds its erased word in a search vector.
+// Each column comes with the key its table names a row by: its primary key, or where it has none
+// its first unique index over columns alone with no predicate, as artifact_versions'
 // (artifact_id, number) is.
 func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 	rows, err := tx.Query(ctx, `
@@ -457,6 +544,7 @@ func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 		    'boolean', 'uuid', 'date', 'interval', 'time with time zone', 'time without time zone',
 		    'timestamp with time zone', 'timestamp without time zone', 'inet', 'cidr', 'macaddr',
 		    'macaddr8', 'oid', 'xid', 'xid8', 'pg_lsn', 'money', 'bit', 'bit varying')
+		  and c.udt_name <> 'vector'
 		order by 1, 2, 3`)
 	if err != nil {
 		return nil, fmt.Errorf("list the columns of the database: %w", err)

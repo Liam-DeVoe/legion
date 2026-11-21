@@ -8,13 +8,14 @@ import { api } from "../../api/client";
 import type { Comment, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails } from "./decisions-filter/decisions-fixtures";
 import { TWO_THREADS, waitInAct } from "./outline-fixtures";
 import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
-import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
  * The outline's reads (`useOutlineReads`) called from two places of one page: the body, and a
@@ -55,34 +56,20 @@ function bodyReads(held: Held): typeof useOutlineReadsItself {
  *  comment it replies to, else under the issue. The outline draws its turns from it. */
 function treeOf(comments: readonly Comment[]): TreeAnswer {
   const key = issueDetails().key;
-  const node = (id: string, supertag: string, parent: string | null): TreeAnswerNode => ({
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-  });
-  return {
-    converted: false,
-    cursor: null,
-    nodes: [
-      node(key, "issue", null),
-      ...comments.map((comment) => ({
-        ...node(comment.id, "comment", comment.reply_to ?? key),
-        author: [comment.author],
-        made_at: comment.created_at,
-        text: comment.body,
-      })),
+  return treeAnswer(
+    [
+      treeNode(key, "issue", null),
+      ...comments.map((comment) =>
+        treeNode(comment.id, "comment", comment.reply_to ?? key, {
+          author: [comment.author],
+          made_at: comment.created_at,
+          text: comment.body,
+        })
+      ),
     ],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+    [],
+    { issue: key }
+  );
 }
 
 /** Each of the outline's six reads, and the tree read the outline draws its turns from, sent
@@ -108,11 +95,7 @@ test("the body and a second caller of the outline's reads send each read once an
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
+    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
     tree: spyOn(api, "getIssueTree").mockResolvedValue(treeOf(TWO_THREADS)),
@@ -175,5 +158,73 @@ test("the body and a second caller of the outline's reads send each read once an
     setSystemTime();
     body.mockRestore();
     for (const spy of [...Object.values(reads), ...others]) spy.mockRestore();
+  }
+});
+
+/** The outline's reads of `issue`, alone under the page's providers, holding what they gave. */
+function renderReads(issue: IssueDetails, client: QueryClient, held: Held) {
+  const route = { key: issue.key, kind: "issue" } as const;
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <SecondCaller held={held} issue={issue} />
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// The page's first focus waits until every read the rows come from has answered, so it lands
+// once where no read still out draws rows above it (`IssueTree`'s opening). A read that answers
+// with a failure has answered too: waiting for a read to hold data, a failed one held the first
+// focus back for ever. Each of the six reads counts, and so does the tree read, which the outline
+// reads in place of each document's blocks: the case leaves one of each out in turn, answers the
+// other, and then fails the one left out.
+test("the outline's reads are settled once each read and the tree read have answered, a failure among them", async () => {
+  for (const last of ["messages", "tree"] as const) {
+    const issue = issueDetails();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    const messages = Promise.withResolvers<never[]>();
+    const tree = Promise.withResolvers<TreeAnswer>();
+    const spies = [
+      spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+      spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
+      spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
+      spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
+      spyOn(api, "listIssueMessages").mockReturnValue(messages.promise as never),
+      spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
+      spyOn(api, "getIssueTree").mockReturnValue(tree.promise),
+      spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
+      spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
+    ];
+    const held: Held = {};
+    try {
+      const view = renderReads(issue, client, held);
+      await waitFor(() => expect(api.listIssueMessages).toHaveBeenCalled());
+      // The read that is not the last answers.
+      if (last === "messages") tree.resolve(treeOf(TWO_THREADS));
+      else messages.resolve([]);
+      await waitInAct(20);
+      expect(held.second?.readsSettled, `settled with the ${last} read still out`).toBe(false);
+      // The last fails.
+      if (last === "messages") messages.reject(new Error("the messages' read failed"));
+      else tree.reject(new Error("the tree read failed"));
+      await waitFor(() =>
+        expect(held.second?.readsSettled, `a failed ${last} read held the reads unsettled`).toBe(
+          true
+        )
+      );
+      expect(held.second?.readsHeld, `a failed ${last} read held its answer`).toBe(false);
+      view.unmount();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   }
 });

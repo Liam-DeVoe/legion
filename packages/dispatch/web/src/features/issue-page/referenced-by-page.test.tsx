@@ -1,6 +1,6 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -23,6 +23,8 @@ import { issue as marginIssue } from "../margin/margin-fixture";
 import type { BlockItemKind } from "../refs/block-reference";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { referencedByControlName } from "./details-names";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
@@ -32,10 +34,18 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 // On the new page the outline is the issue's conversation, so Details' list of what references
 // the issue leaves out what the issue's own asks, comments and messages cite of it, and its
-// control counts the rows the list shows (dispatch://INFRA-3948 R10, decision 76).
+// control counts the rows the list shows.
 
 const REFERENCE = buildDispatchReference({ key: "CORE-1", kind: "issue" });
 const CREATED_AT = "2026-11-16T10:00:00Z";
+
+// Each reference says how long ago it was made ("3 days ago"), which reads the clock. Each case
+// runs at one fixed midday after `CREATED_AT`, so none reads the wall clock. `setSystemTime`
+// holds `Date` alone; the timers the cases wait on (React Query's, `waitFor`'s) run on the real
+// clock as before.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
 
 const OWN_COMMENT = "11111111-1111-4111-8111-111111111111";
 const OWN_ASK = "22222222-2222-4222-8222-222222222222";
@@ -149,7 +159,7 @@ test("with page false an issue's own comment that references it is listed, and w
     );
     expect(kept.getByText(WORDS.otherComment)).toBeInTheDocument();
     expect(within(pageList).getByRole("heading")).toHaveTextContent("Referenced by (1)");
-    // Every colour the list draws in Details is the page's (R10, decision 56): its link and its
+    // Every colour the list draws in Details is the page's: its link and its
     // excerpt as much as its heading and its lines, so no element carries the application's.
     const applicationColours = new Set(
       [linkText, linkHoverText, textSecondaryOnSurface, textMutedOnSurface, borderDefault].flatMap(
@@ -163,6 +173,53 @@ test("with page false an issue's own comment that references it is listed, and w
       "the page's list draws the application's colours"
     ).toEqual([]);
   } finally {
+    view.unmount();
+    client.clear();
+    getReferences.mockRestore();
+  }
+});
+
+// In Details the Retry of a failed read of what references the issue is not disabled while it
+// reads: Chromium would drop its focus to the page (`chromium-focus-fixup.ts`). A keyboard
+// reader on the Retry of the list's failed first read stays on it while the read is out. Details
+// passes `retried` beside `page`, so the case does too. A second press while that read is out
+// joins it whatever the press asks, since the query holds no data to keep (TanStack's
+// `Query.fetch`), so no case counts its reads.
+test("Details' Referenced by Retry pressed by keyboard after the list's first read failed keeps the focus while it reads", async () => {
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new Error("the references are down")
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ReferencedBy page reference={REFERENCE} retried={{ current: false }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    const retry = await within(list).findByRole("button", { name: "Retry" });
+    restoreFocus = emulateChromiumFocusFixup();
+    // The read the Retry sends is held out until the case lets it land.
+    const again = Promise.withResolvers<GraphReferences>();
+    getReferences.mockImplementation(() => again.promise);
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
+    expect(
+      retry,
+      "Details' Referenced by Retry left the focus on the page while it read"
+    ).toHaveFocus();
+    await act(async () => {
+      again.resolve(READ);
+    });
+    await within(list).findByText(WORDS.otherComment);
+    expect(within(list).queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    restoreFocus?.();
     view.unmount();
     client.clear();
     getReferences.mockRestore();
@@ -249,6 +306,7 @@ function stubDetailsReads(details: IssueDetails): () => void {
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
+    spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] }),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
@@ -271,16 +329,16 @@ test("Details' Referenced by reads no count until its list is read, then the row
   const { unmount } = renderDetails(drawer);
 
   try {
-    const toggle = await screen.findByRole("button", { name: "Referenced by" });
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
     await waitFor(() =>
       expect(getReferences).toHaveBeenCalledWith(REFERENCE, { kind: "blocked_by" })
     );
-    expect(toggle).toHaveAccessibleName("Referenced by");
+    expect(toggle).toHaveAccessibleName(referencedByControlName(undefined));
     expect(listReads(), "Details read the list before the reader opened it").toBe(0);
 
     await user.click(toggle);
     expect(
-      await screen.findByRole("button", { name: "Referenced by (1)" }),
+      await screen.findByRole("button", { name: referencedByControlName(1) }),
       "Referenced by's control does not read the rows its list shows"
     ).toBe(toggle);
     expect(listReads()).toBe(1);

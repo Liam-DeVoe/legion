@@ -144,7 +144,24 @@ test("the history is the whole list: nothing says the rest is not listed", async
 });
 
 test("the day the acts fall on heads them, once each", async () => {
-  margin();
+  // A heading is the reader's own day, and HISTORY's moments are UTC instants, which fall on
+  // other local days in a zone far from UTC: in UTC-11 its 10:00 of 12 Nov is on 11 Nov, and
+  // the acts fall on four days. So the acts are read at the same hours of the reader's days.
+  margin(
+    HISTORY.map((act) => {
+      const at = new Date(act.at);
+      return {
+        ...act,
+        at: new Date(
+          at.getUTCFullYear(),
+          at.getUTCMonth(),
+          at.getUTCDate(),
+          at.getUTCHours(),
+          at.getUTCMinutes()
+        ).toISOString(),
+      };
+    })
+  );
   await screen.findByText("moved the order");
   // The heading is the one line of an entry that names no actor; the seven acts fall on three
   // days, and each day is said once, above its newest act. The words of a heading are the
@@ -180,7 +197,7 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Could not load what happened to this priority."
   );
-  expect(screen.queryAllByRole("listitem")).toEqual([]);
+  expect(screen.queryAllByRole("listitem").length).toBe(0);
 });
 
 test("the other three states each say in one line why nothing of that kind is there", async () => {
@@ -194,8 +211,8 @@ test("the other three states each say in one line why nothing of that kind is th
   ]) {
     await userEvent.selectOptions(state, option as string);
     expect(screen.getByText(line as string)).toBeDefined();
-    expect(screen.queryAllByRole("listitem")).toEqual([]);
-    expect(screen.queryAllByRole("link")).toEqual([]);
+    expect(screen.queryAllByRole("listitem").length).toBe(0);
+    expect(screen.queryAllByRole("link").length).toBe(0);
   }
   expect(history).toHaveBeenCalledTimes(1);
 });

@@ -268,8 +268,14 @@ export async function pointerCommand(context: CommandContext): Promise<DispatchT
  *  and its risks, indented beneath it. */
 function lensLines(lens: LensRead): string[] {
   const kind = lens.kind === null ? "a lens of no kind" : `${lens.kind.id} (${lens.kind.words})`;
+  // A lens's `on` names a block a version removed, a retired document or a block of one at the
+  // version of the document that last held it (`#b-<id>@v<N>`, `@v<N>`), and a block of a comment
+  // or a part of an ask a later revision removed at the revision of its item that last held it
+  // (`#b-<id>@v<N>`), so it is null only for a lens placed nowhere. It is never null for a node the
+  // reader may not see: a reader who may see a lens may see the node it stands on, since Dispatch
+  // refuses a lens every reader may see on a node reserved for its author.
   const lines = [
-    `- ${lens.address}${authorOnlyNote(lens.visibility)}: ${kind} on ${lens.on ?? "a node you may not see"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
+    `- ${lens.address}${authorOnlyNote(lens.visibility)}: ${kind} on ${lens.on ?? "no node"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
   ];
   if (lens.verdict !== null) lines.push(`  verdict: ${lens.verdict}`);
   // The document renders a Go list as nullable, and Dispatch answers an empty one.

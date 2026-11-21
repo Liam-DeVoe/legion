@@ -59,11 +59,12 @@ func agentItem(t *testing.T, database *store.Store, kind refs.ItemKind, issueKey
 
 // indexItemAsARouteDoes indexes item id of kind, whose row tx holds with body written at at, as a
 // write route does: the blocks and the references it cites planned (planItemWrite) and written as
-// one batch in tx.
+// one batch in tx. The writer resolves the body's short ids as the item's own author would, and a
+// zero actor resolves them as nobody, which these bodies, holding none, do not depend on.
 func indexItemAsARouteDoes(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	_, write, err := (&server{}).planItemWrite(ctx, tx, kind, id, body, nil, at, true, nil, nil)
+	_, write, err := (&server{}).planItemWrite(ctx, tx, model.Actor{}, kind, id, body, nil, at, true, nil, nil)
 	if err != nil {
 		t.Fatalf("plan the index of the %s: %v", kind, err)
 	}

@@ -196,8 +196,9 @@ func readDatabaseWrites(t *testing.T, ctx context.Context, database *pgx.Conn) d
 //     an agent then removed the first ask's block and restated the ask in a decisions.md section
 //     (the main shape), and moved the second ask's block into the decisions.md (the second shape),
 //     whose own approval a person gave. The restore is the spec's first accepted write on a fleet
-//     of this one build, so its one version restores both blocks and takes the base release's
-//     server-owned attributes off the third, and the approval carries across that combined
+//     of this one build, so its one version restores both blocks and cuts the base release's
+//     server-owned attributes of every ask block to the ones a version keeps (R10: the state, who
+//     answered and when, never the answer's words), and the approval carries across that combined
 //     version, naming the version the person approved; the blocks stand in the `## Decisions`
 //     part, in place of the pointer line. The decisions.md's approval is superseded and reported.
 //     The two versions are one transaction's, one authors value and one xmin.
@@ -214,7 +215,7 @@ func readDatabaseWrites(t *testing.T, ctx context.Context, database *pgx.Conn) d
 //     question in the spec, which its row took, and another person answered the new words before the
 //     agent removed the block. The restore returns the ask under the block id the approved version
 //     held it under, so the one difference no case carries is the words: the restore supersedes
-//     the approval for them alone (sameAskWording, restoredAskBlocks) and reports it.
+//     the approval for them alone (sameAskBytes, restoredAskBlocks) and reports it.
 //
 // The dry run writes nothing (`--dry-run`). Over the database the base release left, which has
 // this build's migrations still to apply, it refuses and applies none; once they are applied, the
@@ -436,9 +437,14 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 	}
 	numberA, markdownA := latestMarkdown(t, current, specA)
 	requireApprovedNow(t, current, specA, "spec A")
-	for _, name := range []string{"state", "answered_by", "answered_at", "selected", "answer"} {
+	for _, name := range []string{"selected", "answer"} {
 		if strings.Contains(markdownA, " "+name+`="`) {
 			t.Fatalf("the restored spec A still holds the base release's %s on an ask block:\n%s", name, markdownA)
+		}
+	}
+	for _, block := range []string{"q-main", "q-moved", "q-kept"} {
+		if !strings.Contains(markdownA, "#"+block+` urgency="med" multiple="false" state="answered" answered_by="`) {
+			t.Fatalf("the restored spec A's block %s keeps no answered state and answerer (R10's kept form):\n%s", block, markdownA)
 		}
 	}
 	decisionsPart := markdownA[strings.Index(markdownA, "## Decisions"):]

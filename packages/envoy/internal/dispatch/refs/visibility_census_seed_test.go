@@ -57,7 +57,7 @@ func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *sto
 }
 
 // seedRun records one run of the command bar alice asked, as a going_requests row, and states it
-// in the store through the writer that states a run from its row (graphcensus.WriteRun): the
+// in the store through the writer that states a run from its row (graphstore.WriteRun): the
 // interaction node, its words and its authored_by, in the shape the going POST writes them, since
 // both write graphstore.InteractionFacts through graphstore.Write. The POST's own writer is a
 // method of api's server, which imports this package, so this external test package takes the
@@ -73,8 +73,8 @@ func seedRun(t *testing.T, ctx context.Context, database *store.Store) {
 		t.Fatalf("record a run of the command bar: %v", err)
 	}
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		held, err := graphcensus.WriteRun(ctx, tx, id)
-		if err == nil && !held {
+		written, err := graphstore.WriteRun(ctx, tx, id)
+		if err == nil && !written.Held {
 			err = fmt.Errorf("the record holds no run %s", id)
 		}
 		return err

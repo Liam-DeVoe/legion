@@ -22,9 +22,10 @@ import (
 // TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow do not prove: writeBlockRefBatch,
 // writeCommentBatch, writeRoleBatch and writeSessionBatch, the two batches of the passes over
 // the project of every node, writeObjectBatch and writeScopeBatch (projects_lock_steps_test.go),
-// and the two writers of an older pod's runs, writeRunFrames and writeGoneRun, each a store write
-// call site graphstore's TestEveryStoreWriteCallSiteIsListed lists. graphstore's
-// TestEveryStoreWriteTakesOneLockOrder cannot run them, since this package imports graphstore.
+// the three writers of an older pod's runs, writeOwedRun, writeRunFrames and writeGoneRun, and
+// writeEndedPreventions, each a store write call site graphstore's
+// TestEveryStoreWriteCallSiteIsListed lists. graphstore's TestEveryStoreWriteTakesOneLockOrder
+// cannot run them, since this package imports graphstore.
 //
 // Each subtest seeds the rows one batch writes from, then holds, each in a transaction of its own,
 // a row of every step the batch takes and a row of every step it does not take, and runs the real
@@ -41,11 +42,13 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeCommentBatch takes its comments' owner rows, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
 	t.Run("writeRoleBatch takes no owner row, then its node rows ascending and the part_of tuple", requireTheRoleBatchLockOrder)
 	t.Run("writeSessionBatch takes no owner row, then its node rows ascending", requireTheSessionBatchLockOrder)
-	t.Run("writeRunFrames takes no owner row and no run row, then the run's interaction node row and the tuple append", requireTheRunFramesLockOrder)
-	t.Run("writeGoneRun takes no owner row, then the run's interaction node row, which it moves", requireTheGoneRunLockOrder)
 	t.Run("writeObjectBatch takes its documents' owner locks in ascending owner key, then each run's node rows ascending and its tuples, and no event", requireTheObjectBatchLockOrder)
 	t.Run("writeScopeBatch over block nodes takes the owner lock, the fence, then the node rows ascending and the project tuple, and no projection row", requireTheBlockScopeBatchLockOrder)
 	t.Run("writeScopeBatch over a comment node takes no owner lock and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
+	t.Run("writeOwedRun takes no owner row, then the run's going_requests row, then its node rows ascending and the tuple append", requireTheOwedRunLockOrder)
+	t.Run("writeRunFrames takes no owner row and no run row, then the run's interaction node row and the tuple append", requireTheRunFramesLockOrder)
+	t.Run("writeGoneRun takes no owner row, then the run's interaction node row, which it moves", requireTheGoneRunLockOrder)
+	t.Run("writeEndedPreventions takes the checks' owner row, then the tuple append, and no node row", requireTheEndedPreventionsLockOrder)
 }
 
 // requireTheBlockRefBatchLockOrder holds writeBlockRefBatch to its steps. The batch is one of the
@@ -133,8 +136,8 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 
 // requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
 // owner lock of its comments' issue, as every writer of a comments row and the erase do
-// (LockCommentOwners), and reads under it which comments still stand unmarked
-// (CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
+// (refs.LockCommentOwners), and reads under it which comments still stand unmarked
+// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
 // removed it writes nothing for it. It then writes every node it writes - its comments' and their
 // authors' - in one store write, which takes their rows in ascending (kind, id) and then appends
 // every tuple: the facts each comment row projects, and each author's authored_by and aliases
@@ -149,7 +152,7 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
-// author's node (graphstore.Authored), passes as well.
+// author's node (graphstore.QueueAuthored), passes as well.
 func requireTheCommentBatchLockOrder(t *testing.T) {
 	ctx := context.Background()
 	writes := newAddressingWrites(t)

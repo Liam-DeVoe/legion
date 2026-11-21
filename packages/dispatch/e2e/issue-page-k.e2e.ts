@@ -7,6 +7,7 @@ import {
   EMPTY_STATE_LINES,
   PLAN_WORDS,
   PRESET_NAMES,
+  STATE_LINES,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
@@ -43,6 +44,7 @@ import {
   seedPlanMarks,
   stepLayouts,
 } from "./issue-page-k";
+import { refuseTreeRead } from "./issue-page-t";
 import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
@@ -245,37 +247,47 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
   }
 }
 
-/** A first read that fails (`slots/view-plan.tsx`): with every read of the plan document's
- *  blocks refused, the page's two retries included, `t p` from the conversation opens Plan,
- *  which says in the page's words that it could not load the plan, with a Retry that holds the
- *  focus, and draws no bar and no switch. `t p` pressed from a control that holds the focus, the
- *  Spec control of the view row, puts the focus on that Retry too: the chord focuses the view's
- *  tree, which hands it on. With the read let through, Enter on that Retry asks it again, and the
- *  view draws the chart with the focus on its first row. */
+/** A first read that fails (`slots/view-plan.tsx`): with every request of the issue's tree read
+ *  refused (`refuseTreeRead`), the page's two retries included, the page still opens, and its
+ *  outline says in the page's words that it could not load the outline
+ *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). The plan's blocks are the tree read's
+ *  (`tree-read/tree-read.ts`'s `blocksOf`), as the outline's rows are, so the question that waits
+ *  on the reader is refused with them and the page has none to open on. `t p` from the page then
+ *  opens Plan. The plan's blocks and the spec's are that one read, so its refusal is one line,
+ *  the statements' where the issue names a spec, as this seed's does: Plan says in the page's
+ *  words that it could not load the spec, with a Retry that holds the focus, and draws no bar and
+ *  no switch. `t p` pressed from a control that holds the
+ *  focus, the Spec control of the view row, puts the focus on that Retry too: the chord focuses
+ *  the view's tree, and the stage the view is drawn in hands the focus on to the Retry
+ *  (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter on that Retry
+ *  asks it again, and the view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
-  let refusing = true;
-  const refuse = async (route: Route) => {
-    if (refusing && route.request().url().includes(seeded.planArtifactId)) {
-      await route.fulfill({ status: 500 });
-      return;
-    }
-    await route.continue();
-  };
-  await page.route(BLOCKS_READ, refuse);
+  const treeRead = await refuseTreeRead(page, seeded.key);
   try {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    // The outline's line is drawn once the tree read has failed, its two retries included. The
+    // focus is moved to the page only after that, or a focus the page places as its reads settle
+    // could land after the move and keep the focus off the page.
+    await expect(
+      issuePage(page).locator("[data-tree-unreadable]"),
+      "the outline whose tree read was refused does not say it could not load the outline"
+    ).toContainText(ANSWER_LINES.outline_unreadable);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
     await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
-    const line = issuePage(page).locator('[data-plan-unreadable="plan"]');
+    const line = issuePage(page).locator('[data-plan-unreadable="statements"]');
     await expect(
       line,
-      "the Plan view whose first read of the plan's blocks failed does not say it could not load the plan"
-    ).toContainText(ANSWER_LINES.plan_unreadable);
+      "the Plan view whose first read of its blocks failed does not say it could not load the spec"
+    ).toContainText(STATE_LINES.spec_unreadable);
+    await expect(
+      issuePage(page).locator("[data-plan-unreadable]"),
+      "the Plan view draws more than one line for the one refused tree read"
+    ).toHaveCount(1);
     const retry = line.getByRole("button");
-    await expect(retry, "the line saying the plan could not be loaded draws no Retry").toHaveCount(
+    await expect(retry, "the line saying the spec could not be loaded draws no Retry").toHaveCount(
       1
     );
     await expect(
@@ -304,9 +316,17 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
     await expect(
       retry,
-      "t p from the Spec control with the plan's blocks refused does not put the focus on the plan's Retry"
+      "t p from the Spec control with the tree read refused does not put the focus on the Plan view's Retry"
     ).toBeFocused();
-    refusing = false;
+    // The chord shows the tree it focused from its own top (`useIssueKeymap.ts`'s `showPart`),
+    // and the Retry stands over the tree, so the stage, which focuses the Retry, brings it on
+    // screen in the frame after (`slots/stage.tsx`'s `focusOn`).
+    await expect
+      .poll(() => onScreen(retry), {
+        message: "t p from the Spec control leaves the plan's focused Retry off the screen",
+      })
+      .toBe(true);
+    await treeRead.lift();
     await page.keyboard.press("Enter");
     await expect(
       planView(page, "chart"),
@@ -314,7 +334,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     ).toHaveAttribute("aria-pressed", "true");
     const bars = planChart(page).locator("[data-plan-bar-row]");
     await expect(bars).toHaveCount(seeded.planTasks.length);
-    await expect(line, "the line saying the plan could not be loaded stays").toHaveCount(0);
+    await expect(line, "the line saying the spec could not be loaded stays").toHaveCount(0);
     const first = await bars.first().getAttribute("data-node-id");
     await expect
       .poll(() => focusedNodeId(page), {
@@ -323,7 +343,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
       })
       .toBe(first);
   } finally {
-    await page.unroute(BLOCKS_READ, refuse);
+    await treeRead.lift();
   }
 }
 
@@ -914,6 +934,8 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // card the key goes to, so that card is off the screen until its placing puts it on.
     const first = nodeRow(page, step(T.third)).first();
     const last = nodeRow(page, step(T.loose)).first();
+    /** The card that holds the focus, itself or a link inside it. */
+    const focusedCard = planChart(page).locator("[data-node-row]:focus-within");
     /** Puts the page at its `end`, from where `card` stands off the screen (`before` fails the
      *  row where it does not), runs `press`, which presses a key and reads where it left the
      *  focus, and reads until `shown` - the card, or the link the key focused - stands on screen
@@ -926,6 +948,33 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       after: string,
       shown: Locator = card
     ): Promise<void> => {
+      // The key before this one moved the focus, and the card it focused places itself on screen
+      // after the focus lands (`useRowOnScreen`: in its layout effect, and in its resize
+      // observer's first callback a frame later). The page is scrolled once that placing has
+      // settled - the card on screen and the scroll position still over two consecutive animation
+      // frames - or the placing undoes the scroll. A resize observer reports in the rendering
+      // step after the call that observes, which runs after the first of the two frame callbacks,
+      // so a scroll it makes there is read by the second.
+      await expect
+        .poll(
+          async () => [
+            await onScreen(focusedCard),
+            await page.evaluate(() => {
+              const { promise, resolve } = Promise.withResolvers<boolean>();
+              const start = window.scrollY;
+              requestAnimationFrame(() => {
+                const next = window.scrollY;
+                requestAnimationFrame(() => resolve(start === next && next === window.scrollY));
+              });
+              return promise;
+            }),
+          ],
+          {
+            message: "the focused card's placing does not settle before the page is scrolled",
+            timeout: 10_000,
+          }
+        )
+        .toEqual([true, true]);
       await page.evaluate(
         (bottom) =>
           window.scrollTo({
@@ -1153,10 +1202,12 @@ test("on a phone the Plan chart is one card for each step @phone @phone-only", a
       planChart(page).locator("[data-plan-head]"),
       "the chart draws its head row at 390 px"
     ).toBeHidden();
-    for (const curve of await planChart(page).locator("svg[data-plan-links] path").all()) {
-      await expect(curve, "the chart draws a curve at 390 px").toBeHidden();
-    }
+    await expect(
+      planChart(page).locator("svg[data-plan-links] path:visible"),
+      "the chart draws a curve at 390 px"
+    ).toHaveCount(0);
 
+    // The cards are settled here: their count and their order are each awaited just above.
     for (const card of await stepLayouts(page)) {
       const at = `the card of ${card.id}`;
       expect(card.row.borderLeftWidth, `${at} has no 4 px left edge`).toBe("4px");

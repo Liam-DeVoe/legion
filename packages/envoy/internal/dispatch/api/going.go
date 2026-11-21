@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -25,7 +24,7 @@ import (
 // not per request). Every read and write of that record is here; the routes that call them are
 // their own.
 //
-// A run is an interaction node of the node and tuple store (dispatch://INFRA-1950/spec#b-r-interaction),
+// A run is an interaction node of the node and tuple store (spec requirement r-interaction),
 // and its two tables are that node's projections: going_requests projects the node, its author
 // column the node's made_by, and each going_events row projects one frame value of it. Every
 // writer here writes the node or the value first and then the row, in one transaction
@@ -34,7 +33,7 @@ import (
 //
 // A run is kept, its row, its frames and its node, until `envoy-dispatch erase --node
 // interaction:<uuid>` erases all three in one transaction (grapherase): a node of the store is
-// removed by erasure alone (dispatch://INFRA-1950/spec#b-r-interaction). Nothing here deletes a
+// removed by erasure alone (spec requirement r-interaction). Nothing here deletes a
 // run. During a roll, and after a rollback, a process of the release before still deletes a run
 // an hour old (contracts.GoingRequestTTL, which this build reads nowhere); the backfill states its
 // node gone (graphcensus's backfillGoneRuns).
@@ -347,23 +346,24 @@ const goingRunNodeTaken = graphstore.NodeRowLockSQL + ` skip locked`
 // (graphstore.LockInteraction), the first lock of every frame's transaction, so a frame takes a
 // node's row before the run's going_requests row, the order the erase of a run takes them in. A
 // run a pod of the release before recorded during a roll has no node yet: its node is written
-// first, from its going_requests row, by the backfill's writer for one run (graphcensus.WriteRun),
-// which takes that row `for no key update` and also states a frame value of every frame that pod
-// stored, and then taken. The node it writes is this transaction's own, which no other can see
-// until it commits, let alone hold. A node another write committed in between is taken without
-// waiting (goingRunNodeTaken), and where another transaction holds it the answer is
-// errGoingRunNodeHeld, which the caller begins again on, so no frame waits on a node's row while it
-// holds the run's. A run the record does not hold is errGoingRunGone.
+// first, from its going_requests row, by the one writer of a run's node from its row, which the
+// backfill shares (graphstore.WriteRun): it takes that row `for no key update` and also states a
+// frame value of every frame that pod stored, and the node is then taken. The node it writes is
+// this transaction's own, which no other can see until it commits, let alone hold. A node another
+// write committed in between is taken without waiting (goingRunNodeTaken), and where another
+// transaction holds it the answer is errGoingRunNodeHeld, which the caller begins again on, so no
+// frame waits on a node's row while it holds the run's. A run the record does not hold is
+// errGoingRunGone.
 func lockGoingRun(ctx context.Context, tx pgx.Tx, requestID string) error {
 	locked, err := graphstore.LockInteraction(ctx, tx, requestID)
 	if err != nil || locked {
 		return err
 	}
-	held, err := graphcensus.WriteRun(ctx, tx, requestID)
+	written, err := graphstore.WriteRun(ctx, tx, requestID)
 	if err != nil {
 		return err
 	}
-	if !held {
+	if !written.Held {
 		return errGoingRunGone
 	}
 	taken, err := tx.Exec(ctx, goingRunNodeTaken, graphstore.KindInteraction, requestID)
@@ -546,7 +546,7 @@ var goingEveryOverdueRun = goingOverdueRead("")
 // that was answering one may have died, and nobody may be reading it. An older run is the boot
 // pass's, or its reader's, as goingSweepWindow says.
 // It deletes no run: a run is kept, row, frames and node, until an erase removes it
-// (dispatch://INFRA-1950/spec#b-r-interaction), where the release before deleted every run past
+// (spec requirement r-interaction), where the release before deleted every run past
 // contracts.GoingRequestTTL. That value is read nowhere in this build.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 	_, err := endOverdueGoingRuns(ctx, pool, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())

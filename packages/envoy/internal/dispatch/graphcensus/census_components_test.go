@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,4 +237,64 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 			t.Errorf("the backfill reports %#v for issues' components, want 1 row, 1 tuple and every row marked", done)
 		}
 	})
+}
+
+// TestTheComponentDependsPassOwesNoRowOfAComponentNoPassCanMark holds the depends pass of the
+// components' backfill to the rows its writer can mark. Component daemon's own address fits the
+// store's bound and its parent's does not, so the component pass leaves its row out
+// (componentFits) and the row names no node after any run; daemon's dependency on envoy fits the
+// bound at both ends, and writeComponentDependsBatch marks a dependency only under a component
+// whose row names its node. So the depends pass neither reads nor counts that dependency, as the
+// component pass neither reads nor counts daemon: after the two passes each reports every row it
+// owes marked, and the dependency keeps its null node columns, which graph_edges' old depends_on
+// arm answers. Counted, it stood remaining after every run, and the backfill never reported the
+// store complete.
+func TestTheComponentDependsPassOwesNoRowOfAComponentNoPassCanMark(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	source, snapshot, _ := seedLockSource(t, database)
+	parent := strings.Repeat("p", graphstore.MaxAddressBytes)
+	if graphstore.AddressFits(graphstore.ComponentAddress("LOCK", parent)) {
+		t.Fatalf("the parent's address fits the store's bound, so this proves nothing")
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into components (project_key, id, title, prose, parent, snapshot_id, source_id) values
+			('LOCK', $3, 'Long', 'A parent past the bound.', null, $1, $2),
+			('LOCK', 'daemon', 'Daemon', 'The daemon.', $3, $1, $2),
+			('LOCK', 'envoy', 'Envoy', 'Routing.', null, $1, $2)
+	`, snapshot, source, parent); err != nil {
+		t.Fatalf("seed the components: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into component_depends (project_key, from_id, to_id) values ('LOCK', 'daemon', 'envoy')`); err != nil {
+		t.Fatalf("seed daemon's dependency on envoy: %v", err)
+	}
+
+	components, err := backfillComponents(ctx, database)
+	if err != nil {
+		t.Fatalf("run the component pass: %v", err)
+	}
+	if components.Rows != 1 || components.Remaining != 0 || !components.Complete {
+		t.Fatalf("the component pass reports %#v, want envoy alone marked and none remaining: daemon's parent and the parent itself are past the bound",
+			components)
+	}
+	depends, err := backfillComponentDepends(ctx, database)
+	if err != nil {
+		t.Fatalf("run the depends pass: %v", err)
+	}
+	if depends.Rows != 0 || depends.Remaining != 0 || !depends.Complete {
+		t.Errorf("the depends pass reports %#v, want no row marked and none remaining: daemon's row names no node after any run", depends)
+	}
+	if kind, address := rowMarker(t, database, `select node_kind, node_address from component_depends where project_key = 'LOCK' and from_id = $1`, "daemon"); kind != "" || address != "" {
+		t.Errorf("daemon's dependency names node %q/%q, want none: daemon's row names none", kind, address)
+	}
+	var answered int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_edges
+		where from_kind = 'component' and from_id = 'LOCK/daemon' and kind = 'depends_on' and to_kind = 'component' and to_id = 'LOCK/envoy'
+	`).Scan(&answered); err != nil {
+		t.Fatalf("read daemon's dependency out of graph_edges: %v", err)
+	}
+	if answered != 1 {
+		t.Errorf("graph_edges answers daemon's dependency on envoy %d times, want once, by its old arm", answered)
+	}
 }

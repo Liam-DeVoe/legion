@@ -18,7 +18,7 @@ import (
 
 // TestACommentAskedForAuthorIsRefusedNamingItsKind holds the refusal of `author` on a kind the
 // read registry does not flag to a route of a kind that exists today
-// (dispatch://INFRA-1950/spec#b-r-node-visibility): a comment asked for `author` on a credential
+// (spec requirement r-node-visibility): a comment asked for `author` on a credential
 // that proves an author is refused by the store, 400 VISIBILITY_NOT_ADMITTED, whose message names
 // the kind comment, and nothing of it is stored - the issue's comment list, the comments table and
 // the store's comment nodes hold what they held. On the shared bearer the same ask is refused
@@ -104,7 +104,7 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 // page her cookie reads lists the three, the lens titled by its verdict and opening the issue's
 // page, and the cookie's run titled by the first line of its words and opening nothing; and the
 // page her token reads lists the project comment, the comment reserved for her and the lens,
-// whose predicates both compare the author a credential proved (dispatch://INFRA-1149's one rule),
+// whose predicates both compare the author a credential proved (cybermonklabs/legion#3178's one rule),
 // and the token's run, and not the run her cookie asked, whose predicate compares the whole
 // credential. Each row answers its state and its visibility.
 //
@@ -263,7 +263,9 @@ func seedAuthorOnlyComment(t *testing.T, database *store.Store, issue string, au
 	`, id, issue, encoded, body, graphstore.KindComment, at); err != nil {
 		t.Fatalf("write the comment's row: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, id, author, at, graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, id, author, at, graphstore.NoEvent)
+	}); err != nil {
 		t.Fatalf("record who wrote the comment: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -18,8 +18,8 @@ import { CONTROL_LABELS, issueStatusWord } from "./page-words";
 import { plainWords } from "./tree-drafts";
 
 /**
- * The issue's history, as the panel draws it (dispatch://INFRA-1196 R15, R20): every event that
- * is no row of the outline, newest first, by day.
+ * The issue's history, as the panel draws it: every event that is no row of the outline, newest
+ * first, by day.
  *
  * It holds the issue's status moves, its claims and releases, its handoffs, its documents added
  * and removed, every other event of the issue itself, and the comments and messages agents wrote
@@ -29,7 +29,8 @@ import { plainWords } from "./tree-drafts";
  * what happened to it, a result recorded against a check, a decision kept, a child's status move
  * - and a new version of a document, which is a version and no upload: a document's versions are
  * in its own toolbar. The upload of any other file or picture, its first version or a later one,
- * is an upload, and one author's uploads within one minute are one entry that opens each.
+ * is an upload, and a run of uploads is one entry that opens each: one author's newest upload
+ * and their uploads made at most a minute before it, with no other author's upload between them.
  *
  * Pure, so the panel and its unit tests read one model.
  */
@@ -37,6 +38,11 @@ export interface HistoryDay {
   readonly date: string;
   /** What the day is headed, in the page's words: Today, Yesterday, or the date written out. */
   readonly label: string;
+  /** Whether the day is the one the oldest event read so far was made in, or one before it,
+   *  while older pages of the log are still to be read (`HistoryInput.loadedFrom`): its earlier
+   *  events can be on a page not read yet, so how many entries it holds is not known until that
+   *  page lands. */
+  readonly partial: boolean;
   readonly today: boolean;
   /** The day's entries, newest first, with the reader's read mark among them where it falls. */
   readonly entries: readonly HistoryEntry[];
@@ -69,7 +75,9 @@ export type HistoryEntry =
       readonly id: string;
       readonly at: string;
       readonly author: Actor;
-      /** The files the run uploaded, oldest first, each by its own address. */
+      /** The files the run uploaded, newest first, each by its own address: one author's newest
+       *  upload and their uploads made at most a minute before it, with no other author's upload
+       *  between them (`uploadRuns`). The run is named (`id`) by its newest upload. */
       readonly files: readonly UploadedFile[];
       readonly seq: number;
     }
@@ -105,14 +113,16 @@ export interface HistoryInput {
   /** When the oldest event the log has read so far was made, while older pages of the log are
    *  still to be read; undefined once the whole log is in. A thread that began before it is
    *  left out until its page is read: its place among events not read yet is not known, and a
-   *  day drawn with that thread alone would count one entry where it holds many. */
+   *  day drawn with that thread alone would count one entry where it holds many. The day it was
+   *  made in is partial (`HistoryDay.partial`). */
   readonly loadedFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
   readonly today: string;
 }
 
-/** How far apart one author's uploads may be and still be one entry. */
+/** How long before a run's newest upload its author's other uploads may have been made and
+ *  still be of that run: the run's minute is counted back from its newest upload alone. */
 const UPLOAD_RUN_MS = 60_000;
 
 /** The event types of a row the outline draws, which the history leaves out. A comment's and a
@@ -120,9 +130,10 @@ const UPLOAD_RUN_MS = 60_000;
  *  part in - and for its creation always, since this list draws a thread agents wrote among
  *  themselves from the issue's comments and messages, each turn whole; what happened to such a
  *  thread after - a mention that could not be delivered, a resolution, an edit - is no node's,
- *  so it is a line here (R15, `ofOutlineRow`). An ask's are left out for a question alone: an
+ *  so it is a line here (`ofOutlineRow`). An ask's are left out for a question alone: an
  *  approval request is no row of the outline - the identity block draws its step
- *  (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's. */
+ *  (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's, as are the
+ *  followers added to it and removed. */
 const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "ask.anchor_refreshed": true,
   "ask.answered": true,
@@ -159,12 +170,11 @@ type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const artifacts = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
   const agentsOnly = agentsOnlyIds(input.comments, input.messages, input.asks);
+  const approvals = new Set(input.asks.flatMap((ask) => (ask.kind === "approval" ? [ask.id] : [])));
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
-  // The upload entry one author's uploads are gathering in, and its place among `entries`.
-  let run:
-    | { author: Actor; at: string; entry: Extract<Dated, { kind: "uploads" }>; index: number }
-    | undefined;
+  // Each upload's event and file, oldest first, gathered into runs once every event is read.
+  const uploads: { event: DispatchEvent; file: UploadedFile }[] = [];
   const ordered = [...input.events].sort((left, right) => left.seq - right.seq);
   const seqOf = new Map<string, number>();
   for (const event of ordered) {
@@ -178,33 +188,12 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         ? event.payload.status
         : undefined;
     const upload = uploadOf(event, artifacts);
-    if (ofOutlineRow(event, agentsOnly) || isDocumentVersion(event, artifacts)) {
+    if (ofOutlineRow(event, agentsOnly, approvals) || isDocumentVersion(event, artifacts)) {
       if (status !== undefined) previousStatus = status;
       continue;
     }
     if (upload !== undefined) {
-      const near =
-        run !== undefined &&
-        run.author.kind === event.actor.kind &&
-        run.author.id === event.actor.id &&
-        Date.parse(event.created_at) - Date.parse(run.at) <= UPLOAD_RUN_MS;
-      if (near && run !== undefined) {
-        const files = [...run.entry.files, upload];
-        const grown = { ...run.entry, at: event.created_at, files, seq: event.seq };
-        entries[run.index] = grown;
-        run = { ...run, entry: grown };
-      } else {
-        const entry = {
-          at: event.created_at,
-          author: event.actor,
-          files: [upload],
-          id: `uploads:${event.id}`,
-          kind: "uploads" as const,
-          seq: event.seq,
-        };
-        run = { at: event.created_at, author: event.actor, entry, index: entries.length };
-        entries.push(entry);
-      }
+      uploads.push({ event, file: upload });
       continue;
     }
     entries.push({
@@ -218,7 +207,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     });
     if (status !== undefined) previousStatus = status;
   }
-  entries.push(...threadsOf(input, agentsOnly, seqOf));
+  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly, seqOf));
 
   // Newest first, by when each happened; one instant by the log's own order.
   entries.sort((one, other) => compareTimestamps(other.at, one.at) || other.seq - one.seq);
@@ -242,12 +231,17 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     }
     day.entries.push(entry);
   }
-  // Today and yesterday are headed in the page's words (decision 14), an older day by its date
+  // Today and yesterday are headed in the page's words, an older day by its date
   // as the Activity tab writes it out. Yesterday is read back from today's noon, so no change of
   // the clocks moves it to another day.
   const noon = new Date(`${input.today}T12:00:00`);
   noon.setDate(noon.getDate() - 1);
   const yesterday = dateKey(noon.toISOString());
+  // While older pages of the log remain, the day the oldest event read so far was made in holds
+  // the events of the pages read and none of the next one's - only a thread waits for its page
+  // (`threadsOf`) - so how many entries it holds is not known yet; nor is it for a day before it,
+  // which only an event dated earlier than its place in the log draws.
+  const cut = input.loadedFrom === undefined ? undefined : dateKey(input.loadedFrom);
   return days.map((day) => ({
     date: day.date,
     entries: day.entries,
@@ -257,8 +251,54 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         : day.date === yesterday
           ? CONTROL_LABELS.history_yesterday
           : dayLabel(day.date, input.today),
+    partial: cut !== undefined && day.date <= cut,
     today: day.date === input.today,
   }));
+}
+
+/**
+ * The runs of `uploads`, given newest first, as entries newest first. A run is its newest upload
+ * and the uploads its author made at most a minute (`UPLOAD_RUN_MS`) before that one, with no
+ * other author's upload between them: walked newest first, each upload joins the run above it
+ * or begins the next. The minute is counted from the run's newest upload, never from the upload
+ * before, so no run spans more than a minute however many uploads it holds. The log read further
+ * back only walks on past the uploads already read: an older page extends the oldest run or
+ * adds runs under it, and moves no file of a run drawn. A newer upload within a minute of the
+ * newest run's newest upload joins that run and splits off its uploads more than a minute older
+ * than itself into a run of their own, and the panel draws the newer part on under the key the
+ * run had (`IssueHistory.tsx`). A run lists its files newest first, as the history lists every
+ * entry, and is named by its newest upload, so an older page that extends it adds files under
+ * the ones the reader is on and leaves its name: the entry is neither moved nor drawn anew.
+ */
+function uploadRuns(
+  uploads: readonly { readonly event: DispatchEvent; readonly file: UploadedFile }[]
+): Extract<Dated, { kind: "uploads" }>[] {
+  const runs: Extract<Dated, { kind: "uploads" }>[] = [];
+  // The run being gathered: its author, its files and when its newest upload was made.
+  let run:
+    | { readonly at: number; readonly author: Actor; readonly files: UploadedFile[] }
+    | undefined;
+  for (const { event, file } of uploads) {
+    if (
+      run !== undefined &&
+      run.author.kind === event.actor.kind &&
+      run.author.id === event.actor.id &&
+      run.at - Date.parse(event.created_at) <= UPLOAD_RUN_MS
+    ) {
+      run.files.push(file);
+      continue;
+    }
+    run = { at: Date.parse(event.created_at), author: event.actor, files: [file] };
+    runs.push({
+      at: event.created_at,
+      author: event.actor,
+      files: run.files,
+      id: `uploads:${event.id}`,
+      kind: "uploads",
+      seq: event.seq,
+    });
+  }
+  return runs;
 }
 
 /** Each thread agents wrote among themselves, as one entry at its first turn: every one that
@@ -337,11 +377,11 @@ function threadEntry(
 
 /**
  * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
- * line names by a token in the page's words (dispatch://INFRA-3948 D6, R22 of
- * dispatch://INFRA-1196): a delivery's target by the agent it went to, never its address or
+ * line names by a token in the page's words, as an address is no name: a delivery's target by
+ * the agent it went to, never its address or
  * `session:<id>`; the status a reopened issue went into by its word; and a stored text it
  * quotes, an approval request's question or the reason it was resolved with, by its plain words,
- * as the outline names an ask (`plainWords`, decision 95), never the markup its author typed or a
+ * as the outline names an ask (`plainWords`), never the markup its author typed or a
  * bare `dispatch://` address, which reads as its short form. Every other text a line of the
  * history holds is a name, a key or the server's own words, none of which is markdown.
  */
@@ -467,11 +507,20 @@ function turnOf(event: DispatchEvent): string | undefined {
 
 /** Whether `event` is of a row the outline draws, and so no line of the history. What happened
  *  to a comment or a message of a thread agents wrote among themselves (`agentsOnly`) is no
- *  row's, and an approval request's events are the history's. */
-function ofOutlineRow(event: DispatchEvent, agentsOnly: ReadonlySet<string>): boolean {
+ *  row's, and an approval request's events are the history's: an event that carries the ask
+ *  says its kind, and a follower's, which names the ask alone, is an approval request's where
+ *  the issue's asks hold that ask as one (`approvals`, by id). */
+function ofOutlineRow(
+  event: DispatchEvent,
+  agentsOnly: ReadonlySet<string>,
+  approvals: ReadonlySet<string>
+): boolean {
   if (OUTLINE_EVENTS[event.type] !== true) return false;
   const turn = turnOf(event);
   if (turn !== undefined && agentsOnly.has(turn)) return false;
+  if (event.type === "ask.follower_added" || event.type === "ask.follower_removed") {
+    return !approvals.has(event.payload.ask_id);
+  }
   const payload: unknown = event.payload;
   return !(
     event.type.startsWith("ask.") &&

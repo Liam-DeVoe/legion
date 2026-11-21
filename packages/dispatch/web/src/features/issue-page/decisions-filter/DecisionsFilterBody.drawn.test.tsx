@@ -38,10 +38,10 @@ import {
 import { presetView } from "../presets";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
+  AGENT,
   answeredAsk,
   ask,
   closing,
-  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
   decisionsRead,
@@ -50,8 +50,11 @@ import {
   KEY,
   node,
   openAsk,
+  personDecision,
   READER,
   READER_ACTOR,
+  SPEC_DOCUMENT,
+  SPEC_SLUG,
   shaped,
   specRef,
   statement,
@@ -80,7 +83,7 @@ const FOOT_CONTROL = { name: (name: string) => name.endsWith(DECISIONS_WORDS.age
 const STORED = "Keep the rail.\n\n  It is 56 px wide -  no wider.\n";
 
 const KEPT: DecisionKeep = {
-  artifact_id: DECISIONS_DOCUMENT.id,
+  artifact_id: SPEC_DOCUMENT.id,
   block_id: "kept",
   changed_version: 1,
   kept_at: "2026-11-15T09:00:00Z",
@@ -88,8 +91,9 @@ const KEPT: DecisionKeep = {
 };
 
 /** One issue that holds an entry of every part: an open question, two decisions a statement
- *  rests on that wait, one the reader kept, an answered ask with the agent's write-up of it
- *  under it, a declined ask, and two decisions no statement rests on. */
+ *  rests on that wait, one the reader kept, an answered ask, which is the reader's decision,
+ *  with the agent's reading of it under it, a declined ask, and two decisions no statement
+ *  rests on. */
 function wholeIssue(): {
   asks: DecisionsAsk[];
   children: TreeNode[];
@@ -115,7 +119,15 @@ function wholeIssue(): {
         "a-answered",
         { at: "2026-11-14T09:00:00Z", selected: ["Changes needed"], text: STORED },
         {
-          children: [decisionNode("reading", { text: "The reader wants the rail kept." })],
+          children: [
+            node({
+              author: AGENT,
+              id: `${SPEC_SLUG}#b-reading`,
+              reference: specRef("reading"),
+              text: "The reader wants the rail kept.",
+              type: "reading",
+            }),
+          ],
           options: [{ label: "Works" }, { label: "Changes needed" }],
           text: "Does the built page work for you?",
         }
@@ -128,7 +140,7 @@ function wholeIssue(): {
       decisionNode("replaced"),
     ],
     made: [
-      decision("reading", { asks: ["a-answered"], kind: "person", waiting_review: false }),
+      personDecision("a-answered"),
       decision("first", {
         changed_at: "2026-11-10T12:00:00Z",
         links: [shaped(specRef("s1"))],
@@ -185,11 +197,11 @@ interface BodyProps {
 }
 
 /** A Change a person sent on a decision: a comment of the issue anchored to the decision's own
- *  words in the decisions document (`DecisionActions.tsx`). */
+ *  words in the spec, whose `decision` block it is (`DecisionActions.tsx`). */
 function changeOf(block: string, at: string, body: string): Comment {
   return {
     anchor: {
-      artifact_id: DECISIONS_DOCUMENT.id,
+      artifact_id: SPEC_DOCUMENT.id,
       block_id: null,
       mark_id: `mark-${block}`,
       orphaned: false,
@@ -203,18 +215,16 @@ function changeOf(block: string, at: string, body: string): Comment {
   } as Comment;
 }
 
-/** The decisions document the decisions read of `made` stands for: its title, then each
- *  decision's heading and words as `made` orders them, the replaced ones after the rest and a
- *  level down under `## Replaced`, which is where the server's section rule finds each
- *  (`decision-review.ts`'s `decisionHeadings`). A Change's send reads it to say which place of
- *  its quote is the decision's own (`DecisionActions.tsx`, decision 92). */
-function decisionsText(made: readonly Decision[]): string {
-  const section = (level: string) => (row: Decision) => `${level} ${row.heading}\n\n${row.text}`;
-  const replaced = made.filter((row) => row.replaced);
+/** The spec the decisions read of `made` stands for: its title, then its `## Decisions` part
+ *  holding each agent's decision's own `decision` block as `made` orders them, a replaced one's
+ *  included, where the server's quote rule finds each (`decision-review.ts`'s `changeAnchor`). A
+ *  Change's send reads it to say which place of its quote is the decision's own
+ *  (`DecisionActions.tsx`, decision 92). */
+function specText(made: readonly Decision[]): string {
   return [
-    `# Decisions of ${KEY}`,
-    ...made.filter((row) => !row.replaced).map(section("##")),
-    ...(replaced.length === 0 ? [] : ["## Replaced", ...replaced.map(section("###"))]),
+    `# Spec of ${KEY}`,
+    "## Decisions",
+    ...made.filter((row) => row.kind === "agent").map((row) => row.text),
   ].join("\n\n");
 }
 
@@ -249,9 +259,6 @@ function renderBody(
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made));
   if (asks !== null) client.setQueryData(["asks", KEY], asks);
   client.setQueryData(["comments", KEY], comments);
-  // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
-  // placed by its quote alone, and no case makes a request for them.
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
   const issue = issueDetails();
   const root = issueTree(children);
   // The view the slot hands the body where no address names a node and no words are typed
@@ -803,11 +810,7 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
     // The Keep is of the words this row drew: the block and the sum of its text.
-    expect(kept.mock.calls[0]?.slice(0, 3)).toEqual([
-      DECISIONS_DOCUMENT.id,
-      "second",
-      "sha256:second",
-    ]);
+    expect(kept.mock.calls[0]?.slice(0, 3)).toEqual([SPEC_DOCUMENT.id, "second", "sha256:second"]);
 
     await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
     expect(rowsOfPart(view, "yours")).toEqual([D("second"), D("kept"), "a-answered", "a-declined"]);
@@ -1504,15 +1507,15 @@ test("each press of the count of what waits goes to the next thing that waits", 
 // the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
 // its words with a link to it in the conversation.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
-  // The send reads the decisions document's text to say which place of the quote in it is the
-  // decision's own, and the reading of that text is the page's engine's, which must be loaded.
+  // The send reads the spec's text to say which place of the quote in it is the decision's own,
+  // and the reading of that text is the page's engine's, which must be loaded.
   await warmMarkdownRenderer();
   const user = userEvent.setup();
   const whole = wholeIssue();
   const sent = changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.");
   const create = spyOn(api, "createComment").mockResolvedValue(sent as never);
   const list = spyOn(api, "listComments").mockResolvedValue([sent] as never);
-  const markdown = decisionsText(whole.made);
+  const markdown = specText(whole.made);
   const text = spyOn(api, "getArtifactText").mockImplementation(
     async (): Promise<ArtifactText> => ({
       markdown,
@@ -1530,13 +1533,13 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
-    // The comment is anchored to the decision's own words in the decisions document, at the
-    // first place they stand there: the heading above them ends with no full stop, so the quote
-    // starts nowhere before them.
+    // The comment is anchored to the decision's own words in the spec, at the first place they
+    // stand there: no words before the decision's block hold them, so the quote starts nowhere
+    // before it.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: DECISIONS_DOCUMENT.id, occurrence: 0, quote: "The decision second." },
+        anchor: { artifact: SPEC_DOCUMENT.id, occurrence: 0, quote: "The decision second." },
         body: "Name the read, please.",
       },
     ]);

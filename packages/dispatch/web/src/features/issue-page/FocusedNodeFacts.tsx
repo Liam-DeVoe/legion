@@ -23,7 +23,7 @@ import {
   rowAnsweredWithError,
   withGuidance,
 } from "../conversation/delivery";
-import { AskHandOn } from "../inbox/AskCard";
+import { AskHandOn } from "../inbox/AskHandOn";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
@@ -44,14 +44,14 @@ import {
 } from "./page-words";
 
 /**
- * The facts of whatever the reader's focus is on, in the panel (dispatch://INFRA-1196 R12, R14):
+ * The facts of whatever the reader's focus is on, in the panel:
  * what it is, how it stands, who made it and what it says. They change as the focus moves,
  * because they are read from the focused node itself (`focused-node.tsx`); until the tree lands
  * the focus is the issue, so this draws the issue's own facts rather than nothing.
  *
  * Under them, what the reader can do to the node that is no reply - the old conversation's card
- * controls, which the panel's list took with it when the outline became the conversation
- * (R14, R19): the pin of an ask, a comment or a message, which the panel's list of pins then
+ * controls, which the panel's list took with it when the outline became the conversation:
+ * the pin of an ask, a comment or a message, which the panel's list of pins then
  * holds; on an open question, who it is asked of and the control that hands it to someone
  * else, with who handed it on and when; on a comment that heads a thread its Resolve or Reopen,
  * and Accept and Reject on a suggestion not yet decided. They are ordinary controls of Details,
@@ -89,8 +89,8 @@ export function FocusedNodeFacts({
       {node.item === undefined ? null : (
         <ItemControls issueKey={issueKey} item={node.item} state={state} />
       )}
-      {/* What references the row the reader is on, mentions included (R14, R19): read only when
-          the reader opens it, so it costs nothing on load and nothing per row (R21). */}
+      {/* What references the row the reader is on, mentions included: read only when
+          the reader opens it, so it costs nothing on load and nothing per row. */}
       <NodeReferences node={node} reference={node.reference} />
     </section>
   );
@@ -149,6 +149,7 @@ function ItemControls({
   });
   const retry = useKeyedWrite({
     label: () => CONTROL_LABELS.retry_delivery,
+    method: "POST",
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
       void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] });
@@ -172,7 +173,12 @@ function ItemControls({
   // The reader's own words by the page's one rule, as the outline's row tells them.
   const own = isReader(comment?.author, viewer);
   const pending = actions.pendingActionIds.has(item.id);
-  const control = `${pageHeaderControl} disabled:opacity-50`;
+  // A control whose write is out stays enabled, marked busy, as the margin's thread cards keep
+  // theirs (`ThreadCard.tsx`): Chromium drops the focus of a focused button that turns disabled
+  // to the page, and enabling it again does not bring it back. A repeat press does nothing:
+  // the queue ignores a repeat of the action it is sending (`useCommentActionQueue`), and a
+  // delivery's Retry returns while one is out.
+  const control = `${pageHeaderControl} aria-busy:opacity-50`;
   const deliveries: Delivery[] = [
     ...(comment?.deliveries ?? []).map((row) => {
       const mode = deliveryMode(row.delivery) ?? "steer";
@@ -211,7 +217,7 @@ function ItemControls({
   // failure's Retry once what it sent again is out, each under the reader's own press, and the
   // focus would fall to the page with them: it goes to the thread's Resolve or Reopen instead,
   // else to Pin, as Unpin in Pinned hands it on (`IssuePins.tsx`). Pin, Resolve and Reopen, and
-  // the hand-on, stay drawn when pressed.
+  // the hand-on, stay drawn when pressed, and none of them is disabled.
   const held = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (held.current === null || held.current.isConnected) return;
@@ -246,8 +252,8 @@ function ItemControls({
         </button>
         {head && comment !== undefined ? (
           <button
+            aria-busy={pending || undefined}
             className={control}
-            disabled={pending}
             onClick={() =>
               actions.mutateItem({ id: item.id, kind: comment.resolved ? "reopen" : "resolve" })
             }
@@ -261,8 +267,8 @@ function ItemControls({
         {head && undecided ? (
           <>
             <button
+              aria-busy={pending || undefined}
               className={control}
-              disabled={pending}
               onClick={() => actions.mutateItem({ id: item.id, kind: "accept" })}
               type="button"
               {...pageChrome}
@@ -270,8 +276,8 @@ function ItemControls({
               {CONTROL_LABELS.accept}
             </button>
             <button
+              aria-busy={pending || undefined}
               className={control}
-              disabled={pending}
               onClick={() => actions.mutateItem({ id: item.id, kind: "reject" })}
               type="button"
               {...pageChrome}
@@ -326,9 +332,11 @@ function ItemControls({
                 </span>
                 {isSafeRetry(delivery) ? (
                   <button
+                    aria-busy={retry.isPending || undefined}
                     className={control}
-                    disabled={retry.isPending}
-                    onClick={() => retry.mutate(delivery)}
+                    onClick={() => {
+                      if (!retry.isPending) retry.mutate(delivery);
+                    }}
                     type="button"
                     {...pageChrome}
                   >

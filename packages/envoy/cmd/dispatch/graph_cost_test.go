@@ -4,21 +4,22 @@
 
 package main
 
-// Three cost measurements share this file. c-write-cost is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost is
-// TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go), and the
-// predicate and lens reads' c-read-cost is TestThePredicateAndTheLensReadsGetNoSlower
-// (predicate_lens_read_cost_test.go). What they
+// Three cost measurements share this file. c-write-cost of cybermonklabs/legion#3178 is
+// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost of
+// cybermonklabs/legion#3178 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
+// (read_cost_test.go), and c-read-cost of cybermonklabs/legion#4193 is
+// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
 // arm's own API, the clock, the order statistic and the table every reading is printed in.
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
-// (baseBuild, testbaseline.Commit). Each serves a database of its own and migrates it at boot, so
-// each arm runs its own code over its own schema: the older build lacks migrations this one
-// holds (the merge-base has no graph_nodes and no graph_tuples, over which this build's
-// graph_edges reads the tuple arm). One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the base commit (baseBuild): the
+// commit BASELINE_SHA names (testbaseline.Commit), which is the fork point with main for a branch
+// that lands on main. Each serves a database of its own and migrates it at boot, so each arm runs
+// its own code over its own schema: the older build lacks migrations this one holds (the fork
+// point has no graph_nodes and no graph_tuples, over which this build's graph_edges reads the
+// tuple arm). One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -120,17 +121,22 @@ func (a *costArm) ready(t *testing.T) {
 }
 
 // startCostArms starts both arms: this working copy's build and the base commit's (baseBuild:
-// the commit BASELINE_SHA names), each on an empty database of its own which that build migrates
-// at boot, and both delivering to one stub Envoy listener, so a delivery costs the same transport
-// on either arm. It answers them in the order they are measured in, this child first. The base
-// arm is named "the base build" and not "the commit before this child": BASELINE_SHA may name a
-// commit that already holds some of this child's own bases.
+// the commit BASELINE_SHA names, testbaseline.Commit), each on an empty database of its own which
+// that build migrates at boot, and both delivering to one stub Envoy listener, so a delivery costs
+// the same transport on either arm. It answers them in the order they are measured in, this child
+// first. The base arm is named "the base build" and not "the commit before this child":
+// BASELINE_SHA may name a commit that already holds some of this child's own bases.
+//
+// This child's arm holds its boot's run of the backfill (DISPATCH_TEST_HOLD_BOOT_BACKFILL): the
+// read cost's run takes the store off the corpus and reads the rows that then name no node before
+// its own backfill (readCostBeforeTheBackfill, costRunBackfill), and the boot's passes, on a
+// goroutine of their own, would name those rows' nodes behind it.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)
 	head := startCostArm(t, "this child", true, dispatchOptions{
 		SigningKey: costSigningKey,
-		Env:        map[string]string{"ENVOY_URL": envoyURL},
+		Env:        map[string]string{"ENVOY_URL": envoyURL, "DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"},
 	})
 	base := startCostArm(t, "the base build", false, dispatchOptions{
 		Binary:     older,
@@ -288,14 +294,22 @@ func costInterleaved(
 // nothing.
 func (a *costArm) timed(t *testing.T, method, path, body string, want int) (time.Duration, httpAnswer) {
 	t.Helper()
+	taken, answer := a.timedAnswer(t, method, path, body)
+	if answer.status != want {
+		t.Fatalf("%s: %s %s: status %d, want %d: %s", a.name, method, path, answer.status, want, answer.body)
+	}
+	return taken, answer
+}
+
+// timedAnswer is timed without the status check, for a read whose caller takes one refusal as a
+// reading (predicateCostRead's cutAtBase) and checks the status itself.
+func (a *costArm) timedAnswer(t *testing.T, method, path, body string) (time.Duration, httpAnswer) {
+	t.Helper()
 	start := time.Now()
 	answer, err := a.server.trySend(method, path, body, asUser(costLogin))
 	taken := time.Since(start)
 	if err != nil {
 		t.Fatalf("%s: %s %s: %v", a.name, method, path, err)
-	}
-	if answer.status != want {
-		t.Fatalf("%s: %s %s: status %d, want %d: %s", a.name, method, path, answer.status, want, answer.body)
 	}
 	return taken, answer
 }
@@ -383,15 +397,23 @@ const costLeaseNamespace int32 = 0x4C4F4F50
 const costLeaseWait = 5 * time.Minute
 
 // costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured. It is memory_harness_test.go's
-// holdBlockIndexLease over a costArm's pool: duty.Exclusive takes that lease before every pass
-// and skips the pass where another session holds it.
+// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease).
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	t.Helper()
+	return holdBlockIndexLease(t, arm.name, arm.pool, arm.server)
+}
+
+// holdBlockIndexLease takes the block-index pass's own lease over pool, the test's own connections
+// to the database server serves, and answers the call that gives it back. It is
+// memory_harness_test.go's memoryServer.holdBlockIndexLease over any pool: duty.Exclusive takes
+// that lease before every pass and skips the pass where another session holds it. name is what a
+// failure calls the build, and server's output is printed where the lease stays held too long.
+func holdBlockIndexLease(t *testing.T, name string, pool *pgxpool.Pool, server *dispatchProcess) func() {
+	t.Helper()
 	ctx := context.Background()
-	conn, err := arm.pool.Acquire(ctx)
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("%s: take a connection for the block-index lease: %v", arm.name, err)
+		t.Fatalf("%s: take a connection for the block-index lease: %v", name, err)
 	}
 	deadline := time.Now().Add(costLeaseWait)
 	for {
@@ -399,7 +421,7 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
 			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
 			conn.Release()
-			t.Fatalf("%s: take the block-index lease: %v", arm.name, err)
+			t.Fatalf("%s: take the block-index lease: %v", name, err)
 		}
 		if held {
 			break
@@ -407,14 +429,14 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				arm.name, docs.BlockIndexLease, costLeaseWait, arm.server.Output.String())
+				name, docs.BlockIndexLease, costLeaseWait, server.Output.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
 		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
 			costLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("%s: give the block-index lease back: %v", arm.name, err)
+			t.Errorf("%s: give the block-index lease back: %v", name, err)
 		}
 	}
 }

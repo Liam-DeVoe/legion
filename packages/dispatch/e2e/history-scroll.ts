@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 /**
  * Where a reader is in the issue's history, and how a test moves them.
  *
- * The history is drawn in Details (dispatch://INFRA-1196 R15), which scrolls in a box of its own
+ * The history is drawn in Details, which scrolls in a box of its own
  * at every width (`features/margin/MarginSheet.tsx`'s drawer box, `overflow-y-auto`), and in the
  * page's own column wherever no drawer holds the panel. So where the reader is is that box's
  * scroll, and scrolling the window instead moves the history not at all. The box is the nearest

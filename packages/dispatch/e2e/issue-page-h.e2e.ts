@@ -1,5 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
+import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
+import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
+import {
+  blockedByControlName,
+  referencedByControlName,
+} from "../web/src/features/issue-page/details-names";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -10,9 +16,10 @@ import {
   CONTROL_LABELS,
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
+import { addPriorityControlName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { getIssue, patchIssue, putRepoProject } from "./api";
+import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -24,6 +31,7 @@ import {
   openDetails,
   openMenu,
   phase,
+  viewportAt,
 } from "./issue-page";
 import {
   addControl,
@@ -54,13 +62,13 @@ import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertWhole } from "./unclipped";
 
 /**
- * Details' properties and pins (dispatch://INFRA-3945, part H of dispatch://INFRA-1196): the
- * rows of the three sections and their controls, the one Add control, the key `l`, the reader's
- * pins, and no comment, question or message of the issue. Every row reads `seedDetailsIssue`
- * as alice with the new page on (`phase`), and writes through Dispatch.
+ * Details' properties and pins: the rows of the three sections and their controls, the one Add
+ * control, the key `l`, the reader's pins, and no comment, question or message of the issue.
+ * Every row reads `seedDetailsIssue` as alice with the new page on (`phase`), and writes through
+ * Dispatch.
  */
 
-/** Development's rows, in the order R2 of the part gives them, as ONE holds them: ONE's spec
+/** Development's rows, in the order the section is to draw them, as ONE holds them: ONE's spec
  *  holds a task list, so its last row is `PROPERTY_LABELS.tasks`. */
 const ONE_DEVELOPMENT_ROWS = [
   PROPERTY_LABELS.status,
@@ -83,8 +91,8 @@ const ONE_DEVELOPMENT_ROWS = [
 /** The tags `e2e/accessibility.e2e.ts` holds the dashboard to. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
-/** The page's words the labels control is named from inside `NoTooltips`
- *  (`labelsControlName`). */
+/** The page's words the labels control and the Repository row's text control are named from
+ *  inside `NoTooltips` (`labelsControlName`, `repoTextControlName`). */
 const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
 /** The page's ink, the grey of a link's underline, as the prototype's `.lnk` draws them, and
@@ -92,11 +100,6 @@ const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 const INK = "rgb(28, 25, 23)";
 const UNDERLINE = "rgb(168, 162, 158)";
 const QUIET = "rgb(120, 113, 108)";
-
-/** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
-function viewportAt(width: number): { height: number; width: number } {
-  return { height: width >= 768 ? 900 : 844, width };
-}
 
 /** The page's reads of Dispatch from now on: every URL it asked for, decoded, and whether none
  *  is still out. Only `fetch` and `xhr` count, so the live socket never holds a read open. */
@@ -128,6 +131,145 @@ async function expectInsideSideways(page: Page, locator: Locator, what: string):
     (box?.x ?? 0) + (box?.width ?? 0),
     `${what} ends right of the viewport`
   ).toBeLessThanOrEqual(width + 1);
+}
+
+/** Each row's glyph in Details, the column before the row's name (`details-leaves.tsx`'s
+ *  `Row`). */
+const ROW_GLYPHS = '[data-margin-section] > div > div > div:first-child > span[aria-hidden="true"]';
+/** Each document's and file's mark of its kind, in Details' list of them. */
+const FILE_MARKS = '[data-testid="issue-files"] a > span[aria-hidden="true"]';
+/** The status's own mark, in the pill of the Status row, Development's first row. */
+const STATUS_MARK =
+  '[data-margin-section="development"] > div > div:first-child > div:last-child > span > svg[data-status-glyph]';
+
+/** A font Chromium says it drew a text in (`CSS.getPlatformFontsForNode`). */
+interface DrawnFont {
+  readonly familyName: string;
+  readonly glyphCount: number;
+  readonly isCustomFont: boolean;
+  readonly postScriptName: string;
+}
+
+/** A glyph of Details: the row it is drawn in, what it holds, and the fonts its text is drawn
+ *  in. An icon holds no text, and so no font. */
+interface GlyphFonts {
+  readonly fonts: readonly DrawnFont[];
+  readonly icon: boolean;
+  readonly row: string;
+  readonly text: string;
+}
+
+/** What `drawnFonts` reads of a glyph in the page: the name of the row it is drawn in, followed
+ *  for a file's mark by the file's name, and what it holds. */
+function describeGlyph(this: Element): Omit<GlyphFonts, "fonts"> {
+  const label =
+    this.closest("[data-margin-section] > div > div")?.querySelector(
+      ":scope > div:first-child > span[data-page-chrome]"
+    )?.textContent ?? "";
+  const file = this.closest("a")?.querySelector("[data-author-text]")?.textContent;
+  return {
+    icon: this.querySelector("svg") !== null,
+    row: file === undefined || file === null ? label : `${label}, ${file}`,
+    text: this.textContent ?? "",
+  };
+}
+
+/** The glyphs of Details that `selectors` find, each with the fonts Chromium drew its text in, as
+ *  Chromium reports them (`CSS.getPlatformFontsForNode`), once the page's typeface has loaded. */
+async function drawnFonts(
+  page: Page,
+  selectors: readonly string[],
+  describe: (this: Element) => Omit<GlyphFonts, "fonts"> | null = describeGlyph
+): Promise<GlyphFonts[]> {
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("DOM.enable");
+    await cdp.send("CSS.enable");
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const glyphs: GlyphFonts[] = [];
+    for (const selector of selectors) {
+      // Inside Details' panel (`marginSlot`).
+      const { nodeIds } = await cdp.send("DOM.querySelectorAll", {
+        nodeId: root.nodeId,
+        selector: `[data-testid="issue-margin"] ${selector}`,
+      });
+      for (const nodeId of nodeIds) {
+        const { object } = await cdp.send("DOM.resolveNode", { nodeId });
+        const { result } = await cdp.send("Runtime.callFunctionOn", {
+          functionDeclaration: describe.toString(),
+          objectId: object.objectId,
+          returnByValue: true,
+        });
+        const described = result.value as Omit<GlyphFonts, "fonts"> | null;
+        if (described === null) continue;
+        const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+        glyphs.push({ ...described, fonts });
+      }
+    }
+    return glyphs;
+  } finally {
+    await cdp.detach();
+  }
+}
+
+/** What `drawnFonts` reads of a text of Details' own chrome (`data-page-chrome`) that holds a
+ *  symbol outside ASCII, a control's mark such as a priority's Remove, or `null` for any other:
+ *  one without such a symbol in its own text, or one inside a reader's own text
+ *  (`data-author-text`), which is the author's and drawn in whatever face holds it. It names the
+ *  row it stands in and the control's name, where it has one. */
+function describeChromeSymbol(this: Element): Omit<GlyphFonts, "fonts"> | null {
+  if (this.closest("[data-author-text]") !== null) return null;
+  const own = [...this.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent ?? "")
+    .join("");
+  const symbol = [...own].some(
+    (character) => (character.codePointAt(0) ?? 0) > 0x7f && /[\p{So}\p{Sm}]/u.test(character)
+  );
+  if (!symbol) return null;
+  const label =
+    this.closest("[data-margin-section] > div > div")?.querySelector(
+      ":scope > div:first-child > span[data-page-chrome]"
+    )?.textContent ?? "";
+  // This runs in the page on an element already drawn, so one read of its name is all it needs.
+  const name = this.getAttribute("aria-label");
+  return { icon: false, row: name === null ? label : `${label} (${name})`, text: own };
+}
+
+/** Whether a glyph's text is drawn in a font other than the page's own typeface, or in none: a
+ *  face of the reader's machine draws it at that face's width, which no column holds on every
+ *  machine. Chromium names a font by the names in its file, so the page's cut of Inter
+ *  (`Dispatch Inter`, `styles.css`) is reported as a web font whose PostScript name is Inter's,
+ *  `InterVariable`. */
+function drawnOutsideThePagesTypeface({ fonts }: GlyphFonts): boolean {
+  return (
+    fonts.length === 0 ||
+    fonts.some((font) => !font.isCustomFont || !font.postScriptName.startsWith("Inter"))
+  );
+}
+
+/** A glyph's reading as a message says it: its row, its text with its code points, and each
+ *  font Chromium drew it in. */
+function glyphReading({ fonts, row, text }: GlyphFonts): string {
+  const points = [...text]
+    .map(
+      (character) =>
+        `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`
+    )
+    .join(" ");
+  const drawn =
+    fonts.length === 0
+      ? "no font"
+      : fonts
+          .map(
+            (font) =>
+              `${font.familyName} (${font.postScriptName}, ${
+                font.isCustomFont ? "the page's" : "the machine's"
+              }, ${font.glyphCount} glyphs)`
+          )
+          .join(", ");
+  return `${row}: ${text} (${points}) in ${drawn}`;
 }
 
 /**
@@ -245,8 +387,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
         marginShell(page).getByRole("tab", { name: /^(Comments|Pinned)\b/ })
       ).toHaveCount(0);
       // The facts of the row the reader is on quote that row, which may be the issue's
-      // question or a comment, by design (part M's R6, decision 147); nothing else of Details
-      // draws the conversation.
+      // question or a comment, by design; nothing else of Details draws the conversation.
       const outsideFacts = (text: string) =>
         marginShell(page)
           .getByText(text, { exact: false })
@@ -312,7 +453,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
     await openDetails(page);
     // Escape in the blocked-by box leaves the box's editor and goes no further: the sheet stays.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
-    await blockedBy.getByRole("button", { name: `Edit issues ${one} waits on` }).click();
+    await blockedBy.getByRole("button", { name: blockedByControlName(one, 1) }).click();
     const blockersBox = blockedBy.getByLabel(`Issues ${one} waits on`, { exact: true });
     await expect(blockersBox).toBeFocused();
     await blockersBox.press("Escape");
@@ -369,18 +510,96 @@ test("every property with a value is visible in Details at every width @phone", 
     const opener = oneRead.created_by?.id;
     expect(opener, `${one} names no one who opened it`).toBeDefined();
 
-    // (5) Every width: R2's order, the twenty labels whole, and each value in its row.
+    // (5) Every width: the rows' order, the twenty labels whole, and each value in its row.
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
-      // The labels of Development's rows, in the order they stand (`IssueMargin.tsx`'s `Row`).
+      // The labels of Development's rows, in the order they stand (`details-leaves.tsx`'s `Row`).
       await expect(
         marginSection(page, "development").locator(
           ":scope > div > div > div:first-child > span[data-page-chrome]"
         ),
         `Development's rows are out of order at ${width} px`
       ).toHaveText(ONE_DEVELOPMENT_ROWS);
+      // Each row's glyph is drawn inside its own column, before the row's name (`Row`'s
+      // `w-3.5`): the page's typeface drew Blocked by's ⊘ 19 px wide in that 14 px column, to
+      // 2 px from the name, and a face of the machine drew Opened by's ☺ 15.3 px wide in it. An
+      // icon is measured by its own box and a text glyph by its text, since the span around
+      // either is the column itself, once the page's typeface has loaded, since that is what
+      // draws ⊘. Soft, so that a width it fails at does not stop the widths after it.
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      const glyphs = await marginSlot(page)
+        .locator(ROW_GLYPHS)
+        .evaluateAll((spans) =>
+          spans.map((span) => {
+            const icon = span.querySelector("svg");
+            const text = document.createRange();
+            text.selectNodeContents(span);
+            return {
+              column: span.getBoundingClientRect().width,
+              drawn: (icon ?? text).getBoundingClientRect().width,
+              glyph: icon === null ? (span.textContent ?? "") : "icon",
+              row: span.nextElementSibling?.textContent ?? "",
+            };
+          })
+        );
+      expect(
+        glyphs.map(({ row }) => row),
+        `Details measures no Blocked by glyph at ${width} px`
+      ).toContain(PROPERTY_LABELS.blocked_by);
+      expect
+        .soft(
+          glyphs
+            .filter(({ column, drawn }) => drawn > column)
+            .map(
+              ({ column, drawn, glyph, row }) =>
+                `${row}'s ${glyph}: ${drawn} px in a column of ${column} px`
+            ),
+          `a row's glyph is drawn wider than its column at ${width} px`
+        )
+        .toEqual([]);
+      // Each glyph of Details that is text is drawn in the page's own typeface, as Chromium
+      // reports the fonts it drew it in, whatever fonts the machine holds: a character that face
+      // does not hold is drawn in one of the machine's faces, at that face's width, or in an
+      // emoji face, and a `unicode-range` that takes it in does not say the face holds it (Inter
+      // has no ⇄, which DejaVu Sans drew here). Each row's glyph that is text and each file's
+      // mark that is. Soft, as above.
+      const textGlyphs = (await drawnFonts(page, [ROW_GLYPHS, FILE_MARKS])).filter(
+        ({ icon }) => !icon
+      );
+      expect(
+        textGlyphs.map(({ row }) => row),
+        `Details reads the fonts of no Blocked by glyph at ${width} px`
+      ).toContain(PROPERTY_LABELS.blocked_by);
+      expect
+        .soft(
+          textGlyphs.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+          `a glyph of Details is drawn in a font the page does not ship at ${width} px`
+        )
+        .toEqual([]);
+      // So is every symbol in the text of Details' own chrome, whichever control draws it: a
+      // priority's Remove, a section's toggle, a control's mark. A reader's own text is left out.
+      const chromeSymbols = await drawnFonts(page, ["[data-page-chrome]"], describeChromeSymbol);
+      expect(
+        chromeSymbols.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+        `a mark of Details' controls is drawn in a font the page does not ship at ${width} px`
+      ).toEqual([]);
+      // The status's own mark in the Status row's pill is a shape, as the page's other status
+      // marks are (`StatusGlyph`), so no font of the machine draws it.
+      await expect(
+        marginSlot(page).locator(STATUS_MARK),
+        `the Status row's pill draws its status mark other than as one shape at ${width} px`
+      ).toHaveCount(1);
+      // The readings, printed so that what each machine drew is on the record when the row
+      // passes too.
+      console.log(
+        `Details' glyphs at ${width} px: ${glyphs
+          .map(({ column, drawn, glyph, row }) => `${row} ${glyph} ${drawn} px in ${column} px`)
+          .join("; ")}\nDetails' glyph fonts at ${width} px: ${[...textGlyphs, ...chromeSymbols]
+          .map(glyphReading)
+          .join("; ")}`
+      );
       const labels = detailsRow(page, PROPERTY_LABELS.labels).locator("[data-author-text]");
       await expect
         .poll(async () =>
@@ -421,11 +640,14 @@ test("every property with a value is visible in Details at every width @phone", 
       const pullRequest = detailsRow(page, PROPERTY_LABELS.pull_request).getByRole("link", {
         name: new RegExp(`#${PULL_NUMBER}\\b`),
       });
+      // The row draws the repository as text, which wraps where a box would cut a long name: a
+      // button whose press opens the box, named by the repository it shows and what it sets.
+      const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
+        exact: true,
+        name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: CONTROL_NAME_WORDS }),
+      });
       const values: readonly (readonly [string, Locator])[] = [
-        [
-          "the repository",
-          detailsRow(page, PROPERTY_LABELS.repository).getByText(REPOSITORY).first(),
-        ],
+        ["the repository", repository],
         ["the pull request", pullRequest],
         [
           "the other link",
@@ -471,7 +693,7 @@ test("every property with a value is visible in Details at every width @phone", 
           "Referenced by's control",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: PROPERTY_LABELS.referenced_by,
+            name: referencedByControlName(undefined),
           }),
         ],
         [
@@ -483,6 +705,74 @@ test("every property with a value is visible in Details at every width @phone", 
         await expect(at, `${what} is not drawn in Details at ${width} px`).toBeVisible();
         await expectInsideSideways(page, at, `${what} at ${width} px`);
       }
+      await expect(
+        repository,
+        `the Repository row does not draw ${REPOSITORY} at ${width} px`
+      ).toHaveText(REPOSITORY);
+      // Enter on the text opens the box in its place, with the focus and the repository in it;
+      // Escape draws the text again with the focus on it, so the next width starts from the
+      // same row.
+      await repository.focus();
+      await page.keyboard.press("Enter");
+      const repositoryBox = detailsRow(page, PROPERTY_LABELS.repository).getByRole("combobox", {
+        exact: true,
+        name: repoControlName(one),
+      });
+      await expect(
+        repositoryBox,
+        `Enter on the repository's text opened no box at ${width} px`
+      ).toBeVisible();
+      await expect(
+        repositoryBox,
+        `the repository's box did not take the focus at ${width} px`
+      ).toBeFocused();
+      await expect(
+        repositoryBox,
+        `the repository's box does not hold ${REPOSITORY} at ${width} px`
+      ).toHaveValue(REPOSITORY);
+      // The open box is the row's value: as wide as the row's value column, the second of the
+      // row's two columns (`details-leaves.tsx`'s `Row`), and wide enough to show the repository
+      // whole. The box fills its list of suggestions from a read it starts when it takes the
+      // focus, and Chromium draws the list's arrow inside the box once the list holds an option,
+      // so both are measured once the list holds the repository, as the reader sees the box.
+      // Both are soft, so that a width the box fails at does not stop the widths after it.
+      await expect(
+        detailsRow(page, PROPERTY_LABELS.repository).locator(
+          `datalist > option[value="${REPOSITORY}"]`
+        ),
+        `the repository's box does not suggest ${REPOSITORY} at ${width} px`
+      ).toHaveCount(1);
+      const valueColumn = detailsRow(page, PROPERTY_LABELS.repository).locator(
+        ":scope > div:last-child"
+      );
+      const [fieldBox, columnBox] = [
+        await repositoryBox.boundingBox(),
+        await valueColumn.boundingBox(),
+      ];
+      expect(fieldBox, `the repository's box has no box at ${width} px`).not.toBeNull();
+      expect(columnBox, `the Repository row's value has no box at ${width} px`).not.toBeNull();
+      const [fieldWidth, columnWidth] = [fieldBox?.width ?? 0, columnBox?.width ?? 0];
+      const { clientWidth, scrollWidth } = await repositoryBox.evaluate((box) => ({
+        clientWidth: box.clientWidth,
+        scrollWidth: box.scrollWidth,
+      }));
+      expect
+        .soft(
+          Math.abs(fieldWidth - columnWidth),
+          `the repository's box is ${fieldWidth} px wide in a value column of ${columnWidth} px at ${width} px`
+        )
+        .toBeLessThanOrEqual(1);
+      expect
+        .soft(
+          scrollWidth,
+          `the repository's box cuts ${REPOSITORY}: its text takes ${scrollWidth} px and the box shows ${clientWidth} px of it at ${width} px`
+        )
+        .toBeLessThanOrEqual(clientWidth);
+      await page.keyboard.press("Escape");
+      await expect(
+        repository,
+        `Escape in the repository's box did not give the focus back to its text at ${width} px`
+      ).toBeFocused();
       await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(three);
       await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(seeded.titles.three);
       for (const label of [
@@ -658,10 +948,10 @@ test("every property with a value is visible in Details at every width @phone", 
         underline: UNDERLINE,
       });
     }
-    // Who opened the issue and who holds its claim are part E's `AgentName`, which draws a
-    // session's link in the ink inside `NoTooltips` (its own underline is E's, R8's last
-    // sentence): alice opened ONE, a person, so her name is words; the planner's claim is a
-    // session's link.
+    // Who opened the issue and who holds its claim are drawn by `AgentName`, which draws a
+    // session's link in the ink inside `NoTooltips` (its underline is `AgentName`'s own, which
+    // this row does not read): alice opened ONE, a person, so her name is words; the planner's
+    // claim is a session's link.
     for (const [what, name] of [
       [
         "the opener",
@@ -713,9 +1003,9 @@ test("every property with a value is visible in Details at every width @phone", 
  *  break it at. */
 const LONGEST_LABEL = "a-label-of-forty-characters-and-no-space";
 
-// R4 and (5): the Labels row lists every label, none cut. Found by the tester on the preview of
-// d4344116: on INFRA-3570 a 40-character label ran 39 px past Details' edge at 1440 px and was
-// cut, at 390 px as well.
+// Step (5) above, for the longest label: the Labels row lists every label, none cut. A
+// 40-character label with no space ran 39 px past Details' edge at 1440 px and was cut, at 390 px
+// as well.
 test("a label of the most characters Dispatch takes is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -749,9 +1039,9 @@ test("a label of the most characters Dispatch takes is whole in Details at every
  *  already runs 14 px past the row at 1440 px. */
 const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
 
-// (5): the repository is visible in its row, whole. Found by the tester on the preview of
-// 962ec632: on INFRA-3570 a repository of 44 characters ran 101 px past Details' Repository row
-// at 1440 px and was cut at Details' edge, at 390 px as well.
+// Step (5) above, for a long repository: the repository is visible in its row, whole. A
+// repository of 44 characters ran 101 px past Details' Repository row at 1440 px and was cut at
+// Details' edge, at 390 px as well.
 test("a repository of a long name is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -777,6 +1067,59 @@ test("a repository of a long name is whole in Details at every width @phone", as
       ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
       await assertWholeInDetails(page, [repository]);
     }
+  });
+});
+
+/** The bottom of Details' head, the element that holds its Close, which stays at the top while
+ *  the panel under it scrolls. */
+function detailsHeadBottom(page: Page): Promise<number> {
+  return marginShell(page).evaluate((drawer) => {
+    const close = drawer.querySelector('[data-testid="details-close"]');
+    const head = [...drawer.children].find((child) => close !== null && child.contains(close));
+    return head?.getBoundingClientRect().bottom ?? Number.NaN;
+  });
+}
+
+// Add opens the control of the property it lists. In a short window the Labels row has
+// scrolled up under Details' head by the time Add, at the end of Development, is in view; Add
+// brings the control into view before it presses it, since the control's popover is placed from
+// where the control is on the screen; without that the popover opened over the head at 390 px.
+test("Add brings a control it reaches into view, so its popover opens under Details' head @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    await page.setViewportSize({ height: 400, width: 390 });
+    await gotoIssue(page, `/issues/${two}`);
+    await openDetails(page);
+    const labelsControl = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+      name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
+    });
+    await expect(labelsControl).toHaveCount(1);
+    await addControl(page).evaluate((control) => control.scrollIntoView({ block: "end" }));
+    await nextFrames(page);
+    const headBottom = await detailsHeadBottom(page);
+    const before = await labelsControl.boundingBox();
+    expect(
+      (before?.y ?? 0) + (before?.height ?? 0),
+      "the Labels control is in view below the head before Add reaches it, so the row proves nothing"
+    ).toBeLessThanOrEqual(headBottom);
+    await addControl(page).click();
+    await openMenu(page)
+      .getByRole("menuitem", { exact: true, name: PROPERTY_LABELS.labels })
+      .click();
+    const popover = page.getByRole("listbox", { name: "Labels options" }).locator("xpath=..");
+    await expect(popover).toBeVisible();
+    const [control, opened] = [await labelsControl.boundingBox(), await popover.boundingBox()];
+    expect(
+      control?.y ?? -1,
+      "Add pressed the Labels control under Details' head"
+    ).toBeGreaterThanOrEqual(headBottom - 1);
+    expect(opened?.y ?? -1, "the labels' popover opened over Details' head").toBeGreaterThanOrEqual(
+      headBottom - 1
+    );
+    await page.keyboard.press("Escape");
   });
 });
 
@@ -854,19 +1197,35 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(detailsRow(page, PROPERTY_LABELS.parent).getByRole("button").first()).toHaveText(
       CONTROL_LABELS.set_parent
     );
-    await addControl(page).click();
-    // The assignee is listed where the header draws its control, which the menu presses: the
-    // header is read once it is drawn.
+    // TWO resolves to no repository, so its Repository row reads None, as an empty row does:
+    // a button whose press draws the repository's box.
     await expect(
-      issuePage(page).getByRole("heading", { level: 1, name: (await getIssue(two)).title })
+      detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
+        exact: true,
+        name: repoTextControlName(two, { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
+      }),
+      "TWO resolves to no repository, but its Repository row does not read None"
+    ).toHaveText(CONTROL_LABELS.none);
+    await addControl(page).click();
+    // Add lists Assignee only where the header draws the assignee's control, which the menu
+    // focuses, and only while TWO has no assignee: an issue someone is assigned to has a value for
+    // it, and Add lists no property that has one. The header is read once it is drawn.
+    const twoStored = await getIssue(two);
+    await expect(
+      issuePage(page).getByRole("heading", { level: 1, name: twoStored.title })
     ).toBeVisible();
-    const headerAssignee = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
+    // One read is the header's answer here: the assignee's control waits on no read, so a header
+    // that draws it draws it in the commit that drew the heading awaited above.
+    const assigneeControls = await page
+      .locator(`[aria-label="${assigneeControlName(two)}"]`)
+      .count();
+    const listsAssignee = assigneeControls > 0 && twoStored.assignee === null;
     await expect(
       openMenu(page).getByRole("menuitem"),
-      "the Add menu lists other than TWO's empty fields, in R5's order"
+      "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"
     ).toHaveText([
       PROPERTY_LABELS.parent,
-      ...(headerAssignee > 0 ? [PROPERTY_LABELS.assignee] : []),
+      ...(listsAssignee ? [PROPERTY_LABELS.assignee] : []),
       PROPERTY_LABELS.labels,
       PROPERTY_LABELS.route,
       PROPERTY_LABELS.blocked_by,
@@ -957,7 +1316,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
 
     // (11) TWO's blockers: a refused key keeps the editor open, then THREE.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
-    await blockedBy.getByRole("button", { name: `Add issues ${two} waits on` }).click();
+    await blockedBy.getByRole("button", { name: blockedByControlName(two, 0) }).click();
     const keys = blockedBy.getByLabel(`Issues ${two} waits on`, { exact: true });
     await keys.fill(`${PROJECT}-9999`);
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
@@ -981,7 +1340,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await reopen(three);
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     await marginSlot(page)
-      .getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${three}` })
+      .getByRole("button", { name: addPriorityControlName(three) })
       .click();
     await marginSlot(page)
       .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
@@ -1036,7 +1395,8 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "true"
     );
     await marginSectionDisclosure(page, "development").click();
-    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toHaveCount(0);
+    // A closed section keeps its rows on the page and hides them, so the reader sees none.
+    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toBeHidden();
     expect(
       await page.evaluate(() => localStorage.getItem("dispatch.issue.margin-sections:alice"))
     ).toBe("development");
@@ -1046,7 +1406,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "false"
     );
     // A control elsewhere on the page that opens Details at a row of a closed section asks the
-    // drawer for that row first (part D's `useOpenDetailsAt`), and the section opens for it.
+    // drawer for that row first (`useOpenDetailsAt`), and the section opens for it.
     await marginShell(page).evaluate(
       (aside, [event, row]) => aside.dispatchEvent(new CustomEvent(event, { detail: row })),
       [DETAILS_ROW_REQUEST_EVENT, "labels"] as const
@@ -1083,5 +1443,447 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "a closed issue's labels can be edited"
     ).toBeDisabled();
     await expect(addControl(page), "a closed issue draws the add control").toHaveCount(0);
+  });
+});
+
+/** The priority's line in Details: the Advances row while the issue advances a priority, and
+ *  the control that adds one, beside Add, while it advances none. Both places carry the one test
+ *  id, and Details draws one of them at a time. */
+function priorityLine(page: Page): Locator {
+  return marginSlot(page).getByTestId("issue-advances");
+}
+
+/** A priority the rows below create for themselves, beside the seed's own: the second one an
+ *  issue advances, or the one its parent advances and it inherits. */
+const SECOND_PRIORITY_TITLE = "Details hold a second priority";
+
+/** What a row holds of the page's writes of one issue and of its reads of that issue after. */
+interface HeldIssue {
+  /** Resolves once the first write's answer has been handed to the page. */
+  readonly landed: Promise<void>;
+  /** How many reads of the issue are held. */
+  readonly readsHeld: () => number;
+  /** Lets every held read go, and resolves once one of them has answered the page. */
+  readonly releaseReads: () => Promise<void>;
+  /** Lets the held write go. */
+  readonly releaseWrite: () => void;
+  /** Resolves once the first write has left the page. */
+  readonly writeOut: Promise<void>;
+  /** How many writes of the issue the page has sent: one for each key a write goes under, so a
+   *  write the page sends again under its own key, as it does after a long silence, is one. */
+  readonly writes: () => number;
+}
+
+/**
+ * Counts every write of the issue `key` the page sends (`PATCH /api/v1/issues/<key>`), holds
+ * the first until `releaseWrite` where `holdWrite` is set, and holds every read of the issue the
+ * page asks for once a write has gone on to Dispatch, until `releaseReads`: so a row sees the page
+ * while the write is out, and between the write landing and the new read being drawn.
+ */
+async function holdIssue(page: Page, key: string, holdWrite: boolean): Promise<HeldIssue> {
+  const path = `/api/v1/issues/${key}`;
+  const writeKeys = new Set<string>();
+  let readsHeld = 0;
+  let holdingReads = false;
+  const writeOut = Promise.withResolvers<void>();
+  const writeGoes = Promise.withResolvers<void>();
+  const landed = Promise.withResolvers<void>();
+  const readsGo = Promise.withResolvers<void>();
+  if (!holdWrite) writeGoes.resolve();
+  await page.route(
+    (url) => url.pathname === path,
+    async (route) => {
+      const request = route.request();
+      if (request.method() === "PATCH") {
+        writeKeys.add(request.headers()["idempotency-key"] ?? `unkeyed ${writeKeys.size}`);
+        writeOut.resolve();
+        await writeGoes.promise;
+        // Held from before Dispatch takes the write: the issue's own event may ask for the read
+        // before the write's answer reaches the page.
+        holdingReads = true;
+        await route.fulfill({ response: await route.fetch() });
+        landed.resolve();
+        return;
+      }
+      if (request.method() !== "GET" || !holdingReads) return route.fallback();
+      readsHeld += 1;
+      await readsGo.promise;
+      // A read the page dropped meanwhile, as a later refresh of the same issue drops the one
+      // before it, has nothing left to answer.
+      await route.fallback().catch(() => undefined);
+    }
+  );
+  return {
+    landed: landed.promise,
+    readsHeld: () => readsHeld,
+    releaseReads: async () => {
+      const answered = page.waitForResponse(
+        (response) =>
+          response.request().method() === "GET" && new URL(response.url()).pathname === path
+      );
+      readsGo.resolve();
+      await answered;
+    },
+    releaseWrite: () => writeGoes.resolve(),
+    writeOut: writeOut.promise,
+    writes: () => writeKeys.size,
+  };
+}
+
+/** Waits until the page has asked for a read of the issue after its write, and that read is
+ *  held, then for the frames in which the page draws what it holds by then. */
+async function readHeld(page: Page, issue: HeldIssue): Promise<void> {
+  await expect
+    .poll(() => issue.readsHeld(), { message: "the page read the issue no more after its write" })
+    .toBeGreaterThan(0);
+  await nextFrames(page);
+}
+
+/** The rule every row below holds at `moment`: one write of the issue sent, and the focus on
+ *  the control or inside `region`, never on the page's body. */
+async function expectFocusKept(
+  page: Page,
+  region: Locator,
+  issue: HeldIssue,
+  moment: string
+): Promise<void> {
+  await nextFrames(page);
+  const focus = await region.evaluateAll((elements) => {
+    const active = document.activeElement;
+    if (active === null || active === document.body) return "the page's body";
+    return elements.some((element) => element.contains(active))
+      ? "kept"
+      : active.outerHTML.slice(0, 160);
+  });
+  expect(
+    { focus, writes: issue.writes() },
+    `${moment}: the focus left the control's place, or other than one write went out`
+  ).toEqual({ focus: "kept", writes: 1 });
+}
+
+/** The rule each priority's row holds after an Enter on `pressed` between the write landing and
+ *  the new read being drawn: the press was refused, so `pressed` says it takes no press
+ *  (`aria-disabled`) and the add control's form did not open. A control that took that Enter and
+ *  opened its form would keep the focus in the line and send no write, so the focus and the
+ *  writes alone cannot tell it from one that refused the press. */
+async function expectPressRefused(page: Page, pressed: Locator, moment: string): Promise<void> {
+  await nextFrames(page);
+  await expect(
+    priorityLine(page).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
+    `${moment}: the press opened the add control's form`
+  ).toHaveCount(0);
+  await expect(pressed, `${moment}: the control pressed takes a press`).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+}
+
+// A control of Details shared with the rest of the page keeps the focus where the reader pressed
+// it while its write is out and until the new read is drawn, and a second press meanwhile sends
+// nothing. Each row presses its control by keyboard and holds the write, presses Enter again
+// while it is out, lets it land and holds the issue's read that follows, presses Enter again
+// while that read is held, and lets it go: at each of the three it reads where the focus is and
+// how many writes went out. The priority's rows act on ONE's Advances row, which stays drawn
+// through the write, so what they read is the shared line's alone.
+test.describe("the shared controls of Details keep the focus while their write lands", () => {
+  test("Details' priority Remove keeps the focus in the priority's line while the removal lands, and sends one write", async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { one, parent } = seeded.keys;
+      // ONE's parent advances a second priority, which ONE inherits, so the Advances row is
+      // still drawn once ONE's own priority is removed.
+      const inherited = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      await patchIssue(parent, { advances: [inherited.id] });
+      await gotoIssue(page, `/issues/${one}`);
+      await openDetails(page);
+      const advances = detailsRow(page, PROPERTY_LABELS.advances);
+      await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
+      const remove = advances.getByRole("button", { name: /^Remove / });
+      await expect(remove).toHaveCount(1);
+      const issue = await holdIssue(page, one, true);
+      await remove.focus();
+      await expect(remove).toBeFocused();
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter while it is out"
+      );
+      issue.releaseWrite();
+      await issue.landed;
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter between the removal landing and the new read"
+      );
+      await issue.releaseReads();
+      await expect(advances.getByRole("button", { name: /^Remove / })).toHaveCount(0);
+      await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
+      await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
+    });
+  });
+
+  test("Details' Add a priority keeps the focus in the priority's line while the added priority lands, and sends one write", async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { one } = seeded.keys;
+      const second = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      await gotoIssue(page, `/issues/${one}`);
+      await openDetails(page);
+      const advances = detailsRow(page, PROPERTY_LABELS.advances);
+      const addPriority = advances.getByRole("button", { name: addPriorityControlName(one) });
+      await addPriority.focus();
+      await expect(addPriority).toBeFocused();
+      await page.keyboard.press("Enter");
+      const picker = advances.getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance });
+      await expect(picker).toBeFocused();
+      await expect(picker.locator("option", { hasText: SECOND_PRIORITY_TITLE })).toHaveCount(1);
+      // The one priority ONE does not advance yet, the first after the picker's empty choice.
+      await page.keyboard.press("ArrowDown");
+      await expect(picker).toHaveValue(second.id);
+      const issue = await holdIssue(page, one, true);
+      await page.keyboard.press("Tab");
+      const add = picker
+        .locator("xpath=ancestor::form[1]")
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.add });
+      await expect(add).toBeFocused();
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter while it is out"
+      );
+      issue.releaseWrite();
+      await issue.landed;
+      await readHeld(page, issue);
+      await expect(
+        addPriority,
+        "the add control lost the focus as Add's write landed"
+      ).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter between the added priority landing and the new read"
+      );
+      await expectPressRefused(
+        page,
+        addPriority,
+        "after a second Enter between the added priority landing and the new read"
+      );
+      await issue.releaseReads();
+      await expect(advances.getByRole("link")).toHaveCount(2);
+      await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
+      await expect(
+        addPriority,
+        "once the new read is drawn, the focus is not on the add control"
+      ).toBeFocused();
+    });
+  });
+
+  test("Details' Blocked by Save keeps the focus in its row while the save is out and lands, and sends one write", async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { three, two } = seeded.keys;
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
+      await open.focus();
+      await page.keyboard.press("Enter");
+      await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
+      await page.keyboard.type(three);
+      const issue = await holdIssue(page, two, true);
+      const save = row.getByRole("button", { exact: true, name: CONTROL_LABELS.save_blocked_by });
+      await save.focus();
+      await expect(save).toBeFocused();
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(page, row, issue, "after a second Enter while the save is out");
+      issue.releaseWrite();
+      await issue.landed;
+      // The save's answer is drawn as it lands: TWO waits on THREE.
+      await expect(row.getByRole("link", { exact: true, name: three })).toBeVisible();
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        row,
+        issue,
+        "after a second Enter between the save landing and the new read"
+      );
+      await issue.releaseReads();
+      await expectFocusKept(page, row, issue, "once the new read is drawn");
+    });
+  });
+
+  test("Details' Blocked by Cancel keeps the focus in its row while the save is out, and the save sends one write", async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { three, two } = seeded.keys;
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
+      await open.focus();
+      await page.keyboard.press("Enter");
+      await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
+      await page.keyboard.type(three);
+      const issue = await holdIssue(page, two, true);
+      // The box's Enter sends the list, so Save never held the focus as the save went out.
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      const cancel = row.getByRole("button", { exact: true, name: CONTROL_LABELS.cancel });
+      await cancel.focus();
+      await expect(cancel, "Cancel does not take the focus while the save is out").toBeFocused();
+      await page.keyboard.press("Enter");
+      await expectFocusKept(page, row, issue, "after Cancel's Enter while the save is out");
+      issue.releaseWrite();
+      await issue.landed;
+      // The save's answer is drawn as it lands: TWO waits on THREE.
+      await expect(row.getByRole("link", { exact: true, name: three })).toBeVisible();
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        row,
+        issue,
+        "after a second Enter between the save landing and the new read"
+      );
+      await issue.releaseReads();
+      await expectFocusKept(page, row, issue, "once the new read is drawn");
+    });
+  });
+});
+
+// Details draws the priority's line in one of two places: beside Add while the issue advances
+// none, and in the Advances row once it advances one. The first priority added and the last one
+// removed move the line from one place to the other, and a focus the line still holds when it
+// leaves moves with it, to the other place's add control, rather than fall to the page's body
+// with the line it left. Each of these two rows presses Enter again on the control it pressed
+// while the issue's read after the write is held, which the control refuses, and reads, once the
+// new read is drawn, that the focus is on the add control of the line's new place, and the
+// writes sent.
+test("Details' Add a priority on an issue that advances none keeps the focus in Details' priority place once the line moves into the Advances row, and sends one write", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { three } = seeded.keys;
+    await gotoIssue(page, `/issues/${three}`);
+    await openDetails(page);
+    const addPriority = priorityLine(page).getByRole("button", {
+      name: addPriorityControlName(three),
+    });
+    await addPriority.focus();
+    await expect(addPriority).toBeFocused();
+    await page.keyboard.press("Enter");
+    const picker = priorityLine(page).getByRole("combobox", {
+      name: CONTROL_LABELS.priority_to_advance,
+    });
+    await expect(picker).toBeFocused();
+    await expect(picker.locator("option", { hasText: PRIORITY_TITLE })).toHaveCount(1);
+    // The first priority after the picker's empty choice, by its arrow key.
+    await page.keyboard.press("ArrowDown");
+    await expect(picker).toHaveValue(seeded.priorityId);
+    const issue = await holdIssue(page, three, false);
+    await page.keyboard.press("Tab");
+    const add = picker
+      .locator("xpath=ancestor::form[1]")
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.add });
+    await expect(add).toBeFocused();
+    await page.keyboard.press("Enter");
+    await issue.landed;
+    await readHeld(page, issue);
+    await expect(addPriority, "the add control lost the focus as Add's write landed").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expectPressRefused(
+      page,
+      addPriority,
+      "after a second Enter between the added priority landing and the new read"
+    );
+    await issue.releaseReads();
+    // THREE advances the priority now, so its line is the Advances row.
+    await expect(detailsRow(page, PROPERTY_LABELS.advances).getByRole("link")).toHaveCount(1);
+    await expectFocusKept(
+      page,
+      priorityLine(page),
+      issue,
+      "once the new read moved the line into the Advances row"
+    );
+    await expect(
+      detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+        name: addPriorityControlName(three),
+      }),
+      "once the new read moved the line into the Advances row, the focus is not on its add control"
+    ).toBeFocused();
+  });
+});
+
+test("Details' priority Remove of an issue's last priority keeps the focus in Details' priority place once the line moves back beside Add, and sends one write", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { one } = seeded.keys;
+    await gotoIssue(page, `/issues/${one}`);
+    await openDetails(page);
+    const remove = detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+      name: /^Remove /,
+    });
+    await expect(remove).toHaveCount(1);
+    const issue = await holdIssue(page, one, false);
+    await remove.focus();
+    await expect(remove).toBeFocused();
+    await page.keyboard.press("Enter");
+    await issue.landed;
+    await readHeld(page, issue);
+    await expect(remove, "Remove lost the focus as its write landed").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expectPressRefused(
+      page,
+      remove,
+      "after a second Enter between the removal landing and the new read"
+    );
+    await issue.releaseReads();
+    // ONE advances nothing now, so its line is the control beside Add.
+    await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
+    const addPriority = priorityLine(page).getByRole("button", {
+      name: addPriorityControlName(one),
+    });
+    await expect(addPriority).toBeVisible();
+    await expectFocusKept(
+      page,
+      priorityLine(page),
+      issue,
+      "once the new read moved the line back beside Add"
+    );
+    await expect(
+      addPriority,
+      "once the new read moved the line back beside Add, the focus is not on its add control"
+    ).toBeFocused();
   });
 });

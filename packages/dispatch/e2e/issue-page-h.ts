@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 
 import type { Actor } from "../web/src/api/types";
+import { FOLD_AFTER } from "../web/src/features/issue-page/details-leaves";
 import type { MarginSection } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { setLiveSessions } from "./agents";
@@ -28,12 +29,11 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 
 /**
- * What part H's browser rows read of Details (dispatch://INFRA-3945, part H of
- * dispatch://INFRA-1196): the locators of its panel and the one seed its rows open.
+ * What the browser rows of `issue-page-h.e2e.ts` read of Details: the locators of its panel and
+ * the one seed its rows open. No other row reads this file.
  *
- * Part D's `e2e/issue-page.ts` opens the new page and Details (`phase`, `gotoIssue`,
- * `openDetails`, `closeDetails`); this file adds what reads the panel inside it, and no other part
- * changes it (decision 2 of the parts).
+ * `e2e/issue-page.ts` opens the new page and Details (`phase`, `gotoIssue`, `openDetails`,
+ * `closeDetails`); this file adds what reads the panel inside it.
  *
  * - **The panel** `[data-testid="issue-margin"]`, the host the details slot's panel is appended to
  *   inside the drawer (`IssueMargin.tsx`'s `IssueMarginCards`).
@@ -83,8 +83,10 @@ export function filesList(page: Page): Locator {
 
 /** The project every issue of the seed is in. */
 export const PROJECT = "DET";
-/** The repository ONE carries, which the fake GitHub serves with one pull request. */
-export const REPOSITORY = "acme/details";
+/** The repository ONE carries, which the fake GitHub serves with one pull request. Its name is
+ *  twenty characters long, as long as a real repository's name that the box of Details'
+ *  Repository row was found to cut. */
+export const REPOSITORY = "acme/details-of-rows";
 const ARCHITECTURE_REPO = "acme/details-architecture";
 export const PULL_NUMBER = 11;
 /** ONE's link out of Dispatch that is not a pull request. */
@@ -112,11 +114,7 @@ export const QUESTION = "Which width does Details open at?";
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
-/** How many entries Details draws of a list before it folds the rest behind Show all: the
- *  panel's own `FOLD_AFTER` (`IssueMargin.tsx`), spelled here because Playwright cannot load
- *  that module - its imports reach a JSON module of `packages/envoy` imported without the
- *  `type: "json"` attribute Node requires. */
-export const FOLD_AFTER = 10;
+export { FOLD_AFTER };
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
  *  before it folds a list behind Show all. */
 export const ONE_PAST_FOLD = FOLD_AFTER + 1;
@@ -137,7 +135,8 @@ export interface DetailsSeed {
 }
 
 /**
- * The issues part H's rows read, as alice, written through Dispatch with `main`'s helpers.
+ * The issues the rows of `issue-page-h.e2e.ts` read, as alice, written through Dispatch with
+ * `main`'s helpers.
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
  *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven

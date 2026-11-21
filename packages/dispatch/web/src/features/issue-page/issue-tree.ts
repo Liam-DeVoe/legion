@@ -57,10 +57,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * The tree read (`IssueTreeReads.tree`), whose answer the page keeps whole, and the reads that
  * tell what the answer does not, each matched to its node by its address: the issue read, the
  * coverage read, the decisions read, the results read, the asks, and the one batched reference
- * read, which names what a chip points at outside the answer. While decisions are sections of
- * `decisions.md`, the decisions read also draws each decision no node of the answer holds, as
- * the outline drew it from that read (`tree-drafts.ts`'s `addDecisions`). No document's blocks
- * are read.
+ * read, which names what a chip points at outside the answer. The decisions read also draws each
+ * agent's decision no node of the answer holds - a section of `decisions.md` a server of the
+ * release before answers - as the outline drew it from that read (`tree-drafts.ts`'s
+ * `addDecisions`). No document's blocks are read.
  */
 
 /** One tie of a node that places nothing, drawn beside the node as its target's name. */
@@ -224,15 +224,17 @@ export interface TreeNode {
    *  every other node, a `requirement` block of any other document among them. */
   readonly statement?: true;
   /** The node's words as the read that carried them holds them: the tree read's `text` for every
-   *  node it answers, and a decision's section of `decisions.md` (`Decision.text`) for a decision
-   *  of the decisions read, as stored; the issue's key and title for the issue itself. `""` where
-   *  the model holds none. */
+   *  node it answers, and a decision's own words, its `decision` block's content (its entry's
+   *  `text` with the lines that open and close the block left out), for a decision of the
+   *  decisions read, as stored; the issue's key and title for the issue itself. `""` where the
+   *  model holds none. */
   readonly text: string;
   /** The server's reading of `text`, where the read that carried the text sends one: the tree
-   *  read's `text_tree` for every node it answers, and a decision's (`Decision.text_tree`) for a
-   *  decision of the decisions read. The row draws the node's words from it, so stored markdown
-   *  is drawn as what it says and the browser parses none of it (R20). A node whose read sends
-   *  none draws `text` as stored. Neither the issue nor a child issue carries one: its `text`
+   *  read's `text_tree` for every node it answers, and a decision's own content (its entry's
+   *  `text_tree` with its block's content at the top level) for a decision of the decisions read.
+   *  The row draws the node's words from it, so stored markdown is drawn as what it says and the
+   *  browser parses none of it (R20). A node whose read sends none draws `text` as stored.
+   *  Neither the issue nor a child issue carries one: its `text`
    *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
    *  one line is that text with each run of white space one space and each bare address written
    *  short (`lineWords`). */
@@ -267,12 +269,12 @@ export interface TreeViews {
 /**
  * Whether `node` is a statement: a `requirement` block of the issue's own spec, the document the
  * issue read names by `primary_artifact_id`, drawn before the coverage read answers as after it,
- * or a requirement that read holds. A `requirement` block of the plan, Verification or
- * decisions document keeps its type and is a block and nothing more: no row of the Spec filter
- * and none of its count, no context row of the Verification filter and none of its statements,
- * and nothing placed under it (`tree-read/tree-nodes.ts`' `draftServing`, which reads the same
- * rule on the tree read's nodes). The review list is no reader of this rule: it reads a
- * requirement the coverage read holds (`inReviewList`'s callers).
+ * or a requirement that read holds. A `requirement` block of the plan, of the Verification
+ * document or of any other document keeps its type and is a block and nothing more: no row of
+ * the Spec filter and none of its count, no context row of the Verification filter and none of
+ * its statements, and nothing placed under it (`tree-read/tree-nodes.ts`' `draftServing`, which
+ * reads the same rule on the tree read's nodes). The review list is no reader of this rule: it
+ * reads a requirement the coverage read holds (`inReviewList`'s callers).
  */
 export function isStatement(node: Pick<TreeNode, "statement">): boolean {
   return node.statement === true;
@@ -308,6 +310,11 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
+  /** The decisions read. The tree reads its `entries` and nothing else of it: the review state of
+   *  each decision node of the tree read (`tree-read/tree-nodes.ts`' `draftDecision`), and each
+   *  agent's decision no node holds, which it draws itself (`tree-drafts.ts`'s `addDecisions`,
+   *  `isDecisionEntry`), with who decided it (`decided_by`), which is the decision's author, and
+   *  the questions it settles (`from_ask`). */
   readonly decisions?: IssueDecisions;
   /** The issue's comments with each body's reading: what a Change of a decision the tree read
    *  holds no node for is found among (`addDecisions`). */
@@ -420,9 +427,9 @@ export function nodeWords(node: TreeNode): string {
  * `## # 1 rule` reads `# 1 rule`, and a list that follows a paragraph with no blank line ends
  * that paragraph, so the paragraph alone is the first block. A block that holds no words - a
  * horizontal rule, a paragraph that is only an image or a piece of HTML - is passed over, or the
- * line would be empty while the node has words. A decision's reading opens with its own `##`
- * heading, and `wordsOf` joins a heading and the paragraph after it with one space, so a line cut
- * from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
+ * line would be empty while the node has words. A decision's content opens with its own heading
+ * where it has one, and `wordsOf` joins a heading and the paragraph after it with one space, so a
+ * line cut from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
  *
  * A stored text is markdown, and its marks are no word of it, so its first block reads as that
  * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
@@ -469,8 +476,8 @@ export function lineWords(node: Pick<TreeNode, "text" | "tree">): string {
  *  written short: the first block of a reading, or of a stored text's reading, read by
  *  `firstBlockWordsRaw`, so a bare address stays as written. A caller that names each reference
  *  itself reads these, since a short form leaves it no address to name. A `TreeNode` passes as
- *  it is, and a decision as `{ text, tree: text_tree }`; a title node's line is its text as
- *  `lineWords` reads it, its addresses as written. */
+ *  it is, and a decision as its own content (`decision-review.ts`'s `decisionContent`); a title
+ *  node's line is its text as `lineWords` reads it, its addresses as written. */
 export function lineWordsRaw(node: {
   readonly text: string;
   readonly tree?: DisplayTree;
@@ -629,9 +636,10 @@ export function assemble(
   const placements = new Map<string, readonly string[]>();
   for (const draft of drafts) {
     references.set(draft.id, draft.reference ?? draft.id);
-    // A parent named twice is one placement: a decision whose paragraphs each cite the same
-    // question arrives naming it once per paragraph (`api/decisions.go`), and drawing it twice
-    // there would count it twice in `held` and give both rows one key (`tree-keys.ts`).
+    // A parent named twice is one placement: a decision may name the same question twice - the
+    // read of the release before named it once for each paragraph of a section that cited it -
+    // and drawing it twice there would count it twice in `held` and give both rows one key
+    // (`tree-keys.ts`).
     const named = [...new Set(draft.parents)].filter((parent) => known.has(parent));
     placements.set(draft.id, named.length === 0 ? [key] : named);
   }

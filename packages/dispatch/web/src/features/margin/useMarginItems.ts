@@ -15,23 +15,21 @@ import type {
   DispatchEvent,
   DisplayTree,
 } from "../../api/types";
+import { commentWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import {
-  isDecisionEntry,
-  issueDecisionsQuery,
-  issueSpecAddress,
-  linkReachesDocument,
-} from "../doc/spec-marks";
+import { issueDecisionsQuery, issueSpecAddress, linkReachesDocument } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
+import { isDecisionEntry } from "../issue/decision-entries";
 import {
   type ConversationPinKind,
   conversationItemId,
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
@@ -350,6 +348,7 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
+  const freshness = useNewIssuePageFreshness();
   const comments = useQuery({
     enabled: owner !== undefined,
     queryKey: commentsQueryKey,
@@ -361,6 +360,7 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
+    ...freshness,
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
@@ -494,7 +494,10 @@ export function useMarginItems(
   // only once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
+  const decisionsView = useQuery({
+    ...issueDecisionsQuery(issueKey ?? "", showsDecisions),
+    ...freshness,
+  });
   const specAddress = issueSpecAddress(issueKey ?? "");
   // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
   // spec block it stands beside.
@@ -563,6 +566,12 @@ export function useMarginItems(
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
     previous: Comment[] | undefined;
   }>({
+    // A read of the comments asked while an action is out waits until Dispatch has taken it - its
+    // answer, or the comment's own event (`comment.resolved`, `comment.reopened`,
+    // `suggestion.accepted`, `suggestion.rejected`) - for at most `SEND_DEADLINE_MS`: Dispatch can
+    // answer it before, with the comment as it was. The owner's comments are everyone's, so the
+    // hold ends on the event rather than wait out an answer that is late.
+    holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [commentsQueryKey] }),
     issue: issueKey,
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);

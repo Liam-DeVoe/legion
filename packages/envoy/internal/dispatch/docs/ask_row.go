@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // AskColumns selects one ask row, aliased a, in the order ScanAsk reads it. Its block artifact is
@@ -98,7 +97,7 @@ func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, rea
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := write(ctx, tx, func(b *store.WriteBatch) error { return settled.Queue(ctx, b) }); err != nil {
+	if err := write(ctx, tx, settled.Queue); err != nil {
 		return model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
 	}
 	return ask, nil
@@ -159,7 +158,7 @@ func WriteRestoredAsks(ctx context.Context, tx pgx.Tx, restored []model.Ask, act
 		if err != nil {
 			return fmt.Errorf("restore withdrawn ask: %w", err)
 		}
-		if err := write(ctx, tx, func(b *store.WriteBatch) error { return settled.Queue(ctx, b) }); err != nil {
+		if err := write(ctx, tx, settled.Queue); err != nil {
 			return fmt.Errorf("restore withdrawn ask: %w", err)
 		}
 	}

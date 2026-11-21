@@ -26,7 +26,8 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
  * (`tree`) hangs under it, whether or not the comments read holds that comment yet, and the
  * Change of a decision the read holds no node for is a comment of the issue's (`comments`) whose
- * quote its words hold, so the count reads no block of the decisions document.
+ * quote its words hold, so the count reads no block of a document. A person's decision is the
+ * answered ask, which waits for no review and is never counted here.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -42,7 +43,7 @@ export interface WaitingOnReader {
 }
 
 export function waitingOnReader(
-  issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
   isCoverageStatement: (reference: string) => boolean,
@@ -67,12 +68,13 @@ export function waitingOnReader(
   // The decisions a Change waits on, each by its address: a decision node's from the tree read
   // alone, as the outline finds it, so the two agree while the comments read is out or older.
   const changed = new Set(
-    decisionChangeComments(decisions, comments, issue.artifacts, undefined, tree).values()
+    decisionChangeComments(decisions, comments, issue, undefined, tree).values()
   );
+  // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
   const reviewing =
     viewer === undefined
       ? 0
-      : (decisions?.decisions ?? []).filter((decision) =>
+      : (decisions?.entries ?? []).filter((decision) =>
           inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };

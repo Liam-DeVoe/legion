@@ -34,6 +34,7 @@ function item(decision: Partial<DecisionEntry>): DecisionMarginItem {
       block_id: "d-1",
       ref: "dispatch://CORE-1/artifact/choices-md",
     },
+    from_ask: [],
     kept: null,
     kept_by: null,
     kept_text_sum: null,

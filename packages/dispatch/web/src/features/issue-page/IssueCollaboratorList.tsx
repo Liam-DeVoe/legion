@@ -79,9 +79,9 @@ function Worked({
  * click from the conversation it had; a person is their login as plain text, as everywhere.
  *
  * It is drawn in the People section of the issue page's one right-hand panel, behind that
- * section's own disclosure (dispatch://INFRA-1196 R12, `details-more.tsx`), where the nine-tab
+ * section's own disclosure (`details-more.tsx`), where the nine-tab
  * page gave it a tab of its own. What a read answered stays drawn when a later read fails, with
- * the failure and its Retry above it (decision 98); the failure is drawn alone only while no read
+ * the failure and its Retry above it; the failure is drawn alone only while no read
  * has answered.
  */
 export function IssueCollaboratorList({
@@ -95,7 +95,12 @@ export function IssueCollaboratorList({
   const query = useQuery(issueCollaboratorsQuery(issueKey));
   // The Retry the reader pressed goes with its line once the read lands, and the focus with it:
   // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
-  // Pinned hands it on (`IssuePins.tsx`).
+  // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
+  // that fails again leaves the focus on it: Chromium drops the focus of a focused button that
+  // turns disabled to the page. It reads busy then, and a press while the list is read joins
+  // that read rather than ending it and sending another (`cancelRefetch: false`), which the
+  // query decides as the press lands: the render's `isFetching` can be older than a second
+  // press made before React draws the first one's read.
   const retried = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (retried.current === null || retried.current.isConnected) return;
@@ -104,12 +109,19 @@ export function IssueCollaboratorList({
       owner.current?.focus();
     }
   });
-  const failure = query.isError ? (
+  // The line stays while the read its Retry sent is out, even where no read has answered: a
+  // fetch of a read that holds no answer clears its failure and puts it back to pending as it
+  // starts, which would take the line, and its Retry with the focus, away at the press. A
+  // failure it counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn
+  // afresh by that count, so a read that fails again is said again, in the same words.
+  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
+  const failure = failed ? (
     <DetailsErrorLine
+      failure={query.errorUpdateCount}
       message={ANSWER_LINES.collaborators_unreadable}
       onRetry={() => {
         retried.current = document.activeElement;
-        void query.refetch();
+        void query.refetch({ cancelRefetch: false });
       }}
       retrying={query.isFetching}
     />

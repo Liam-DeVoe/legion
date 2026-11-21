@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -75,8 +76,8 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 	}
 	// The proved session's comment ties it to its person (the alias_of tuple graphstore.AuthorFacts
 	// states), which carries a delivery to the session onto that person's page. It is written after
-	// the node check because it writes the same node (graphstore.Authored). That check does not stop
-	// the test, so the page below is read whatever the check found.
+	// the node check because it writes the same node (graphstore.QueueAuthored). That check does
+	// not stop the test, so the page below is read whatever the check found.
 	rig.created(t, "the proved session's comment", rig.serve(caller.presenting(t, http.MethodPost,
 		"/api/v1/issues/"+issue+"/comments", token, map[string]any{"body": "Written by the session the broker proved."})))
 	rig.publish(t, issue)
@@ -171,7 +172,7 @@ func TestAQueuedMessageAnsweredLaterLeavesTheCensusAtZero(t *testing.T) {
 // every kind it read, so a failure says which side of which kind drifted.
 func requireStoreCensusZero(t *testing.T, database *store.Store, what string) {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census %s: %v", what, err)
 	}

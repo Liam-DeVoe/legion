@@ -123,9 +123,10 @@ func TestAReadingInACopyOfAnAnsweredAskIsKept(t *testing.T) {
 
 // requireCopyKeptWithReading holds document, a copy, to its settlement having kept its ask block
 // ship as a copy of source: no ask of its own, the block's entry in the asks member an agent reads
-// beside the text (TextWithAsks) showing the source's answer and naming it, while no attribute of
-// the block in the document holds either, its reading r1 still in it,
-// and no block.invalid written.
+// beside the text (TextWithAsks) showing the source's answer and naming it, while the block in the
+// document holds only what a version keeps of it on a fleet of one build - the source's state and
+// its provenance (keptAskState) - and none of the answer's words or selection, its reading r1 still
+// in it, and no block.invalid written.
 func requireCopyKeptWithReading(t *testing.T, service *Service, document, source, what string) {
 	t.Helper()
 	if count := asksOn(t, service, document); count != 0 {
@@ -135,8 +136,13 @@ func requireCopyKeptWithReading(t *testing.T, service *Service, document, source
 	if invalid, flagged := ask.Attrs["invalid"]; flagged && invalid != nil {
 		t.Errorf("%s is flagged invalid: %v", what, invalid)
 	}
-	if state, copied := ask.Attrs["state"], ask.Attrs["copied_from"]; state != nil || copied != nil {
-		t.Errorf("%s holds state %v copied from %v in the document, want neither: the copy's source's ask holds them", what, state, copied)
+	if state, copied := ask.Attrs["state"], ask.Attrs["copied_from"]; state != asks.StateAnswered || copied != source {
+		t.Errorf("%s holds state %v copied from %v in the document, want what a version keeps of its source's ask: answered, copied from %s", what, state, copied, source)
+	}
+	for _, name := range []string{"selected", "answer"} {
+		if value, held := ask.Attrs[name]; held {
+			t.Errorf("%s holds %s=%v in the document, want none of the answer's words", what, name, value)
+		}
 	}
 	text, err := service.TextWithAsks(context.Background(), document, false)
 	if err != nil {
@@ -222,8 +228,8 @@ func TestARetractedAnsweredAskReturningWithAReadingIsRestored(t *testing.T) {
 // answerAsRecorded answers the ask of blockID on artifactID as alice the way the answer route
 // records an answer: through the one writer of an ask's answer state (asks.Settle), with the
 // ask.answered event that records it - the event a restoration reads the state back from
-// (stateBeforeRetraction) - and the block kept in step with it while another build serves
-// (KeepAskBlockInStep, which writes nothing on a fleet of one build), in one joined transaction.
+// (stateBeforeRetraction) - and the block kept in step with it (KeepAskBlockInStep, which on a
+// fleet of one build writes the ones a version keeps, R3), in one joined transaction.
 func answerAsRecorded(t *testing.T, service *Service, artifactID, blockID string, selected []string) {
 	t.Helper()
 	ask := blockAskOn(t, service, artifactID, blockID)

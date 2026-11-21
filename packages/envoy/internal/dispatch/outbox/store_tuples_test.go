@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -148,7 +149,7 @@ func requireBaseAttributes(t *testing.T, database *store.Store, written []graphs
 			graphstore.AttributeVisibility: true, graphstore.AttributeState: true,
 			graphstore.AttributeProject: read.Project != "", graphstore.AttributeParties: len(read.Parties) > 0,
 		}
-		for _, attribute := range graphstore.BaseAttributes() {
+		for _, attribute := range graphstorecopy.BaseAttributes() {
 			value, ok, err := graphstore.CurrentValue(ctx, database.Pool, node.Kind, node.ID, attribute)
 			if err != nil {
 				t.Fatalf("read the %s of %s %s: %v", attribute, node.Kind, node.ID, err)

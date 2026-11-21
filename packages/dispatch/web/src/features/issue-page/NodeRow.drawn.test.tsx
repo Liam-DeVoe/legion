@@ -1,6 +1,4 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,15 +8,25 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { DisplayTree, IssueChild } from "../../api/types";
+import type { Agent, Decision, DisplayTree, IssueChild } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { useAgentText } from "../refs/AgentName";
+import { agentsQuery } from "../refs/agent-registry";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
-import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
-import type { NodeChip, TreeNode } from "./issue-tree";
+import {
+  AGENT,
+  decision,
+  decisionsRead,
+  issueDetails,
+  KEY,
+  SPEC_SLUG,
+} from "./decisions-filter/decisions-fixtures";
+import { buildIssueTree, type NodeChip, type TreeNode } from "./issue-tree";
+import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
@@ -29,13 +37,17 @@ import {
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
   type GapKind,
+  GLYPH_NAMES,
+  GLYPH_TOKENS,
+  isReader,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
-import { addressesAsShortForms } from "./tree-drafts";
+import { addressesAsShortForms, blockNodeId } from "./tree-drafts";
+import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
  * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
@@ -218,6 +230,127 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   });
 });
 
+/** One row of the tree as `ConversationRows` draws it, its body open: the node as the tree model
+ *  built it, its author named by the page's one rule for naming one (`AgentText.author`). */
+function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
+  const agentText = useAgentText();
+  return (
+    <NodeRow
+      author={{
+        kind: authorKind(drawn.author),
+        name: agentText.author(drawn.author),
+        reader: isReader(drawn.author, undefined),
+      }}
+      body
+      context={false}
+      focused={false}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      onFocus={() => {}}
+      onPin={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      pinned={false}
+      rowKey="row"
+      tabStop={false}
+    />
+  );
+}
+
+// R9: an agent's decision is drawn with who decided it as the decisions read's entry for it
+// records (`DecisionEntry.decided_by`), which the read's `decisions` member does not carry. The
+// session that wrote it is named by the title the page's sessions read gives it, as any agent's
+// is: its role's word on the row and its whole title in the opened body (ruling 6). A session no
+// registry lists any longer is named by the title it stamped on what it wrote, which the entry
+// carries (`decided_by.title`), in the same two places. A decision whose entry names nobody draws
+// no author on its row, and its opened body says "Author unknown" (ruling 5).
+test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
+  const title = "Legion architect · CORE-1";
+  const storedTitle = "Legion planner · CORE-1";
+  const named = decision("d-named");
+  const unnamed = decision("d-unnamed");
+  const stored = decision("d-stored");
+  const read = decisionsRead([named, unnamed, stored]);
+  const root = buildIssueTree({
+    decisions: {
+      ...read,
+      entries: (read.entries ?? []).map((entry) => {
+        if (entry.ref === unnamed.ref) return { ...entry, decided_by: null };
+        if (entry.ref !== stored.ref) return entry;
+        return {
+          ...entry,
+          decided_by: { id: "session-gone", kind: "session", title: storedTitle },
+        };
+      }),
+    },
+    issue: issueDetails(),
+  });
+  const registered: Agent = {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: AGENT.id,
+    state: "live",
+    title,
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(agentsQuery().queryKey, [registered]);
+  const drawn = (made: Decision) => {
+    const id = blockNodeId(SPEC_SLUG, made.block_id);
+    const shown = root.children.find((child) => child.id === id);
+    if (shown === undefined) throw new Error(`the tree draws no decision ${id}`);
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NoTooltips>
+            <TreeRow node={shown} />
+          </NoTooltips>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      const text = (selector: string) =>
+        view.container.querySelector(selector)?.textContent ?? null;
+      return {
+        body: text("[data-node-body] [data-node-author]"),
+        kind: view.container.querySelector("[data-author-kind]")?.getAttribute("data-author-kind"),
+        row: text("[data-node-margin] [data-node-author]"),
+        title: text("[data-node-author-title]"),
+        type: view.container.querySelector("[data-node-row]")?.getAttribute("data-node-type"),
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn(named)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "architect",
+    title,
+    type: "decision",
+  });
+  expect(drawn(unnamed)).toEqual({
+    body: CONTROL_LABELS.unknown_author,
+    kind: "unknown",
+    row: null,
+    title: null,
+    type: "decision",
+  });
+  expect(drawn(stored)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "planner",
+    title: storedTitle,
+    type: "decision",
+  });
+});
+
 // A view that edits rows in place passes `editable`, and the row element itself carries
 // `data-editable` for that view's style. Every other view passes nothing, and its rows carry none.
 test("a row carries data-editable where its view passes editable, and none by default", () => {
@@ -314,6 +447,57 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
     tag: NODE_TYPE_NAMES.requirement,
     token: "requirement",
   });
+});
+
+// R34, R9: a reading is a typed node - an agent's reading of a person's answer, inside the ask or
+// the decision it reads - so its row draws its kind as one tag, its word and a shape no other
+// kind draws; and it is always an agent's words, so its bullet and its tag take an agent's quiet
+// grey, never the colour of the question or the decision it reads, and it never reads as the
+// person's decision itself.
+test("a reading row draws its own word and shape, in an agent's grey", () => {
+  const drawn = (type: NodeType) => {
+    const view = renderRow(node({ id: `spec#b-${type}`, text: "Keep the rail.", type }));
+    try {
+      const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+      const dot = view.container.querySelector("[data-node-bullet] i");
+      return {
+        agentBullet: dot?.classList.contains(pageKindBullet.agent) ?? null,
+        agentTag: tag?.classList.contains(pageKindTag.agent) ?? null,
+        shape: tag?.querySelector("svg path")?.getAttribute("d") ?? null,
+        tag: tag?.textContent ?? null,
+        token: tag?.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  const reading = drawn("reading");
+  expect(reading).toMatchObject({
+    agentBullet: true,
+    agentTag: true,
+    tag: NODE_TYPE_NAMES.reading,
+    token: "reading",
+  });
+  // The negative controls: the question and the decision a reading reads draw their own colours,
+  // and no other shape the page draws - a kind's, a state's or an author's - is the reading's.
+  for (const type of ["ask", "decision"] as const) {
+    expect(drawn(type), `the ${type} drew an agent's grey`).toMatchObject({
+      agentBullet: false,
+      agentTag: false,
+    });
+  }
+  const shapes = Object.keys(GLYPH_NAMES)
+    .filter((token) => token !== GLYPH_TOKENS.types.reading)
+    .map((token) => {
+      const view = render(<NodeGlyph token={token} />);
+      try {
+        return view.container.querySelector("path")?.getAttribute("d") ?? null;
+      } finally {
+        view.unmount();
+      }
+    });
+  expect(shapes.length).toBeGreaterThan(0);
+  expect(shapes, "another shape the page draws is a reading's").not.toContain(reading.shape);
 });
 
 // R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
@@ -422,7 +606,7 @@ test("an answered ask draws the answer in its own row, word for word", () => {
 test("a decision the model marks unsure says so in one word", () => {
   const unsure = (marked: boolean) => {
     const view = renderRow(
-      node({ id: "decisions-md#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
+      node({ id: "spec#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
     );
     try {
       return view.container.querySelector("[data-node-unsure]")?.textContent ?? null;
@@ -577,7 +761,7 @@ const MARKED_DRAWN = {
 // paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
-    id: "decisions-md#b-d1",
+    id: "spec#b-d1",
     text: MARKED,
     tree: displayTree(MARKED),
     type: "decision",
@@ -629,41 +813,26 @@ test("a node whose read sends no reading of its text draws the text as stored", 
   }
 });
 
-/** The selector list of each rule of `styles.css` that gives a block a sideways scroll of its
- *  own: it is drawn as a block, held to the width of what holds it, and scrolls along its own x
- *  axis. The browser applies these rules and no DOM of a unit test does, so a row reads them
- *  here. A list is kept whole, since a comma inside `:is(…)` separates no selectors. */
-function sidewaysScrollRules(): string[] {
-  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    ""
-  );
-  return [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(([, selectors = "", body = ""]) => {
-    const declared = new Set(body.split(";").map((one) => one.replace(/\s+/g, " ").trim()));
-    const scrolls = ["display: block", "max-width: 100%", "overflow-x: auto"].every((one) =>
-      declared.has(one)
-    );
-    return scrolls ? [selectors.trim()] : [];
-  });
-}
-
 // Decision 282: at 390 px a note whose body holds a table of sixteen columns, drawn in its row,
 // made the whole page 794 px wide. A wide block in a node's words - a table, a code block -
 // scrolls sideways inside itself, as a table does in a document's reading, so neither the row
-// nor the page does. The row's own blocks are the ones a rule of `styles.css` gives that scroll;
-// the widths are the browser suite's to read, since no DOM of a unit test lays any out.
+// nor the page does. The row's own blocks are the ones a rule of `styles.css` gives that scroll,
+// drawn as a block held to the width of what holds it; the widths are the browser suite's to
+// read, since no DOM of a unit test lays any out.
 test("a table and a code block in a row's words each scroll sideways on their own", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
   const view = renderRow(
     node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" })
   );
   try {
-    const rules = sidewaysScrollRules();
+    const rules = wordsScrollRules().filter(({ declared }) =>
+      ["display: block", "max-width: 100%"].every((one) => declared.has(one))
+    );
     for (const block of ["table", "pre"]) {
       const drawn = view.container.querySelector(`[data-node-words] ${block}`);
       if (drawn === null) throw new Error(`the row's words draw no ${block}`);
       expect(
-        rules.some((selectors) => [...document.querySelectorAll(selectors)].includes(drawn)),
+        rules.some(({ selectors }) => [...document.querySelectorAll(selectors)].includes(drawn)),
         `no rule of styles.css scrolls the ${block} in a row's words sideways on its own`
       ).toBe(true);
     }
@@ -677,12 +846,11 @@ test("a table and a code block in a row's words each scroll sideways on their ow
 // sideways; every other row's stay out of the tab order. The row hands its focus to its words.
 test("out of the tab order, a focused row's code block and table keep their tab stop, named, and an unfocused row's do not", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
-  // The rules that make each block scroll, which the hook reads through the computed style.
-  const sheet = document.createElement("style");
-  sheet.textContent = sidewaysScrollRules()
-    .map((selectors) => `${selectors} { overflow-x: auto; }`)
-    .join("\n");
+  // The rules that make each block scroll, which the hook reads through the computed style, and
+  // each block's content laid out past its box, as a wide one's is.
+  const sheet = wordsScrollSheet();
   document.head.append(sheet);
+  const restore = overflowing("[data-node-words] pre, [data-node-words] table");
   const drawn = (focused: boolean) => {
     const view = renderRow(
       node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" }),
@@ -712,19 +880,20 @@ test("out of the tab order, a focused row's code block and table keep their tab 
       { label: null, role: null, tabIndex: "-1" },
     ]);
   } finally {
+    restore();
     sheet.remove();
   }
 });
 
-// Part G's R4, the tester's F20: a decision's text holds the source of a typed block its section
-// quotes, and the row draws the block's words but none of its source lines, whether it draws the
-// text as stored or from its reading.
+// Part G's R4, the tester's F20: a decision's text holds the source of a typed block inside its
+// own block, and the row draws the block's words but none of its source lines, whether it draws
+// the text as stored or from its reading.
 test("a decision whose text quotes a typed block draws none of its source lines", async () => {
   const text = "It names the statement.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::";
   for (const tree of [undefined, displayTree(text)]) {
     const view = renderRow(
       node({
-        id: "decisions-md#b-d1",
+        id: "spec#b-d1",
         text,
         type: "decision",
         ...(tree === undefined ? {} : { tree }),
@@ -783,7 +952,7 @@ test("a chip names its target by its first words and never by an address", () =>
           ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
         },
       ],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),
@@ -868,7 +1037,7 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   const view = renderRow(
     node({
       chips: [ambiguous],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),
@@ -1248,27 +1417,38 @@ test("more is drawn on a cut row and never beside words a body draws whole", asy
   }
 });
 
-// Decision 263: a row in view is cut before the page paints it, also where its words arrive
-// after the row. A statement is drawn from its document's blocks before the coverage read
-// brings its words, so its row mounts in view with none: the mount measures it whole, and the
-// batch its coming near starts holds it in view at that length. The commit that brings its words
-// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
-// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
-// whole for the 59 frames recorded after.
-test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
-  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
-  // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
-  const restore = layOut(9600, (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600));
+/** 3,000 words, which run 400 lines of 24 px where they are drawn whole. */
+const LONG_WORDS = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+
+/**
+ * What a row in view draws in the commit that draws it from `next`, before the page is painted:
+ * the row is drawn from `first` and measured as its coming near measures it, then, if `relaidOut`
+ * is given, laid out again by it and measured again as it stands in view, and then drawn from
+ * `next` with every animation frame held, so none runs. `words` is how tall the browser lays a
+ * row's words out (`layOut`). `cutBefore` is whether the row was cut before `next` was drawn.
+ */
+async function redrawnInView({
+  first,
+  next,
+  relaidOut,
+  words,
+}: {
+  readonly first: TreeNode;
+  readonly next: TreeNode;
+  readonly relaidOut?: () => void;
+  readonly words: (element: HTMLElement) => number;
+}): Promise<{ cutBefore: boolean; maxHeight: string | undefined; more: string | undefined }> {
+  const restore = layOut(9600, words);
   const near = installIntersectionObserver();
   try {
-    const statement = { id: "spec#b-r1", type: "requirement" } as const;
-    const row = renderRow(node({ ...statement, text: "" }), { body: false });
+    const row = renderRow(first, { body: false });
     try {
       await measureNearWords(near);
-      expect(
-        row.container.querySelector("[data-node-more]"),
-        "a row with no words was cut"
-      ).toBeNull();
+      if (relaidOut !== undefined) {
+        relaidOut();
+        await measureNearWords(near);
+      }
+      const cutBefore = row.container.querySelector("[data-node-more]") !== null;
       const frames: FrameRequestCallback[] = [];
       const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
         frames.push(callback);
@@ -1276,15 +1456,13 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
       });
       try {
         await act(async () => {
-          row.redraw(node({ ...statement, text, tree: displayTree(text) }));
+          row.redraw(next);
         });
-        expect(
-          row.container.querySelector("[data-node-more]")?.textContent,
-          "the words that arrived were drawn whole in view"
-        ).toBe(`${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`);
-        expect(row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
-          "144px"
-        );
+        return {
+          cutBefore,
+          maxHeight: row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight,
+          more: row.container.querySelector("[data-node-more]")?.textContent ?? undefined,
+        };
       } finally {
         frame.mockRestore();
       }
@@ -1295,6 +1473,57 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
     near.restore();
     restore();
   }
+}
+
+// Decision 263: a row in view is cut before the page paints it, also where its words arrive
+// after the row. A statement is drawn from its document's blocks before the coverage read
+// brings its words, so its row mounts in view with none: the mount measures it whole, and the
+// batch its coming near starts holds it in view at that length. The commit that brings its words
+// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
+// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
+// whole for the 59 frames recorded after.
+test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
+  const statement = { id: "spec#b-r1", type: "requirement" } as const;
+  const drawn = await redrawnInView({
+    first: node({ ...statement, text: "" }),
+    next: node({ ...statement, text: LONG_WORDS, tree: displayTree(LONG_WORDS) }),
+    // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
+    words: (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600),
+  });
+  expect(drawn.cutBefore, "a row with no words was cut").toBe(false);
+  expect(drawn.more, "the words that arrived were drawn whole in view").toBe(
+    `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
+  );
+  expect(drawn.maxHeight).toBe("144px");
+});
+
+// Decision 261: a row in view keeps its length unless it draws other words. A new comment on the
+// issue adds an address to the names read, which then reads under a key of its own, so every
+// block row drawn from that read takes a new reading of the same words (`tree-drafts.ts`'s
+// `treeOf`). A row measured whole, whose words then run past the cut, as a narrower width runs
+// them, is held whole in view by the batch that measures it again; a new reading of the same
+// words draws nothing new, so the row stays whole, with no animation frame run.
+test("a row held whole in view stays whole when a later read draws the same words anew", async () => {
+  const statement = { id: "spec#b-r1", text: LONG_WORDS, type: "requirement" } as const;
+  // The server reads one text into one tree (`pmdoc.DisplayJSON`), where the page's own parse
+  // gives each block a new id, so the later read's answer is a copy of the first.
+  const reading = displayTree(LONG_WORDS);
+  // Five lines of 24 px where the row is first measured, which six lines hold whole.
+  let run = 120;
+  const drawn = await redrawnInView({
+    first: node({ ...statement, tree: reading }),
+    next: node({ ...statement, tree: structuredClone(reading) }),
+    // The words now run 400 lines, and the batch holds the row in view at its length.
+    relaidOut: () => {
+      run = 9600;
+    },
+    words: () => run,
+  });
+  expect(drawn.cutBefore, "the batch cut a row in view").toBe(false);
+  expect(drawn.more, "a new reading of the same words cut the row held whole in view").toBe(
+    undefined
+  );
+  expect(drawn.maxHeight).toBe("");
 });
 
 // R16: an open question's options are the choices of its answer. A press on one leaves the

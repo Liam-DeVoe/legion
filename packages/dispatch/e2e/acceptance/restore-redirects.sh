@@ -18,7 +18,10 @@
 # default: only the caller knows which release that is. Once the base server has booted, the
 # commit it is stamped with (the `commit` of its /healthz, the one it registers in
 # server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
-# naming both, so that a binary built from another commit never stands in for that release.
+# naming both, so that a binary built from another commit never stands in for that release. In
+# the same way this head's server must be stamped with the commit this checkout stands on (`git
+# rev-parse HEAD`, which the Verification preamble stamps HEAD_BINARY with), so that a binary left
+# from an earlier head never stands in for the head the result is recorded at.
 #
 # Before this head boots it captures, through the base server, what each of R8's three resolvers
 # answers: GET /api/v1/references?to=<old address> (blockReferenceNode), GET
@@ -33,15 +36,16 @@
 # collision census, the three resolvers and the counter (the dangling_citations line of
 # `envoy-dispatch census --store --verbose`): moved=0, and returning equal to the captured
 # citations of the main shape's old spec address, which answers 404 NOT_FOUND. It reads the
-# restore's dry run listing the second shape's asks as about to move. It runs the restore
-# (`envoy-dispatch restore-answered-asks --project SEED`) and reads the citation again three ways:
-# the references read and the block-links leg answer the restored ask's block at its new address
-# with the captured text, and the closure answers the spec as the member the citation reaches. A
-# text is held to the captured one character for character with two differences and no other,
-# each printed: the eight server-owned ask attributes are absent, and a block that took a new id
-# carries it. It reads one moved_to tuple for the move, with its time, and no second row; one for
-# the colliding ask, to its new id; none for an ask of the main shape, whose old spec address now
-# answers the restored ask block. The counter then reads zero in both sets.
+# restore's dry run listing the second shape's asks as about to move, and writing nothing: no
+# moved_to tuple, no version of a document of the project and no asks row's block. It runs the
+# restore (`envoy-dispatch restore-answered-asks --project SEED`) and reads the citation again
+# three ways: the references read and the block-links leg answer the restored ask's block at its
+# new address with the captured text, and the closure answers the spec as the member the citation
+# reaches. A text is held to the captured one character for character with two differences and no
+# other, each printed: the eight server-owned ask attributes are absent, and a block that took a
+# new id carries it. It reads one moved_to tuple for the move, with its time, and no second row;
+# one for the colliding ask, to its new id; none for an ask of the main shape, whose old spec
+# address now answers the restored ask block. The counter then reads zero in both sets.
 #
 # Then it plants one state, for one census. A healthy run never leaves a citation of the first set
 # dangling, so that set reads zero before the restore and after it, as a counter that watched no
@@ -116,6 +120,12 @@ base_sha="$(git -C "$checkout" rev-parse --verify --quiet "${BASELINE_SHA}^{comm
   exit 2
 }
 readonly base_sha
+# The commit this checkout stands on, in full: the one this head's server must be stamped with.
+head_sha="$(git -C "$checkout" rev-parse --verify --quiet HEAD)" || {
+  printf '%s stands on no commit (git rev-parse HEAD)\n' "$checkout" >&2
+  exit 2
+}
+readonly head_sha
 readonly project=SEED
 # The eight server-owned ask attributes R10 takes out of markdown.
 readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
@@ -366,9 +376,10 @@ server="$baseline_boot_url"
 send agent GET /healthz
 want_status 200 head "read this head's /healthz"
 head_commit="$(jq -r '.commit // ""' "$work/body")"
-[[ -n "$head_commit" && "$head_commit" != "$base_commit" ]] ||
-  fail head "this head is stamped with a commit of its own" "it serves '$head_commit', the base '$base_commit'"
-pass head "this head serves $head_commit over the base release's database, the decisions step held"
+[[ "$head_commit" == "$head_sha" && "$head_commit" != "$base_commit" ]] ||
+  fail head "this head is stamped with the commit this checkout stands on, not the base's" \
+    "it serves '$head_commit', $checkout stands on '$head_sha', the base serves '$base_commit'"
+pass head "this head serves $head_commit, the commit this checkout stands on, over the base release's database, the decisions step held"
 
 dispatch_command backfill backfill-graph-store
 [[ "$command_code" == 0 ]] || fail before "envoy-dispatch backfill-graph-store" "exited $command_code: $(<"$work/backfill.out")"
@@ -401,12 +412,26 @@ want_status 404 before "$returning_address answers 404 before the restore"
 expect before "$returning_address answers NOT_FOUND" '"NOT_FOUND"' '.code'
 pass before "the three resolvers answer, and $returning_address answers 404 NOT_FOUND, before one ask moves"
 
+# What the restore writes: the moved_to tuples, the versions of the project's documents, and the
+# block each of the project's asks rows names, one line, so a dry run that writes any of them reads
+# otherwise after it than before.
+readonly restore_writes="select (select count(*) from graph_tuples where kind = 'moved_to')
+  || ' ' || (select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.project_key = '$project')
+  || ' ' || (select md5(coalesce(string_agg(k.id::text || ':' || coalesce(k.block_artifact_id::text, '') || ':' || coalesce(k.block_id, ''), ',' order by k.id), ''))
+             from asks k join issues i on i.key = k.issue_key where i.project_key = '$project')"
+query before "read what the restore writes, before its dry run" "$restore_writes"
+writes_before="$answer"
 dispatch_command dry restore-answered-asks --project "$project" --dry-run
 grep '^restore-answered-asks: ' "$work/dry.out" | sed 's/^/  /' || true
 [[ "$command_code" == 0 ]] || fail before "the restore's dry run" "exited $command_code: $(<"$work/dry.out")"
 grep -q "^restore-answered-asks: issue=$issue_a restored=4 moved=2 new_ids=2 .* dry_run=true\$" "$work/dry.out" ||
   fail before "the dry run lists the second shape's two asks of $issue_a as about to move" "$(grep "issue=$issue_a " "$work/dry.out" || echo 'no line')"
-pass before "the dry run lists the second shape's two asks as about to move, and wrote nothing"
+query before "read what the restore writes, after its dry run" "$restore_writes"
+[[ "${answer%% *}" == 0 ]] || fail before "the dry run writes no moved_to tuple" "the store holds ${answer%% *}"
+[[ "$answer" == "$writes_before" ]] ||
+  fail before "the dry run writes no version of a document of $project and no asks row's block" \
+    "moved_to tuples, versions and the asks rows' blocks read '$writes_before' before it and '$answer' after"
+pass before "the dry run lists the second shape's two asks as about to move, and wrote no moved_to tuple, no version and no asks row's block"
 
 # ---------------------------------------------------------------------------------------------
 # The restore, and the citation read again.

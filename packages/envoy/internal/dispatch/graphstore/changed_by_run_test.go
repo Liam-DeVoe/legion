@@ -51,13 +51,13 @@ func TestAWriteMadeForARunNamesEachNodeItMarksOnce(t *testing.T) {
 		node, tuples := CommentFacts(nil, id, author, at, NoEvent, "", "", "", nil)
 		node.Changed = true
 		authors, authored, _ := AuthorFacts(KindComment, id, author, at, NoEvent)
-		written, err := WriteUncaused(ctx, tx, append([]Node{node}, authors...), append(tuples, authored...))
+		written, err := writeHeldNodes(ctx, tx, append([]Node{node}, authors...), append(tuples, authored...))
 		if err != nil {
 			return err
 		}
 		return Caused(ctx, tx, written, event)
 	}
-	forRun := WithRun(context.Background(), run)
+	forRun := store.WithRun(context.Background(), run)
 	runInOneTransaction(t, database, "the comment written for the run", func(_ context.Context, tx pgx.Tx) error {
 		return writeComment(forRun, tx, comment, stored)
 	})
@@ -84,7 +84,7 @@ func TestAWriteMadeForARunNamesEachNodeItMarksOnce(t *testing.T) {
 	}
 
 	runInOneTransaction(t, database, "the comment written for another run", func(_ context.Context, tx pgx.Tx) error {
-		return Write(WithRun(context.Background(), other), tx, []Node{marked}, nil)
+		return Write(store.WithRun(context.Background(), other), tx, []Node{marked}, nil)
 	})
 	if held := changedByRunOf(t, database, KindComment, comment, other); len(held) != 1 || held[0].SourceEvent != NoEvent {
 		t.Fatalf("the comment written for run %s holds the changed_by_run %+v to it, want one at the sentinel", other, held)

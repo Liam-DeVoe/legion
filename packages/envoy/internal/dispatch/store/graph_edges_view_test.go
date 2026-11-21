@@ -15,9 +15,21 @@ import (
 // file, with the arm set it states. A migration stating the view from this set on is one of them:
 // the first of them is where the function became the view's one source.
 var graphEdgesViewMigrations = map[string]GraphEdgesArms{
-	"20261117140000_issue_tree_relations.up.sql":     GraphEdgesIssueRelations,
-	"20261118023219_issue_tree_components.up.sql":    GraphEdgesComponents,
-	"20261119100000_issue_tree_artifact_refs.up.sql": GraphEdgesArtifactRefs,
+	"20261117140000_issue_tree_relations.up.sql":                          GraphEdgesIssueRelations,
+	"20261118023219_issue_tree_components.up.sql":                         GraphEdgesComponents,
+	"20261119100000_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
+	"20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
+}
+
+// graphEdgesSiblingRestatements are the migrations of the sibling branch this branch merges that
+// state graph_edges by hand after the first of graphEdgesViewMigrations, each from the arms the
+// sibling's own view has: 20261120122700 filters the tuple arm of 20261109215947's arms, and
+// 20261121034242 restates 20261116094101's arms with that filter. Neither holds this branch's
+// arms, and a database runs each version once, so the newest of graphEdgesViewMigrations, dated
+// after both, states the view again from GraphEdgesView with every arm of both branches.
+var graphEdgesSiblingRestatements = map[string]bool{
+	"20261120122700_graph_edges_tuple_arm_filter.up.sql":          true,
+	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql": true,
 }
 
 // graphEdgesStatement is the head of the statement that states the view, as GraphEdgesView writes
@@ -53,7 +65,7 @@ func TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives(t *testing.T) {
 		arms, listed := graphEdgesViewMigrations[name]
 		states := strings.Contains(string(body), graphEdgesStatement)
 		switch {
-		case !listed && states && name > first:
+		case !listed && states && name > first && !graphEdgesSiblingRestatements[name]:
 			t.Errorf("%s states graph_edges and is not stated from GraphEdgesView: write its statement with that function's text for its arm set, and list it in graphEdgesViewMigrations", name)
 			continue
 		case !listed:

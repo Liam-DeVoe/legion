@@ -9,28 +9,27 @@ import {
 } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import {
-  api,
-  type IssueTreeAnswer,
-  type IssueTreeNode,
-  type IssueTreeTuple,
-} from "../../../api/client";
+import { api } from "../../../api/client";
 import { liveFeedUp, onLiveFeedBack } from "../../../api/live-socket";
 import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
-import type { IssueDetails } from "../../../api/types";
+import type {
+  IssueDetails,
+  IssueTreeNode,
+  IssueTreeRead,
+  IssueTreeTuple,
+} from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
-import { refetchFailedOnFocus } from "../../refs/reference-target";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { writesOf } from "../../writes/write-store";
 import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`), which the model serves: the one file
  * of the issue page that names the route. Every other file reads the answer through the names
- * below, so the day the answer's shape moves onto the generated contract only these aliases
- * change.
+ * below, which are the generated contract's (`IssueTreeRead`, `IssueTreeNode`, `IssueTreeTuple`).
  */
-export type TreeAnswer = IssueTreeAnswer;
+export type TreeAnswer = IssueTreeRead;
 export type TreeAnswerNode = IssueTreeNode;
 export type TreeTuple = IssueTreeTuple;
 
@@ -121,19 +120,6 @@ async function readTree(
   return mergeTreePages(pages);
 }
 
-/**
- * How the page's reads are kept fresh: by the events that can change them, never by age, so a
- * slot the stage mounts again past the app's 30 s `staleTime` sends no read; only a read whose
- * last answer failed is read again on focus (`refetchFailedOnFocus`), so a read that failed
- * recovers on the open page while a healthy one stays quiet. Every read of `useIssueTree` that an
- * event refreshes takes it, which names it `EVENT_FRESH`; the tree read and its views take it,
- * with the changes `TREE_FRESH` names.
- */
-export const REFRESHED_BY_EVENTS = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
-
 /** Whether a new observer of the tree or of a view may read it (`TREE_FRESH`): where its last
  *  read was not refused, or where something asked for it again since that refusal - an event of
  *  the issue, a refresh of every query, the page's subscription - which marked it stale. The
@@ -171,7 +157,7 @@ function mayReadNow(query: Pick<Query, "state">): boolean {
   return query.state.status === "pending" && !droppedWhileHeld.has(query);
 }
 
-/** How the tree read and its views are kept fresh: as `REFRESHED_BY_EVENTS`, except that none of
+/** How the tree read and its views are kept fresh: as `EVENT_FRESH`, except that none of
  *  TanStack's own reads asks again for a read Dispatch refused, and none is sent for a refresh
  *  while a write of the issue holds it (`mayReadNow`). A refused read, whether it holds an answer
  *  or not, stays refused until the reader's Retry, an event of the issue, the live feed coming
@@ -188,7 +174,7 @@ function mayReadNow(query: Pick<Query, "state">): boolean {
  *  filter is next on. A read that holds an answer which a write or an event marked stale while
  *  nothing observed it is read when something next observes it, and a read never made is made. */
 const TREE_FRESH = {
-  ...REFRESHED_BY_EVENTS,
+  ...EVENT_FRESH,
   enabled: mayReadNow,
   refetchOnMount: mayReadOnMount,
   refetchOnReconnect: false,
@@ -222,7 +208,9 @@ export const viewQuery = (key: string, filter: TreeFilter) =>
  *  they are. The state is the tree read's own. */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
+  readonly errorUpdateCount: number;
   readonly isError: boolean;
+  readonly isFetching: boolean;
   readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
 }
@@ -278,6 +266,7 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     data: answer,
     errorUpdateCount,
     isError,
+    isFetching,
     isPending,
     isSuccess,
     refetch,
@@ -287,8 +276,18 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     [answer, issue]
   );
   const blocksOf = useMemo(
-    () => byRole((role): TreeBlocksRead => ({ data: blocks(role), isError, isSuccess, refetch })),
-    [blocks, isError, isSuccess, refetch]
+    () =>
+      byRole(
+        (role): TreeBlocksRead => ({
+          data: blocks(role),
+          errorUpdateCount,
+          isError,
+          isFetching,
+          isSuccess,
+          refetch,
+        })
+      ),
+    [blocks, errorUpdateCount, isError, isFetching, isSuccess, refetch]
   );
   return useMemo(
     () => ({

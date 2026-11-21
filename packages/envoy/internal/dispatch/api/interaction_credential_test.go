@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -81,7 +82,7 @@ func (c interactionCredential) references(t *testing.T, handler http.Handler, di
 }
 
 // TestInteractionNodesAreTuplesReadByTheirOwnCredential is c-interaction-declared-and-private
-// (dispatch://INFRA-1950/spec#b-r-interaction). It holds the kind's declarations and its privacy in
+// (spec requirement r-interaction). It holds the kind's declarations and its privacy in
 // one place:
 //
 //   - interaction has a registry entry and backlink arms, so a count of it is answered and not
@@ -126,8 +127,8 @@ func requireInteractionDeclared(t *testing.T, database *store.Store) {
 	if !slices.Contains(refs.VisibilityKinds(), graphstore.KindInteraction) || !refs.ResolvesNodeKind(graphstore.KindInteraction) {
 		t.Errorf("refs.nodeRegistry holds no entry with a loader for %s: it holds %v", graphstore.KindInteraction, refs.VisibilityKinds())
 	}
-	if !slices.Contains(refs.BacklinkKinds(), graphstore.KindInteraction) {
-		t.Errorf("refs.backlinkArms declares no arms for %s: it declares %v", graphstore.KindInteraction, refs.BacklinkKinds())
+	if !slices.Contains(refstest.BacklinkKinds(), graphstore.KindInteraction) {
+		t.Errorf("refs.backlinkArms declares no arms for %s: it declares %v", graphstore.KindInteraction, refstest.BacklinkKinds())
 	}
 	counted, err := refs.BacklinkCounts(ctx, database.Pool, model.Actor{}, graphstore.KindInteraction, []string{uuid.NewString()}, nil)
 	t.Logf("a count of an interaction answers %v, %v", counted, err)

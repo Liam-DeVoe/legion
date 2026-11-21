@@ -199,7 +199,7 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 		t.Errorf("the decisions query reads role %q room %q fragment %q, want role decisions, no room of an issue and no fragment", artifact.Role, artifact.Room, artifact.Fragment)
 	}
 	var selected int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from decisions_documents(include_retired => true) where issue_key = $1`, converted.Key).Scan(&selected); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*) from decisions_documents() where issue_key = $1`, converted.Key).Scan(&selected); err != nil {
 		t.Fatalf("read the decisions documents: %v", err)
 	}
 	if selected != 0 {
@@ -238,7 +238,12 @@ func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 	}
 	upload := func(content string) model.Artifact {
 		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "plan.md", "content": content}, "alice")
+		uploads := "/api/v1/issues/" + issue.Key + "/artifacts"
+		body := map[string]any{"name": "plan.md", "content": content}
+		if base := uploadBaseNamed(t, handler, uploads, "plan.md"); base != nil {
+			body["precondition"] = base
+		}
+		response := dispatchRequest(t, handler, http.MethodPost, uploads, body, "alice")
 		if response.Code != http.StatusCreated {
 			t.Fatalf("upload plan.md: status=%d body=%s", response.Code, response.Body.String())
 		}

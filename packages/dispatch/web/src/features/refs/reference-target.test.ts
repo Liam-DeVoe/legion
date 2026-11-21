@@ -16,6 +16,7 @@ import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { refreshQueries } from "../../api/query-refresh";
 import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
+import { refocus } from "../issue-page/window-focus-fixture";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
   agentArtifactQuery,
@@ -123,17 +124,6 @@ test("summary reads are fetched again by events, never by age", () => {
     "runbook",
   ]);
 });
-
-/**
- * The person comes back to the tab. Resolves once the client has handled the focus: its focus
- * listener awaits `resumePausedMutations` before it refetches, so awaiting the same call after it
- * finds any refetch the focus starts already at its read.
- */
-async function refocus(queryClient: QueryClient): Promise<void> {
-  focusManager.setFocused(false);
-  focusManager.setFocused(true);
-  await queryClient.resumePausedMutations();
-}
 
 /**
  * Observes `options` as a mounted reference does, with `read` failing its first call: the failed

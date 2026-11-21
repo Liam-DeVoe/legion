@@ -31,7 +31,7 @@ owns its child while it holds its role: it decomposes the child, files the child
 under the child, reviews their specs and signs the child off. So file every child you create under
 the root alone, never below a child. You hear a child's `child-status` and `child-closed` notices,
 its architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
-architect does not hold its role (`skill://legion-architect`, section 2).
+architect does not hold its role (`skill://legion-architect/references/wake-routing.md`).
 Review every version of each child's spec and of its Verification document before the child's
 work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
@@ -93,8 +93,12 @@ Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved.
-A person's answer to an ask block writes no version, since Dispatch holds the answer on the ask,
-so it leaves the gate as it stands. Dispatch carries the approval to a new version in two cases.
+A person's answer, resolve or decline of an ask writes one version. That version changes only the
+server-owned attributes of the ask's block: `state`, and `answered_by` and `answered_at` where the
+ask is answered. Dispatch carries a standing approval across it, and an approval request stays
+with whoever held its turn. An issue's close and reopen each write one version too: the close's
+carries no approval, so the approval reads stale until the reopen's version carries it.
+Dispatch carries the approval to a new version in two cases.
 The first is a version whose text is exactly the text of the version they approved, with no ask
 block in it decided since, such as an accidental edit undone exactly. The second is a version
 whose every change is one Dispatch carries an approval over: a reading added, changed or removed
@@ -162,13 +166,14 @@ It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
-A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A repeated change is one child, never one per instance.
-A child that duplicates another issue and is not yet released is never released:
-fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`, because
-its work is folded into the issue you keep.
-Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
+A child that duplicates another issue and is not yet released is never released.
+A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
+Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work of a child is done, folded into another issue or no longer needed.
+For a fold, name in the reason the issue that carries the work.
+Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
+Say why in a `dispatch comment`.
 A child that looks independent of the tree,
 capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
 child as a root. A problem outside the tree is never an issue you file: a clear defect in code
@@ -178,7 +183,8 @@ decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours, one a worker escalated or one a child's architect sent you, is an ask block you
 write in the root spec; after approval its new version closes the gate. The human's answer writes
-no version and carries no approval. When it changes the spec's text outside the block, rewrite
+one version, which changes only the block's server-owned attributes, and Dispatch carries the
+approval across it. When the answer changes the spec's text outside the block, rewrite
 that text and run the two reviews on the new version. Then request approval again with a
 `--summary` of one sentence naming what changed since the earlier approval and one sentence with
 both reviews' results. A to-do only a human can do is a `dispatch ask`.

@@ -32,9 +32,14 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 const decisionBlock =
   ':::ask{#decision urgency="high" multiple="false" state="open"}\nShip now?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n';
 
-/** The decision block as every stored version holds it: the first write took the seed's `state`
- *  off it, since an ask's state lives on the ask alone. */
+/** The decision block as the text routes serve it, and as a stored version of this build holds it
+ *  while its ask is open: with none of the server-owned attributes, an ask's state living on the
+ *  ask. */
 const storedDecision = ':::ask{#decision urgency="high" multiple="false"}\n';
+/** The decision's opener in a stored version once the close resolved it: a version keeps the state
+ *  of an ask that is not open on its opener, for the release before's readers. */
+const storedResolvedDecision =
+  ':::ask{#decision urgency="high" multiple="false" state="resolved"}\n';
 
 /** The decision block's state as the text routes answer it, in their `asks` member, read from
  *  the ask: their markdown holds no ask's state. */
@@ -168,24 +173,23 @@ async function expectWithdrawn(
 
 // SLOW(>=2s): two pages of the issue, one of them the document editor with its own socket, then a
 // close, the version history, the closed issue's settlement window, a reopen and a reload.
-// @pr: Create through answer to close: the Close withdraws the issue's asks and writes no byte of the document, and Reopen brings them back.
-test("a person's Close withdraws the issue's asks and writes no byte of the document, and Reopen brings the asks back @pr", async ({
+// @pr: Create through answer to close: the Close withdraws the issue's asks and writes one version showing them resolved, and Reopen brings them back in one more.
+test("a person's Close withdraws the issue's asks and writes one version showing them resolved, and Reopen brings the asks back in one more @pr", async ({
   browser,
 }) => {
   const seeded = await seedIssue("CLOSE");
   const opened = await openIssueAndInbox(browser, seeded, { clock: true });
   const { decision, inbox, page, sockets } = opened;
   try {
-    // The close writes no version of its own, so the version it leaves is the newest one saved
-    // before it.
+    // The close writes the decision's resolved state into its block, as a version keeps it for
+    // the release before's readers, and the settlement it leaves owed saves that as one version:
+    // the newest version saved before the close is the one it starts from.
     const before = await newestVersion(seeded.artifactId);
     await page.getByRole("button", { name: "Close issue" }).click();
     await expectWithdrawn(opened, seeded, "alice");
-    expect(await newestVersion(seeded.artifactId)).toBe(before);
 
     // That version's stored text holds the decision as it was written, with none of the
-    // server-owned attributes: an ask's state lives on the ask alone, and on a fleet of one build
-    // a close's withdrawal changes no byte of a document.
+    // server-owned attributes: a version keeps no state of an open ask, and no answer's words.
     const savedMarkdown = (await getArtifactVersion(seeded.artifactId, before)).markdown;
     expect(savedMarkdown).toContain(storedDecision);
     expect(savedMarkdown).not.toContain("state=");
@@ -216,13 +220,16 @@ test("a person's Close withdraws the issue's asks and writes no byte of the docu
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
-    // The room's load for the reconnect above arms a settlement of the closed issue's document,
-    // which runs 250 ms later (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`) and saves a
-    // version only where the document's bytes changed. The close changed none, so it saves none;
-    // the text routes answer the decision's state from its ask in their asks, so an agent reading
-    // the document reads the decision resolved.
+    // The close's write left the document owed a settlement, which runs on the closed issue
+    // 250 ms after it is armed (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`) and saves one
+    // version, the decision's opener showing it resolved, as its ask's node holds it; the text
+    // routes answer the same state from the ask in their asks, so an agent reading the document
+    // reads the decision resolved.
     await expect.poll(() => decisionState(seeded.artifactId), PROBE).toBe("resolved");
-    expect(await newestVersion(seeded.artifactId)).toBe(before);
+    await expect.poll(() => newestVersion(seeded.artifactId), PROBE).toBe(before + 1);
+    expect((await getArtifactVersion(seeded.artifactId, before + 1)).markdown).toContain(
+      storedResolvedDecision
+    );
     await page.getByRole("button", { name: "Reopen" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");
@@ -248,10 +255,14 @@ test("a person's Close withdraws the issue's asks and writes no byte of the docu
     await reconnectedSockets(page, sockets, 4);
     await expect(connectedDot(page)).toHaveText("connected");
     await expectOpenDecision(decision);
-    // Neither the close nor the reopen, nor the settlements their rooms' loads ran, saved a
-    // version: the text routes read the decision open again from its ask.
+    // The reopen wrote the decision open again, which takes its state off, and the settlement it
+    // left owed saved that as one more version: the text routes read the decision open again
+    // from its ask.
     expect(await decisionState(seeded.artifactId)).toBe("open");
-    expect(await newestVersion(seeded.artifactId)).toBe(before);
+    await expect.poll(() => newestVersion(seeded.artifactId), PROBE).toBe(before + 2);
+    expect((await getArtifactVersion(seeded.artifactId, before + 2)).markdown).toContain(
+      storedDecision
+    );
   } finally {
     await page.context().close();
   }

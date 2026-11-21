@@ -418,6 +418,13 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
+ *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
+ *  the Decisions tab reads them. */
+export function getIssueDecisions(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
@@ -651,13 +658,6 @@ export function listIssueAsks(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
- *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
- *  the Decisions tab reads them. */
-export function getIssueDecisions(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/decisions", { params: { key: issue } }, options);
-}
-
 export function createProjectDocument(
   project: string,
   input: Body<"/api/v1/projects/{key}/artifacts", "post">,
@@ -868,6 +868,20 @@ export function followAsk(id: string, sessionID: string, actor: Actor) {
 /** The document's current canonical markdown, as the server's live room holds it. */
 export function getArtifactText(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/text", { params: { id } }, options);
+}
+
+/** The base an upload replacing the document names: the token its live read answers, in the shape
+ *  `CreateArtifactInput.precondition` takes. An upload over a document the owner already holds
+ *  says which text it replaces, and the server checks it under the write's own lock. */
+export async function documentBase(
+  id: string,
+  options: ApiOptions = {}
+): Promise<{ readonly document: string }> {
+  const { token } = await getArtifactText(id, options);
+  if (token === undefined) {
+    throw new Error(`document ${id} answers no document token`);
+  }
+  return { document: token };
 }
 
 /** The blocks of the document's current version, each with the span of markdown it covers. */
@@ -1143,6 +1157,12 @@ export function putAgentState(
 /** The signed-in human's own conversation state with every session, unread counts included. */
 export function getAgentStates(options: ApiOptions = {}) {
   return get("/api/v1/me/agents/state", {}, options);
+}
+
+/** `PUT /api/v1/me/documents/{id}/read`: records `version` as the caller's last read version of the
+ *  document, the write the Spec tab makes when it shows that version (`useSpecMarks`). */
+export function putDocumentRead(id: string, version: number, options: ApiOptions = {}) {
+  return put("/api/v1/me/documents/{id}/read", { body: { version }, params: { id } }, options);
 }
 
 export function putIssueState(

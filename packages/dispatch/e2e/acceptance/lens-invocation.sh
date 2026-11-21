@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives the invocation of a lens end to end against a running server (dispatch://INFRA-1950's
-# c-lens-invocation, dispatch://INFRA-1950/spec#b-r-lens). As the person DEV_SIGNIN_LOGIN signs
+# Drives the invocation of a lens end to end against a running server (check c-lens-invocation,
+# spec requirement r-lens). As the person DEV_SIGNIN_LOGIN signs
 # in, it invokes three lenses on one spec - a pre-mortem, a trade-off analysis and a BOTEC - each
 # one lens node under the spec through its part_of tuple, with one has_kind tuple to a lens_kind
 # node of the catalogue, and reads them back through GET /api/v1/lenses in the order it invoked

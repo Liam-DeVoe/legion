@@ -30,7 +30,7 @@ const NO_ROWS: readonly ReferenceRow[] = [];
  * The words of the comments, messages and questions of the focused row's own issue, by their
  * ids (`issueItemWords`), while the list is open. They come from the reads the outline is drawn
  * from, under their own keys and with their own functions (`useIssueTree.ts`), watched and never
- * asked for, so they cost no request (R21); while a read has no answer its items have no words
+ * asked for, so they cost no request; while a read has no answer its items have no words
  * here. A row whose address names no issue has no items to read.
  */
 function useIssueItemWords(
@@ -62,13 +62,13 @@ function useIssueItemWords(
 }
 
 /**
- * What references the row the reader is on, in Details (dispatch://INFRA-1196 R14: the panel
- * holds "what references the issue or the focused node"; R19's table: "A block's 'Referenced
- * by' list" goes to "The focused node's facts in the panel").
+ * What references the row the reader is on, in Details: the panel holds what references the
+ * issue or the focused node, and a block's old 'Referenced by' list now stands in the focused
+ * node's facts.
  *
  * One link per node that points at the focused one, mentions included, each landing on that
  * node: a node of this issue opens focused in the outline, and a node of another issue or of a
- * project document opens where that address opens (R20, `buildReferencePath`). The outline
+ * project document opens where that address opens (`buildReferencePath`). The outline
  * already carries two of the three edges the old disclosure listed - what serves a node is its
  * spine and what needs it is a chip - and nothing on the page points back from a node to what
  * mentions it, so this is where a reader reads that.
@@ -77,11 +77,10 @@ function useIssueItemWords(
  * or a question of this issue by the first line of its words, beside its word, each reference in
  * that line named from the page's one batched read of what references point at
  * (`useKnownReferenceNames`), as the outline's row names it; and any other node by the word of its
- * tie or of its kind alone, with its issue and its time (D4 of
- * dispatch://INFRA-3948/artifact/plan-md). The read's excerpt is the node's stored text, the
- * markdown its author typed with every address it cites, and is drawn nowhere (R22).
+ * tie or of its kind alone, with its issue and its time. The read's excerpt is the node's stored
+ * text, the markdown its author typed with every address it cites, and is drawn nowhere.
  *
- * It costs no request on the first load and none per node (R21). Two gates hold that: the
+ * It costs no request on the first load and none per node. Two gates hold that: the
  * reader opens the list, and Details is open around it, which on the issue page it is not when
  * the page loads. The list closes again when the focus moves to another row, so a reader
  * walking the outline with Details open reads one node's references and not every node's. The
@@ -95,7 +94,7 @@ export function NodeReferences({
   reference,
 }: {
   /** The row the reader is on. The issue's own references are Details' References row, so the
-   *  issue draws no list of its own here and nothing is drawn twice (R14, c-one-panel). */
+   *  issue draws no list of its own here and nothing is drawn twice (c-one-panel). */
   node: Pick<FocusedNode, "id" | "type">;
   /** The focused node's own `dispatch://` address (`TreeNode.reference`); `undefined` for a
    *  node the model gives no address, which nothing can reference. */
@@ -104,7 +103,7 @@ export function NodeReferences({
   const drawer = useMarginDrawer();
   const panelId = useId();
   // Which row the reader opened the list on. The focus moving to another row closes it, and a
-  // reader coming back to the row finds it closed (R9): the row the list was opened on is let
+  // reader coming back to the row finds it closed: the row the list was opened on is let
   // go of as the focus leaves it, in the render that moves it.
   const [openedOn, setOpenedOn] = useState<string | undefined>(undefined);
   if (openedOn !== undefined && openedOn !== node.id) setOpenedOn(undefined);
@@ -115,13 +114,13 @@ export function NodeReferences({
   const reading = open && (drawer === undefined || drawer.open);
   const query = useQuery({ ...referencesQuery(addressed), enabled: reading });
   // The issue the focused row is of: a citing node of another issue, or of a project, says
-  // which, as the old panel's "Comment · LAY-9" did (R19); a citing item of this issue is named
+  // which, as the old panel's "Comment · LAY-9" did; a citing item of this issue is named
   // by its words.
   const here = addressed === undefined ? undefined : parseNodeReference(addressed);
   const issueKey = here !== undefined && "key" in here ? here.key : undefined;
   const itemWords = useIssueItemWords(issueKey, open);
   // The names the page's one batched read gave what its references point at, which a reference in
-  // a citing item's line is named by: a context the page publishes, so no request (R21).
+  // a citing item's line is named by: a context the page publishes, so no request.
   const names = useKnownReferenceNames();
   // An edge a newer build answers with, of a kind or to a node this page does not know, is left
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
@@ -136,7 +135,12 @@ export function NodeReferences({
   // The control of the list the focus was last on (`onFocus` below). Retry goes with its line
   // once the read it sent lands, under the reader's own press, and the focus would fall to the
   // page with it: it goes back to the list's own control instead, as Unpin in Pinned hands it on
-  // (`IssuePins.tsx`).
+  // (`IssuePins.tsx`). Retry is never disabled while it reads again, since Chromium drops the
+  // focus of a focused button that turns disabled to the page, so a read that fails again
+  // leaves the focus on it; it reads busy then, and a press while the list is read joins that
+  // read rather than ending it and sending another (`cancelRefetch: false`), which the query
+  // decides as the press lands: the render's `isFetching` can be older than a second press made
+  // before React draws the first one's read.
   const held = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (held.current === null || held.current.isConnected) return;
@@ -145,6 +149,12 @@ export function NodeReferences({
       toggle.current?.focus();
     }
   });
+  // The line stays while the read its Retry sent is out, even where the list held no answer: a
+  // fetch of a read that holds none clears its failure and puts it back to pending as it starts,
+  // which would take the line, and its Retry with the focus, away at the press. A failure it
+  // counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn afresh by
+  // that count, so a read that fails again is said again, in the same words.
+  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
   if (addressed === undefined) {
     return null;
   }
@@ -170,17 +180,18 @@ export function NodeReferences({
       </button>
       {open ? (
         <div id={panelId}>
-          {reading && query.isPending ? (
+          {reading && query.isPending && !failed ? (
             <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
               {ANSWER_LINES.references_loading}
             </p>
           ) : null}
-          {query.isError ? (
+          {failed ? (
             <div className="mt-1">
               <DetailsErrorLine
                 error={query.error}
+                failure={query.errorUpdateCount}
                 message={ANSWER_LINES.references_unreadable}
-                onRetry={() => void query.refetch()}
+                onRetry={() => void query.refetch({ cancelRefetch: false })}
                 retrying={query.isFetching}
               />
             </div>
@@ -200,7 +211,7 @@ export function NodeReferences({
                 // A comment, a message or a question of this issue is named by its first line;
                 // every other node, and an item whose read has not answered, by its word alone,
                 // which is then the link: its stored text is markup, and an address, a slug or
-                // an id is no name (R22, ruling 5).
+                // an id is no name.
                 const named = row.line !== "";
                 const elsewhere = row.source !== undefined && row.source !== issueKey;
                 const text = named ? row.line : (word ?? "");

@@ -15,14 +15,15 @@ import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
-/** The key `l`'s name in the list of keys (dispatch://INFRA-3945 R4). */
+/** The key `l`'s name in the list of keys. */
 const LABELS_CONTROL_NAME = "Edit labels";
 
 /**
- * Details' properties (dispatch://INFRA-1196 R13, R14): the one panel `IssueMarginPanel` draws,
- * filled into the shell's Details drawer.
+ * Details' properties: the one panel `IssueMarginPanel` draws, filled into the shell's Details
+ * drawer.
  *
  * The panel is drawn once for the life of the page into its own stage, an element this slot
  * holds, and the stage is appended to the host the drawer draws (`IssueMarginCards`). So the
@@ -53,8 +54,8 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     return element;
   });
   // The drawer's `aside` the stage sits in, where a control elsewhere on the page asks for a row
-  // of the panel (`IssueMarginPanel`): read as the host takes the stage, since the panel is drawn
-  // before any host holds it.
+  // of the panel and which Add watches (`IssueMarginPanel`): read as the host takes the stage,
+  // since the panel is drawn before any host holds it.
   const [drawerBox, setDrawerBox] = useState<HTMLElement | null>(null);
   // The host takes the stage as it is drawn, and lets go of it only while it still holds it.
   const holdPanel = useCallback(
@@ -73,8 +74,8 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
   const openDetailsAt = useOpenDetailsAt();
   useKeymap("issue", [
     {
-      // The labels' control is in Details' Labels row (dispatch://INFRA-1196 R13): the key
-      // opens Details there and presses it, as a reader does.
+      // The labels' control is in Details' Labels row: the key opens Details there and presses
+      // it, as a reader does.
       id: "labels",
       keys: "l",
       label: LABELS_CONTROL_NAME,
@@ -83,17 +84,21 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // The control, by the name it has for the issue as it is now (`labelsControlName`):
         // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
-        // from these same writes (decision 145 of the parts). Without the save's words the key
-        // found no control for the length of the save.
+        // from these same writes. While that save is out the control is busy, `aria-disabled` and
+        // refusing to open, so `l` acts only while the control takes a press (`usableControl`),
+        // which counts no refusal from Details being closed: the key opens Details at the row
+        // first. A closed Development is a refusal: it keeps the row on the page but `hidden`
+        // (`details-leaves.tsx`'s `PropertySection`), so `l` is off while Development is closed.
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,
           words: { ANSWER_LINES, CONTROL_LABELS },
         });
-        const control = document.querySelector(
-          `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+        return usableControl(
+          document.querySelector(
+            `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+          )
         );
-        return control instanceof HTMLButtonElement && !control.disabled;
       },
     },
   ]);

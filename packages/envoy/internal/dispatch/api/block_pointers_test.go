@@ -39,10 +39,14 @@ func claimMarkdown(id, serves string) string {
 	return ":::claim{#" + id + " serves=\"" + serves + "\"}\nIt holds.\n:::\n"
 }
 
+// uploadChecks uploads checks.md to the issue, naming the token of the version it replaces where
+// the issue already holds one, as every replacement does.
 func uploadChecks(t *testing.T, handler http.Handler, issueKey, content string) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
+	owner := "/api/v1/issues/" + issueKey + "/artifacts"
+	return dispatchRequest(t, handler, http.MethodPost, owner, map[string]any{
 		"name": "checks.md", "content": content,
+		"precondition": uploadBaseNamed(t, handler, owner, "checks.md"),
 	}, "alice")
 }
 
@@ -209,16 +213,18 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 // sibling tree is refused, a needs naming a plan task of a sibling tree among them, and a document
 // its project holds points only inside itself. A needs names a plan task of another document of
 // its own issue or of an issue above it (dispatch://INFRA-1253/spec R10). Every refusal names the
-// reference and writes nothing.
+// reference and writes nothing. The issues below the root each hold a requirement of their own,
+// so they are created unconverted, as the release before writes a child: a child born converted
+// under an issue whose requirements stand is a view, and its create with a requirement is refused.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
-	middle := createChildIssue(t, handler, "CORE", root.Key, requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n")
-	issue := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n")
-	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n")
+	middle := createDigestChild(t, handler, database, "CORE", "The middle", requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n", root.Key, true)
+	issue := createDigestChild(t, handler, database, "CORE", "The issue", requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n", middle.Key, true)
+	sibling := createDigestChild(t, handler, database, "CORE", "The sibling", requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n", middle.Key, true)
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
 	// A requirement of the issue's own spec, of its parent's and of its root's is named.
@@ -310,15 +316,25 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 		t.Fatalf("block_refs of the seeded spec = %#v, want t1's serves edge at %s", rows, target)
 	}
 	rootR1 := "dispatch://" + root.Key + "/spec#b-r1"
+	// The node the requirement's address names now: the root is born converted, so its spec is a
+	// fragment of its issue room and r1's node is the room's block, at the tree artifact's address
+	// (T12a and T17 of this branch's plan), which the pointer resolves to as it is indexed.
+	rootR1Node, err := refs.NamedBlock(context.Background(), database.Pool, root.Key+"/spec#r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootR1Node == root.Key+"/spec#r1" {
+		t.Fatalf("%s names the node at its own address, want the block of %s's issue room", rootR1, root.Key)
+	}
 
 	t.Run("a requirement of its parent's spec", func(t *testing.T) {
-		requireSeededServes(t, seed("A seeded child spec pointing into its parent", root.Key, rootR1), root.Key+"/spec#r1")
+		requireSeededServes(t, seed("A seeded child spec pointing into its parent", root.Key, rootR1), rootR1Node)
 	})
 
 	// The grandchild's parent is the pending one, so the root is reached only by the walk above
 	// it: this is the case that fails when that walk is dropped.
 	t.Run("a requirement of its grandparent's spec", func(t *testing.T) {
-		requireSeededServes(t, seed("Grandchild plan serving the oldest requirement", middle.Key, rootR1), root.Key+"/spec#r1")
+		requireSeededServes(t, seed("Grandchild plan serving the oldest requirement", middle.Key, rootR1), rootR1Node)
 	})
 
 	t.Run("a block no document holds", func(t *testing.T) {

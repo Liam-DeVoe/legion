@@ -1,9 +1,10 @@
 import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, apiErrorMessage, issuePatchRequest } from "../../api/client";
+import { ApiError, issuePatchRequest } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { BlockedByRefusalWords } from "./page-words";
 
@@ -15,9 +16,11 @@ export interface BlockedByRefusal {
 }
 
 export interface BlockedByWrite {
-  /** Why the last save failed, until the next save starts or the control forgets it
-   *  (`forgetRefusal`): one of the page's sentences for a refusal it knows, else what Dispatch
-   *  said, or the page's line for a save that never reached it. */
+  /** Why Dispatch refused the last save, until the next save starts or the control forgets it
+   *  (`forgetRefusal`): one of the page's sentences for a refusal it knows, else Dispatch's answer
+   *  (its message, or the client's line for an answer that carried none, as the page's other
+   *  controls mark it too); `undefined` for a save that ended without Dispatch's answer, which
+   *  `unansweredLine` says. */
   readonly error: BlockedByRefusal | string | undefined;
   /** Drops that refusal, so an editor opened again never draws the one before it. */
   readonly forgetRefusal: () => void;
@@ -25,6 +28,12 @@ export interface BlockedByWrite {
   /** Saves the issues this one waits on. `onSaved` runs on a landing and on nothing else, so
    *  the editor stays open over a refusal with the reader's list still in it. */
   readonly save: (keys: readonly string[]) => void;
+  /** The page's own line for the last save where it ended without Dispatch's answer, until the
+   *  next save starts or the control forgets it (`forgetRefusal`): the sentence of a save the
+   *  reader stopped, which may have been saved, or the line of a save that ended in an error of
+   *  the page's own; `undefined` otherwise. It is the page's words, where `error` may be
+   *  Dispatch's. */
+  readonly unansweredLine: string | undefined;
 }
 
 /**
@@ -61,6 +70,16 @@ export function blockedByRefusal(
  * open with the typed list in it; there is no Retry, because sending the same refused list again
  * would be refused again
  * (`packages/dispatch/AGENTS.md`: a field's refusal belongs at its control).
+ *
+ * A save the reader stopped is no refusal: it may have been saved. The editor stays open over it
+ * too, and says so in the words every surface says such a write in (`stoppedWriteNote`), with the
+ * field named as the editor's other lines name it. Its Save is a press of its own, a new write
+ * under a key of its own of what the box holds then, so the sentence says that and not that the
+ * stopped save is asked again under its key.
+ *
+ * A save that ends in an error of the page's own holds no word of Dispatch's, so the editor says
+ * the page's own line for it, as it says a stopped save's (`unansweredLine`), kept apart from
+ * what Dispatch said (`error`) for the control to mark each as whose words it is.
  */
 export function useIssueBlockedBy(issueKey: string, onSaved: () => void): BlockedByWrite {
   const queryClient = useQueryClient();
@@ -80,11 +99,16 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
       onSaved();
     },
   });
+  const stopped = write.error instanceof SendStoppedError;
+  // What ended the last save, unless the reader stopped it, which says its own sentence. Only an
+  // `ApiError` carries Dispatch's answer; any other error is the page's own and has no words a
+  // reader should be shown, so the page says its own line for it.
+  const ended = write.isError && !stopped ? write.error : null;
   return {
-    error: write.isError
-      ? (blockedByRefusal(write.error, issueKey, write.variables ?? []) ??
-        apiErrorMessage(write.error, `Could not save what ${issueKey} waits on.`))
-      : undefined,
+    error:
+      ended instanceof ApiError
+        ? (blockedByRefusal(ended, issueKey, write.variables ?? []) ?? ended.message)
+        : undefined,
     forgetRefusal: () => {
       if (write.isError) write.reset();
     },
@@ -92,5 +116,12 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     save: (keys) => {
       guard.guard(() => write.mutate(keys));
     },
+    unansweredLine: stopped
+      ? stoppedWriteNote(`what ${issueKey} waits on`, "saved", {
+          anew: "Saving again sends what the box holds now as a new write.",
+        })
+      : ended !== null && !(ended instanceof ApiError)
+        ? `Could not save what ${issueKey} waits on.`
+        : undefined,
   };
 }
