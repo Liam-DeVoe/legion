@@ -1286,6 +1286,12 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	// no event of it.
 	moved := issue(key, "acme/widgets", "todo", true, "", 1)
 	client.show(moved)
+	// A recovery pass that listed Dispatch before the move holds the issue on zeta/tools, and
+	// records it there if GitHub answers its reads, which serveAndRecover lets it do. The
+	// refresher runs one pass at a time, every 20 to 40 ms while zeta/tools is unread, so a
+	// listing after the move means every pass that listed before it has ended, its reads failed.
+	listed := client.listingCount()
+	testwait.Eventually(t, "a recovery listing after the move", func() bool { return client.listingCount() > listed })
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)

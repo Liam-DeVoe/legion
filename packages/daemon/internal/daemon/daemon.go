@@ -3068,9 +3068,11 @@ type source struct {
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
 // status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
-// close among them — asks for one read of the live records once its transaction commits (live,
-// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
-// state follow the records without a timer. live is nil where no refresher runs.
+// close among them — and each correction that moves a record onto another repository
+// (CorrectIssueRepository, where it wrote the row), which changes the repository a live record
+// names, asks for one read of the live records once its transaction commits (live, the workflow's
+// wakeLive, which holds one request at most), so the repository caches and legion state follow
+// the records without a timer. live is nil where no refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
@@ -3103,6 +3105,20 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	}
 	s.liveOnCommit(ctx)
 	return nil
+}
+
+// CorrectIssueRepository asks for the read only where it moved the record: the read is what takes
+// the repository the issue left out of the cache set and the live set once no other live record
+// names it. The follow after a boot moves records with this write alone, so without this the
+// repository left would stay cached, and read again by the refresher, until some other write
+// asked.
+func (s projectRecords) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error) {
+	corrected, err := s.Store.CorrectIssueRepository(ctx, tx, key, repo, defaultBranch, githubRepo, at)
+	if err != nil || !corrected {
+		return corrected, err
+	}
+	s.liveOnCommit(ctx)
+	return true, nil
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits

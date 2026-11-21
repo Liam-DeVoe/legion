@@ -1238,8 +1238,14 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	// preparation of the fact read of GitHub for the repository it moves onto
 	// (intake.Handover.RepositoryRead, RepositoryRefusal), as an event's is, and a hand-over that
 	// read nothing — the outbox's read of GitHub did not answer — corrects nothing, its change read
-	// again at the issue's next event or at the next boot.
-	if fact.ResolvedRepo != "" {
+	// again at the issue's next event or at the next boot. Nor does a hand-over whose Dispatch read
+	// is older than the record (intake.Handover.Seq below its LastDispatchSeq): the event the
+	// record took since carried Dispatch's newer resolution, which the engine acted on then, and
+	// the outbox's reads of GitHub between its Dispatch read and this apply leave time for a
+	// person's change of the repository to land first, which the older read would undo. The follow
+	// pass leaves a record a later event carried past its listing the same way (the daemon's
+	// followListing).
+	if fact.ResolvedRepo != "" && (fact.Seq == 0 || fact.Seq >= stored.LastDispatchSeq) {
 		change := intake.DispatchIssue{
 			Key:                   fact.Issue,
 			ResolvedRepo:          fact.ResolvedRepo,

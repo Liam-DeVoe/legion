@@ -238,6 +238,13 @@ type Handover struct {
 	// repository the issue is on, so admission corrects nothing and the record stands, as a
 	// retained event's missing repository leaves it (workflow.SettleRetainedRepository).
 	ResolvedRepo string
+	// Seq is the sequence Dispatch had run to at that read (dispatch.Issue.LastSeq), zero where
+	// nothing read one. A record that took a later event (record.Issue.LastDispatchSeq above it)
+	// holds a newer statement by Dispatch of the issue's repository than this read, so admission
+	// corrects nothing from it, as the daemon's follow pass leaves a record a later event carried
+	// past its listing: the outbox reads GitHub between its Dispatch read and this fact's apply,
+	// and a person's change of the repository applied in that time would otherwise be undone.
+	Seq int64
 	// RepositoryRead, RepositoryRefusal and RepositoryRefusalKind are what the outbox's
 	// preparation of the fact read of GitHub for ResolvedRepo where it names another repository
 	// than the record holds (the daemon's prepareHandover), as an event's preparation carries them

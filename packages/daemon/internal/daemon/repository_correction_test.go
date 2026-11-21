@@ -28,7 +28,8 @@ import (
 // no repository and so applies no change, and the follow after the boot (followListing), which
 // applies the changes the boot's listing left. Each runs over a real PostgreSQL, as every test of
 // this package does, and reads the record and the Dispatch messages the pass queued, never the
-// statement that writes the record, which has its own test (record's TestCorrectIssueRepository...).
+// statement that writes the record, which has its own test (record's
+// TestCorrectIssueRepository...).
 
 // correctionKey is the recorded issue every test here moves between repositories, and
 // correctionProject the Dispatch project it belongs to.
@@ -48,7 +49,7 @@ var correctionMoment = time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 // issue to: GitHub's name and default branch where both role Apps are installed on it, or the
 // refusal GitHub's answer made where one is not. A repository it does not name is one whose reads
 // GitHub did not answer, which carries neither, as does every fact no preparation read GitHub for:
-// the boot's listing and a hand-over.
+// the boot's listing.
 type correctionReadsOf map[string]correctionRead
 
 // correctionRig is one test's daemon: the records, what its preparations read of GitHub, and the

@@ -57,9 +57,16 @@ func seedHandOverFence(t *testing.T, pool *pgxpool.Pool, repo, branch string) {
 // prepareHandover), as testRepositories answers it.
 func consumeHandOver(t *testing.T, pool *pgxpool.Pool, admission *Admission, resolved string) {
 	t.Helper()
+	consumeHandOverRead(t, pool, admission, resolved, 0)
+}
+
+// consumeHandOverRead is consumeHandOver with the sequence Dispatch had run to at the outbox's
+// read (intake.Handover.Seq), 0 for none.
+func consumeHandOverRead(t *testing.T, pool *pgxpool.Pool, admission *Admission, resolved string, seq int64) {
+	t.Helper()
 	read := testRepositories.prepared(intake.DispatchIssue{ResolvedRepo: resolved})
 	if _, err := intake.ApplyFact(context.Background(), pool, "outbox", "handover:"+fencedChild+":1",
-		intake.Handover{Issue: fencedChild, Tree: fencedRoot, Generation: 1, ResolvedRepo: resolved,
+		intake.Handover{Issue: fencedChild, Tree: fencedRoot, Generation: 1, ResolvedRepo: resolved, Seq: seq,
 			RepositoryRead: read.RepositoryRead, RepositoryRefusal: read.RepositoryRefusal, RepositoryRefusalKind: read.RepositoryRefusalKind},
 		admission.engine, admission); err != nil {
 		t.Fatalf("consume the hand-over: %v", err)
@@ -166,5 +173,53 @@ func TestRepositoryCorrectionOfAHandOverOntoAnUnservedRepositoryWaitsOnTheRecord
 	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on acme/gadgets."
 	if messages := handOverMessages(t, pool); len(messages) != 1 || messages[0] != want {
 		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, want)
+	}
+}
+
+// A hand-over corrects nothing from a Dispatch read older than the record (intake.Handover.Seq
+// below record.Issue.LastDispatchSeq): the outbox reads GitHub between its read of Dispatch and the
+// fact's apply, and a person's change of the repository applied in that time is Dispatch's newer
+// word, which the old read would undo. Here the outbox read the child at sequence 5, then an event
+// at sequence 6 moved it onto sjawhar/legion and was applied first. The hand-over's read names
+// acme/tools, which would move the record back, or acme/gadgets, whose review App is not
+// installed, which would leave a change waiting and tell the issue so. Either way the record stays
+// on sjawhar/legion with nothing waiting and nothing said, and the child is still re-admitted.
+// Control: with that check deleted from admit's consumeHandover, both rows fail.
+func TestAHandOverWhoseReadIsOlderThanTheRecordCorrectsNothing(t *testing.T) {
+	for _, resolved := range []string{"acme/tools", "acme/gadgets"} {
+		t.Run(resolved, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			seedHandOverFence(t, pool, "acme/widgets", "main")
+			// The child is todo and handed to Legion already, as Dispatch shows it where the
+			// outbox makes no write, so a person's edit of it admits no orphan and the fence stays
+			// for the hand-over (admit's orphan).
+			child := issue(t, pool, fencedChild)
+			child.Status = "todo"
+			putIssue(t, pool, child)
+
+			apply(t, pool, admission, "repository-6", testRepositories.prepared(intake.DispatchIssue{Key: fencedChild, Seq: 6,
+				Type: "issue.updated", Status: "todo", Title: fencedChild, Parent: fencedRoot, Rank: "B", HandedOver: true,
+				ResolvedRepo: "sjawhar/legion"}), admission.engine)
+			if got := issue(t, pool, fencedChild); got.Repo != "sjawhar/legion" || got.LastDispatchSeq != 6 || handoverOf(t, pool, fencedChild) == nil {
+				t.Fatalf("after the event %s = %+v, fence %+v; want it on sjawhar/legion at sequence 6, its fence standing",
+					fencedChild, got, handoverOf(t, pool, fencedChild))
+			}
+
+			consumeHandOverRead(t, pool, admission, resolved, 5)
+
+			got := issue(t, pool, fencedChild)
+			assertReadmitted(t, got)
+			if got.Repo != "sjawhar/legion" || got.DefaultBranch != "main" || got.GitHubRepo != "sjawhar/legion" {
+				t.Fatalf("the re-admitted child is on %s at %s, spelled %s; want sjawhar/legion at main, where the newer event moved it",
+					got.Repo, got.DefaultBranch, got.GitHubRepo)
+			}
+			if got.RepoChange != nil {
+				t.Fatalf("the waiting change = %+v, want none: the hand-over's read is older than the record", got.RepoChange)
+			}
+			if messages := handOverMessages(t, pool); len(messages) != 0 {
+				t.Fatalf("the issue was told %q, want nothing", messages)
+			}
+		})
 	}
 }

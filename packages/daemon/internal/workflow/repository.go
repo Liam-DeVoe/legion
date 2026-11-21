@@ -81,10 +81,10 @@ func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, 
 // admission reads). A correction writes a repository Dispatch moved an issue onto, often long
 // after any read the daemon kept of it was made, so a kept read would move the record onto a
 // repository an App was uninstalled from since, or at a default branch renamed since. A fact whose
-// preparation made no such read — a boot listing's, which reads GitHub for no repository, a
-// hand-over's, which is not prepared, or one whose reads GitHub did not answer — is Unread:
-// nothing is written and nothing is said, and the issue's next event, or the follow after the
-// next boot, reads GitHub again.
+// preparation made no such read — a boot listing's, which reads GitHub for no repository, or an
+// event's or a hand-over's whose preparation's reads GitHub did not answer — is Unread: nothing is
+// written and nothing is said, and the issue's next event, or the follow after the next boot,
+// reads GitHub again.
 func (e *Engine) correctionResolution(fact intake.DispatchIssue) (Resolution, error) {
 	if fact.RepositoryRefusal != "" || fact.ResolvedRepo == "" {
 		return e.ResolveIssueRepository(fact)

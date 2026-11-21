@@ -568,13 +568,14 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // not answer, and a repository GitHub hangs on is read again later rather than holding up the
 // rest. It bounds each installation read (readInstallations), each webhook App check
 // (checkWebhookAppOn), each read of a repository's name and default branch (readName) that a
-// preparation makes (prepareName, whichever caller prepares: the refresher, a launch or an
-// admission) or the rename pass makes of a configured pair's `to` (renameTransfer), an
+// preparation makes (prepareName, whichever caller prepares: the refresher, a launch, an admission
+// or a correction) or the rename pass makes of a configured pair's `to` (renameTransfer), an
 // admission's read again of the default branch of a repository an entry records issues on
 // (prepareUnrecorded), and each read of a record's repository for its backfill (backfillRead).
-// Nothing bounds a preparation as a whole: repositoryReads repositories are prepared at once, so a
-// preparation of n repositories, four reads each, takes at most ceil(n / repositoryReads) × 4 of
-// these.
+// Nothing bounds the refresher's preparation as a whole: it prepares repositoryReads repositories
+// at once, so its preparation of n repositories, four reads each, takes at most
+// ceil(n / repositoryReads) × 4 of these. The follow pass bounds all its reads together
+// (appMintAttempt, followListing), which is why it reads each repository once (readCorrection).
 var installReadAttempt = 15 * time.Second
 
 // repositoryReads is how many repositories the refresher prepares at once.
@@ -949,8 +950,7 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 
 // refreshRepositories is the refresher: one goroutine that runs seven jobs until ctx ends, each
 // started by its own cause, and none of them a read of a repository mapping, which Dispatch
-// keeps for no daemon any longer: the one read of Dispatch among them is the seventh's, of the
-// issues' own resolutions.
+// keeps for no daemon any longer.
 //
 //  1. The boot's preparation of the repositories the records name (prepareAtStart), once, as it
 //     starts.
@@ -992,9 +992,9 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 	w.prepareAtStart(ctx)
 	var reread, recovery, heard, live, follow retrying
 	liveFailed := false
-	// What the last follow pass its bound cut short left unread (followLeft), which only this
+	// What the last follow pass its bound cut short left unread (followRecorded), which only this
 	// loop reaches, so it needs no lock.
-	var rest followLeft
+	var rest map[string]bool
 	for {
 		now := time.Now()
 		bad := w.badAnswers()
@@ -2625,13 +2625,13 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 	return fact, nil
 }
 
-// prepareListed readies a todo issue of a listing — the boot's (reconcile, boot set) or a
-// recovery's (recoverRepositories) — as prepareRepository readies an event's, from the listing the
-// daemon has just read: an issue records holds a record of takes that record's repository, and an
-// unrecorded one's repository is readied as an event's is (prepareUnrecorded), with no read of
-// Dispatch's view. Its Dispatch chain
-// is read up walk, the one cache over the listing (listingAncestry), and no other root's is read
-// again: the listing holds every queued root's own todo.
+// prepareListed readies an issue of a listing — the boot's (reconcile, boot set) or a recovery's
+// (recoverRepositories) — as prepareRepository readies an event's, from the listing the daemon has
+// just read: a recorded issue, whatever its status, as a recorded issue's event is
+// (prepareRecorded), keeping the repository the listing resolves it to, and an unrecorded todo's
+// repository as an unrecorded issue's event's is (prepareUnrecorded), with no read of Dispatch's
+// view. Its Dispatch chain is read up walk, the one cache over the listing (listingAncestry), and
+// no other root's is read again: the listing holds every queued root's own todo.
 //
 // The boot's listing reads GitHub for no repository. It runs inside the boot's
 // bounded reconcile (readinessAttempt(workflow.reconcile, bootTimeout, …), 30 s), and a
@@ -2641,7 +2641,8 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 // DispatchTarget. Such a repository is left unread instead (leaveForRecovery), and the
 // refresher's recovery, which runs as soon as the boot is over, reads it outside any boot bound
 // and takes the issue from its own listing (recoverRepositories): the issue waits, and is not
-// dropped.
+// dropped. A recorded issue the listing resolves to another repository is left the same way, to
+// the follow the boot asks for (prepareRecorded), since the recovery takes no recorded issue.
 func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]*record.Issue, walk ancestry, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
 	recorded := records[issue.Key]
 	if recorded != nil {
@@ -2824,14 +2825,16 @@ func (w *workflowRuntime) correctionReads(ctx context.Context, key, resolved str
 // from Dispatch names another repository than the record holds, the fact carries what GitHub
 // answers for that repository now (correctionReads), which the correction admission's hand-over
 // makes is written from (admit's consumeHandover); one that names the record's repository, or
-// none, reads nothing. It runs outside the fact lock, as every preparation does, since the fact's
-// apply performs no I/O.
+// none, reads nothing, and so does one whose Dispatch read is older than the record, which that
+// correction leaves as it stands. It runs outside the fact lock, as every preparation does, since
+// the fact's apply performs no I/O.
 func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.Handover) (intake.Handover, error) {
 	if handover.ResolvedRepo == "" {
 		return handover, nil
 	}
 	recorded, err := w.recordOf(ctx, handover.Issue)
-	if err != nil || recorded == nil || w.repositories.same(handover.ResolvedRepo, recorded.Repo) {
+	if err != nil || recorded == nil || w.repositories.same(handover.ResolvedRepo, recorded.Repo) ||
+		handover.Seq > 0 && handover.Seq < recorded.LastDispatchSeq {
 		return handover, err
 	}
 	answer := w.correctionReads(ctx, handover.Issue, handover.ResolvedRepo)
@@ -2855,20 +2858,19 @@ func (w *workflowRuntime) requestFollow() {
 // the refresher runs it again on its backoff. The pass reads within one bound (appMintAttempt)
 // whatever number of issues it moves, which is why it reads GitHub once per repository
 // (readCorrection). A pass that bound cuts short commits the corrections it prepared before the
-// bound ended and returns every issue it did not prepare (followLeft), which its caller hands to
-// the next pass as left: the follow stays owed, and the next pass for the same follows reads those
-// issues alone, so each pass moves on from where the last stopped. A follow asked for since is a
-// new boot's listing, whose pass reads every issue again.
-func (w *workflowRuntime) followRecorded(ctx context.Context, left followLeft) followLeft {
+// bound ended and returns every recorded issue it did not prepare, by key, which its caller hands
+// to the next pass as left: the follow stays owed, and the next pass reads those issues alone, so
+// each pass moves on from where the last stopped. The refresher keeps left in a variable of its
+// own loop (refreshRepositories), so nothing but that loop reaches it and it needs no lock. It
+// carries no count of the follows its pass was made for: the boot's listing alone asks for a
+// follow (requestFollow), and the boot's reconcile is over before the refresher starts, so every
+// pass of one process serves the same follows.
+func (w *workflowRuntime) followRecorded(ctx context.Context, left map[string]bool) map[string]bool {
 	follows := w.followRequested.Load()
 	if follows <= w.followApplied.Load() {
 		return left
 	}
-	var only map[string]bool
-	if left.follows == follows {
-		only = left.issues
-	}
-	unread, err := w.followListing(ctx, only)
+	unread, err := w.followListing(ctx, left)
 	if err != nil {
 		if ctx.Err() == nil {
 			w.log.Warn("workflow: the recorded issues did not follow Dispatch's resolution of them; reading Dispatch's listing again",
@@ -2879,20 +2881,10 @@ func (w *workflowRuntime) followRecorded(ctx context.Context, left followLeft) f
 	if len(unread) > 0 {
 		w.log.Warn("workflow: the follow of Dispatch's resolution reached its bound before it read every recorded issue; "+
 			"it wrote what it read, and its next pass reads the rest", "left", len(unread), "bound", appMintAttempt.String())
-		return followLeft{follows: follows, issues: unread}
+		return unread
 	}
 	w.followApplied.Store(follows)
-	return followLeft{}
-}
-
-// followLeft is what a follow pass its bound cut short left unread (followRecorded): each
-// recorded issue, by key, it did not prepare, and the count of follows that pass was made for,
-// which the next pass for that same count reads alone. The refresher keeps it in a variable of
-// its own loop (refreshRepositories) and hands it to each pass, so nothing but that loop can
-// reach it and it needs no lock.
-type followLeft struct {
-	follows uint64
-	issues  map[string]bool
+	return nil
 }
 
 // followReasons is the follow still owed, as the refresher logs what it waits on: one a boot's
@@ -2919,8 +2911,8 @@ func (w *workflowRuntime) followReasons() []string {
 // and every one after it are left owed (left) for the next pass to read. The corrections the pass
 // prepared before, whose reads GitHub answered, are written all the same; the write is bounded
 // on its own (appMintAttempt), since the reads' bound has ended by then. With only set (the
-// issues of the followLeft followRecorded was handed), the pass prepares those issues alone; nil
-// prepares every one.
+// issues a pass its bound cut short left, which followRecorded hands on), the pass prepares those
+// issues alone; nil prepares every one.
 //
 // The corrections are one transaction under the lock every fact applies under, as the boot's
 // reconcile is, and the records are read again inside it, in one read before the first
@@ -2929,8 +2921,11 @@ func (w *workflowRuntime) followReasons() []string {
 // because each correction writes its own issue's row alone, and what a correction reads of a
 // record (its repository, the change waiting on it, its last Dispatch sequence) is written by
 // facts, which apply under that same lock. The pod an issue's correction leaves on the repository
-// it left is replaced by the ordinary per-issue update round, which reads the record. The records
-// are read first, so a project the workflow records no issue of asks Dispatch for no listing.
+// it left is replaced by the ordinary per-issue update round, which reads the record, and each
+// correction asks for a read of the live records at the commit (projectRecords'
+// CorrectIssueRepository), which takes that repository out of the cache set and the live set once
+// no other live record names it. The records are read first, so a project the workflow records no
+// issue of asks Dispatch for no listing.
 func (w *workflowRuntime) followListing(ctx context.Context, only map[string]bool) (left map[string]bool, err error) {
 	reading, cancelReads := context.WithTimeout(ctx, appMintAttempt)
 	defer cancelReads()
@@ -3250,7 +3245,8 @@ func (w *workflowRuntime) prepareRead(ctx context.Context, issue intake.Dispatch
 	if err != nil {
 		// The refusal is posted on the issue (intake.DispatchIssue.RepositoryRefusal), and the
 		// error quotes what Dispatch resolved the issue to, so it is kept as a far side's text is.
-		issue.RepositoryRefusal = storetext.FarSideError(err.Error())
+		// Its kind says no App can be installed on such a name, so a person is asked to set one.
+		issue.RepositoryRefusal, issue.RepositoryRefusalKind = storetext.FarSideError(err.Error()), intake.RefusedName
 		return issue, nil
 	}
 	if boot {
@@ -3279,7 +3275,7 @@ func (w *workflowRuntime) prepareRead(ctx context.Context, issue intake.Dispatch
 	switch {
 	case len(answer.missing) != 0:
 		w.readAnswered(repo)
-		issue.RepositoryRefusal = refusal
+		issue.RepositoryRefusal, issue.RepositoryRefusalKind = refusal, intake.RefusedByGitHub
 		return issue, nil
 	case answer.limited != nil:
 		wait := answer.limited.wait

@@ -672,11 +672,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// A pod whose claims record shapedAnswersContract, the contract from which every build
 		// states its contract in the header. Such a pod is in no pod reading: podContracts leaves
 		// out a claim at shapedAnswersContract or above. So the reading falls through to the body
-		// this daemon writes, which carries every key, the repositories block repositoriesLiveContract
-		// writes and the four of a repository correction among them, and the row names
-		// DaemonAPIVersion. repositoriesLiveContract and repositoryCorrectionContract stand above
-		// shapedAnswersContract, so a caller between them is served their bands by its header
-		// alone (contract_shapes_test.go).
+		// this daemon writes, which carries every key, the repositories block
+		// repositoriesLiveContract writes and the four of a repository correction among them, and
+		// the row names DaemonAPIVersion. repositoriesLiveContract and repositoryCorrectionContract
+		// stand above shapedAnswersContract, so a caller between them is served their bands by its
+		// header alone (contract_shapes_test.go).
 		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true},

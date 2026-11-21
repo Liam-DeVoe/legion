@@ -6,15 +6,17 @@ package daemon
 // Dispatch onto another repository by its own reads at that preparation (prepareRecorded,
 // correctionReads), always, whatever the repository state keeps (repositories.recordRepository),
 // and once per repository in a follow pass (readCorrection): both Apps installed, the correction
-// applies at the name and default branch GitHub answered then (intake.DispatchIssue.RepositoryRead)
-// through the one writer (workflow.Engine.ApplyRepositoryChange, record.Store.CorrectIssueRepository);
-// a role App not installed is a refusal the preparation carries on the fact
-// (intake.DispatchIssue.RepositoryRefusal), and the change waits on the record with it; a read GitHub
-// did not answer, a read the preparation's bound cut short, or a fact no preparation read GitHub
-// for, applies nothing and says nothing. A waiting change is applied at the issue's next event or
-// at the next boot, whatever the repository: nothing reads it again in between. These tests run the
-// daemon's own preparation and handlers over a real PostgreSQL and NATS, with a GitHub that names
-// strangerRepo as strangerNamed, a repository no record names before a test's own.
+// applies at the name and default branch GitHub answered then
+// (intake.DispatchIssue.RepositoryRead) through the one writer
+// (workflow.Engine.ApplyRepositoryChange, record.Store.CorrectIssueRepository); a role App not
+// installed is a refusal the preparation carries on the fact
+// (intake.DispatchIssue.RepositoryRefusal), and the change waits on the record with it; a read
+// GitHub did not answer, a read the preparation's bound cut short, or a fact no preparation read
+// GitHub for, applies nothing and says nothing. A waiting change is applied at the issue's next
+// event or at the next boot, whatever the repository: nothing reads it again in between. These
+// tests run the daemon's own preparation and handlers over a real PostgreSQL and NATS, with a
+// GitHub that names strangerRepo as strangerNamed, a repository no record names before a test's
+// own.
 
 import (
 	"context"
@@ -219,8 +221,9 @@ func TestRepositoryCorrectionWaitsWhileARoleAppIsNotInstalledAndTheNextEventAppl
 // keeps that read at trunk first, then GitHub's answer changes, and the issue is corrected. A
 // default branch renamed since is the one the record takes; an App uninstalled since leaves the
 // change waiting with GitHub's reason and the record where it was, as for an App never installed;
-// a read GitHub does not answer writes nothing; and a hand-over, whose preparation
-// (prepareHandover) reads GitHub at the hand-over, takes the renamed branch as an event does.
+// a read GitHub does not answer writes nothing, while its event is applied all the same, the
+// record taking its sequence; and a hand-over, whose preparation (prepareHandover) reads GitHub
+// at the hand-over, takes the renamed branch as an event does.
 func TestRepositoryCorrectionWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
 	const key = "LEGION-1041"
 	for _, tc := range []struct {
@@ -234,6 +237,10 @@ func TestRepositoryCorrectionWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
 		branch string
 		waits  *record.RepositoryChange
 		note   string
+		// seq is the Dispatch sequence the record holds once the row's event is applied, 0 where
+		// the row does not read it: an event whose correction writes nothing is applied all the
+		// same, so a redelivery of it stops at the sequence fence.
+		seq int64
 	}{
 		{name: "a default branch renamed since the read was kept",
 			change:  func(github *changingGitHub, _ *installations) { github.rename("release/v2") },
@@ -248,7 +255,8 @@ func TestRepositoryCorrectionWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
 			change: func(_ *changingGitHub, installs *installations) {
 				installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
 			},
-			correct: deliverCorrection},
+			correct: deliverCorrection,
+			seq:     2},
 		{name: "a hand-over the outbox prepares",
 			change:  func(github *changingGitHub, _ *installations) { github.rename("release/v2") },
 			correct: handOverCorrection,
@@ -274,6 +282,10 @@ func TestRepositoryCorrectionWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
 			notes := repositoryNotes(t, w, key)
 			if tc.note == "" && len(notes) != 0 || tc.note != "" && (len(notes) != 1 || notes[0] != tc.note) {
 				t.Fatalf("notes on %s = %q, want %q", key, notes, tc.note)
+			}
+			if tc.seq != 0 && got.LastDispatchSeq != tc.seq {
+				t.Fatalf("%s is at Dispatch sequence %d, want %d: the event applies though its correction writes nothing",
+					key, got.LastDispatchSeq, tc.seq)
 			}
 		})
 	}
@@ -553,4 +565,71 @@ func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testin
 	if notes := repositoryNotes(t, w, refused); len(notes) != 1 {
 		t.Fatalf("notes on %s = %q, want it told once", refused, notes)
 	}
+}
+
+// A follow pass that moves two recorded issues onto a repository a role App is not installed on
+// reads that repository once and gives both issues GitHub's refusal from that one read
+// (followReads): the refusal is GitHub's answer for the repository, not for either issue. Each
+// issue keeps its record's repository with the change waiting on it, and each is told once why.
+func TestAFollowMovingTwoIssuesOntoARepositoryMissingAnAppSharesItsRefusal(t *testing.T) {
+	installs := &installations{}
+	installs.setMissing(true, "review "+strangerRepo)
+	w, client, github := changingRig(t, installs)
+	keys := []string{"LEGION-1091", "LEGION-1092"}
+	for i, key := range keys {
+		recordCorrectionRoot(t, w.pool, w.records, key, key, i)
+		client.show(issue(key, strangerRepo, "in_progress", true, "", 1))
+	}
+
+	w.requestFollow()
+	follows := w.followRequested.Load()
+	testwait.Eventually(t, "the follow applied", func() bool { return w.followApplied.Load() >= follows })
+	want := record.RepositoryChange{Pending: strangerRepo, Reason: "the review App is not installed on " + strangerRepo}
+	for _, key := range keys {
+		if got := onWidgets(t, w, key); got.RepoChange == nil || *got.RepoChange != want {
+			t.Fatalf("the waiting change of %s = %+v, want %+v", key, got.RepoChange, want)
+		}
+		if notes := repositoryNotes(t, w, key); len(notes) != 1 || notes[0] != waitingNote("review") {
+			t.Fatalf("notes on %s = %q, want it told once, saying %q", key, notes, waitingNote("review"))
+		}
+	}
+	for _, role := range []string{"implement " + strangerRepo, "review " + strangerRepo} {
+		if reads := installs.reads(role); reads != 1 {
+			t.Errorf("the follow made %d reads of %q for %d issues, want one: the second issue takes the first one's refusal",
+				reads, role, len(keys))
+		}
+	}
+	if reads := github.reads.Load(); reads != 1 {
+		t.Errorf("the follow read %s's name and default branch %d times for %d issues, want once", strangerRepo, reads, len(keys))
+	}
+}
+
+// A follow that moves the last live record off a repository asks for a read of the live records
+// at its commit (projectRecords' CorrectIssueRepository, refreshLive), as the rename pass does
+// after its writes: the repository the issue left leaves the cache set and the live set, so its
+// cache retires and the refresher stops reading it. The follow writes no other record that would
+// ask. The record starts on answeredRepo, which no anchor names, moved there through the bare
+// store, which asks for nothing. Control: with the correction asking for no read, the cache set
+// keeps answeredNamed.
+func TestAFollowThatMovesARecordOffARepositoryReadsTheLiveRecordsAgain(t *testing.T) {
+	w, client, _ := changingRig(t, &installations{})
+	const key = "LEGION-1095"
+	bare := w.records.(projectRecords).Store
+	recordCorrectionRoot(t, w.pool, bare, key, key, 0)
+	correctRecord(t, w.pool, bare, key, answeredNamed, "main", time.Now().UTC())
+	cached := func(repo string) bool { return slices.Contains(repositoryNames(w.cacheRepositories()), repo) }
+	w.wakeLive()
+	testwait.Eventually(t, answeredNamed+" in the cache set before the follow", func() bool { return cached(answeredNamed) })
+	client.show(issue(key, strangerRepo, "in_progress", true, "", 1))
+
+	w.requestFollow()
+	follows := w.followRequested.Load()
+	testwait.Eventually(t, "the follow applied", func() bool { return w.followApplied.Load() >= follows })
+	if got := recordedIssue(t, w, key); got == nil || got.Repo != strangerNamed {
+		t.Fatalf("%s = %+v, want it moved onto %s by the follow", key, got, strangerNamed)
+	}
+	left := ghrepo.MustParse(answeredNamed)
+	testwait.Eventually(t, answeredNamed+" out of the cache set and the live set, and "+strangerNamed+" cached", func() bool {
+		return !cached(answeredNamed) && !w.repositories.isLive(left) && cached(strangerNamed)
+	})
 }

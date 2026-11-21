@@ -29,7 +29,7 @@ func recordedIssueRuntime(t *testing.T, github string, installs *installations) 
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.fill(ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools"))
 	client := &detailDispatch{resolved: map[string]string{"LEGION-301": "zeta/tools"}}
-	return &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, installs: installs,
+	return &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, installs: installs, log: quietLogger(),
 		defaultBranches: newDefaultBranches(roleTokens{}, repos, github, defaultBranchTTL, time.Now)}, client
 }
 

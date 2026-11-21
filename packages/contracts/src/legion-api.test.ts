@@ -2683,9 +2683,11 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
-  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
+  // above 199: the repositories block's, at 202, and the repository correction's
+  // (dispatch://INFRA-3136), at the daemon's own contract, which serves each issue without its
+  // `repoBefore`, `repoCorrectedAt`, `repoChangePending` and `repoChangeReason`. So the golden's
+  // issues are compared with those four keys taken off, and nothing else beside the block moves.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2702,7 +2704,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  const correctionKeys = ["repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"];
+  const issues = isJsonObject(rest.issues) ? rest.issues : {};
+  const withoutCorrection = Object.fromEntries(
+    Object.entries(issues).map(([key, issue]) => [
+      key,
+      isJsonObject(issue)
+        ? Object.fromEntries(
+            Object.entries(issue).filter(([field]) => !correctionKeys.includes(field))
+          )
+        : issue,
+    ])
+  );
+  expect(narrowedRest).toEqual({ ...rest, issues: withoutCorrection });
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,

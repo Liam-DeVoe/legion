@@ -1673,8 +1673,8 @@ why the daemon has not applied it, the `<why>` of the line above.
 Install both Apps on it, as for any repository the daemon leaves out
 ([The daemon will not start](/legion/legion/troubleshooting/#the-daemon-will-not-start)), or set
 the issue's repository to one they are installed on.
-When you install a missing App, nothing tells the daemon, and it does not read a missing App again
-on a timer.
+When you install a missing App, nothing tells the daemon, and nothing it reads again on a timer
+moves the issue.
 The daemon uses no read kept from an earlier pass to write the correction: it reads both Apps, the
 repository's name and its default branch from GitHub afresh at the issue's preparation, so the
 issue moves at the issue's next event from Dispatch or at the daemon's next boot.

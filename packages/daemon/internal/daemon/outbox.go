@@ -1273,14 +1273,14 @@ func (handOverRule) firstAttempt(ctx context.Context, r *outbox, row record.Outb
 		return false, err
 	}
 	if issue.Status == payload.Status && issue.HandedOver {
-		return false, r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
+		return false, r.consumeHandover(ctx, row, payload, issue)
 	}
 	// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
 	// label added when the child lacks it, so a person's move since that read stands.
 	if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
 		return false, fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
 	}
-	return false, r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
+	return false, r.consumeHandover(ctx, row, payload, issue)
 }
 
 // stillWanted is unreachable and says so: a hand-over's write is made by its own first attempt,
@@ -1569,16 +1569,19 @@ func recordRefused(err error) bool {
 // sequence fence. The fact is idempotent (admit's consumeHandover reads the fence it deletes), so
 // the event, or this row's retry after a failure here, changes nothing more.
 //
-// resolved is the repository Dispatch resolved the issue to at the read the status executor made
-// of it before any of this, which the fact carries so the re-admission lands on the repository
-// Dispatch resolves the issue to now (admit's consumeHandover): no event and no PATCH of this
-// door says the repository changed, so without it the new generation would run on the repository
-// the record holds until the issue's next event or the next boot. A read that answered no
-// repository carries none, and corrects nothing. The fact is prepared first (prepareHandover),
-// outside the fact lock, so a resolution that moves the issue carries GitHub's read of the
-// repository it moves onto, which the correction writes and nothing the daemon kept.
-func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, resolved string) error {
-	fact := intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger, ResolvedRepo: resolved}
+// read is the issue as the status executor read it from Dispatch before any of this. The fact
+// carries its resolution, so the re-admission lands on the repository Dispatch resolves the issue
+// to now (admit's consumeHandover): no event and no PATCH of this door says the repository
+// changed, so without it the new generation would run on the repository the record holds until
+// the issue's next event or the next boot. A read that answered no repository carries none, and
+// corrects nothing. The fact carries the read's sequence too, so a record that took a later event
+// meanwhile, a person's change of the repository among them, is not corrected back to this read.
+// The fact is prepared first (prepareHandover), outside the fact lock, so a resolution that moves
+// the issue carries GitHub's read of the repository it moves onto, which the correction writes
+// and nothing the daemon kept.
+func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) error {
+	fact := intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger,
+		ResolvedRepo: read.ResolvedRepo, Seq: read.LastSeq}
 	if r.prepareHandover != nil {
 		prepared, err := r.prepareHandover(ctx, fact)
 		if err != nil {
