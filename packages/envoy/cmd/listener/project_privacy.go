@@ -624,13 +624,12 @@ func sendProject(requested string, sender, target []string) string {
 	return contracts.NoProject
 }
 
-// logPayload is the payload_summary attribute of a log line about a message, or none: in the
-// all-public mode always, as before the modes existed; in the required mode only when the privacy
-// answer the line's decision read lists no private project, so no line carries a body where a
-// private project is possible, and a line made with no read (decision nil, or one that read
-// nothing) carries none.
-func logPayload(privacy *listenerPrivacy, decision *scopeDecision, summary string) []slog.Attr {
-	if privacy.isRequired() && (decision == nil || !decision.read || decision.err != nil || !decision.set.none()) {
+// logPayload is the payload_summary attribute of a log line about a message (the "listener send"
+// and "listener publish" records, and "listener received"), or none: in the all-public mode always,
+// as before the modes existed; in the required mode never, so no line carries a comment's or a
+// direct message's text whatever the message's project.
+func logPayload(privacy *listenerPrivacy, summary string) []slog.Attr {
+	if privacy.isRequired() {
 		return nil
 	}
 	return []slog.Attr{slog.String("payload_summary", summary)}

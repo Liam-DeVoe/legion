@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -11,10 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-const logContentMarker = "the-body-a-private-project-must-not-log"
+const logContentMarker = "the-body-no-required-mode-line-logs"
 
-// recordLine writes one request record of a message whose payload summary holds the marker, under
-// privacy and decision, and answers the line it wrote.
+// recordLine writes one "listener send" record of a message whose payload summary holds the
+// marker, under privacy and decision, and answers the line it wrote.
 func recordLine(t *testing.T, privacy *listenerPrivacy, decision *scopeDecision) string {
 	t.Helper()
 	var out bytes.Buffer
@@ -25,13 +26,19 @@ func recordLine(t *testing.T, privacy *listenerPrivacy, decision *scopeDecision)
 	return out.String()
 }
 
-// TestNoListenerLogLineCarriesContentWithPrivateProjects: in the required mode a send's or a
-// publish's line carries the message's payload_summary only when the privacy answer its own
-// decision read lists no private project, and the "listener received" line, which makes no
-// decision, carries none; a line that keeps the event id, source and outcome is written either
-// way. In the all-public mode every line carries it, as at the merge base. Controls: the same line
-// under an answer listing no private project carries the body, so the row fails for the private
-// project it names.
+// receivedLine writes the "listener received" line of the same message under privacy, as the
+// durable delivery handler writes it, and answers it.
+func receivedLine(privacy *listenerPrivacy) string {
+	var out bytes.Buffer
+	received := []slog.Attr{slog.String("source", "agent"), slog.String("event_id", "evt-1")}
+	logging.NewWithWriter("test-machine", &out).LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(privacy, logContentMarker)...)...)
+	return out.String()
+}
+
+// TestNoListenerLogLineCarriesContentWithPrivateProjects: in the required mode neither the
+// "listener send" record nor the "listener received" line writes a message's text, whatever the
+// privacy answer lists, private projects or none; each still writes the event id. Control: in the
+// all-public mode both write it, as at the merge base, so the row fails for the mode it names.
 func TestNoListenerLogLineCarriesContentWithPrivateProjects(t *testing.T) {
 	source := newPrivacySource(t, privacyListingPRIV)
 	required := &listenerPrivacy{required: true, counters: newPrivacyCounters(metrics.New())}
@@ -41,25 +48,17 @@ func TestNoListenerLogLineCarriesContentWithPrivateProjects(t *testing.T) {
 		_, _ = decision.answer()
 		return decision
 	}
-
-	if line := recordLine(t, required, decided()); strings.Contains(line, logContentMarker) || !strings.Contains(line, `"event_id":"evt-1"`) {
-		t.Errorf("with PRIV private the send's line is %s; want the event id and no body", line)
+	for _, answer := range []string{privacyListingPRIV, privacyNone} {
+		source.answer(answer)
+		for name, line := range map[string]string{"listener send": recordLine(t, required, decided()), "listener received": receivedLine(required)} {
+			if strings.Contains(line, logContentMarker) || !strings.Contains(line, `"event_id":"evt-1"`) {
+				t.Errorf("required mode, answer %s: the %s line is %s; want the event id and no text", answer, name, line)
+			}
+		}
 	}
-	if line := recordLine(t, required, nil); strings.Contains(line, logContentMarker) {
-		t.Errorf("a required-mode line that made no decision carries the body: %s", line)
-	}
-	if attrs := logPayload(required, nil, logContentMarker); len(attrs) != 0 {
-		t.Errorf("the listener received line's attributes in the required mode are %v, want none", attrs)
-	}
-
-	source.answer(privacyNone)
-	if line := recordLine(t, required, decided()); !strings.Contains(line, logContentMarker) {
-		t.Errorf("control: with no private project the send's line is %s; want the body", line)
-	}
-	if line := recordLine(t, nil, nil); !strings.Contains(line, logContentMarker) {
-		t.Errorf("all-public: the send's line is %s; want the body, as at the merge base", line)
-	}
-	if attrs := logPayload(nil, nil, logContentMarker); len(attrs) != 1 {
-		t.Errorf("all-public: the listener received line's attributes are %v, want the body", attrs)
+	for name, line := range map[string]string{"listener send": recordLine(t, nil, nil), "listener received": receivedLine(nil)} {
+		if !strings.Contains(line, logContentMarker) {
+			t.Errorf("control, all-public: the %s line is %s; want the text, as at the merge base", name, line)
+		}
 	}
 }

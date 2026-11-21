@@ -45,12 +45,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// relayHeaderGapReason names why a frame carries Envoy-Gap where the reason is not the stream's
-// own retention: privacyHoldGap for frames the privacy hold dropped.
-const (
-	relayHeaderGapReason = "Envoy-Gap-Reason"
-	privacyHoldGap       = "privacy_hold"
-)
+// privacyHoldGap is relayHeaderGapReason's value for frames the privacy hold dropped.
+const privacyHoldGap = "privacy_hold"
 
 // heldMarkerTimeout bounds one write of a session's held marker.
 const heldMarkerTimeout = 2 * time.Second

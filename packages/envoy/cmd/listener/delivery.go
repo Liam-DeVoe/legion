@@ -470,7 +470,7 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 		// The line carries the message's body only where logPayload allows it: in the required
 		// privacy mode this line makes no privacy decision, so it carries none.
 		received := []slog.Attr{slog.String("source", item.Source), slog.String("source_session", item.SourceSession), slog.String("topic", item.Topic), slog.String("event_id", item.EventID)}
-		cfg.logger.LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(cfg.privacy, nil, item.PayloadSummary)...)...)
+		cfg.logger.LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(cfg.privacy, item.PayloadSummary)...)...)
 		switch {
 		case strings.HasPrefix(item.Topic, contracts.RoleTopicPrefix):
 			roleTopicDelivery(cfg, message, item)
