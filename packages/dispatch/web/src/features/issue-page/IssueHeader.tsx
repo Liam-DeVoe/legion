@@ -11,9 +11,10 @@ import {
   pageMutedText,
   pagePaperBg,
 } from "../../theme/classes";
+import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { stoppedNote } from "../writes/useKeyedWrite";
+import { refusedNote, stoppedNote } from "../writes/useKeyedWrite";
 import { chipOfLostAction } from "./approval-chip-box";
 import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
 import type { IssueAction } from "./IssueActionsMenu";
@@ -105,9 +106,9 @@ export function IssueHeader({
   const header = useRef<HTMLElement | null>(null);
   useFocusKeeper(header, HEADER_FOCUS_FALLBACKS);
   useIssuePalette({
-    drafts,
     isClosed,
     priorityWrite,
+    requestStatus: writes.requestStatus,
     saving: updateIssue.isPending,
   });
 
@@ -126,7 +127,7 @@ export function IssueHeader({
       ? {
           disabled: updateIssue.isPending,
           id: "reopen",
-          run: () => drafts.requestStatusSubmit("backlog"),
+          run: () => writes.requestStatus("backlog"),
           text:
             pendingStatus === "backlog"
               ? ANSWER_LINES.saving_reopen
@@ -135,7 +136,7 @@ export function IssueHeader({
       : {
           disabled: updateIssue.isPending,
           id: "close",
-          run: () => drafts.requestStatusSubmit("done"),
+          run: () => writes.requestStatus("done"),
           text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,
         },
     {
@@ -241,7 +242,17 @@ export function IssueHeader({
           onRetry={drafts.retry}
           pending={updateIssue.isPending}
         />
+        {writes.statusRefusal === undefined ? null : (
+          // The dry run of a status write was refused, so the status went back: the header says
+          // why, as it says why for a write it shows refused itself.
+          <p className={`text-sm ${pageFailedText}`} role="alert">
+            {refusedNote(`change the status of ${issue.key}`, writes.statusRefusal)}
+          </p>
+        )}
       </div>
+      {writes.statusQuestion === undefined ? null : (
+        <ParentStatusDialog question={writes.statusQuestion} />
+      )}
     </header>
   );
 }

@@ -138,15 +138,14 @@ export function useBoardMoves(
     },
     [labels, project, queryClient, queryKey]
   );
-  /** Places the move `plan` makes of the list as it reads now and sends `change` of it through
+  /** Places the move `plan` makes of the list as it reads now and sends its change through
    *  `send`; on a refusal puts the list back and says why - but for the rule's refusal, which the
    *  question that follows says. Answers whether it landed, and the refusal. */
   const place = useCallback(
     async (
       key: string,
       plan: MovePlan,
-      send: MoveWrite,
-      change: (input: UpdateIssueInput) => UpdateIssueInput = (input) => input
+      send: MoveWrite
     ): Promise<{ landed: boolean; refusal?: unknown }> => {
       const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
       const moved = previous === undefined ? undefined : plan(previous);
@@ -158,7 +157,7 @@ export function useBoardMoves(
       void queryClient.cancelQueries({ queryKey, exact: true });
       queryClient.setQueryData(queryKey, moved.issues);
       try {
-        await send({ input: change(moved.input), key });
+        await send({ input: moved.input, key });
         setError(undefined);
         return { landed: true };
       } catch (cause) {
@@ -176,9 +175,13 @@ export function useBoardMoves(
     async (key: string, plan: MovePlan) => {
       const { landed } = await place(
         key,
-        plan,
-        placedMove,
-        ({ status: _status, ...input }) => input
+        (issues) => {
+          const moved = plan(issues);
+          if (moved === undefined) return undefined;
+          const { status: _status, ...input } = moved.input;
+          return { ...moved, input };
+        },
+        placedMove
       );
       void refetch(landed);
     },

@@ -4,9 +4,12 @@ import { join } from "node:path";
 import type { StatusChangeEntry } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
-import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
+import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
+import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { messageFor } from "../errors";
+import { ToolInputError } from "../tool-input-errors";
 
 // The parent-status rule from the `dispatch` command: the three options of `dispatch issue-update`
 // (`--include-children`, `--unlink-children`, `--include-parent`), which send
@@ -50,7 +53,6 @@ const changed = fixture("changed");
 const dryRun = fixture("dry-run");
 const conflict = fixture("conflict");
 const conflictMidway = fixture("conflict-midway");
-const browserOnly = fixture("browser-only");
 
 /** The refusal text a fixture's answer carries, which the CLI prints after the code. */
 function errorOf(answer: Answer): string {
@@ -67,6 +69,23 @@ function entriesOf(answer: Answer, keep: readonly string[]): Answer {
   return {
     status: answer.status,
     body: { ...answer.body, changed: entries.filter((entry) => keep.includes(entry.key)) },
+  };
+}
+
+/** `answer` as the route answers the same call made with `status`: the issue and each entry carry
+ *  it in place of the recorded one. The recorded call with include_children closes the issue,
+ *  which only a person signed in at a browser may send, so this command's call of it moves the
+ *  issues to another status. */
+function movedTo(answer: Answer, status: string): Answer {
+  const issue = answer.body.issue as Record<string, unknown>;
+  const entries = answer.body.changed as StatusChangeEntry[];
+  return {
+    status: answer.status,
+    body: {
+      ...answer.body,
+      issue: { ...issue, status },
+      changed: entries.map((entry) => ({ ...entry, issue: { ...entry.issue, status }, status })),
+    },
   };
 }
 
@@ -300,18 +319,49 @@ function made(): string[] {
   return requests.map((request) => `${request.method} ${request.path}`);
 }
 
-/** The message line a close's reason leaves on `key`. */
-function reasonPosted(key: string): string {
-  return `reason posted as message ${MESSAGE_ID} (dispatch://${key}/message/${MESSAGE_ID})`;
-}
-
 describe("dispatch issue-update with an option of the status change", () => {
   // The route answers a call with include_children the entries of its dry run, each with the
-  // issue it left beside it, so the dry run's record of the call is the answer here. Each line
-  // names the status the issue had before the call, which the read of the project gives, since
-  // the answer names only the status after it: ACME-6 is a grandchild of ACME-4.
+  // issue it left beside it, so the dry run's record of the call, moved to the backlog, is the
+  // answer here. Each line names the status the issue had before the call, which the read of the
+  // project gives, since the answer names only the status after it: ACME-6 is a grandchild of
+  // ACME-4.
   test("issue-update --include-children sends the status change and no PATCH", async () => {
-    statusChange = dryRun;
+    statusChange = movedTo(dryRun, "backlog");
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "ACME-4",
+      "--status",
+      "backlog",
+      "--include-children",
+    ]);
+
+    expect(code).toBe(0);
+    expect(made()).toEqual([
+      "GET /api/v1/issues/ACME-4",
+      "GET /api/v1/issues",
+      "POST /api/v1/issues/ACME-4/status-change",
+    ]);
+    expect(sent("GET", "/api/v1/issues").search).toBe("?project=ACME");
+    const body = sent("POST", "/api/v1/issues/ACME-4/status-change").body as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(body).sort()).toEqual(["actor", "include_children", "status"]);
+    expect(body).toMatchObject({ status: "backlog", include_children: true });
+    expect(stdout).toBe(
+      [
+        "ACME-6: status in_progress -> backlog",
+        "ACME-5: status todo -> backlog",
+        "ACME-4: status in_progress -> backlog",
+        "",
+      ].join("\n")
+    );
+  });
+
+  // Dispatch takes include_children with done only from a person signed in at a browser, and
+  // every call of this command presents a token: the call is refused before its reason is posted.
+  test("--include-children with --status done is refused before anything is sent", async () => {
     const { code, stdout } = await run([
       "issue-update",
       "--issue",
@@ -323,48 +373,32 @@ describe("dispatch issue-update with an option of the status change", () => {
       "--include-children",
     ]);
 
-    expect(code).toBe(0);
-    expect(made()).toEqual([
-      "GET /api/v1/issues/ACME-4",
-      "GET /api/v1/issues",
-      "POST /api/v1/issues/ACME-4/messages",
-      "POST /api/v1/issues/ACME-4/status-change",
+    expect(code).toBe(2);
+    expect(stdout.split("\n").slice(0, 2)).toEqual([
+      "dispatch issue-update was not called: 1 problem",
+      "- include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
     ]);
-    expect(sent("GET", "/api/v1/issues").search).toBe("?project=ACME");
-    const body = sent("POST", "/api/v1/issues/ACME-4/status-change").body as Record<
-      string,
-      unknown
-    >;
-    expect(Object.keys(body).sort()).toEqual(["actor", "include_children", "status"]);
-    expect(body).toMatchObject({ status: "done", include_children: true });
-    expect(stdout).toBe(
-      [
-        "ACME-6: status in_progress -> done",
-        "ACME-5: status todo -> done",
-        `ACME-4: ${reasonPosted("ACME-4")}; status in_progress -> done`,
-        "",
-      ].join("\n")
-    );
+    expect(requests).toEqual([]);
+  });
 
-    // From a token, which every call of this command presents, Dispatch refuses include_children
-    // with done: the refusal says so, and says where the reason landed.
-    requests.length = 0;
-    statusChange = browserOnly;
-    const refused = await run([
+  // A refusal lists every problem of the call, so its caller fixes all of them and calls once
+  // (the dispatch skill). With no --reason the same call breaks two parts of the rule: done needs
+  // a reason, and include_children does not go with done. Adding the reason alone still leaves the
+  // second, so the first refusal names both.
+  test("--include-children with --status done and no --reason names both problems before anything is sent", async () => {
+    const { code, stdout } = await run([
       "issue-update",
       "--issue",
       "ACME-4",
       "--status",
       "done",
-      "--reason",
-      "Shipped with its tree.",
       "--include-children",
     ]);
-    expect(refused.code).toBe(1);
-    expect(refused.stdout).toStartWith(
-      `BROWSER_SIGN_IN_REQUIRED: ${errorOf(browserOnly)}; the reason already landed as message ${MESSAGE_ID}`
-    );
-    expect(made()).not.toContain("PATCH /api/v1/issues/ACME-4");
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("status done requires reason");
+    expect(stdout).toContain("include_children does not go with status done");
+    expect(requests).toEqual([]);
   });
 
   test("issue-update --unlink-children sends the status change and no PATCH", async () => {
@@ -433,9 +467,11 @@ describe("dispatch issue-update with an option of the status change", () => {
     ]);
 
     expect(code).toBe(0);
+    // The issues above ACME-2 are read one parent at a time, and ACME-1 is its root: no listing of
+    // the project.
     expect(made()).toEqual([
       "GET /api/v1/issues/ACME-2",
-      "GET /api/v1/issues",
+      "GET /api/v1/issues/ACME-1",
       "POST /api/v1/issues/ACME-2/status-change",
     ]);
     const body = sent("POST", "/api/v1/issues/ACME-2/status-change").body as Record<
@@ -528,33 +564,44 @@ describe("dispatch issue-update with an option of the status change", () => {
   });
 
   // The CLI asks a route no build answered three more times, 1, 2 and 4 s apart (jittered), as
-  // every write does, before it says so: the test waits those seconds.
+  // every write does, before it says so. runDispatchCli takes no wait of its own, so this row calls
+  // the executor it runs with a wait that returns at once (`sleep`), as dispatch-review.test.ts
+  // does. The CLI prints `messageFor` of what the executor throws, and exits 1 for any error that
+  // is no ToolInputError.
   test("--include-children on a Dispatch without the route is refused after its retries and sends no PATCH", async () => {
     statusChange = "no route";
-    const { code, stdout } = await run([
-      "issue-update",
-      "--issue",
-      "ACME-4",
-      "--status",
-      "in_progress",
-      "--include-children",
-    ]);
+    const base = `http://127.0.0.1:${server.port}`;
+    const waits: number[] = [];
+    const error: unknown = await executeDispatchTool({
+      tool: "dispatch_issue_update",
+      args: { issue: "ACME-4", status: "in_progress", include_children: true },
+      cwd: stateDir,
+      host: "omp",
+      sessionId: "ses-1",
+      config: { url: base, credential: bearerCredential(TOKEN) },
+      env: {},
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    }).catch((thrown: unknown) => thrown);
 
-    expect(code).toBe(1);
-    expect(stdout).toBe(
-      `NOT_FOUND: Dispatch at http://127.0.0.1:${server.port} answered no route for POST /api/v1/issues/ACME-4/status-change each time the status change was sent. This build is older than that route, so it takes no include_children, unlink_children or include_parent, and nothing changed. No PATCH was sent in its place, since a PATCH would write the status without the option.\n`
+    expect(error).toBeInstanceOf(DispatchServiceError);
+    expect(error).not.toBeInstanceOf(ToolInputError);
+    expect(messageFor(error)).toBe(
+      `NOT_FOUND: Dispatch at ${base} answered no route for POST /api/v1/issues/ACME-4/status-change each time the status change was sent. This build is older than that route, so it takes no include_children, unlink_children or include_parent, and nothing changed. No PATCH was sent in its place, since a PATCH would write the status without the option.`
     );
+    expect(waits).toHaveLength(3);
     expect(made()).toEqual([
       "GET /api/v1/issues/ACME-4",
       "GET /api/v1/issues",
       ...Array(4).fill("POST /api/v1/issues/ACME-4/status-change"),
     ]);
-  }, 20_000);
+  });
 });
 
 describe("a PARENT_STATUS_CONFLICT", () => {
   const childFlags =
-    "dispatch issue-update --status takes --include-children, which moves the open issues under the issue with it, or --unlink-children, which removes its open children from it.";
+    "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.";
 
   // Whichever command Dispatch refuses, the CLI prints the refusal, each issue that holds the
   // rule as `KEY [status] title`, and the flags that move them, and exits 1, as it prints a near
@@ -575,12 +622,14 @@ describe("a PARENT_STATUS_CONFLICT", () => {
     expect(patch.code).toBe(1);
     const patchLines = patch.stdout.split("\n");
     expect(patchLines[0]).toStartWith(
-      `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}; the reason already landed as message ${MESSAGE_ID}`
+      `PARENT_STATUS_CONFLICT: ${errorOf(conflict)} The reason already landed as message ${MESSAGE_ID}`
     );
     expect(patchLines.slice(1)).toEqual(["ACME-5 [todo] Child in work", childFlags, ""]);
 
     // The status change refused midway: the steps before the refusal changed ACME-8, and the
-    // refusal names the child filed between two steps.
+    // refusal names the child filed between two steps. The fake answers the refusal the real
+    // server wrote for such a call, made with include_children: the CLI prints a refusal the same
+    // whichever option the call passed, and this command never sends include_children with done.
     statusChange = conflictMidway;
     const midway = await run([
       "issue-update",
@@ -590,12 +639,12 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "done",
       "--reason",
       "Closing the tree.",
-      "--include-children",
+      "--unlink-children",
     ]);
     expect(midway.code).toBe(1);
     const midwayLines = midway.stdout.split("\n");
     expect(midwayLines[0]).toStartWith(
-      `PARENT_STATUS_CONFLICT: ${errorOf(conflictMidway)}; the steps before the refusal changed ACME-8 (status todo -> done); the reason already landed as message ${MESSAGE_ID}`
+      `PARENT_STATUS_CONFLICT: ${errorOf(conflictMidway)} The steps before the refusal changed ACME-8 (status todo -> done); the reason already landed as message ${MESSAGE_ID}`
     );
     expect(midwayLines.slice(1)).toEqual([
       "ACME-10 [triage] Filed between two steps",
@@ -657,7 +706,7 @@ describe("dispatch issues --json", () => {
   });
 
   // Claude Code reads back at most 30,000 characters of a command's output, so the CLI cuts a
-  // longer result there and writes it whole to a file. A cut object is no JSON object, so the
+  // longer result at 25,000 and writes it whole to a file. A cut object is no JSON object, so the
   // listing goes out whole.
   test("issues --json is printed whole on a host that cuts long output", async () => {
     listing = Array.from({ length: 400 }, (_, index) => ({

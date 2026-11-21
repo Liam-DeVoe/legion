@@ -311,38 +311,35 @@ func waitForLockWaiter(t *testing.T, process *dispatchProcess, holder pgx.Tx, wh
 
 // holdFixLease takes the lease parent-status-fix (api's parentStatusFixLease) in a pass of the
 // test's own, as a process that runs the fix holds it. The pass holds it until the returned end
-// runs, or the test ends, and end answers whether the pass ran.
+// runs, or the test ends, and end answers whether the pass ran. A try of the lease that ends
+// before its pass runs fails the test, and so does a pass that does not start within a minute.
 func holdFixLease(t *testing.T, database *store.Store) (end func() bool) {
 	t.Helper()
 	leases := storetest.Leases(t, database.Pool)
-	entered, done := make(chan struct{}), make(chan struct{})
-	ran := make(chan bool, 1)
+	entered, done, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var passed bool
 	go func() {
-		ran <- duty.Exclusive(context.Background(), leases, "parent-status-fix", time.Time{}, 0, func(context.Context) {
+		defer close(finished)
+		passed = duty.Exclusive(context.Background(), leases, "parent-status-fix", time.Time{}, 0, func(context.Context) {
 			close(entered)
 			<-done
 		})
 	}()
 	var once sync.Once
-	var passed bool
 	end = func() bool {
-		once.Do(func() {
-			close(done)
-			passed = <-ran
-		})
+		once.Do(func() { close(done) })
+		<-finished
 		return passed
 	}
 	t.Cleanup(func() { end() })
-	testwait.Eventually(t, "the test's pass under the lease parent-status-fix", func() bool {
-		select {
-		case <-entered:
-			return true
-		case took := <-ran:
-			t.Fatalf("the lease parent-status-fix answered %t before the test's pass under it ran", took)
-		default:
-		}
-		return false
-	})
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	select {
+	case <-entered:
+	case <-finished:
+		t.Fatalf("the lease parent-status-fix answered %t before the test's pass under it ran", passed)
+	case <-time.After(bound):
+		t.Fatalf("the test's pass under the lease parent-status-fix did not start within %v", bound)
+	}
 	return end
 }
 

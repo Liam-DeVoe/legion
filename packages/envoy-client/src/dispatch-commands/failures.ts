@@ -34,16 +34,13 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     );
   }
   if (!(error instanceof DispatchServiceError)) return error;
-  return new DispatchServiceError(
-    error.code,
-    error.status,
-    `${error.code}: ${error.message}${joined}`,
-    error.candidates,
-    error.current,
-    error.mismatches,
-    error.issues,
-    error.changed
-  );
+  // A message that ends a sentence (a parent-status conflict's does) takes the clauses as a
+  // sentence of their own, as withAccount joins its account.
+  const told =
+    joined !== "" && /[.!?]$/.test(error.message)
+      ? `${error.message} ${suffix.charAt(0).toUpperCase()}${suffix.slice(1)}`
+      : `${error.message}${joined}`;
+  return new DispatchServiceError(error.code, error.status, `${error.code}: ${told}`, error);
 }
 
 /**
@@ -63,7 +60,7 @@ export function parentStatusConflictLines(error: unknown): string[] | undefined 
     ...issues.map((issue) => `${issue.key} [${issue.status}] ${issue.title}`),
     ...(relations.has("child")
       ? [
-          "dispatch issue-update --status takes --include-children, which moves the open issues under the issue with it, or --unlink-children, which removes its open children from it.",
+          "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.",
         ]
       : []),
     ...(relations.has("parent")

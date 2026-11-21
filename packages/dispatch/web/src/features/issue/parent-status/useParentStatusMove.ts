@@ -1,3 +1,4 @@
+import type { ISSUE_STATUS_OPTIONS } from "@legion/contracts/dispatch-tools";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 
@@ -26,7 +27,7 @@ import { signedInLogin, useWrites } from "../../writes/write-store";
 /** The code of Dispatch's refusal of a write that would put a parent's status out of line with
  *  its children's (R24): a parent is done only when each child is done, and while a child is in
  *  work its parent is in work. */
-export const PARENT_STATUS_CONFLICT = "PARENT_STATUS_CONFLICT";
+const PARENT_STATUS_CONFLICT = "PARENT_STATUS_CONFLICT";
 
 /** Whether `error` is that refusal, which names the issues that hold the write (`issues`). */
 export function isParentStatusConflict(error: unknown): error is ApiError {
@@ -36,7 +37,7 @@ export function isParentStatusConflict(error: unknown): error is ApiError {
 /** The options of `POST /api/v1/issues/{key}/status-change`, each the member of its body that
  *  names it: move the open issues under the issue with it, unlink its open children, or move its
  *  parents into work. */
-export type ParentStatusOption = "include_children" | "unlink_children" | "include_parent";
+export type ParentStatusOption = (typeof ISSUE_STATUS_OPTIONS)[number];
 
 /** Whether the issue page knows `issue` has a parent or an open child: only then can the rule
  *  refuse a write of its status. */
@@ -84,9 +85,9 @@ export interface StatusMove extends StatusPick {
    *  (`issueHasParentOrOpenChild`, `cardHasParentOrOpenChild`): only then is the dry run sent
    *  before the write. */
   readonly related: boolean;
-  /** The write the surface makes when the rule asks nothing: the issue's `PATCH`, as before. Its
-   *  refusal is the surface's to show, and a `409 PARENT_STATUS_CONFLICT` of it the surface hands
-   *  to `ask`. */
+  /** The write the surface makes when the rule asks nothing: the issue's `PATCH`. Its refusal is
+   *  the surface's to show, and a `409 PARENT_STATUS_CONFLICT` of it the surface hands to `ask`
+   *  (`askOnConflict`). */
   readonly patch: () => unknown;
 }
 
@@ -101,7 +102,7 @@ export type StatusMoveEnd =
   | { readonly kind: "kept" }
   /** The dry run was refused for another reason than the rule, so nothing was written. */
   | { readonly kind: "refused"; readonly refusal: unknown }
-  /** Another move of this hook was still checking or asking, so this one did nothing. */
+  /** Another move of this hook was asking, so this one did nothing. */
   | { readonly kind: "busy" };
 
 /** What one option's dry run answered, while the question is open. */
@@ -135,7 +136,9 @@ export interface ParentStatusQuestion extends StatusPick {
 /** What the hook gives its surface. */
 export interface ParentStatusMove {
   /** Makes `move`: for an issue with a parent or an open child, the dry run first, then the
-   *  surface's `patch` where the rule asks nothing, or the question where it would refuse. */
+   *  surface's `patch` where the rule asks nothing, or the question where it would refuse. A move
+   *  made while an earlier one is checking is shown as pending at once and waits for that check,
+   *  so each move is made, in the order they came. */
   readonly move: (move: StatusMove) => Promise<StatusMoveEnd>;
   /** Asks the question for a write Dispatch refused `409 PARENT_STATUS_CONFLICT` (`conflict`),
    *  as a refused dry run asks it: the page took the issue for one the rule could not refuse. */
@@ -147,11 +150,25 @@ export interface ParentStatusMove {
   readonly question: ParentStatusQuestion | undefined;
 }
 
+/** A surface's `onError` of a write of `key` it made itself: where the write set the status and
+ *  Dispatch refused it under the rule, it asks the question (`ask`), as a refused dry run does. The
+ *  surface took the issue for one the rule could not refuse: it read the parent or the children
+ *  before they changed. Each such write carries one field, so a write that sets the status sets
+ *  nothing else. Any other refusal stays the surface's to show. */
+export function askOnConflict(
+  parentStatus: Pick<ParentStatusMove, "ask">,
+  key: string,
+  input: { readonly status?: string | undefined },
+  error: unknown
+): void {
+  if (input.status !== undefined && isParentStatusConflict(error)) {
+    void parentStatus.ask({ key, status: input.status }, error);
+  }
+}
+
 /** The options the question offers for the issues that hold a write: the children's two where a
  *  listed issue is a child, the parents' one where a listed issue is a parent. */
-export function choicesFor(
-  issues: readonly ParentStatusConflictIssue[]
-): readonly ParentStatusOption[] {
+function choicesFor(issues: readonly ParentStatusConflictIssue[]): readonly ParentStatusOption[] {
   const child = issues.some((issue) => issue.relation === "child");
   const parent = issues.some((issue) => issue.relation === "parent");
   return [
@@ -201,7 +218,9 @@ function landStatusChange(client: QueryClient, answer: StatusChangeAnswer | null
     void client.invalidateQueries({ queryKey: ["issue"] });
   } else {
     mergeIssue(client, answer.issue);
-    readChangedAgain(client, answer.changed ?? []);
+    for (const entry of answer.changed ?? []) {
+      void client.invalidateQueries({ queryKey: ["issue", entry.key] });
+    }
   }
   void client.invalidateQueries({ queryKey: ["issues"] });
 }
@@ -221,14 +240,14 @@ function writeRefusal(client: QueryClient, error: unknown): string {
 /**
  * The one way the page writes an issue's status (R24, D13). Dispatch keeps a parent's status in
  * line with its children's, so for an issue the page knows has a parent or an open child, a move
- * sends the route's dry run first. Where the rule asks nothing, the surface's own `PATCH` follows,
- * as before. Where the rule would refuse it (`409 PARENT_STATUS_CONFLICT`), the hook asks the
- * person what to do: it lists the issues that hold the move, sends the dry run of each choice the
- * listed issues allow, and lists what each choice changes. A choice confirmed is one status change
- * with that option, written through the write store; once it lands, each issue it changed and the
- * issue lists are read again. Keep as it is, Cancel and Escape write nothing. A `PATCH` the
- * surface made for an issue it knew no parent or open child of, refused by the rule all the same,
- * opens the same question (`ask`).
+ * sends the route's dry run first. Where the rule asks nothing, the surface's own `PATCH` follows.
+ * Where the rule would refuse it (`409 PARENT_STATUS_CONFLICT`), the hook asks the person what to
+ * do: it lists the issues that hold the move, sends the dry run of each choice the listed issues
+ * allow, and lists what each choice changes. A choice confirmed is one status change with that
+ * option, written through the write store; once it lands, each issue it changed and the issue
+ * lists are read again. Keep as it is, Cancel and Escape write nothing. A `PATCH` the surface made
+ * for an issue it knew no parent or open child of, refused by the rule all the same, opens the
+ * same question (`ask`).
  */
 export function useParentStatusMove(): ParentStatusMove {
   const client = useQueryClient();
@@ -237,8 +256,12 @@ export function useParentStatusMove(): ParentStatusMove {
   const [refusal, setRefusal] = useState<unknown>();
   const [asking, setAsking] = useState<Asking>();
   /** Whether a move is checking or asking: current in the task that starts one, so a second
-   *  press in that task does nothing. */
+   *  press in that task waits for the check (`checking`) or, while the question is open, does
+   *  nothing. */
   const busy = useRef(false);
+  /** The dry run of the move that is checking, which settles once that move has made its write
+   *  or opened the question: a move made meanwhile waits for it. */
+  const checking = useRef<Promise<void> | undefined>(undefined);
   /** Ends the move the question is open for. */
   const settle = useRef<((end: StatusMoveEnd) => void) | undefined>(undefined);
   /** Which round of the choices' dry runs is the question's now: an answer of an earlier round,
@@ -314,6 +337,16 @@ export function useParentStatusMove(): ParentStatusMove {
 
   const move = useCallback(
     async (next: StatusMove): Promise<StatusMoveEnd> => {
+      const pick = { key: next.key, status: next.status };
+      /** Takes `pick` off the pending status, unless a later move or the question shows its own. */
+      const unshow = () => setPending((shown) => (shown === pick ? undefined : shown));
+      if (checking.current !== undefined) {
+        // A move made while an earlier one checks: the surface shows it at once, as it shows a
+        // write waiting its turn, and it goes once that check has made its write.
+        setPending(pick);
+        while (checking.current !== undefined) await checking.current;
+        unshow();
+      }
       if (busy.current) return { kind: "busy" };
       setRefusal(undefined);
       if (!next.related) {
@@ -321,22 +354,36 @@ export function useParentStatusMove(): ParentStatusMove {
         return { kind: "patched" };
       }
       busy.current = true;
-      const pick = { key: next.key, status: next.status };
       setPending(pick);
+      const checked = Promise.withResolvers<void>();
+      checking.current = checked.promise;
+      /** Lets a move that waits for this check go: called once this move has made its write or
+       *  opened the question, so a later move's write never goes before it. */
+      const release = () => {
+        checking.current = undefined;
+        checked.resolve();
+      };
       try {
         await dryRunStatusChange(client, next.key, { status: next.status });
       } catch (error) {
-        if (isParentStatusConflict(error)) return open(pick, error);
+        if (isParentStatusConflict(error)) {
+          const asked = open(pick, error);
+          release();
+          return asked;
+        }
         busy.current = false;
-        setPending(undefined);
+        unshow();
         setRefusal(error);
+        release();
         return { kind: "refused", refusal: error };
       }
-      // The rule asks nothing of this move as the issues stood at the dry run. The `PATCH` goes as
-      // before, and Dispatch judges it as it stands then: a refusal of it asks (`ask`).
+      // The rule asks nothing of this move as the issues stood at the dry run. The `PATCH` goes,
+      // and Dispatch judges it as it stands then: a refusal of it asks (`ask`).
       busy.current = false;
-      setPending(undefined);
-      await next.patch();
+      unshow();
+      const patched = next.patch();
+      release();
+      await patched;
       return { kind: "patched" };
     },
     [client, open]

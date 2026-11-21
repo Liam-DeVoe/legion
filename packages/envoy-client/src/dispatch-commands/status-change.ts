@@ -1,5 +1,9 @@
-import type { IssueDetails, StatusChangeAnswer, StatusChangeEntry } from "@legion/contracts";
-import { ISSUE_STATUS_OPTIONS } from "@legion/contracts";
+import type {
+  ISSUE_STATUS_OPTIONS,
+  IssueDetails,
+  StatusChangeAnswer,
+  StatusChangeEntry,
+} from "@legion/contracts";
 import {
   type DispatchClient,
   DispatchServiceError,
@@ -18,19 +22,15 @@ interface IssueBefore {
   readonly parent: string | null;
 }
 
-/** The options of the status change a `dispatch issue-update` call set to true. The schema refused
- *  one beside any field but status and reason, and include_children beside unlink_children. */
-export function statusChangeOptions(args: Readonly<Record<string, unknown>>): IssueStatusOption[] {
-  return ISSUE_STATUS_OPTIONS.filter((option) => args[option] === true);
-}
-
 /**
  * What a status change's options may move, as it stood before the call: the issue the call names
- * and its children, which the read of that issue holds, and, where an option moves the open issues
- * deeper under it (include_children) or the issues above it (include_parent), every issue of its
- * project, since a parent is always in its child's project. The route's answer names the status
- * and the parent each issue has after the call, so this read is what each line's "before" comes
- * from. It is made before anything is written, so a read that fails sends nothing.
+ * and its children, which the read of that issue holds. Where an option moves the open issues
+ * deeper under it (include_children), every issue of its project, since a parent is always in its
+ * child's project. Where an option moves only the issues above it (include_parent), each of them,
+ * read one parent at a time up to the root, which Dispatch keeps at most 32 levels above. The
+ * route's answer names the status and the parent each issue has after the call, so this read is
+ * what each line's "before" comes from. It is made before anything is written, so a read that
+ * fails sends nothing.
  */
 export async function issuesBeforeStatusChange(
   client: DispatchClient,
@@ -43,14 +43,21 @@ export async function issuesBeforeStatusChange(
   for (const child of before.children ?? []) {
     issues.set(child.key, { status: child.status, parent: before.key });
   }
-  if (options.includes("include_children") || options.includes("include_parent")) {
-    try {
+  try {
+    if (options.includes("include_children")) {
       for (const row of await client.listAllIssues({ project: before.project })) {
         issues.set(row.key, { status: row.status, parent: row.parent ?? null });
       }
-    } catch (error) {
-      throw refusalWithCode(error);
+    } else if (options.includes("include_parent")) {
+      let parent = before.parent ?? null;
+      while (parent !== null && !issues.has(parent)) {
+        const above = await client.getIssue(parent);
+        issues.set(above.key, { status: above.status, parent: above.parent ?? null });
+        parent = above.parent ?? null;
+      }
     }
+  } catch (error) {
+    throw refusalWithCode(error);
   }
   return issues;
 }

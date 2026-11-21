@@ -222,26 +222,32 @@ export function pathKeepsBytesOf(name: string): boolean {
 
 const artifactOwner = documentOwnerValidation(false);
 
-/** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
- *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
- *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
- *  its lines joined. The name alone makes an empty document and is held to the same rule, since
- *  what the writer types into it afterwards is Markdown too. */
+/** The refusal of the parts of dispatch_artifact's rule `value` breaks, or undefined when it keeps
+ *  the rule. It names every part the call broke, the owner and the source before the name, joined
+ *  in one refusal, so its caller fixes them all and calls once. A call without path writes a
+ *  document, whose text is always Markdown, so it goes only under a name that says Markdown or
+ *  says nothing: a .jsonl stored that way reads back with its lines joined. The name alone makes
+ *  an empty document and is held to the same rule, since what the writer types into it
+ *  afterwards is Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
     readonly path?: unknown;
     readonly content?: unknown;
   };
-  const ownerOrSourceProblem = brokenParts([
+  const extension =
+    typeof input.path === "string" || typeof input.name !== "string"
+      ? undefined
+      : NAME_EXTENSION.exec(input.name.trim())?.[1];
+  const nameProblem =
+    extension === undefined || MARKDOWN_EXTENSION.test(extension)
+      ? undefined
+      : `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
+  return brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
     [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
+    [nameProblem === undefined, nameProblem ?? ""],
   ]);
-  if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
-  if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
-  const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
-  if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
@@ -351,6 +357,15 @@ export const ISSUE_STATUS_OPTIONS = [
   "include_parent",
 ] as const;
 
+/** The options of the status change that `input` sets to true, in the order of
+ *  `ISSUE_STATUS_OPTIONS`. An option set to false asks for nothing. The tool's rule and the CLI's
+ *  call both read the options through this one filter. */
+export function issueStatusOptionsOf(
+  input: Readonly<Record<string, unknown>>
+): (typeof ISSUE_STATUS_OPTIONS)[number][] {
+  return ISSUE_STATUS_OPTIONS.filter((option) => input[option] === true);
+}
+
 /** The fields of dispatch_issue_update the status change route does not take, so no option goes
  *  with one of them. */
 const ISSUE_UPDATE_PATCH_FIELDS = [
@@ -371,13 +386,16 @@ const ISSUE_UPDATE_PATCH_FIELDS = [
 ] as const;
 
 const ISSUE_UPDATE_OPTIONS_RULE =
-  "include_children, unlink_children and include_parent go with status, and with reason when the status is done, and with no other field. include_children does not go with unlink_children.";
+  "include_children, unlink_children and include_parent go with status, and with reason when the status is done, and with no other field. include_children does not go with unlink_children, or with status done.";
 const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}. ${ISSUE_UPDATE_OPTIONS_RULE}`;
 
 /** The refusal of the parts of the options' rule `input` breaks, or undefined when it keeps it or
- *  sets no option to true. An option set to false asks for nothing, so the rule does not read it. */
+ *  sets no option to true. An option set to false asks for nothing, so the rule does not read it.
+ *  include_children with done closes the open issues under the issue, which Dispatch takes only
+ *  from a person signed in at a browser: a call of this tool presents a token, so it is refused
+ *  here, before its reason is posted. */
 function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): string | undefined {
-  const options = ISSUE_STATUS_OPTIONS.filter((option) => input[option] === true);
+  const options = issueStatusOptionsOf(input);
   if (options.length === 0) return undefined;
   const named = options.join(", ").replace(/, ([^,]*)$/, " and $1");
   const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
@@ -385,6 +403,10 @@ function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): st
     [
       !(input["include_children"] === true && input["unlink_children"] === true),
       "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
+    ],
+    [
+      !(input["include_children"] === true && input["status"] === "done"),
+      "include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
     ],
     [
       typeof input["status"] === "string",
@@ -397,11 +419,31 @@ function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): st
   ]);
 }
 
-/** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
+/** The refusal of the reason's part of dispatch_issue_update's rule `input` breaks, or undefined
+ *  when it keeps it: reason is the close's note, so status done requires it and every other call
+ *  goes without it. */
+function issueReasonProblem(input: {
+  readonly status?: unknown;
+  readonly reason?: unknown;
+}): string | undefined {
+  if (input.status === "done") {
+    return typeof input.reason !== "string" || input.reason.trim() === ""
+      ? `${ISSUE_UPDATE_DONE_RULE}.`
+      : undefined;
+  }
+  if (input.reason === undefined) return undefined;
+  const status =
+    typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
+  return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
+}
+
+/** The refusal of the parts of dispatch_issue_update's rule `value` breaks, or undefined when it
  *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
  *  an option of the status change goes with status alone, and the update names at least one field
- *  to change. `check` and `refusal` both read this one function, so the refusal never names a
- *  part the call kept. */
+ *  to change. It names every part of the reason's and the options' rules the call broke, joined in
+ *  one refusal, so its caller fixes them all and calls once. The field part is read only when the
+ *  call keeps those two: a call refused for its reason is never told it names no field. `check`
+ *  and `refusal` both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
@@ -420,17 +462,13 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly before?: unknown;
     readonly after?: unknown;
   };
-  if (input.status === "done") {
-    if (typeof input.reason !== "string" || input.reason.trim() === "") {
-      return `${ISSUE_UPDATE_DONE_RULE}.`;
-    }
-  } else if (input.reason !== undefined) {
-    const status =
-      typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
-    return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
-  }
+  const reasonProblem = issueReasonProblem(input);
   const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
-  if (optionsProblem !== undefined) return optionsProblem;
+  const broken = brokenParts([
+    [reasonProblem === undefined, reasonProblem ?? ""],
+    [optionsProblem === undefined, optionsProblem ?? ""],
+  ]);
+  if (broken !== undefined) return broken;
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
@@ -976,7 +1014,9 @@ export const dispatchToolSpecs = [
       "this rule, it refuses a status or parent change that breaks it with 409 " +
       "PARENT_STATUS_CONFLICT, which names each issue that holds it. include_children, " +
       "unlink_children and include_parent tell Dispatch what to do with those issues. Each goes " +
-      "with status alone, and with reason when the status is done. " +
+      "with status alone, and with reason when the status is done. include_children does not go " +
+      "with done: only a person signed in at a browser closes the open issues under an issue " +
+      "together with it, on the issue's page. " +
       "A closed issue still takes messages and comments, though not asks or artifacts; of this " +
       "tool's fields it takes only a board move " +
       "(before, after), components, " +
@@ -1007,7 +1047,7 @@ export const dispatchToolSpecs = [
       include_children: z
         .boolean()
         .describe(
-          "With status, also write that status on each open issue under this issue, at any depth, whose status is in another group. Dispatch refuses it with status done from a token (403 BROWSER_SIGN_IN_REQUIRED): only a person signed in at a browser closes the open issues under an issue together with it."
+          "With status, also write that status on each open issue under this issue, at any depth, whose status is in another group. Not with status done, which this tool refuses before anything is sent: only a person who is signed in at a browser can close the open issues under an issue together with it, on the issue's page in Dispatch (Close issue, then Move them with it)."
         )
         .optional(),
       unlink_children: z

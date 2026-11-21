@@ -948,13 +948,23 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
+	handler = s.decideBrokerToken(trackTransactions(handler))
+	if route.Method+" "+route.Pattern == statusChangeRoute {
+		// Outside every layer above and outside decideBrokerToken, so it sees each answer the
+		// route gives, and inside compression, so it reads the JSON a layer wrote rather than
+		// gzip. The route's declared refusals carry changed: the handler and the keyed layer
+		// write it, and every layer outside the keyed layer refuses before any step runs with
+		// the {code, error} it answers every route, to which this adds changed []
+		// (addChangedToRefusals).
+		handler = addChangedToRefusals(handler)
+	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
 	// them resolved. Compression sits just inside it, so every one of those answers is
 	// compressed for a caller that takes gzip and the line counts the bytes that went on the
 	// wire. The two websockets register mounts beside the table carry no compressed answer: the
 	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	return accesslog.HandlerFunc(route.Pattern, compressAnswers(handler))
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1080,9 +1090,9 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
-	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
-	// writes the header.
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, linkedReadRefusal's
+	// 502 for a linked repository's read GitHub rate-limited with a wait, and the keyed layer's
+	// 409 KEY_IN_FLIGHT (writeKeyInFlight, writeKeyFreed). writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
