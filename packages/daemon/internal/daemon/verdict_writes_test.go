@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -661,14 +662,20 @@ func TestLegionVerdictHoldsTheIssuesMergeStateReadUntilItsWriteEnds(t *testing.T
 	read := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	go func() { read <- writer.await(ctx, "CAPTURE-1") }()
+	go func() {
+		ended, err := writer.await(ctx, "CAPTURE-1")
+		if err == nil && !ended {
+			err = errors.New("the bound passed")
+		}
+		read <- err
+	}()
 	select {
 	case err := <-read:
 		t.Fatalf("the read went on (%v) while the issue's write was pending", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if err := writer.await(ctx, "CAPTURE-2"); err != nil {
-		t.Fatalf("another issue's read waited: %v", err)
+	if ended, err := writer.await(ctx, "CAPTURE-2"); err != nil || !ended {
+		t.Fatalf("another issue's read waited: %v, %v", ended, err)
 	}
 	target, ok := writer.next()
 	if !ok || target.head != "code" || target.number != 86 {
@@ -683,8 +690,30 @@ func TestLegionVerdictHoldsTheIssuesMergeStateReadUntilItsWriteEnds(t *testing.T
 	case <-ctx.Done():
 		t.Fatal("the read still waits after the write ended")
 	}
-	if err := writer.await(canceledContext(), "CAPTURE-1"); err != nil {
-		t.Fatalf("a read of an issue with no write pending waited: %v", err)
+	if ended, err := writer.await(canceledContext(), "CAPTURE-1"); err != nil || !ended {
+		t.Fatalf("a read of an issue with no write pending waited: %v, %v", ended, err)
+	}
+}
+
+// A merge-state read waits on its issue's write of legion-verdict for one bound at most (the
+// writer's bound, one issueRead): a write held up by a slow GitHub or a long queue holds the
+// issue's reads no longer than that, and the read then goes on and says so once.
+func TestLegionVerdictAMergeStateReadWaitsOnItsWriteForOneBoundAtMost(t *testing.T) {
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry})
+	writer.bound = 50 * time.Millisecond
+	logs := &syncBuffer{}
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
+		verdicts: writer, log: slog.New(slog.NewJSONHandler(logs, nil))}
+	// The write is queued and never taken, as a write that never ends.
+	w.queueVerdictWrite("CAPTURE-1", "acme/widgets", 86, "code")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, _, err := w.readMergeState(ctx, "CAPTURE-1", ""); err != nil {
+		t.Fatalf("the read behind a write that never ends: %v, want it to go on after the bound", err)
+	}
+	lines := loggedMessages(t, logs.String(), verdictReadWentOn)
+	if len(lines) != 1 || lines[0]["issue"] != "CAPTURE-1" {
+		t.Fatalf("%q lines = %v, want one naming CAPTURE-1", verdictReadWentOn, lines)
 	}
 }
 

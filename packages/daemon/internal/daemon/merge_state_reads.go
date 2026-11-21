@@ -329,8 +329,12 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 func (w *workflowRuntime) readMergeState(ctx context.Context, issue, head string) (record.MergeState, string, error) {
 	// A write of legion-verdict the same commit asked for comes first: GitHub answers `blocked`
 	// until the required check exists (verdictWriter.await, spec R4).
-	if err := w.verdicts.await(ctx, issue); err != nil {
+	ended, err := w.verdicts.await(ctx, issue)
+	if err != nil {
 		return record.MergeStateUnread, "", err
+	}
+	if !ended {
+		w.log.Warn(verdictReadWentOn, "issue", issue, "waited", w.verdicts.bound.String())
 	}
 	_, recorded, err := issueRecord(ctx, w.pool, w.records, issue)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -29,10 +30,12 @@ const (
 )
 
 // The lines the writer logs, besides each write's own legion_verdict_write: once per pull request
-// whose head is another project's issue branch, and once while the App is in token mode.
+// whose head is another project's issue branch, once while the App is in token mode, and each time
+// a merge-state read goes on after waiting its bound on its issue's write.
 const (
 	otherProjectsHead = "verdict: no daemon writes legion-verdict here: the head is another project's issue branch"
 	verdictTokenMode  = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
+	verdictReadWentOn = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
 )
 
 // verdictWriter is the state of the daemon's writer of the required check legion-verdict (spec
@@ -46,6 +49,8 @@ const (
 // this daemon's on.
 type verdictWriter struct {
 	entries []config.VerdictRepository
+	// bound is how long a merge-state read waits on its issue's write (await).
+	bound time.Duration
 
 	mu sync.Mutex
 	// queue is each head asked for and not yet taken, oldest first, and running how many writes
@@ -78,7 +83,7 @@ type verdictTarget struct {
 }
 
 func newVerdictWriter(entries []config.VerdictRepository) *verdictWriter {
-	return &verdictWriter{entries: entries, pending: map[string]int{}, ended: make(chan struct{}),
+	return &verdictWriter{entries: entries, bound: issueRead, pending: map[string]int{}, ended: make(chan struct{}),
 		wake: make(chan struct{}, 1), foreign: map[string]string{}}
 }
 
@@ -159,26 +164,33 @@ func (v *verdictWriter) idle() bool {
 	return len(v.queue) == 0 && v.running == 0
 }
 
-// await returns once issue has no write of legion-verdict queued or being made, or with ctx's error
-// once ctx ends. The merge-state reads of the issue call it before each read (readMergeState):
-// GitHub answers `blocked` until the required check exists, so a read made before the write that a
-// verdict asked for on the same commit would hold the round on a check about to be written (spec
-// R4). A runtime with no writer waits on nothing.
-func (v *verdictWriter) await(ctx context.Context, issue string) error {
+// await returns true once issue has no write of legion-verdict queued or being made, false once
+// the writer's bound passes with one still pending, or ctx's error once ctx ends. The merge-state
+// reads of the issue call it before each read (readMergeState): GitHub answers `blocked` until
+// the required check exists, so a read made before the write that a verdict asked for on the same
+// commit would hold the round on a check about to be written (spec R4). The one writer makes every
+// head's writes in turn, so a slow GitHub or a long queue before the issue's write would hold its
+// reads with no end: after the bound the read goes on, as it did before there was a writer. A
+// runtime with no writer waits on nothing.
+func (v *verdictWriter) await(ctx context.Context, issue string) (bool, error) {
 	if v == nil {
-		return nil
+		return true, nil
 	}
+	bound := time.NewTimer(v.bound)
+	defer bound.Stop()
 	for {
 		v.mu.Lock()
 		pending, ended := v.pending[issue], v.ended
 		v.mu.Unlock()
 		if pending == 0 {
-			return nil
+			return true, nil
 		}
 		select {
 		case <-ended:
+		case <-bound.C:
+			return false, nil
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 	}
 }
