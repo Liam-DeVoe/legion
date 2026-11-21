@@ -59,6 +59,10 @@ type Stack struct {
 
 	t      testing.TB
 	tokens *tokenTable
+	// services are the accounts every auth service of the stack lists (BROKER_NATS_SERVICES), and
+	// schema the test schema the broker's tables are in: each computed once, in StartWith.
+	services []config.NATSService
+	schema   string
 }
 
 // tokenTable is the stack's platform tokens: each raw token the hub's clients present, the account
@@ -133,6 +137,30 @@ func StartWith(t testing.TB, opts Options) *Stack {
 
 	keys := testnats.NewCalloutKeys(t)
 	cluster := testnats.StartClusterWithCallout(t, 3, keys)
+	s := &Stack{Cluster: cluster, Keys: keys, Broker: broker, t: t, tokens: tokens, services: services, schema: schema}
+	// The auth service's hold view reads the broker's tables and shares the first broker process's
+	// floor of the row with its routes, as cmd/cipherd wires one process (holdrecordtest's
+	// HoldView); with the hold read off it reads nothing.
+	var hold *natscallout.HoldView
+	if !opts.NoHoldRead {
+		hold = broker.HoldView(false)
+	}
+	s.Auth = s.startAuth(t, "the auth service", natscallout.Deps{ServiceToken: tokens.verify, Hold: hold})
+
+	s.Records = broker.Client(t)
+	if err := s.Records.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("holdtest: bootstrap the hold row: %v", err)
+	}
+	s.Kube = NewKube(t, cluster)
+	s.Kube.InstallRender(t, keys)
+	return s
+}
+
+// startAuth starts an auth service on the stack's hub with deps: the stack's keys as seed files and
+// its services, closed when t ends, and returns it once its subscription reaches the hub. what
+// names it in a failure.
+func (s *Stack) startAuth(t testing.TB, what string, deps natscallout.Deps) *natscallout.Service {
+	t.Helper()
 	dir := t.TempDir()
 	write := func(name, seed string) string {
 		path := filepath.Join(dir, name)
@@ -141,40 +169,23 @@ func StartWith(t testing.TB, opts Options) *Stack {
 		}
 		return path
 	}
-	// The auth service's hold view reads the broker's tables and shares the first broker process's
-	// floor of the row with its routes, as cmd/cipherd wires one process (holdrecordtest's
-	// HoldView); with the hold read off it reads nothing.
-	var hold *natscallout.HoldView
-	if !opts.NoHoldRead {
-		hold = broker.HoldView(false)
-	}
-	auth, err := natscallout.Start(context.Background(), natscallout.Settings{
-		URLs:           cluster.URLs(),
-		SeedFile:       write("service.seed", keys.ServiceSeed),
-		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       services,
-	}, natscallout.Deps{
-		ServiceToken: tokens.verify,
-		Hold:         hold,
-	})
+	service, err := natscallout.Start(context.Background(), natscallout.Settings{
+		URLs:           s.Cluster.URLs(),
+		SeedFile:       write("service.seed", s.Keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", s.Keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", s.Keys.XKeySeed),
+		Services:       s.services,
+	}, deps)
 	if err != nil {
-		t.Fatalf("holdtest: start the auth service: %v", err)
+		t.Fatalf("holdtest: start %s: %v", what, err)
 	}
-	t.Cleanup(auth.Close)
+	t.Cleanup(service.Close)
 	ready, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := auth.Ready(ready); err != nil {
-		t.Fatalf("holdtest: the auth service's subscription never reached the hub: %v", err)
+	if err := service.Ready(ready); err != nil {
+		t.Fatalf("holdtest: %s's subscription never reached the hub: %v", what, err)
 	}
-
-	records := broker.Client(t)
-	if err := records.Bootstrap(context.Background()); err != nil {
-		t.Fatalf("holdtest: bootstrap the hold row: %v", err)
-	}
-	kube := NewKube(t, cluster)
-	kube.InstallRender(t, keys)
-	return &Stack{Cluster: cluster, Keys: keys, Broker: broker, Records: records, Auth: auth, Kube: kube, t: t, tokens: tokens}
+	return service
 }
 
 // SetTokenLife sets how long every platform token the stack verifies from now on lives from its

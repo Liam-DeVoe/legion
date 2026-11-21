@@ -204,7 +204,7 @@ func redTeamSchedule(t *testing.T, s *holdtest.Stack, holdID string, wrap func(h
 
 	b := s.StartReplica(t, holdtest.ReplicaConfig{})
 	moveRow(t, s, natsgrant.OperatorPhaseHeld, holdID)
-	a.Postgres.Stall()
+	a.Postgres.Freeze()
 	var census *holdClient
 	testwait.Eventually(t, "an operator connection decided by B under held", func() bool {
 		op, err := connectOperator(s)
@@ -230,7 +230,7 @@ func redTeamSchedule(t *testing.T, s *holdtest.Stack, holdID string, wrap func(h
 	}
 	t.Logf("schedule under %s: A read prepare %s before the writer connected; the writer admitted: %v; A's readings %v",
 		holdID, time.Since(readPrepare).Round(time.Millisecond), admitted, a.Readings())
-	a.Postgres.Open()
+	a.Postgres.Restore()
 	moveRow(t, s, natsgrant.OperatorPhaseReleased, holdID)
 	return admitted, a
 }
@@ -293,7 +293,7 @@ func TestHoldReadAFailureAfterHeldIsUnknown(t *testing.T) {
 		op.Close()
 		t.Logf("after a read of held, the read failed (%v): the listener was refused %s, broker_nats_callout_hold_unknown %s, the operator given %s's grant",
 			readings[0].Err, listenerReason, r.HoldUnknown(), operator)
-		r.Postgres.Open()
+		r.Postgres.Restore()
 		return listenerReason, operator
 	}
 
@@ -362,7 +362,7 @@ func TestHoldReadUnknownAdmitsOnlyTheOperator(t *testing.T) {
 		name       string
 		make, undo func()
 	}{
-		{"Postgres stopped", func() { replica.Postgres.Cut() }, func() { replica.Postgres.Open() }},
+		{"Postgres stopped", func() { replica.Postgres.Cut() }, func() { replica.Postgres.Restore() }},
 		{"a read held past 500 ms", func() {
 			tx, err := pool.Begin(ctx)
 			require.NoError(t, err)

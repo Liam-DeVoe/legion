@@ -7,8 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,10 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // HoldRead is a reading of the hold row, natscallout.Deps.HoldRead's type.
@@ -43,16 +42,18 @@ type ReplicaConfig struct {
 
 // Replica is one more replica of the stack's auth service, in the replicas' queue group beside
 // any other that runs: the same hub, keys, services and platform tokens as Stack.Auth, and its own
-// metrics and its own Postgres pool, which reaches the stack's Postgres through Postgres, a path
-// a test can stall or cut as a network partition or a stopped Postgres looks to this replica
-// alone. Its every reading of the row, as the replica decided on it, is kept (Readings).
+// metrics and its own Postgres pool, which reaches the stack's Postgres through Postgres, a relay
+// a test can freeze (every byte held both ways, as a network partition makes it) or cut (every
+// connection closed and every new one refused, as a stopped Postgres looks to this replica alone),
+// and restore. Its every reading of the row, as the replica decided on it, is kept (Readings).
 type Replica struct {
 	Service *natscallout.Service
 	// Registry holds the replica's broker_nats_callout_decisions_total and
 	// broker_nats_callout_hold_unknown (natscallout.NewMetrics).
 	Registry *metrics.Registry
-	// Postgres is the path from the replica's pool to the stack's Postgres; nil with NoHoldRead.
-	Postgres *PostgresPath
+	// Postgres is the relay from the replica's pool to the stack's Postgres
+	// (testnats.StartProxy); nil with NoHoldRead.
+	Postgres *testnats.Proxy
 
 	mu       sync.Mutex
 	readings []Reading
@@ -73,11 +74,18 @@ func (s *Stack) StartReplica(t testing.TB, cfg ReplicaConfig) *Replica {
 	r := &Replica{Registry: metrics.New()}
 	deps := natscallout.Deps{ServiceToken: s.tokens.verify, Metrics: natscallout.NewMetrics(r.Registry), Now: cfg.Now}
 	if !cfg.NoHoldRead {
-		schema := schemaOf(t, s.Broker.Pool)
 		upstream := s.Broker.Pool.Config()
-		r.Postgres = startPostgresPath(t, net.JoinHostPort(upstream.ConnConfig.Host, strconv.Itoa(int(upstream.ConnConfig.Port))))
+		r.Postgres = testnats.StartProxy(t, "tcp://"+net.JoinHostPort(upstream.ConnConfig.Host, strconv.Itoa(int(upstream.ConnConfig.Port))))
+		relay, err := url.Parse(r.Postgres.URL())
+		if err != nil {
+			t.Fatalf("holdtest: read the Postgres relay's address: %v", err)
+		}
+		port, err := strconv.Atoi(relay.Port())
+		if err != nil {
+			t.Fatalf("holdtest: read the Postgres relay's port: %v", err)
+		}
 		poolConfig := s.Broker.Pool.Config()
-		poolConfig.ConnConfig.Host, poolConfig.ConnConfig.Port = "127.0.0.1", uint16(r.Postgres.port)
+		poolConfig.ConnConfig.Host, poolConfig.ConnConfig.Port = relay.Hostname(), uint16(port)
 		poolConfig.ConnConfig.Fallbacks = nil
 		pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 		if err != nil {
@@ -85,7 +93,7 @@ func (s *Stack) StartReplica(t testing.TB, cfg ReplicaConfig) *Replica {
 		}
 		t.Cleanup(pool.Close)
 		read := HoldRead(func(ctx context.Context) (natshold.Reading, bool, error) {
-			return natshold.Read(ctx, pool, schema)
+			return natshold.Read(ctx, pool, s.schema)
 		})
 		if cfg.Wrap != nil {
 			read = cfg.Wrap(read)
@@ -104,57 +112,8 @@ func (s *Stack) StartReplica(t testing.TB, cfg ReplicaConfig) *Replica {
 			return reading, found, err
 		}, keys, nil, deps.Metrics)
 	}
-	dir := t.TempDir()
-	write := func(name, seed string) string {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(seed+"\n"), 0o600); err != nil {
-			t.Fatalf("holdtest: write %s: %v", name, err)
-		}
-		return path
-	}
-	service, err := natscallout.Start(context.Background(), natscallout.Settings{
-		URLs:           s.Cluster.URLs(),
-		SeedFile:       write("service.seed", s.Keys.ServiceSeed),
-		IssuerSeedFile: write("issuer.seed", s.Keys.IssuerSeed),
-		XKeySeedFile:   write("xkey.seed", s.Keys.XKeySeed),
-		Services:       stackServices(t),
-	}, deps)
-	if err != nil {
-		t.Fatalf("holdtest: start a replica of the auth service: %v", err)
-	}
-	t.Cleanup(service.Close)
-	ready, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := service.Ready(ready); err != nil {
-		t.Fatalf("holdtest: the replica's subscription never reached the hub: %v", err)
-	}
-	r.Service = service
+	r.Service = s.startAuth(t, "a replica of the auth service", deps)
 	return r
-}
-
-// stackServices are the services the stack's auth service lists (Start): the operator, the probe
-// and a listener entry of each of ListenerMachines.
-func stackServices(t testing.TB) []config.NATSService {
-	t.Helper()
-	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount}
-	for _, machine := range ListenerMachines {
-		entries = append(entries, "listener/"+machine+"/*="+listenerAccountPrefix+machine)
-	}
-	services, err := config.ParseNATSServices(strings.Join(entries, " "))
-	if err != nil {
-		t.Fatalf("holdtest: the stack's services: %v", err)
-	}
-	return services
-}
-
-// schemaOf is the schema pool's connections resolve the hold's tables in.
-func schemaOf(t testing.TB, pool *pgxpool.Pool) string {
-	t.Helper()
-	var schema string
-	if err := pool.QueryRow(context.Background(), `select current_schema()`).Scan(&schema); err != nil {
-		t.Fatalf("holdtest: read the test schema's name: %v", err)
-	}
-	return schema
 }
 
 // Close closes the replica: it leaves the queue group, and the hub sends its requests to the
@@ -211,146 +170,4 @@ func (r *Replica) scrape() []string {
 		lines = append(lines, scanner.Text())
 	}
 	return lines
-}
-
-// PostgresPath is a TCP path from one replica's pool to the stack's Postgres, which a test stalls
-// (every byte held in both directions, so a read waits past its deadline, as a network partition
-// makes it) or cuts (every connection closed and every new one refused, as a stopped Postgres
-// looks to the replica), and opens again.
-type PostgresPath struct {
-	listener net.Listener
-	port     int
-	upstream string
-
-	mu    sync.Mutex
-	cond  *sync.Cond
-	state pathState
-	conns map[net.Conn]struct{}
-}
-
-type pathState int
-
-const (
-	pathOpen pathState = iota
-	pathStalled
-	pathCut
-	pathClosed
-)
-
-// startPostgresPath listens on a port of its own on 127.0.0.1 and forwards each connection to
-// upstream, until t ends.
-func startPostgresPath(t testing.TB, upstream string) *PostgresPath {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("holdtest: listen for the replica's Postgres path: %v", err)
-	}
-	p := &PostgresPath{listener: listener, port: listener.Addr().(*net.TCPAddr).Port, upstream: upstream, conns: map[net.Conn]struct{}{}}
-	p.cond = sync.NewCond(&p.mu)
-	go p.accept()
-	t.Cleanup(func() {
-		p.set(pathClosed)
-		_ = listener.Close()
-	})
-	return p
-}
-
-// Stall holds every byte on the path, in both directions, until Open.
-func (p *PostgresPath) Stall() { p.set(pathStalled) }
-
-// Cut closes every connection on the path and refuses every new one until Open.
-func (p *PostgresPath) Cut() { p.set(pathCut) }
-
-// Open lets the path carry its bytes again.
-func (p *PostgresPath) Open() { p.set(pathOpen) }
-
-func (p *PostgresPath) set(state pathState) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.state = state
-	if state == pathCut || state == pathClosed {
-		for conn := range p.conns {
-			_ = conn.Close()
-		}
-		clear(p.conns)
-	}
-	p.cond.Broadcast()
-}
-
-func (p *PostgresPath) accept() {
-	for {
-		client, err := p.listener.Accept()
-		if err != nil {
-			return
-		}
-		p.mu.Lock()
-		refused := p.state == pathCut || p.state == pathClosed
-		p.mu.Unlock()
-		if refused {
-			_ = client.Close()
-			continue
-		}
-		server, err := net.DialTimeout("tcp", p.upstream, 10*time.Second)
-		if err != nil {
-			_ = client.Close()
-			continue
-		}
-		if !p.track(client, server) {
-			continue
-		}
-		go p.pipe(client, server)
-		go p.pipe(server, client)
-	}
-}
-
-// track records both halves of one forwarded connection, or closes them when the path was cut
-// meanwhile.
-func (p *PostgresPath) track(conns ...net.Conn) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.state == pathCut || p.state == pathClosed {
-		for _, conn := range conns {
-			_ = conn.Close()
-		}
-		return false
-	}
-	for _, conn := range conns {
-		p.conns[conn] = struct{}{}
-	}
-	return true
-}
-
-// pipe copies from to to, waiting before each write while the path is stalled, and closes both
-// when either ends or the path is cut.
-func (p *PostgresPath) pipe(from, to net.Conn) {
-	defer func() {
-		_ = from.Close()
-		_ = to.Close()
-	}()
-	buffer := make([]byte, 32<<10)
-	for {
-		n, err := from.Read(buffer)
-		if n > 0 {
-			if !p.flowing() {
-				return
-			}
-			if _, werr := to.Write(buffer[:n]); werr != nil {
-				return
-			}
-		}
-		// A read ends with the peer's close, the path's cut or the test's end; each ends the pipe.
-		if err != nil {
-			return
-		}
-	}
-}
-
-// flowing waits while the path is stalled, and reports whether it is open.
-func (p *PostgresPath) flowing() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for p.state == pathStalled {
-		p.cond.Wait()
-	}
-	return p.state == pathOpen
 }
