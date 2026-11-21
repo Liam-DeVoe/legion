@@ -1987,8 +1987,12 @@ func (m *Machine) afterTurn(ctx context.Context, heldWaited bool) error {
 // every other (turnCount), known or not, since the producer numbered that turn too: a count a
 // take's report makes known again (learnTurns) holds it, and an end after the end of the turn
 // given that take says another turn ran after that one, so that take's report places no count.
+// It is a turn's end like any other for the bound of the wait for a take's report, too: the turn
+// that ran was a start the bound would have been disarmed by, so it is armed whole again from this
+// end (reportwait.go, armReportWait).
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.log.Info("supervise: a turn this daemon never saw begin has ended")
+	m.disarm(TimerReport)
 	count := m.counted()
 	count.ended++
 	if !count.known || m.reportedAhead.sequence <= count.ended {

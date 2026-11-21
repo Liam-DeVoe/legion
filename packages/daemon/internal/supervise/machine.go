@@ -1589,11 +1589,17 @@ type Machine struct {
 	// memory only: a daemon restarted under the process starts it not known (NewMachine), and the
 	// report of the own turn of a take it accepts since can make it known again (learnTurns).
 	turns turnCount
+	// restoredTake is whether the pending take is one the store held accepted when a daemon start
+	// built this machine (NewMachine), rather than one this machine accepted (accept clears it).
+	// The wait for a take's report bounds such a take with nothing held only where its restored
+	// anchor is bound (reportReaches). It is memory only: what it says is of this daemon's start.
+	restoredTake bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
 	// process for a reason that keeps the process — a provider error's turn, a compaction, the
-	// second wait (takeBack) — and TaskValueTakeFailed for one a take of which this process failed
-	// to decide or record (undecided). The latest of the two decides, and any write of the value
+	// second wait (takeBack), the bound of the wait for the take's report (reportMissed) — and
+	// TaskValueTakeFailed for one a take of which this process failed to decide or record
+	// (undecided). The latest of the two decides, and any write of the value
 	// clears it (putValue). letGo clears it with the process, and it is memory only: a restart's
 	// own writes are its boot's (valueRead), and its write after a failed take is a hold's end.
 	rewrite valueRewrite
@@ -1910,7 +1916,9 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	}
 	// The take the store holds accepted is anchored where the store shows the daemon before this
 	// one handled no turn start after the one it gave it, for the producer's word that its text
-	// was held to give it its turn back (anchorRestored, heldUnrun).
+	// was held to give it its turn back (anchorRestored, heldUnrun), and for the bound of the wait
+	// for its report (reportReaches).
+	m.restoredTake = m.claim.Pending != nil && m.claim.Pending.taken()
 	m.anchorRestored()
 	m.publish()
 	return m, nil

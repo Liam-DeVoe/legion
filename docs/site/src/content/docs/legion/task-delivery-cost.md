@@ -136,6 +136,10 @@ So each figure that names a task names its claim too.
     When that report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
     The command counts that turn as a turn with no cause, since its lines name no task.
     A take that the daemon accepted before the restart is not put back either when the worker's first hello after the restart does not say that its shim dropped no frame while no daemon was connected, or when the worker does not answer on that connection: frames lost in the restart could hide the take's own turn, and the daemon writes `supervise: the first hello after the daemon start does not show its connection carries every frame its shim held; no report gives the restored take its turn back`.
+    A take whose turn the daemon counted ended, and whose report naming its task never came, is taken back when no report of it comes within the second bound, `worker_turn_start_timeout_seconds`, from the end of the last turn that ran.
+    That happens when the worker's host dropped the task's text, so the turn the daemon gave the take reported no task, and no report puts the take back.
+    The daemon writes `supervise: the report of the take's turn did not come by its bound; the task is taken back with the note of a cut turn, and what waited for the report runs or its value is written again` and `supervise: a task was taken back`, writes the value again under the same number, and charges nothing.
+    After a daemon restart the bound starts no earlier than the worker's first act, and it leaves alone a take that the daemon accepted before the restart unless the daemon would put that take back by the rules above: frames lost in the restart could hide the take's own turn, and the bound would end that turn.
 
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
   A turn that the daemon put back does not count.
