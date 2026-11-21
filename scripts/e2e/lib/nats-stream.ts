@@ -107,8 +107,7 @@ export async function createSessionBucket(
   );
   if (exists) throw new Error(`the bucket ${sessionBucket} exists already`);
   const kv = await nc.jetstream().views.kv(sessionBucket, {
-    description:
-      "Envoy session consumers' selection records: each session's current consumer name",
+    description: "Envoy session consumers' selection records: each session's current consumer name",
     history: 1,
     storage: StorageType.File,
     replicas: info.config.num_replicas,
