@@ -188,8 +188,9 @@ type StoreState struct {
 	// Family is the store's family, required: SessionFamily for the bucket's sentinel,
 	// DispatchFamily for Dispatch's store, DaemonFamily(project) for a daemon's. Key alone cannot
 	// tell two stores apart, so each store reads only a sentinel that names its own family: the
-	// session family's for KVStore, the one NewPGStore was given for PGStore. WriteSentinel writes
-	// whatever family its caller gives; CreateSessionBucket writes SessionFamily.
+	// session family's for KVStore, the one NewPGStore was given for PGStore. Each store's
+	// WriteSentinel writes its own family itself, and refuses a state that names another
+	// (ownSentinel).
 	Family string `json:"family"`
 	// Cutover is the family's cutover marker: CutoverDone, CutoverRolledBack, or "" before any.
 	Cutover string `json:"cutover,omitempty"`
@@ -210,6 +211,22 @@ type StoreState struct {
 	// BackupSHA256 and Hold are the recovery's inputs.
 	BackupSHA256 string `json:"backup_sha256,omitempty"`
 	Hold         string `json:"hold,omitempty"`
+}
+
+// ownSentinel is state as the store of family writes it under key: naming family, which it sets
+// when state names none, and carrying key. A state that names another family is refused as
+// ErrSentinelFamily naming both, so no caller writes another family's sentinel, or one its store
+// cannot read, by mistake.
+func ownSentinel(state StoreState, key, family string) (StoreState, error) {
+	switch state.Family {
+	case "":
+		state.Family = family
+	case family:
+	default:
+		return StoreState{}, fmt.Errorf("%w: a sentinel of the family %q cannot be written as the %q store's", ErrSentinelFamily, state.Family, family)
+	}
+	state.Key = key
+	return state, nil
 }
 
 // Store keeps the selection records of one family.

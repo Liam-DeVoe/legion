@@ -37,18 +37,14 @@ func SessionBucketConfig(replicas int) jetstream.KeyValueConfig {
 
 // CreateSessionBucket creates SessionBucket at replicas copies (SessionBucketConfig) and writes
 // its sentinel state, as the operator's create-bucket does before the cutover, and answers a
-// KVStore of it on conn. The sentinel names SessionFamily: state's Family is set to it when empty,
-// and another family is refused, since this bucket is the session family's alone. A bucket that
-// exists already is refused, since no writer may adopt a bucket another may own. The sentinel is
-// written only once the new stream answers, within ctx's deadline, else createBucketWait
-// (createBucket).
+// KVStore of it on conn. The sentinel names SessionFamily (WriteSentinel): a state that names
+// another family is refused before the bucket is created, since this bucket is the session
+// family's alone. A bucket that exists already is refused, since no writer may adopt a bucket
+// another may own. The sentinel is written only once the new stream answers, within ctx's deadline,
+// else createBucketWait (createBucket).
 func CreateSessionBucket(ctx context.Context, conn *nats.Conn, replicas int, state StoreState) (*KVStore, error) {
-	switch state.Family {
-	case "":
-		state.Family = SessionFamily
-	case SessionFamily:
-	default:
-		return nil, fmt.Errorf("consumer names: %s is the %s family's bucket, not %q's", SessionBucket, SessionFamily, state.Family)
+	if _, err := ownSentinel(state, SentinelKey, SessionFamily); err != nil {
+		return nil, fmt.Errorf("consumer names: %s: %w", SessionBucket, err)
 	}
 	return createBucket(ctx, conn, SessionBucketConfig(replicas), state)
 }
@@ -206,11 +202,16 @@ func (s *KVStore) Write(ctx context.Context, logical string, record Record, revi
 	return s.put(ctx, logical, data, revision)
 }
 
-// WriteSentinel writes the sentinel, under its own key (StoreState.Key), if its revision is still
-// revision (0: never written): the operator's create-bucket and replay write it, and a test of a
-// family writes it as they do.
+// WriteSentinel writes the sentinel, under its own key (StoreState.Key) and naming the session
+// family, which it sets when state names none (ownSentinel), if its revision is still revision
+// (0: never written): the operator's create-bucket and replay write it, and a test of a family
+// writes it as they do. A state naming another family is refused as ErrSentinelFamily, and
+// nothing is written.
 func (s *KVStore) WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error) {
-	state.Key = SentinelKey
+	state, err := ownSentinel(state, SentinelKey, SessionFamily)
+	if err != nil {
+		return 0, fmt.Errorf("consumer names: the bucket %s's %s: %w", s.bucket, SentinelKey, err)
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return 0, err

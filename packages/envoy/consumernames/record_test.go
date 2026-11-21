@@ -175,6 +175,62 @@ func TestASentinelsFamilyRoundTrips(t *testing.T) {
 	}
 }
 
+// sentinelStore is a store's sentinel, as each store reads and writes it.
+type sentinelStore interface {
+	State(ctx context.Context) (StoreState, error)
+	WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error)
+}
+
+// Each store's WriteSentinel writes its own family itself: a state that names no family is
+// written naming the store's, and one that names another family is refused, naming both, with
+// nothing written, so no caller writes another family's sentinel, or one its store cannot read, by
+// mistake. Before, WriteSentinel wrote whatever family its caller gave: a caller that forgot the
+// family wrote a sentinel its own store then refused to read, and one that named another family
+// wrote that family's. The control is the family-less sentinel put under the key as bytes, which
+// the store refuses to read.
+func TestWriteSentinelWritesItsStoresOwnFamily(t *testing.T) {
+	ctx := context.Background()
+	run := func(t *testing.T, store sentinelStore, family, key string, put func(data []byte)) {
+		revision, err := store.WriteSentinel(ctx, StoreState{Cutover: CutoverDone, Boundary: 1}, 0)
+		if err != nil {
+			t.Fatalf("WriteSentinel of a state naming no family = %v", err)
+		}
+		if state, err := store.State(ctx); err != nil || state.Family != family || state.Cutover != CutoverDone {
+			t.Errorf("the sentinel written with no family read back as %+v, %v; want the store's family %s, done", state, err, family)
+		}
+		_, err = store.WriteSentinel(ctx, StoreState{Family: DispatchFamily, Cutover: CutoverRolledBack}, revision)
+		if !errors.Is(err, ErrSentinelFamily) || !strings.Contains(err.Error(), `"`+DispatchFamily+`"`) || !strings.Contains(err.Error(), `"`+family+`"`) {
+			t.Errorf("WriteSentinel of another family's state = %v; want ErrSentinelFamily naming both families", err)
+		}
+		if state, err := store.State(ctx); err != nil || state.Cutover == CutoverRolledBack {
+			t.Errorf("after the refused write the sentinel reads %+v, %v; want the one written before", state, err)
+		}
+		data, err := json.Marshal(StoreState{Key: key, Cutover: CutoverDone})
+		if err != nil {
+			t.Fatal(err)
+		}
+		put(data)
+		if state, err := store.State(ctx); !errors.Is(err, ErrMalformedSentinel) {
+			t.Errorf("control: a sentinel under the key that names no family read as %+v, %v; want ErrMalformedSentinel", state, err)
+		}
+	}
+	t.Run("PGStore", func(t *testing.T) {
+		db := newMemPG()
+		family := daemonFamily(t, "legion-go")
+		run(t, pgStore(t, family, db), family, PGSentinelKey(family), func(data []byte) {
+			db.rows[PGSentinelKey(family)] = pgRow{data: data, revision: 9}
+		})
+	})
+	t.Run("KVStore", func(t *testing.T) {
+		live := newLiveStore(t, testnats.URL(t), nil)
+		run(t, live.store, SessionFamily, SentinelKey, func(data []byte) {
+			if _, err := live.js.Publish(ctx, "$KV."+SessionBucket+"."+SentinelKey, data); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+}
+
 // Each store reads only a sentinel that names its own family (KVStore the session family's, a
 // PGStore the one NewPGStore was given):
 // a key alone cannot tell two stores apart, so a well-formed sentinel naming another family, or one
@@ -223,7 +279,13 @@ func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
 	for _, other := range append(others[SessionFamily], "") {
 		t.Run("KVStore of session, a sentinel of "+other, func(t *testing.T) {
 			live := newLiveStore(t, testnats.URL(t), nil)
-			if _, err := live.store.WriteSentinel(ctx, StoreState{Family: other, Cutover: CutoverDone, Boundary: 1}, 0); err != nil {
+			// WriteSentinel writes the session family alone, so another family's sentinel is put
+			// under the key as bytes, as a principal with a write of the bucket can.
+			data, err := json.Marshal(StoreState{Key: SentinelKey, Family: other, Cutover: CutoverDone, Boundary: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := live.js.Publish(ctx, "$KV."+SessionBucket+"."+SentinelKey, data); err != nil {
 				t.Fatal(err)
 			}
 			state, err := live.store.State(ctx)

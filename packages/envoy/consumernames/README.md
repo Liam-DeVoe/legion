@@ -68,7 +68,9 @@ revision:
 - **The sentinel** (`StoreState`) names its store's family (`session`, `dispatch` or
   `daemon/<project>`) and holds the cutover marker (`cutover`: empty, `done` or `rolled_back`), the
   cutover boundary B (`boundary`), the stream's identity, and a recovery's inputs (`replay_from`,
-  `orphans`, the backup's sha256, the hold).
+  `orphans`, the backup's sha256, the hold). Each store's `WriteSentinel` writes its own family
+  itself when the state names none, and refuses a state that names another (`ErrSentinelFamily`,
+  naming both), so no caller writes another family's sentinel, or one its store cannot read.
 - **Strict read.** A value is a record only when it is one JSON object of the record's fields and
   nothing after it, carrying the key it was read under, with every field well formed. Any principal
   with a JetStream API grant can have the server store its answer under any key of the bucket

@@ -115,10 +115,15 @@ func (s *PGStore) Write(ctx context.Context, logical string, record Record, revi
 	return s.put(ctx, record.Key, data, revision)
 }
 
-// WriteSentinel writes the family's sentinel row, under its own key (StoreState.Key), if its
-// revision is still revision (0: never written).
+// WriteSentinel writes the family's sentinel row, under its own key (StoreState.Key) and naming the
+// store's family, which it sets when state names none (ownSentinel), if its revision is still
+// revision (0: never written). A state naming another family is refused as ErrSentinelFamily, and
+// nothing is written.
 func (s *PGStore) WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error) {
-	state.Key = PGSentinelKey(s.family)
+	state, err := ownSentinel(state, PGSentinelKey(s.family), s.family)
+	if err != nil {
+		return 0, fmt.Errorf("consumer names: %s's %s row: %w", IntakeConsumersTable, PGSentinelKey(s.family), err)
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return 0, err

@@ -46,12 +46,20 @@ func startingSentinelRig(t *testing.T, sentinel func(t *testing.T, conn *natsgo.
 }
 
 // writeSentinel writes the bucket's sentinel of family with the cutover done, over a key never
-// written.
+// written. It puts the sentinel under the key as bytes, as a principal with a write of the bucket
+// can, since the store's own WriteSentinel writes the session family alone.
 func writeSentinel(family string) func(t *testing.T, conn *natsgo.Conn) {
 	return func(t *testing.T, conn *natsgo.Conn) {
 		t.Helper()
-		store := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn})
-		if _, err := store.WriteSentinel(context.Background(), consumernames.StoreState{Family: family, Cutover: consumernames.CutoverDone, Boundary: 1}, 0); err != nil {
+		data, err := json.Marshal(consumernames.StoreState{Key: consumernames.SentinelKey, Family: family, Cutover: consumernames.CutoverDone, Boundary: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		js, err := conn.JetStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := js.Publish("$KV."+consumernames.SessionBucket+"."+consumernames.SentinelKey, data, natsgo.ExpectLastSequencePerSubject(0)); err != nil {
 			t.Fatal(err)
 		}
 	}
