@@ -68,14 +68,21 @@ type rules struct {
 	// table already admits before completion: the new prove's done opens a new epoch, abort's check
 	// reads the newest done prove, and abort is admitted again after its own stop.
 	AbortAfterOwnStop bool
+	// ReleasedPrepareAbort: a row lost in prepare and restored released with the hold's id leaves
+	// the hold's cohort and a journal that shows prepare (no done hold set, no ended entry, only hold
+	// set's and abort's own entries). On that row hold abort is admitted (Request.RowReleased), even
+	// over hold set's pending intent, which can no longer move the row from prepare; it deletes the
+	// cohort, which the cohort-delete route admits on that row too, and its done entry ends the
+	// journal. Without it no command is admitted on the released row and the journal never ends.
+	ReleasedPrepareAbort bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
 // no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal,
-// BackupCommand and HubAbortAfterStop.
+// BackupCommand, HubAbortAfterStop, AbortAfterOwnStop and ReleasedPrepareAbort.
 var currentRules = rules{ProveEpochs: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true,
 	Serialize: true, StopEntries: true, SetCommand: true, ConvertStoppable: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true, AbortAfterOwnStop: true}
+	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true, AbortAfterOwnStop: true, ReleasedPrepareAbort: true}
 
 var current = tableFor(currentRules)
 
@@ -248,6 +255,12 @@ type modelRequest struct {
 // Decide is the table's Decide.
 func (t table) Decide(d Done, req modelRequest) error {
 	w, c := d.Workflow, req.Command
+	if req.RowReleased {
+		if c == CommandAbort && t.Rules.ReleasedPrepareAbort && inPrepare(d) {
+			return nil
+		}
+		return wrap(ErrNotHeld, "the row is released: only hold abort is admitted on it, and only while the journal shows prepare")
+	}
 	if t.Rules.EndIsFinal {
 		for _, end := range []string{CommandRelease, CommandAbort} {
 			if hasDone(d.Ops, end) {
@@ -331,6 +344,17 @@ func (t table) Decide(d Done, req modelRequest) error {
 	return nil
 }
 
+// inPrepare reports whether the journal shows a hold that never got past prepare: no done entry,
+// so no done hold set and no ended entry, and no entry but hold set's and hold abort's own.
+func inPrepare(d Done) bool {
+	for _, o := range d.Ops {
+		if o.State == StateDone || (o.Command != CommandSet && o.Command != CommandAbort) {
+			return false
+		}
+	}
+	return true
+}
+
 // unchanged reports whether the record shows nothing changed: no entry but hold release's own,
 // which a crashed release leaves, and, with SetCommand, hold set's, whose restart and barrier
 // change no stored data. With WayOut a command's stop that recorded LeftUnchanged, and the intent
@@ -346,16 +370,16 @@ func (t table) unchanged(ops []Operation) bool {
 		if o.Command == CommandRelease || (t.Rules.SetCommand && o.Command == CommandSet) {
 			continue
 		}
-		if !t.Rules.WayOut || o.State == stateDone || (o.State == stateStop && o.Outputs[stopLeftKey] != LeftUnchanged) {
+		if !t.Rules.WayOut || o.State == StateDone || (o.State == StateStop && stopLeft(o) != LeftUnchanged) {
 			return false
 		}
-		if o.State == stateIntent && latest[o.Command].State == stateIntent {
-			return false // the run before this intent ended with no entry
+		if o.State == StateIntent && cutRun(ops, o.Command) {
+			return false // a run of this command ended with no entry
 		}
 		latest[o.Command] = o
 	}
 	for _, o := range latest {
-		if o.State != stateStop {
+		if o.State != StateStop {
 			return false
 		}
 	}

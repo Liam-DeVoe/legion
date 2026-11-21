@@ -510,19 +510,40 @@ func (s Store) Records(ctx context.Context, holdID, kind string) ([]Record, []De
 	return records, deletions, err
 }
 
-// DeleteCohort deletes holdID's cohort record of key at gen, for hold abort from prepare, its one
-// caller, which deletes it before it writes released. It deletes only while the hold row is
-// prepare with holdID (ErrHoldMismatch otherwise), holding the row so no move commits between the
-// check and the delete, and only the record whose gen is gen (ErrGenMismatch otherwise), the gen
-// the route verified the operator's signature over, so an old signature cannot delete a newer
-// record. The same statement keeps the delete in nats_hold_record_deletes with sig, that
-// signature, so every broker replica reads the record as the operator's delete (Records). It
-// deletes no record of another kind, so the journal outlives an abort.
-func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64, sig string) error {
+// DeleteCohort deletes holdID's cohort record of key at gen, for hold abort from prepare, which
+// deletes it before it writes released, and for hold abort on a row lost in prepare and restored
+// released. It deletes only while the hold row is prepare with holdID, or released with holdID
+// when released, the caller's judge of that hold's done record (nil when there is none), read in
+// the same transaction, answers nil; it answers ErrHoldMismatch otherwise, and released's refusal
+// as it is. It holds the row so no move commits between the check and the delete, and deletes only
+// the record whose gen is gen (ErrGenMismatch otherwise), the gen the route verified the
+// operator's signature over, so an old signature cannot delete a newer record. The same statement
+// keeps the delete in nats_hold_record_deletes with sig, that signature, so every broker replica
+// reads the record as the operator's delete (Records). It deletes no record of another kind, so
+// the journal outlives an abort.
+func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64, sig string, released func(journal *Record) error) error {
 	return s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
-		current, err := s.heldBy(ctx, tx, holdID, string(natsgrant.OperatorPhasePrepare))
+		current, err := s.heldBy(ctx, tx, holdID, "")
 		if err != nil {
 			return err
+		}
+		switch current.Phase {
+		case string(natsgrant.OperatorPhasePrepare):
+		case string(natsgrant.OperatorPhaseReleased):
+			var journal *Record
+			rec, err := scanRecord(tx.QueryRow(ctx, `select `+recordColumns+` from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3`,
+				holdID, KindDone, journalKey), holdID, KindDone)
+			switch {
+			case err == nil:
+				journal = &rec
+			case !errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("natshold: read the journal of hold %s: %w", holdID, err)
+			}
+			if err := released(journal); err != nil {
+				return err
+			}
+		default:
+			return &Conflict{Err: ErrHoldMismatch, Current: &current}
 		}
 		deleted, err := tx.Exec(ctx, `with deleted as (
 				delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3 and gen = $4

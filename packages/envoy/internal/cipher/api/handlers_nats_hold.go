@@ -479,14 +479,21 @@ func (s *server) restoreAdmitted(latest *natshold.LogEntry, journal *natshold.Re
 // asks the journal's own Decide: it answers hold release ErrAlreadyDone only once the hold has
 // ended, its first refusal (EndIsFinal).
 func (s *server) holdEnded(holdID string, journal *natshold.Record) bool {
+	d, ok := s.verifiedJournal(holdID, journal)
+	return ok && errors.Is(holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandRelease}), holdrecord.ErrAlreadyDone)
+}
+
+// verifiedJournal is journal, holdID's done record, decoded, when it is there and its signature
+// verifies against BROKER_NATS_HOLD_SIGNING_KEYS, and false otherwise.
+func (s *server) verifiedJournal(holdID string, journal *natshold.Record) (holdrecord.Done, bool) {
 	if journal == nil || signedrecord.Verify(s.deps.NATSHold.Keys, journal.Sig, signedrecord.Record(holdID, natshold.KindDone, journal.Key, journal.Gen, journal.Value)) != nil {
-		return false
+		return holdrecord.Done{}, false
 	}
 	var d holdrecord.Done
 	if json.Unmarshal(journal.Value, &d) != nil {
-		return false
+		return holdrecord.Done{}, false
 	}
-	return errors.Is(holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandRelease}), holdrecord.ErrAlreadyDone)
+	return d, true
 }
 
 // holdRecordBody is PUT /v1/nats-hold/records' body.
@@ -764,10 +771,12 @@ func (f *recordFloors) serve(holdID, kind string, records []natshold.Record, del
 }
 
 // deleteNATSHoldCohort deletes the cohort record the query names (?hold_id=, ?kind=cohort, ?key=,
-// ?gen=, ?sig=), for hold abort from prepare, its one caller: once the operator's signature over
-// the record's delete at that gen verifies (signedrecord.RecordDelete), only while the row is
-// prepare with that hold id, and only the record at that gen, so neither the operator's token alone
-// nor an old signature deletes a record.
+// ?gen=, ?sig=), for hold abort from prepare, and for hold abort on a row lost in prepare and
+// restored released: once the operator's signature over the record's delete at that gen verifies
+// (signedrecord.RecordDelete), only while the row is prepare with that hold id, or released with
+// it while that hold's done record verifies and its journal admits hold abort on the released row
+// (holdrecord.Request.RowReleased: the journal shows prepare), and only the record at that gen, so
+// neither the operator's token alone nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
 	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
@@ -780,7 +789,17 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record's delete at the gen it names", nil)
 		return
 	}
-	err = s.holdStore().DeleteCohort(r.Context(), holdID, key, gen, query.Get("sig"))
+	released := func(journal *natshold.Record) error {
+		d, ok := s.verifiedJournal(holdID, journal)
+		if !ok {
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s has no done record that verifies", natshold.ErrHoldMismatch, holdID)}
+		}
+		if err := holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandAbort, RowReleased: true}); err != nil {
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID)}
+		}
+		return nil
+	}
+	err = s.holdStore().DeleteCohort(r.Context(), holdID, key, gen, query.Get("sig"), released)
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
@@ -788,7 +807,7 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "delete the cohort", err)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error()+": the cohort is deleted only while the row is prepare with its hold id", conflict)
+		s.writeHoldConflict(w, http.StatusConflict, "hold_mismatch", err.Error()+": the cohort is deleted only while the row is prepare with its hold id, or released with it while that hold's journal shows prepare", conflict)
 		return
 	case errors.Is(err, natshold.ErrGenMismatch):
 		s.writeHoldConflict(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
