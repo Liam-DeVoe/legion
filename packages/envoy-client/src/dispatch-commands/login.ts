@@ -7,9 +7,9 @@
 // that, every session of the machine that sets `AGENT_SECRETS_MACHINE_IDENTITY=device-login`
 // trades the login for its broker token.
 //
-// It is the one `dispatch` command that is no Dispatch tool: a person runs it in a terminal,
-// before any session exists, so it reads no host, no session and no envoy.json, only the
-// environment's broker settings.
+// It is no Dispatch tool: a person runs it in a terminal, before any session exists, so it reads
+// no host, no session and no envoy.json, only the environment's broker settings. Its name, its
+// help and the sentence `dispatch --help` lists for it are `dispatch-login-command.ts`'s.
 
 import { hostname } from "node:os";
 import {
@@ -29,32 +29,14 @@ import {
   IDENTITY_VAR,
 } from "@legion/cipher-client/environment";
 import { PERSON_VAR } from "@legion/cipher-client/signins";
-import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { loginHelp } from "../dispatch-login-command";
 import { messageFor } from "../errors";
 
-/** The exit codes of every `dispatch` command: done, refused, and a usage error. */
+/** `dispatch login`'s exit codes: done, refused, and a usage error. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
-
-/** `dispatch login --help`. */
-const LOGIN_HELP = [
-  "Usage: dispatch login --device [--person <address>]",
-  "",
-  "Logs this machine in at the secrets broker, once per machine, for a machine with no identity of its own, such as a laptop. It prints a code and the page to type it into; the person the login names approves it there, signed in to Dispatch. The login is then kept in the file AGENT_SECRETS_DEVICE_LOGIN_FILE names (default ~/.config/legion/device-login.json), mode 0600, and every session that sets AGENT_SECRETS_MACHINE_IDENTITY=device-login trades it for its broker token.",
-  "",
-  "Flags:",
-  "  --device",
-  "      Log in with the broker's device grant: the only way there is, and required.",
-  "  --person <address>",
-  `      The person who approves the login, by the address they sign in to Dispatch with; else ${PERSON_VAR}.`,
-  "",
-  `It reads ${BROKER_URL_VAR}, the broker, and needs no Dispatch host or session.`,
-  "",
-  `Example: ${DEVICE_LOGIN_COMMAND} --person ada@example.com`,
-  "",
-].join("\n");
 
 /** What the command writes to and waits with. */
 export interface LoginIo {
@@ -95,14 +77,14 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
 
 /**
  * Runs `dispatch login` with `argv` (the words after `login`) in `env`, and answers its exit
- * code: 0 once the login is approved and kept; 1 when the broker refused it, the person denied it,
- * its code expired, or it could not be kept (the message then names its credential, live at the
- * broker, and any copy of it kept); 2 for a usage error, before any request: no `--device`, no
- * person (`--person`, else `AGENT_SECRETS_PERSON`), no broker (`AGENT_SECRETS_URL`) a device login
- * may use (https, or http on this machine's loopback), a login directory others may write to,
- * another user owns, or this user cannot enter and write to, or a login file setting that names
- * something other than a regular file (a directory, a named pipe, a socket, a device, a loop of
- * links).
+ * code: 0 once the login is approved and kept; 1 when the broker could not be reached or refused
+ * it, the person denied it, its code expired, or it could not be kept (the message then names its
+ * credential, live at the broker, and any copy of it kept); 2 for a usage error, before any
+ * request: no `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), no broker
+ * (`AGENT_SECRETS_URL`) a device login may use (https, or http on this machine's loopback), a
+ * login directory others may write to, another user owns, or this user cannot enter and write
+ * to, or a login file setting that names something other than a regular file (a directory, a
+ * named pipe, a socket, a device, a loop of links).
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -115,7 +97,7 @@ export async function loginCommand(
   };
   const parsed = parseLogin(argv);
   if (parsed.kind === "help") {
-    io.print(LOGIN_HELP);
+    io.print(loginHelp());
     return OK;
   }
   if (parsed.kind === "refused")

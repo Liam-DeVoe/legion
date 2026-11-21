@@ -2841,7 +2841,7 @@ GATES = [
         # cipher-client with them: every generator entry resolves to src/dispatch-command.ts,
         # whose program holds no cipher-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
         # the shared envoy_client_dep read would declare a read this job does not make.
-        (ENVOY_CLIENT_SRC, "docs/site/generators/dispatch-tools.ts:10-16 imports ../../../packages/envoy-client/src/dispatch-command.ts"),
+        (ENVOY_CLIENT_SRC, "docs/site/generators/dispatch-tools.ts:10-15 imports ../../../packages/envoy-client/src/dispatch-command.ts"),
         ("skills/**", "docs/site/generators/legion-skills.ts:15-19 reads skills/*/SKILL.md"),
         ("deploy/kubernetes/**", "docs/site/generators/legion-config.ts's exampleFiles lists every tracked deploy/kubernetes *.example/*.yml/*.yaml and its renderExamples reads each whole"),
         ("scripts/third-party-notices.ts", "docs/site/astro.config.mjs:10-15; packages/dispatch/web/vite.config.ts:6-12"),

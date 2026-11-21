@@ -1152,10 +1152,11 @@ the operator's sign-in (above).
 
 Agents reach Dispatch through one command, `dispatch <command> [flags]`, which each host plugin
 bundles from `bin/dispatch.ts` into its `dist/dispatch.js` and puts on its agents' shell `PATH`
-through a `bin/dispatch` shim. The command line has one command per spec, and `proxy`, which no
-spec defines (`dispatch proxy`, below). `dispatch-command.ts` derives the spec commands and their
-flags from the specs: one command per spec, named by the spec's name without its `dispatch_`
-prefix and with hyphens for underscores (`issue-update`), one flag per field
+through a `bin/dispatch` shim. The command line has one command per spec, and `proxy` and
+`login`, which no spec defines and `dispatch-command.ts` lists in `COMMANDS_OUTSIDE_THE_SPECS`
+(both below). `dispatch-command.ts` derives the spec commands and their flags from the specs: one
+command per spec, named by the spec's name without its `dispatch_` prefix and with hyphens for
+underscores (`issue-update`), one flag per field
 (`reply_to_ask` → `--reply-to-ask`), `--<field>-file <path>` for every string (`-` reads stdin),
 `--no-<field>` for a boolean, `--clear-<field>` for a nullable field or a list, a repeated
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
@@ -1177,9 +1178,10 @@ needs Dispatch on. It prints the Dispatch server, the session and the socket tha
 use, and starts nothing.
 
 `dispatch login --device [--person <address>]` logs the machine in at the secrets broker
-(`dispatch-commands/login.ts`). It is the one command that is no Dispatch call. A person runs
-it once per machine, in a terminal of their own: it waits for the approval until the code
-lapses, which a command timeout of an agent's shell can cut short. The command is each plugin's
+(`dispatch-commands/login.ts`; its help is `src/dispatch-login-command.ts`'s). It is no Dispatch
+call, and takes no `--dry-run`. A person runs it once per machine, in a terminal of their own: it
+waits for the approval until the code lapses, which a command timeout of an agent's shell can cut
+short. The command is each plugin's
 `bin/dispatch`, under the directory the host installed the plugin in (claude-envoy's or
 pi-envoy's), or `bun packages/envoy-client/bin/dispatch.ts` from a checkout of this repository.
 It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, and the person who
@@ -1277,9 +1279,9 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 ### `dispatch proxy`
 
 `dispatch proxy --socket <path> [--dry-run] -- <command> [<argument>...]` runs `<command>` with a
-proxy to Dispatch on a unix socket (`src/dispatch-proxy.ts`). It is the one command of `dispatch`
-that no spec defines. `src/dispatch-proxy-command.ts` holds its parser, its help and its exit line,
-and `dispatch proxy --help` prints the help. The proxy is for a tool that calls Dispatch's HTTP API
+proxy to Dispatch on a unix socket (`src/dispatch-proxy.ts`). No Dispatch spec defines it.
+`src/dispatch-proxy-command.ts` holds its parser, its help and its exit line, and
+`dispatch proxy --help` prints the help. The proxy is for a tool that calls Dispatch's HTTP API
 in a session under `DISPATCH_TOKEN_BROKER=1`. Such a session holds no bearer to give the tool, and
 the proxy runs only under that setting.
 
@@ -1422,8 +1424,9 @@ itself or for a request, and it prints no credential.
 `@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-eight
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives one command and its flags from each spec, and no host
-adds aliases or descriptions of its own. `dispatch proxy` is the one command that no spec defines:
-`dispatch-proxy-command.ts` holds its parser and its help.
+adds aliases or descriptions of its own. No spec defines `dispatch proxy` or `dispatch login`,
+which `dispatch-command.ts` lists in `COMMANDS_OUTSIDE_THE_SPECS`: `dispatch-proxy-command.ts`
+holds the proxy's parser and help, and `dispatch-login-command.ts` holds the login's help.
 `dispatch issue-update` reads the issue first and sends `PATCH /api/v1/issues/{key}` as the
 session actor: `status` (a Legion lifecycle status), `title`, `labels` (replacing the set),
 `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
@@ -1491,7 +1494,7 @@ Dispatch's code.
 
 `dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
 reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
-session's own credential as every command presents it, and prints Dispatch's JSON answer for
+session's own credential as every Dispatch call presents it, and prints Dispatch's JSON answer for
 `jq`. It takes no method and no body: a write goes through the command named for it. The spec
 refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
 backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,

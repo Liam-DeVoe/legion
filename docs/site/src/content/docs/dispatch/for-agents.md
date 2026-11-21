@@ -101,12 +101,17 @@ Listings include the creator actor (`created_by`, nullable) and creation time (`
 Bulk parent changes are ordinary independent keyed writes, at most eight in flight: a refusal does not hold the others, and each failed request retries or resumes through the shared pending-writes controls.
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
-A command with several problems is refused once, with every problem listed, so the next run can
-fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
-exits 2 on a usage error, such as an unknown command or flags it refused before any request.
-`dispatch proxy` exits with the status of the command it runs instead. It exits 127 for a command
-that does not exist, 126 for a command that cannot run, 128 plus the signal's number for a command
-that a signal ended, and 2 on a usage error or when it cannot start ([The proxy](#the-proxy)).
+A command that a Dispatch spec defines, given several problems, is refused once with every problem
+listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or
+AskGate refused it. It exits 2 on a usage error, such as flags it refused before any request, and
+an unknown command exits 2 too. The commands that no spec defines exit by rules of their own,
+which each one's help gives. `dispatch proxy` exits with the status of the command it runs. It
+exits 127 for a command that does not exist, 126 for a command that cannot run, 128 plus the
+signal's number for a command that a signal ended, and 2 on a usage error or when it cannot start
+([The proxy](#the-proxy)). `dispatch login --device`, which a person runs once to log a machine in
+at the secrets broker and which takes no `--dry-run`, exits 0 once the login is kept, and 1 when
+the broker could not be reached or refused it, the person denied it, its code expired, or the login
+could not be kept. It exits 2 on a usage error, before any request.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -431,9 +436,9 @@ each key's answer for 24 hours; the same key with a different request is refused
 
 `dispatch proxy --socket <path> -- <command> [<argument>...]` runs a command, such as a script that
 reads Dispatch, with a proxy to Dispatch on a unix socket. It is for a session under
-`DISPATCH_TOKEN_BROKER=1`, which holds no bearer to give a tool, and it runs only there. It is the
-one `dispatch` command that no Dispatch spec defines. `dispatch proxy --help` prints its help, and
-the [command reference](/legion/dispatch/reference/tools/) shows the same text.
+`DISPATCH_TOKEN_BROKER=1`, which holds no bearer to give a tool, and it runs only there. No
+Dispatch spec defines it. `dispatch proxy --help` prints its help, and the
+[command reference](/legion/dispatch/reference/tools/) shows the same text.
 
 The proxy listens on the socket for the whole run of the command. It starts the command only when
 the socket takes connections, with `DISPATCH_PROXY_SOCKET` set to the socket's path. The command

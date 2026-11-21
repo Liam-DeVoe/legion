@@ -485,10 +485,10 @@ write result names (`notifications.dispatch.issue.<KEY>.>` or
 `notifications.dispatch.document.<PROJECT>.<SLUG>.>`), which it names only when none of the
 session's subscriptions, as the Envoy listener records them, covers that owner.
 
-The shared specs in `@legion/contracts` supply the description and flags of each command but one:
-`@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag per field.
-The one other command is `dispatch proxy`, which no spec defines (`@legion/envoy-client`'s README,
-"`dispatch proxy`").
+The shared specs in `@legion/contracts` supply the description and flags of each command they
+define: `@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag
+per field. `dispatch proxy` and `dispatch login`, which no spec defines, carry their own help
+(`@legion/envoy-client`'s README, "`dispatch proxy`" and "The `dispatch` command").
 
 `dispatch artifact` takes at most one upload source: a local `--path`, or inline `--content`.
 With neither, it makes an empty document under `--name`, which a person or an agent writes in

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 
 /**
- * The surface of `dispatch proxy --socket <path> -- <command>`, the one command of the `dispatch`
+ * The surface of `dispatch proxy --socket <path> -- <command>`, a command of the `dispatch`
  * command line that no Dispatch tool spec defines: its name, the sentence `dispatch --help` lists,
  * its help, its exit line and the parse of its own arguments. The proxy itself is
  * `dispatch-proxy.ts`.

@@ -27,6 +27,7 @@ import {
   executeDispatchTool,
 } from "./dispatch-execute";
 import { DispatchWriteLandedError } from "./dispatch-http";
+import { LOGIN_COMMAND } from "./dispatch-login-command";
 import { runDispatchProxy, socketPathTaken } from "./dispatch-proxy";
 import { PROXY_COMMAND, parseProxyArgv, proxyExitLine, proxyHelp } from "./dispatch-proxy-command";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
@@ -244,7 +245,8 @@ function commandHost(
 }
 
 /** The session a call acts as, its state directory and the envoy.json its plugin chose: what
- *  every command and `dispatch proxy` resolve alike before they read Dispatch's configuration. */
+ *  every spec command and `dispatch proxy` resolve alike before they read Dispatch's
+ *  configuration. */
 interface CallSession {
   readonly host: DispatchHost;
   readonly sessionId: string;
@@ -339,7 +341,7 @@ function callDispatch(
 
 /**
  * `dispatch proxy --socket <path> -- <command>`: its own arguments (`parseProxyArgv`), then the
- * host, the session and Dispatch resolved as every command resolves them, under
+ * host, the session and Dispatch resolved as every spec command resolves them, under
  * `DISPATCH_TOKEN_BROKER=1` with a DPoP credential, then the proxy itself (`runDispatchProxy`).
  * Every line of its own goes to standard error, since standard output belongs to its command, and
  * none goes to the session's records: it calls neither `refuse` nor `recordOutcome`. A run that
@@ -432,7 +434,7 @@ export async function runDispatchCli(
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
-  if (argv[0] === "login") {
+  if (argv[0] === LOGIN_COMMAND) {
     return await loginCommand(argv.slice(1), env, {
       print,
       fetchImpl: io.fetchImpl,
@@ -481,9 +483,9 @@ export async function runDispatchCli(
     return code;
   };
 
-  // `dispatch proxy` is the one command no Dispatch tool spec defines: its own parser takes `--`
-  // and the command after it, and it prints every line of its own on standard error, since its
-  // command's standard output is the command's alone.
+  // No Dispatch tool spec defines `dispatch proxy`: its own parser takes `--` and the command
+  // after it, and it prints every line of its own on standard error, since its command's
+  // standard output is the command's alone.
   if (argv[0] === PROXY_COMMAND) {
     return await runProxyCommand(argv.slice(1), env, rawEnv, io, ledgerHost);
   }

@@ -20,7 +20,7 @@ import { hasErrnoCode, messageFor } from "./errors";
  * `/api/` and a comment POST that carries an `Idempotency-Key` to the Dispatch server this
  * session's `dispatch` command resolves, with the session's one broker credential, and gives back
  * Dispatch's answer as Dispatch sent it. `dispatch-cli.ts` resolves the server, the session and
- * the credential as every command does, then calls {@link runDispatchProxy}; the parse of its
+ * the credential as every spec command does, then calls {@link runDispatchProxy}; the parse of its
  * arguments and its help are `dispatch-proxy-command.ts`'s.
  *
  * The standard practice it follows: a local authenticating proxy holds the credential and signs
