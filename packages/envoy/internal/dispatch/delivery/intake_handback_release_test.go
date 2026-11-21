@@ -350,7 +350,9 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     the publish (its log line). Then, before the link moves, the stop is seen waiting for its
 //     hand-back with its hold live (handBacksWaiting). Once the link moves, the hold is released by
 //     the time the stop returns, and the hand-back reached the server before the standby created the
-//     durable.
+//     durable. The subtest reads its own premise first: a stop whose deadline passed before its
+//     hand-back landed logs intakeHoldFinalizing, and the subtest then fails as a premise not met,
+//     naming the budget, rather than as a stop that kept its hold;
 //   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
 //     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
 //     holder then, and the standby has not created the durable. With the link still held, the hold is
@@ -415,6 +417,12 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		case <-row.stopped:
 		case <-time.After(30 * time.Second):
 			t.Fatal("the holder's stop did not return within 30 s of the link moving")
+		}
+		// The premise: the hand-back landed before the stop's deadline. A stop whose deadline passed
+		// first has said so (intakeHoldFinalizing) and left its hold to the finalizer, and such a run
+		// reads nothing of the stop's release, whatever the hold reads next.
+		if loggedMessage(logs(), intakeHoldFinalizing) {
+			t.Fatalf("control: the premise did not hold: the stop's deadline (landingBudget, %s) passed before its hand-back landed, so this run reads nothing of a hand-back that lands before it; the holder logged %q", landingBudget, loggedMessages(logs()))
 		}
 		if holdLive(t, row.pool) {
 			t.Fatalf("the stop kept its hold although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
