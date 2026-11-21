@@ -30,11 +30,11 @@ const (
 // under every labelled issue. The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, a person-scoped broker
-// token, the personal-token check and a new token's default scopes all read Scopes, and none of
-// them may hold this scope: it is the daemon's broker token's alone. DISPATCH_SCOPES in
-// @legion/contracts and the check on agent_tokens.scopes do not name it either, so no personal
-// token can hold it.
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
+// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
+// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it.
 const ScopeLegionStatus = "legion-status"
 
 // Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
