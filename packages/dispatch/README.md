@@ -144,8 +144,8 @@ DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone se
 ```
 
 `DISPATCH_E2E_ACCESS_ISSUER=1` gives a run the secrets broker's service-account token, so a
-driver can read the membership answer (`GET /api/v1/access/projects/{key}`,
-`GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), which a harness without it
+driver can read the routes `DISPATCH_ACCESS_ACCOUNTS` gates (the membership answer and the
+repository answer, listed in `packages/envoy/cmd/dispatch/README.md`), which a harness without it
 refuses to every caller. The harness then starts one row more before the server,
 `e2e/run-access-issuer.sh`: `packages/envoy/cmd/dev-oidc-issuer`, which keeps the broker
 account's token in a file in the harness's own directory and reports its port as
@@ -400,10 +400,9 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 
 It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets.
 
-`DISPATCH_E2E_SIGNIN=google` signs people in as a deployment that signs in with Google does, with
-outside sign-in on: the same issuer stands in for Google, and each server admits the Workspace
-domain `example.com` and, as a restricted member, an account outside it that a project's access
-list names (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_OUTSIDE=1`). Each server answers at a
+`DISPATCH_E2E_SIGNIN=google` signs people in as a deployment that signs in with Google does: the
+same issuer stands in for Google, and each server admits the Workspace domain `example.com`
+(`DISPATCH_SIGNIN_DOMAIN`) and no Google account outside it. Each server answers at a
 second origin, `http://localhost:<port>` (`DISPATCH_OUTSIDE_ORIGIN`), beside its canonical
 `http://127.0.0.1:<port>`. The issuer signs in nobody of its own: a spec queues each person, with
 the claims Google gives that account, at the issuer's `POST /_dev/sign-in-as`. Only

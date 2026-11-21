@@ -57,11 +57,10 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # Under `google` the issuer stands in for Google: the server admits the Workspace
 # domain DISPATCH_E2E_SIGNIN_DOMAIN (DISPATCH_SIGNIN_DOMAIN, which
 # DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1 lets it take from an issuer other than
-# Google's, under the DISPATCH_TEST_HOOKS=1 below) and, with outside sign-in on
-# (DISPATCH_SIGNIN_OUTSIDE=1), an account outside it that a project names; and it
-# answers at a second origin, DISPATCH_OUTSIDE_ORIGIN, the dashboard origin's
-# scheme and port under the host DISPATCH_E2E_SIGNIN_OUTSIDE_HOST. Every input a
-# mode names is required.
+# Google's, under the DISPATCH_TEST_HOOKS=1 below), and no Google account outside
+# it; and it answers at a second origin, DISPATCH_OUTSIDE_ORIGIN, the dashboard
+# origin's scheme and port under the host DISPATCH_E2E_SIGNIN_OUTSIDE_HOST. Every
+# input a mode names is required.
 case "${DISPATCH_E2E_PROCESSES:-1}" in
   1)
     own_port_variable=DISPATCH_E2E_PORT
@@ -162,7 +161,6 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
         # port in two-process mode, or `{port}` on a held one, which held-port.py writes in.
         signin_env+=(
           DISPATCH_SIGNIN_DOMAIN="$DISPATCH_E2E_SIGNIN_DOMAIN"
-          DISPATCH_SIGNIN_OUTSIDE=1
           DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1
           DISPATCH_OUTSIDE_ORIGIN="${server_origin%%://*}://$DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:${server_origin##*:}"
         )
@@ -251,14 +249,17 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
-# The membership answer's reader, read before the sweep below: DISPATCH_E2E_ACCESS_ISSUER=1
-# (e2e/harness-access.ts) has the harness start e2e/run-access-issuer.sh before this server, a dev
-# OIDC issuer on DISPATCH_E2E_ACCESS_ISSUER_PORT that keeps the secrets broker's projected
-# service-account token in the file the harness exports as DISPATCH_E2E_ACCESS_TOKEN_FILE. The
-# server verifies that issuer's tokens for the audience e2e/access-account.sh names and lists that
-# file's account in DISPATCH_ACCESS_ACCOUNTS, so a driver reads the three routes of the membership
-# answer with the file's token. Unset, the server verifies no service-account token, and those
-# routes refuse every caller, as a deployment that names no access account does.
+# The reader of the routes DISPATCH_ACCESS_ACCOUNTS gates (the membership answer and the repository
+# answer, listed in packages/envoy/cmd/dispatch/README.md), read before the sweep below:
+# DISPATCH_E2E_ACCESS_ISSUER=1 (e2e/harness-access.ts) has the harness start
+# e2e/run-access-issuer.sh before this server, a dev OIDC issuer on DISPATCH_E2E_ACCESS_ISSUER_PORT
+# that keeps the secrets broker's projected service-account token in the file the harness exports
+# as DISPATCH_E2E_ACCESS_TOKEN_FILE. The server verifies that issuer's tokens for the audience
+# e2e/access-account.sh names and lists that file's account in DISPATCH_ACCESS_ACCOUNTS, so a
+# driver may read those routes with the file's token; the one that does,
+# e2e/acceptance/membership-answer.sh, reads the membership answer's. Unset, the server verifies no
+# service-account token, and those routes refuse every caller, as a deployment that names no
+# access account does.
 access_env=()
 if [ "${DISPATCH_E2E_ACCESS_ISSUER:-}" = "1" ]; then
   : "${DISPATCH_E2E_ACCESS_ISSUER_PORT:?DISPATCH_E2E_ACCESS_ISSUER_PORT must name the dev OIDC issuer (e2e/run-access-issuer.sh) DISPATCH_E2E_ACCESS_ISSUER=1 verifies tokens from}"
@@ -433,8 +434,8 @@ done
 # against, the only Host the router serves under dev sign-in, the origin of the
 # sign-in's /auth/callback, and the Playwright config's baseURL. Under google
 # DISPATCH_OUTSIDE_ORIGIN is the second one, and a request whose Host is its host
-# is answered as that origin: its callback and the Origin its writes must carry
-# are that origin's. Dev sign-in also refuses a DATABASE_URL whose host is not
+# is answered as that origin: the Origin its writes must carry is that origin's,
+# and it serves no Google sign-in. Dev sign-in also refuses a DATABASE_URL whose host is not
 # loopback or a unix socket, and any DISPATCH_SIGNIN_* setting.
 app_pem="$(openssl genrsa 2048 2>/dev/null)"
 

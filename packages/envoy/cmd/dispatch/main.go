@@ -93,9 +93,10 @@ type bootConfig struct {
 	DefaultProject string
 	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
 	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
-	// account of the issuer and audience), and those of them that read the membership answer.
-	// resolveBootConfig has held each to the subject's form, refused either without
-	// DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list leaves out.
+	// account of the issuer and audience), and those of them that read the routes of the read
+	// class accessAccount. resolveBootConfig has held each to the subject's form, refused either
+	// without DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list
+	// leaves out.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
@@ -130,14 +131,11 @@ type bootConfig struct {
 	SignInClientSecret string
 	SignInGroup        string
 	SignInDomain       string
-	// SignInOutside is DISPATCH_SIGNIN_OUTSIDE=1: under SignInDomain, a verified Google account
-	// outside the domain signs in too, as a restricted member, while a project names it directly
-	// (identity.OutsideRule).
-	SignInOutside bool
 	// SignInWorkspaceDomains is DISPATCH_SIGNIN_WORKSPACE_DOMAINS, the other domains the Workspace
-	// owns beside SignInDomain, each trimmed; nil when unset. Under SignInOutside an account outside
-	// the Workspace at an address on one of them is refused (identity.OutsideRule.WorkspaceDomains);
-	// without it nothing reads them.
+	// owns beside SignInDomain, each trimmed; nil when unset. A person from outside the domain at an
+	// address on one of them, or on SignInDomain, is refused (identity.OutsideRule's
+	// WorkspaceDomains, identity.WorkspaceAddress), since such an address signs in only as a
+	// Workspace account.
 	SignInWorkspaceDomains []string
 	// SignInPasskey is DISPATCH_SIGNIN_PASSKEY=1: under SignInDomain, a person outside the domain
 	// that a project names directly signs in with a passkey at OutsideOrigin, enrolled through the
@@ -1570,9 +1568,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
-	if boot.SignInOutside, err = parseSignInSwitch("DISPATCH_SIGNIN_OUTSIDE", env.get("DISPATCH_SIGNIN_OUTSIDE")); err != nil {
-		return bootConfig{}, err
-	}
 	if boot.SignInPasskey, err = parseSignInSwitch("DISPATCH_SIGNIN_PASSKEY", env.get("DISPATCH_SIGNIN_PASSKEY")); err != nil {
 		return bootConfig{}, err
 	}
@@ -1624,8 +1619,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		// reaches that address name themself in the header and be that person (R6). The
 		// acknowledgement below says the header is trusted on a test harness; it cannot make a
 		// deployment's outside address trustworthy, so the pair is refused before it is read.
-		// DISPATCH_SIGNIN_OUTSIDE, the other setting that faces people from outside, is refused
-		// beside header identity with the rest of the sign-in settings (checkSignInSettings).
 		if boot.OutsideOrigin != "" {
 			return bootConfig{}, errors.New("DISPATCH_OUTSIDE_ORIGIN must be unset because header identity takes whoever a request header names, and the outside origin is the address people from outside reach Dispatch at: header identity is only for tests and local harnesses")
 		}
@@ -1723,10 +1716,10 @@ func commaList(env settingValues, name string) []string {
 
 // checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
 // accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
-// would configure nothing, and each entry is a service account's subject. An account that reads
-// the membership answer must be one the deployment admits, which every account is while
-// DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch stores one, a
-// lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
+// would configure nothing, and each entry is a service account's subject. An access account must
+// be one the deployment admits, which every account is while DISPATCH_OIDC_ACCOUNTS names none.
+// The owner fallback is a person as Dispatch stores one, a lowercase email; the refusal does not
+// repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
 func checkAccessSettings(boot bootConfig) error {
 	for _, list := range []struct {
 		name     string
@@ -1750,7 +1743,7 @@ func checkAccessSettings(boot bootConfig) error {
 	if len(boot.OIDCAccounts) > 0 {
 		for _, account := range boot.AccessAccounts {
 			if !slices.Contains(boot.OIDCAccounts, account) {
-				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an account that reads the membership answer must be one the deployment admits", account)
+				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an access account must be one the deployment admits", account)
 			}
 		}
 	}

@@ -182,6 +182,8 @@ with a list, a store that cannot hold a private project yet, for any of the reas
 
 Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
 The database's part is read at boot, right after the migrate and before any loop or the repository seed, and a boot whose read fails logs `dispatch: read the private projects` and exits 1, as one whose database will not open does; it is read again every 30 seconds after, and a later read that fails answers `1`.
+So the header lags the database by at most 30 seconds, and only where the list is empty: the switch to private refuses a project the list does not name (`409 PRIVATE_PROJECT_NOT_PROVISIONED`), and a non-empty list answers `1` without a read, so only a project made private outside the switch (a direct SQL write) answers `0` until the next read, while every read of projects already holds it private.
+No notification is involved, so none can be missed, and a restart reads at boot.
 
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
@@ -189,13 +191,14 @@ With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the v
 
 `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
 A request whose `Host` is its host, compared as a URL parser reads a host (the name without regard to case or trailing dots, the port as a number, the scheme's default being none: `outside.example.`, `outside.example:443`, `outside.example:0443`), is answered as that origin (`routes.sameHost`); another port is another origin.
-With `DISPATCH_SIGNIN_OUTSIDE=1` its Google sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too; under every other sign-in `/auth/start` and `/auth/callback` answer there the `404` a path no route serves answers, and the client lists no outside callback (`routes.googleSignInHere`).
+Startup refuses an outside origin on `DISPATCH_SERVER_URL`'s host, whatever either port, with the names compared the same way (`routes.HostName`), so `DISPATCH_SERVER_URL=https://dispatch.example.` beside `DISPATCH_OUTSIDE_ORIGIN=https://dispatch.example` is refused (`checkOutsideOrigin`).
 A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other, and an agent's broker token proof must name that origin (below), so an agent whose Dispatch URL is the outside origin signs for it.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
+At the outside origin `GET /auth/start` and `GET /auth/callback`, Google's sign-in, answer `404`, with passkey sign-in on or off (`routes.googleSignInHere`): Google signs in the Workspace's people alone, at `DISPATCH_SERVER_URL`, so the sign-in client lists no callback of the outside origin.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
-under Google sign-in its host must also be one Google takes in an OAuth redirect URI, a DNS name whose top-level domain is on the public suffix list and no IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.GoogleRedirectHost`);
+under Google sign-in its host must also be a public domain name, a DNS name whose top-level domain is on the public suffix list and no IP address, since it is the relying party of every passkey enrolled there, which is a registrable domain name and never an IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.PasskeyHost`);
 a value that breaks any of these refuses startup.
-Beside header identity it refuses startup too, whatever `DISPATCH_IDENTITY_HEADER_TRUSTED` says, and beside `DISPATCH_DEV_SIGNIN=1`: each takes whoever a request header or a loopback client names, so anyone who reached the outside origin could name the person they are, as `DISPATCH_SIGNIN_OUTSIDE` is refused beside header identity for the same reason.
+Beside header identity it refuses startup too, whatever `DISPATCH_IDENTITY_HEADER_TRUSTED` says, and beside `DISPATCH_DEV_SIGNIN=1`: each takes whoever a request header or a loopback client names, so anyone who reached the outside origin could name the person they are.
 A dashboard URL of either origin is read as a reference, by the server and by `rebuild-refs`, so a link written on one origin opens on the other.
 
 `DISPATCH_ALLOWED_LOGINS`, `DISPATCH_APP_CLIENT_SECRET` and `DISPATCH_ASSET_STORE_BUCKET` are removed:
@@ -216,10 +219,17 @@ A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
 a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
-`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), the secrets broker's own account in production;
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`) and the repository answer (`GET /api/v1/access/projects/{key}/repositories`), the secrets broker's own account in production;
 a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
 every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
+
+The repository answer is the list of the repositories a project's issues resolve to, which the secrets broker reads for the edge listener, so that the GitHub events the edge listener relays to an outside person's agents are those of exactly these repositories:
+`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
+It is read live on each request from `refs.ProjectRepositoriesSQL`, the one rule of which repositories a project owns, which the GitHub proxy (`/api/github/rest/...`, under Routes) and Delivery read too, so the answer lists a repository exactly when that rule counts the project as its owner:
+issues are a repository's only owners, so a repository mapping gives the project nothing, and no recorded rename is read.
+An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list: its unread ancestors may name a repository the list would leave out.
+That refusal reaches only the secrets broker, so Dispatch also logs it at WARN, `dispatch: the repository answer is unresolved`, with `project` and `issue`, for the operator who must repair the chain.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -296,8 +306,13 @@ While a project is private and `session_projects_filled` holds no row, an open v
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
 The one exception is a restricted member's own machine logins: at a browser, `GET /api/v1/machine-logins` answers them their own and no service's (`api.restrictedOwnLoginRoutes`); through a token of theirs it is `403 OAUTH_SCOPE_REQUIRED` where the token lacks the route's scopes, as their agent's `named` token and any broker token of theirs do (a restricted member's broker token holds no scope, `api.brokerTokenActor`), since the route's scope gate refuses those first, and `403 RESTRICTED_MEMBER` through their personal token, which holds them.
+The live agent view on `/ws/live` relays a session's whole transcript, which holds whatever the session read, so it is narrower than the agents list (`access.SessionContentClause`): a caller that is not open watches only a session that its own person's broker-issued token alone is tied to (`session_owners`), with a listener list that names only projects it sees or with none; while a project is private, an open viewer watches a session that wrote in no project it does not see when its listener list names only projects it sees, or, with no list, when a broker-issued token tied the session to somebody and every private project each such person sees is one it sees too.
+No viewer but the server and the session itself watches a session that reached a project the viewer does not see (`session_reached_projects`): an access change that takes a project from a person (off its list, a group taken off the list or the person out of the group, the group deleted, an owner change) records the project against every session tied to that person, and a listener record that lists a private project for a session records it too, in the write's own transaction, so neither a lost project nor a narrowed list hides what the transcript holds; nothing removes such a pair.
+A sign-in or an hourly confirmation that makes a full member restricted takes projects from that person too (every public project and every one a group admitted them to, unless it names them), so it records, in the same transaction, each project the person saw before and no longer sees against every session tied to them (`store.RecordReachedProjects`, which every such change calls).
+Dispatch ties a session to its person when it verifies the session's broker-issued token, on a read as on a write, before the request reads anything; a verified request whose tie cannot be written is `503 DATABASE_UNAVAILABLE`, so no session reads under a person it is not tied to, and an access change that takes a project from that person finds every session that read under them.
+The view asks the rule again before each batch of the session's frames, so a write that ties the session to another person or records a project it newly wrote in or reached ends a view that may no longer read it before the next frame; it reads nothing for the server, the viewer's own session, or an open viewer while no project is private.
 While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
-A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects.
+A direct conversation is read by its parties and by an open viewer, each only when it may see every session in the conversation and read each one's content by the live agent view's rule (`access.PartyClause`, which holds every session party to `access.SessionContentClause` as well as `access.SessionClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions its own person proved; a file of a session's conversation, that file's graph node and an ask or a comment on it are read by the same rule, since what a session writes can hold whatever it read, while the agents list keeps `access.SessionClause` alone.
 While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
 With no private project in the deployment, a full member's credential sees every project its person sees, whatever it lists.
@@ -662,9 +677,9 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 `DISPATCH_IDENTITY` controls how browser requests identify a person, always by lowercase email:
 
 - `cookie` (the default) accepts the signed session cookie (`__Host-dsession`, or `dsession`: see the session cookie, below), which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
-  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_OUTSIDE=1` and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
-  `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
-  `DISPATCH_SIGNIN_PASSKEY=1` (below) needs the domain and `DISPATCH_OUTSIDE_ORIGIN`, and refuses the boot beside `DISPATCH_SIGNIN_OUTSIDE=1`, so a deployment signs people from outside in one way, and under `iap` identity and header identity, each naming the setting.
+  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
+  `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
+  `DISPATCH_SIGNIN_PASSKEY=1` (below) needs the domain and `DISPATCH_OUTSIDE_ORIGIN`, and refuses the boot under `iap` identity and header identity, each naming the setting.
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
   it issues no session cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
@@ -693,23 +708,20 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
-- With `DISPATCH_SIGNIN_OUTSIDE=1` beside the domain, a verified Google account outside it signs in too, as a restricted member (`people.member_kind`), while some project's owner is that email or some project's access list names it directly (`access.Listed`; a group on a list never admits such an account).
-  An address on a domain the Workspace owns, or on a subdomain of one, that is not the Workspace's account (a personal Google account, or another Workspace's) is refused without reading the lists, with a 403 page saying such an address signs in only as a Workspace account (`identity.ErrWorkspaceAddress`), else it would read every project that lists the member, even before the member's first sign-in.
-  The Workspace's domains are `DISPATCH_SIGNIN_DOMAIN` and each one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists (`identity.OutsideRule.WorkspaceDomains`), which only this rule and the passkey rule (`identity.PasskeyRule`, below) read, so a deployment with neither `DISPATCH_SIGNIN_OUTSIDE=1` nor `DISPATCH_SIGNIN_PASSKEY=1` answers as before whatever it lists;
+- A restricted member (`people.member_kind` `restricted`) is a person from outside the domain whom some project's owner is or some project's access list names directly (`access.Listed`; a group on a list never admits such a person).
+  No Google sign-in admits one: at the canonical origin an account whose `hd` is not the domain gets the 403 page saying it is not in the domain, whatever a list names, and the outside origin serves no Google sign-in at all (`/auth/start` and `/auth/callback` answer `404` there, with passkey sign-in on or off), so the Google client's OAuth consent screen stays Internal and lists `<DISPATCH_SERVER_URL>/auth/callback` alone.
+  A person from outside signs in with a passkey (`DISPATCH_SIGNIN_PASSKEY`, below), and the rule that admits restricted members (`identity.PasskeyRule`, over the `identity.OutsideRule` it embeds) answers for them.
+  An address on a domain the Workspace owns, or on a subdomain of one, is never a restricted member's: the rule refuses it without reading the lists (`identity.ErrWorkspaceAddress`, `identity.WorkspaceAddress`), else a person from outside holding it would read every project that lists the member, even before the member's first sign-in.
+  The Workspace's domains are `DISPATCH_SIGNIN_DOMAIN` and each one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists (`identity.OutsideRule.WorkspaceDomains`): list every domain the Workspace owns;
   a Workspace account (`hd` the domain) still signs in as a full member at an address on any of them.
   An internationalized entry is written in Unicode or as its A-labels, and the rule holds it as its A-labels (`idna.Lookup.ToASCII`);
   an address's domain is compared without one trailing dot and, when written in Unicode, also as IDNA lookup maps it, so `bob@bücher.example`, `Bob@BÜCHER.example` and the sign-in domain in fullwidth letters are refused as their A-label spellings are.
-  For a domain the Workspace owns that the setting does not list, an account outside the Workspace never takes the address of a full member who signed in under another Google account, or under none:
-  `PgPeopleStore.SignInSubject` records nothing in the transaction that would take the address (`auth.ErrAddressHeldByMember`), so the member's sessions and refresh token stand, and the callback answers a 403 page saying the address is a Workspace member's, with no cookie, logged `msg="dispatch: sign-in refused"` with its `reason`.
-  An account outside the domain that no list names gets a 403 page saying so and naming it.
-  The hourly confirmation (below) runs the same rule, so an account no list names any more, or whose address is now on a domain the Workspace owns, is signed out at its next request past the hour, and one the setting no longer admits too;
-  a list that cannot be read is no refusal: the callback answers `500 IDENTITY_ERROR` with no cookie, and a confirmation keeps the sign-in and fails only the request, as an issuer that cannot be reached does.
-  The authorization request then names no `hd` on any origin, since `hd` narrows Google's account chooser to the domain and would hide an outside account; it never decides who signs in.
-  The Google client's OAuth consent screen's audience must be External, which with the scopes Dispatch asks for (`openid`, `email`, `profile`) needs no test-user list and keeps refresh tokens past seven days in Testing status; the client lists `<DISPATCH_SERVER_URL>/auth/callback` and, with an outside origin, `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback` (a deployment with `DISPATCH_SIGNIN_PASSKEY=1` instead lists no outside callback, below).
+  For a domain the Workspace owns that the setting does not list, a restricted member never takes the address of a full member who signed in under another Google account, or under none:
+  the passkey store's enrollment (`PgPasskeys.Enroll`) is refused before it writes (`refuseAMembersAddress`) and again under the address's lock (`signInAccountTx`), each `auth.ErrAddressHeldByMember`, which records nothing, so the member's sessions and refresh token stand.
+  A restricted member's Google sign-in that an earlier build admitted ends at its next hourly confirmation (below), since the refreshed account is not in the domain.
 
 - With `DISPATCH_SIGNIN_PASSKEY=1` beside the domain, a person outside it whom a project's access list names directly signs in as a restricted member with a passkey, at `DISPATCH_OUTSIDE_ORIGIN` alone, and with no Google account (`identity.PasskeyRule`, `identity.Passkeys`, the `/auth/passkey/*` routes below).
-  Google then signs in the domain's people alone, as without `DISPATCH_SIGNIN_OUTSIDE`, and at the outside origin `/auth/start` and `/auth/callback` answer `404`:
-  the Google client lists `<DISPATCH_SERVER_URL>/auth/callback` alone, no outside callback, and its consent screen's audience may stay Internal.
+  Google signs in the domain's people alone, as without the setting.
   List every other domain the Workspace owns in `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`: an address on a domain it does not list is no Workspace address to this rule, so the owner can make a link for a Workspace member's address there before the member first signs in with Google, and the passkey enrolled with it keeps signing in as that address after the Workspace offboards the member, since no passkey sign-in or confirmation asks Google.
   The project's owner makes a single-use link for the person in their browser (`POST /api/v1/projects/{key}/access/people/{email}/invitations`, which any token is refused): `<DISPATCH_OUTSIDE_ORIGIN>/enroll#<token>`, 32 random bytes, base64url, in the URL fragment, which no server logs and no browser sends on, of which `outside_invitations` keeps only the SHA-256.
   It lapses 24 hours after it was made, or at its first use, and a newer link for the same person and project, the person's removal from that project's list and the owner's Reset each end it.
@@ -726,10 +738,10 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   The owner's browser reads, on the project's access answer, each passkey of a listed person: when it was enrolled, who made the link that enrolled it (`made_by`) and, where the owner sees it, that link's project (`passkeys`), whom it can make a link for now (`invitable`), and whom another owner's project names (`listed_by_another_owner`); no other caller reads them, and a deployment without the setting answers none.
   With the setting turned off, a passkey's cookie is refused at its next use, `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF` (below), and the person's tokens are refused as below.
 
-- A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that signs them in at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`, the decision `identity.OutsideRule.Person` makes for an account outside the Workspace):
-  it acts only while `DISPATCH_SIGNIN_OUTSIDE=1` or `DISPATCH_SIGNIN_PASSKEY=1`, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
+- A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that admits them at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`):
+  it acts only while `DISPATCH_SIGNIN_PASSKEY=1`, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
   lists that cannot be read are `503 IDENTITY_UNAVAILABLE`, never an accept.
-  So turning the setting off, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation (a passkey's at once when the owner takes them off the last list, and at its next use once `DISPATCH_SIGNIN_PASSKEY` is off).
+  So a deployment that stops admitting restricted members, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation (a passkey's at once when the owner takes them off the last list, and at its next use once `DISPATCH_SIGNIN_PASSKEY` is off).
   None of these revokes the token, so it acts again once all hold again;
   another Google account's sign-in to the address revokes a personal token (below).
   A personal token's owner's member kind is read in the token's own lookup (`api.personalTokenActor`), by the owner in the form `people.email` holds (`canonical_login`, migration `20261117000831`: `model.CanonicalLogin` in SQL, every Unicode space trimmed and A-Z lowered), whatever case or surrounding space the token's row spells it with, so a full member's token, and one whose owner has no `people` row, reads nothing more and answers as before.
@@ -750,10 +762,10 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 - A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
   `reason` is `WORKSPACE_ADDRESS` for a restricted member whose address is now on a domain the Workspace owns (`identity.ErrWorkspaceAddress`), whatever the lists say;
   `NOT_LISTED` once no list names the account;
-  or `OUTSIDE_SIGNIN_OFF` for a restricted member once neither `DISPATCH_SIGNIN_OUTSIDE` nor `DISPATCH_SIGNIN_PASSKEY` is on (`DomainRule.SignedOutReason`), a passkey's account at its very next request, since the refusal of its cookie writes nothing.
+  or `OUTSIDE_SIGNIN_OFF` for a restricted member once the deployment admits nobody from outside (`DomainRule.SignedOutReason`), a passkey's account at its very next request, since the refusal of its cookie writes nothing.
   It is read from the address's row and the lists at each request (`SignInRule.SignedOutReason`), not kept from the request that ended the sign-in, so it reaches the person whichever of their requests ran the confirmation, a live socket's heartbeat included, and whichever server process answers the next one, and it needs no column of its own.
   A sign-out, an expired cookie, a person a list still names at an address on no domain the Workspace owns, an address another account or another sign-in holds now and a full member are told none;
-  a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_PASSKEY` holds no restricted member, so it answers as it always has.
+  a deployment that never admitted a restricted member holds none, so it answers as it always has.
   A person who signed out and whom the rule would refuse now is told why too (`WORKSPACE_ADDRESS` or `NOT_LISTED`), at another browser still holding the session the sign-out ended.
 
 - A person is their email, so an address passed from one account to another is one person.
@@ -3240,6 +3252,9 @@ A pair a row already holds is not written again, so a second run writes no pair,
 Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
 It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
 
+The same statement records, in `session_owners`, the person each proven session's `owner` names, canonical by `model.CanonicalLogin`'s rule, as every live append of a proven session and every verified broker-issued token does: the live agent view reads it (`access.SessionContentClause`).
+`--reset` does not empty it, since no build recorded it under another rule, and it neither writes nor empties `session_reached_projects`, whose pairs only access changes, member kind changes and listener records write and nothing removes.
+
 Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
 Until it has run, an open viewer of a deployment that holds a private project reads no session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet.
 Under `Recreate` the build before has stopped when the migration runs.
@@ -4494,7 +4509,7 @@ Each item below names a field of the line, then what it holds.
 
   The route's own pattern (`/api/v1/issues/{key}`), so one route's requests group together whatever ids their paths carry;
   `unmatched` for a path under `/api`, `/v1`, `/auth`, `/ws` or `/healthz` that no route answers.
-  A route that answers at one origin alone (`/auth/start` and `/auth/callback` at `DISPATCH_OUTSIDE_ORIGIN` without `DISPATCH_SIGNIN_OUTSIDE=1`, the passkey ceremonies at `DISPATCH_SERVER_URL`) answers the other the same `404` and logs that request under its own pattern, once.
+  A route that answers at one origin alone (`/auth/start` and `/auth/callback` at `DISPATCH_SERVER_URL`, the passkey ceremonies at `DISPATCH_OUTSIDE_ORIGIN`) answers the other the same `404` and logs that request under its own pattern, once.
 
 - `path`
 
@@ -4605,24 +4620,20 @@ Each item below names a path with its method and identity, then its purpose.
 - `/auth/start` (GET; none)
 
   Start Google sign-in at the sign-in issuer:
-  the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and, unless `DISPATCH_SIGNIN_OUTSIDE=1`, the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
-  With `?prompt=select_account`, the link a refused outside sign-in offers, it asks Google for its account chooser too (`prompt=select_account consent`), so a browser holding one Google session can pick another account rather than be sent back with the one just refused.
-  The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
+  the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
+  The issuer sends the browser back to `DISPATCH_SERVER_URL`'s callback, the one origin that serves Google's sign-in.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
-  Unless `DISPATCH_SIGNIN_OUTSIDE=1`, it answers at `DISPATCH_OUTSIDE_ORIGIN` the `404` a path no route serves answers, as `/auth/callback` does there: a person from outside signs in there with a passkey (below), or not at all.
+  At `DISPATCH_OUTSIDE_ORIGIN` it answers the `404` a path no route serves answers, as `/auth/callback` does there, with passkey sign-in on or off: a person from outside signs in there with a passkey (below), or not at all.
 
 - `/auth/callback` (GET; sign-in state)
 
   Exchange the issuer's code and sign in the person `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` admits:
   under a group, named by the email in their pool username, anyone outside the group refused with a 403 page naming them;
   under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason;
-  with `DISPATCH_SIGNIN_OUTSIDE=1`, also, as a restricted member, a verified Google account outside the domain that a project's owner is or a project's access list names directly, anyone else outside the domain refused with a 403 page saying no access list names them, and an account outside the Workspace at an address on a domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`, or a subdomain of one) refused with a 403 page saying such an address signs in only as a Workspace account.
   Record the person, their member kind and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account, or none, held it, and revoking its personal tokens when another account did), issue the cookie.
-  An account outside the Workspace at the address of a full member under another account, or under none, is not recorded and gets a 403 page saying the address is a Workspace member's, with no cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
-  `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
@@ -4656,6 +4667,7 @@ Each item below names a path with its method and identity, then its purpose.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   That 401 is `{"code":"NO_IDENTITY","error":"unauthorized"}`, except for a person from outside the domain whose sign-in the hourly confirmation ended, whose 401 here and on every route adds `reason` (`NOT_LISTED`, `OUTSIDE_SIGNIN_OFF` or `WORKSPACE_ADDRESS`) and `login`, their address, and says why in `error` (Identity, above).
+  At `DISPATCH_OUTSIDE_ORIGIN` that 401 also carries `sign_in: "passkey"`, with passkey sign-in on or off, so the page there offers the passkey and no Google sign-in, which that origin does not serve (`routes.whoamiSignIn`).
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
@@ -5027,6 +5039,7 @@ Each item below names a path with its method and identity, then its purpose.
   A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
+  The repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer read, is the exception: it reads no rename.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
 
