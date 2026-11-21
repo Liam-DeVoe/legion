@@ -15,7 +15,8 @@ import (
 // fireWorkBackHooks fires each hook of the deployment that stands on the work-back event and
 // counts this move, now that recordPass has counted it. counts is the task's whole backward-move
 // map after the move (record.ReturnCounts.BackwardMoves), which is what each hook reads its own
-// number from.
+// number from, and label names that task before each prompt (taskLabel; "" for a run with no
+// plan rows).
 //
 // A hook fires when the move is one its Moves selects and the counts of the moves it selects,
 // added up after this move, are a positive whole multiple of its Every. Two hooks on one event
@@ -26,7 +27,7 @@ import (
 // A hook whose Every is not positive fires never. The loader refuses such a hook
 // (config's readHookEvery), so this is the guard that keeps a hook written by any other route
 // from dividing by nothing rather than a rule of its own.
-func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, counts map[string]int, pr *record.PullRequest) error {
+func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue, label string, from, to phase.Phase, counts map[string]int, pr *record.PullRequest) error {
 	pair := phase.Pair(from, to)
 	for _, hook := range e.cfg.Hooks {
 		if hook.On != HookEventWorkBack || hook.Every <= 0 || !hookSelects(hook, pair) {
@@ -36,7 +37,7 @@ func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue string,
 		if count <= 0 || count%hook.Every != 0 {
 			continue
 		}
-		if err := e.fireHook(ctx, tx, issue, hook, from, to, count, counts, pr); err != nil {
+		if err := e.fireHook(ctx, tx, issue, label, hook, from, to, count, counts, pr); err != nil {
 			return err
 		}
 	}
@@ -73,8 +74,9 @@ func hookCount(hook Hook, counts map[string]int) int {
 }
 
 // fireHook writes one firing, in the move's own transaction: one record.HookPrompt for each role
-// the hook names, in the hook's own order with repeats dropped, and then one message on the issue
-// naming what fired and whom it reached.
+// the hook names, in the hook's own order with repeats dropped, its prompt the hook's own after
+// label, which names the task whose returns fired it, and then one message on the issue naming
+// what fired and whom it reached.
 //
 // Whether a role has a session is not read here. A role that has run no phase holds no topic, and
 // the outbox ends that one row undelivered with a log line, as it does for any role message; a
@@ -84,7 +86,7 @@ func hookCount(hook Hook, counts map[string]int) int {
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
 // raised it, so the firing copies nothing.
-func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue string, hook Hook, from, to phase.Phase, count int, counts map[string]int, pr *record.PullRequest) error {
+func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue, label string, hook Hook, from, to phase.Phase, count int, counts map[string]int, pr *record.PullRequest) error {
 	// The pull request is named as GitHub names it, owner/name#n, and is left out for an issue
 	// whose record holds none: a hook can fire on a move made before the pull request exists.
 	pull := ""
@@ -98,7 +100,7 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue string, hook Hoo
 		}
 		prompted = append(prompted, string(role))
 		if err := e.enqueue(ctx, tx, issue, record.HookPrompt{Hook: hook.Name, Role: role, From: from, To: to,
-			Count: count, Counts: counts, PullRequest: pull, Prompt: hook.Prompt}); err != nil {
+			Count: count, Counts: counts, PullRequest: pull, Prompt: label + hook.Prompt}); err != nil {
 			return err
 		}
 	}

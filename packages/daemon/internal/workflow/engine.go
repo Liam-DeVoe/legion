@@ -2268,12 +2268,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// few lines down, which would leave the start comparing a phase with itself.
 	movedBack := phase.MovesBack(issue.Phase, row.To)
 	if movedBack {
-		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
+		if err := e.recordPass(ctx, tx, issue, w, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
 	}
 	if trigger == TriggerReviewRejected {
-		if err := e.recordRound(ctx, tx, issue, w.Task, pr); err != nil {
+		if err := e.recordRound(ctx, tx, issue, w, pr); err != nil {
 			return err
 		}
 	}

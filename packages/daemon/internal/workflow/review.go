@@ -1414,11 +1414,12 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	return nil
 }
 
-// recordPass counts task one more pass through the implementing, testing and reviewing stretch,
-// which every move back into an earlier phase opens, counts the move itself under its own pair,
-// and fires the deployment's hooks that stand on the move (fireWorkBackHooks). The counts are the
-// task's (record.Store.ReturnCounts): on its plan_tasks row for an issue with plan rows, and on the
-// implementer's phases row for an issue with none, where they lived before plans.
+// recordPass counts w's task one more pass through the implementing, testing and reviewing
+// stretch, which every move back into an earlier phase opens, counts the move itself under its own
+// pair, and fires the deployment's hooks that stand on the move (fireWorkBackHooks), each prompt
+// naming the task (taskLabel). The counts are the task's (record.Store.ReturnCounts): on its
+// plan_tasks row for an issue with plan rows, and on the implementer's phases row for an issue with
+// none, where they lived before plans.
 //
 // The pass bounds nothing: it is the counter the handoff completion key carries
 // (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
@@ -1434,7 +1435,8 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // raises is the completion key's alone. Everything is written in the move's own transaction, so
 // a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
 // move back: the transition starts the next role whatever a hook said.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) error {
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, from, to phase.Phase, pr *record.PullRequest) error {
+	task := w.Task
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return err
@@ -1450,14 +1452,27 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts); err != nil {
 		return err
 	}
-	return e.fireWorkBackHooks(ctx, tx, issue.Key, from, to, counts.BackwardMoves, pr)
+	return e.fireWorkBackHooks(ctx, tx, issue.Key, taskLabel(w), from, to, counts.BackwardMoves, pr)
 }
 
-// recordRound counts task one more review round, which only a review that requested changes
-// ends, and tells the architect once for each value review_round_cap holds. The counts are the
-// task's, where recordPass keeps them. The move's own pair and the deployment's hooks are counted
-// where every backward move passes (recordPass), so a round and a move are counted apart: this
-// one is the cap's, and everything it writes it writes in the move's own transaction.
+// taskLabel is what a notice or a prompt about the returns of w's task puts before its reason:
+// `task <id>: ` for a run with plan rows, which can hold more than one task, so its owner reads
+// whose returns they were, and "" for a run with none, which has no task to name and reads as it
+// did before plans.
+func taskLabel(w Walk) string {
+	if !w.Stored {
+		return ""
+	}
+	return "task " + w.Task + ": "
+}
+
+// recordRound counts w's task one more review round, which only a review that requested changes
+// ends, and tells the architect once for each value review_round_cap holds, its notice naming the
+// task (taskLabel). The counts are the task's, where recordPass keeps them. The move's own pair and
+// the deployment's hooks are counted where every backward move passes (recordPass), so a round and
+// a move are counted apart: this one is the cap's, and everything it writes it writes in the move's
+// own transaction. The cap's message on the issue keeps its one fixed line, which a reader of a
+// fleet counts the cap by; the notice to the architect names the task.
 //
 // What the cap reads is Rounds less the rounds a conflict with the base caused
 // (classify.ConflictRound, record.ReturnCounts.ConflictRounds). A round opened while the record
@@ -1481,7 +1496,8 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //
 // Nothing here holds the move back: the transition starts the next role whatever the counts read. A write that fails is still an error of the move's transaction, as
 // every other write of that transaction is, and is returned rather than swallowed.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, pr *record.PullRequest) error {
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest) error {
+	task := w.Task
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return err
@@ -1507,7 +1523,7 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message}); err != nil {
 			return err
 		}
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: taskLabel(w) + message}); err != nil {
 			return err
 		}
 	}
