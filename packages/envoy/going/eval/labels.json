@@ -410,16 +410,16 @@
       "labels": [
         {
           "by": "claude",
-          "label": "pass",
-          "why": "The chart has eight bars, one for each week from the week of 28 September (2026-W40) to that of 16 November (2026-W47)."
+          "label": "fail",
+          "why": "The chart has eight bars, running from the week of 28 September (2026-W40) to the week of 16 November (2026-W47), and the text says \"eight weeks… through the week of 16 November\". The fact asks for one bar per ISO week from 2026-W40 to 2026-W46, so the answer's chart covers one week too many."
         },
         {
           "by": "gpt",
-          "label": "pass",
-          "why": "The chart includes one row for every week from Monday 2026-09-28 through Monday 2026-11-16, corresponding to ISO weeks 2026-W40 through 2026-W47."
+          "label": "fail",
+          "why": "The chart shows eight weekly bars from 2026-W40 through 2026-W47, rather than the required seven-week range ending at 2026-W46."
         }
       ],
-      "label": "pass"
+      "label": "fail"
     },
     {
       "task": "find-03",
