@@ -12,17 +12,28 @@ import (
 )
 
 var (
-	// dollarTag opens a dollar-quoted string: $$ or $tag$, a tag being an identifier ($1 is a
-	// parameter, not a quote).
-	dollarTag = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$`)
+	// dollarTag opens a dollar-quoted string: $$ or $tag$, a tag being an identifier, whose bytes
+	// at or above 0x80 count as letters, as Postgres's scanner counts them (dolq_start, dolq_cont);
+	// $1 is a parameter, not a quote.
+	dollarTag = regexp.MustCompile(`^\$(?:(?:[A-Za-z_]|[^\x00-\x7F])(?:[A-Za-z_0-9]|[^\x00-\x7F])*)?\$`)
 	// plainIdentifier is a quoted identifier's text that names what the bare word would.
-	plainIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
+	plainIdentifier = regexp.MustCompile(`^(?:[A-Za-z_]|[^\x00-\x7F])(?:[A-Za-z_0-9$]|[^\x00-\x7F])*$`)
 )
 
-// identifierByte reports whether b can continue an identifier, so that an E before a quote is the
-// escape-string prefix only when it stands alone.
+// identifierByte reports whether b can continue an identifier, a byte at or above 0x80 among
+// them as Postgres's scanner reads it (ident_cont), so that a name, an E before a quote or a $
+// before a tag is read as part of the identifier it touches.
 func identifierByte(b byte) bool {
-	return b == '_' || b == '$' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+	return b == '_' || b == '$' || b >= 0x80 || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+// standalone reports whether code[start:end] is a whole token: no identifier byte touches it on
+// the left, or on the right when the match ends in an identifier byte.
+func standalone(code string, start, end int) bool {
+	if start > 0 && identifierByte(code[start-1]) {
+		return false
+	}
+	return end >= len(code) || !identifierByte(code[end-1]) || !identifierByte(code[end])
 }
 
 // maskSQL answers src as Postgres's lexer reads it, with nothing but code left: each comment (`--`
@@ -131,8 +142,11 @@ func sqlCallEnd(code string, open int) int {
 
 // sqlCalls answers each call of the function name in code, whole, and its top-level arguments.
 func sqlCalls(code, name string) (calls []string, args [][]string) {
-	opener := regexp.MustCompile(`(?i)(?:\b[a-z_]+\.)?\b` + name + `\s*\(`)
+	opener := regexp.MustCompile(`(?i)` + name + `\s*\(`)
 	for _, at := range opener.FindAllStringIndex(code, -1) {
+		if !standalone(code, at[0], at[0]+len(name)) {
+			continue
+		}
 		end := sqlCallEnd(code, at[1]-1)
 		if end < 0 {
 			continue
@@ -181,7 +195,7 @@ var (
 	// return of the row: neither reads a column. rowRead is any other mention of the row.
 	assignTarget = regexp.MustCompile(`(?i)\bnew\s*\.\s*(search|title_lexemes)\s*:=`)
 	returnNew    = regexp.MustCompile(`(?i)\breturn\s+new\b`)
-	rowRead      = regexp.MustCompile(`(?i)\bnew\b(\s*\.\s*\w+)?`)
+	rowRead      = regexp.MustCompile(`(?i)new(\s*\.\s*\w+)?`)
 	// directParse is a call of any of Postgres's functions that parse text into a vector:
 	// to_tsvector, json_to_tsvector, jsonb_to_tsvector, qualified or not.
 	directParse = regexp.MustCompile(`(?i)\w*to_tsvector\s*\(`)
@@ -282,6 +296,9 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 		rest := withoutCalls(code, "search_document_text", "search_text", "issue_search_vector", "title_lexemes", "issue_embedding_spec")
 		rest = returnNew.ReplaceAllString(assignTarget.ReplaceAllString(rest, "assigned :="), "return")
 		for _, at := range rowRead.FindAllStringIndex(rest, -1) {
+			if !standalone(rest, at[0], at[0]+len("new")) {
+				continue
+			}
 			read := strings.ToLower(strings.Join(strings.Fields(rest[at[0]:at[1]]), ""))
 			if read != "new.search" && read != "new.artifact_id" {
 				t.Errorf("%s reads the row raw (%s), outside the normalising functions:\n%s", name, rest[at[0]:min(len(rest), at[1]+40)], code)
