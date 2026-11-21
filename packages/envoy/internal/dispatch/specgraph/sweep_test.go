@@ -80,10 +80,13 @@ func notRepoPaths(path string) []string {
 // decode of the base of its own, and each object that the writer is handed is the writer's own: a
 // writer is a function of the package, which can name no variable of the sweep, and it gets a tree
 // or files of its own and copies of the place and the value, which the sweep compares after the
-// call with copies taken before it (changeKept). So a writer that writes another value, writes it
-// at another place, under another key or under another file name, changes another place of the
-// file too, or changes the value or the place that it is handed, before or after a right write,
-// fails by name; and each sweep reads at least its floor of inputs of each base (sweepFloors), so
+// call with copies taken before it (changeKept); and the input that the sweep derives is no object
+// that a writer was handed, but bytes encoded from the writer's tree or a copy of the writer's files
+// taken after the read back (changedFile, filesWritten). So a writer that writes another value,
+// writes it at another place, under another key or under another file name, changes another place
+// of the file too, or changes the value or the place that it is handed, before or after a right
+// write, fails by name, and one that keeps what it was handed and changes it in a later call
+// changes no input; and each sweep reads at least its floor of inputs of each base (sweepFloors), so
 // that a fault that drops inputs fails by name too. One right, which sweepInputs gives
 // the input where it writes it: a repository path of a tree written " " is a real path, since git
 // holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree

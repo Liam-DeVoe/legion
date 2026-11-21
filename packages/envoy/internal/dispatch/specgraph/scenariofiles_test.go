@@ -57,11 +57,20 @@ func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any
 // what the sweep means it to hold: each file of written with its bytes, or no such file where they
 // are nil, which takes the file out; each JSON file of changed, as encoding/json/v2 decodes it into
 // any, as its meant tree (treeChange.meant), which the caller builds before the writer runs,
-// compared whole; each other file of base with the base's bytes; and no other file. So a writer
-// that writes under another file name, writes another value, writes it at another place or under
-// another key, or changes another place or another file too, fails by name.
+// compared whole; each other file of base with the base's bytes; no other file; and each file its
+// bytes alone, with no mode, time or sys, as a file of a scenario is. So a writer that writes under
+// another file name, writes another value, writes it at another place or under another key, changes
+// another place or another file too, or makes a file a directory or a link, fails by name.
 func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte, changed map[string]meantTree) {
 	t.Helper()
+	for _, name := range slices.Sorted(maps.Keys(fsys)) {
+		switch f := fsys[name]; {
+		case f == nil:
+			t.Fatalf("the scenario that the sweep wrote holds %s as no file (nil)", name)
+		case f.Mode != 0 || !f.ModTime.IsZero() || f.Sys != nil:
+			t.Fatalf("the scenario that the sweep wrote holds %s with the mode %v, the time %v and the sys %v, where a file of a scenario is its bytes alone", name, f.Mode, f.ModTime, f.Sys)
+		}
+	}
 	meant := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(written)) {
 		meant[name] = true
@@ -304,15 +313,17 @@ func cloneFiles(fsys fstest.MapFS) fstest.MapFS {
 // caller builds from base before the call (filesRead). write is handed a copy of base of its own
 // (cloneFiles), which it changes, and the read back takes each other file from another copy of base,
 // taken before the call, so that a writer that writes another file, or writes through a file that
-// it is handed, fails by name. Each writer is the function that a function of the package gives
-// (takenOut, textWritten, attributeOutOfFiles), of its own copies of what it writes, so that it can
-// name no variable of the sweep.
+// it is handed, fails by name. The input that filesWritten gives is a third copy, taken after the
+// read back, which no writer holds: so a writer that keeps the files that it was handed, and
+// changes them in a later call, changes no input of the sweep. Each writer is the function that a
+// function of the package gives (takenOut, textWritten, attributeOutOfFiles), of its own copies of
+// what it writes, so that it can name no variable of the sweep.
 func filesWritten(t *testing.T, base fstest.MapFS, written map[string][]byte, write func(fsys fstest.MapFS)) fstest.MapFS {
 	t.Helper()
-	before, fsys := cloneFiles(base), cloneFiles(base)
-	write(fsys)
-	filesRead(t, before, fsys, written, nil)
-	return fsys
+	before, handed := cloneFiles(base), cloneFiles(base)
+	write(handed)
+	filesRead(t, before, handed, written, nil)
+	return cloneFiles(handed)
 }
 
 // takenOut is the writer of the tree sweep that takes the file name out of the files that it is
