@@ -2,12 +2,8 @@ package oauth_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/cipher/hold"
-	"github.com/sjawhar/envoy/internal/cipher/oauth"
 )
 
 // TestIntrospectionCarriesTheGatesDeadline (K11): introspection answers a live token naming a
@@ -15,11 +11,13 @@ import (
 // so a resource server keeps the answer no later than the gate would serve it
 // (oauthwire.Introspection.NotHeldUntil). A person served with no deadline, as everyone outside
 // IAP, is answered with none; a held person is held and answered with none. Once the gate's clock
-// reaches the deadline, introspection answers no token of that person, failing as it does for
-// every check the gate cannot decide.
+// reaches the deadline, ada's token is still answered active and not held, with a not_held_until
+// that every reader's clock is past (it must be no later than the gate's own clock), so each reader
+// refuses it as a deadline passed, not as a hold it cannot read.
 //
-// Control: withHold leaving NotHeldUntil unset; ada's token is answered with no deadline, and the
-// test fails naming her.
+// Controls: withHold leaving NotHeldUntil unset; ada's token is answered with no deadline, and the
+// test fails naming her. withHold answering a passed deadline *oauth.HoldUncheckableError, as it
+// did; the last row fails.
 func TestIntrospectionCarriesTheGatesDeadline(t *testing.T) {
 	d := newHoldDispatch(t, nil, person, servedBob, otherPerson)
 	f := newExchangeFixture(t, d.configure)
@@ -49,8 +47,9 @@ func TestIntrospectionCarriesTheGatesDeadline(t *testing.T) {
 	}
 
 	d.ahead.Add(int64(time.Hour))
-	var uncheckable *oauth.HoldUncheckableError
-	if answer, err := f.provider.Introspect(ctx, adaToken); !errors.As(err, &uncheckable) || !errors.Is(err, hold.ErrUncheckable) || answer.Active {
-		t.Fatalf("Introspect of %s's token once the gate's clock passed her deadline = %+v, %v; want *oauth.HoldUncheckableError and no answer", person, answer, err)
+	answer, err = f.provider.Introspect(ctx, adaToken)
+	if err != nil || !answer.Active || answer.Held || answer.NotHeldUntil <= 0 || answer.NotHeldUntil > d.now().Unix() {
+		t.Fatalf("Introspect of %s's token once the gate's clock passed her deadline = %+v, %v; want active, not held, and a not_held_until in the past (at most %d)",
+			person, answer, err, d.now().Unix())
 	}
 }

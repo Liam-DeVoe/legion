@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -61,8 +62,9 @@ const iapLapseBound = 10 * time.Second
 // the Directory fails each check of her account. Her broker token at Dispatch answers 503
 // BROKER_UNAVAILABLE within 10 seconds; her personal token and her approval of a new pending login
 // 503 IDENTITY_UNAVAILABLE; the broker's routes 503 HOLD_UNCHECKABLE, saying her deadline has
-// passed, its introspection of her token the same, and its token endpoint server_error; and each of
-// bob's credentials still serves.
+// passed, and its token endpoint server_error; its introspection of her token answers her active
+// and not held with a not_held_until already past, which every reader refuses as a deadline passed;
+// and each of bob's credentials still serves.
 //
 // Controls, each failing the test at the step it names: the refresh grant asking the gate as the
 // device code grant does (oauth.Provider.Token), or the lease renewal asking it as the other
@@ -155,7 +157,6 @@ func TestIAPLeaverHoldThroughTheRealBroker(t *testing.T) {
 		{"ada@example.com's new enrollment under her sign-in past her deadline", http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", func() (int, string) { return r.enrolUnderSignIn(t, ada) }},
 		{"ada@example.com's sign-in trade past her deadline", http.StatusInternalServerError, "server_error", func() (int, string) { return r.tradeSignIn(t, ada) }},
 		{"ada@example.com's broker token mint past her deadline", http.StatusInternalServerError, "server_error", func() (int, string) { return r.mintBrokerToken(t, ada) }},
-		{"ada@example.com's broker introspection past her deadline", http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", func() (int, string) { return r.introspectionAnswer(t, ada) }},
 		{"ada@example.com's agent-tier secret request past her deadline", http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", func() (int, string) { return r.askAgentSecret(t, ada) }},
 		{"ada@example.com's agent-tier grant read past her deadline", http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", func() (int, string) { return r.readAgentGrant(t, ada) }},
 		{"ada@example.com's human-tier secret request past her deadline", http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", func() (int, string) { return r.askHumanSecret(t, ada) }},
@@ -168,6 +169,37 @@ func TestIAPLeaverHoldThroughTheRealBroker(t *testing.T) {
 	if unserved := r.iapUnserved(t, bob); len(unserved) != 0 {
 		t.Errorf("bob@example.com's credentials past ada's deadline: %s, want each served", strings.Join(unserved, "; "))
 	}
+	if status, held, until := r.introspectedNotHeldUntil(t, ada); status != http.StatusOK || held || until <= 0 || until > time.Now().Unix() {
+		t.Errorf("ada@example.com's broker introspection past her deadline = %d, held %t, not_held_until %d; want 200, not held, and a not_held_until already past", status, held, until)
+	}
+}
+
+// introspectedNotHeldUntil is the broker's introspection of p's broker token under the listener
+// account: its status, and for a 200 its held and not_held_until (0 for none).
+func (r *leaverRig) introspectedNotHeldUntil(t *testing.T, p *leaverPerson) (status int, held bool, notHeldUntil int64) {
+	t.Helper()
+	form := url.Values{"token": {p.brokerToken}}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, r.broker.URL+"/v1/oauth/introspect", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+r.broker.ListenerToken)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("introspect %s's broker token: %v", p.email, err)
+	}
+	defer response.Body.Close()
+	var answer struct {
+		Held         bool  `json:"held"`
+		NotHeldUntil int64 `json:"not_held_until"`
+	}
+	if response.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+			t.Fatalf("decode %s's introspection answer: %v", p.email, err)
+		}
+	}
+	return response.StatusCode, answer.Held, answer.NotHeldUntil
 }
 
 // iapBrowserDecisionHeldText and iapBrowserDecisionUnavailableText are Dispatch's words for a
