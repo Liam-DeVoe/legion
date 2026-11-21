@@ -420,8 +420,7 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 		// here, the key set and the fake hosts the rig serves.
 		r.iapKeys, r.iapKey = iapKeySet(t)
 		r.directory = directorytest.ServeGoogle(t)
-		boot = iapBoot(t, r.iapKeys, settings)
-		boot.DirectoryOptions = r.directory.ClientOptions()
+		boot = iapBoot(t, r.iapKeys, r.directory, settings)
 	} else {
 		maps.Copy(settings, map[string]string{
 			"DISPATCH_SIGNIN_ISSUER":  "https://accounts.google.com",

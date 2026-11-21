@@ -100,8 +100,8 @@ func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 }
 
 // iapKeySet is a key set served on this machine in IAP's place, so no test calls Google, with the
-// ES256 key it publishes; iapBoot is boot pointed at it, and its Directory reader at Google hosts
-// served on this machine (directorytest), as no setting can point a server.
+// ES256 key it publishes; iapBoot is boot pointed at it, and its Directory reader at directory, the
+// Google hosts served on this machine (directorytest), as no setting can point a server.
 func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	keys := oidctest.New(t)
@@ -110,14 +110,14 @@ func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	return keys, signing
 }
 
-func iapBoot(t *testing.T, keys *oidctest.Issuer, overrides map[string]string) bootConfig {
+func iapBoot(t *testing.T, keys *oidctest.Issuer, directory *directorytest.Google, overrides map[string]string) bootConfig {
 	t.Helper()
 	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(overrides)))
 	if err != nil {
 		t.Fatalf("resolve an IAP boot: %v", err)
 	}
 	boot.IAPKeySetURL = keys.URL() + "/keys"
-	boot.DirectoryOptions = directorytest.ServeGoogle(t).ClientOptions()
+	boot.DirectoryOptions = directory.ClientOptions()
 	return boot
 }
 
