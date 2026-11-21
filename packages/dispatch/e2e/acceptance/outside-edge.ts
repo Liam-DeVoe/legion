@@ -96,9 +96,9 @@ import {
 import { join } from "node:path";
 import {
   type DeviceAuthorization,
-  type DeviceLogin,
   deviceLoginHost,
   finishDeviceLogin,
+  type KeptDeviceLogin,
   startDeviceLogin,
 } from "@legion/cipher-client/device-login";
 import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
@@ -106,9 +106,9 @@ import { brokerCredential } from "@legion/envoy-client/broker-credential";
 import {
   createConsumerDelivery,
   type InboundUnavailable,
-  registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
 import { connectListenerRelay, type ListenerRelay } from "@legion/envoy-client/listener-relay";
+import { registerWithRelay } from "@legion/envoy-client/relay-registration";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
 import { type BrowserContext, chromium, type Page } from "@playwright/test";
 import { addVirtualPasskey } from "../virtual-passkey";
@@ -551,6 +551,23 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
   return login;
 }
 
+/** Waits `ms`, or rejects with `signal`'s reason once it aborts. The device-login poll waits
+ *  through it before each try, so an abort ends the poll at its next wait, naming why. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const aborted = () => {
+    clearTimeout(timer);
+    reject(signal.reason);
+  };
+  const timer = setTimeout(() => {
+    signal.removeEventListener("abort", aborted);
+    resolve();
+  }, ms);
+  signal.addEventListener("abort", aborted, { once: true });
+  return promise;
+}
+
 /** Step 2: a device login of this machine, approved on the page; then the tailnet code. Answers
  *  the login, or undefined when it was not made. */
 async function deviceLogin(
@@ -558,7 +575,7 @@ async function deviceLogin(
   person: string,
   inputs: RunInputs,
   rows: Rows
-): Promise<DeviceLogin | undefined> {
+): Promise<KeptDeviceLogin | undefined> {
   const want = `a device login at ${inputs.broker}, approved on ${inputs.origin}, answers a DPoP-bound pair`;
   let started: DeviceAuthorization;
   try {
@@ -589,7 +606,7 @@ async function deviceLogin(
   );
   const polled = finishDeviceLogin(started, {
     path: join(inputs.state, "device-login.json"),
-    signal: stop.signal,
+    sleep: (ms) => pause(ms, stop.signal),
   });
   // A failure of the poll is read below, after the page; it must not go unhandled meanwhile.
   polled.catch(() => undefined);
@@ -606,7 +623,7 @@ async function deviceLogin(
     return undefined;
   }
   recordApproval(inputs.state, started.userCode, approval.credential);
-  let login: DeviceLogin;
+  let login: KeptDeviceLogin;
   try {
     login = await polled;
   } catch (error) {
@@ -744,7 +761,7 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
     await registerWithRelay({
       relay: delivery,
       ownAgentSubject: legacyAgentSubject(session),
-      followed: [],
+      followed: () => [],
       outage,
       send: (topics, request) =>
         client.subscribe({
