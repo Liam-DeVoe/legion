@@ -3,6 +3,7 @@ package writerhold
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,8 @@ import (
 )
 
 // streamsRun runs `envoy-infra streams <args>` in the stack with the hold's flags, recorded the
-// census's reader of the recorded session consumers, and no writer of the daemon stores.
+// census's reader of the recorded session consumers, a reader of fresh names that names none, and
+// no writer of the daemon stores.
 func (h *heldStack) streamsRun(recorded RecordedSessionConsumers, args ...string) (int, string, string) {
 	h.t.Helper()
 	return h.streamsRunWith(recorded, nil, args...)
@@ -29,13 +31,19 @@ func (h *heldStack) streamsRun(recorded RecordedSessionConsumers, args ...string
 // streamsRunWith is streamsRun with stores, the census's writer of the daemon stores' stream ids.
 func (h *heldStack) streamsRunWith(recorded RecordedSessionConsumers, stores StreamIDWriter, args ...string) (int, string, string) {
 	h.t.Helper()
+	return h.streamsRunReaders(CensusReaders{Recorded: recorded, FreshNames: noFreshNames, Stores: stores}, args...)
+}
+
+// streamsRunReaders runs `envoy-infra streams <args>` in the stack with readers.
+func (h *heldStack) streamsRunReaders(readers CensusReaders, args ...string) (int, string, string) {
+	h.t.Helper()
 	full := append(append([]string{}, args...), commonArgs...)
 	full = append(full, "--minters-report", h.report, "--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null", "--replicas", "3")
 	if !strings.Contains(strings.Join(args, " "), "--reason") {
 		full = append(full, "--reason", "the row's streams "+args[0])
 	}
 	var stdout, stderr bytes.Buffer
-	code := runStreams(context.Background(), full, &stdout, &stderr, streamsEnv{env: h.e, recorded: recorded, stores: stores})
+	code := runStreams(context.Background(), full, &stdout, &stderr, streamsEnv{env: h.e, readers: readers})
 	h.t.Logf("envoy-infra streams %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
 }
@@ -43,6 +51,12 @@ func (h *heldStack) streamsRunWith(recorded RecordedSessionConsumers, stores Str
 // noStores is a writer of the daemon stores' stream ids for a stack with no daemon store: it
 // changes nothing.
 func noStores(context.Context, *nats.Conn, []string, []string) ([]string, error) { return nil, nil }
+
+// noFreshNames is a reader of the recorded fresh names for a stack with no selection record: it
+// names none.
+func noFreshNames(context.Context, *nats.Conn, []string, string, []string) (map[string][]string, error) {
+	return map[string][]string{}, nil
+}
 
 // journalCommands are the hold's journal entries, each "<command> <state>".
 func (h *heldStack) journalCommands(id string) []string {
@@ -91,38 +105,46 @@ func (h *heldStack) setReplicas(stream string, replicas int) {
 	h.awaitStreamLeaders()
 }
 
-// The streams commands (t-e-58, review H3): under exactly Operator(OperatorPhaseReleased),
-// `streams ensure` makes a missing ENVOY_MEASURE and nothing else. As the `measure` entry,
+// deleteStream deletes stream as the operator under a hold of no steps, which it then releases.
+func (h *heldStack) deleteStream(stream string) {
+	h.t.Helper()
+	ctx := context.Background()
+	id := h.s.Prepare(h.t, holdrecord.WorkflowStreamsUpdate)
+	h.s.HoldWithoutTheSteps(h.t, id)
+	nc, err := h.s.ConnectOperator(ctx)
+	require.NoError(h.t, err)
+	js, err := jetstream.New(nc)
+	require.NoError(h.t, err)
+	require.NoError(h.t, js.DeleteStream(ctx, stream), "delete %s", stream)
+	nc.Close()
+	h.s.Release(h.t, id)
+}
+
+// The streams commands (t-e-58, review H3; option A): the operator's released grant reads only,
+// so it makes no stream, ENVOY_MEASURE included, and changes none. As the `measure` entry,
 // `streams check` reports a copied bucket at one replica fewer than the build's. Then `streams
-// update` in its own hold brings it to the build's count, and its postcheck passes, writing the
-// hold's journal: hold set, then the update's intent and its done entry. Controls: under
-// Operator(OperatorPhaseReleased), a STREAM.CREATE of KV_legion_agents, KV_envoy_webhook_redelivery
-// and ENVOY_NOTIFICATIONS, and a STREAM.UPDATE of KV_envoy_sessions, are each refused. It fails when
-// the operator's released grant can make or change a protected stream, or when the held update
-// cannot repair the shortfall check reports.
+// update` in its own hold makes the missing ENVOY_MEASURE and brings the bucket to the build's
+// count, its postcheck passes, and it writes the hold's journal: hold set, then the update's intent
+// and its done entry. Controls: under Operator(OperatorPhaseReleased), a STREAM.CREATE of
+// ENVOY_MEASURE, KV_legion_agents, KV_envoy_webhook_redelivery and ENVOY_NOTIFICATIONS, and a
+// STREAM.UPDATE of KV_envoy_sessions, are each refused. It fails when the operator's released grant
+// can make or change a stream, or when the held update cannot repair what check reports.
 func TestHoldTheStreamsCommands(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	settings := streamset.Settings{Replicas: 3}
+	h.deleteStream(streamset.MeasureStream)
+	bucket := kvStreamPrefix + bus.RoleClaimBucket
+	h.setReplicas(bucket, 2)
+
+	// The controls: the released grant makes and changes no stream. The test's own operator
+	// connection ends before any hold: a second operator connection, reconnecting through the
+	// hold's restarts, is one the hold's report refuses (TestHoldReportASecondOperator).
 	released, err := h.s.ConnectOperator(ctx)
 	require.NoError(t, err)
-	// The test's own operator connection ends before any hold: a second operator connection,
-	// reconnecting through the hold's restarts, is one the hold's report refuses
-	// (TestHoldReportASecondOperator).
-	defer released.Close()
-	rowPhase := func(ctx context.Context) (natsgrant.OperatorPhase, error) {
-		row, err := h.s.Records.Row(ctx)
-		return row.Phase, err
-	}
-
-	report, err := streams.Ensure(ctx, released, settings, rowPhase)
-	require.NoError(t, err)
-	require.Len(t, report.Changes, 1, "ensure changed more than ENVOY_MEASURE: %v", report.Lines())
-	require.Equal(t, streamset.MeasureStream, report.Changes[0].Stream)
-
-	// The controls: the released grant makes and changes no protected stream.
 	for _, request := range []struct{ subject, stream string }{
+		{"$JS.API.STREAM.CREATE." + streamset.MeasureStream, streamset.MeasureStream},
 		{"$JS.API.STREAM.CREATE." + kvStreamPrefix + bus.LegionAgentBucket, kvStreamPrefix + bus.LegionAgentBucket},
 		{"$JS.API.STREAM.CREATE." + kvStreamPrefix + bus.WebhookRedeliveryBucket, kvStreamPrefix + bus.WebhookRedeliveryBucket},
 		{"$JS.API.STREAM.CREATE." + bus.Stream, bus.Stream},
@@ -131,10 +153,8 @@ func TestHoldTheStreamsCommands(t *testing.T) {
 		_, err := released.Request(request.subject, []byte(`{"name":"`+request.stream+`","subjects":["x.>"]}`), 3*time.Second)
 		require.Error(t, err, "control: the released grant was answered on %s", request.subject)
 	}
-
 	released.Close()
-	bucket := kvStreamPrefix + bus.RoleClaimBucket
-	h.setReplicas(bucket, 2)
+
 	measure, err := nats.Connect(h.s.Cluster.URL(), nats.UserInfo("service", holdtest.MeasureToken), nats.CustomInboxPrefix("_INBOX_envoy_measure"), nats.Timeout(10*time.Second))
 	require.NoError(t, err, "the measure entry was refused")
 	checked := streams.Check(ctx, measure, settings)
@@ -146,6 +166,7 @@ func TestHoldTheStreamsCommands(t *testing.T) {
 	require.Zero(t, code, "streams update")
 	require.Contains(t, stdout, "streams update done in hold")
 	require.Equal(t, 3, h.streamReplicas(bucket), "the update did not bring %s to 3 copies", bucket)
+	require.Equal(t, 3, h.streamReplicas(streamset.MeasureStream), "the update did not make %s", streamset.MeasureStream)
 	id := h.row().HoldID
 	require.Equal(t, []string{"hold set intent", "hold set done", "streams update intent", "streams update done"}, h.journalCommands(id))
 	require.True(t, h.journal(id).Complete)
@@ -189,15 +210,16 @@ func TestHoldTheStreamsWordsRunOnlyInTheirHolds(t *testing.T) {
 // `hold release` succeeds after a streams-census hold: the census, its only command, writes its
 // intent and its done entry, which completes the record. The census runs with the stack's every
 // family converted (each cutover row done) and a stub reader of the recorded session consumers.
-// The control is a census with no reader, which is UNKNOWN (exit 2) and writes no done entry, so
-// release is refused, naming the pending census.
+// A census with no reader is UNKNOWN (exit 2) and, as every command can, writes a stop entry,
+// `unchanged`. The control is a census killed after its intent, with no stop: release is refused
+// while that intent is pending.
 func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 
-	// The control: no reader.
+	// No reader: UNKNOWN, and a stop entry that left nothing changed.
 	code, _, stderr := h.streamsRun(nil, "census", "--family", "session")
 	id := h.row().HoldID
 	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
@@ -207,11 +229,18 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 		// census reaches the reader.
 		code, _, stderr = h.streamsRun(nil, "census", "--hold", id, "--family", "session")
 	}
-	require.Equal(t, 2, code, "control: a census with no reader")
+	require.Equal(t, 2, code, "a census with no reader")
 	require.Contains(t, stderr, ErrNoRecordReader.Error())
-	require.NotContains(t, h.journalCommands(id), "streams census done")
-	code, _, stderr = h.run(actionRelease, "--hold", id, "--reason", "over a census with no done entry")
-	require.Equal(t, 1, code, "control: release over a census with no done entry")
+	last := h.journal(id).Ops[len(h.journal(id).Ops)-1]
+	require.Equal(t, CommandStreamsCensus+" stop", last.Command+" "+last.State)
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+
+	// The control: the census run again and killed after its intent, with no stop.
+	_, err = h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandStreamsCensus}, nil)
+	require.NoError(t, err)
+	code, _, stderr = h.run(actionRelease, "--hold", id, "--reason", "over a census killed after its intent")
+	require.Equal(t, 1, code, "control: release over a pending census intent")
+	require.Contains(t, stderr, holdrecord.ErrBusy.Error())
 
 	code, stdout, _ := h.streamsRunWith(stub, noStores, "census", "--hold", id, "--family", "session")
 	require.Zero(t, code, "the census with a reader")
@@ -221,4 +250,80 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	code, _, _ = h.run(actionRelease, "--hold", id, "--reason", "the census is done")
 	require.Zero(t, code, "release after the census")
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+}
+
+// StreamsCommandOn runs the held words on a stack its caller names: `streams update` through it,
+// with the stack's broker client and Operator, prepares and sets a streams-update hold, runs the
+// update and writes its done entry, as StreamsCommand does through the flags. The control is the
+// same run with no Operator to reach, which stops before any hold.
+func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	args := append([]string{"update", "--reason", "the seam", "--replicas", "3", "--minters-report", h.report,
+		"--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null"}, commonArgs...)
+	deps := StreamsDeps{
+		Records:  func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
+		Operator: func(context.Context) (*Operator, error) { return h.op, nil },
+	}
+	var stdout, stderr bytes.Buffer
+	require.Zero(t, StreamsCommandOn(context.Background(), args, &stdout, &stderr, deps), "%s%s", stdout.String(), stderr.String())
+	id := h.row().HoldID
+	require.Contains(t, h.journalCommands(id), CommandStreamsUpdate+" done")
+	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "the seam's update is done")
+	require.Zero(t, code)
+
+	deps.Operator = func(context.Context) (*Operator, error) { return nil, errors.New("no hub here") }
+	stdout.Reset()
+	stderr.Reset()
+	require.Equal(t, 1, StreamsCommandOn(context.Background(), args, &stdout, &stderr, deps), "control")
+	require.Contains(t, stderr.String(), "no hub here")
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase, "control: a hold was set with no hub")
+}
+
+// The census reads the recorded fresh consumer names (consumernames.RecordedFreshNames, passed
+// in) before it removes anything, and passes them to streams.Census as RecordedFreshNames. It gives
+// the reader its --family values, --dispatch-database-file and each --daemon-database entry. With
+// no reader, or a reader that cannot read a store, the census is UNKNOWN (exit 2) and writes no
+// done entry. The control is the same census with a reader, which is done. That an unrecorded
+// fresh-form consumer is removed and a recorded one kept is streams.Census's own rule, which #4687
+// tests, and t-7's rows test with the real reader.
+func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	ctx := context.Background()
+	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
+	args := []string{"census", "--family", "session", "--dispatch-database-file", "/run/dispatch-db", "--daemon-database", "P=/run/daemon-db"}
+
+	// The first census sets its hold and stops at its convert check; the session family's cutover
+	// row is then written done under that hold.
+	code, _, _ := h.streamsRunWith(stub, noStores, args...)
+	require.Equal(t, 1, code, "the census before the family is converted")
+	id := h.row().HoldID
+	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
+	require.NoError(t, err)
+	held := append([]string{"census", "--hold", id}, args[1:]...)
+
+	code, _, stderr := h.streamsRunReaders(CensusReaders{Recorded: stub, Stores: noStores}, held...)
+	require.Equal(t, 2, code, "a census with no reader of the fresh names")
+	require.Contains(t, stderr, ErrNoFreshNamesReader.Error())
+	failing := func(context.Context, *nats.Conn, []string, string, []string) (map[string][]string, error) {
+		return nil, errors.New("the dispatch store cannot be read")
+	}
+	code, _, stderr = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: failing, Stores: noStores}, held...)
+	require.Equal(t, 2, code, "a census whose fresh-names reader fails")
+	require.Contains(t, stderr, "the dispatch store cannot be read")
+	require.NotContains(t, h.journalCommands(id), CommandStreamsCensus+" done")
+
+	var gotFamilies, gotDaemons []string
+	var gotDispatch string
+	reader := func(_ context.Context, _ *nats.Conn, families []string, dispatch string, daemons []string) (map[string][]string, error) {
+		gotFamilies, gotDispatch, gotDaemons = families, dispatch, daemons
+		return map[string][]string{"session": {}}, nil
+	}
+	code, _, _ = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: reader, Stores: noStores}, held...)
+	require.Zero(t, code, "the census with a reader of the fresh names")
+	require.Equal(t, []string{"session"}, gotFamilies)
+	require.Equal(t, "/run/dispatch-db", gotDispatch)
+	require.Equal(t, []string{"P=/run/daemon-db"}, gotDaemons)
+	require.Contains(t, h.journalCommands(id), CommandStreamsCensus+" done")
 }
