@@ -17,6 +17,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -263,6 +265,89 @@ func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *test
 	}
 	if sample := unguardedReplacementSample(t, registry); sample != "" {
 		t.Fatalf("after the upload expecting the version the counter reads %q, want no replacement counted: it said what it replaced", sample)
+	}
+}
+
+// TestACommandBarUploadOverAProjectDocumentSeesAVersionWrittenUnderItsOwnersLock: a project
+// document is its own owner, whose lock the document service's version writers hold (an edit's
+// snapshot here, as named versions, settlements and rebuilds do) and which the upload takes only
+// after the project's upload lock and its read of the document. A version written under that lock
+// while the command bar's upload waits for it is seen: the upload expecting the version it read is
+// refused, 409 DOCUMENT_CHANGED, and the document keeps that writer's text and its two versions.
+func TestACommandBarUploadOverAProjectDocumentSeesAVersionWrittenUnderItsOwnersLock(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	createArtifactIssue(t, handler)
+	guide := uploadDocument(t, handler, "/api/v1/projects/TEST", "guide.md", "# Guide\n\nRead this first.\n")
+	ctx := context.Background()
+	hold, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hold.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, hold, store.ArtifactOwner(guide.Artifact.ID)); err != nil {
+		t.Fatalf("hold the document's owner lock: %v", err)
+	}
+	// The command bar's upload, expecting the version 1 it read, is sent while the lock is held.
+	spec := goingJSONSend(t, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{"name": "guide.md", "content": "# Guide\n\nThe bar's.\n"})
+	spec.condition = &goingCondition{ExpectVersion: &goingArtifactVersion{Artifact: guide.Artifact.ID, Version: 1}}
+	request, err := spec.build(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	person := model.Actor{Kind: "user", ID: "alice", Credential: personCredential, Proven: true}
+	doer := (&server{inProcess: handler}).goingDoer(goingBarCaller(person, true, goingTestRun), testServerURL)
+	type answered struct {
+		status int
+		body   string
+		err    error
+	}
+	sent := make(chan answered, 1)
+	go func() {
+		response, err := doer.Do(request)
+		if err != nil {
+			sent <- answered{err: err}
+			return
+		}
+		defer response.Body.Close()
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(response.Body)
+		sent <- answered{status: response.StatusCode, body: body.String()}
+	}()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if waiting, _ := storetest.OwnerLockWaiters(t, database); waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the upload never came to wait on the document's owner lock")
+		}
+	}
+	// Bob's edit writes version 2 under the held lock, as the document service writes a version.
+	joined, ledger := deps.Docs.Join(ctx, hold)
+	defer ledger.Discard()
+	if _, err := deps.Docs.ApplyOps(joined, guide.Artifact.ID, []model.EditOp{{Op: "replace", Find: "Read this first.", With: "Bob's."}},
+		model.Actor{Kind: "user", ID: "bob"}, nil); err != nil {
+		t.Fatalf("edit the document under its owner lock: %v", err)
+	}
+	if _, err := deps.Docs.SnapshotVersion(joined, guide.Artifact.ID, model.Actor{Kind: "user", ID: "bob"}); err != nil {
+		t.Fatalf("write the edit's version under the owner lock: %v", err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the edit's version: %v", err)
+	}
+	var answer answered
+	select {
+	case answer = <-sent:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the upload did not answer once the owner lock was released")
+	}
+	if answer.err != nil || answer.status != http.StatusConflict || goingAnswerCode(t, answer.body) != "DOCUMENT_CHANGED" {
+		t.Fatalf("the upload expecting version 1 answered %d %s (%v), want 409 DOCUMENT_CHANGED", answer.status, answer.body, answer.err)
+	}
+	if versions := uploadedVersionCount(t, database, guide.Artifact.ID); versions != 2 {
+		t.Fatalf("the document holds %d versions, want its 2: the refused upload wrote one", versions)
+	}
+	if text := readDocumentPrecondition(t, handler, guide.Artifact.ID).Markdown; !strings.Contains(text, "Bob's.") {
+		t.Fatalf("the document reads %q, want Bob's text kept", text)
 	}
 }
 

@@ -809,19 +809,12 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	} else if input.expectNew {
-		// Decided after the owner's lock above, as the expected content is: an artifact of the
-		// name made by another writer before this upload took that lock is never written over.
+		// Decided after the lock above, which every upload to this owner takes before it makes an
+		// artifact, as the expected content is: an artifact of the name made by another writer
+		// before this upload took that lock is never written over.
 		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_EXISTS",
 			"%s already holds %s (slug %s), and this upload makes a new document alone, so nothing was written",
 			artifactOwnerText(target), artifact.Name, artifact.Slug))
-		return
-	} else if expected := input.expectVersion; expected != nil && (artifact.ID != expected.Artifact || latestArtifactVersion(artifact) != expected.Version) {
-		// Decided after the owner's lock above, as a create alone is: a version another writer
-		// wrote after the command bar's read and before this upload took that lock is never
-		// written over.
-		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
-			"%s was written again after the version this upload was to replace was read, so nothing was written over it",
-			artifact.Name))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -861,6 +854,31 @@ func (s *server) storeArtifact(
 	if target.IssueKey == nil && target.Session == "" && !created {
 		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
 			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// The version an upload over an artifact expects (expectVersion) is decided under the lock of
+	// that artifact's owner, which every writer of its versions holds while it writes one - this
+	// route, and the document service's named versions, settlements and rebuilds
+	// (docs.lockArtifactOwner): an issue's artifact was read under its issue's lock above, and a
+	// conversation's file under the conversation's lock, which every writer of a file takes; a
+	// project's artifact is its own owner, whose lock is taken only just above, after the read, so
+	// its versions are read again under it. A version another writer wrote after the command
+	// bar's read is never written over.
+	if expected := input.expectVersion; expected != nil && !created {
+		latest := latestArtifactVersion(artifact)
+		if target.IssueKey == nil && target.Session == "" {
+			if err := tx.QueryRow(r.Context(), `
+				select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
+			`, artifact.ID).Scan(&latest); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if artifact.ID != expected.Artifact || latest != expected.Version {
+			s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
+				"%s was written again after the version this upload was to replace was read, so nothing was written over it",
+				artifact.Name))
 			return
 		}
 	}
