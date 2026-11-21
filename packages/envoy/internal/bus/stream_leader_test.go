@@ -3,10 +3,17 @@
 // three-server clusters (testnats.StartCluster). A row that needs the stream's first election
 // slow forces the order a slow election makes; the issue's verification runs the rest against a
 // server that holds that election.
+//
+// What a start promises is a leader named, and each row reads that once (hasLeader). A member is
+// named leader before it serves writes (testnats.Cluster.AwaitStream), so a write sent the moment
+// a start answers can draw "no responders": a row that writes after the start waits until every
+// running member serves a write to the stream (AwaitStream, AwaitBucket) and then writes. Such a
+// row checks that the start leaves a leader named, not that a write sent at once is served.
 
 package bus
 
 import (
+	"bytes"
 	"context"
 	"slices"
 	"sync/atomic"
@@ -32,6 +39,13 @@ const createdBucketSendWait = 2 * time.Second
 // once gave up after three sends, six seconds at this wait. On a cluster that elects at once the
 // first send is answered; the row that holds the slow election is this one run against a server
 // that holds the stream's first election (the issue's verification).
+//
+// The row reads the leader the start leaves once (hasLeader), waits until every running member
+// serves a write to the bucket (testnats.Cluster.AwaitBucket), then writes through the handle the
+// start returned (KeyValue.Put), on the row's two-second JetStream wait, the caller's own. Its
+// write once went out the moment the start answered: in a whole-package run beside seven other
+// cluster test runs, member 0 routed none of nats.go's three sends to the bucket's stream, and the
+// row failed "put into the bucket the start created: nats: no response from stream".
 func TestEnsureKeyValueCreatesAThreeCopyBucketWhoseFirstElectionIsSlow(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.Servers[0].URL())
@@ -41,87 +55,119 @@ func TestEnsureKeyValueCreatesAThreeCopyBucketWhoseFirstElectionIsSlow(t *testin
 		t.Fatalf("open JetStream: %v", err)
 	}
 	const bucket = "envoy_create_test"
-	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
+	wait := rowWait(t)
+	kv, err := EnsureKeyValue(wait, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
 	if err != nil {
 		t.Fatalf("ensure a three-copy bucket: %v", err)
 	}
+	if !hasLeader(t, wait, js, "KV_"+bucket) {
+		t.Fatal("the start answered while the bucket's stream had no leader")
+	}
+	cluster.AwaitBucket(t, bucket)
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("put into the bucket the start created: %v", err)
 	}
-	if copies := testnats.Copies(testnats.AwaitSettledStream(t, cluster.JetStream(t), "KV_"+bucket).Cluster); copies != 3 {
-		t.Fatalf("bucket stream has %d copies, want 3", copies)
-	}
+	deadline, _ := wait.Deadline()
+	testnats.AwaitStreamCopiesWithin(t, cluster.JetStream(t), "KV_"+bucket, 3, time.Until(deadline))
 }
 
 // A start that creates the notification stream at three copies answers only once the stream has a
-// leader, so the first publish after it is answered. The server answers the create's first send
-// at the stream's first leader election, but a send made again while that election runs is an
-// equal create, which it answers at once with the stream still leaderless; a start that took that
-// answer as the stream's served a publish no leader could store ("no response from stream"). On a
-// cluster that elects at once this row passes either way; the run that holds it is this row against
-// a server that holds the stream's first election (the issue's verification).
+// leader. The server answers the create's first send at the stream's first leader election, but a
+// send made again while that election runs is an equal create, which it answers at once with the
+// stream still leaderless; a start that took that answer as the stream's served a publish no
+// leader could store ("no response from stream"). On a cluster that elects at once this row passes
+// either way; the run that holds it is this row against a server that holds the stream's first
+// election (the issue's verification). The row checks that the start leaves a leader named
+// (hasLeader); its publish waits until every running member serves one (AwaitStream), so it does
+// not check that a publish sent the moment the start answers is served.
 func TestAStartThatCreatesTheStreamAtThreeCopiesServesItsFirstPublish(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	client := startOnCluster(t, cluster, WithReplicas(3))
-	if err := client.Publish(contracts.Envelope{
+	if !hasLeader(t, rowWait(t), cluster.JetStream(t), Stream) {
+		t.Fatal("the start that created the stream at three copies answered while it had no leader")
+	}
+	created := contracts.Envelope{
 		EventID: "event-created", Source: "dispatch",
 		Topic: "notifications.agent.ses_created", DedupeKey: "dispatch.event.created",
-	}); err != nil {
+	}
+	cluster.AwaitStream(t, Stream, created.Topic)
+	if err := client.Publish(created); err != nil {
 		t.Fatalf("the first publish after a start that created the stream at three copies: %v", err)
 	}
 }
 
 // A start that raises the notification stream from one copy to three answers only once the raised
-// stream has a leader, so the first publish after it is answered. The server answers the raise at
-// once, from the member that held the one copy, and the stream has no leader until its new group
-// elects one; a publish sent then draws no answer even after the leader is there, so a start that
-// took the raise's answer as the stream's left its first publish to fail at its 5 s bound, with no
-// election held.
+// stream has a leader. The server answers the raise at once, from the member that held the one
+// copy, and the stream has no leader until its new group elects one; a publish sent then draws no
+// answer even after the leader is there, so a start that took the raise's answer as the stream's
+// left its first publish to fail at its 5 s bound, with no election held. The row checks that the
+// start leaves a leader named, and its publish waits as the row above's does.
 func TestAStartThatRaisesTheStreamToThreeCopiesServesItsFirstPublish(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	startOnCluster(t, cluster, WithReplicas(1)).Close()
 	client := startOnCluster(t, cluster, WithReplicas(3))
-	if err := client.Publish(contracts.Envelope{
+	if !hasLeader(t, rowWait(t), cluster.JetStream(t), Stream) {
+		t.Fatal("the start that raised the stream to three copies answered while it had no leader")
+	}
+	raised := contracts.Envelope{
 		EventID: "event-raised", Source: "dispatch",
 		Topic: "notifications.agent.ses_raised", DedupeKey: "dispatch.event.raised",
-	}); err != nil {
+	}
+	cluster.AwaitStream(t, Stream, raised.Topic)
+	if err := client.Publish(raised); err != nil {
 		t.Fatalf("the first publish after a start that raised the stream to three copies: %v", err)
 	}
 }
 
-// hasLeader reads stream once and reports whether it has a leader then: the fact a start that
-// answered must leave behind, read with one request so that the row does not itself wait for it.
-func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
+// hasLeader reads stream within ctx and reports whether it has a leader then: the fact a start
+// that answered must leave behind, read from one answer so that the row does not itself wait for
+// it (rowRead). The leader the read names may not serve writes yet (testnats.Cluster.AwaitStream).
+func hasLeader(t *testing.T, ctx context.Context, js nats.JetStreamContext, stream string) bool {
 	t.Helper()
-	info, err := js.StreamInfo(stream)
+	info := rowRead(t, ctx, js, stream)
+	return info.Cluster != nil && info.Cluster.Leader != ""
+}
+
+// rowRead reads stream until a read is answered, as a start reads one (readAgain): each read is
+// cut to ctx, the row's deadline, and one the server leaves unanswered within its read limit is
+// read again, since a member answers some reads with nothing at all (sentAgain). An answer that
+// is an error, or the end of ctx, fails the row.
+func rowRead(t *testing.T, ctx context.Context, js nats.JetStreamContext, stream string) *nats.StreamInfo {
+	t.Helper()
+	info, err := readAgain(ctx, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) {
+		return js.StreamInfo(stream, nats.Context(ctx))
+	})
 	if err != nil {
 		t.Fatalf("read %s: %v", stream, err)
 	}
-	return info.Cluster != nil && info.Cluster.Leader != ""
+	return info
 }
 
 // A start that finds a bucket another program raised a moment ago, whose new group has not elected
 // its leader yet, waits for that leader before it answers. Its own raise is nothing (the bucket has
 // the copies already), and the other program's raise was answered at once, with the stream
 // leaderless, so a start that took the stream as it found it handed its caller a bucket whose first
-// put drew no answer.
+// put drew no answer. The row checks that the start leaves a leader named, and its put waits as the
+// first row's does.
 func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_found_raised_test"
-	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+	wait := rowWait(t)
+	if _, err := EnsureKeyValue(wait, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
+	if _, err := raiseReplicas(wait, js, bucket, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
-	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
+	kv, err := EnsureKeyValue(wait, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
 	if err != nil {
 		t.Fatalf("a start that finds the raised bucket: %v", err)
 	}
-	if !hasLeader(t, js, "KV_"+bucket) {
+	if !hasLeader(t, wait, js, "KV_"+bucket) {
 		t.Fatal("the start answered while the raised bucket's stream had no leader")
 	}
+	cluster.AwaitBucket(t, bucket)
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
@@ -135,19 +181,21 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_found_raised_one_copy_test"
-	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+	wait := rowWait(t)
+	if _, err := EnsureKeyValue(wait, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
+	if _, err := raiseReplicas(wait, js, bucket, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
-	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
+	kv, err := EnsureKeyValue(wait, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy that finds the raised bucket: %v", err)
 	}
-	if !hasLeader(t, js, "KV_"+bucket) {
+	if !hasLeader(t, wait, js, "KV_"+bucket) {
 		t.Fatal("the start at one copy answered while the raised bucket's stream had no leader")
 	}
+	cluster.AwaitBucket(t, bucket)
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
@@ -188,6 +236,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_created_elsewhere_test"
+	wait := rowWait(t)
 	other, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open the other start's JetStream: %v", err)
@@ -197,42 +246,44 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("listen for the other start's create: %v", err)
 	}
 	t.Cleanup(func() { _ = creates.Unsubscribe() })
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(wait); err != nil {
 		t.Fatalf("flush the listener: %v", err)
 	}
-	createCtx, abandon := context.WithCancel(t.Context())
+	createCtx, abandon := context.WithCancel(wait)
 	abandoned := make(chan error, 1)
 	go func() {
 		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
 		abandoned <- err
 	}()
-	_, err = creates.NextMsg(time.Minute)
+	_, err = creates.NextMsgWithContext(wait)
 	abandon()
 	if err != nil {
 		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
 	}
 	<-abandoned
-	testwait.Eventually(t, "the meta leader to list the other start's stream", func() bool {
-		listed := false
-		for name := range js.StreamNames() {
-			listed = listed || name == "KV_"+bucket
+	testwait.Until(t, "the meta leader to list the other start's stream", func() ([]string, bool) {
+		// Each listing is cut to the row's deadline, and one the server leaves unanswered is asked
+		// again after RequestTimeout.
+		ask, cancel := context.WithTimeout(wait, RequestTimeout)
+		defer cancel()
+		var names []string
+		for name := range js.StreamNames(nats.Context(ask)) {
+			names = append(names, name)
 		}
-		return listed
+		return names, slices.Contains(names, "KV_"+bucket)
 	})
-	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
+	kv, err := EnsureKeyValue(wait, conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy whose create met another start's: %v", err)
 	}
-	info, err := js.StreamInfo("KV_" + bucket)
-	if err != nil {
-		t.Fatalf("read the bucket's stream: %v", err)
-	}
+	info := rowRead(t, wait, js, "KV_"+bucket)
 	if info.Config.Replicas != 3 {
 		t.Fatalf("the bucket's stream has %d copies, want the other start's 3: this start's create made the bucket, so this row holds nothing", info.Config.Replicas)
 	}
 	if info.Cluster == nil || info.Cluster.Leader == "" {
 		t.Fatal("the start at one copy answered while the other start's stream had no leader")
 	}
+	cluster.AwaitBucket(t, bucket)
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
@@ -240,65 +291,152 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 
 // A start that finds the notification stream another program raised a moment ago waits for its
 // leader too, for the same reason: the raise was answered at once, and a publish sent while the
-// stream has no leader draws no answer.
+// stream has no leader draws no answer. The row checks that the start leaves a leader named, and
+// its publish waits as the second row's does.
 func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
 	cluster, js := startClusterJetStream(t)
+	wait := rowWait(t)
 	startOnCluster(t, cluster, WithReplicas(1)).Close()
-	info, err := js.StreamInfo(Stream)
-	if err != nil {
-		t.Fatalf("read the one-copy stream: %v", err)
-	}
-	raised := info.Config
-	raised.Replicas = 3
-	if _, err := js.UpdateStream(&raised); err != nil {
+	// Another program's raise, made as a start makes one (raiseStream), so an update the server
+	// leaves unanswered is read again rather than taken for a refusal.
+	if _, err := raiseStream(wait, js, rowRead(t, wait, js, Stream), 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
 	client := startOnCluster(t, cluster, WithReplicas(3))
-	if !hasLeader(t, js, Stream) {
+	if !hasLeader(t, wait, js, Stream) {
 		t.Fatal("the start answered while the raised stream had no leader")
 	}
-	if err := client.Publish(contracts.Envelope{
+	found := contracts.Envelope{
 		EventID: "event-found-raised", Source: "dispatch",
 		Topic: "notifications.agent.ses_found_raised", DedupeKey: "dispatch.event.found_raised",
-	}); err != nil {
+	}
+	cluster.AwaitStream(t, Stream, found.Topic)
+	if err := client.Publish(found); err != nil {
 		t.Fatalf("the first publish after the start: %v", err)
 	}
 }
 
-// earlyAnswerJetStream loses the answer to a start's first create: that send goes out through a
-// context of a millisecond, so the server takes the create and the answer, which the server gives
-// only at the stream's first leader election, finds nobody waiting. The start sends the create
-// again, and the server answers that equal create at once, while the stream has no leader: the
-// order a slow election makes, forced without holding the election.
+// cutContext is a context the row ends when it chooses, by closing done, and that reports
+// context.DeadlineExceeded from then on, as the context of a send whose wait ran out does. Its
+// deadline and values are its parent's.
+type cutContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *cutContext) Done() <-chan struct{} { return c.done }
+
+func (c *cutContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// earlyAnswerJetStream loses the answer to a start's first create of the stream. That send goes
+// out under a context the row ends the moment creates, a listener on the same connection, sees the
+// create reach the server, and it answers context.DeadlineExceeded, as a send whose wait ran out
+// does, whatever the server sent back. So the server has taken the first create, its answer never
+// reaches the start, and the start sends the create again (sentAgain), on any machine. Whether the
+// server answers that resend at once, with the stream still leaderless, depends on the cluster:
+// the meta leader can take the resend first, and the first election can end before it lands. So
+// it records whether an answer the start took named no leader (leaderless), which the row needs.
 type earlyAnswerJetStream struct {
 	nats.JetStreamContext
-	sent int
+	wait    context.Context
+	creates *nats.Subscription
+	sent    int
+	// first is the first create as the listener saw it reach the server, nil when it saw none.
+	first []byte
+	// leaderless is whether a create's answer the start took named no leader for the stream.
+	leaderless bool
 }
 
 func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if js.sent++; js.sent == 1 {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-		defer cancel()
-		return js.JetStreamContext.AddStream(cfg, append(slices.Clone(opts), nats.Context(ctx))...)
+	if js.sent++; js.sent > 1 {
+		info, err := js.JetStreamContext.AddStream(cfg, opts...)
+		if err == nil && (info.Cluster == nil || info.Cluster.Leader == "") {
+			js.leaderless = true
+		}
+		return info, err
 	}
-	return js.JetStreamContext.AddStream(cfg, opts...)
+	cut := &cutContext{Context: js.wait, done: make(chan struct{})}
+	go func() {
+		defer close(cut.done)
+		if seen, err := js.creates.NextMsgWithContext(js.wait); err == nil {
+			js.first = seen.Data
+		}
+	}()
+	_, _ = js.JetStreamContext.AddStream(cfg, append(slices.Clone(opts), nats.Context(cut))...)
+	<-cut.done
+	return nil, context.DeadlineExceeded
 }
 
-// A start whose create of the stream at three copies is answered before the stream's first
-// election ends answers only once the stream has a leader.
+// A start whose create of the stream at three copies is answered while the stream has no leader
+// answers only once the stream has a leader. Each run starts a cluster, loses the start's first
+// create's answer and lets the start send it again (earlyAnswerJetStream); the row checks the
+// start's leader at once, then that each create reached the server and was the first one again.
+// A run whose resend was answered after the first election tests nothing of this, so the row runs
+// again on a new cluster until a run's answer named no leader, failing by name at the row's
+// deadline if none does. In 10 runs of the row here, each first run's answer named no leader.
 func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testing.T) {
-	cluster, js := startClusterJetStream(t)
+	wait := rowWait(t)
+	for run := 1; ; run++ {
+		if earlyAnswerRun(t, wait) {
+			return
+		}
+		if wait.Err() != nil {
+			t.Fatalf("in %d runs no answer the start took named no leader, so this row held nothing", run)
+		}
+		t.Logf("run %d: every create's answer the start took named a leader; running again on a new cluster", run)
+	}
+}
+
+// earlyAnswerRun is one run of the row above, on a cluster of its own, and reports whether an
+// answer the start took named no leader.
+func earlyAnswerRun(t *testing.T, wait context.Context) bool {
+	t.Helper()
+	cluster := testnats.StartCluster(t, 3)
+	conn := testnats.Connect(t, cluster.URL())
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	creates, err := conn.SubscribeSync(jsAPI("STREAM.CREATE", Stream))
+	if err != nil {
+		t.Fatalf("listen for the start's creates: %v", err)
+	}
+	t.Cleanup(func() { _ = creates.Unsubscribe() })
+	if err := conn.FlushWithContext(wait); err != nil {
+		t.Fatalf("flush the listener: %v", err)
+	}
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
-	early := &earlyAnswerJetStream{JetStreamContext: js}
-	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
+	early := &earlyAnswerJetStream{JetStreamContext: js, wait: wait, creates: creates}
+	if _, err := ensureStreamWithConfig(wait, early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
+	}
+	if !hasLeader(t, wait, js, Stream) {
+		t.Fatal("the start answered while the stream it created had no leader")
+	}
+	if early.first == nil {
+		t.Fatal("the listener never saw the start's first create reach the server, so this row holds nothing")
 	}
 	if early.sent < 2 {
 		t.Fatalf("creates sent = %d, want the first one's answer lost and the create sent again", early.sent)
 	}
-	if !hasLeader(t, cluster.JetStream(t), Stream) {
-		t.Fatal("the start answered while the stream it created had no leader")
+	for i := 2; i <= early.sent; i++ {
+		again, err := creates.NextMsgWithContext(wait)
+		if err != nil {
+			t.Fatalf("create %d of the %d the start sent never reached the server: %v", i, early.sent, err)
+		}
+		if !bytes.Equal(again.Data, early.first) {
+			t.Fatalf("create %d the start sent was %s, want the first create's %s: an equal create", i, again.Data, early.first)
+		}
 	}
+	return early.leaderless
 }
 
 // A run of the reconnect hooks that finds the stream with no leader, as one whose other members
@@ -306,8 +444,11 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 // guard for an election that run did not cause (atReconnect): those hooks rewatch the program's
 // state, and a run that ended at the ensure would leave every cache it rewatches stale. It once
 // waited the 36 s guard, failed the run with "the stream had no leader when the wait ended", and
-// ran no hook after the ensure. Here two of the stream's three members are stopped, so the one the
-// client is connected to answers the stream's read with no leader for as long as the row runs.
+// ran no hook after the ensure. Here two of the stream's three members are stopped until the
+// row's cleanup, so the one the client is connected to answers the stream's read with no leader
+// for as long as the row runs, and no election can end while it does: a run that waited for one
+// ends at its hang guard with that error, or, waiting with no guard, does not end before the row's
+// deadline (rowWait).
 func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	cluster.AwaitReady(t)
@@ -323,22 +464,29 @@ func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testi
 	})
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)
-	noLeader := testwait.Holds(60*time.Second, 100*time.Millisecond, func() bool {
-		info, err := client.JS().StreamInfo(Stream)
+	wait := rowWait(t)
+	deadline, _ := wait.Deadline()
+	noLeader := testwait.Holds(time.Until(deadline), 100*time.Millisecond, func() bool {
+		// Each read is cut to the row's deadline, and one the member leaves unanswered is asked again
+		// after RequestTimeout.
+		ask, cancel := context.WithTimeout(wait, RequestTimeout)
+		defer cancel()
+		info, err := client.JS().StreamInfo(Stream, nats.Context(ask))
 		return err == nil && leaderless(info)
 	})
 	if !noLeader {
 		t.Fatal("the remaining member never answered the stream's read with no leader: this row needs that read")
 	}
 
-	started := time.Now()
-	err = client.runReconnectHooks(client.Conn)
-	took := time.Since(started)
-	if err != nil || !after.Load() {
-		t.Fatalf("a run that found the stream with no leader = %v after %s, the hook after the ensure ran: %t; want nil and the hook run",
-			err, took.Round(time.Millisecond), after.Load())
+	conn := client.Conn
+	ran := make(chan error, 1)
+	go func() { ran <- client.runReconnectHooks(conn) }()
+	select {
+	case err = <-ran:
+	case <-wait.Done():
+		t.Fatal("the run did not end: it waits for an election it did not cause, which cannot end while two of the stream's three members are stopped")
 	}
-	if took > 10*time.Second {
-		t.Fatalf("the run took %s, want it to wait for no election it did not cause", took.Round(time.Millisecond))
+	if err != nil || !after.Load() {
+		t.Fatalf("a run that found the stream with no leader = %v, the hook after the ensure ran: %t; want nil and the hook run", err, after.Load())
 	}
 }
