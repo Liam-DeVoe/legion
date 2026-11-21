@@ -226,7 +226,7 @@ type bootConfig struct {
 	// project goes private with no provisioning and no bus record, and a complete store; the boot
 	// names each that is private in an INFO line, and /healthz says only that one exists, naming
 	// none (reportPrivateProjects, privateBeforeFullSwitchReason). A key PrivateProjects names too
-	// takes its full switch.
+	// is left off, since it takes its full switch, so the two lists are disjoint.
 	PrivateBeforeFullSwitch []string
 	// PrivateBeforeFullSwitchIgnored is each entry of DISPATCH_PRIVATE_BEFORE_FULL_SWITCH that is no
 	// project key, in the order given, logged at boot as PrivateProjectsIgnored's are.
@@ -1170,7 +1170,7 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries,
-		mayBePrivate(boot.PrivateProjects, boot.PrivateBeforeFullSwitch))
+		boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1471,6 +1471,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get(privateProjectsVariable))
 	boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored = privateProjectsSetting(env.get(privateBeforeFullSwitchVariable))
+	// A key both settings name takes its full switch, so it is DISPATCH_PRIVATE_PROJECTS' alone: this
+	// is the one place the overlap is settled, and every reader gets two disjoint lists
+	// (api.NewDeps refuses lists that are not).
+	boot.PrivateBeforeFullSwitch = slices.DeleteFunc(boot.PrivateBeforeFullSwitch, func(key string) bool {
+		_, provisioned := slices.BinarySearch(boot.PrivateProjects, key)
+		return provisioned
+	})
 	for _, setting := range []struct {
 		name   string
 		target *bool

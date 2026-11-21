@@ -483,6 +483,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           >
             This project is private before its full switch: Dispatch hides it as any private
             project, while its own namespace, stores and message gate come with its full switch.
+            Until then, its notifications reach any agent session that subscribes to them.
           </p>
         ) : null}
         <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>

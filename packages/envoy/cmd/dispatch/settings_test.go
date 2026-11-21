@@ -1142,8 +1142,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": func(t *testing.T) {
 			// The list's own reading is TestThePrivateBeforeFullSwitchSettingIsAListOfKeys. Its
 			// reader: the owner's switch of PRIV to private, which with PRIV on it alone needs no
-			// bus, though this router is given none, and with another key on it alone is refused
-			// for want of PRIV on either list.
+			// bus, though this router is given none, with another key on it alone is refused for
+			// want of PRIV on either list, and with PRIV on DISPATCH_PRIVATE_PROJECTS too is PRIV's
+			// full switch, refused for want of a bus to hold its record.
 			t.Run("router", func(t *testing.T) {
 				database := storetest.Open(t)
 				if _, err := database.Pool.Exec(context.Background(), `
@@ -1154,20 +1155,25 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Fatalf("seed alice's project PRIV: %v", err)
 				}
 				for _, row := range []struct {
-					value string
-					want  int
-					code  string
+					value, provisioned string
+					want               int
+					code               string
 				}{
-					{"OTHER", http.StatusConflict, "PRIVATE_PROJECT_NOT_PROVISIONED"},
-					{"PRIV", http.StatusOK, ""},
+					{"OTHER", "", http.StatusConflict, "PRIVATE_PROJECT_NOT_PROVISIONED"},
+					{"PRIV", "", http.StatusOK, ""},
+					{"PRIV", "PRIV", http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE"},
 				} {
+					if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'public' where key = 'PRIV'`); err != nil {
+						t.Fatalf("make PRIV public: %v", err)
+					}
 					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
 					request.Header.Set("Content-Type", "application/json")
 					request.Header.Set("Sec-Fetch-Site", "same-origin")
 					response := httptest.NewRecorder()
-					routerFor(t, resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": row.value}), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
+					env := map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": row.value, "DISPATCH_PRIVATE_PROJECTS": row.provisioned}
+					routerFor(t, resolveWith(t, env), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
 					if response.Code != row.want || errorCode(response) != row.code {
-						t.Errorf("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=%q: PATCH PRIV private answered %d %s, want %d %s", row.value, response.Code, response.Body.String(), row.want, row.code)
+						t.Errorf("%v: PATCH PRIV private answered %d %s, want %d %s", env, response.Code, response.Body.String(), row.want, row.code)
 					}
 				}
 			})
@@ -2546,7 +2552,9 @@ func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
 // ERROR line naming the setting, the entry and the refusal a switch of the project it meant gets
 // while neither list names its key: 409 PRIVATE_PROJECTS_OFF while both lists are empty, as a
 // mistyped day-one key leaves them when it is this setting's only entry, else 409
-// PRIVATE_PROJECT_NOT_PROVISIONED. Neither list reads the other's entries. Control: a setting that
+// PRIVATE_PROJECT_NOT_PROVISIONED. Neither list reads the other's entries, and a key both name
+// takes its full switch: the boot leaves it on DISPATCH_PRIVATE_PROJECTS alone, so the two lists
+// every reader gets are disjoint (api.NewDeps refuses lists that are not). Control: a setting that
 // read the entry would put it on the list.
 func TestThePrivateBeforeFullSwitchSettingIsAListOfKeys(t *testing.T) {
 	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": " PRIV, ALPHA ,PRIV,"})
@@ -2563,6 +2571,11 @@ func TestThePrivateBeforeFullSwitchSettingIsAListOfKeys(t *testing.T) {
 		!slices.Equal(boot.PrivateBeforeFullSwitch, []string{"DAYONE"}) || !slices.Equal(boot.PrivateProjectsIgnored, []string{"1"}) || len(boot.PrivateBeforeFullSwitchIgnored) != 0 {
 		t.Errorf("both settings set: PrivateProjects %q ignored %q, PrivateBeforeFullSwitch %q ignored %q; want [FULL] ignoring 1, and [DAYONE] ignoring none",
 			boot.PrivateProjects, boot.PrivateProjectsIgnored, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored)
+	}
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "PRIV", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "PRIV,DAYONE"}); !slices.Equal(boot.PrivateProjects, []string{"PRIV"}) ||
+		!slices.Equal(boot.PrivateBeforeFullSwitch, []string{"DAYONE"}) {
+		t.Errorf("PRIV on both settings: PrivateProjects %q, PrivateBeforeFullSwitch %q; want [PRIV] and [DAYONE]: a key both name takes its full switch",
+			boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
 	}
 	for _, entry := range []string{"1", "priv"} {
 		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "ALPHA," + entry + ",PRIV"})

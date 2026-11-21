@@ -144,11 +144,11 @@ func (s *server) privateProjectProvisioned(key string) bool {
 }
 
 // privateBeforeFullSwitch reports whether project key is one the deployment makes private before
-// its full switch: Deps.PrivateBeforeFullSwitch names it and Deps.PrivateProjects does not, since
-// a project both name takes its full switch.
+// its full switch: Deps.PrivateBeforeFullSwitch names it, which NewDeps holds apart from
+// Deps.PrivateProjects.
 func (s *server) privateBeforeFullSwitch(key string) bool {
 	_, found := slices.BinarySearch(s.deps.PrivateBeforeFullSwitch, key)
-	return found && !s.privateProjectProvisioned(key)
+	return found
 }
 
 // accessAnswer is answer as every route of a project's access answers it: marked

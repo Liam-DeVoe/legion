@@ -75,14 +75,19 @@ func TestABootReportsAnUnprovisionedPrivateProjectAndStaysUp(t *testing.T) {
 		}
 	})
 	t.Run("PRIV on both lists takes its full switch", func(t *testing.T) {
-		if logged := report(t, []string{"PRIV"}, []string{"PRIV"}); strings.Contains(logged, beforeFullSwitchLine) || strings.Contains(logged, "level=ERROR") {
+		// The boot settles a key on both lists (resolveBootConfig), so the state is built from
+		// the lists the boot hands it, as main builds it.
+		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "PRIV", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "PRIV"})
+		if logged := report(t, boot.PrivateProjects, boot.PrivateBeforeFullSwitch); strings.Contains(logged, beforeFullSwitchLine) || strings.Contains(logged, "level=ERROR") {
 			t.Fatalf("the boot's report with PRIV on both lists names it private before its full switch, or logs an ERROR:\n%s", logged)
 		}
 	})
 	t.Run("DAYONE named before its full switch but not private yet", func(t *testing.T) {
 		logged := report(t, nil, []string{"DAYONE", "PRIV"})
+		// The line names the setting, DISPATCH_PRIVATE_BEFORE_FULL_SWITCH, so it is read by its
+		// projects attribute, the line's last, which must be DAYONE alone: PRIV is private.
 		if line := lineHolding(logged, "may be made private before its full switch, not private yet"); !strings.Contains(line, "level=INFO") ||
-			!strings.Contains(line, "projects=DAYONE") {
+			!strings.HasSuffix(line, " projects=DAYONE\n") {
 			t.Fatalf("the boot's report names DAYONE, listed and no private project, with no INFO line naming it alone:\n%s", logged)
 		}
 	})
@@ -195,11 +200,9 @@ func TestAProcessServesAProjectPrivateBeforeItsFullSwitch(t *testing.T) {
 	}})
 	process.waitHealthy(t)
 	const maintenancePass = `msg="dispatch duty: leased pass ran" lease=suggestion-outcomes`
-	for deadline := time.Now().Add(60 * time.Second); strings.Count(process.Output.String(), maintenancePass) < 2; time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for two passes of the maintenance loop:\n%s", process.Output.String())
-		}
-	}
+	waitUntil(t, 60*time.Second, "two passes of the maintenance loop", func() bool {
+		return strings.Count(process.Output.String(), maintenancePass) >= 2
+	})
 	output := process.Output.String()
 	if line := lineHolding(output, "dispatch: private before its full switch"); !strings.Contains(line, "level=INFO") || !strings.Contains(line, "projects=PRIV") {
 		t.Errorf("the process's log holds no INFO line naming PRIV private before its full switch:\n%s", output)
@@ -211,23 +214,8 @@ func TestAProcessServesAProjectPrivateBeforeItsFullSwitch(t *testing.T) {
 	if strings.Contains(output, "private project not provisioned: PRIV") {
 		t.Errorf("the process reported PRIV, private before its full switch, as a private project no list names:\n%s", output)
 	}
-	response, err := http.Get(process.url("/healthz"))
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
-	defer response.Body.Close()
-	raw, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("read /healthz: %v", err)
-	}
-	var health struct {
-		OK       bool     `json:"ok"`
-		Degraded []string `json:"degraded"`
-	}
-	if err := json.Unmarshal(raw, &health); err != nil {
-		t.Fatalf("decode /healthz %s: %v", raw, err)
-	}
-	if response.StatusCode != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{"private_before_full_switch"}) || strings.Contains(string(raw), "PRIV") {
-		t.Fatalf(`/healthz = %d %s, want 200, ok, degraded ["private_before_full_switch"], and no project's key`, response.StatusCode, raw)
+	health := process.readHealthz(t)
+	if health.status != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{"private_before_full_switch"}) || strings.Contains(health.body, "PRIV") {
+		t.Fatalf(`/healthz = %d %s, want 200, ok, degraded ["private_before_full_switch"], and no project's key`, health.status, health.body)
 	}
 }

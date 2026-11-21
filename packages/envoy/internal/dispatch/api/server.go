@@ -153,8 +153,9 @@ type Deps struct {
 	// their full switch, sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_BEFORE_FULL_SWITCH).
 	// Such a project's switch to private needs neither the provisioning PrivateProjects names nor
 	// the bus record (BusProjects), and still needs a complete store: Dispatch hides it as any
-	// private project, and its namespace, stores and bus gate come with its full switch. A key
-	// PrivateProjects names too takes the full switch (privateBeforeFullSwitch).
+	// private project, and its namespace, stores and bus gate come with its full switch. It shares
+	// no key with PrivateProjects: NewDeps refuses lists that do, and cmd/dispatch takes a key both
+	// settings name off this list, since that project takes its full switch.
 	PrivateBeforeFullSwitch []string
 	// BusProjects writes the private-projects record the listeners hold a private project's
 	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
@@ -350,6 +351,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
+	}
+	for _, key := range input.PrivateBeforeFullSwitch {
+		if _, both := slices.BinarySearch(input.PrivateProjects, key); both {
+			return Deps{}, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS and DISPATCH_PRIVATE_BEFORE_FULL_SWITCH both name %q: "+
+				"a project takes its full switch or is private before it, never both", key)
+		}
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()

@@ -880,13 +880,6 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // such read answers (R9).
 func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T) {
 	database := storetest.Open(t)
-	probe := func(state *privateProjectsState) (int, string) {
-		t.Helper()
-		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
-			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		return response.Code, response.Body.String()
-	}
 	// read is the state as the boot leaves it: read once, before the listener serves.
 	read := func() *privateProjectsState {
 		t.Helper()
@@ -896,8 +889,8 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 		}
 		return state
 	}
-	_, without := probe(nil)
-	if code, body := probe(read()); code != http.StatusOK || body != without {
+	_, without := healthzOf(t, database, nil)
+	if code, body := healthzOf(t, database, read()); code != http.StatusOK || body != without {
 		t.Fatalf("/healthz with no private project = %d %s, want 200 and the body without the read, %s", code, body, without)
 	}
 	for _, key := range []string{"PRIV", "PRIVTWO"} {
@@ -906,29 +899,42 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 			t.Fatalf("seed the private project %s: %v", key, err)
 		}
 	}
-	code, body := probe(read())
-	var health map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(body), &health); err != nil {
+	code, body := healthzOf(t, database, read())
+	if code != http.StatusOK || strings.Contains(body, "PRIV") {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and no private project's key", code, body)
+	}
+	requireOnlyDegraded(t, body, without, `["private_project_unprovisioned"]`)
+}
+
+// healthzOf is /healthz as a handler built with state answers it: its status and its body. A nil
+// state is a handler with no read of the private projects.
+func healthzOf(t *testing.T, database *store.Store, state *privateProjectsState) (int, string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
+		ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	return response.Code, response.Body.String()
+}
+
+// requireOnlyDegraded fails unless body, a /healthz answer, carries degraded as want, compared as
+// the literal a probe reads, and is otherwise without, the body of a handler with no read, field
+// for field: no key and no count beside the fixed reasons, so nothing in it changes with how many
+// projects are private, or which (R2).
+func requireOnlyDegraded(t *testing.T, body, without, want string) {
+	t.Helper()
+	var fields, withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
 		t.Fatalf("decode /healthz %s: %v", body, err)
 	}
-	if code != http.StatusOK || string(health["ok"]) != "true" {
-		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and ok true", code, body)
-	}
-	if got := string(health["degraded"]); got != `["private_project_unprovisioned"]` {
-		t.Fatalf(`/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want ["private_project_unprovisioned"]: %s`, got, body)
-	}
-	if strings.Contains(body, "PRIV") {
-		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
-	}
-	// No count either: the body is the one without the read, field for field, plus degraded alone,
-	// so nothing in it changes with how many projects are unprovisioned.
-	delete(health, "degraded")
-	var withoutFields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(without), &withoutFields); err != nil {
 		t.Fatalf("decode /healthz %s: %v", without, err)
 	}
-	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
-		t.Errorf("/healthz with an unprovisioned private project = %s, want the body without one plus degraded alone, %s", body, without)
+	if got := string(fields["degraded"]); got != want {
+		t.Fatalf("/healthz = %s: degraded %s, want %s", body, got, want)
+	}
+	delete(fields, "degraded")
+	if !maps.EqualFunc(fields, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz = %s, want the body without the read plus degraded alone, %s", body, without)
 	}
 }
 
@@ -942,63 +948,45 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 // private_project_unprovisioned beside it.
 func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
 	database := storetest.Open(t)
-	probe := func(list, beforeFullSwitch []string) (int, map[string]json.RawMessage, string) {
+	probe := func(list, beforeFullSwitch []string) (int, string) {
 		t.Helper()
 		state, err := startPrivateProjectsState(t.Context(), database.Pool, list, beforeFullSwitch)
 		if err != nil {
 			t.Fatalf("the first read of the private projects: %v", err)
 		}
-		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
-			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		var health map[string]json.RawMessage
-		if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
-			t.Fatalf("decode /healthz %s: %v", response.Body.String(), err)
-		}
-		return response.Code, health, response.Body.String()
+		return healthzOf(t, database, state)
 	}
+	_, without := healthzOf(t, database, nil)
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into projects (key, name, default_assignee) values ('DAYONE', 'Day one', 'alice@example.com')`); err != nil {
 		t.Fatalf("seed DAYONE: %v", err)
 	}
-	if code, health, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || health["degraded"] != nil {
-		t.Fatalf("/healthz with DAYONE listed and public = %d %s, want 200 and no degraded", code, body)
+	if code, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with DAYONE listed and public = %d %s, want 200 and the body without the read, %s", code, body, without)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'DAYONE'`); err != nil {
 		t.Fatalf("make DAYONE private: %v", err)
 	}
-	code, health, body := probe(nil, []string{"DAYONE"})
-	if code != http.StatusOK || string(health["ok"]) != "true" || string(health["degraded"]) != `["private_before_full_switch"]` {
-		t.Fatalf(`/healthz with DAYONE private before its full switch = %d %s, want 200, ok true and degraded ["private_before_full_switch"]`, code, body)
+	code, body := probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK || strings.Contains(body, "DAYONE") {
+		t.Fatalf("/healthz with DAYONE private before its full switch = %d %s, want 200 and no private project's key", code, body)
 	}
-	if strings.Contains(body, "DAYONE") {
-		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
-	}
-	// No count either: beside degraded, the body is the one a handler with no read answers, field
-	// for field, so nothing in it tells a caller how many projects are private before their full
-	// switch.
-	delete(health, "degraded")
-	without := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil).
-		ServeHTTP(without, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	var withoutFields map[string]json.RawMessage
-	if err := json.Unmarshal(without.Body.Bytes(), &withoutFields); err != nil {
-		t.Fatalf("decode /healthz %s: %v", without.Body.String(), err)
-	}
-	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
-		t.Errorf("/healthz with DAYONE private before its full switch = %s, want the body without the read plus degraded alone, %s", body, without.Body.String())
-	}
-	if code, health, body := probe([]string{"DAYONE"}, []string{"DAYONE"}); code != http.StatusOK || health["degraded"] != nil {
-		t.Fatalf("/healthz with DAYONE private and on both lists = %d %s, want 200 and no degraded: it took its full switch", code, body)
+	requireOnlyDegraded(t, body, without, `["private_before_full_switch"]`)
+	// A key on both settings takes its full switch: the boot leaves it on DISPATCH_PRIVATE_PROJECTS
+	// alone (resolveBootConfig), and the state is built from the lists the boot hands it.
+	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "DAYONE", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "DAYONE"})
+	if code, body := probe(boot.PrivateProjects, boot.PrivateBeforeFullSwitch); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with DAYONE private and on both settings = %d %s, want 200 and the body without the read: it took its full switch", code, body)
 	}
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into projects (key, name, default_assignee, visibility) values ('OFFL', 'Off both lists', 'alice@example.com', 'private')`); err != nil {
 		t.Fatalf("seed OFFL: %v", err)
 	}
-	want := `["private_project_unprovisioned","private_before_full_switch"]`
-	if code, health, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || string(health["degraded"]) != want {
-		t.Fatalf("/healthz with DAYONE private before its full switch and OFFL on neither list = %d %s, want 200 and degraded %s", code, body, want)
+	code, body = probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK {
+		t.Fatalf("/healthz with DAYONE private before its full switch and OFFL on neither list = %d %s, want 200", code, body)
 	}
+	requireOnlyDegraded(t, body, without, `["private_project_unprovisioned","private_before_full_switch"]`)
 }
 
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read

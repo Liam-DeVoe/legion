@@ -64,14 +64,6 @@ func reportIgnoredPrivateProjects(setting string, ignored []string) {
 	}
 }
 
-// mayBePrivate is every key either list names, sorted and each once: the projects a switch to
-// private may name, which the maintenance sweep reads (api.RunMaintenanceSweep).
-func mayBePrivate(privateProjects, beforeFullSwitch []string) []string {
-	keys := slices.Concat(privateProjects, beforeFullSwitch)
-	slices.Sort(keys)
-	return slices.Compact(keys)
-}
-
 // reportPrivateProjects is the boot's report of what the state's first read (state) says of
 // private projects, right after every project has an owner. It makes no read of its own. It
 // reports and never refuses: Dispatch runs as one process, so a boot that exited would stop every
@@ -84,24 +76,22 @@ func mayBePrivate(privateProjects, beforeFullSwitch []string) []string {
 //     private yet, are one INFO line.
 //   - The projects private before their full switch (BeforeFullSwitch) are one INFO line naming
 //     each as such, so no reader of the log takes one for a fully switched project; the keys on
-//     DISPATCH_PRIVATE_BEFORE_FULL_SWITCH alone that no private project holds yet are another.
+//     DISPATCH_PRIVATE_BEFORE_FULL_SWITCH that no private project holds yet are another.
 //
-// The store's own check, with a list, is the maintenance loop's as it starts and then hourly
+// The store's own check, with either list, is the maintenance loop's as it starts and then hourly
 // (api.RunMaintenanceSweep): it reads every project-owned table, so the boot serves without
 // waiting for it, and its first line is not repeated a pass later.
 func reportPrivateProjects(state *privateProjectsState) {
 	api.LogUnprovisionedPrivateProjects(state.Unprovisioned())
-	if len(state.list) > 0 {
-		if notPrivate := state.provisionedNotPrivate(); len(notPrivate) > 0 {
-			slog.Info("dispatch: private projects provisioned but not private yet", "projects", strings.Join(notPrivate, ","))
-		}
+	if notPrivate := state.notPrivate(state.list); len(notPrivate) > 0 {
+		slog.Info("dispatch: private projects provisioned but not private yet", "projects", strings.Join(notPrivate, ","))
 	}
 	if before := state.BeforeFullSwitch(); len(before) > 0 {
 		slog.Info("dispatch: private before its full switch: Dispatch hides each of these projects as any private project, "+
 			"while its namespace, its stores and its bus gate come with its full switch ("+privateBeforeFullSwitchVariable+")",
 			"projects", strings.Join(before, ","))
 	}
-	if notPrivate := state.beforeFullSwitchNotPrivate(); len(notPrivate) > 0 {
+	if notPrivate := state.notPrivate(state.beforeFullSwitch); len(notPrivate) > 0 {
 		slog.Info("dispatch: may be made private before its full switch, not private yet ("+privateBeforeFullSwitchVariable+")",
 			"projects", strings.Join(notPrivate, ","))
 	}
@@ -125,7 +115,8 @@ const privateProjectsReadInterval = 30 * time.Second
 type privateProjectsState struct {
 	querier access.Querier
 	// list is DISPATCH_PRIVATE_PROJECTS and beforeFullSwitch DISPATCH_PRIVATE_BEFORE_FULL_SWITCH,
-	// each sorted and each key once.
+	// each sorted and each key once, and disjoint: the boot takes a key both settings name off
+	// beforeFullSwitch, since it takes its full switch (resolveBootConfig).
 	list, beforeFullSwitch []string
 	// last is the last read, published whole, so a response's header reads it without a lock.
 	last atomic.Pointer[privateProjectsRead]
@@ -179,32 +170,17 @@ func (s *privateProjectsState) privateProjects(ctx context.Context) ([]string, e
 	return private, nil
 }
 
-// provisionedNotPrivate answers the keys on the list that the last read did not find private: a key
-// of no project, or of a public one.
-func (s *privateProjectsState) provisionedNotPrivate() []string {
+// notPrivate answers the keys of keys, list or beforeFullSwitch, that the last read did not find
+// private: a key of no project, or of a public one.
+func (s *privateProjectsState) notPrivate(keys []string) []string {
 	last := s.last.Load()
-	var keys []string
-	for _, key := range s.list {
-		if _, found := slices.BinarySearch(last.private, key); !found {
-			keys = append(keys, key)
+	var notPrivate []string
+	for _, key := range keys {
+		if _, private := slices.BinarySearch(last.private, key); !private {
+			notPrivate = append(notPrivate, key)
 		}
 	}
-	return keys
-}
-
-// beforeFullSwitchNotPrivate answers the keys DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names and
-// DISPATCH_PRIVATE_PROJECTS does not that the last read did not find private: a key of no project,
-// or of a public one.
-func (s *privateProjectsState) beforeFullSwitchNotPrivate() []string {
-	last := s.last.Load()
-	var keys []string
-	for _, key := range s.beforeFullSwitch {
-		_, provisioned := slices.BinarySearch(s.list, key)
-		if _, private := slices.BinarySearch(last.private, key); !provisioned && !private {
-			keys = append(keys, key)
-		}
-	}
-	return keys
+	return notPrivate
 }
 
 // run reads the private projects every privateProjectsReadInterval until ctx is done.
@@ -261,16 +237,15 @@ func (s *privateProjectsState) Unprovisioned() []string {
 }
 
 // BeforeFullSwitch answers, sorted, the private projects DISPATCH_PRIVATE_BEFORE_FULL_SWITCH
-// names and DISPATCH_PRIVATE_PROJECTS does not, as the last read found them: the projects private
-// before their full switch. nil for none, for a nil state, and after a failed read.
+// names, as the last read found them: the projects private before their full switch. nil for
+// none, for a nil state, and after a failed read.
 func (s *privateProjectsState) BeforeFullSwitch() []string {
 	if s == nil {
 		return nil
 	}
 	var keys []string
 	for _, key := range s.last.Load().private {
-		_, provisioned := slices.BinarySearch(s.list, key)
-		if _, before := slices.BinarySearch(s.beforeFullSwitch, key); before && !provisioned {
+		if _, before := slices.BinarySearch(s.beforeFullSwitch, key); before {
 			keys = append(keys, key)
 		}
 	}

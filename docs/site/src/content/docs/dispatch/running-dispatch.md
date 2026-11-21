@@ -419,9 +419,10 @@ Of these, only the owner check of step 2 applies to a switch to public.
 
 A project private before its full switch is the outside person's project on their first day. Its
 switch to private skips steps 3 and 5: it needs no provisioning and writes no record, while step 4
-still applies. Dispatch then hides it from every person and credential that does not see it, as
-any private project, while its namespace, its stores and its bus gate come with its full switch.
-So nobody takes it for a fully switched project, its access carries
+still applies. In its own reads Dispatch then hides it from every person and credential that does
+not see it, as any private project, while its namespace, its stores and its bus gate come with its
+full switch. Until then, the project's notifications on the hub reach any agent session that
+subscribes to them. So nobody takes it for a fully switched project, its access carries
 `"private_before_full_switch": true` while it is private, the server logs at INFO, at start, each
 such project as private before its full switch, and `/healthz` says one exists (below). A key both
 settings name takes its full switch. From the apply that adds such a key to
@@ -490,8 +491,10 @@ balancer's or Kubernetes' readiness probe at it.
   so a probe adds no read. `private_project_unprovisioned` is there while the database holds a
   private project that neither list names, and `private_before_full_switch` while it holds a
   project private before its full switch ([Private projects](#private-projects)). Neither names a
-  project or counts one, because the check answers anyone; the project's key is in the server's
-  log. It is absent when neither holds, and it never decides `ok` or the status.
+  project or counts one, because the check answers anyone. The project's key is in the line the
+  server logs at start, so a project made private after the start is named at the next one; an
+  unprovisioned one is named in every maintenance pass too. It is absent when neither holds, and
+  it never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.

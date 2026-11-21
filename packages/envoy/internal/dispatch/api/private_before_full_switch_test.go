@@ -53,16 +53,18 @@ func requireBeforeFullSwitch(t *testing.T, database *store.Store, response *http
 // DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names goes private with no bus to write its record and no
 // provisioning, appends project.access_changed as any switch does, and answers its access with
 // private_before_full_switch true; no writer is asked for its record, even one the deployment has.
-// Its store must still be complete: each backfill marker missing, and a row whose node does not
-// name it, refuse it 409 PRIVATE_PROJECTS_INCOMPLETE as for any project. Making it public again
-// is the plain switch to public. A project on neither list keeps 409
-// PRIVATE_PROJECT_NOT_PROVISIONED beside the list, a project on DISPATCH_PRIVATE_PROJECTS alone
-// keeps 409 PRIVATE_PROJECTS_INCOMPLETE and 409 PRIVATE_PROJECTS_UNAVAILABLE, and a project on
-// both lists takes its full switch, bus record and all.
+// Its store must still be complete: each row of the table a full switch is refused by
+// (requireAnIncompleteStoreRefusesTheSwitch) refuses it 409 PRIVATE_PROJECTS_INCOMPLETE as for any
+// project. Making it public again is the plain switch to public. A project on neither list keeps
+// 409 PRIVATE_PROJECT_NOT_PROVISIONED beside the list, and a project on DISPATCH_PRIVATE_PROJECTS
+// alone keeps 409 PRIVATE_PROJECTS_INCOMPLETE and 409 PRIVATE_PROJECTS_UNAVAILABLE. The two lists
+// never share a project: NewDeps refuses lists that do, since the boot takes a key both settings
+// name off this list (cmd/dispatch, TestThePrivateBeforeFullSwitchSettingIsAListOfKeys).
 //
 // Controls: let every key skip the provisioning and the record, and the rows of a project on
-// neither list and on both lists fail; skip the store's check for a project before its full
-// switch too, and the incomplete rows fail.
+// neither list and on DISPATCH_PRIVATE_PROJECTS alone fail; skip the store's check for a project
+// before its full switch, and the incomplete rows fail; drop NewDeps' refusal, and the row of a
+// project on both lists fails.
 func TestAProjectBecomesPrivateBeforeItsFullSwitch(t *testing.T) {
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	public := map[string]string{"visibility": model.ProjectPublic}
@@ -93,33 +95,8 @@ func TestAProjectBecomesPrivateBeforeItsFullSwitch(t *testing.T) {
 		}
 	})
 
-	for _, marker := range []struct{ table, command string }{
-		{"session_projects_filled", "envoy-dispatch backfill-session-projects"},
-		{"access_events_scrubbed", "envoy-dispatch scrub-access-events"},
-	} {
-		t.Run("still refused with "+marker.table+" empty", func(t *testing.T) {
-			handler, database := newPrivateProjectsServer(t, testServerOptions{privateBeforeFullSwitch: beforeFullSwitch}, nil)
-			if _, err := database.Pool.Exec(context.Background(), `delete from `+marker.table); err != nil {
-				t.Fatalf("empty %s: %v", marker.table, err)
-			}
-			before := allEvents(t, database)
-			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", marker.table, marker.command)
-		})
-	}
-
-	t.Run("still refused with a row whose node names another project", func(t *testing.T) {
-		handler, database := newPrivateProjectsServer(t, testServerOptions{privateBeforeFullSwitch: beforeFullSwitch}, nil)
-		if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "PRIV", "title": "One"}, "alice"); created.Code != http.StatusCreated {
-			t.Fatalf("create PRIV-1: %d %s", created.Code, created.Body.String())
-		}
-		if tag, err := database.Pool.Exec(context.Background(), `update graph_nodes set project_key = 'OTHER' where kind = 'issue' and id = 'PRIV-1'`); err != nil || tag.RowsAffected() != 1 {
-			t.Fatalf("point PRIV-1's node at OTHER: %v, %d rows", err, tag.RowsAffected())
-		}
-		before := allEvents(t, database)
-		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE",
-			"issue PRIV-1: differs; no command cures it: compare the row with its node")
+	t.Run("still refused while the store is incomplete", func(t *testing.T) {
+		requireAnIncompleteStoreRefusesTheSwitch(t, testServerOptions{privateBeforeFullSwitch: beforeFullSwitch})
 	})
 
 	t.Run("a project on neither list", func(t *testing.T) {
@@ -151,21 +128,15 @@ func TestAProjectBecomesPrivateBeforeItsFullSwitch(t *testing.T) {
 		requireRefused(t, database, response, "OTHER", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", "session_projects_filled")
 	})
 
-	t.Run("a project on both lists takes its full switch", func(t *testing.T) {
-		both := testServerOptions{privateProjects: beforeFullSwitch, privateBeforeFullSwitch: beforeFullSwitch}
-		handler, database := newPrivateProjectsServer(t, both, nil)
-		before := allEvents(t, database)
-		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE", privateProjectsBucket)
-
-		bus := &recordingBus{}
-		handler, database = newPrivateProjectsServer(t, both, bus)
-		made := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-		if made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate || strings.Contains(made.Body.String(), "private_before_full_switch") {
-			t.Fatalf("PATCH PRIV private on both lists with a writer that accepts = %d %s, PRIV %s; want 200, PRIV private, and no private_before_full_switch",
-				made.Code, made.Body.String(), visibilityOf(t, database, "PRIV"))
+	t.Run("a project on both lists is refused at the start", func(t *testing.T) {
+		_, err := NewDeps(DepsInput{PrivateProjects: []string{"OTHER", "PRIV"}, PrivateBeforeFullSwitch: []string{"DAYONE", "PRIV"}})
+		if err == nil || !strings.Contains(err.Error(), `"PRIV"`) || strings.Contains(err.Error(), "DAYONE") ||
+			!strings.Contains(err.Error(), "DISPATCH_PRIVATE_PROJECTS") || !strings.Contains(err.Error(), "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH") {
+			t.Fatalf("NewDeps with PRIV on both lists = %v, want it refused naming PRIV and both settings, and not DAYONE", err)
 		}
-		requireOnlyTheRecord(t, bus, busCall{"PRIV", "the route's transaction", model.ProjectPrivate, model.ProjectPublic}, "PRIV on both lists")
+		if _, err := NewDeps(DepsInput{PrivateProjects: []string{"OTHER"}, PrivateBeforeFullSwitch: beforeFullSwitch}); err != nil {
+			t.Fatalf("NewDeps with lists that share no project = %v, want them taken", err)
+		}
 	})
 }
 

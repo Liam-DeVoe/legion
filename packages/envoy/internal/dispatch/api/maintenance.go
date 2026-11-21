@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -159,13 +160,13 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 // (sweepGoingRequests), and then sends every delivery a process that died left owed
 // (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
 // delivers. Every pass also logs an ERROR line for each project the database holds private that
-// privateProjects, every project the deployment names in DISPATCH_PRIVATE_PROJECTS or
-// DISPATCH_PRIVATE_BEFORE_FULL_SWITCH, does not name (reportUnprovisionedPrivateProjects). Where
-// privateProjects names any, it logs an ERROR line when the store cannot yet hold a private
-// project (storeIncomplete) once as it starts, before its first tick and on no lease, so each
-// process reports its own start, and then in one pass an hour: the start's check is the boot's
-// report, read beside the serving process rather than before it. A project private before its
-// full switch keeps that check, which its switch needs as a full switch does. It stops when ctx is
+// neither privateProjects (DISPATCH_PRIVATE_PROJECTS) nor beforeFullSwitch
+// (DISPATCH_PRIVATE_BEFORE_FULL_SWITCH) names (reportUnprovisionedPrivateProjects). Where either
+// names a project, it logs an ERROR line when the store cannot yet hold a private project
+// (storeIncomplete) once as it starts, before its first tick and on no lease, so each process
+// reports its own start, and then in one pass an hour: the start's check is the boot's report,
+// read beside the serving process rather than before it. A project private before its full
+// switch keeps that check, which its switch needs as a full switch does. It stops when ctx is
 // done.
 //
 // It is a timer and not a woken loop (duty.RunWoken), the shape every other sweep of this server
@@ -187,10 +188,11 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 // run.
 func RunMaintenanceSweep(
 	ctx context.Context, pool *store.Pool, interval time.Duration, leases duty.Leases,
-	resumeDeliveries func(context.Context) error, privateProjects []string,
+	resumeDeliveries func(context.Context) error, privateProjects, beforeFullSwitch []string,
 ) {
+	mayBePrivate := slices.Concat(privateProjects, beforeFullSwitch)
 	var storeChecked time.Time
-	if len(privateProjects) > 0 {
+	if len(mayBePrivate) > 0 {
 		storeChecked = time.Now()
 		logStoreIncomplete(store.WithTransactionTracking(ctx), pool)
 	}
@@ -204,10 +206,10 @@ func RunMaintenanceSweep(
 		if err := sweepGoingRequests(ctx, pool); err != nil {
 			slog.Warn("dispatch: going request sweep failed", "error", err)
 		}
-		if err := reportUnprovisionedPrivateProjects(ctx, pool, privateProjects); err != nil {
+		if err := reportUnprovisionedPrivateProjects(ctx, pool, mayBePrivate); err != nil {
 			slog.Warn("dispatch: private projects", "error", err)
 		}
-		if len(privateProjects) > 0 && time.Since(storeChecked) >= storeCompletenessInterval {
+		if len(mayBePrivate) > 0 && time.Since(storeChecked) >= storeCompletenessInterval {
 			storeChecked = time.Now()
 			logStoreIncomplete(ctx, pool)
 		}
