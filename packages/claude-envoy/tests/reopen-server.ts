@@ -134,9 +134,8 @@ export interface ReopenServerOptions {
   readonly args?: readonly string[]
   /** The hub's nonce, which a seed or a broker token signs. */
   readonly nonce?: string
-  /** The loopback address the hub and its gate listen on (fake-nats-server.ts's fakeHost): one of
-   *  the row's own for a row that asserts the hub saw no connection, a count a stray client
-   *  inflates; FAKE_NATS_HOST otherwise. */
+  /** The loopback address the hub and its gate listen on (fake-nats-server.ts's fakeHost), else
+   *  one of the hub's own that the fake picks. */
   readonly brokerHost?: string
   /** The host's variables and the credential's, given the server's state directory. */
   readonly env: (stateDirectory: string) => Readonly<Record<string, string>>

@@ -629,7 +629,7 @@ func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string
 		return listed
 	}
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		found, err = opened(armed)
+		found, err = opened(readConnections, armed)
 		if err != nil || len(found) != len(want) {
 			return false
 		}

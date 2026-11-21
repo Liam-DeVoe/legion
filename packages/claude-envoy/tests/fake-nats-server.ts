@@ -41,16 +41,26 @@ function matches(pattern: string, subject: string): boolean {
  * dialing the address its own server had, and the kernel can give that server's port to a later
  * listener on the same address, which the stray client then reaches: a count the later test
  * asserts (`connections`, `liveConnections`) is the count it inflates. A fake on an address no
- * other server of the run listens on is out of its reach. Each fake names its own literal rather
- * than drawing one, so the tests carry no copy of the Go tests' address rule
- * (internal/testport's LoopbackIP).
+ * other server of the run listens on is out of its reach. Each fake names its own literal, or
+ * takes the next of nextFakeHost's, rather than drawing one, so the tests carry no copy of the Go
+ * tests' address rule (internal/testport's LoopbackIP).
  */
 export function fakeHost(literal: string): string {
   return process.platform === "linux" ? literal : "127.0.0.1"
 }
 
-/** The address a FakeNatsServer listens on unless it is given another (its `host` option). */
-export const FAKE_NATS_HOST = "127.86.0.1"
+/** How many FakeNatsServers this process has given an address of nextFakeHost's. */
+let fakesMade = 0
+
+/**
+ * The address of a FakeNatsServer given no `host`: one this process gives no other fake,
+ * 127.86.2.1, then 127.86.2.2, and so on. The fixed literals tests name are under 127.86.2.0, so
+ * no default meets one.
+ */
+function nextFakeHost(): string {
+  const n = fakesMade++
+  return `127.86.${2 + Math.floor(n / 254)}.${1 + (n % 254)}`
+}
 
 export class FakeNatsServer {
   /** SUB subjects in arrival order, across every client connection. */
@@ -87,12 +97,12 @@ export class FakeNatsServer {
   private held: Socket<Client>[] | null = null
 
   /** `nonce`, when given, goes in INFO, as a server that asks for nkey sign-in sends one. `host` is
-   *  the loopback address it listens on (fakeHost of it): a test that asserts a count no other fake
-   *  may reach names one of its own, and every other fake takes FAKE_NATS_HOST. */
+   *  the loopback address it listens on (fakeHost of it), else one of its own (nextFakeHost): no
+   *  fake of the run shares an address with another, so no count a test asserts takes a stray. */
   constructor(options: { readonly nonce?: string; readonly host?: string } = {}) {
     this.nonce = options.nonce
     this.listener = Bun.listen<Client>({
-      hostname: fakeHost(options.host ?? FAKE_NATS_HOST),
+      hostname: fakeHost(options.host ?? nextFakeHost()),
       port: 0,
       socket: {
         open: (socket) => {
