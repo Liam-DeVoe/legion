@@ -386,6 +386,25 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
   }
 });
 
+// R1: the issue's three sentences read the same sentence end as a person's quote (`one-line.ts`'s
+// `SENTENCE_END`), so a full stop that a number follows ends an abbreviation, not a sentence.
+test("a sentence is not ended at an abbreviation that a number follows", () => {
+  const { lines, unmount } = bullets(
+    summaryNode(
+      "The page keeps the old order (see p. 4) for now. It fits a phone. Done when it ships."
+    )
+  );
+  try {
+    expect(lines).toEqual([
+      "The page keeps the old order (see p. 4) for now.",
+      "It fits a phone.",
+      "Done when it ships.",
+    ]);
+  } finally {
+    unmount();
+  }
+});
+
 // R1: a leading label and the words after it with no end hold no sentence end, so the summary's
 // first line is its one sentence, with the label in it and not the label alone.
 test("a summary of a leading label and words with no end draws its first line", () => {

@@ -17,11 +17,16 @@ export const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase 
 
 /** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
  *  where the words stop, or where a space and a word that does not start in lower case follow:
- *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. It
- *  is read past a leading label (`issue-tree.ts`'s `LEADING_LABEL`), which ends none: by the
- *  issue's three sentences and by a person's quoted first sentence (`spec-decided-by.ts`'s
- *  `firstSentenceOf`), so the same words are split one way wherever the page draws them. */
-export const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
+ *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. A
+ *  full stop before a number ends an abbreviation too (`see p. 4`), not a sentence, unless the
+ *  number opens a numbered label (`2. Then`), which starts the next sentence: digits and full
+ *  stops, at most five characters, that end in a full stop before a space or where the words
+ *  stop, the shape `issue-tree.ts`'s `LEADING_LABEL` reads. It is read past a leading label
+ *  (`LEADING_LABEL`), which ends none: by the issue's three sentences and by a person's quoted
+ *  first sentence (`spec-decided-by.ts`'s `firstSentenceOf`), so the same words are split one
+ *  way wherever the page draws them. */
+export const SENTENCE_END =
+  /(?:[!?]|\.(?!\s+\d(?![\d.]{0,3}\.(?:\s|$))))[)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
