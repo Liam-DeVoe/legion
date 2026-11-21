@@ -34,6 +34,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/natsurl"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -685,9 +687,13 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once. A refusal names its entry by its
-// position alone (`nats_urls entry 2`), never by any of its text: a query can hold a token, and a
-// token holding a "/" written as the user is what validURL refuses for an "@" after its host.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. An entry the NATS client would read
+// other than as written once the entries are joined with commas is refused too, with natsurl's
+// reason (natsurl.EntryRefusal: a comma, an "@" after its host, a websocket path that stops parsing
+// once decoded), and every refusal names its entry by its position alone (`nats_urls entry 2`),
+// never by any of its text: a credential holding a "/", "?", "#", space or comma ends url.Parse's
+// authority early, so the entry does not parse, or parses with a part of the credential as its
+// host, and nothing that reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
@@ -695,8 +701,16 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	}
 	urls := make([]string, 0, len(read))
 	for index, raw := range read {
+		// A comma first, so an entry that lists two servers, or a credential holding a comma, gets
+		// the comma's reason, which says how to write it, whatever else of it would not parse.
+		if strings.Contains(raw, ",") {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.CommaReason)
+		}
 		if _, err := endpointURL(raw, key); err != nil {
 			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
+		}
+		if why := natsurl.EntryRefusal(raw); why != "" {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, why)
 		}
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
@@ -779,6 +793,14 @@ const envNameRule = "must be an environment variable name (letters, digits, and 
 func envNameRefusal(key string, entry int) error {
 	return fmt.Errorf("%s entry %d: its key %s", key, entry, envNameRule)
 }
+// providerVarName is the variable a provider_keys entry names: an envVarName in upper case, as every
+// provider's variable is (ANTHROPIC_API_KEY, GEMINI_API_KEY). The variable is the entry's name in
+// every refusal, log line, settings answer and file name, so a provider's key pasted in its place,
+// most of which hold a lowercase letter, is refused rather than printed under that name.
+var providerVarName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// providerVarRule is the refusal's words for a name providerVarName does not match.
+const providerVarRule = "must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)"
 
 // spendAttributesRule is the refusal's words for an operator value of
 // runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
@@ -834,8 +856,10 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		envNode, secretNode := value.Content[i], value.Content[i+1]
 		env := envNode.Value
-		if envNode.Kind != yaml.ScalarNode || !envVarName.MatchString(env) {
-			return nil, fmt.Errorf("%s key %q (the variable OMP reads) %s", key, env, envNameRule)
+		if envNode.Kind != yaml.ScalarNode || !providerVarName.MatchString(env) {
+			// By its position, not its text: what stands where a variable name goes can be a key
+			// pasted into the wrong place, and this refusal is printed as it is.
+			return nil, fmt.Errorf("%s entry %d: its key (the variable OMP reads) %s", key, i/2+1, providerVarRule)
 		}
 		if strings.HasPrefix(env, "AGENT_SECRETS_") {
 			return nil, fmt.Errorf("%s names %s: an AGENT_SECRETS_* variable is the runtime's (AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR) or the daemon's own agent-secrets machine login, and is never exported into an agent's environment", key, env)
@@ -859,7 +883,9 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 			continue
 		}
 		if !envVarName.MatchString(secret) {
-			return nil, fmt.Errorf("%s value %q for %s (the key that holds it) %s, or %s and an absolute path", key, secret, env, envNameRule, providerKeyFilePrefix)
+			// By the variable it is for, not its text: a value that is no secretsd key's name can be
+			// the provider's key itself, pasted where its name goes.
+			return nil, fmt.Errorf("%s value for %s (the key that holds it) %s, or %s and an absolute path", key, env, envNameRule, providerKeyFilePrefix)
 		}
 		keys = append(keys, ProviderKey{Env: env, Secret: secret})
 	}
