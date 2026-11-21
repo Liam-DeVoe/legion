@@ -2396,9 +2396,9 @@ Each item below names a function, then what it does.
 
   pulls `IMAGE`, which must be named by digest, into the node's containerd, so a pod's start never waits on a registry
 
-- `kind_sandbox_route_github ADDRESS PORT`
+- `kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE...`
 
-  sends the cluster's pods to `ADDRESS:PORT` for `github.com` and `api.github.com`: a Service on port 443 with no selector, whose one endpoint is `ADDRESS:PORT`, and a CoreDNS `hosts` rule naming its cluster IP (`kind_github_address`).
+  sends the cluster's pods to `ADDRESS:GITHUB_PORT` for `github.com` and `api.github.com`, and to `ADDRESS:SITES_PORT` for each `SITE`, the public TLS sites the image probe reaches: for each, a Service on port 443 with no selector, whose one endpoint is that address, and a CoreDNS `hosts` rule naming its cluster IP (`kind_github_address`, `kind_sites_address`).
   The rule reaches pods alone: the node, and containerd's pulls, resolve through Docker's DNS
 
 - `kind_sandbox_start_nfs_server SEED`

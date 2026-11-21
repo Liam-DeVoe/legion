@@ -1,6 +1,6 @@
-// The Stage 4a harness's image probe checks: the worker image under test, unmodified, passes its
-// probe under the operator's pod, and the probe refuses a pod the image cannot serve. The rig is
-// live_test.go.
+// The Stage 4a harness's image probe checks: the worker image under test, on the rig's stand-ins
+// (kindtest.Rig.Image), passes its probe under the operator's pod, and the probe refuses a pod the
+// image cannot serve. The rig is live_test.go.
 
 package sandbox
 
@@ -23,26 +23,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 )
 
-// prober is a runtime of the run's Options on the worker image under test, unmodified
-// (liveEnv.probeImage), which the image probe's checks probe: what they check is the image
-// itself, never the copy the run's pods start, which adds the fake GitHub's authority. edit, when
-// not nil, changes those Options first, never the shared runtime's. The prober shares the run's
-// listener, which no probe uses, and ends with ctx.
+// prober is a runtime of the run's Options, on the run's image (liveEnv.image), which the image
+// probe's checks probe. edit, when not nil, changes those Options first, never the shared
+// runtime's. The prober shares the run's listener, which no probe uses, and ends with ctx.
 func (r *liveRig) prober(ctx context.Context, edit func(*Options)) (*Runtime, error) {
 	if err := r.startRuntimeOnce(); err != nil {
 		return nil, err
 	}
 	opts := r.runtimeOptions(r.streamAddress(), r.ln)
-	opts.Image = r.env.probeImage
 	if edit != nil {
 		edit(&opts)
 	}
 	return New(ctx, r.rc, opts)
 }
 
-// probeSandbox is the name of the probe Sandbox the prober makes for the worker image under test.
+// probeSandbox is the name of the probe Sandbox the prober makes for the run's image.
 func (r *liveRig) probeSandbox() string {
-	_, digest, _ := strings.Cut(r.env.probeImage, "@sha256:")
+	_, digest, _ := strings.Cut(r.env.image, "@sha256:")
 	return probeName(r.env.project, digest, "")
 }
 
@@ -109,7 +106,7 @@ func (r *liveRig) checkImageProbe() error {
 	if !ok || contract != api.DaemonAPIVersion {
 		return fmt.Errorf("the probe log confirms contract %d (found %t), want %d: %s", contract, ok, api.DaemonAPIVersion, passed["log"])
 	}
-	note("runtime", "probe Sandbox %s passed on %s: %s", passed["sandbox"], r.env.probeImage, lastLine(passed["log"], bootprobe.OKPrefix))
+	note("runtime", "probe Sandbox %s passed on %s: %s", passed["sandbox"], r.env.image, lastLine(passed["log"], bootprobe.OKPrefix))
 	note("runtime", "daemon-api-version=%d parsed, the daemon's contract", contract)
 	if models := bootprobe.AgentModels(passed["log"]); models != bootprobe.AgentModelsResolved {
 		return fmt.Errorf("the probe log says agent-models=%q, want %q: %s", models, bootprobe.AgentModelsResolved, passed["log"])

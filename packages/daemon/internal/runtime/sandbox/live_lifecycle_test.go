@@ -568,15 +568,16 @@ func (r *liveRig) checkStalePluginInstall() error {
 	}
 	note("operator", "/proc/%s/cmdline (the shim, never replaced by the agent's own execs): carries %v", shim, want)
 
-	// The negative control: the published pi-legion@9.6.1 by exact version. The daemon's loader
+	// The negative control: pi-legion@9.6.1 by exact version. The daemon's loader
 	// (config.readPluginSource) and the release's linked bare versions admit only an exact
 	// version, an absolute tarball path, or an http(s) URL — never a dist-tag or a range — and
 	// installBlock's bunSpec turns that version into @sjawhar/pi-legion@9.6.1 before bun ever
-	// sees it (LEGION-164), so bun fetches it from the registry inside the pod: the run proves
-	// the version→package mapping end to end, not just a tarball install. The install
-	// still lands — so the earlier generation's own directory is gone once this one's own `rm -rf
-	// .../g*` has run — but the wrapper's own check ends the child before `exec`, and the runtime
-	// observes it Gone.
+	// sees it (LEGION-164), so bun fetches it from the registry inside the pod, here the rig's npm
+	// stand-in, which serves a 9.6.1 declaring contract 23 as the published one does
+	// (newKindLiveEnv): the run proves the version→package mapping end to end, not just a tarball
+	// install. The install still lands — so the earlier generation's own directory is gone once
+	// this one's own `rm -rf .../g*` has run — but the wrapper's own check ends the child before
+	// `exec`, and the runtime observes it Gone.
 	mark := r.obs.mark()
 	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
 	if err != nil {
@@ -588,7 +589,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if !ok {
 		return fmt.Errorf("no Gone for the negative control's %s within %s", negLoc.Incarnation, liveGoneLimit)
 	}
-	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
+	note("runtime", "negative control: Observe gone for %s (the registry's pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
 	worker.loc, worker.state = nil, stateDead
 
 	final, err := r.getPod(name)

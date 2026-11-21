@@ -9,8 +9,10 @@
 //
 // Where each part comes from:
 //
-//   - the cluster, Agent Sandbox, gVisor, the image and the fake GitHub (internal/fakegithub),
-//     which the pods reach as github.com and api.github.com: kindtest.Start;
+//   - the cluster, Agent Sandbox, gVisor, the image, the fake GitHub (internal/fakegithub), which
+//     the pods reach as github.com and api.github.com, and the stand-ins for the image probe's
+//     public sites and for the npm registry (kindtest.TLSSites), which the pods reach under those
+//     hosts' names: kindtest.Start;
 //   - PostgreSQL on the kind network (kindtest.Rig.StartPostgres): the daemon's store, Dispatch's
 //     database and the session store every pod keeps its sessions in (`session_store: postgres`);
 //   - NATS, the Envoy listener and Dispatch, each built from this checkout and run as a process of
@@ -28,9 +30,10 @@
 //     answers every turn with a WAITING line carrying the run's marker, and a turn a step scripted
 //     with a call of the tool the step names.
 //
-// What the rig stands in for lies outside the daemon and its pods: the model, GitHub, and the
-// operator's own reads and kills, which kubectl and the role namespaces' entry and a role's kill of
-// scripts/e2e/lib/role-namespaces.sh make, as an operator reads a pod and ends one role in it.
+// What the rig stands in for lies outside the daemon and its pods: the model, GitHub, the public
+// TLS sites and the npm registry, and the operator's own reads and kills, which kubectl and the
+// role namespaces' entry and a role's kill of scripts/e2e/lib/role-namespaces.sh make, as an
+// operator reads a pod and ends one role in it.
 package daemon
 
 import (

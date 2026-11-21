@@ -94,12 +94,11 @@ spec: {accessModes: [ReadWriteMany], storageClassName: "", volumeName: team-shar
 		"silent-server":  shareLivePod(shareLiveClaim, shareLiveSilentServer, "/scratch"),
 	}
 	work := t.TempDir()
-	// probed is each case's file on the worker image under test, unmodified, which the image
-	// probe runs: the checks of the image itself run on the image as it is published.
+	// probed is each case's file on the rig's image, which the image probe runs.
 	probed := map[string]config.Config{}
 	for _, tc := range shareLiveCases(server) {
 		kindLiveProviders(t, rig, tc.project, sessions.InCluster)
-		path := writeBurstableLiveConfig(t, filepath.Join(work, tc.name), tc.project, rig.Gateway, rig.WorkerImage,
+		path := writeBurstableLiveConfig(t, filepath.Join(work, tc.name), tc.project, rig.Gateway, rig.Image,
 			rig.Kubeconfig, rig.Context, tc.pod)
 		cfg, err := config.LoadForValidation(path, nil)
 		if err != nil {

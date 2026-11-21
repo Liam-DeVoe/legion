@@ -24,14 +24,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/kindtest"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
@@ -59,6 +63,11 @@ type claudeKindLive struct {
 // daemon on the kind rig with the implementer on Claude Code and runs the lane's three checks, each
 // a subtest.
 func TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive(t *testing.T) {
+	// The implementer's install fetches the pin's two tarballs by the lock's resolved URLs, which
+	// the rig's npm stand-in answers inside the cluster from the copies the job's setup fetched
+	// (kindtest.NPMTarballsEnv), held to the lock's integrity before it serves them.
+	tarballs := os.Getenv(kindtest.NPMTarballsEnv)
+	testprereq.Require(t, tarballs != "", "kind", "the Claude Code implementer installs the pinned release from the rig's npm stand-in, which serves the tarballs %s names; it is not set", kindtest.NPMTarballsEnv)
 	rig := newKindTreeRig(t, kindTreeOptions{
 		prefix: "CK", admissionCap: 1,
 		topLevel: "worker_backends:\n  implementer: claude\n",
@@ -71,6 +80,7 @@ func TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResu
 		},
 		providerKeys: map[string]string{"ANTHROPIC_API_KEY": kindTreeAnthropicKey},
 	})
+	rig.kind.Sites.ServeNPMLock(t, filepath.Join(kindtest.RepositoryRoot(t), "packages", "daemon", "docker", "claude-code", "package-lock.json"), tarballs)
 	r := &claudeKindLive{kindTreeRig: rig}
 	r.key = r.seedRoot("the Claude Code implementer in an issue pod", phase.Implementing, claim.RoleImplementer)
 	r.branch(r.key)

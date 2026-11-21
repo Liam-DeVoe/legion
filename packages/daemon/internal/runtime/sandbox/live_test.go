@@ -288,10 +288,9 @@ type liveEnv struct {
 	// runtime's own identity on the same cluster.
 	kubeconfig, kubeContext, runtimeToken string
 	namespace, project, claimProject      string
-	// image is the image every pod of the run starts, which trusts the fake GitHub's authority
-	// (kindtest.Rig.Image); probeImage is the worker image under test, unmodified, which the
-	// image probe's checks start, since what they check is the image itself.
-	image, probeImage string
+	// image is the image every pod of the run starts, the image probe's included: the worker image
+	// under test, built to read the rig's stand-ins as the real services (kindtest.Rig.Image).
+	image string
 	// repo is the run's private repository of the fake GitHub, and repoSecondOwner a private
 	// repository under another owner, the implement App installed on both, where second-owner
 	// provisions an issue. github serves both; repoBare is the bare repository it serves repo
@@ -416,9 +415,13 @@ func newKindLiveEnv(t *testing.T, rig *kindtest.Rig) liveEnv {
 	env := liveEnv{
 		kubeconfig: rig.Kubeconfig, kubeContext: rig.Context, namespace: "legion", project: liveProject,
 		// The claim token's project is a project token, [a-z0-9]+; the label keeps the dashes.
-		claimProject: strings.ReplaceAll(liveProject, "-", ""), image: rig.Image, probeImage: rig.WorkerImage,
+		claimProject: strings.ReplaceAll(liveProject, "-", ""), image: rig.Image,
 		github: rig.GitHub, streamHost: rig.Gateway, storageClass: "standard", work: rig.Evidence, scratch: t.TempDir(),
 	}
+	// The stale-plugin install's negative control has bun fetch a published pi-legion by its
+	// version (live_lifecycle_test.go), which the rig's npm stand-in serves: a pi-legion 9.6.1
+	// whose package.json declares contract 23, all that the install's check reads of it.
+	rig.Sites.PublishNPM(t, map[string]any{"name": "@sjawhar/pi-legion", "version": "9.6.1", "legion": map[string]any{"daemonApiVersion": 23}})
 	held, err := net.Listen("tcp", net.JoinHostPort(rig.Gateway, "0"))
 	if err != nil {
 		t.Fatalf("pick the worker stream's port on %s: %v", rig.Gateway, err)

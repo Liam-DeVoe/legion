@@ -1233,10 +1233,12 @@ def reduce_line(line: str) -> tuple:
 # PMDOC_WALK_CORPUS, DISPATCH_TOKEN_CORPUS, DISPATCH_TEST_SPEC_CORPUS), the seeded database the
 # statement timings measure on (DISPATCH_BENCH_DATABASE_URL), the outbox load steps' switch
 # (DISPATCH_OUTBOX_LOAD_STEPS), the intake drain's bound
-# (LEGION_TEST_DRAIN_MEASURE), the kind rig's worker image, its archive and the directory a failed
-# rig's state goes to (LEGION_TEST_KIND_IMAGE, LEGION_TEST_KIND_IMAGE_ARCHIVE,
-# LEGION_TEST_KIND_LOG_DIR, which internal/kindtest reads at run time), and the base commit
-# envoy-go's pmdoc differential step hands its script (DIFFERENTIAL_BASE), which no go command reads.
+# (LEGION_TEST_DRAIN_MEASURE), the kind rig's worker image, its archive, the directory a failed
+# rig's state goes to and the directory of npm tarballs its npm stand-in serves
+# (LEGION_TEST_KIND_IMAGE, LEGION_TEST_KIND_IMAGE_ARCHIVE, LEGION_TEST_KIND_LOG_DIR,
+# LEGION_TEST_KIND_NPM_TARBALLS, which internal/kindtest and its tests read at run time), and the
+# base commit envoy-go's pmdoc differential step hands its script (DIFFERENTIAL_BASE), which no go
+# command reads.
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
@@ -1256,7 +1258,7 @@ ENV_ALLOWED = frozenset({
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_DAEMON_LOG_DIR", "LEGION_TEST_DRAIN_MEASURE",
-    "LEGION_TEST_KIND_IMAGE", "LEGION_TEST_KIND_IMAGE_ARCHIVE", "LEGION_TEST_KIND_LOG_DIR",
+    "LEGION_TEST_KIND_IMAGE", "LEGION_TEST_KIND_IMAGE_ARCHIVE", "LEGION_TEST_KIND_LOG_DIR", "LEGION_TEST_KIND_NPM_TARBALLS",
     "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base

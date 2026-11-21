@@ -132,6 +132,10 @@ variables:
     class: set
     jobs: [kind]
     why: The archive of that worker image the kind rig loads into its node.
+  LEGION_TEST_KIND_NPM_TARBALLS:
+    class: set
+    jobs: [kind]
+    why: The pinned Claude Code tarballs the kind job's setup fetches, which the rig's npm stand-in serves to its pods.
   LEGION_TEST_NATS_URL:
     class: set
     jobs: [pi-envoy, pi-legion]

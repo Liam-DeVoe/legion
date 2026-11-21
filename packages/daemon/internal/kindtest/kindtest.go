@@ -1,10 +1,11 @@
 // Package kindtest is the kind rig a Go test of the Sandbox runtime runs on: a throwaway kind
 // cluster with Agent Sandbox's controller and gVisor, a registry the node pulls from, the fake
 // GitHub (internal/fakegithub), which the cluster's pods reach as github.com and api.github.com,
-// and the worker image under test, beside an image built FROM it that trusts the fake GitHub's
-// authority. Start brings it up from the test process on an amd64 Linux host with Docker, which
-// the kind job of ci.yaml is, and tears it down when the test ends, keeping the cluster's state
-// when the test failed (LogDirEnv).
+// the stand-ins for the public TLS sites the daemon's image probe reaches (TLSSites), and an image
+// built FROM the worker image under test that reads those stand-ins as the real services. Start
+// brings it up from the test process on an amd64 Linux host with Docker, which the kind job of
+// ci.yaml is, and tears it down when the test ends, keeping the cluster's state when the test
+// failed (LogDirEnv).
 //
 // The cluster's pieces are scripts/e2e/lib/kind-sandbox.sh's, the one place the rig's pins are
 // written; each runs in a bash of its own here. The test process reaches the cluster as the host
@@ -23,6 +24,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"io/fs"
@@ -54,11 +56,14 @@ import (
 // two: ImageEnv names it by digest in a registry this host can pull from (the image a
 // pull request's worker-image job pushed), and ImageArchiveEnv names a `docker save` archive of it
 // (the image the kind job built itself). LogDirEnv names the directory a failed test's cluster
-// state goes to, which the job uploads.
+// state goes to, which the job uploads. NPMTarballsEnv names a directory of npm tarballs, which a
+// test serves from the rig's npm stand-in (TLSSites.ServeNPMLock): the job's setup fetches them by
+// a lock's resolved URLs, since a test's pods reach no registry outside the runner.
 const (
 	ImageEnv        = "LEGION_TEST_KIND_IMAGE"
 	ImageArchiveEnv = "LEGION_TEST_KIND_IMAGE_ARCHIVE"
 	LogDirEnv       = "LEGION_TEST_KIND_LOG_DIR"
+	NPMTarballsEnv  = "LEGION_TEST_KIND_NPM_TARBALLS"
 )
 
 // job is the ci.yaml job that runs the kind tests and gives them what Start needs.
@@ -79,13 +84,12 @@ type Rig struct {
 	Registry string
 	// GitHub is the fake GitHub, which the cluster's pods reach as github.com and api.github.com.
 	GitHub *fakegithub.Server
-	// WorkerImage is the worker image under test, unmodified, by its digest in Registry: the
-	// image the checks of the image itself start (the image probe, the leak guard's probe).
-	WorkerImage string
-	// Image is the image every other pod of a kind test starts, by its digest in Registry, and
-	// already in the node's containerd: built FROM WorkerImage, with the fake GitHub's authority
-	// added to its system trust store (update-ca-certificates), so git, curl and every Go program
-	// of the image trust the fake as GitHub.
+	// Sites is the stand-in for the public TLS sites the daemon's image probe reaches, which the
+	// cluster's pods reach under the sites' own names.
+	Sites *TLSSites
+	// Image is the image every pod of a kind test starts, the image probe's included, by its digest
+	// in Registry, and already in the node's containerd: built FROM the worker image under test to
+	// read the stand-ins as the real services (buildStandInImage).
 	Image string
 
 	// Evidence is the directory a failed test's cluster state goes to (LogDirEnv), where a test
@@ -103,9 +107,10 @@ type measurement struct {
 
 // Start brings the rig up for t and tears it down when t ends, failing t at the first piece that
 // fails. Each piece is logged by name with how long it took: kind (the pinned kind's build),
-// cluster, agent-sandbox, gvisor, registry, fake-github, worker-image (the pull of ImageEnv's image,
-// or the load of ImageArchiveEnv's archive), trusting-image (the build FROM it), registry-push
-// (both images into Registry) and image-load (Image into the node's containerd).
+// cluster, agent-sandbox, gvisor, registry, stand-ins (the fake GitHub and the TLS sites, and the
+// cluster's route to them), worker-image (the pull of ImageEnv's image, or the load of
+// ImageArchiveEnv's archive), stand-in-image (the build FROM it), registry-push (Image into
+// Registry) and image-load (Image into the node's containerd).
 func Start(t *testing.T) *Rig {
 	t.Helper()
 	r := prepare(t)
@@ -127,25 +132,29 @@ func Start(t *testing.T) *Rig {
 		r.shell(t, "kind_sandbox_start_registry", strconv.Itoa(port))
 		r.Registry = "localhost:" + strconv.Itoa(port)
 	})
-	r.Measure(t, "fake-github", func() {
+	r.Measure(t, "stand-ins", func() {
 		r.Gateway = gateway(t)
 		r.GitHub = fakegithub.Start(t, fakegithub.Options{Listen: net.JoinHostPort(r.Gateway, "0")})
-		_, port, err := net.SplitHostPort(r.GitHub.Addr())
+		r.Sites = StartTLSSites(t, net.JoinHostPort(r.Gateway, "0"))
+		_, githubPort, err := net.SplitHostPort(r.GitHub.Addr())
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.shell(t, "kind_sandbox_route_github", r.Gateway, port)
+		_, sitesPort, err := net.SplitHostPort(r.Sites.Addr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.shell(t, "kind_sandbox_route_stand_ins", append([]string{r.Gateway, githubPort, sitesPort}, r.Sites.Hosts()...)...)
 	})
-	var worker, trusting string
+	var worker, standIn string
 	r.Measure(t, "worker-image", func() { worker = r.loadWorkerImage(t) })
-	r.Measure(t, "trusting-image", func() { trusting = r.buildTrustingImage(t, worker) })
+	r.Measure(t, "stand-in-image", func() { standIn = r.buildStandInImage(t, worker) })
 	r.Measure(t, "registry-push", func() {
-		r.WorkerImage = r.push(t, worker, "legion-worker")
-		r.Image = r.push(t, trusting, "legion-worker-trusting")
-		// The host's copies go once the registry holds both: the node pulls from the registry,
-		// and three copies of a multi-gigabyte image is more disk than a runner can spare. A copy
-		// that will not go costs disk and nothing else, so it is logged rather than failed.
-		names := []string{worker, trusting, r.Registry + "/legion-worker:rig", r.Registry + "/legion-worker-trusting:rig"}
+		r.Image = r.push(t, standIn, "legion-worker-stand-ins")
+		// The host's copies go once the registry holds the image: the node pulls from the
+		// registry, and more copies of a multi-gigabyte image is more disk than a runner can spare.
+		// A copy that will not go costs disk and nothing else, so it is logged rather than failed.
+		names := []string{worker, standIn, r.Registry + "/legion-worker-stand-ins:rig"}
 		if out, err := exec.Command("docker", append([]string{"image", "rm", "--force"}, names...)...).CombinedOutput(); err != nil {
 			t.Logf("docker image rm %s: %v: %s", strings.Join(names, " "), err, out)
 		}
@@ -642,33 +651,71 @@ func (r *Rig) loadWorkerImage(t *testing.T) string {
 	return loaded[1]
 }
 
-// buildTrustingImage builds, FROM worker, the image every other pod of a kind test starts: the fake
-// GitHub's authority added to the system trust store, under the user worker runs as. Debian's
-// update-ca-certificates is called by its full path, /usr/sbin/update-ca-certificates, since the
-// worker image's PATH (its ENV, packages/daemon/docker/worker.Dockerfile) holds no /usr/sbin and a
-// RUN of the bare name exits 127.
-func (r *Rig) buildTrustingImage(t *testing.T, worker string) string {
+// buildStandInImage builds, FROM worker, the image every pod of a kind test starts, under the user
+// worker runs as, which reads the rig's stand-ins as the real services:
+//
+//   - the fake GitHub's authority and the TLS sites' (TLSSites.AuthorityPEM) in the system trust
+//     store, which git, curl, wget, python3, aws, gcloud, redis-cli and every Go program of the
+//     image read;
+//   - the same two in NODE_EXTRA_CA_CERTS, which node and bun read beside their own roots;
+//   - UV_SYSTEM_CERTS, so uv reads the system store in place of its own roots;
+//   - the same two in Chrome for Testing's managed CACertificates policy, since Chromium reads no
+//     file of the system store;
+//   - each compromised site's stand-in root at the path of its real root (tlssites.Site.Root), in
+//     no trust store, as the real roots are.
+//
+// Debian's update-ca-certificates is called by its full path, /usr/sbin/update-ca-certificates,
+// since the worker image's PATH (its ENV, packages/daemon/docker/worker.Dockerfile) holds no
+// /usr/sbin and a RUN of the bare name exits 127.
+func (r *Rig) buildStandInImage(t *testing.T, worker string) string {
 	t.Helper()
-	dir := filepath.Join(r.work, "trusting-image")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir := filepath.Join(r.work, "stand-in-image")
+	if err := os.MkdirAll(filepath.Join(dir, "roots"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "fake-github-ca.crt"), r.GitHub.CAPEM(), 0o644); err != nil {
+	authorities := slices.Concat(r.GitHub.CAPEM(), r.Sites.AuthorityPEM())
+	var policy struct {
+		CACertificates []string `json:"CACertificates"`
+	}
+	for rest := authorities; ; {
+		var block *pem.Block
+		if block, rest = pem.Decode(rest); block == nil {
+			break
+		}
+		policy.CACertificates = append(policy.CACertificates, base64.StdEncoding.EncodeToString(block.Bytes))
+	}
+	policyJSON, err := json.Marshal(policy)
+	if err != nil {
 		t.Fatal(err)
 	}
-	user := strings.TrimSpace(r.docker(t, "image", "inspect", "--format", "{{.Config.User}}", worker))
+	files := map[string][]byte{
+		"fake-github-ca.crt": r.GitHub.CAPEM(), "tls-sites-ca.crt": r.Sites.AuthorityPEM(),
+		"authorities.pem": authorities, "chrome-policy.json": policyJSON,
+	}
 	dockerfile := "FROM " + worker + "\nUSER root\n" +
-		"COPY fake-github-ca.crt /usr/local/share/ca-certificates/fake-github-ca.crt\n" +
-		"RUN /usr/sbin/update-ca-certificates\n"
+		"COPY fake-github-ca.crt tls-sites-ca.crt /usr/local/share/ca-certificates/\n" +
+		"COPY authorities.pem /usr/local/share/legion-kind/authorities.pem\n" +
+		"COPY chrome-policy.json /etc/opt/chrome_for_testing/policies/managed/legion-kind.json\n"
+	for _, path := range slices.Sorted(maps.Keys(r.Sites.RootsPEM())) {
+		name := filepath.Join("roots", filepath.Base(path))
+		files[name] = r.Sites.RootsPEM()[path]
+		dockerfile += "COPY " + name + " " + path + "\n"
+	}
+	dockerfile += "RUN /usr/sbin/update-ca-certificates\n" +
+		"ENV NODE_EXTRA_CA_CERTS=/usr/local/share/legion-kind/authorities.pem UV_SYSTEM_CERTS=1\n"
+	user := strings.TrimSpace(r.docker(t, "image", "inspect", "--format", "{{.Config.User}}", worker))
 	if user != "" {
 		dockerfile += "USER " + user + "\n"
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
-		t.Fatal(err)
+	files["Dockerfile"] = []byte(dockerfile)
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	tag := "legion-worker-trusting:" + r.Name
+	tag := "legion-worker-stand-ins:" + r.Name
 	r.docker(t, "build", "--quiet", "--tag", tag, dir)
-	t.Logf("built %s FROM %s, trusting the fake GitHub's authority, as user %q", tag, worker, user)
+	t.Logf("built %s FROM %s, reading the rig's stand-ins, as user %q", tag, worker, user)
 	return tag
 }
 
@@ -691,7 +738,7 @@ func (r *Rig) push(t *testing.T, image, repository string) string {
 	return pushed
 }
 
-// teardown keeps what the cluster held and the fake GitHub's requests when the test failed, then
+// teardown keeps what the cluster held and the stand-ins' requests when the test failed, then
 // deletes the cluster and the registry.
 func (r *Rig) teardown(t *testing.T) {
 	status := "0"
@@ -701,6 +748,12 @@ func (r *Rig) teardown(t *testing.T) {
 			requests := strings.Join(r.GitHub.Requests(), "\n") + "\n"
 			if err := os.WriteFile(filepath.Join(r.Evidence, "fake-github-requests.txt"), []byte(requests), 0o644); err != nil {
 				t.Logf("keep the fake GitHub's requests: %v", err)
+			}
+		}
+		if r.Sites != nil {
+			requests := strings.Join(r.Sites.Requests(), "\n") + "\n"
+			if err := os.WriteFile(filepath.Join(r.Evidence, "tls-sites-requests.txt"), []byte(requests), 0o644); err != nil {
+				t.Logf("keep the TLS stand-ins' requests: %v", err)
 			}
 		}
 		t.Logf("the rig's state at the failure is in %s", r.Evidence)

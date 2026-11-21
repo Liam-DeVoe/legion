@@ -40,9 +40,10 @@ name: CI job kind
 # their union (KIND_TESTS), and holds each step to what it builds.
 #
 # rig runs the rig's measuring test, which times each piece of the rig by name (the pinned kind's
-# build, the cluster, Agent Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull
-# or load, the build FROM it of the image that trusts the fake GitHub's authority, the push of both
-# into the registry and the load into the node), then runs a Burstable Sandbox under gVisor that
+# build, the cluster, Agent Sandbox, gVisor, the registry, the stand-ins for GitHub and for the
+# public TLS sites the image probe reaches, the worker image's pull or load, the build FROM it of
+# the image that reads those stand-ins as the real services, its push into the registry and the
+# load into the node), then runs a Burstable Sandbox under gVisor that
 # clones a private repository from the fake GitHub and a gVisor pod that mounts an NFS share of a
 # server in the cluster, and logs `df -h` before the rig and with it up. shares runs
 # internal/daemon's share test, which launches an issue pod that mounts NFS shares through the
@@ -799,6 +800,20 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
+      # The two tarballs the implementer's install fetches by the Claude Code pin's lock, its main
+      # package and linux-x64's, the two `npm ci` asked for in an INFRA issue pod on 2026-11-21,
+      # which the rig's npm stand-in serves to the pods, so no pod reaches the registry. The test
+      # holds each to the lock's integrity before it serves it.
+      - name: Fetch the pinned Claude Code tarballs the rig's npm stand-in serves
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/npm-tarballs"
+          mkdir -p "$dir"
+          jq -r '.packages["node_modules/@anthropic-ai/claude-code", "node_modules/@anthropic-ai/claude-code-linux-x64"].resolved' \
+            packages/daemon/docker/claude-code/package-lock.json |
+            while read -r url; do curl -fsSL --retry 3 --output "$dir/${url##*/}" "$url"; done
+          ls -l "$dir"
+
       # The test, by name. .github/scripts/ci_job_reads.py builds this text from KIND_TREE_PARTS,
       # whose tests daemon-go's two `-skip`s name with the other parts', and holds the step to it.
       # The image comes as the rig part's does, and a failed test's state goes to kind-logs.
@@ -807,6 +822,7 @@ jobs:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+          LEGION_TEST_KIND_NPM_TARBALLS: ${{ runner.temp }}/npm-tarballs
         run: go test -v -count=1 -timeout 20m -run '^(TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/
         working-directory: packages/daemon
 

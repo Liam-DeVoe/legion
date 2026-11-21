@@ -36,10 +36,12 @@
 # kernel.
 # kind_sandbox_load_image IMAGE pulls IMAGE, a reference by digest, into the node's containerd under
 # that digest, so a pod's start never waits on a registry.
-# kind_sandbox_route_github ADDRESS PORT sends the cluster's pods to ADDRESS:PORT for github.com
-# and api.github.com: a selectorless Service on 443 whose one endpoint is ADDRESS:PORT, and a
-# CoreDNS hosts rule naming its cluster IP (kind_github_address). The rule reaches pods alone: the
-# node, and containerd's pulls, resolve through Docker's DNS.
+# kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE... sends the cluster's pods to
+# ADDRESS:GITHUB_PORT for github.com and api.github.com, and to ADDRESS:SITES_PORT for each SITE,
+# the public TLS sites the image probe reaches: for each, a selectorless Service on 443 whose one
+# endpoint is that address, and a CoreDNS hosts rule naming its cluster IP (kind_github_address,
+# kind_sites_address). The rule reaches pods alone: the node, and containerd's pulls, resolve
+# through Docker's DNS.
 # kind_sandbox_start_nfs_server SEED starts an NFS server in the cluster (NFS-Ganesha, as the
 # Kubernetes SIG Storage's nfs-provisioner image ships it), exporting /team, which holds seed.txt
 # with SEED, and /scratch, and sets kind_nfs_server to its Service's cluster IP once the node
@@ -64,6 +66,7 @@ kind_kubeconfig=
 kind_node=
 kind_registry=
 kind_github_address=
+kind_sites_address=
 kind_nfs_server=
 
 kind_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -210,47 +213,60 @@ kind_sandbox_load_image() {
   note "the node's containerd holds $1: $(docker exec "$kind_node" crictl inspecti -o go-template --template '{{.status.size}}' "$1") bytes"
 }
 
-kind_sandbox_route_github() {
-  local address=$1 port=$2 corefile hosts
-  kind_k apply -f - <<EOF
+# kind_stand_in_service NAMESPACE NAME ADDRESS PORT applies a selectorless Service NAME on 443 in
+# NAMESPACE whose one endpoint is ADDRESS:PORT, and prints its cluster IP.
+kind_stand_in_service() {
+  local namespace=$1 name=$2 address=$3 port=$4 ip
+  kind_k apply -f - >&2 <<EOF
 apiVersion: v1
 kind: Namespace
-metadata: {name: fake-github}
+metadata: {name: $namespace}
 ---
 apiVersion: v1
 kind: Service
-metadata: {name: github, namespace: fake-github}
+metadata: {name: $name, namespace: $namespace}
 spec:
   ports: [{name: https, port: 443, protocol: TCP}]
 ---
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
 metadata:
-  name: github
-  namespace: fake-github
-  labels: {kubernetes.io/service-name: github}
+  name: $name
+  namespace: $namespace
+  labels: {kubernetes.io/service-name: $name}
 addressType: IPv4
 ports: [{name: https, port: $port, protocol: TCP}]
 endpoints: [{addresses: ["$address"]}]
 EOF
-  kind_github_address=$(kind_k -n fake-github get service github -o jsonpath='{.spec.clusterIP}')
-  [ -n "$kind_github_address" ] || fail "the fake GitHub's Service has no cluster IP"
+  ip=$(kind_k -n "$namespace" get service "$name" -o jsonpath='{.spec.clusterIP}')
+  [ -n "$ip" ] || fail "the Service $namespace/$name has no cluster IP"
+  printf '%s\n' "$ip"
+}
+
+kind_sandbox_route_stand_ins() {
+  local address=$1 github_port=$2 sites_port=$3 corefile hosts
+  shift 3
+  [ "$#" -gt 0 ] || fail "kind_sandbox_route_stand_ins names no TLS site to route"
+  kind_github_address=$(kind_stand_in_service fake-github github "$address" "$github_port")
+  kind_sites_address=$(kind_stand_in_service tls-sites sites "$address" "$sites_port")
   corefile=$(kind_k -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')
-  [[ $corefile == *".:53 {"* ]] || fail "CoreDNS's Corefile has no .:53 server block to route github.com in: $corefile"
-  [[ $corefile != *"hosts {"* ]] || fail "CoreDNS's Corefile holds a hosts block already, and the rig routes github.com once: $corefile"
+  [[ $corefile == *".:53 {"* ]] || fail "CoreDNS's Corefile has no .:53 server block to route the stand-ins in: $corefile"
+  [[ $corefile != *"hosts {"* ]] || fail "CoreDNS's Corefile holds a hosts block already, and the rig routes the stand-ins once: $corefile"
   hosts=".:53 {
     hosts {
        $kind_github_address github.com api.github.com
+       $kind_sites_address $*
        fallthrough
     }"
   corefile=${corefile/".:53 {"/"$hosts"}
   kind_k -n kube-system create configmap coredns --from-literal=Corefile="$corefile" --dry-run=client -o yaml |
     kind_k replace -f -
   # A restart rather than CoreDNS's reload, which waits on the ConfigMap volume's sync and then
-  # 30 s and its jitter; the restart also drops the cache's answers for the two names.
+  # 30 s and its jitter; the restart also drops the cache's answers for the names.
   kind_k -n kube-system rollout restart deployment/coredns
   kind_k -n kube-system rollout status deployment/coredns --timeout=180s
-  note "github.com and api.github.com resolve, for the cluster's pods, to $kind_github_address:443, whose endpoint is $address:$port"
+  note "github.com and api.github.com resolve, for the cluster's pods, to $kind_github_address:443, whose endpoint is $address:$github_port"
+  note "$* resolve, for the cluster's pods, to $kind_sites_address:443, whose endpoint is $address:$sites_port"
 }
 
 kind_sandbox_start_nfs_server() {
