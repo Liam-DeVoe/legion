@@ -454,3 +454,42 @@ func TestTheKVStoreRacesOnAGrantWithNoDirectGet(t *testing.T) {
 		t.Fatalf("KVStore's read of the deleted key on the reduced grant = %v, want ErrRecordDeleted", err)
 	}
 }
+
+// On a bucket of three copies a stale conditional write is a conflict as on one copy. nats.go
+// reads a wrong last sequence as either 10071 or 10164 (jetstream's
+// JSErrCodeStreamWrongLastSequenceConstant, which it says a replicated stream can answer);
+// nats-server v2.15.1 answered 10071 to both subtests' expected-last-subject-sequence write.
+func TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("%d copies", replicas), func(t *testing.T) {
+			cluster := testnats.StartCluster(t, 3)
+			conn := testnats.Connect(t, cluster.URL())
+			t.Cleanup(conn.Close)
+			ctx := context.Background()
+			js, err := jetstream.New(conn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
+				t.Fatal(err)
+			}
+			store := NewKVStore(SessionBucket, ConnRequester{conn})
+			first, err := store.Write(ctx, "ses-1", Record{Start: 1}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Write(ctx, "ses-1", Record{Start: 2}, first); err != nil {
+				t.Fatal(err)
+			}
+			_, err = store.Write(ctx, "ses-1", Record{Start: 3}, first)
+			var api *jetstream.APIError
+			if !errors.As(err, &api) {
+				t.Fatalf("a stale write on %d copies = %v, want the server's answer wrapped", replicas, err)
+			}
+			t.Logf("a stale write on %d copies: the server answered %d", replicas, api.ErrorCode)
+			if !errors.Is(err, ErrConflict) {
+				t.Fatalf("a stale write on %d copies = %v (code %d), want ErrConflict", replicas, err, api.ErrorCode)
+			}
+		})
+	}
+}
