@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -242,9 +243,16 @@ func TestASwitchToPrivateLeavesTheSearchOfTheProjectsStillSeenAsItWas(t *testing
 // on 2026-11-21 against pgvector 0.8.7, each run on a fresh database: in 120 runs of the control
 // at each of 1,000, 5,000 and 25,000 (20 within the whole row, 100 alone), it read 0 every time,
 // and at 5,000 and 25,000 its walk reached 50 of PRIV's vectors with PRIV public in every run, the
-// state in which the failing run at 1,000 reached alice's as well. The row writes 25,000, the most
-// of those counts, as bob's row does. In the 20 runs of the whole row at each count, one graph a
-// project read 33 or 34 hits before PRIV held anything and the same hits after.
+// state in which the failing run at 1,000 reached alice's as well. Those runs wrote PRIV's vectors
+// nearest the query first, the order the plan of the row's update then visited them in, and the
+// order hnswIssues now writes them in by construction: in 180 more runs of the control alone with
+// the order forced, nearest first read 0 in all 60 (30 at 1,000, 20 at 5,000, 10 at 25,000), while
+// farthest first read 33 in 7 of 20 at 5,000, and a random order 33 in 8 of 20 at 5,000 and in 5
+// of 10 at 25,000 (every order read 0 at 1,000). The control is therefore the nearest-first write,
+// where one graph over every project loses alice's hits; one graph a project keeps them in any
+// order, since PRIV's writes never reach PUB's graph. The row writes 25,000, the most of the counts
+// measured, as bob's row does. In the 20 runs of the whole row at each count, one graph a project
+// read 33 or 34 hits before PRIV held anything and the same hits after.
 const hnswSwitchHidden = 25000
 
 // hnswSwitchFloor is the fewest hits of PUB's hnswVisible that alice's search must read before
@@ -369,6 +377,12 @@ func hnswAddHidden(t *testing.T, seed privateSeed, reader hnswReader, count int)
 // apart by the issue's number, so the visible and the hidden issues do not share axes in step, nor
 // one batch's hidden issues the last batch's; on the curve, the remainder is on dimensions 2 and 3
 // at an angle that turns a quarter circle from the batch's first issue to its last.
+//
+// The vectors are written one row at a time in the issues' order, nearest the query first, so the
+// HNSW index takes them in that order by construction rather than by the order a plan of one
+// update happens to visit the rows in. The order changes the graph they make: on one graph over
+// every project, the switch row's control keeps none of alice's hits after nearest-first writes,
+// and keeps her 33 in some runs after other orders (hnswSwitchHidden).
 func hnswIssues(t *testing.T, seed privateSeed, project string, first, count int, nearest, farthest float64, layout hnswLayout) {
 	t.Helper()
 	ctx, pool := t.Context(), seed.database.Pool
@@ -389,36 +403,49 @@ func hnswIssues(t *testing.T, seed privateSeed, project string, first, count int
 	if err != nil || noded.RowsAffected() != int64(count) {
 		t.Fatalf("copy %s's node to %d issues of %s: %d copied, %v", seed.issue[project], count, project, noded.RowsAffected(), err)
 	}
-	embedded, err := pool.Exec(ctx, `
-		update embeddings e
-		set embedding = placed.vector, model = $6, embedded_hash = e.content_hash, embedded_at = now(), project_key = $1
-		from (
-			select i.key, (
-				select array_agg(case
-					when d = 1 then p.cosine
-					when $9::bool and d = 3 then sqrt(1 - p.cosine * p.cosine) * cos(p.angle)
-					when $9::bool and d = 4 then sqrt(1 - p.cosine * p.cosine) * sin(p.angle)
-					when $9::bool then 0
-					when d = $7::int then $8::float8
-					when d = p.axis then sqrt(1 - p.cosine * p.cosine - $8::float8 * $8::float8)
-					else 0 end order by d)::real[]::vector
-				from generate_series(1, $7::int) d
-			) as vector
-			from issues i
-			cross join lateral (
-				select $3::float8 - ($3::float8 - $4::float8) * (i.number - $10::int) / greatest($2::int - 1, 1) as cosine,
-					3 + ((i.number - 1001) * $5::int) % ($7::int - 3) as axis,
-					(i.number - $10::int) * (pi() / 2) / greatest($2::int - 1, 1) as angle
-			) p
-			where i.project_key = $1 and i.number between $10::int and $10::int + $2::int - 1
-		) placed
-		where e.kind = 'issue' and e.id = placed.key
-	`, project, count, nearest, farthest, layout.stride, embed.BedrockModel, embed.Dimension, layout.shared, layout.curve, first)
-	if err != nil {
-		t.Fatalf("embed %d issues of %s: %v", count, project, err)
+	if strings.ContainsRune(project+embed.BedrockModel, '\'') {
+		t.Fatalf("project %q or model %q holds a quote, which the statement below cannot carry", project, embed.BedrockModel)
 	}
-	if embedded.RowsAffected() != int64(count) {
-		t.Fatalf("embedded %d of %s's %d issues, want every one: the issue trigger queued fewer embedding rows than issues", embedded.RowsAffected(), project, count)
+	number := func(value float64) string { return strconv.FormatFloat(value, 'g', -1, 64) }
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+		do $$
+		declare
+			r record;
+			written int := 0;
+			n int;
+		begin
+			for r in
+				select i.key, (
+					select array_agg(case
+						when d = 1 then p.cosine
+						when %[9]t and d = 3 then sqrt(1 - p.cosine * p.cosine) * cos(p.angle)
+						when %[9]t and d = 4 then sqrt(1 - p.cosine * p.cosine) * sin(p.angle)
+						when %[9]t then 0
+						when d = %[7]d then %[8]s::float8
+						when d = p.axis then sqrt(1 - p.cosine * p.cosine - %[8]s::float8 * %[8]s::float8)
+						else 0 end order by d)::real[]::vector
+					from generate_series(1, %[7]d) d
+				) as vector
+				from issues i
+				cross join lateral (
+					select %[3]s::float8 - (%[3]s::float8 - %[4]s::float8) * (i.number - %[10]d) / greatest(%[2]d - 1, 1) as cosine,
+						3 + ((i.number - 1001) * %[5]d) %% (%[7]d - 3) as axis,
+						(i.number - %[10]d) * (pi() / 2) / greatest(%[2]d - 1, 1) as angle
+				) p
+				where i.project_key = '%[1]s' and i.number between %[10]d and %[10]d + %[2]d - 1
+				order by i.number
+			loop
+				update embeddings e
+				set embedding = r.vector, model = '%[6]s', embedded_hash = e.content_hash, embedded_at = now(), project_key = '%[1]s'
+				where e.kind = 'issue' and e.id = r.key;
+				get diagnostics n = row_count;
+				written := written + n;
+			end loop;
+			if written <> %[2]d then
+				raise exception 'embedded %% of %[1]s''s %[2]d issues, want every one: the issue trigger queued fewer embedding rows than issues', written;
+			end if;
+		end $$`, project, count, number(nearest), number(farthest), layout.stride, embed.BedrockModel, embed.Dimension, number(layout.shared), layout.curve, first)); err != nil {
+		t.Fatalf("embed %d issues of %s: %v", count, project, err)
 	}
 	if _, err := pool.Exec(ctx, `analyze embeddings`); err != nil {
 		t.Fatalf("analyze embeddings: %v", err)
