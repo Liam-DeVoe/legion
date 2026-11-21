@@ -34,10 +34,9 @@ import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { SnoozeWrites } from "./ask-snooze-fixture";
-import { AskHandOnWritesContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
-import { useAskHandOnWrites } from "./useAskHandOn";
+import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 
 installInboxApiMocks();
 

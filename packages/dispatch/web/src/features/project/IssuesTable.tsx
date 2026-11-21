@@ -179,9 +179,10 @@ export function IssuesTable({
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
-  // The issue the reader marked last - by its own checkbox, or `x` on its row - and the List's
-  // search box: where the focus goes when the bar goes with it (`returnFocus`, below). A
-  // select-all marks no row of the reader's own, so it records none.
+  // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
+  // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
+  // reader's own, so it records none. The List's search box is the last place `noteFocus`,
+  // below, hands the focus to.
   const lastMarked = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const recordMark = useCallback((key: string) => {
@@ -312,9 +313,8 @@ export function IssuesTable({
   // last off the list is answered above (`landAtPlace`).
   const returnFocus = () => {
     if (landAtPlace()) return null;
-    const listed = leaves();
-    const last = lastMarked.current;
-    const key = last !== null && listed.includes(last) ? last : listed[0];
+    // `landAtPlace` moved nothing, so no issue is marked, or the issue marked last is listed.
+    const key = lastMarked.current ?? leaves()[0];
     return key === undefined ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its

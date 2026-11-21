@@ -1,11 +1,26 @@
-import { type Context, useContext, useMemo, useState } from "react";
+import { type Context, useCallback, useContext, useMemo, useState } from "react";
 
+import type { Ask } from "../../api/types";
 import { type KeyedWriteOptions, useKeyedWrite } from "../writes/useKeyedWrite";
 
+/** What every press a card makes of an ask carries - a hand-on, an answer, a decline, a reply:
+ *  the ask it is of. `retry()` runs the newest render's `write` and callbacks with the press's
+ *  own values (`useKeyedWrite`), and a host may draw one card for one ask after another, so the
+ *  ask a write is sent to, what it changes in the Inbox's read and the ask the Inbox holds are
+ *  the press's, whichever ask the card shows. */
+export interface AskPress {
+  readonly ask: Ask;
+}
+
+/** The ask a press of a card's ask write is of (`useAskWrites`'s `askIdOf`). */
+export function pressAsk({ ask }: AskPress): string {
+  return ask.id;
+}
+
 /** The newest press of one ask's write of one kind in an Inbox, and what became of it: `out`
- *  until Dispatch decides it, then `landed`, or `failed` with the error Dispatch refused it with
- *  or the reader's stop. `at` is when the press was made. The next press of the ask takes its
- *  place. */
+ *  until Dispatch decides it, then `landed` where the kind keeps a landed press (`keepsLanded`),
+ *  or `failed` with the error Dispatch refused it with or the reader's stop. `at` is when the
+ *  press was made. The next press of the ask takes its place. */
 export type AskPressState<P> =
   | { readonly at: number; readonly press: P; readonly state: "landed" | "out" }
   | { readonly at: number; readonly failure: Error; readonly press: P; readonly state: "failed" };
@@ -16,6 +31,9 @@ export interface AskWrites<P> {
   /** Lets go of the newest press of `askId` once Dispatch has decided it, its refusal with it.
    *  A press that is out stays: it is Dispatch's to decide. */
   readonly forget: (askId: string) => void;
+  /** Lets go of the newest press of `askId` where it has landed. A press that is out or failed
+   *  stays. The same function on every render. */
+  readonly forgetLanded: (askId: string) => void;
   /** The newest press of each ask this kind has written, by ask. */
   readonly newest: ReadonlyMap<string, AskPressState<P>>;
   /** The asks whose write is out. The Inbox keeps each one's row where the reader saw it until
@@ -29,6 +47,13 @@ export interface AskWrites<P> {
    *  (`again`), else as a new press of the same values. Nothing where its newest press did not
    *  fail. */
   readonly retry: (askId: string) => void;
+}
+
+/** `entries` without the entry of `askId`. */
+function without<V>(entries: ReadonlyMap<string, V>, askId: string): Map<string, V> {
+  const next = new Map(entries);
+  next.delete(askId);
+  return next;
 }
 
 /**
@@ -46,11 +71,17 @@ export interface AskWrites<P> {
  * cache before the Inbox lets go of the row, and the render that lets go of it draws the row as
  * the rollback left it.
  *
+ * A press that lands is let go of as it lands, unless `keepsLanded` answers true for its ask:
+ * then it stays, `landed`, until `forgetLanded` or the ask's next press. A kind whose surfaces
+ * read nothing of a landed press keeps none, so its entries do not grow with each ask written
+ * while the Inbox stays.
+ *
  * `askIdOf` names the ask of a press; a module's own function, so it is the same on every render.
  */
 export function useAskWrites<TData, P, TContext = unknown>(
   askIdOf: (press: P) => string,
-  options: KeyedWriteOptions<TData, P, TContext>
+  options: KeyedWriteOptions<TData, P, TContext>,
+  keepsLanded?: (askId: string) => boolean
 ): AskWrites<P> {
   const [newest, setNewest] = useState<ReadonlyMap<string, AskPressState<P>>>(() => new Map());
   // Dispatch's decision on `press`: a landing (`failure` undefined) or a refusal or a stop. Where
@@ -60,12 +91,11 @@ export function useAskWrites<TData, P, TContext = unknown>(
       const askId = askIdOf(press);
       const entry = current.get(askId);
       if (entry?.press !== press) return current;
-      return new Map(current).set(
-        askId,
-        failure === undefined
-          ? { at: entry.at, press, state: "landed" }
-          : { at: entry.at, failure, press, state: "failed" }
-      );
+      if (failure !== undefined) {
+        return new Map(current).set(askId, { at: entry.at, failure, press, state: "failed" });
+      }
+      if (keepsLanded?.(askId) !== true) return without(current, askId);
+      return new Map(current).set(askId, { at: entry.at, press, state: "landed" });
     });
   const { again, mutate, stopped } = useKeyedWrite<TData, P, TContext>({
     ...options,
@@ -78,6 +108,13 @@ export function useAskWrites<TData, P, TContext = unknown>(
       decide(press, undefined);
     },
   });
+  const forgetLanded = useCallback(
+    (askId: string) =>
+      setNewest((current) =>
+        current.get(askId)?.state === "landed" ? without(current, askId) : current
+      ),
+    []
+  );
   return useMemo(() => {
     const out = new Set<string>();
     for (const [askId, { state }] of newest) {
@@ -91,11 +128,9 @@ export function useAskWrites<TData, P, TContext = unknown>(
       forget: (askId: string) =>
         setNewest((current) => {
           const state = current.get(askId)?.state;
-          if (state === undefined || state === "out") return current;
-          const next = new Map(current);
-          next.delete(askId);
-          return next;
+          return state === undefined || state === "out" ? current : without(current, askId);
         }),
+      forgetLanded,
       newest,
       out,
       press: (press: P) => {
@@ -111,7 +146,7 @@ export function useAskWrites<TData, P, TContext = unknown>(
         if (kept === undefined || !again(kept)) mutate(press);
       },
     };
-  }, [again, askIdOf, mutate, newest, stopped]);
+  }, [again, askIdOf, forgetLanded, mutate, newest, stopped]);
 }
 
 /** The writes of one kind of the Inbox around the caller, which provides every kind of its ask

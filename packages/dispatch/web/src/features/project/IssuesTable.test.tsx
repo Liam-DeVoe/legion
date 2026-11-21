@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { pickNamed } from "../../__tests__/list-picks";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -1061,41 +1062,20 @@ test("the List's bar gone with the focus after the issue marked last left the li
   const [marked, last, next] = order.slice(11, 14);
   // Each row's checkbox is drawn where its row stands now, 100 px a row, with the tenth row at
   // the window's top: happy-dom lays nothing out, and the hand-off reads what the reader sees.
-  const real = Element.prototype.getBoundingClientRect;
-  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    const row = this.matches('input[type="checkbox"]') ? this.closest("[data-issue-row]") : null;
-    if (row === null) return real.call(this);
-    const index = [...document.querySelectorAll("[data-issue-row]")].indexOf(row);
-    return new DOMRect(0, (index - 9) * 100, 40, 40);
-  });
-  restores.push(() => rect.mockRestore());
+  restores.push(layRowsOut("[data-issue-row]", 9));
   await user.click(screen.getByRole("checkbox", { name: `Select ${marked}` }));
   await user.click(screen.getByRole("checkbox", { name: `Select ${last}` }));
   act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
-  const realFocus = HTMLElement.prototype.focus;
-  const focused: { options: FocusOptions | undefined; target: HTMLElement }[] = [];
-  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
-    this: HTMLElement,
-    options?: FocusOptions
-  ) {
-    focused.push({ options, target: this });
-    realFocus.call(this, options);
-  });
-  const scroll = spyOn(Element.prototype, "scrollIntoView");
-  restores.push(() => {
-    focus.mockRestore();
-    scroll.mockRestore();
-  });
+  const moves = watchMoves();
+  restores.push(moves.restore);
   // The listing answers from `issues`, so the read again no longer lists the two issues.
   issues.splice(0, issues.length, ...issues.filter(({ key }) => key !== marked && key !== last));
   await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
   await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
   const landing = screen.getByRole("checkbox", { name: `Select ${next}` });
   await waitFor(() => expect(landing).toHaveFocus());
-  expect(focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-  expect(scroll).not.toHaveBeenCalled();
+  expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+  expect(moves.scrolled).toEqual([]);
 });
 
 test("leaving the table clears what the bar says it will act on", async () => {

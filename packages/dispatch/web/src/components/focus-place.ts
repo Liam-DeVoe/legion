@@ -715,8 +715,7 @@ function leaveUnseen(loss: Loss): void {
     return;
   }
   if (!(region instanceof HTMLElement) || !region.matches(DIALOG)) return;
-  if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
-  region.focus({ preventScroll: true });
+  focusOwnStop(region);
 }
 
 /** Where a node stood in the page while it was there: the parent holding it and the siblings
@@ -1086,6 +1085,15 @@ function focusNoScroll(target: HTMLElement): boolean {
   return document.activeElement === target;
 }
 
+/** Focuses `region` at its own stop without a scroll. A region with no Tab stop of its own is
+ *  given `tabindex="-1"` for it. The page's rescue ends there for a loss the reader caused
+ *  (`handOn`, `leaveUnseen`), and so does the selection bar's hand-off in a list
+ *  (`focusListStop`). */
+export function focusOwnStop(region: HTMLElement): void {
+  if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
+  focusNoScroll(region);
+}
+
 /** The controls a loss the reader caused walks back to, nearest first: the control now at `index`
  *  in `controls`, then each control before that place (`placesFrom`), save every control that
  *  takes typed text (`takesText`). The reader never chose such a field, and their next key would
@@ -1167,8 +1175,7 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     if (land(candidate)) return;
   }
   if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
-  if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
-  focusNoScroll(region);
+  focusOwnStop(region);
 }
 
 /**

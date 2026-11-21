@@ -1,8 +1,9 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
+import { layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
@@ -430,9 +431,6 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
   }
 });
 
-/** How tall each row of `PlacedList` is drawn. */
-const ROW_PX = 100;
-
 /** The keys of `PlacedList`'s twenty rows, in its order. */
 const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
 
@@ -486,55 +484,6 @@ function PlacedList({
   );
 }
 
-/** Lays `PlacedList`'s rows down the window, `ROW_PX` each, with the row at `first` in the
- *  list's order at the window's top, as a reader deep in the list sees it. A row and its mark are
- *  drawn where the row stands now, so a row that moves up into a place that went is drawn there.
- *  happy-dom lays nothing out, and without this every element would read as in sight. */
-function layRowsOut(first: number): () => void {
-  const real = Element.prototype.getBoundingClientRect;
-  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    const row = this.closest("[data-row]");
-    if (row === null) return real.call(this);
-    const index = [...document.querySelectorAll("[data-row]")].indexOf(row);
-    return new DOMRect(0, (index - first) * ROW_PX, 200, ROW_PX);
-  });
-  return () => rect.mockRestore();
-}
-
-/** Every focus the page asks for from now on, with the options it asks with, and every element
- *  it scrolls into view, until `restore`. happy-dom scrolls nothing, so a scroll is read here. */
-function watchMoves(): {
-  focused: { options: FocusOptions | undefined; target: HTMLElement }[];
-  restore: () => void;
-  scrolled: Element[];
-} {
-  const realFocus = HTMLElement.prototype.focus;
-  const focused: { options: FocusOptions | undefined; target: HTMLElement }[] = [];
-  const scrolled: Element[] = [];
-  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
-    this: HTMLElement,
-    options?: FocusOptions
-  ) {
-    focused.push({ options, target: this });
-    realFocus.call(this, options);
-  });
-  const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element
-  ) {
-    scrolled.push(this);
-  });
-  return {
-    focused,
-    restore: () => {
-      focus.mockRestore();
-      scroll.mockRestore();
-    },
-    scrolled,
-  };
-}
-
 /** `keys` without `taken`. */
 function without(keys: readonly string[], ...taken: string[]): string[] {
   return keys.filter((key) => !taken.includes(key));
@@ -545,7 +494,7 @@ function without(keys: readonly string[], ...taken: string[]): string[] {
 // with no scroll. The list's first row, nine rows above the window, would scroll the list back
 // to its top and throw the reader's place away.
 test("a press that takes away the row marked last hands the focus to the row that moves up into its place, with no scroll", () => {
-  const laidOut = layRowsOut(9);
+  const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
@@ -569,7 +518,7 @@ test("a press that takes away the row marked last hands the focus to the row tha
 // up into its place is below it too. The focus goes to the nearest row before that place that
 // the reader can see, the window's last row, with no scroll.
 test("a press that takes away the row marked last, with the row now at its place out of sight, hands the focus to the nearest row before it in sight", () => {
-  const laidOut = layRowsOut(9);
+  const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-19" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
@@ -592,7 +541,7 @@ test("a press that takes away the row marked last, with the row now at its place
 // leaving row's place once that row goes, so the place is read from the leaving row, which the
 // reader can see: the focus goes to the row after it, with no scroll.
 test("a press still taking away the row marked last hands the focus to the row after it, which moves up into its place in sight", () => {
-  const laidOut = layRowsOut(9);
+  const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
@@ -615,7 +564,7 @@ test("a press still taking away the row marked last hands the focus to the row a
 // row away, and neither the row now at its place nor any row before it is in sight. The list
 // itself takes the focus at its own stop, with no scroll, rather than a row above the window.
 test("a press that takes away the row marked last, with no row in sight at its place or before it, hands the focus to the list's own stop", () => {
-  const laidOut = layRowsOut(9);
+  const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
@@ -637,7 +586,7 @@ test("a press that takes away the row marked last, with no row in sight at its p
 // case of the place's: the row's mark takes the focus as the page names it, and the bar brings
 // it into view, as it always has.
 test("the row marked last still listed takes the focus as the page names it, out of sight or not", () => {
-  const laidOut = layRowsOut(9);
+  const laidOut = layRowsOut("[data-row]", 9);
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {

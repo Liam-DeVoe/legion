@@ -25,9 +25,8 @@ import {
   badgeSelectWrapper,
 } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
-import { AskHandOnWritesContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
-import { type AskHandOnWrite, useAskHandOn } from "./useAskHandOn";
+import { type AskHandOnWrite, AskHandOnWritesContext, useAskHandOn } from "./useAskHandOn";
 
 /**
  * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
@@ -54,9 +53,9 @@ import { type AskHandOnWrite, useAskHandOn } from "./useAskHandOn";
  * reader pressed it, as `AssignToMe` does.
  *
  * Inside an Inbox the write is not the card's: the Inbox holds every card's hand-on, by ask
- * (`useAskHandOnWrites`), reached through the context it provides (`hand-on-live.ts`) rather
- * than a prop every host passes down, since the card the reader pressed can be one the Inbox
- * never rendered itself - the decision block its reading column draws through the document
+ * (`useAskHandOnWrites`), reached through the context it provides (`AskHandOnWritesContext`)
+ * rather than a prop every host passes down, since the card the reader pressed can be one the
+ * Inbox never rendered itself - the decision block its reading column draws through the document
  * page. The optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment
  * the write starts (`isMine`, `inAssigneeFilter`), and the reading column's card goes whenever
  * the reader moves the selection, so the hold outlives the card: the Inbox keeps the row where
@@ -97,10 +96,12 @@ function HandOnControl({
   const [open, setOpen] = useState(false);
   const page = usePageWords();
   // The trigger is held (`aria-disabled`, which keeps the focus on it) from the pick until the
-  // commit after the write's answer (`useHeldThroughAnswer`): the one in which the Inbox lets go
-  // of the row and, where the hand-on takes the ask out of the reader's list, takes the row and
-  // this card away. A refusal lets go of the trigger the commit after its answer, with Retry
-  // beside it. While held, the list does not open.
+  // commit after the write's answer (`useHeldThroughAnswer`). Inside an Inbox the write's
+  // `pending` and the Inbox's hold on the row come from the same state, so the Inbox lets go of
+  // the row in the answer's own commit, while the trigger is still held: where the hand-on takes
+  // the ask out of the reader's list, that commit takes the row and this card away. A refusal
+  // lets go of the trigger the commit after its answer, with Retry beside it. While held, the
+  // list does not open.
   const held = useHeldThroughAnswer(write.pending);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The people are listed only while the list stands open, which is after the reader reached for

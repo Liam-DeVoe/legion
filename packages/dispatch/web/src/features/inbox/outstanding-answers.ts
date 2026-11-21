@@ -12,25 +12,16 @@ import {
 
 import type { WriteBounds, WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
-import type { Ask, InboxRow } from "../../api/types";
+import type { InboxRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import { SendStoppedError } from "../writes/keyed-write";
 import { type KeyedWriteOptions, useKeyedWrite } from "../writes/useKeyedWrite";
-import { useAskWrites } from "./ask-writes";
+import { type AskPress, pressAsk, useAskWrites } from "./ask-writes";
 
 /** The rows the Inbox read held before the write took its ask's row out, kept so a refused write
  *  puts them back. Undefined where the write left the Inbox alone - a change to an answer the
  *  server has already recorded, whose ask has no open row there - and so kept nothing. */
 type InboxRowsBefore = { readonly rows: InboxRow[] | undefined } | undefined;
-
-/** What every press of an answer or a decline carries: the ask it is of. `retry()` runs the
- *  newest render's `write` and callbacks with the press's own values (`useKeyedWrite`), and a
- *  host may draw one card for one ask after another, so the ask a write is sent to, the row it
- *  takes out of the Inbox and the ask the Inbox holds are the press's, whichever ask the card
- *  shows. */
-export interface AskPress {
-  readonly ask: Ask;
-}
 
 /** What an answer or a decline is written with, beyond what the write itself does with the
  *  Inbox's row. */
@@ -148,11 +139,6 @@ export interface OutstandingAnswerWrites {
   readonly retry: (askId: string, surface: PressSurface) => void;
 }
 
-/** The ask a press of an answer or a decline is of. */
-function pressAsk({ ask }: AskPress): string {
-  return ask.id;
-}
-
 /**
  * Every answer, or every decline, the reader makes in one Inbox, held by ask in the Inbox's own
  * state (`useAskWrites`), as each row's snooze is. The write takes the ask's row out of the
@@ -167,6 +153,10 @@ function pressAsk({ ask }: AskPress): string {
  * its ask; else a surface drawn for its ask where one is (`draw`), so that card's state follows
  * the write; else the surface that made or last retried it, as it last drew, whose callbacks
  * then change only what outlives it - a draft, a read.
+ *
+ * A landed press stays only while a surface is drawn for its ask, which reads its landing
+ * (`isSuccess`, `submittedAt`). One that lands with none drawn is let go of as it lands, and one
+ * kept is let go of once the last surface drawn for its ask goes.
  */
 export function useOutstandingAnswerWrites(): OutstandingAnswerWrites {
   const queryClient = useQueryClient();
@@ -185,17 +175,22 @@ export function useOutstandingAnswerWrites(): OutstandingAnswerWrites {
     }
     return surface.current;
   };
-  const writes = useAskWrites(pressAsk, outstandingAnswerWrite(queryClient, surfaceOf));
+  const writes = useAskWrites(pressAsk, outstandingAnswerWrite(queryClient, surfaceOf), (askId) =>
+    drawn.has(askId)
+  );
+  const { forgetLanded } = writes;
   const draw = useCallback(
     (askId: string, surface: PressSurface) => {
-      drawn.set(askId, new Set(drawn.get(askId)).add(surface));
+      drawn.set(askId, (drawn.get(askId) ?? new Set()).add(surface));
       return () => {
         const surfaces = drawn.get(askId);
         surfaces?.delete(surface);
-        if (surfaces?.size === 0) drawn.delete(askId);
+        if (surfaces?.size !== 0) return;
+        drawn.delete(askId);
+        forgetLanded(askId);
       };
     },
-    [drawn]
+    [drawn, forgetLanded]
   );
   return useMemo(
     () => ({
@@ -241,32 +236,37 @@ export const AskDeclineWritesContext = createContext<OutstandingAnswerWrites | u
   undefined
 );
 
-/** Which of the two writes a surface makes: an answer, or a decline. */
-const KIND_WRITES = { answer: AskAnswerWritesContext, decline: AskDeclineWritesContext } as const;
-
 /**
- * The reader's own answer to an ask, or their decline of it, as one write: it takes the ask's
- * row out of the Inbox the moment it goes and puts it back where the server refuses it
- * (`outstandingAnswerWrite`). The two writes share this rather than each keeping its own copy.
- *
- * Inside an Inbox the write is the Inbox's, by ask (`useOutstandingAnswerWrites`), reached
- * through the context it provides, since the card can be the document's own - a question written
- * as a decision block, drawn by `ProofDocument` - which takes no prop of the Inbox's. The surface
- * shows the newest press of the ask it is drawn for (`askId`), whichever surface made it, and
- * makes its own presses with `options`. The Inbox holds the row from the reader's own press, in
- * that press's commit, so the commit the removal makes still draws the row; and a card drawn for
- * the ask after the reader moved away shows the write's `…ing`, or its refusal and its Retry.
- * Outside an Inbox - the issue page's Conversation, a document's margin and its ask block, the
- * Answers page - the surface's own write makes every press, and it lives as long as the surface:
- * nothing there takes the row out from under it. Inside an Inbox that own write makes none.
+ * A surface's own answer or decline, made outside an Inbox - the issue page's Conversation, a
+ * document's margin and its ask block, the Answers page: it takes the ask's row out of the
+ * Inbox's read the moment it goes and puts it back where the server refuses it
+ * (`outstandingAnswerWrite`). It lives as long as the surface: nothing there takes the row out
+ * from under it.
  */
-export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>(
-  kind: keyof typeof KIND_WRITES,
-  askId: string,
+export function useOwnAnswerWrite<TData, TVariables extends AskPress>(
   options: OutstandingAnswerWriteOptions<TData, TVariables>
 ): OutstandingAnswerWrite<TVariables> {
-  const own = useKeyedWrite(outstandingAnswerWrite(useQueryClient(), () => options));
-  const inbox = useContext(KIND_WRITES[kind]);
+  return useKeyedWrite(outstandingAnswerWrite(useQueryClient(), () => options));
+}
+
+/**
+ * The Inbox's answer or decline of `askId` as a surface drawn for that ask shows it, from the
+ * writes of one kind (`inbox`) the Inbox provides; undefined outside an Inbox, where `inbox` is
+ * undefined.
+ *
+ * The Inbox's write is reached through the context it provides, since the card can be the
+ * document's own - a question written as a decision block, drawn by `ProofDocument` - which
+ * takes no prop of the Inbox's. The surface shows the newest press of the ask it is drawn for,
+ * whichever surface made it, and makes its own presses with `options`. The Inbox holds the row
+ * from the reader's own press, in that press's commit, so the commit the removal makes still
+ * draws the row; and a card drawn for the ask after the reader moved away shows the write's
+ * `…ing`, or its refusal and its Retry.
+ */
+export function useInboxAnswerWrite<TData, TVariables extends AskPress>(
+  inbox: OutstandingAnswerWrites | undefined,
+  askId: string,
+  options: OutstandingAnswerWriteOptions<TData, TVariables>
+): OutstandingAnswerWrite<TVariables> | undefined {
   // The Inbox's writes hold the presses of every surface of this kind, each made of that
   // surface's own variables, so a press of this surface's is handed back as its own type, and
   // this surface's options are handed over without it.
@@ -277,7 +277,7 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>(
   });
   const draw = inbox?.draw;
   useLayoutEffect(() => draw?.(askId, surface), [askId, draw]);
-  if (inbox === undefined) return own;
+  if (inbox === undefined) return undefined;
   const shown = inbox.of(askId);
   return {
     ...shown,
@@ -286,4 +286,20 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>(
     retry: () => inbox.retry(askId, surface),
     variables: shown.variables as TVariables | undefined,
   };
+}
+
+/**
+ * The reader's own answer to an ask, inside an Inbox and outside it alike: the Inbox's write of
+ * `askId` where the card is drawn under one (`useInboxAnswerWrite`), else the card's own
+ * (`useOwnAnswerWrite`). The answer form builds `options` from its own state inside
+ * `useAskAnswerForm`, which `AskCard` calls at its top, so the form cannot pick one of the two
+ * by the component it draws, as `DeclineControl` does. It makes its own write inside an Inbox
+ * too, and that write makes no press there.
+ */
+export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>(
+  askId: string,
+  options: OutstandingAnswerWriteOptions<TData, TVariables>
+): OutstandingAnswerWrite<TVariables> {
+  const own = useOwnAnswerWrite(options);
+  return useInboxAnswerWrite(useContext(AskAnswerWritesContext), askId, options) ?? own;
 }

@@ -18,6 +18,7 @@ import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-r
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { pickNamed } from "../../__tests__/list-picks";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -2573,8 +2574,8 @@ test("Assign to me stays held through the commit after its answer, and goes with
 
 // The hand-on's optimistic `waiting_on_person` takes the row out of the reader's own list as
 // the write starts, which would unmount the card holding the control: the list holds the write
-// itself, by ask, through the context it provides (`hand-on-live.ts`), and keeps the row while
-// the write is out, so the refusal is shown where the reader pressed rather than lost to a
+// itself, by ask, through the context it provides (`AskHandOnWritesContext`), and keeps the row
+// while the write is out, so the refusal is shown where the reader pressed rather than lost to a
 // remount.
 test("a refused hand-on keeps its row in the reader's own list, with the reason and a working Retry", async () => {
   const user = userEvent.setup();
@@ -3456,30 +3457,8 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
   const getAsk = mockAskReads(rows);
   // Each row's mark is drawn where its row stands now, 100 px a row, with the tenth row at the
   // window's top: happy-dom lays nothing out, and the hand-off reads what the reader can see.
-  const real = Element.prototype.getBoundingClientRect;
-  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    const row = this.matches('input[type="checkbox"]') ? this.closest("[data-inbox-row]") : null;
-    if (row === null) return real.call(this);
-    const index = [...document.querySelectorAll("[data-inbox-row]")].indexOf(row);
-    return new DOMRect(0, (index - 9) * 100, 800, 100);
-  });
-  const realFocus = HTMLElement.prototype.focus;
-  const focused: { options: FocusOptions | undefined; target: HTMLElement }[] = [];
-  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
-    this: HTMLElement,
-    options?: FocusOptions
-  ) {
-    focused.push({ options, target: this });
-    realFocus.call(this, options);
-  });
-  const scrolled: Element[] = [];
-  const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element
-  ) {
-    scrolled.push(this);
-  });
+  const laidOut = layRowsOut("[data-inbox-row]", 9);
+  const moves = watchMoves();
   const { unmount } = renderInbox("/?group=waiting-on");
   try {
     await screen.findByText("Question 20?");
@@ -3493,13 +3472,12 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
     await waitFor(() => expect(rowIds()).not.toContain(last));
     expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
     await waitFor(() => expect(landing).toHaveFocus());
-    expect(focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(scrolled).toEqual([]);
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+    expect(moves.scrolled).toEqual([]);
   } finally {
     unmount();
-    scroll.mockRestore();
-    focus.mockRestore();
-    rect.mockRestore();
+    moves.restore();
+    laidOut();
     getAsk.mockRestore();
     getInbox.mockRestore();
     snoozeAsk.mockRestore();

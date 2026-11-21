@@ -97,7 +97,6 @@ import {
   LATER_GROUP_KEY,
   sortRows,
 } from "./grouping";
-import { AskHandOnWritesContext } from "./hand-on-live";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
 import { buildInboxPath, type InboxRoute, useInboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
@@ -139,8 +138,8 @@ import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
 import { answerFailure } from "./useAskAnswerForm";
-import { useAskHandOnWrites } from "./useAskHandOn";
-import { AskSnoozeWritesProvider, useAskSnooze, useAskSnoozeWritesAround } from "./useAskSnooze";
+import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
+import { AskSnoozeContext, AskSnoozeWritesProvider, useAskSnooze } from "./useAskSnooze";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
@@ -1033,7 +1032,7 @@ function InboxBody({
   // stays with the ask for every control drawn for it. Under the Blocked on you narrowing
   // (`?section=needs-you`), which lists no snoozed ask, the optimistic moment drops the row at
   // once, and only the reader's hand keeps it.
-  const snoozing = useAskSnoozeWritesAround().out;
+  const snoozing = useInboxWrites(AskSnoozeContext).out;
   /** The rows the reader can see, in the order they see them, as this list last rendered them:
    *  what the motion hold is read against, what the selection steps through, and the rows a
    *  write out may keep. Written on every render below, and read before that as the record of
@@ -1060,7 +1059,7 @@ function InboxBody({
   // row back, and the next read places it, with the refusal shown on it.
   //
   // Only a row this list drew is kept. The cards reach these writes through the context this
-  // list provides (`hand-on-live.ts`, `outstanding-answers.ts`), since one of them is the
+  // list provides (`useAskHandOn.ts`, `outstanding-answers.ts`), since one of them is the
   // document page's own and takes no prop of this list's, and that context reaches every card
   // under the Inbox: the card of a Reply row's thread (`ThreadBody`), whose ask is often one the
   // reader's filters hide, and every ask block of a document open in the column, not only the
@@ -2218,13 +2217,16 @@ function InboxBody({
       // The bar gone with the focus, or the control in it that held the focus: the checkbox of
       // the row the reader marked last while the list still draws it, brought into view, else of
       // the first row in list order while no row is marked, else the list column's own stop with
-      // no scroll. A press that took the row marked last away is answered above (`landAtPlace`).
+      // no scroll. A press that took the row marked last away is answered above (`landAtPlace`),
+      // so where it moves nothing, no row is marked or the row marked last is drawn and no press
+      // is taking it away.
       returnFocus={() =>
         landAtPlace()
           ? null
-          : ([originRow(lastMarked()), ...rows()]
-              .find((row) => row !== null && !dismissedHere(row.dataset.inboxRow ?? ""))
-              ?.querySelector<HTMLElement>(MARK_SELECTOR) ?? focusListStop(listScroller.current))
+          : ((
+              originRow(lastMarked()) ??
+              rows().find((row) => !dismissedHere(row.dataset.inboxRow ?? ""))
+            )?.querySelector<HTMLElement>(MARK_SELECTOR) ?? focusListStop(listScroller.current))
       }
       state={barState}
     >

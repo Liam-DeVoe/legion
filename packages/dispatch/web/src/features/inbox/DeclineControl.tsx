@@ -1,13 +1,13 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useContext, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
   borderDefault,
@@ -26,7 +26,14 @@ import {
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
+import type { AskPress } from "./ask-writes";
+import {
+  AskDeclineWritesContext,
+  type OutstandingAnswerWrite,
+  type OutstandingAnswerWriteOptions,
+  useInboxAnswerWrite,
+  useOwnAnswerWrite,
+} from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
 /**
@@ -174,8 +181,8 @@ interface DeclinePress extends AskPress {
  * under Decline to answer, which opens the dialog on the refused decline's note, and the ask's
  * short row says it too. It reaches the Inbox through the context the Inbox provides, since this
  * card is drawn on surfaces that take no prop of the Inbox's, a document's own decision block
- * among them. Outside an Inbox the control makes its own write, and the dialog is the one surface
- * a refusal is shown on.
+ * among them (`useInboxAnswerWrite`). Outside an Inbox the control makes its own write
+ * (`OwnDeclineControl`), and the dialog is the one surface a refusal is shown on.
  */
 export function DeclineControl({
   ask,
@@ -194,10 +201,10 @@ export function DeclineControl({
   // the shell's indicator carries it only while it is out. Each press carries the ask it
   // declines (`AskPress`), so its landing reads again the ask it was made on, whichever ask the
   // card is drawn for by then.
-  const write = useOutstandingAnswerWrite("decline", ask.id, {
-    label: (press: DeclinePress) => `Decline of “${press.ask.question}”`,
+  const options: OutstandingAnswerWriteOptions<Ask, DeclinePress> = {
+    label: (press) => `Decline of “${press.ask.question}”`,
     method: "POST",
-    write: (press: DeclinePress, bounds) => decline(press.ask.id, press.input, bounds),
+    write: (press, bounds) => decline(press.ask.id, press.input, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (declined, press) => {
       setOpen(false);
@@ -213,8 +220,43 @@ export function DeclineControl({
       invalidateOwnerReads(queryClient, press.ask);
       onDeclined?.(press.ask.id);
     },
-  });
+  };
+  const inbox = useInboxAnswerWrite(useContext(AskDeclineWritesContext), ask.id, options);
+  const drawn = { ask, open, setOpen, submitGuard };
+  return inbox === undefined ? (
+    <OwnDeclineControl {...drawn} options={options} />
+  ) : (
+    <DeclineButton {...drawn} write={inbox} />
+  );
+}
 
+/** What `DeclineButton` draws from beside the write: the ask, whether the dialog is open, and
+ *  the guard that lets one press through at a time. */
+interface DeclineDrawn {
+  readonly ask: Ask;
+  readonly open: boolean;
+  readonly setOpen: (open: boolean) => void;
+  readonly submitGuard: SubmitGuard;
+}
+
+/** The decline of a card drawn outside an Inbox, as the control's own write
+ *  (`useOwnAnswerWrite`). */
+function OwnDeclineControl({
+  options,
+  ...drawn
+}: DeclineDrawn & { options: OutstandingAnswerWriteOptions<Ask, DeclinePress> }): ReactNode {
+  return <DeclineButton {...drawn} write={useOwnAnswerWrite(options)} />;
+}
+
+/** **Decline to answer**, the refusal under it and the dialog it opens, drawn from `write`: the
+ *  Inbox's decline of the ask, or the control's own. */
+function DeclineButton({
+  ask,
+  open,
+  setOpen,
+  submitGuard,
+  write,
+}: DeclineDrawn & { write: OutstandingAnswerWrite<DeclinePress> }): ReactNode {
   return (
     <div className="mt-3">
       <button

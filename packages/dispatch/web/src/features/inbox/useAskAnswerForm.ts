@@ -36,7 +36,8 @@ import {
   clearPendingAskThreadInvalidation,
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
-import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
+import type { AskPress } from "./ask-writes";
+import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
@@ -242,13 +243,13 @@ export function useAskAnswerForm({
   };
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
-  // Inbox and its restore on a refusal are the decline's too, and are written once beside the
-  // Inbox's own hold on the row while the write is out (`useOutstandingAnswerWrite`). Each press
+  // Inbox and its restore on a refusal are the decline's too, and are written once, beside the
+  // Inbox's own hold on the row while the write is out (`outstanding-answers.ts`). Each press
   // carries the ask it answers: `retry()` runs the newest render's `write` and callbacks with the
   // press's own values (`useKeyedWrite`), and a host may draw this card for one ask after
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
-  const mutation = useOutstandingAnswerWrite("answer", ask.id, {
+  const mutation = useOutstandingAnswerWrite(ask.id, {
     label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),

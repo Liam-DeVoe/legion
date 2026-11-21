@@ -10,7 +10,13 @@ import {
 import { focusOnDocument } from "../features/shell/roving";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL } from "./control-names";
-import { causedByReader, inSightNow, outOfSight, pressOnRowMark } from "./focus-place";
+import {
+  causedByReader,
+  focusOwnStop,
+  inSightNow,
+  outOfSight,
+  pressOnRowMark,
+} from "./focus-place";
 
 export interface SelectionBarProps {
   /** The bar's own element, for a page whose keymap puts the reader on it: Escape from a control
@@ -96,7 +102,7 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     // A row a press is still taking away (`leaving`) is drawn until the write's optimistic apply
     // lands, and the row after it moves up into its place only then: until then that place is
     // where the row marked last stands, read from its own mark.
-    const mark = markAtPlace(kept, before.current, last, list.control, list.control(last));
+    const mark = markAtPlace(kept, before.current, last, list.control);
     if (mark !== null) {
       mark.focus({ preventScroll: true });
       return true;
@@ -107,14 +113,12 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
 }
 
 /** Puts the focus on a list's own stop with no scroll, as the page's rescue gives a region its
- *  own: `tabindex="-1"` where it has no Tab stop of its own. It is where the selection bar's
- *  hand-off ends when no row in sight can take the focus, the emptied list included, since the
- *  page's search box takes typed text the reader never chose. Answers null, so a page's
- *  `returnFocus` can end with it and leave the bar nothing to move. */
+ *  own (`focusOwnStop`). It is where the selection bar's hand-off ends when no row in sight can
+ *  take the focus, the emptied list included, since the page's search box takes typed text the
+ *  reader never chose. Answers null, so a page's `returnFocus` can end with it and leave the bar
+ *  nothing to move. */
 export function focusListStop(stop: HTMLElement | null): null {
-  if (stop === null) return null;
-  if (!stop.hasAttribute("tabindex")) stop.tabIndex = -1;
-  stop.focus({ preventScroll: true });
+  if (stop !== null) focusOwnStop(stop);
   return null;
 }
 
@@ -123,19 +127,19 @@ export function focusListStop(stop: HTMLElement | null): null {
  *  mark of the nearest row before it they can see, else null. The place is the place of the
  *  first row after `last` in `before`, the order last read with it, that `kept` holds; past the
  *  last row where none is; none where `before` does not hold `last`. While the row marked last is
- *  still drawn, the place is read from its mark (`lastMark`): the row after it stands below it
- *  until it goes. Measured at 390 px in Chromium: a Dismiss handed the focus on while the
- *  dismissed thread still stood in view, and the row after it, below the window, moved up into
- *  view a frame later. */
+ *  still drawn, the place is read from its own mark: the row after it stands below it until it
+ *  goes. Measured at 390 px in Chromium: a Dismiss handed the focus on while the dismissed
+ *  thread still stood in view, and the row after it, below the window, moved up into view a
+ *  frame later. */
 function markAtPlace(
   kept: readonly string[],
   before: readonly string[],
   last: string,
-  control: (id: string) => HTMLElement | null,
-  lastMark: HTMLElement | null
+  control: (id: string) => HTMLElement | null
 ): HTMLElement | null {
   const from = before.indexOf(last);
   if (from === -1) return null;
+  const lastMark = control(last);
   const places = new Map(kept.map((id, index) => [id, index]));
   let place = kept.length;
   for (let index = from + 1; index < before.length; index += 1) {

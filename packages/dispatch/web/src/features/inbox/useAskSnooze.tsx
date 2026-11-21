@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
+import { createContext, type ReactNode, useMemo, useState } from "react";
 
 import { api, askSnoozeRequest, type WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -9,7 +9,7 @@ import { snoozeWritten } from "../../api/write-events";
 import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
 import { stoppedNote } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
-import { useAskWrites } from "./ask-writes";
+import { useAskWrites, useInboxWrites } from "./ask-writes";
 
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, or what one the reader stopped may have done and
@@ -59,7 +59,7 @@ export interface AskSnoozeWrites {
  * The snooze writes of the Inbox around a control (`useAskSnoozeWrites`). Each Inbox provides its
  * own (`AskSnoozeWritesProvider`): the page's and the drawer's are separate. A row's Snooze is
  * drawn only inside an Inbox, so a control with no provider is a mistake in the code, and
- * `useAskSnoozeWritesAround` throws for it.
+ * `useInboxWrites` throws for it.
  */
 export const AskSnoozeContext = createContext<AskSnoozeWrites | undefined>(undefined);
 
@@ -70,18 +70,9 @@ export function AskSnoozeWritesProvider({ children }: { children: ReactNode }): 
   return <AskSnoozeContext value={useAskSnoozeWrites()}>{children}</AskSnoozeContext>;
 }
 
-/** The snooze writes of the Inbox around the caller (`AskSnoozeContext`). */
-export function useAskSnoozeWritesAround(): AskSnoozeWrites {
-  const writes = useContext(AskSnoozeContext);
-  if (writes === undefined) {
-    throw new Error("A row's Snooze is drawn outside an Inbox, which holds its write");
-  }
-  return writes;
-}
-
 /** The snooze write of `askId` in the Inbox around the control (`AskSnoozeContext`). */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
-  return useAskSnoozeWritesAround().of(askId);
+  return useInboxWrites(AskSnoozeContext).of(askId);
 }
 
 /**
