@@ -10,6 +10,7 @@ import type {
   MessageDeliveryMode,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { useNavigationState } from "../../lib/page-address";
@@ -145,11 +146,12 @@ function BroadcastRecipientRow({
         // Outstanding, and nobody is carrying it. Only the attempt's own mode is offered: the
         // frame may already have reached the agent, and a repeat of the same mode is recognised
         // by its dedupe key while a different mode is a new key - that would be a second delivery.
+        // While the retry is out, Retry is held (`heldPress`), not disabled: it keeps the focus
+        // and its Tab stop, and a press of it sends nothing.
         <div className="mt-3">
           <button
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retry.isPending}
-            onClick={() => retry.mutate(latest?.delivery ?? delivery)}
+            {...heldPress(retry.isPending, () => retry.mutate(latest?.delivery ?? delivery))}
             type="button"
           >
             Retry

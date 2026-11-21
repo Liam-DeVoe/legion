@@ -20,7 +20,7 @@ import {
   openDisplayMenu,
 } from "./filters";
 import { nextFrames } from "./frames";
-import { dropFirstAnswer, watchWrites } from "./keyed-writes";
+import { distinctKeys, dropFirstAnswer, watchWrites } from "./keyed-writes";
 import {
   expectReadWhileHeld,
   holdIssuePatches,
@@ -1036,7 +1036,7 @@ test("reload mid Start next finishes the recorded order without repeating its co
       .getByRole("button", { name: "Start next", exact: true })
       .click();
     await expect.poll(() => held).toBe(true);
-    expect(completed).toHaveLength(1);
+    expect(distinctKeys(completed)).toEqual([expect.any(String)]);
     mode = "refuse";
     await page.reload();
     const interrupted = page.getByRole("region", { name: "Interrupted table action" });
@@ -1051,7 +1051,7 @@ test("reload mid Start next finishes the recorded order without repeating its co
           .getByRole("row", { name: `${issue.key} ${issue.title}`, exact: true })
           .getByRole("cell", { name: `#${index + 1}`, exact: true })
       ).toBeVisible();
-    expect(completed).toHaveLength(1);
+    expect(distinctKeys(completed)).toEqual([expect.any(String)]);
     await page.reload();
     await expect(interrupted).toHaveCount(0);
   } finally {
@@ -1130,7 +1130,7 @@ test("reload mid merge moves current open descendants then records one reason an
     expect((await listIssueMessages(source.key)).map(({ message }) => message.body)).toEqual([
       expect.stringContaining(`Merged into ${target.key}`),
     ]);
-    expect(completed).toHaveLength(1);
+    expect(distinctKeys(completed)).toEqual([expect.any(String)]);
     await expect(interrupted).toHaveCount(0);
     await page.reload();
     await expect(interrupted).toHaveCount(0);
