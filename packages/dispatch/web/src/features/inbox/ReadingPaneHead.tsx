@@ -21,6 +21,7 @@ import { AssignToMe } from "./AssignToMe";
 import { askIssueKey, controlName } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApprovalDetails, EarlierApprovalToggle } from "./EarlierApproval";
+import { inboxActionMark } from "./inbox-action-mark";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
@@ -121,15 +122,15 @@ export interface ReadingPaneHeadProps {
  * control once the person gives its action a key; a control whose action has none draws none.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
- * row (`hand()` returns the column in `Inbox.tsx`), and the short row beside it draws no Snooze
- * and no copy-ref control at all. So this head draws the same three controls the card row draws
- * — `[data-inbox-snooze]`, `[data-inbox-owner]` (the title) and the copy-ref control — and the
- * keys find them here. The `<header>` of this head and of the thread's (`ThreadPaneHead`) carries
- * `data-inbox-pane-head`, so a key that looks for a control of the head alone finds it there and
- * never a control of the same kind inside the document the column draws under it: `a` and
- * Shift+R press the approval's Approve and Request changes (`data-approval-action`) there while
- * they take a press, and the command bar presses Open page, Skip to the answer and Next change by
- * their own marks (`data-inbox-action`).
+ * row (`hand()` returns the column in `useInboxKeymap.ts`), and the short row beside it draws no
+ * Snooze and no copy-ref control at all. So this head draws the same three controls the card row
+ * draws — `[data-inbox-snooze]`, `[data-inbox-owner]` (the title) and the copy-ref control — and
+ * the keys find them here. The `<header>` of this head and of the thread's (`ThreadPaneHead`)
+ * carries `data-inbox-pane-head`, so a key that looks for a control of the head alone finds it
+ * there and never a control of the same kind inside the document the column draws under it: `a`
+ * and Shift+R press the approval's Approve and Request changes (`data-approval-action`) there
+ * while they take a press, and the command bar presses Open page, Skip to the answer, Next change
+ * and the approval's state by their own marks (`inboxActionMark`).
  */
 export function ReadingPaneHead({
   artifact,
@@ -182,7 +183,7 @@ export function ReadingPaneHead({
             <Link
               aria-keyshortcuts={keyshortcutsOf(openKeys)}
               className={`text-sm ${linkText} ${linkHoverText}`}
-              data-inbox-action="open-at-section"
+              {...inboxActionMark("inbox.open-at-section")}
               to={page}
             >
               Open page
@@ -222,7 +223,7 @@ export function ReadingPaneHead({
             <button
               aria-keyshortcuts={keyshortcutsOf(skipKeys)}
               className={secondaryButtonCompact}
-              data-inbox-action="skip-to-answer"
+              {...inboxActionMark("inbox.skip-to-answer")}
               onClick={onSkipToAnswer}
               type="button"
             >
@@ -234,7 +235,7 @@ export function ReadingPaneHead({
             <button
               aria-keyshortcuts={keyshortcutsOf(nextChangeKeys)}
               className={secondaryButtonCompact}
-              data-inbox-action="next-change"
+              {...inboxActionMark("inbox.next-change")}
               onClick={onNextChange}
               type="button"
             >
@@ -264,6 +265,7 @@ export function ReadingPaneHead({
                   requestChanges: requestChangesKeys,
                   showReviews: reviewsKeys,
                 }}
+                stateMarks={inboxActionMark("inbox.show-reviews")}
                 variant="pane"
               />
             )}

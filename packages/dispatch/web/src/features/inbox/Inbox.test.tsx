@@ -6990,6 +6990,112 @@ test("a dismiss of the last row beside the column leaves the address naming no r
   }
 });
 
+// Beside the column only the selected row is the item in hand (R8). The Dismiss the pointer
+// reaches on another row takes that row out and leaves the reader on the item they are reading:
+// the selection, the address and the focus stay where they were.
+test("beside the column a Dismiss on a row that is not selected leaves the selection and ?item= on the selected row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  // Newest first, A to D: each thread's reply an hour older than the one before.
+  let threads = ["a", "b", "c", "d"].map((name, index) => {
+    const row = replyRow(`thread-${name}`, { subject: `Thread ${name.toUpperCase()}` });
+    return { ...row, reply: { ...row.reply, created_at: `2026-10-12T0${4 - index}:00:00Z` } };
+  });
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async () => ({
+    as_of: "2026-10-12T05:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  }));
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const dismissed = answerInboxDismisses().mockImplementation(async () => {
+    threads = threads.filter((thread) => thread.thread_id !== "thread-c");
+    return { dismissed: 1 };
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() =>
+      expect(rowIds()).toEqual([
+        "reply:thread-a",
+        "reply:thread-b",
+        "reply:thread-c",
+        "reply:thread-d",
+      ])
+    );
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-a"]));
+    expect(address()).toBe("/?item=reply%3Athread-a");
+
+    await user.click(
+      within(shortRow("reply:thread-c")).getByRole("button", { name: "Dismiss: Thread C" })
+    );
+
+    await waitFor(() =>
+      expect(rowIds()).toEqual(["reply:thread-a", "reply:thread-b", "reply:thread-d"])
+    );
+    expect(dismissed).toHaveBeenCalledTimes(1);
+    expect(selectedIds()).toEqual(["reply:thread-a"]);
+    expect(address()).toBe("/?item=reply%3Athread-a");
+    expect(shortRow("reply:thread-d")).not.toHaveFocus();
+  } finally {
+    unmount();
+    narrow();
+    dismissed.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A search that leaves no row hides the item being read; it does not take it away. The selection
+// and the address keep it while nothing is listed, so the reader who clears the text is back on
+// that item rather than on the first row.
+test("a search that leaves no row keeps the selection and ?item=, so clearing it is back on the item being read", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?item=ask-b");
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(selectedIds()).toEqual(["ask-b"]);
+
+    // No row holds a "z", so the first letter already leaves the list empty.
+    await user.keyboard("f");
+    const box = screen.getByRole("searchbox", { name: "Search asks" });
+    expect(box).toHaveFocus();
+    await user.keyboard("zephyr");
+    const empty = await screen.findByRole("region", { name: "Inbox empty state" });
+    expect(empty).toHaveTextContent("Nothing matches this text");
+    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
+    expect(address()).toBe("/?item=ask-b&q=zephyr");
+
+    await user.clear(box);
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    expect(selectedIds()).toEqual(["ask-b"]);
+    expect(address()).toBe("/?item=ask-b");
+    expect(within(await screen.findByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 test("an empty list with no message to say yet takes the focus itself", async () => {
   const user = userEvent.setup();
   // The credential requests have not answered, so the Inbox cannot say that nothing needs the

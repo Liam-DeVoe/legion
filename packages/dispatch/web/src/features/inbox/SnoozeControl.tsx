@@ -7,6 +7,7 @@ import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
+import { inboxActionMark } from "./inbox-action-mark";
 import { InboxHandOffContext } from "./pane-selection";
 import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
 import { type AskSnoozePress, type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
@@ -146,7 +147,7 @@ export function SnoozeControl({
           aria-keyshortcuts={keyshortcutsOf(unsnoozeKeys)}
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
-          data-inbox-action="unsnooze"
+          {...inboxActionMark("inbox.unsnooze")}
           {...heldPress(held, () => write.submit(null, handingOn({ askId, until: null })))}
           type="button"
         >

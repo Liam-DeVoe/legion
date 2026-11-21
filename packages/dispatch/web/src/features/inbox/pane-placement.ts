@@ -13,8 +13,8 @@
  * The reader's press, scroll, touch or key is read on the column and not on the window: the list
  * beside it moves the selection with `j` and `k`, and a window-wide reading would end the next
  * item's placement before its document had drawn. The one move of the reader's made from the
- * list is the document's own keys (Space, Shift+Space, `g g` and Shift+G, `Inbox.tsx`), which
- * scroll the column with the focus left where it is: they say so on the column itself
+ * list is the document's own keys (Space, Shift+Space, `g g` and Shift+G, `useInboxKeymap.ts`),
+ * which scroll the column with the focus left where it is: they say so on the column itself
  * (`PANE_READER_MOVE`), and that ends the placement as a key pressed in the column does.
  */
 import { LIMIT_MS, QUIET_MS } from "../doc/refocus-when-settled";

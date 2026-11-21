@@ -89,6 +89,7 @@ import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
+import { inboxActionMark } from "./inbox-action-mark";
 import { useOptionDigits } from "./option-digits";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
@@ -387,8 +388,8 @@ export function AskCard({
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
-  // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
-  // is drawn by the render the press schedules, so the focus can only be this effect's - the
+  // own click, and the Inbox's Enter, which presses this same control (`useInboxKeymap.ts`). The
+  // field is drawn by the render the press schedules, so the focus can only be this effect's - the
   // opener runs before React has committed the box and would focus nothing. Only an open by the
   // disclosure itself focuses, which is why the intent is recorded as the control is pressed: an
   // option that opens the disclosure for its own words, and a change that seeds the note, leave
@@ -585,6 +586,7 @@ export function AskCard({
           controls={referencesPanelId}
           count={referencedByCount}
           expanded={referencesOpen}
+          marks={inboxActionMark("inbox.referenced-by")}
           onToggle={() => setReferencesOpen((open) => !open)}
         />
         {referencesOpen ? (
@@ -709,7 +711,7 @@ export function AskCard({
     <fieldset aria-label="Question-shaped answer" className="flex gap-2">
       <button
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-        data-inbox-action="ask-back-instead"
+        {...inboxActionMark("inbox.ask-back-instead")}
         {...heldPress(held, sendClarification)}
         ref={focusAskBackInstead}
         type="button"
@@ -718,7 +720,7 @@ export function AskCard({
       </button>
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
-        data-inbox-action="answer-anyway"
+        {...inboxActionMark("inbox.answer-anyway")}
         {...heldPress(held, () => sendAnswer(answerText))}
         type="button"
       >
@@ -732,7 +734,7 @@ export function AskCard({
         {changing ? (
           <button
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
-            data-inbox-action="cancel"
+            {...inboxActionMark("inbox.cancel")}
             {...heldPress(held, cancelChanging)}
             type="button"
           >
@@ -744,7 +746,7 @@ export function AskCard({
             // while the card holds, that is read inside from the form as the hold found it
             // (`refusedForm`), so the text the landing clears leaves it held and not `disabled`.
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
-            data-inbox-action="ask-back"
+            {...inboxActionMark("inbox.ask-back")}
             disabled={nothingToAskBack || uploading}
             {...heldPress(held, sendClarification)}
             type="button"
@@ -809,7 +811,7 @@ export function AskCard({
       // key that must not fire while the reader is answering an ask (the issue page's priority
       // digits, beside this card's own options) matches the bare attribute, and the Inbox's
       // answer keys find the selected question's own card by its value (`answerHand` in
-      // `Inbox.tsx`). Neither asks for a test id.
+      // `useInboxKeymap.ts`). Neither asks for a test id.
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
@@ -918,7 +920,7 @@ export function AskCard({
                     <button
                       aria-expanded={handlesOpen}
                       className={`flex min-w-0 items-center gap-1 ${tooltips ? textMutedHoverToSecondary : ON_PAGE.quietAct}`}
-                      data-inbox-action="asker-handles"
+                      {...inboxActionMark("inbox.asker-handles")}
                       onClick={() => setHandlesOpen((open) => !open)}
                       type="button"
                     >
@@ -940,7 +942,7 @@ export function AskCard({
             <span className="flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (
                 <CopyButton
-                  marks={{ "data-inbox-action": "copy-session-id" }}
+                  marks={inboxActionMark("inbox.copy-session-id")}
                   value={sessionAuthor.id}
                   what="session ID"
                 >
@@ -949,7 +951,7 @@ export function AskCard({
               )}
               {sessionTitle === undefined || sessionTitle === "" ? null : (
                 <CopyButton
-                  marks={{ "data-inbox-action": "copy-session-title" }}
+                  marks={inboxActionMark("inbox.copy-session-title")}
                   value={sessionTitle}
                   what="session title"
                 >
@@ -958,7 +960,7 @@ export function AskCard({
               )}
               {tmuxTarget === undefined ? null : (
                 <CopyButton
-                  marks={{ "data-inbox-action": "copy-tmux-target" }}
+                  marks={inboxActionMark("inbox.copy-tmux-target")}
                   value={tmuxTarget}
                   what="tmux target"
                 >
@@ -1056,7 +1058,7 @@ export function AskCard({
                 className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                 // The Inbox's Enter opens this disclosure to reach the answer box behind it,
                 // and finds the control by this handle, as it finds the box by
-                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
+                // `data-ask-answer` and an option by `data-ask-option` (`useInboxKeymap.ts`).
                 data-ask-note-disclosure=""
                 onClick={() => {
                   // Opening it is a move into the field behind it; closing it moves nowhere.

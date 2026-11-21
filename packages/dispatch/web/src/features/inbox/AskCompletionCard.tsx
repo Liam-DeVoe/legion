@@ -33,6 +33,7 @@ import type { DwellRef } from "../shell/useDwell";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
+import { inboxActionMark } from "./inbox-action-mark";
 
 export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
   if (ask.edited_at === null) {
@@ -47,7 +48,7 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
         <details className="mt-1">
           <summary
             className={`cursor-pointer font-medium ${linkText} ${linkHoverText}`}
-            data-inbox-action="previous-versions"
+            {...inboxActionMark("inbox.previous-versions")}
           >
             {edits.length === 1
               ? "Show 1 previous version"
@@ -90,7 +91,7 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] })
       <details className="mt-1">
         <summary
           className={`cursor-pointer font-medium underline ${textPrimaryOnSuccessCallout}`}
-          data-inbox-action="earlier-answers"
+          {...inboxActionMark("inbox.earlier-answers")}
         >
           {earlier.length === 1
             ? "Show 1 earlier answer"
@@ -238,7 +239,7 @@ function AnsweredAsk({
       {onChangeAnswer === undefined ? null : (
         <button
           className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
-          data-inbox-action="change-answer"
+          {...inboxActionMark("inbox.change-answer")}
           onClick={onChangeAnswer}
           type="button"
         >

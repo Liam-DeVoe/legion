@@ -2,11 +2,12 @@ import { createContext, useContext } from "react";
 
 /**
  * Which card an Inbox draws the option digits on (R17): the card of the item in hand, whose
- * options the digits pick (`inbox.option`, `Inbox.tsx`). Beside the reading column that is the
- * selected question's card, which `askId` names; the column's document can hold other blocks'
- * cards, which draw none. Below the column's width, and in the drawer, it is the card whose row
- * holds the focus, itself or on one of its options, which the browser knows before React does:
- * every card draws its digits there, and only the row in hand shows them (`ROW_IN_HAND_CLASS`).
+ * options the digits pick (`inbox.option`, `useInboxKeymap.ts`). Beside the reading column that
+ * is the selected question's card, which `askId` names; the column's document can hold other
+ * blocks' cards, which draw none. Below the column's width, and in the drawer, it is the card
+ * whose row holds the focus, itself or on one of its options, which the browser knows before
+ * React does: every card draws its digits there, and only the row in hand shows them
+ * (`ROW_IN_HAND_CLASS`).
  *
  * A context rather than a prop, as the hand-on's registration is (`hand-on-live.ts`): the card
  * of a question written as a decision block is the document page's own, which no prop of the
@@ -27,8 +28,8 @@ export interface OptionDigit {
 }
 
 /** Shows a digit only inside the Inbox row in hand: the row itself focused, or an option of it
- *  (`answerHand` in `Inbox.tsx`). The row is the `group` (`InboxRowShell`). The digit keeps its
- *  space while hidden, so a row taking the focus moves no option's text. */
+ *  (`answerHand` in `useInboxKeymap.ts`). The row is the `group` (`InboxRowShell`). The digit
+ *  keeps its space while hidden, so a row taking the focus moves no option's text. */
 export const ROW_IN_HAND_CLASS =
   "invisible group-focus:visible group-has-[[data-ask-option]:focus]:visible";
 

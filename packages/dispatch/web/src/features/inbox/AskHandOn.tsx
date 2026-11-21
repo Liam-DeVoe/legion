@@ -27,6 +27,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { AskHandOnLiveContext } from "./hand-on-live";
+import { inboxActionMark } from "./inbox-action-mark";
 import { askWaitingOnPerson } from "./list-row";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -137,7 +138,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
           keysOnTrigger
           label="Hand this question to"
           // The Inbox's command bar presses the trigger by this mark (its Hand on action).
-          marks={{ trigger: { "data-inbox-action": "hand-on" } }}
+          marks={{ trigger: inboxActionMark("inbox.hand-on") }}
           mode="single"
           onOpenChange={(next) => setOpen(next && !held)}
           onPick={(login) => {

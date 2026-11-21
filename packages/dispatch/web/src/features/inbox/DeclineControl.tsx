@@ -27,6 +27,7 @@ import {
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { inboxActionMark } from "./inbox-action-mark";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
@@ -205,7 +206,7 @@ export function DeclineControl({
     <div className="mt-3">
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        data-inbox-action="decline"
+        {...inboxActionMark("inbox.decline")}
         {...heldPress(write.isPending, () => setOpen(true))}
         type="button"
       >

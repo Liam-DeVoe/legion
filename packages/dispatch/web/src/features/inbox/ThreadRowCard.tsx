@@ -21,6 +21,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
+import { inboxActionMark } from "./inbox-action-mark";
 import { rowPriority, rowType, threadReferenceRoute } from "./list-row";
 import { RowKindIcon, RowPriorityTag } from "./RowMarks";
 import { ThreadBody } from "./ThreadBody";
@@ -96,7 +97,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </Link>
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
-          data-inbox-action="mark-read"
+          {...inboxActionMark("inbox.mark-read")}
           {...heldPress(markRead.isPending, () => markRead.mutate(thread))}
           type="button"
         >

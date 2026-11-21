@@ -19,6 +19,7 @@ import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { inboxActionMark } from "./inbox-action-mark";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
   api.removeAskFollower(askId, sessionId, bounds);
@@ -349,7 +350,7 @@ export function AskRecipients({
       <DisclosureToggle
         expanded={open}
         label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
-        marks={{ "data-inbox-action": "recipients" }}
+        marks={inboxActionMark("inbox.recipients")}
         onToggle={() => setOpen((shown) => !shown)}
         textClassName={textMutedOnSurface}
       />

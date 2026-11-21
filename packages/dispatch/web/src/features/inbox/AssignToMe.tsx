@@ -10,6 +10,7 @@ import {
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
+import { inboxActionMark } from "./inbox-action-mark";
 
 /** Takes an issue nobody holds for the viewer: one PATCH through the shared assignee write, so
  *  the row is theirs at once and rolls back if the server refuses. Under the Unassigned filter
@@ -58,7 +59,7 @@ export function AssignToMe({
         aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-        data-inbox-action="assign-to-me"
+        {...inboxActionMark("inbox.assign-to-me")}
         {...heldPress(held, () => {
           setPressedOn(askId);
           write.submit(viewer);

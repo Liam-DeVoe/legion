@@ -131,7 +131,7 @@ export function PaneFrame({
           read the head can hand the keyboard to the document. Nothing here scrolls it: the
           browser scrolls whichever focusable element holds the focus on the arrow keys, Page
           Up, Page Down, Space, Home and End, so this writes no scrolling code, and the list's
-          own keys for the document scroll it from the list (`Inbox.tsx`). A labelled
+          own keys for the document scroll it from the list (`useInboxKeymap.ts`). A labelled
           `<section>` is `role="region"`, and its name is neither a superset nor a subset of
           the enclosing section's name, since Playwright matches an accessible name by
           substring: each of the two names matches only itself. */}

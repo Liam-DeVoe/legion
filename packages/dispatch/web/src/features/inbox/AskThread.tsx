@@ -37,6 +37,7 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { inboxActionMark } from "./inbox-action-mark";
 import type { AskPress } from "./outstanding-answers";
 import { askArtifactId } from "./owner-reads";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
@@ -379,6 +380,7 @@ export function AskThread({
   const fold = (
     <EarlierReplies
       count={folded.length}
+      marks={inboxActionMark("inbox.earlier-replies")}
       onToggle={() => setShowAllReplies(!showAll)}
       open={showAll}
       replies={(id) => (

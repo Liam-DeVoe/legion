@@ -462,10 +462,19 @@ export function usePaneSelection({
     if (!paneShown) return;
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
     // address: `?item=` is left unread until there are rows to read it against. A selected row
-    // that went with the rest - the last row dismissed, or taken away by the server - leaves the
-    // selection and the address, unless the column keeps its question for the reader's answer.
+    // that went with the rest - the last row dismissed, or taken away by the server, so that no
+    // candidate is that row any more - leaves the selection and the address, unless the column
+    // keeps its question for the reader's answer. A row the typed text or the filter fields only
+    // hide is still a candidate: it stays selected and named in the address, so taking that
+    // narrowing off brings the reader back to the item they were reading.
     if (listedRows.current.length === 0) {
-      if (selectedId !== undefined && paneSubject.current?.kept !== true) select(undefined);
+      if (
+        selectedId !== undefined &&
+        paneSubject.current?.kept !== true &&
+        !candidates.some((row) => rowId(row) === selectedId)
+      ) {
+        select(undefined);
+      }
       return;
     }
     const visible = presented.current;

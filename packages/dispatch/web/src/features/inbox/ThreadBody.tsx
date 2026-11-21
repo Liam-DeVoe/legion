@@ -68,6 +68,7 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { inboxActionMark } from "./inbox-action-mark";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -209,6 +210,7 @@ function ThreadTurns({
   const fold = (
     <EarlierReplies
       count={folded.length}
+      marks={inboxActionMark("inbox.earlier-replies")}
       onToggle={() => setShowEarlier(!showEarlier)}
       open={showEarlier}
       replies={(id) => (

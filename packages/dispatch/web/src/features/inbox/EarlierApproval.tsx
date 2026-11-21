@@ -10,6 +10,7 @@ import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
 import { AgentName } from "../refs/AgentName";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
+import { inboxActionMark } from "./inbox-action-mark";
 
 /**
  * What changed between the version a human approved and the version the request names, with every
@@ -90,7 +91,7 @@ export function EarlierApprovalToggle({
       keyHint={<ControlKeyHint keys={shortcutKeys} />}
       keyshortcuts={keyshortcutsOf(shortcutKeys)}
       label={diffOpen ? "Hide diff" : "Show diff"}
-      marks={{ "data-inbox-action": "earlier-approval-diff" }}
+      marks={inboxActionMark("inbox.earlier-approval-diff")}
       onToggle={onToggle}
       textClassName={textMutedOnSurface}
     />
