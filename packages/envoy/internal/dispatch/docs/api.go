@@ -83,7 +83,8 @@ type VersionResult struct {
 // operations landed. UnguardedBlocks is, for an edit under a block guard, each block the batch
 // took that the guard did not name - the rest of what a delete or a move removed, a typed block a
 // replace rewrote - with the token the edit read it at (requirePreconditionCoverage): the guard
-// did not check them, and naming them in it refuses the edit when one of them changed.
+// did not name them, and a named block that holds one may still cover it; naming them in it
+// refuses the edit when one of them changed.
 type EditOutcome struct {
 	Applied         int
 	Changed         bool

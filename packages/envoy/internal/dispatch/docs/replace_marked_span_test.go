@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -18,11 +19,16 @@ import (
 // are the same fault at a span's start and end, in a link, italic, strikethrough and code, and
 // the bounds of the rule: a with that writes the span's mark itself, and a find that spells the
 // span's markup, over its whole text or across its edge, which leaves the mark to the with. A
-// bare URL and a bare www link are their own markup, so a find that covers one whole across its
-// edge spells it, where it was refused with that same find as the markup to spell. A find that
-// spells the span's markup over part of the text it covers (`a **b** c` over `**a b c**`) spells
-// it over that part alone, so the span keeps its mark, where the with was written without the
-// bold. A find that runs past a span's edge without spelling its markup is refused
+// link's markup is spelled with its own URL and title: a titled link's find spelled with its
+// title, and one whose title holds a quote and a backslash, which the with writes back so the
+// stored markdown reads it as the renderer writes it and the parser reads it; and a find that is
+// one link alone, spelled with its own URL, and a titled one with its URL and title, each of
+// which the with writes again. A bare URL and a bare www link are their own markup, so a find
+// that covers one whole across its edge spells it, where it was refused with that same find as
+// the markup to spell. A find that spells the span's markup over part of the text it covers (`a
+// **b** c` over `**a b c**`) spells it over that part alone, so the span keeps its mark, where
+// the with was written without the bold. A find that runs past a span's edge without spelling
+// its markup, or spells a link with another URL or title, is refused
 // (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as written,
 // whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a backtick inside
 // a bold, an italic and a code span, the review's two finds (`2*3*4` in italic, `2**3**4` in
@@ -126,6 +132,38 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 			with:     "wrote that",
 			want:     "Sami wrote that today.\n",
 			text:     "Sami wrote that today.",
+		},
+		{
+			name:     "a find that spells a titled link's markup with its own title leaves the link to the with",
+			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
+			find:     "wrote [this](https://a.example/1 \"Spec\") today",
+			with:     "wrote that today",
+			want:     "I wrote that today.\n",
+			text:     "I wrote that today.",
+		},
+		{
+			name:     "a find that spells a link's markup with its own title holding a quote and a backslash",
+			markdown: "I wrote [this](https://a.example/1 \"say \\\"hi\\\" \\\\ now\") today.\n",
+			find:     "wrote [this](https://a.example/1 \"say \\\"hi\\\" \\\\ now\") today",
+			with:     "wrote [that](https://a.example/1 \"say \\\"hi\\\" \\\\ now\") today",
+			want:     "I wrote [that](https://a.example/1 \"say \\\"hi\\\" \\\\ now\") today.\n",
+			text:     "I wrote that today.",
+		},
+		{
+			name:     "a find that is one link alone, spelled with its own URL, leaves the link to the with",
+			markdown: "I wrote [this](https://a.example/1) today.\n",
+			find:     "[this](https://a.example/1)",
+			with:     "[that](https://a.example/1)",
+			want:     "I wrote [that](https://a.example/1) today.\n",
+			text:     "I wrote that today.",
+		},
+		{
+			name:     "a find that is one link alone, spelled with its own URL and title, leaves the link to the with",
+			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
+			find:     "[this](https://a.example/1 \"Spec\")",
+			with:     "[that](https://a.example/1 \"Spec\")",
+			want:     "I wrote [that](https://a.example/1 \"Spec\") today.\n",
+			text:     "I wrote that today.",
 		},
 		{
 			name:     "a find that covers a bare URL whole across its edge leaves the link to the with",
@@ -282,16 +320,24 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // TestReplaceInsideAMarkedSpanKeepsTheSpanWhole once wrote outside the span, as `**Sami**'s loud`.
 // The next two are a find that spells one span's markup and covers a second span of that kind
 // whose markup it does not spell: the second link lost its URL, and the second bold its bold,
-// since the find was read as spelling every span of the kind once it spelled one. The last two are
+// since the find was read as spelling every span of the kind once it spelled one. The next two are
 // a find that spells a link's markup with another URL, and one that spells it with the link's URL
 // and not its title, as finds copied from an older read after another writer changed the URL or
 // gave the link a title: each was written, and the URL or the title the document held went with
-// no word. Each refusal gives the link's markup as the document holds it.
+// no word. The last two are a find that is that one link alone, spelled with another URL and with
+// another title: it lay inside the link, so it was written there under the URL and title the
+// document held, where the same spelling in a longer find was refused. Each refusal gives the
+// link's markup as the document holds it. The longer find's refusal says it covers text outside
+// the link; the find that is the link alone covers none, so its refusal says it spells the link
+// with another URL or title, and nothing of text outside it.
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 	for _, test := range []struct {
 		name, markdown, find, with, kind, span string
 		// markup is the span's markup the refusal says to spell, where the row reads it.
 		markup string
+		// says is words the refusal's message holds, and unsaid words it does not hold, where the
+		// row reads them.
+		says, unsaid string
 	}{
 		{
 			name:     "a find across a link's start",
@@ -373,6 +419,7 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			kind:     "link",
 			span:     "this",
 			markup:   "[this](https://a.example/1)",
+			says:     "text outside it",
 		},
 		{
 			name:     "a find that spells a link's markup without the title it has",
@@ -382,6 +429,28 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			kind:     "link",
 			span:     "this",
 			markup:   "[this](https://a.example/1 \"Spec\")",
+		},
+		{
+			name:     "a find that is one link alone, spelled with another URL",
+			markdown: "I wrote [this](https://a.example/1) today.\n",
+			find:     "[this](https://wrong.example/9)",
+			with:     "that",
+			kind:     "link",
+			span:     "this",
+			markup:   "[this](https://a.example/1)",
+			says:     "another URL or title",
+			unsaid:   "text outside it",
+		},
+		{
+			name:     "a find that is one link alone, spelled with another title",
+			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
+			find:     "[this](https://a.example/1 \"Draft\")",
+			with:     "that",
+			kind:     "link",
+			span:     "this",
+			markup:   "[this](https://a.example/1 \"Spec\")",
+			says:     "another URL or title",
+			unsaid:   "text outside it",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -399,6 +468,9 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			if !errors.As(err, &crossed) || crossed.Kind() != test.kind || crossed.Span.Text != test.span || (test.markup != "" && crossed.Span.Markdown != test.markup) {
 				t.Fatalf("replace %q with %q in %q = %v, want it refused for crossing the %s %q; the document reads %q",
 					test.find, test.with, test.markdown, err, test.kind, test.span, read)
+			}
+			if message := err.Error(); (test.says != "" && !strings.Contains(message, test.says)) || (test.unsaid != "" && strings.Contains(message, test.unsaid)) {
+				t.Fatalf("refusal = %q, want it to say %q and not %q", message, test.says, test.unsaid)
 			}
 			// A refused replace stores no version: the latest is the one before the seed, or the
 			// seed's own if a settlement has stored it since.

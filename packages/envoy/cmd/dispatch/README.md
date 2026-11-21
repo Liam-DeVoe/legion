@@ -5173,7 +5173,8 @@ Each item below names an operation and its required fields, then its behavior.
   Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's markup over all of the span's text it covers (`**Sami bold**`) lets `with` decide that span's formatting; one that spells it over part of that text (`a **b** c` over `**a b c**`) keeps the span.
   A `find` matched as the text is written spells no markup: `2*3*4` inside `*a 2\*3\*4 b*` is the span's own text, so the replacement stays in the italic.
   A `find` that crosses a span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written: narrow it to the span's inside, or spell the whole span's markup in it (`wrote [this](https://example.com/Sami)`), which then replaces the markup too.
-  A link is spelled only with the URL it has, so `wrote [this](https://wrong.example/9)` over that link is refused naming it, and a bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it spells it (`docs at https://example.com/x`).
+  A link is spelled only with the URL and title it has, so `wrote [this](https://wrong.example/9)` over that link is refused naming it, and so is `[this](https://wrong.example/9)`, a `find` that is that link alone, which was written inside the link under the URL the document held.
+  A bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it spells it (`docs at https://example.com/x`).
   No `find` spells strikethrough's markup: replace the text outside a struck span in an operation of its own.
   A `with` that parses to blocks keeps none of the spans the match lies inside.
   Each span is weighed alone: `wrote [this](https://a.example/1) and that`, where `that` is a second link, spells the first link and crosses the second's edge, so it is refused naming `that`.
@@ -5313,6 +5314,7 @@ Each item below names a status and code, then its meaning.
 
   A `replace`'s `find` covers text inside a bold, italic, strikethrough, link or code span and text outside it, which would write the replacement outside the span, dropping a link with its URL or cutting the span to end on a space; nothing is written.
   The message names the span's text and kind and the markup that spells it: narrow `find` to the span's inside, or write the whole span with its markup in `find`, which then replaces the markup too (a find never spells strikethrough, so a struck span's edge takes one replace inside it and one outside).
+  A `find` that spells a link with another URL or title than the link has is refused the same way, and one that is that link alone (`[this](https://wrong.example/9)`) covers no text outside it, so its message says instead that it spells the link with another URL or title; each message names the link's own markup, its URL and title, to write in `find`.
   Each span the `find` covers is weighed alone: one that spells a span's markup crosses the edge of every other span it covers whose markup it does not spell, as `wrote [this](https://a.example/1) and that` does where `that` is a second link.
 
 - `400 REPLACE_FIELDS`

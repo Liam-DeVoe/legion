@@ -1460,8 +1460,8 @@ type editArtifactResponse struct {
 	Written string `json:"written"`
 	// UnguardedBlocks is, for an edit under a block guard, each block the edit took that the
 	// guard did not name, with the token the edit read it at (docs.EditOutcome.UnguardedBlocks):
-	// the guard did not check them, and naming them in it refuses the edit when one changed. It
-	// is absent where there is none.
+	// the guard did not name them, and a named block that holds one may still cover it; naming
+	// them in it refuses the edit when one changed. It is absent where there is none.
 	UnguardedBlocks []model.EditBlockPrecondition `json:"unguarded_blocks,omitempty"`
 }
 

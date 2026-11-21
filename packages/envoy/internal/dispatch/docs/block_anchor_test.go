@@ -142,8 +142,9 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 		op      func(ids map[string]string) model.EditOp
 		// covered, unguarded, missing and kept name blocks as blockIDsByName does. unguarded is
 		// the block the coverage warns of, "" for none; missing is the block it refuses the guard
-		// for leaving out, "" where it accepts the guard; kept is a block the batch's document,
-		// written, still holds under its id, "" where the row reads none.
+		// for leaving out, "" where it accepts the guard; kept is a block the batch's document
+		// still holds under its id, and written the markdown that document renders, each "" where
+		// the row reads none.
 		covered                           []string
 		unguarded, missing, kept, written string
 	}{
@@ -310,18 +311,22 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 			if !slices.Equal(got, want) {
 				t.Fatalf("coverage of %v warns of %v, want %v (%s)", test.covered, got, want, test.unguarded)
 			}
-			if test.kept == "" {
+			if test.kept == "" && test.written == "" {
 				return
 			}
 			batch, err := applyOperations(tree, ops)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := blockIDsByName(batch.tree)[test.kept]; got != ids[test.kept] {
-				t.Fatalf("the batch's document holds %q under id %q, want it kept under %q", test.kept, got, ids[test.kept])
+			if test.kept != "" {
+				if got := blockIDsByName(batch.tree)[test.kept]; got != ids[test.kept] {
+					t.Fatalf("the batch's document holds %q under id %q, want it kept under %q", test.kept, got, ids[test.kept])
+				}
 			}
-			if got, err := pmdoc.Render(batch.tree); err != nil || got != test.written {
-				t.Fatalf("the batch's document = %q (%v), want %q", got, err, test.written)
+			if test.written != "" {
+				if got, err := pmdoc.Render(batch.tree); err != nil || got != test.written {
+					t.Fatalf("the batch's document = %q (%v), want %q", got, err, test.written)
+				}
 			}
 		})
 	}

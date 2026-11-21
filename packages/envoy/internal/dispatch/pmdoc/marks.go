@@ -197,21 +197,29 @@ type Span struct {
 // outside the span, so a link it covered goes with its URL, and a span it cut to end or start on a
 // space is written with character references to keep its delimiters (`**Sami said&#32;**loud`). A
 // range inside one span crosses no edge of it, and neither does one over a span's whole text
-// alone.
+// alone, unless its find spells that span, a link, with another URL or title.
 //
 // spelled is how the find that matched r spells it (QuoteFinder.FindSpelling). A find that spells
 // a span's markup over the whole span (`wrote [this](https://example.com/Sami)`) crosses no edge
 // of it: it replaces that markup too, which is then the text written over it to keep or drop
 // (WithoutQuotedMarkup). A link is spelled only with its own URL and title, so a find that writes
-// its text under another URL or another title crosses its edge. A link written as its own text - a
-// bare URL, or a www link the writer leaves bare - has no markup but that text, so a find that
-// covers the whole of it spells it, however the finder read the find: such a link was refused with
-// the find itself as the markup to spell. The test is the span's own: a find that spells one
-// span's markup and covers a second span of the type whose markup it does not spell (`wrote
-// [this](…) and that`, where `that` is a second link) crosses the second span's edge. One that
-// spells only the part of a span it covers (`**bold** now` in `**Sami said bold** now`) still
-// crosses that span's edge, and a find matched as written spells no other markup at all.
-func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
+// its text under another URL or another title crosses its edge, and so does one that is that link
+// alone (`[this](https://wrong.example/9)`), which was written inside the link under the URL and
+// title the document held, where the same spelling in a longer find was refused. A link written
+// as its own text - a bare URL, or a www link the writer leaves bare - has no markup but that
+// text, so a find that covers the whole of it spells it, however the finder read the find: such a
+// link was refused with the find itself as the markup to spell. The test is the span's own: a find
+// that spells one span's markup and covers a second span of the type whose markup it does not
+// spell (`wrote [this](…) and that`, where `that` is a second link) crosses the second span's
+// edge. One that spells only the part of a span it covers (`**bold** now` in `**Sami said bold**
+// now`) still crosses that span's edge, and a find matched as written spells no other markup at
+// all.
+//
+// The second answer, alone, says r is the crossed span's whole text alone, a link its find spells
+// with another URL or title: r covers no text outside the link, so what refuses it says that, not
+// that it covers text outside the span. The third says r crosses a span's edge at all; where it
+// does not, the span and alone are zero.
+func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool, bool) {
 	type open struct {
 		mark Mark
 		// first is the index of the span's first child, and from its position.
@@ -235,10 +243,17 @@ func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
 				continue
 			}
 			// The span ends at pos.
-			if span.from >= r.To || pos <= r.From || (span.from <= r.From && r.To <= pos) {
+			if span.from >= r.To || pos <= r.From {
 				continue
 			}
 			covers := r.From <= span.from && pos <= r.To
+			inside := span.from <= r.From && r.To <= pos
+			// r inside the span crosses no edge of it, and r over its whole text alone none either,
+			// unless the find spells that link with another URL or title.
+			alone := inside && covers
+			if inside && !(alone && spelled.spellsAnotherLink(span.mark, span.from, pos)) {
+				continue
+			}
 			if covers && spelled.spells(span.mark, span.from, pos) {
 				continue
 			}
@@ -246,7 +261,7 @@ func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
 			if covers && crossed.Markdown != "" && crossed.Markdown == crossed.Text {
 				continue
 			}
-			return crossed, true
+			return crossed, alone, true
 		}
 		opened = kept
 		if child == nil || (pos >= r.To && len(opened) == 0) {
@@ -262,7 +277,7 @@ func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
 		}
 		pos += nodeSize(child)
 	}
-	return Span{}, false
+	return Span{}, false, false
 }
 
 // spanOf is the span mark covers over runs, the textblock's children it covers, with its text and

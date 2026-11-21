@@ -4424,14 +4424,14 @@ func TestABatchChangesNoBlockItsOperationsDoNotName(t *testing.T) {
 	}
 }
 
-// applyAlone applies op to tree as a write of its own, on a budget of its own, through the calls
-// applyBatch makes for each operation: its text in line feeds alone (withLineFeeds), and a delete
-// written by deleteOperation, any other operation by applyOperation.
+// applyAlone applies op to tree as a write of its own: a batch of that one operation
+// (applyOperations), so each row runs every step applyBatch takes for an operation, and it answers
+// the tree the batch leaves. A refusal is the batch's, stamped as operation 0's (stampOperation),
+// which errors.As and errors.Is read as they read the operation's own error.
 func applyAlone(tree *pmdoc.Node, op model.EditOp) (*pmdoc.Node, error) {
-	op = withLineFeeds(op)
-	if op.Op == "delete" {
-		_, next, err := deleteOperation(newBatchTree(tree), op)
-		return next, err
+	batch, err := applyOperations(tree, []model.EditOp{op})
+	if err != nil {
+		return nil, err
 	}
-	return applyOperation(newBatchTree(tree), op, pmdoc.NewWriteBudget())
+	return batch.tree, nil
 }

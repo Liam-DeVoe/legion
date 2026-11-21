@@ -259,7 +259,8 @@ func oneCellAdvice(field string, cells []string) string {
 func (e *ErrQuoteSpansBlocks) Unwrap() error { return pmdoc.ErrTargetSpansBlocks }
 
 // ErrFindCrossesSpan names a replace whose find crosses the edge of a marked span - bold, italic,
-// strikethrough, a link, code: it covers text inside the span and text outside it
+// strikethrough, a link, code: it covers text inside the span and text outside it, or spells a
+// link with another URL or title, even a find that is that link alone
 // (pmdoc.TextblockAt.CrossedSpan). Text written over such a find lands outside the span, so a link
 // it covered went with its URL and no warning, and a span it cut to end on a space was written
 // with character references. The fix is to narrow the find to the span's inside, or to spell the
@@ -269,6 +270,9 @@ type ErrFindCrossesSpan struct {
 	opIndex
 	Find string
 	Span pmdoc.Span
+	// Alone says the find is the link's whole text alone, spelled with another URL or title than
+	// the link has: it covers no text outside the link, so the refusal says what it spells wrong.
+	Alone bool
 }
 
 // Kind is what the span the find crosses is, as the refusal names it: "link", "bold", "italic",
@@ -288,6 +292,16 @@ func (e *ErrFindCrossesSpan) Kind() string {
 }
 
 func (e *ErrFindCrossesSpan) Error() string {
+	spelled := ""
+	if e.Span.Markdown != "" {
+		spelled = fmt.Sprintf(" (%q)", e.Span.Markdown)
+	}
+	if e.Alone {
+		return fmt.Sprintf(
+			"%sfind %q spells the link %q with another URL or title than the one it has; write the link as it is in find%s, which then replaces the markup too, so with decides that formatting",
+			e.prefix(), e.Find, e.Span.Text, spelled,
+		)
+	}
 	noun := e.Kind() + " span"
 	if e.Kind() == "link" {
 		noun = "link"
@@ -298,10 +312,6 @@ func (e *ErrFindCrossesSpan) Error() string {
 	)
 	if e.Span.Mark.Type == "strike_through" {
 		return refusal + ", and replace the text outside it in an operation of its own, since a find cannot spell strikethrough's markup"
-	}
-	spelled := ""
-	if e.Span.Markdown != "" {
-		spelled = fmt.Sprintf(" (%q)", e.Span.Markdown)
 	}
 	return fmt.Sprintf("%s, or write the whole %s with its markup in find%s, which then replaces the markup too, so with decides that formatting", refusal, noun, spelled)
 }
@@ -2766,8 +2776,8 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	// written over it would land outside the span, so a link it covered would go with its URL,
 	// and a span it cut to end on a space would be written with character references
 	// (`**Sami said&#32;**loud`). A find that spells the whole span's markup replaces it instead.
-	if span, crossed := at.CrossedSpan(r, spelled); crossed {
-		return nil, &ErrFindCrossesSpan{Find: op.Find, Span: span}
+	if span, alone, crossed := at.CrossedSpan(r, spelled); crossed {
+		return nil, &ErrFindCrossesSpan{Find: op.Find, Span: span, Alone: alone}
 	}
 	code := at.Node.Type == "code_block"
 	var with *pmdoc.Node
