@@ -647,10 +647,11 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // rules (resolveCoreRoleHolder, beforeForward) with the dedupe and attempt caches as the record of
 // what the holder already took, reports a refusal with the lane's own lines, and returns the
 // forward to make, stamped with when its resolution started (roleForward.resolvedAt), and whether
-// to make one. The lane names its role in either form (roleOfLaneTopic). A Legion role named under
-// a project it does not work for reaches no holder (roleLaneProjectError): its claim is keyed on
-// the bare name, so the lane of another project naming it would hand that project's message to
-// the role's own project's holder.
+// to make one. The lane names its role in either form; the claim it resolves is the one that name
+// is keyed by (roleOfLaneTopic, store.RoleClaimKeyOf): the bare name, or <project>.<role> for a
+// free-form role under a project. A Legion role named under a project it does not work for
+// reaches no holder (roleLaneProjectError): its claim is keyed on the bare name, so the lane of
+// another project naming it would hand that project's message to the role's own project's holder.
 func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
 	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
 	if err := roleLaneProjectError(lane); err != nil {
