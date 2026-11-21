@@ -369,7 +369,7 @@ const legionClaimView = z.object({
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
   /** `api.ClaimView.Unreachable`: when the daemon found this claim's session out of Envoy's
-   * reach, and absent while the claim is reachable (contract 203). */
+   * reach, and absent while the claim is reachable (contract 208). */
   unreachable: legionUnreachableView.optional(),
 });
 
@@ -1063,7 +1063,7 @@ const legionControllerLocator = z.object({
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative().optional(),
   /** `api.ControllerLocator.Unreachable`: when the daemon found the controller's session out of
-   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 203).
+   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 208).
    * Nobody else can relaunch the controller, so the daemon relaunches it on its same session
    * itself, at most once in 6 hours; a controller this key still names after that is a person's
    * to recover. */
@@ -1835,7 +1835,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each fact-route golden is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
@@ -2117,9 +2117,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
- * its tree for the tree root's architect, and only an issue under its own issue for a child's own
- * architect (`ISSUE_NOT_OWNED` otherwise). */
+/** `api.ChildRequest`, an architect's rerun_child of one issue it owns: any child of its tree for
+ * the tree root's architect, and only an issue under its own issue for a child's own architect
+ * (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2151,7 +2151,7 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
-  // The `read_state` summary's mark of a claim Envoy cannot reach (contract 203): when the daemon
+  // The `read_state` summary's mark of a claim Envoy cannot reach (contract 208): when the daemon
   // found it so, and the token `relaunch` takes, which is its locator's. The summary reads them
   // off a claim view whichever path reached it, so each is named under every parent of its name.
   "architect.unreachable.since",
@@ -2274,7 +2274,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
-    // The summary's line on a controller the daemon found out of Envoy's reach (contract 203).
+    // The summary's line on a controller the daemon found out of Envoy's reach (contract 208).
     "controllerLocator.unreachable",
     "controllerLocator.unreachable.since",
   ],

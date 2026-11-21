@@ -414,7 +414,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections`, 942, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections`, 966, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -2583,6 +2583,39 @@ A rating row left in place is not harmless in the same way: the release that rec
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release that lets the owning architect's status stand
+
+This release takes the owning architect's `done`, `backlog`, `icebox` or `triage` on a child as it takes a person's move.
+A set-back is the status row that writes the daemon's status back over a status that the daemon does not take (`record.ReassertStatusWrite`).
+The daemon queues a set-back in these cases.
+A session with a claim in the issue's tree writes a status, other than the owning architect's move of a child out of the workflow.
+A session with no claim in the tree writes a status on a root that runs or that waits on a person.
+The daemon's own hand-over `todo` on a child of a closed tree arrives stale, for example after the root of that tree came back.
+In this release each set-back carries `observedSeq`, the Dispatch sequence of the write it undoes.
+Before each write, the daemon reads the issue's events after that sequence.
+When a later event changed the status and the daemon did not write that event, the row ends and writes nothing.
+So a set-back never writes over a move that came after the write it undoes.
+Its migration `20261120012547_set_back_observed_seq` changes no table and runs no statement.
+
+**The key `observedSeq` must go before the earlier image is pinned.**
+The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+A set-back that carries `observedSeq` fails that decode at every attempt, and the earlier release retries it on its backoff until the roll forward.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The Dispatch sequence that each set-back of one project carries.
+update outbox set payload = payload - 'observedSeq' where kind = 'dispatch_status' and payload ? 'observedSeq' and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261120012547_set_back_observed_seq.up.sql` carries this same block.
+The statement removes the key and keeps every other field of the row, its attempts and its time to run.
+The earlier release then decodes and runs each set-back of the project.
+It writes the daemon's status as that release writes it, with no read of the events after the write it undoes.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and the statement names the project: a daemon left on this release keeps the check on its own set-backs.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -3259,6 +3292,7 @@ The migrations recorded above this one are these.
 20261118133133_fleet_alert_lines adds the table `fleet_alert_lines`, and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that reports claims out of reach](#rolling-back-the-release-that-reports-claims-out-of-reach)).
 20261118134019_claim_activity_sent_at adds `claims.activity_sent_at` and `claims.activity_sent_generation`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the one statement of the same section.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
+20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
