@@ -31,8 +31,11 @@
 //
 // A daemon's ready consumer reads the one wake lane every daemon shares, where the listener also
 // puts every project's role and agent wake reports. So a daemon is held to its projects only once
-// it opens its consumers per project and every listener publishes each project's role and agent
-// wakes on that project's own lane.
+// it opens its consumers per project, every listener publishes each project's role and agent
+// wakes on that project's own lane, and each legion-go-<project>-* durable filters on its own
+// kind's lane only (dispatch and wake on the project's own lane, ready on the shared wake lane's
+// listener_ready, github on notifications.github.>), since the held grant reads a wider durable
+// whole (projects.go, TestWithinProjectsReadsAWideConsumerWhole).
 package natsgrant
 
 import (
