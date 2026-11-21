@@ -176,8 +176,8 @@ type SendResponse struct {
 // (PublishResponse). The message reaches the session that holds the role then, live, through the
 // lane's walk. It carries no recipient_state and no state: the message was not stored for the
 // target, so nothing about the target was read. The envelope is the copy the lane holds, as
-// PublishResponse's kept answer gives it: whole for its own sender, and its ids and times alone
-// with Duplicate for a copy another sender kept under the same key.
+// PublishResponse's kept answer gives it: whole for its own sender, and its ids, times and
+// expects_reply alone with Duplicate for a copy another sender kept under the same key.
 type KeptSendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply: the kept copy's, written in the dialect the

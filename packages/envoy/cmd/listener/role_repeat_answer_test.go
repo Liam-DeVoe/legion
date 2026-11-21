@@ -188,3 +188,44 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		requireKept(t, "the repeated publish to the unclaimed role", repeat, kept, true)
 	})
 }
+
+// A session publishes under K to a role another session holds, and the stream stores the forward
+// on that holder's agent subject. The sender then takes the role and repeats under K: the repeat
+// is an echo (the sender holds the role), which forwards nothing, and its 200 is the forward the
+// stream holds, read back at the sequence the route recorded for it, with duplicate and the
+// holder the sender is now: never the new envelope the route built for the repeat, whose event_id
+// no stored message carries. The control is the holder's first publish to its own role, which no
+// forward stored: it answers its own envelope with no duplicate, as an echo always has.
+func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testing.T) {
+	rig := newSenderLimitRig(t)
+
+	t.Run("control: a holder's first publish to its own role answers its own envelope with no duplicate", func(t *testing.T) {
+		role := "role-echo-first-" + id.New()
+		holder := "ses_role_echo_first_" + id.New()
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
+		echo := held(t, rig.publishFrom(t, holder, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": uuid.NewString()}))
+		echo.requireStatus(t, "the holder's publish to its own role", http.StatusOK)
+		if echo.Duplicate || echo.envelope.SourceSession != holder || echo.Holder != holder || echo.line["event_id"] != echo.envelope.EventID {
+			t.Fatalf("the holder's publish to its own role answered %s, want its own envelope, holder %s, no duplicate", echo.raw, holder)
+		}
+	})
+
+	t.Run("case: the sender's repeat after it took the role answers the stored forward with duplicate", func(t *testing.T) {
+		role := "role-echo-repeat-" + id.New()
+		bob := "ses_role_echo_bob_" + id.New()
+		alice := "ses_role_echo_alice_" + id.New()
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, bob, role, nil)
+		key := uuid.NewString()
+		first := held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": key}))
+		stored := heldForward(t, rig.harness.client, bob)
+		first.requireHeld(t, "Alice's publish to Bob's role", stored, false)
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, alice, role, nil)
+		repeat := held(t, rig.publishFrom(t, alice, contracts.RoleTopicPrefix+role,
+			map[string]any{"idempotency_key": key, "message": "the repeat's own body"}))
+		repeat.requireHeld(t, "Alice's repeat after she took the role", stored, true)
+		if repeat.Holder != alice {
+			t.Fatalf("Alice's repeat after she took the role named holder %q, want %s; body %s", repeat.Holder, alice, repeat.raw)
+		}
+		heldForward(t, rig.harness.client, bob)
+	})
+}

@@ -67,8 +67,9 @@ func senderOf(r *http.Request, item contracts.Envelope) requestSender {
 // without a token, as a caller on the shared bearer always could. Any other copy is another
 // sender's message under a key this caller repeated, which may be known or guessed (a Dispatch
 // mention key, a role key taken verbatim), so the answer says only that the key is taken: the
-// copy's event_id and its times, with the topic and dedupe key it was stored under, and none of
-// what the other sender wrote or who it is (payload, payload_summary, payload_ref, source,
+// copy's event_id and its times, with the topic and dedupe key it was stored under and the reply it
+// asks for (expects_reply, which every answer of a stored copy names, expectsReplyAnswer), and none
+// of what the other sender wrote or who it is (payload, payload_summary, payload_ref, source,
 // source_event_id, source_session, sender, trace_id and the rest).
 //
 // A caller that names no session and the source dispatch reads Dispatch's own copies whole: the
@@ -80,12 +81,13 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 		return held
 	}
 	return contracts.Envelope{
-		EventID:   held.EventID,
-		Topic:     held.Topic,
-		DedupeKey: held.DedupeKey,
-		IssuedAt:  held.IssuedAt,
-		ExpiresAt: held.ExpiresAt,
-		KeptAt:    held.KeptAt,
+		EventID:      held.EventID,
+		Topic:        held.Topic,
+		DedupeKey:    held.DedupeKey,
+		IssuedAt:     held.IssuedAt,
+		ExpiresAt:    held.ExpiresAt,
+		KeptAt:       held.KeptAt,
+		ExpectsReply: held.ExpectsReply,
 	}
 }
 
@@ -99,8 +101,8 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
 // (bus.StoredAck), and *item becomes that copy as storedCopy reads it, whole for its own sender
-// and its ids and times alone for anyone else. duplicate is whether that copy is another
-// request's, which is when its event_id is not *item's: a caller's repeat under the same
+// and its ids, times and expects_reply alone for anyone else. duplicate is whether that copy is
+// another request's, which is when its event_id is not *item's: a caller's repeat under the same
 // idempotency_key built a new envelope, with a new event_id, that no stored message carries. A
 // verdict that answers the bus's own resend after a closed connection (bus.StoredAck.Resent) can
 // name the copy this request's first send stored, which carries its own event_id: that copy is
@@ -108,7 +110,10 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 //
 // A copy that cannot be read, and a refusal of a publish whose message id is still in process
 // under an earlier one (bus.ErrDuplicateInProcess), are an error wrapping errStoredCopyUnread,
-// with *item untouched, and the charge stays marked by the publish's own answer.
+// with *item untouched, and the charge stays marked by the publish's own answer. A copy that
+// cannot be read after the bus sent the publish again (bus.StoredAck.Resent) may be the one this
+// request's first send stored, so that error is bus.ErrUnacknowledged too (resentUnread), and its
+// 503 says maybe_stored as every answer that may have stored the message does (mayHaveStored).
 func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, charge *senderCharge, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
 	ack, err := publish(ctx, *item)
 	charge.published(ack, err)
@@ -120,12 +125,22 @@ func publishHeld(ctx context.Context, reader storedReader, publish storedPublish
 	}
 	held, err := storedCopy(ctx, reader, item.Topic, *item, ack.Sequence)
 	if err != nil {
+		if ack.Resent {
+			return false, resentUnread{err}
+		}
 		return false, err
 	}
 	duplicate = held.EventID != item.EventID
 	*item = sender.answer(held)
 	return duplicate, nil
 }
+
+// resentUnread is a stored copy that could not be read after a resend's duplicate verdict: the
+// read's own error, whose text it keeps, and bus.ErrUnacknowledged, since the first send of the
+// publish went unanswered and may have stored the copy the verdict names (publishHeld).
+type resentUnread struct{ error }
+
+func (e resentUnread) Unwrap() []error { return []error{e.error, bus.ErrUnacknowledged} }
 
 // storedCopy reads, through reader, the copy a duplicate verdict on item's publish to subject
 // named at seq: the message the stream holds at seq on subject, item's own topic for a send or a

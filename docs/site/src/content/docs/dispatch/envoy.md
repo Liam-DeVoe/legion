@@ -663,9 +663,9 @@ and the body `envoy: the stream already knows this message's id, and no stored c
 read: …`, and the same request again gets the copy once it can be read. The stored copy is
 answered whole to its own request and to its own sender, the same `source` and `source_session`
 and, where the copy names a session, the session a secrets-broker token proves; anyone else
-repeating the key learns only that it is taken: the copy's `event_id`, its times, its topic and
-its dedupe key, and nothing the other sender wrote. Envoy's clients report that answer as not
-delivered, naming the copy's `event_id`.
+repeating the key learns only that it is taken: the copy's `event_id`, its times, its topic, its
+dedupe key and the reply it asks for, and nothing the other sender wrote. Envoy's clients report
+that answer as not delivered, naming the copy's `event_id`.
 
 ### The sender limit
 

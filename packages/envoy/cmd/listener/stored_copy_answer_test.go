@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,9 @@ type ownCopyAnswer struct {
 // the 200 names it with no duplicate; the publish costs one and the send is counted as stored for
 // an unresponsive session. Whether the first send or the resend stored that copy is the server's
 // order, so these rows show the routes end to end, and the first row is the one that fails, every
-// run, for a rule that marks every duplicate verdict or forgives a resend's.
+// run, for a rule that marks every duplicate verdict or forgives a resend's. Each row compares the
+// whole answered envelope with the copy the stream holds, so an answer that names the copy's
+// event_id over another body fails too.
 func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
@@ -102,9 +105,9 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		own := item
 		charge := &senderCharge{sender: "ses_own_copy", giveBack: func() {}}
 		duplicate, err := publishHeld(ctx, client, storedThen(own), charge, requestSender{source: item.Source, session: item.SourceSession}, &item)
-		if err != nil || duplicate || item.EventID != own.EventID {
-			t.Fatalf("a resend's verdict on the request's own copy answered duplicate %t, event %s (%v); want no duplicate and its own event %s",
-				duplicate, item.EventID, err, own.EventID)
+		if err != nil || duplicate || !reflect.DeepEqual(item, own) {
+			t.Fatalf("a resend's verdict on the request's own copy answered duplicate %t, %+v (%v); want no duplicate and its own copy whole, %+v",
+				duplicate, item, err, own)
 		}
 		if got := charge.counted(); got != "ses_own_copy" {
 			t.Fatalf("a resend's own copy cost the sender %q, want ses_own_copy: the request stored it", got)
@@ -117,9 +120,9 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		other := item
 		other.EventID = id.New()
 		duplicate, err := publishHeld(ctx, client, storedThen(other), nil, requestSender{source: item.Source, session: item.SourceSession}, &item)
-		if err != nil || !duplicate || item.EventID != other.EventID {
-			t.Fatalf("a verdict on another request's copy answered duplicate %t, event %s (%v); want duplicate and that copy's event %s",
-				duplicate, item.EventID, err, other.EventID)
+		if err != nil || !duplicate || !reflect.DeepEqual(item, other) {
+			t.Fatalf("a verdict on another request's copy answered duplicate %t, %+v (%v); want duplicate and that copy whole, %+v",
+				duplicate, item, err, other)
 		}
 	})
 
@@ -138,9 +141,9 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 			t.Fatalf("the resent publish answered %d %s (%v), want 200", recorder.Code, recorder.Body.String(), err)
 		}
 		stored := heldCopy(t, rig.harness.client, subject)
-		if answer.Duplicate || answer.EventID != stored.EventID {
-			t.Fatalf("the resent publish answered duplicate %t and event %s; want no duplicate and the one stored copy's event %s",
-				answer.Duplicate, answer.EventID, stored.EventID)
+		if answer.Duplicate || !reflect.DeepEqual(answer.Envelope, stored) {
+			t.Fatalf("the resent publish answered duplicate %t and %+v; want no duplicate and the one stored copy whole, %+v",
+				answer.Duplicate, answer.Envelope, stored)
 		}
 		// The copy is this request's own, which the stream stored for it: it costs one.
 		lines := linesIn(rig.harness.logs.String()[logged:], "listener publish", nil)
@@ -166,9 +169,9 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 			t.Fatalf("the resent send answered %d %s (%v), want 200", recorder.Code, recorder.Body.String(), err)
 		}
 		stored := heldCopy(t, d.client, contracts.LegacyAgentSubject(target))
-		if answer.Duplicate || answer.EventID != stored.EventID {
-			t.Fatalf("the resent send answered duplicate %t and event %s; want no duplicate and the one stored copy's event %s",
-				answer.Duplicate, answer.EventID, stored.EventID)
+		if answer.Duplicate || !reflect.DeepEqual(answer.Envelope, stored) {
+			t.Fatalf("the resent send answered duplicate %t and %+v; want no duplicate and the one stored copy whole, %+v",
+				answer.Duplicate, answer.Envelope, stored)
 		}
 		scrape := httptest.NewRecorder()
 		met.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))

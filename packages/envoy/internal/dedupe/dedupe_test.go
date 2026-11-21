@@ -97,6 +97,39 @@ func TestCache_ExpiryAfterTTL(t *testing.T) {
 	}
 }
 
+// LatestStored names the newest delivery of a key recorded with a stored copy, whichever session
+// it went to: not a delivery recorded with no copy, not after the TTL, and not once that delivery
+// is cleared, while clearing another session's delivery of the key keeps it.
+func TestCache_LatestStoredNamesTheNewestStoredDeliveryOfAKey(t *testing.T) {
+	clock := newTestClock()
+	c := NewWithClock(10*time.Minute, clock.Now)
+	defer c.Stop()
+
+	c.Record("key-1", "ses-A")
+	if session, _, ok := c.LatestStored("key-1"); ok {
+		t.Fatalf("a delivery recorded with no copy is the latest stored one of ses %q", session)
+	}
+	c.RecordStored("key-1", "ses-B", 7)
+	clock.Advance(time.Minute)
+	c.RecordStored("key-1", "ses-C", 9)
+	if session, seq, ok := c.LatestStored("key-1"); !ok || session != "ses-C" || seq != 9 {
+		t.Fatalf("LatestStored = %q, %d, %t; want ses-C at 9", session, seq, ok)
+	}
+	c.Clear("key-1", "ses-B")
+	if session, seq, ok := c.LatestStored("key-1"); !ok || session != "ses-C" || seq != 9 {
+		t.Fatalf("after clearing ses-B, LatestStored = %q, %d, %t; want ses-C at 9", session, seq, ok)
+	}
+	c.Clear("key-1", "ses-C")
+	if session, _, ok := c.LatestStored("key-1"); ok {
+		t.Fatalf("after clearing ses-C, LatestStored still names %q", session)
+	}
+	c.RecordStored("key-2", "ses-A", 3)
+	clock.Advance(11 * time.Minute)
+	if session, _, ok := c.LatestStored("key-2"); ok {
+		t.Fatalf("LatestStored names %q past the TTL", session)
+	}
+}
+
 func TestCache_NotSeenAtExactTTLBoundary(t *testing.T) {
 	clock := newTestClock()
 	ttl := 10 * time.Minute

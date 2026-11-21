@@ -82,16 +82,16 @@ func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
 		}
 	})
 
-	t.Run("case: an agent's copy kept under the send's key is answered with its ids and times alone, with duplicate", func(t *testing.T) {
+	t.Run("case: an agent's copy kept under the send's key is answered with its ids, times and expects_reply alone, with duplicate", func(t *testing.T) {
 		role, key := "marked-send-other-"+id.New(), uuid.NewString()
 		words := "alice's own words " + id.New()
 		planted := held(t, serveLimited(t, rig.mux, rig.harness.logs.String, postJSON("/v1/messages/publish", messageJSON(t, map[string]any{
-			"topic": contracts.RoleTopicPrefix + role, "source_session": "ses_marked_send_alice", "message": words,
+			"topic": contracts.RoleTopicPrefix + role, "source_session": "ses_marked_send_alice", "message": words, "expects_reply": "optional",
 			"dedupe_key": contracts.AgentSendDedupeKey(target, key),
 		}, nil))))
 		planted.requireStatus(t, "the agent's publish to the role nobody claims", http.StatusAccepted)
 		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
-		answer := send(t, role, key, "dispatch's words", "optional")
+		answer := send(t, role, key, "dispatch's words", "required")
 		answer.requireStatus(t, "the marked send under the agent's key", http.StatusAccepted)
 		got := answer.envelope
 		if !answer.Duplicate || got.EventID != kept.EventID || got.IssuedAt != kept.IssuedAt ||
@@ -101,6 +101,9 @@ func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
 		if got.Payload != "" || got.PayloadSummary != "" || got.Source != "" || got.SourceSession != "" ||
 			got.Sender != nil || strings.Contains(answer.raw, words) {
 			t.Fatalf("the marked send under the agent's key answered %s, which carries what the agent wrote or who it is", answer.raw)
+		}
+		if got := expectsReply(t, answer); got != "optional" {
+			t.Fatalf("the marked send under the agent's key answered expects_reply %q, want the kept copy's %q", got, "optional")
 		}
 		if answer.line["event_id"] != kept.EventID || answer.line["source"] != "dispatch" {
 			t.Fatalf("the marked send under the agent's key wrote the line %v, want the copy's event_id %s and Dispatch as the asker", answer.line, kept.EventID)
