@@ -21,13 +21,15 @@ body: |-
   prints a whole body whose one URL sits beside a JSON quote, as GitHub's documentation URL does,
   as not readable: the rate-limit classifier, `ghbranch`, the cipher and Dispatch clients, the
   listener calls and `legion controller start` each read the answer through `Answer.Decode` or
-  `oauth2call.Holds`, and Dispatch's `Error` holds its sentence as it came (`Said`). A role
-  lookup's holder and a role publish's refusal words (its holder, event id and the listener's
-  error) are held as they came (`oauth2call.RemoteText`): the supervisor's forget compares the
-  holder with the claim's session as it came and prints the holder's state as one of the
-  listener's words or as the rule reads it, and the outbox's re-hold compares a 504's holder with
-  the architect's session as it came, so a notice that names that session no longer spends its
-  copies at once.
+  `oauth2call.Holds`, Dispatch's `Error` holds its code and its sentence as they came (`Code`,
+  `Said`) and the broker's refusal its code, so a write that quotes a code - a message naming
+  `ISSUE_NOT_FOUND`, a pod token holding a run of `POD_TOKEN_EXPIRED` - leaves the refusal the one
+  its sender made. A role lookup's holder and a role publish's refusal words (its holder, event
+  id and the listener's error) are held as they came (`oauth2call.RemoteText`): the supervisor's
+  forget compares the holder with the claim's session as it came and prints the holder's state as
+  one of the listener's words or as the rule reads it, and the outbox's re-hold compares a 504's
+  holder with the architect's session as it came, so a notice that names that session no longer
+  spends its copies at once.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368
