@@ -144,11 +144,14 @@ func projectHeld(projects []string, project string) bool {
 	return projectscope.BrokerTokenAdmits(projects, project, true)
 }
 
-// sessionOfProjects reports whether a session whose entry is entry is one of projects': the token
-// that registered it (session.SessionEntry.Projects) lists one of them. An entry no token's
-// list was recorded on, one an earlier build wrote among them, is no project's.
-func sessionOfProjects(entry session.SessionEntry, projects []string) bool {
-	return slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
+// sessionOfProjects reports whether a session whose entry is entry, in state, is one of projects':
+// the token that registered it (session.SessionEntry.Projects) lists one of them. An entry no
+// token's list was recorded on, one an earlier build wrote among them, is no project's, and so is
+// a gone session's, whatever entry the registry still answers for it: a record the registry reads
+// as absent (session.DecodeEntry) is gone, and the zero entry or a stale one beside it is no
+// session's scope.
+func sessionOfProjects(entry session.SessionEntry, state session.State, projects []string) bool {
+	return state != session.Gone && slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
 }
 
 // rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of
@@ -453,9 +456,10 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 // (its directory, machine, host and title, and its capabilities the empty list) for any other, a
 // session the edge's reads do not show. The role, the holder's id and state and the claim's
 // revision stay, so a caller still sees who holds a role of its project, and can claim it with
-// if_claim_revision. Every other listener's answer is holder as it is.
+// if_claim_revision. Every other listener's answer is holder as it is. The holder is live: the
+// route answers this only for a live one (roleGetHandler).
 func edgeRoleHolder(r *http.Request, entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
-	if projects, held := heldProjects(r); !held || sessionOfProjects(entry, projects) {
+	if projects, held := heldProjects(r); !held || sessionOfProjects(entry, session.Live, projects) {
 		return holder
 	}
 	holder.Capabilities = []string{}
@@ -580,8 +584,10 @@ func runEdgeRepositories(ctx context.Context, d *listenerDeps, machineID string,
 // topic whose repository no fresh answer of its session's projects names, and refollows that
 // session's consumer, as an unsubscribe does. A session one of whose projects has no fresh
 // answer keeps every topic: an answer that is not there says nothing of a repository's leaving,
-// and the relay withholds the session's GitHub frames meanwhile. A record it cannot list, or a
-// removal that fails, is logged and left to the next pass.
+// and the relay withholds the session's GitHub frames meanwhile. The projects are those of the
+// token this listener admitted the session's registration on (edgeAdmissions), never the
+// session's stored record, and a session it admitted no registration of is left alone. A record
+// it cannot list, or a removal that fails, is logged and left to the next pass.
 func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) {
 	logger := d.repositories.logger
 	items, err := d.registry.List()
@@ -593,8 +599,11 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 		if item.MachineID != machineID {
 			continue
 		}
-		entry, _ := d.sessions.Lookup(item.SessionID)
-		repositories, complete := d.repositories.standing(entry.Projects)
+		projects, admitted := d.consumers.admissions.of(item.SessionID)
+		if !admitted {
+			continue
+		}
+		repositories, complete := d.repositories.standing(projects)
 		if !complete {
 			continue
 		}

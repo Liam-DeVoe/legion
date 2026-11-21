@@ -145,12 +145,18 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title and capabilities (`edgeRoleHolder`).
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
-  Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
+  Any other target, and one the session registry reads as gone, gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`, which every edge read of a session's projects asks).
 
 - **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeShownTopics`);
   any other session gets the `404` of an unknown one.
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
+
+- **Frames**: the relay and the relay socket each hand a session a frame only of a project its token lists, as the session's own message, or as a GitHub event the rule above passes (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`).
+  The relay holds a session to the token its replica admitted the session's registration on, which it keeps in memory, and the socket to the token it was opened with; neither reads a stored record, so no session entry, interest row, role claim or consumer filter widens what reaches the session.
+  A message on the session's own agent subject is judged by the topic its envelope names: a send or a dead letter to the session passes, and a forward, such as a role's message forwarded to the claim's holder, passes only for a project of the token.
+  Every frame withheld this way is acknowledged undelivered and counted in `envoy_edge_github_withheld_total` under `reason="project_not_held"`.
+  A relay replica that admitted no registration of the session since it started relays it nothing until the session registers through it again, at its next heartbeat, and its messages wait in its consumer.
 
 Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 

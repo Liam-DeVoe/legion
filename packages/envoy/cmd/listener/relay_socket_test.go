@@ -455,7 +455,10 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 		t.Errorf("the replica holds %d subscriptions after two refused subs, want the %d it held before", now, held)
 	}
 	publisher := testnats.Connect(t, rig.owner.url)
-	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Data: []byte(`{"stray":true}`), Header: natsgo.Header{}}
+	// The frame names an event of the token's project, which the edge's rule passes to this
+	// socket (edgeFrameVerdict), so only the socket's subscriptions keep it away.
+	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Data: []byte(`{"stray":true}`),
+		Header: natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}}
 	if err := publisher.PublishMsg(stray); err != nil {
 		t.Fatalf("publish a frame for %s: %v", other, err)
 	}
@@ -733,11 +736,13 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 			sub := socket.awaitSubscription(t)
 
 			// Far more than the connection's buffers hold: the socket's writes block, and the rest
-			// wait on the subscription.
+			// wait on the subscription. Each names an event of the token's project as its stored
+			// subject, which the edge's rule passes (edgeFrameVerdict), so each is written.
 			publisher := testnats.Connect(t, rig.owner.url)
 			data := bytes.Repeat([]byte("x"), 512<<10)
+			header := natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}
 			for i := range 60 {
-				if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "unread." + strconv.Itoa(i), Data: data}); err != nil {
+				if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "unread." + strconv.Itoa(i), Header: header, Data: data}); err != nil {
 					t.Fatalf("publish frame %d: %v", i, err)
 				}
 			}
@@ -961,9 +966,9 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 }
 
 // Headers: msg.headers is always present, a JSON object mapping each header name as
-// NATS carries it, its case kept, to every one of its values in order, and {} when the message
-// carries none. Control: the headers read one value per name (Header.Get); the repeated values are
-// lost and the row fails naming them.
+// NATS carries it, its case kept, to every one of its values in order, and the relay's
+// Envoy-Subject alone when the message carries no header of its own. Control: the headers read one
+// value per name (Header.Get); the repeated values are lost and the row fails naming them.
 func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_headers"
@@ -984,10 +989,10 @@ func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 		}
 	}
 
-	publishRelayFrame(t, rig.owner.url, session, nil)
-	bare := client.next(5 * time.Second)
-	if !strings.Contains(bare.raw, `"headers":{}`) {
-		t.Fatalf("a frame of a message with no headers is %s, want \"headers\":{}", bare.raw)
+	bare := publishRelayFrame(t, rig.owner.url, session, nil)
+	frame = client.next(5 * time.Second)
+	if subjects := frame.Headers[relayHeaderSubject]; len(frame.Headers) != 1 || !slices.Equal(subjects, bare.Header.Values(relayHeaderSubject)) {
+		t.Fatalf("a frame of a message carrying only the relay's header is %s, want exactly %s %v", frame.raw, relayHeaderSubject, bare.Header.Values(relayHeaderSubject))
 	}
 }
 
@@ -1020,15 +1025,23 @@ func TestANonEdgeListenerServesNoRelaySocket(t *testing.T) {
 }
 
 // publishRelayFrame publishes, on session's relay subject, a message shaped as a relay frame -
-// its receipt subject under bus.RelayReplyPrefix - carrying header, and answers it.
+// its receipt subject under bus.RelayReplyPrefix - carrying header and the relay's Envoy-Subject,
+// set on header itself. The subject and the envelope are an event of relaySocketProject, which
+// the edge's rule (edgeFrameVerdict) passes to a socket of any session whose token lists it, so a
+// row that holds a frame away from a socket holds it there by the socket's subscriptions alone.
 func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) *natsgo.Msg {
 	t.Helper()
 	conn := testnats.Connect(t, url)
+	if header == nil {
+		header = natsgo.Header{}
+	}
+	subject := "notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"
+	header.Set(relayHeaderSubject, subject)
 	msg := &natsgo.Msg{
 		Subject: bus.DeliverSubject(session),
 		Reply:   bus.RelayReplyPrefix + "rowsown." + strings.ReplaceAll(t.Name(), "/", "."),
 		Header:  header,
-		Data:    []byte(`{"row":"` + t.Name() + `"}`),
+		Data:    marshalListenerEnvelope(t, listenerTestEnvelope(subject, "row-"+t.Name())),
 	}
 	if err := conn.PublishMsg(msg); err != nil {
 		t.Fatalf("publish a frame for %s: %v", session, err)

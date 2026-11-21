@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The edge listener hands a session a frame only of a project its token lists, as the session's
+  own message, or as a GitHub event of one of its projects' repositories (`edgeFrameVerdict`),
+  both in its relay and in its relay socket. The relay reads the token its replica admitted the
+  session's registration on, held in memory; the socket reads the token it was opened with.
+  Neither reads a stored record, so another project's frame that a forged session record, interest
+  row, role claim or consumer filter put on the session's path is acknowledged undelivered and
+  counted in `envoy_edge_github_withheld_total{reason="project_not_held"}`. A relay replica that
+  admitted no registration of a session since it started relays it nothing until the session
+  registers through it again; its messages wait in its consumer. Every edge read of a session's
+  projects reads a gone session as no project's.
+time: 2026-11-21T02:10:19Z
+custom:
+    Issue: fix-edge-record-binding

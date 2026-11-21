@@ -155,6 +155,10 @@ type sessionDelivery struct {
 	// consumers has one (startSessionRelays sets it before /v1 opens, and main's start ends when
 	// that relay cannot start), so a registration answered consumer is relayed.
 	relay sessionRelay
+	// admissions is, on an edge listener, the projects of the token each session's latest
+	// registration here was admitted on (subscribeHandler), which the relay holds the session's
+	// frames to (edge_frames.go). Every other listener records none.
+	admissions edgeAdmissions
 	// marks is the last mark taken (mark).
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.

@@ -1,0 +1,378 @@
+//go:build natslive
+
+package main
+
+// edge_frame_rule_test.go holds the edge's per-frame rule (edge_frames.go) to what an outside
+// session receives through its relay socket: a frame reaches the socket only for a project its
+// live token lists, as the session's own message, or as a GitHub event of one of its projects'
+// repositories, whatever a stored record, a role claim or the session's consumer says. Each
+// attack row first shows the channel it uses is live (a frame of the token's own project sent the
+// same way arrives), then that the other project's frame does not, and that it was counted.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
+)
+
+// scopeProject is the project the scope rig's edge serves and its sessions' tokens list, and
+// scopeOtherProject the project no token of the rig lists.
+const (
+	scopeProject      = "PRIV"
+	scopeOtherProject = "PUB"
+)
+
+// scopeRig is one edge replica as a deployment runs it: its routes behind the broker-token
+// credential (edgeRig, built here with the edge relay main starts in edge mode, whose receipts
+// are under bus.RelayReplyPrefix), and the same replica's relay socket route, so a session's
+// frames reach the socket the row reads.
+type scopeRig struct {
+	*edgeRig
+	socketServer *httptest.Server
+}
+
+func newScopeRig(t *testing.T) *scopeRig {
+	t.Helper()
+	projects := []string{scopeProject}
+	rig := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, true)
+	withPublishRoute(t, rig.deps)
+	met := metrics.New()
+	stand := newRepositoryStandIn(t, []string{scopeProject}, edgeRepositoryFixture())
+	clock := &edgeClock{}
+	logger := rig.harness.config.logger
+	reader := newEdgeRepositories(stand.server.URL, listenerBrokerAccount(edgeAccountToken), projects, newEdgeWithheldCounter(met), logger)
+	reader.now = clock.now
+	edge := &edgeRig{relayRig: rig, projects: projects, met: met, repositories: stand, reader: reader, clock: clock, ticks: make(chan time.Time)}
+	rig.deps.repositories = reader
+	rig.relays.repositories = reader
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runEdgeRepositories(ctx, rig.deps, "test-machine", edge.ticks)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	rig.relays.setOwned(true)
+	edge.broker = brokertokentest.NewStubBroker(t)
+	edge.caller = brokertokentest.NewCaller(t)
+	edge.handler = apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, edge.broker), edgeProjects: projects, logger: logger}, rig.mux)
+
+	tokens := listenerBrokerTokens(t, edge.broker)
+	sockets := newRelaySockets(rig.harness.client, tokens, projects, logger)
+	routes := http.NewServeMux()
+	registerV1Routes(routes, &listenerDeps{client: rig.harness.client, relaySockets: sockets, repositories: reader}, "test-machine", logger)
+	server := httptest.NewServer(apiAuth(listenerAPIAuth{brokers: tokens, edgeProjects: projects, logger: logger}, routes))
+	t.Cleanup(server.Close)
+	t.Cleanup(sockets.stop)
+	// One whole pass of the repository refresh, so a GitHub frame of the project's repository
+	// meets a fresh answer.
+	edge.tick(t)
+	return &scopeRig{edgeRig: edge, socketServer: server}
+}
+
+// openSocket opens session's relay socket with token, subscribes its relay subject and returns
+// once the replica holds that subscription (the pong after the sub).
+func (r *scopeRig) openSocket(t *testing.T, session, token string) *relaySocketClient {
+	t.Helper()
+	signed := r.caller.Signed(t, http.MethodGet, listenerBrokerOrigin+relaySocketPath(session), token)
+	header := http.Header{"Authorization": {signed.Header.Get("Authorization")}, "DPoP": {signed.Header.Get("DPoP")}}
+	dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
+	conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(r.socketServer.URL, "http")+relaySocketPath(session), header)
+	if err != nil {
+		t.Fatalf("open the relay socket of %s: %v (%s)", session, err, describeUpgrade(response))
+	}
+	client := startRelaySocketClient(t, conn)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	select {
+	case <-client.pongs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no pong within 5 s of the socket's sub")
+	}
+	return client
+}
+
+// scopeFrame is one msg frame a socket received: the stored subject its relay header names and
+// the envelope it carries.
+type scopeFrame struct {
+	subject string
+	item    contracts.Envelope
+	raw     string
+}
+
+// take reads the socket's next n msg frames within the bound, answering each received and done
+// as a session that wrote it does, and fails the test on any other frame or a close.
+func takeScopeFrames(t *testing.T, client *relaySocketClient, n int, within time.Duration) []scopeFrame {
+	t.Helper()
+	deadline := time.After(within)
+	var frames []scopeFrame
+	for len(frames) < n {
+		select {
+		case frame := <-client.frames:
+			if frame.Op != "msg" {
+				t.Fatalf("the socket sent %s, want a msg frame", frame.raw)
+			}
+			read := scopeFrame{raw: frame.raw}
+			if subjects := frame.Headers[relayHeaderSubject]; len(subjects) > 0 {
+				read.subject = subjects[0]
+			}
+			_ = json.Unmarshal(frame.data(t), &read.item)
+			if strings.HasPrefix(frame.Reply, bus.RelayReplyPrefix) {
+				client.pub(frame.Reply, relayReplyReceived)
+				client.pub(frame.Reply, relayReplyDone)
+			}
+			frames = append(frames, read)
+		case err := <-client.closed:
+			t.Fatalf("the socket closed (%v) after %d of %d frames", err, len(frames), n)
+		case <-deadline:
+			t.Fatalf("the socket sent %d of %d frames within %s: %v", len(frames), n, within, scopeFrameTopics(frames))
+		}
+	}
+	return frames
+}
+
+// noScopeFrame fails the test when the socket sends a msg frame within the window.
+func noScopeFrame(t *testing.T, client *relaySocketClient, window time.Duration, what string) {
+	t.Helper()
+	select {
+	case frame := <-client.frames:
+		t.Fatalf("%s: the socket sent %s within %s, want nothing", what, frame.raw, window)
+	case <-time.After(window):
+	}
+}
+
+func scopeFrameTopics(frames []scopeFrame) []string {
+	topics := make([]string, len(frames))
+	for i, frame := range frames {
+		topics[i] = frame.item.Topic + " (" + frame.item.EventID + ")"
+	}
+	return topics
+}
+
+// storeScopeEvent stores a new envelope on subject, its payload payload when not empty, and
+// returns it.
+func storeScopeEvent(t *testing.T, rig *scopeRig, subject, payload string) contracts.Envelope {
+	t.Helper()
+	item := listenerTestEnvelope(subject, "edge-scope-"+id.New())
+	if payload != "" {
+		item.Source = "github"
+		item.Payload = payload
+	}
+	if _, err := rig.harness.client.JS().Publish(subject, marshalListenerEnvelope(t, item)); err != nil {
+		t.Fatalf("store a message on %s: %v", subject, err)
+	}
+	return item
+}
+
+// registerScopeSession registers session at the edge under a token of scopeProject, following
+// topics, and opens its relay socket first, so every frame its relay sends finds the socket.
+func registerScopeSession(t *testing.T, rig *scopeRig, session string, topics ...string) (*relaySocketClient, string) {
+	t.Helper()
+	token := rig.personToken(session, scopeProject)
+	client := rig.openSocket(t, session, token)
+	requireStatus(t, rig.subscribe(t, token, session, topics...), http.StatusOK, "the registration of "+session)
+	return client, token
+}
+
+// publishScopeFrame publishes a frame on session's relay subject as a NATS user that is no relay
+// would: under a receipt subject of the relay family, naming subject as the stored subject, and
+// carrying an envelope of that subject.
+func publishScopeFrame(t *testing.T, conn *natsgo.Conn, session, subject string) contracts.Envelope {
+	t.Helper()
+	item := listenerTestEnvelope(subject, "edge-scope-forged-"+id.New())
+	header := natsgo.Header{}
+	header.Set(relayHeaderSubject, subject)
+	header.Set(relayHeaderStreamSeq, "1")
+	msg := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "forged." + item.EventID, Header: header, Data: marshalListenerEnvelope(t, item)}
+	if err := conn.PublishMsg(msg); err != nil {
+		t.Fatalf("publish a frame on %s: %v", msg.Subject, err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the frame on %s: %v", msg.Subject, err)
+	}
+	return item
+}
+
+// requireWithheld fails the test unless the edge counted want frames withheld for a project its
+// token does not list.
+func requireWithheld(t *testing.T, rig *scopeRig, want int64) {
+	t.Helper()
+	if got := rig.withheld(t, "project_not_held"); got != want {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="project_not_held"} = %d, want %d`, got, want)
+	}
+}
+
+// The edge relays a session only the frames of the projects its live token lists. Its own
+// traffic arrives: a send in each agent-subject form the edge accepts, a role message of its
+// project forwarded to it as the holder, an event of its project, and a GitHub event of its
+// project's repository. Three paths that put another project's frame in front of the session are
+// each closed at the frame: a frame another NATS user publishes on the session's relay subject, a
+// role claim naming the session as the holder of another project's role, and another project's
+// subject added to the session's own consumer.
+func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
+	const ownIssue = "notifications.dispatch.issue." + scopeProject + ".PRIV-1.comment.created"
+	const otherIssue = "notifications.dispatch.issue." + scopeOtherProject + ".PUB-1.comment.created"
+
+	t.Run("its own traffic arrives", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session, peer = "ses_scope_own", "ses_scope_peer"
+		newForm := contracts.AgentSubject(scopeProject, session)
+		client, token := registerScopeSession(t, rig, session,
+			"notifications.github.acme.pub.>", newForm, "notifications.dispatch.issue."+scopeProject+".>")
+		peerToken := rig.namedToken(peer, scopeProject)
+		requireStatus(t, rig.subscribe(t, peerToken, peer), http.StatusOK, "the peer's registration")
+		const role = "legion-priv-priv-1-tester"
+		requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, session, role)),
+			http.StatusOK, "the claim of "+role)
+
+		sent := rig.call(t, http.MethodPost, peerToken, "/v1/messages/send",
+			fmt.Sprintf(`{"target_session":%q,"source_session":%q,"message":"from a peer of the project","source":"agent"}`, session, peer))
+		requireStatus(t, sent, http.StatusOK, "the peer's send")
+		var send listenerwire.SendResponse
+		if err := json.Unmarshal(sent.Body.Bytes(), &send); err != nil {
+			t.Fatalf("decode the send's answer %s: %v", sent.Body.String(), err)
+		}
+		roleSubject := contracts.RoleSubject(scopeProject, role)
+		published := rig.call(t, http.MethodPost, peerToken, "/v1/messages/publish",
+			fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, roleSubject, peer))
+		if published.Code != http.StatusOK && published.Code != http.StatusAccepted {
+			t.Fatalf("the publish to %s: status %d (%s), want it taken", roleSubject, published.Code, published.Body.String())
+		}
+		direct := storeScopeEvent(t, rig, newForm, "")
+		issue := storeScopeEvent(t, rig, ownIssue, "")
+		github := storeScopeEvent(t, rig, "notifications.github.acme.pub.pr.1", `{"kind":"pr","action":"opened","repo":"acme/pub"}`)
+
+		frames := takeScopeFrames(t, client, 5, 15*time.Second)
+		var events, topics []string
+		for _, frame := range frames {
+			events = append(events, frame.item.EventID)
+			topics = append(topics, frame.item.Topic)
+		}
+		for _, want := range []contracts.Envelope{send.Envelope, direct, issue, github} {
+			if !slices.Contains(events, want.EventID) {
+				t.Errorf("the message on %s (%s) never reached the socket; it received %v", want.Topic, want.EventID, scopeFrameTopics(frames))
+			}
+		}
+		if !slices.Contains(topics, roleSubject) {
+			t.Errorf("the role message on %s never reached its holder's socket; it received %v", roleSubject, scopeFrameTopics(frames))
+		}
+		noScopeFrame(t, client, time.Second, "after its own five messages")
+		requireWithheld(t, rig, -1)
+	})
+
+	t.Run("a frame another user publishes on its relay subject", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session = "ses_scope_injected"
+		client, _ := registerScopeSession(t, rig, session)
+		publisher := testnats.Connect(t, rig.url)
+		other := publishScopeFrame(t, publisher, session, otherIssue)
+		own := publishScopeFrame(t, publisher, session, ownIssue)
+		// One connection's publishes reach a subscriber in the order they were sent, so the
+		// first frame being the second publish shows the first never reached the socket.
+		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		if frames[0].item.EventID != own.EventID {
+			t.Fatalf("the socket's first frame is %s on %s, want %s's frame %s: the frame of %s published on the relay subject reached it",
+				frames[0].item.EventID, frames[0].subject, scopeProject, own.EventID, other.Topic)
+		}
+		noScopeFrame(t, client, time.Second, "after the frame of "+scopeProject)
+		requireWithheld(t, rig, 1)
+	})
+
+	t.Run("a role claim naming it for another project's role", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session = "ses_scope_claimed"
+		client, token := registerScopeSession(t, rig, session)
+		const own, other = "legion-priv-priv-2-tester", "legion-pub-pub-2-tester"
+		requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, session, own)),
+			http.StatusOK, "the claim of "+own)
+		// The claim of the other project's role is written to the role bucket as a forged
+		// record would be: the edge refuses the claim itself (edgeRoleRefusal).
+		if _, err := rig.deps.registry.SetRole(session, "test-machine", other, false); err != nil {
+			t.Fatalf("write the claim of %s naming %s: %v", other, session, err)
+		}
+		publishRole := func(role string) {
+			t.Helper()
+			subject := contracts.RoleSubject(contracts.RoleProject(role), role)
+			recorder := httptest.NewRecorder()
+			// A publish through a listener in no edge mode: the shared listener another
+			// project's sender uses, which forwards the role's message to the claim's holder.
+			rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(
+				fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":"ses_scope_sender"}`, subject))))
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the publish to %s: status %d (%s), want it taken", subject, recorder.Code, recorder.Body.String())
+			}
+		}
+		publishRole(other)
+		publishRole(own)
+		// The forwards are stored in the order they were made, and the relay sends in stream
+		// order, so the first frame being the second forward shows the first was withheld.
+		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		if want := contracts.RoleSubject(scopeProject, own); frames[0].item.Topic != want {
+			t.Fatalf("the socket's first frame carries %s, want the role message of %s: the role message of %s reached its socket",
+				frames[0].item.Topic, want, contracts.RoleSubject(scopeOtherProject, other))
+		}
+		noScopeFrame(t, client, time.Second, "after the role message of "+scopeProject)
+		requireWithheld(t, rig, 1)
+	})
+
+	t.Run("another project's subject added to its consumer", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session = "ses_scope_refiltered"
+		client, _ := registerScopeSession(t, rig, session, "notifications.dispatch.issue."+scopeProject+".>")
+		// The relay restarts the session's consumer on its stored filter when its run starts, so
+		// the update below waits for a frame of that run: the restart has happened, and the
+		// update is the consumer's filter from then on.
+		first := storeScopeEvent(t, rig, ownIssue, "")
+		if frames := takeScopeFrames(t, client, 1, 10*time.Second); frames[0].item.EventID != first.EventID {
+			t.Fatalf("the socket's first frame is %s, want the event %s", frames[0].raw, first.EventID)
+		}
+		name, ok := bus.SessionConsumerName(session)
+		if !ok {
+			t.Fatalf("no consumer name for %s", session)
+		}
+		js := rig.harness.client.JS()
+		info, err := js.ConsumerInfo(bus.Stream, name)
+		if err != nil {
+			t.Fatalf("read %s's consumer %s: %v", session, name, err)
+		}
+		config := info.Config
+		if config.FilterSubject != "" {
+			config.FilterSubjects = []string{config.FilterSubject}
+			config.FilterSubject = ""
+		}
+		config.FilterSubjects = append(config.FilterSubjects, "notifications.dispatch.issue."+scopeOtherProject+".>")
+		// The update a listener-grant user can send (CONSUMER.CREATE carries updates), with no
+		// record of the session's changed at all.
+		if _, err := js.UpdateConsumer(bus.Stream, &config); err != nil {
+			t.Fatalf("add %s's issues to %s's consumer: %v", scopeOtherProject, session, err)
+		}
+		other := storeScopeEvent(t, rig, otherIssue, "")
+		own := storeScopeEvent(t, rig, ownIssue, "")
+		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		if frames[0].item.EventID != own.EventID {
+			t.Fatalf("the socket's first frame is %s on %s, want %s's event %s: the event of %s (%s) the consumer was given reached it",
+				frames[0].item.EventID, frames[0].subject, scopeProject, own.EventID, scopeOtherProject, other.EventID)
+		}
+		noScopeFrame(t, client, time.Second, "after the event of "+scopeProject)
+		requireWithheld(t, rig, 1)
+	})
+}

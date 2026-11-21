@@ -747,7 +747,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// whose record names no project, is answered as a session no listener has heard of,
 		// before a wake is reported or anything is stored: the sender learns nothing of another
 		// project's session.
-		if projects, held := heldProjects(r); held && (errors.Is(err, nats.ErrKeyNotFound) || (hasEntry && !sessionOfProjects(target, projects))) {
+		if projects, held := heldProjects(r); held && (errors.Is(err, nats.ErrKeyNotFound) || (hasEntry && !sessionOfProjects(target, recipientState, projects))) {
 			record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, unknownSession(targetSession))
 			return
 		}
@@ -1429,7 +1429,7 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 				result = append(result, listedSessionInfo(registry, entry, held[entry.SessionID]))
 				continue
 			}
-			if sessionOfProjects(entry.SessionEntry, projects) {
+			if sessionOfProjects(entry.SessionEntry, entry.State, projects) {
 				info := listedSessionInfo(registry, entry, rolesOfProjects(held[entry.SessionID], projects))
 				info.Topics = edgeShownTopics(repositories, projects, entry.SessionID, info.Topics)
 				result = append(result, info)
@@ -1478,7 +1478,7 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *htt
 	switch {
 	case errors.Is(err, bus.ErrRefused):
 		writeBusUnavailable(w, err)
-	case edge && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !sessionOfProjects(entry, projects))):
+	case edge && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !sessionOfProjects(entry, d.sessions.EntryState(entry), projects))):
 		// At the edge a session it does not show, and one with no record, which names no
 		// project, is answered as one no listener has heard of.
 		writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
@@ -1587,7 +1587,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 					return
 				}
 			}
-			if projects, edge := heldProjects(r); edge && !sessionOfProjects(entry, projects) {
+			if projects, edge := heldProjects(r); edge && !sessionOfProjects(entry, state, projects) {
 				writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
 				return
 			}
@@ -1602,7 +1602,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			// At the edge a session of none of the token's projects is answered as one no listener
 			// has heard of, and a shown session's roles and topics are those projects' alone.
 			projects, edge := heldProjects(r)
-			if edge && !sessionOfProjects(entry, projects) {
+			if edge && !sessionOfProjects(entry, state, projects) {
 				writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
 				return
 			}
@@ -2917,6 +2917,13 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			refusal.write(w)
 			return
 		}
+		// The relay holds the session's frames to the projects of the token this registration was
+		// admitted on, which it keeps in memory and never reads back from a stored record
+		// (edge_frames.go). It is recorded before the registration writes the session's entry, so
+		// the relay the entry's write starts already has it.
+		if projects, held := heldProjects(r); held && d.consumers != nil {
+			d.consumers.admissions.admit(body.SessionID, projects)
+		}
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
 		// claim of the controller role behind a project's notice lane
@@ -3227,7 +3234,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	}, logger))
 	v1.Handle("/v1/sessions", sessionsHandler(d.registry, d.sessions, d.repositories))
 	v1.Handle("/v1/sessions/", deleteSessionHandler(d, logger))
-	v1.Handle(relaySocketPattern, relaySocketRoute(d.relaySockets))
+	v1.Handle(relaySocketPattern, relaySocketRoute(d.relaySockets, d.repositories))
 	v1.HandleFunc("/v1/messages/send", sendHandler(d, logger))
 	v1.HandleFunc("/v1/messages/publish", publishHandler(d, logger))
 	v1.HandleFunc("/v1", func(w http.ResponseWriter, r *http.Request) {
