@@ -35,7 +35,7 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 			Given: GivenTask{Task: retried, Entry: 3, Generation: 1}}))
 		rows, err := records.Phases(ctx, tx, issue.Key)
 		must(t, err)
-		if len(rows) != 1 || rows[0].Given.Task != retried || rows[0].Given.Entry != 3 || rows[0].Given.Generation != 1 {
+		if len(rows) != 1 || rows[0].Given != (GivenTask{Task: retried, Entry: 3, Generation: 1}) {
 			t.Fatalf("phases before ClearGeneration = %#v, want the one row carrying the retry's task %q for entry 3 in generation 1 as it was put", rows,
 				retried)
 		}
@@ -52,7 +52,7 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 			t.Fatalf("the implementer's row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
 				row.EntryTask)
 		}
-		if row.Given.Task != "" || row.Given.Entry != 0 || row.Given.Generation != 0 {
+		if row.Given != (GivenTask{}) {
 			t.Fatalf("the implementer's row still names the retry's task %q for entry %d in generation %d of the generation that ended, want none",
 				row.Given.Task, row.Given.Entry, row.Given.Generation)
 		}

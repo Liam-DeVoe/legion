@@ -1419,10 +1419,14 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	// seeds such a row beside the work its entry was raised with, and the same steps follow.
 	for _, tc := range []struct {
 		name string
-		// seed records the parent with its implementer in the middle of implementing on entry 3,
-		// its phases row keeping a task given for another entry or another generation, and answers
-		// that task.
-		seed func(*testing.T, *pgxpool.Pool) string
+		// seed records the parent with its implementer's claim in the middle of implementing,
+		// given entry 3, and answers the claim's token, which the case's phases row is written
+		// against.
+		seed func(*testing.T, *pgxpool.Pool) claim.Token
+		// given is the entry and the generation the row keeps its task as given for: an entry
+		// before the one the row stands on, or the entry it stands on in a generation of the issue
+		// before the one it runs now. The case's body writes the task on it.
+		given record.GivenTask
 		// entry names the entry whose work the hold keeps, and givenFor the entry, and the
 		// generation where it differs, the seeded task was given for, as the failure tells them.
 		entry, givenFor string
@@ -1435,14 +1439,9 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		// implementing with the work of the entry the row stands on, and the return starts
 		// implementing on it.
 		{name: "a task given for an entry before the one the row stands on, then a child opens: the held task and the return's task are the entry's work",
-			entry: "entry 3, which the row stands on", givenFor: "entry 2",
-			seed: func(t *testing.T, pool *pgxpool.Pool) string {
-				token := pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
-				older := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
-				spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
-					EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour),
-					Given: record.GivenTask{Task: older, Entry: 2, Generation: 1}})
-				return older
+			given: record.GivenTask{Entry: 2, Generation: 1}, entry: "entry 3, which the row stands on", givenFor: "entry 2",
+			seed: func(t *testing.T, pool *pgxpool.Pool) claim.Token {
+				return pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
 			}},
 		// A task the implementer was given for the entry its phases row stands on, in a generation
 		// of the issue before the one it runs now, is no task of this run
@@ -1453,23 +1452,23 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		// with the entry's work, not the task of the earlier generation, and the return starts
 		// implementing on it.
 		{name: "a task given for the entry the row stands on in an earlier generation, then a child opens: the held task and the return's task are the entry's work",
-			entry: "entry 3 in generation 2", givenFor: "entry 3 in generation 1",
-			seed: func(t *testing.T, pool *pgxpool.Pool) string {
+			given: record.GivenTask{Entry: 3, Generation: 1}, entry: "entry 3 in generation 2", givenFor: "entry 3 in generation 1",
+			seed: func(t *testing.T, pool *pgxpool.Pool) claim.Token {
 				spSeedParent(t, pool, spParent, phase.Implementing, true, func(rerun *record.Issue) { rerun.Generation = 2 })
 				pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 				token := putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 2, supervise.StateIdle, "")
 				markGivenEntry(t, pool, token, 3)
-				earlier := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
-				spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
-					EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour),
-					Given: record.GivenTask{Task: earlier, Entry: 3, Generation: 1}})
-				return earlier
+				return token
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := pwAdmission(t, 2)
-			given := tc.seed(t, pool)
+			token := tc.seed(t, pool)
+			given := tc.given
+			given.Task = "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
+			spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+				EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour), Given: given})
 			seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 			spPass(t, pool, admission)
@@ -1477,7 +1476,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
 			if wait.Task != pwTask(spParent, phase.Implementing) {
 				t.Fatalf("the held task = %q, want the work of %s, %q, not the task %q given for %s",
-					wait.Task, tc.entry, pwTask(spParent, phase.Implementing), given, tc.givenFor)
+					wait.Task, tc.entry, pwTask(spParent, phase.Implementing), given.Task, tc.givenFor)
 			}
 
 			pnChildMerged(t, pool, spChild, spParent, 51)

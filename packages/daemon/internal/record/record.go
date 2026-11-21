@@ -811,13 +811,15 @@ type GivenTask struct {
 	// earlier release names none of the three columns, so an entry it raises leaves this at an
 	// entry before, which GivenFor passes over.
 	Entry int64
-	// Generation is the issue's generation (Issue.Generation) Task was given in, and 0 where Entry
-	// is 0. An earlier release's generation clear empties PhaseRow.EntryTask and leaves the given
-	// task beside the entry it keeps; where that clear gives the issue a generation of its own (its
-	// rerun, its adoption, its re-admission as a root), the issue's generation passes this one, and
-	// GivenFor passes the task over. A member of a tree whose root such a release re-admits keeps
-	// its own generation, so its given task outlives that clear (docs/kubernetes.md, the rollback
-	// of the release that holds a parent's start, says what that costs).
+	// Generation is the issue's generation (Issue.Generation) Task was given in, and 0 where no task
+	// was given, beside an empty Task. A restart of a row that stands at entry 0 gives a task for
+	// entry 0 (workflow's restart), so Entry 0 is written there beside the issue's generation. An
+	// earlier release's generation clear empties PhaseRow.EntryTask and leaves the given task beside
+	// the entry it keeps; where that clear gives the issue a generation of its own (its rerun, its
+	// adoption, its re-admission as a root), the issue's generation passes this one, and GivenFor
+	// passes the task over. A member of a tree whose root such a release re-admits keeps its own
+	// generation, so its given task outlives that clear (docs/kubernetes.md, the rollback of the
+	// release that holds a parent's start, says what that costs).
 	Generation uint64
 }
 
@@ -826,8 +828,7 @@ type GivenTask struct {
 // of another entry, or of another generation. Its one reader is the admission pass's stop of a
 // parent whose start is written and not delivered or whose worker is in the middle of its phase
 // (workflow's entryWork, StopForChildren): the hold keeps the task, after the turn that took it
-// has ended too, and the return decorates it once (dispatch://INFRA-3320 R9 and R12). It is read
-// only where the given entry is p's Entry and the given generation is the issue's, so what the
+// has ended too, and the return decorates it once (dispatch://INFRA-3320 R9 and R12). So what the
 // hold keeps is a fact of the record and never a reading of the task's text.
 func (p PhaseRow) GivenFor(generation uint64) (string, bool) {
 	if p.Given.Task == "" || p.Given.Entry != p.Entry || p.Given.Generation != generation {

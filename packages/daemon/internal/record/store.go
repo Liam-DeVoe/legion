@@ -1547,17 +1547,16 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// role was last given for an entry goes with it, with the entry and the generation it was
 		// given for (PhaseRow.Given, GivenTask): it was the old run's. The generation alone would
 		// not retire it on a member of a re-admitted tree, which keeps its own generation while its
-		// root takes a new one. That the number is never reset
-		// is also what keeps a review of the old entry from moving the reviewer's commit after the
-		// promotion: its footer names a number the row has left (PhaseRow.ReviewedHead), and until
-		// the promotion the row holds no entry's task. The mark that the task is sent as written
-		// goes with the task it was about. The time the entry was raised stays with the number it
-		// belongs to, and so does the move that raised it (entry_moved_back), which that same
-		// promotion writes again. The counts go with the rounds: the new generation counts its
-		// moves back from nothing, and the cap mark goes with them, so the architect is told again
-		// at the new generation's own first crossing of the cap. The commit the daemon recorded
-		// for the reviewer's own review goes with the decision: the new generation's first review
-		// reads the whole change.
+		// root takes a new one. That the number is never reset is also what keeps a review of the
+		// old entry from moving the reviewer's commit after the promotion: its footer names a
+		// number the row has left (PhaseRow.ReviewedHead), and until the promotion the row holds no
+		// entry's task. The mark that the task is sent as written goes with the task it was about.
+		// The time the entry was raised stays with the number it belongs to, and so does the move
+		// that raised it (entry_moved_back), which that same promotion writes again. The counts go
+		// with the rounds: the new generation counts its moves back from nothing, and the cap mark
+		// goes with them, so the architect is told again at the new generation's own first crossing
+		// of the cap. The commit the daemon recorded for the reviewer's own review goes with the
+		// decision: the new generation's first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_verbatim = false, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0 where " + where,

@@ -48,10 +48,10 @@ type childrenHold struct {
 	// phases row keeps as the one its worker was given for the entry the phase stands on, a start
 	// of which is written and not delivered or in whose middle its worker stands (entryWork). Each
 	// is kept as it was composed, with none of the daemon's decorations of a send, the base-merge
-	// sentence and the reviewer's round sentences (task, record.PhaseRow.Given). The
-	// return starts it where the start goes back as it was held, and builds a testing task of its
-	// own where a held testing, reviewing or accepting comes back as testing (ReturnFromChildren);
-	// the start decorates either once (start).
+	// sentence and the reviewer's round sentences (task, record.PhaseRow.Given). The return starts
+	// it where the start goes back as it was held, and builds a testing task of its own where a
+	// held testing, reviewing or accepting comes back as testing (ReturnFromChildren); the start
+	// decorates either once (start).
 	Task string
 	// Cause is what the start was for: the reason the notice the move replaces carried — a worker's
 	// own move back with its words — or else the completion, review, retry or stop that raised it
@@ -296,10 +296,10 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 //
 // Each of those tasks is held as it was composed, before the daemon decorated its send with the
 // base-merge sentence of a testing task of a parent and the reviewer's round sentences: the row
-// keeps the task that way (record.PhaseRow.Given), a fact of the record rather than a
-// reading of the task's text, and the return's start decorates the task it gives once (start). A
-// row that keeps no such task for its entry in the issue's generation, as on an entry a release
-// before this one raised, has entryWork say what is held for it.
+// keeps the task that way (record.PhaseRow.Given), a fact of the record rather than a reading of
+// the task's text, and the return's start decorates the task it gives once (start). A row that
+// keeps no such task for its entry in the issue's generation, as on an entry a release before this
+// one raised, has entryWork say what is held for it.
 //
 // Every start the parent owes is finished in the same transaction (Store.FinishOutbox), so none
 // delivers later: the wait keeps its start on the record (record.ChildrenWait), and the return
