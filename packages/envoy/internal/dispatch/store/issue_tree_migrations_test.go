@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -49,12 +50,37 @@ var keepsItsShape = []string{
 
 // createdNew are the tables this child creates: document_rooms and version_renders (R19),
 // issue_trees, which holds each issue's one tree, issue_room_blocks, the projection of an issue
-// room's block's in_document (D16), node_search, the search rows of a node (T15), and
-// issue_tree_block_drain, the one-row record of how far the block drain got (T6). Each is created
-// new, by a create table of its own that is the first statement of the set to name it, and no
-// statement of the set fills it from a stored row. A table no migration of the set names is no
-// finding.
-var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_tree_block_drain"}
+// room's block's in_document, node_search, the search rows of a node, and issue_views, the
+// per-issue record of how an issue was converted and whether its spec is its own (R23). Each is
+// created new, by a create table of its own that is the first statement of the set to name it,
+// and no statement of the set fills it from a stored row. A table no migration of the set names is
+// no finding.
+var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_views"}
+
+// columnAdd is the one statement a table of columnAdds takes from this child: an alter table of it
+// that adds the columns named, each of the type Postgres's parser names (its typeName's names) and
+// with no constraint, so no default, no not null and no foreign key, and does nothing else.
+// catalogOnlyAlterTable exempts that statement from the census's table limit, because it rewrites
+// no row.
+type columnAdd struct {
+	// what names the columns in a finding.
+	what    string
+	columns map[string][]string
+}
+
+// columnAdds are the tables whose one statement from this child is a columnAdd, each taking it
+// once: issue_links, which takes the node column pair, and document_block_versions, which takes
+// the version and the rule of the block index's pass that last stated each document.
+var columnAdds = map[string]columnAdd{
+	"issue_links": {
+		what:    "the nullable node column pair, node_kind and node_address",
+		columns: map[string][]string{"node_kind": {"text"}, "node_address": {"text"}},
+	},
+	"document_block_versions": {
+		what:    "the nullable integer columns stated_version and stated_rule",
+		columns: map[string][]string{"stated_version": {"pg_catalog", "int4"}, "stated_rule": {"pg_catalog", "int4"}},
+	},
+}
 
 // The statement forms the test reads, each over a statement as pgmigrate.Statements gives it: its
 // words one space apart, and a DO block's body read as statements, so a form is found anywhere in
@@ -174,11 +200,9 @@ func (r relationOf) is(table string) bool {
 	return r.Relation.Name == table && (r.Relation.Schema == "" || r.Relation.Schema == "public")
 }
 
-// addsTheNodePair says whether statement is the one statement issue_links takes (R19): an alter
-// table of table that adds node_kind and node_address, each of type text with no constraint, so
-// no default, no not null and no foreign key, and does nothing else. catalogOnlyAlterTable
-// exempts that statement from the census's table limit, because it rewrites no row.
-func addsTheNodePair(statement, table string) bool {
+// addsColumns says whether statement is add, an alter table of table that adds add's columns, each
+// of its type with no constraint, and does nothing else.
+func addsColumns(statement, table string, add columnAdd) bool {
 	node, body, ok := parsedStatement(statement)
 	if !ok || node != "AlterTableStmt" {
 		return false
@@ -206,20 +230,26 @@ func addsTheNodePair(statement, table string) bool {
 			} `json:"AlterTableCmd"`
 		} `json:"cmds"`
 	}
-	if json.Unmarshal(body, &alter) != nil || !alter.is(table) || alter.Objtype != "OBJECT_TABLE" || len(alter.Cmds) != 2 {
+	if json.Unmarshal(body, &alter) != nil || !alter.is(table) || alter.Objtype != "OBJECT_TABLE" || len(alter.Cmds) != len(add.columns) {
 		return false
 	}
-	var added []string
+	added := map[string]bool{}
 	for _, item := range alter.Cmds {
 		column := item.Command.Def.Column
-		if item.Command.Subtype != "AT_AddColumn" || column == nil || len(column.Constraints) != 0 ||
-			len(column.TypeName.ArrayBounds) != 0 || len(column.TypeName.Names) != 1 || column.TypeName.Names[0].String.Value != "text" {
+		if item.Command.Subtype != "AT_AddColumn" || column == nil || len(column.Constraints) != 0 || len(column.TypeName.ArrayBounds) != 0 {
 			return false
 		}
-		added = append(added, column.Name)
+		names := make([]string, len(column.TypeName.Names))
+		for index, name := range column.TypeName.Names {
+			names[index] = name.String.Value
+		}
+		want, named := add.columns[column.Name]
+		if !named || added[column.Name] || !slices.Equal(names, want) {
+			return false
+		}
+		added[column.Name] = true
 	}
-	slices.Sort(added)
-	return slices.Equal(added, []string{"node_address", "node_kind"})
+	return true
 }
 
 // createsNew says whether statement creates table new: a plain create table of it, which holds no
@@ -466,7 +496,7 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 		reading.findings = append(reading.findings, fmt.Sprintf(format, args...))
 	}
 	named := map[string]bool{}
-	var pairAdds []string
+	adds := map[string][]string{}
 	for _, migration := range migrations {
 		reading.touched = append(reading.touched, pgmigrate.TouchedTables(migration.SQL)...)
 		typeMigration, typeFindings := readTypeStatements(migration)
@@ -501,12 +531,15 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 					}
 				}
 			}
-			if slices.Contains(touched, "issue_links") {
-				if addsTheNodePair(statement, "issue_links") {
-					pairAdds = append(pairAdds, migration.Name)
+			for _, table := range slices.Sorted(maps.Keys(columnAdds)) {
+				if !slices.Contains(touched, table) {
+					continue
+				}
+				if addsColumns(statement, table, columnAdds[table]) {
+					adds[table] = append(adds[table], migration.Name)
 				} else {
-					finding("%s touches issue_links in the statement %q: the one statement issue_links takes from this child is the alter table that adds the nullable node column pair, node_kind and node_address, with no default (R19)",
-						migration.Name, statement)
+					finding("%s touches %s in the statement %q: the one statement %s takes from this child is the alter table that adds %s, with no default",
+						migration.Name, table, statement, table, columnAdds[table].what)
 				}
 			}
 			for _, table := range createdNew {
@@ -529,8 +562,15 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 			}
 		}
 	}
-	if len(pairAdds) > 1 {
-		finding("issue_links takes one alter table from this child, and %s each add the node column pair: a second is an alter table the first already made", strings.Join(pairAdds, ", "))
+	for _, table := range slices.Sorted(maps.Keys(columnAdds)) {
+		switch held := adds[table]; {
+		case len(held) == 0:
+			finding("no migration of this child adds %s to %s, with no default: that alter table is the one statement %s takes from this child",
+				columnAdds[table].what, table, table)
+		case len(held) > 1:
+			finding("%s takes one alter table from this child, and %s each add %s: a second is an alter table the first already made",
+				table, strings.Join(held, ", "), columnAdds[table].what)
+		}
 	}
 	slices.Sort(reading.touched)
 	reading.touched = slices.Compact(reading.touched)
@@ -772,9 +812,10 @@ func requireTheIssueTreeMigrationsKeepToTheLimit(t *testing.T, fsys fs.FS) {
 // artifact_versions_document_search, asks_approval_kind_check or
 // asks_normalize_approval_documents; none is an alter table, a drop table or a truncate of a table
 // R19 keeps whole; the one statement on issue_links is the add of the nullable node column pair
-// with no default; and document_rooms, version_renders and issue_trees, where the set names them,
-// are created new and filled from no stored row. It reads no pull request, so it runs with no
-// token.
+// with no default, and the one statement on document_block_versions the add of the nullable
+// integer columns stated_version and stated_rule with no default, each made once; and
+// each table of createdNew, where the set names it, is created new and filled from no stored row.
+// It reads no pull request, so it runs with no token.
 func TestThisChildsMigrationsTouchNoTableAboveTheCensusLimit(t *testing.T) {
 	requireTheIssueTreeMigrationsKeepToTheLimit(t, migrationFiles)
 }

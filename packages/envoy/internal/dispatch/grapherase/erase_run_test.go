@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
@@ -27,7 +28,7 @@ const runWords = "What does the spec say?"
 
 // seedRun records one run of the command bar asked by author, with two frames, and gives it its
 // interaction node and their frame values as this build's frame path does for a run with no node
-// (graphcensus.WriteRun). It answers the run's id.
+// (graphstore.WriteRun). It answers the run's id.
 func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 	t.Helper()
 	ctx := context.Background()
@@ -54,8 +55,8 @@ func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 		t.Fatalf("begin the run's node: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if held, err := graphcensus.WriteRun(ctx, tx, run); err != nil || !held {
-		t.Fatalf("write the run's node: held %t, %v", held, err)
+	if written, err := graphstore.WriteRun(ctx, tx, run); err != nil || !written.Held {
+		t.Fatalf("write the run's node: held %t, %v", written.Held, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the run's node: %v", err)
@@ -64,7 +65,7 @@ func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 }
 
 // markChangedByRun writes the node kind:id again, as the store holds it, on a context carrying
-// run, as a write made for the run writes a node it changed (graphstore.WithRun, Node.Changed): the
+// run, as a write made for the run writes a node it changed (store.WithRun, Node.Changed): the
 // store appends one changed_by_run tuple from the node to the run's interaction.
 func markChangedByRun(t *testing.T, database *store.Store, kind, id, run string) {
 	t.Helper()
@@ -79,7 +80,7 @@ func markChangedByRun(t *testing.T, database *store.Store, kind, id, run string)
 		t.Fatalf("read %s:%s: held %t, %v", kind, id, held, err)
 	}
 	node.Changed, node.Restates = true, true
-	if err := graphstore.Write(graphstore.WithRun(ctx, run), tx, []graphstore.Node{node}, nil); err != nil {
+	if err := graphstore.Write(store.WithRun(ctx, run), tx, []graphstore.Node{node}, nil); err != nil {
 		t.Fatalf("write %s:%s for run %s: %v", kind, id, run, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -189,7 +190,7 @@ func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 		t.Fatalf("the backfill after the erase wrote back %d going_requests rows, %d going_events rows, %d nodes and %d tuples of the run, want none",
 			requests, events, nodes, tuples)
 	}
-	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

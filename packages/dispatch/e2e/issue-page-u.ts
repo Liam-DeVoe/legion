@@ -1,6 +1,6 @@
 import { expect, type Page, type Request, type Route } from "@playwright/test";
 
-import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import {
   mergeTreePages,
@@ -66,9 +66,9 @@ function treePath(key: string): string {
  * cursor names, the pages merged as the page merges them (`mergeTreePages`). A cursor the read
  * names twice fails the read rather than walk the same pages again.
  */
-async function readTree(key: string, view: TreeView | null): Promise<IssueTreeAnswer> {
+async function readTree(key: string, view: TreeView | null): Promise<IssueTreeRead> {
   const headers = await userHeaders("alice");
-  const pages: IssueTreeAnswer[] = [];
+  const pages: IssueTreeRead[] = [];
   const cursors = new Set<string>();
   let cursor: string | null = null;
   do {
@@ -81,7 +81,7 @@ async function readTree(key: string, view: TreeView | null): Promise<IssueTreeAn
         `GET ${url.pathname}${url.search} failed: ${response.status} ${await response.text()}`
       );
     }
-    const answered = (await response.json()) as IssueTreeAnswer;
+    const answered = (await response.json()) as IssueTreeRead;
     pages.push(answered);
     cursor = answered.cursor;
     if (cursor !== null && cursors.has(cursor)) {
@@ -100,20 +100,22 @@ export async function decisionNodesOf(
   key: string,
   blocks: readonly string[]
 ): Promise<IssueTreeNode[]> {
-  const { nodes } = await readTree(key, null);
+  const nodes = (await readTree(key, null)).nodes ?? [];
   return blocks.map((block) => {
+    // The read names a block by its store id and carries its block id beside it (`block_id`).
     const node = nodes.find(
-      (one) => one.supertag === "decision" && one.issue === undefined && one.id === block
+      (one) =>
+        one.supertag === "decision" && one.issue === undefined && (one.block_id ?? one.id) === block
     );
     if (node === undefined) throw new Error(`${key}'s tree read holds no decision node ${block}`);
     return node;
   });
 }
 
-/** The `text_sha256` the tree read answers on `node`, a decision node of issue `key`: the sum a
- *  Keep of the words the node holds carries. */
+/** The `text_sha256` the tree read answers on `node`, a decision node of issue `key`, in the
+ *  model's decision it carries (`decision`): the sum a Keep of the words the node holds carries. */
 export function decisionSumOf(key: string, node: IssueTreeNode): string {
-  const sum = node.text_sha256;
+  const sum = node.decision?.text_sha256;
   if (sum === undefined || sum === "") {
     throw new Error(`${key}'s tree read answers no text_sha256 on its decision node ${node.id}`);
   }
@@ -129,7 +131,7 @@ export async function decisionSum(key: string, block: string): Promise<string> {
 
 /** The nodes the read of issue `key`'s view `view` answers, every page its cursor names. */
 export async function viewNodesOf(key: string, view: TreeView): Promise<IssueTreeNode[]> {
-  return (await readTree(key, view)).nodes;
+  return (await readTree(key, view)).nodes ?? [];
 }
 
 /**
@@ -166,9 +168,11 @@ export async function idReadsOf(key: string): Promise<TreeIdReads> {
 }
 
 /** The id the row of a decision node carries: `<slug>#b-<block id>` for a block of a
- *  document, which every decision node is. */
+ *  document, which every decision node is, by its block id (`block_id`). */
 export function decisionRowId(node: IssueTreeNode): string {
-  return node.document === undefined ? node.id : blockNode(node.document.slug, node.id);
+  return node.document === undefined
+    ? node.id
+    : blockNode(node.document.slug, node.block_id ?? node.id);
 }
 
 /** One row of the asks read. */
@@ -185,25 +189,27 @@ export function askRowId(reads: TreeIdReads, askId: string): string {
   return slug === undefined ? askId : blockNode(slug, ask.block_id);
 }
 
-/** The row of the asks read that the ask node `node` is: by the block it is in its document, or
- *  by its own id where it is a block of none. */
+/** The row of the asks read that the ask node `node` is: by the block it is in its document
+ *  (`block_id`), or by its own id where it is a block of none. */
 export function askOfNode(node: IssueTreeNode, reads: TreeIdReads): ReadAsk | undefined {
   const { document } = node;
   return (reads.asks ?? []).find((ask) =>
     document === undefined
       ? ask.id === node.id
-      : ask.block_id === node.id &&
+      : ask.block_id === (node.block_id ?? node.id) &&
         (ask.block_artifact?.id ?? ask.artifact_id) === document.artifact_id
   );
 }
 
-/** The state word a decision's row draws from its node: "Replaced", "Waiting for review", or
- *  "Kept by" and the person whose Keep stands; none for a decision in none of them. */
+/** The state word a decision's row draws from the model's decision its node carries
+ *  (`decision`): "Replaced", "Waiting for review", or "Kept by" and the person whose Keep stands;
+ *  none for a decision in none of them. */
 export function reviewWordOf(node: IssueTreeNode): string | null {
   const words = NODE_STATE_WORDS.decision;
-  if (node.replaced === true) return words.replaced;
-  if (node.waiting_review === true) return words.waiting_review;
-  return node.kept == null ? null : `${words.kept} ${node.kept.kept_by}`;
+  const decision = node.decision;
+  if (decision?.replaced === true) return words.replaced;
+  if (decision?.waiting_review === true) return words.waiting_review;
+  return decision?.kept == null ? null : `${words.kept} ${decision.kept.kept_by}`;
 }
 
 /** What stands beside one statement of the Spec view. */

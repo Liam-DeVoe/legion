@@ -275,6 +275,8 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	// This document itself, its INFRA-1098 and INFRA-1253 references rewritten to TREE-1 and
 	// TREE-2, indexed into a child of a parent closed as done, each holding the requirements the
 	// document's serves name of it (a child under a done ancestor holds requirements of its own).
+	// The parent is closed before the child is created: a child born converted under a parent
+	// whose requirements stand is a view, and its create with a requirement is refused.
 	verification, err := os.ReadFile("testdata/infra-1253-verification.md")
 	if err != nil {
 		t.Fatalf("read the Verification document's copy: %v", err)
@@ -283,10 +285,10 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	if parent := createSpecIssue(t, handler, "TREE", requirementsSpec(requirementIDs(string(verification), "TREE-1"))); parent.Key != "TREE-1" {
 		t.Fatalf("the done parent is %s, want TREE-1, which the copy's references name", parent.Key)
 	}
+	closeIssue(t, handler, "TREE-1")
 	if treeChild := createChildIssue(t, handler, "TREE", "TREE-1", requirementsSpec(requirementIDs(string(verification), "TREE-2"))); treeChild.Key != "TREE-2" {
 		t.Fatalf("the child is %s, want TREE-2, which the copy's references name", treeChild.Key)
 	}
-	closeIssue(t, handler, "TREE-1")
 	uploaded := uploadDocument(t, handler, "/api/v1/issues/TREE-2", "verification.md", string(verification))
 	if uploaded.Version.Number != 1 {
 		t.Fatalf("the copy's upload stored version %d, want 1", uploaded.Version.Number)

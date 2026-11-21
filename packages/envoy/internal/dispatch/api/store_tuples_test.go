@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -199,11 +200,12 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	// The backlink arms map against the kinds that reader declares, in both directions: every
 	// kind it resolves has an entry, and a kind the map does not declare is counted for nothing.
 	// The kinds are the registry's own list and not a list written here, so a kind the reader
-	// learns to resolve and the map never learns to count fails this loop the day it is added.
+	// learns to resolve and the map never learns to count fails this loop the day it is added;
+	// the map's kinds are refstest's copy of its keys, which refs' own test holds to the map.
 	// The reader resolves no node of a kind the registry carries no loader for (refs'
 	// unresolvedKind: a supertag, an attribute, a result), so those are the registry's kinds no
 	// count is owed for, read off the registry's own answer (refs.ResolvesNodeKind).
-	counted := refs.BacklinkKinds()
+	counted := refstest.BacklinkKinds()
 	resolved := 0
 	for _, kind := range refs.VisibilityKinds() {
 		if !refs.ResolvesNodeKind(kind) {
@@ -632,7 +634,9 @@ func requireProvedSessionAlias(t *testing.T, database *store.Store, issue *strin
 		comment string
 		actor   model.Actor
 	}{{"4c6e7b00-0000-4000-8000-000000000001", actor}, {"4c6e7b00-0000-4000-8000-000000000002", claimedActor}} {
-		if err := graphstore.Authored(ctx, tx, "comment", write.comment, write.actor, at, graphstore.NoEvent); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return graphstore.QueueAuthored(b, "comment", write.comment, write.actor, at, graphstore.NoEvent)
+		}); err != nil {
 			t.Fatalf("record who wrote %s: %v", write.comment, err)
 		}
 	}

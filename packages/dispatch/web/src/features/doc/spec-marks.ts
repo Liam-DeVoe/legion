@@ -3,19 +3,21 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { api, documentReadRequest } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
   ArtifactBlock,
-  DecisionEntry,
   DecisionLink,
   GraphReferences,
   IssueDecisions,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { isDecisionEntry, withEntries } from "../issue/decision-entries";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
-/** What a stale block says when the reader rests on it. */
-export const STALE_BLOCK_TITLE = "A decision that shaped this block changed after it.";
+/** What a stale block says when the reader rests on it: its own text changed after a decision tied
+ *  it (`shapedNodeChanged`). */
+export const STALE_BLOCK_TITLE = "This block changed after a decision that shaped it.";
 
 /** One block of the spec as its `part_of` edge reads it: the version in which its text last
  *  changed (none where the server never recorded one) and the head of its text. */
@@ -33,10 +35,13 @@ export interface ChangedSinceRead {
   readonly version: number;
 }
 
-/** The decisions view, which the margin's decision cards read under the same key. */
+/** The decisions view, which the margin's decision cards, the issue page and the Decisions tab read
+ *  under the same key: the read with its `entries`, whichever release's server answered it
+ *  (`withEntries`). */
 export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   enabled,
-  queryFn: () => api.getIssueDecisions(issueKey),
+  queryFn: async (): Promise<IssueDecisions> =>
+    withEntries(await api.getIssueDecisions(issueKey), issueKey),
   queryKey: ["decisions", issueKey] as const,
 });
 
@@ -48,13 +53,6 @@ export function shapedNodeChanged(link: DecisionLink): boolean {
   const event = link.event ?? null;
   const changed = link.text_changed_event ?? null;
   return event !== null && changed !== null ? changed > event : link.stale;
-}
-
-/** Whether an entry of the Decisions read is a decision: an agent's, or an ask a person answered.
- *  An open ask is a question, and a declined one decided nothing, so neither is drawn beside the
- *  spec nodes its `shaped` tuples reach, as the old `decisions` member never held them. */
-export function isDecisionEntry(entry: DecisionEntry): boolean {
-  return entry.kind === "agent" || entry.answer_state === "answered";
 }
 
 /** The address of issue `issueKey`'s spec as the server names a document (`dispatch://<KEY>/spec`),
@@ -70,7 +68,6 @@ export function issueSpecAddress(issueKey: string): string {
 export function linkReachesDocument(link: DecisionLink, address: string): boolean {
   return link.to.document === address;
 }
-
 /** Every spec block a decision shaped whose text changed after the decision tied it, each once,
  *  in the order the read names them: the `shaped` links of the Decisions read's decisions
  *  (isDecisionEntry). With `address`, only the blocks of the document at that address
@@ -217,7 +214,9 @@ export function useSpecMarks({
       enabled && readAtOpen !== undefined && shownVersion !== undefined
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
-    onSuccess: (result) => queryClient.setQueryData(readKey, result),
+    // Over any read of the mark still out, which was asked before it and would put back the
+    // version read before (`replaceQueryData`).
+    onSuccess: (result) => replaceQueryData(queryClient, readKey, result),
     request: (version) => documentReadRequest(artifact.id, version),
     shouldSend: true,
     target: `read:document:${artifact.id}`,

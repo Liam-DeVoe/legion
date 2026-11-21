@@ -23,6 +23,15 @@ var decisionCensusKinds = []string{
 	"reading_parent", "ask_parent", "ask_anchor", "ask_answer",
 }
 
+// decisionEdgeCensusKinds are graph_edges' answers of those ties, which `census --store` holds to
+// the store as kinds of their own (graphcensus' edgeProjection). The database this file's test
+// seeds holds rows and tuples of each but ask_parent_edge, an ask's owned_by, which only an ask on
+// a document no issue owns states.
+var decisionEdgeCensusKinds = []string{
+	refs.TupleShaped + "_edge", refs.TupleFromAsk + "_edge", graphstore.TupleDecidedBy + "_edge",
+	graphstore.TupleFollowedBy + "_edge", "ask_parent_edge", "ask_anchor_edge",
+}
+
 // decisionCensusSession is the session the shared agent bearer writes this file's decision as,
 // decisionCensusFollower the session that follows the ask, and decisionCensusRole the role the
 // issue is routed to.
@@ -98,11 +107,16 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	pointer := func(block string) string { return "dispatch://" + issue + "/spec#b-" + block }
 	upload := func(header http.Header, name, content string, actor any) {
 		t.Helper()
+		artifacts := "/api/v1/issues/" + issue + "/artifacts"
 		body := map[string]any{"name": name, "content": content}
 		if actor != nil {
 			body["actor"] = actor
 		}
-		if answer := process.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", censusBody(t, body), header); answer.status != http.StatusCreated {
+		// The second upload of asks.md replaces its first version, so it names that version's token.
+		if base := process.uploadBase(t, artifacts, name); base != nil {
+			body["precondition"] = base
+		}
+		if answer := process.send(t, http.MethodPost, artifacts, censusBody(t, body), header); answer.status != http.StatusCreated {
 			t.Fatalf("upload %s: %s", name, answer)
 		}
 	}
@@ -141,6 +155,11 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	for _, name := range decisionCensusKinds {
 		requireCensusLine(t, printed, name, true)
 	}
+	for _, name := range decisionEdgeCensusKinds {
+		if name != "ask_parent_edge" {
+			requireCensusLine(t, printed, name, true)
+		}
+	}
 	for _, line := range []string{
 		"census: store-only kind=copied_from tuples=1 unresolved=0 left_out=0\n",
 		"census: store-only kind=moved_to tuples=0 unresolved=0 left_out=0\n",
@@ -156,7 +175,8 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	// The decision's tuple into r2 moves to r3: the rows still name r1 and r2 and the store now
 	// states r1 and r3, so both sides count three, and the census names the row of r2 that no
 	// tuple states and the tuple into r3 that no row projects, and nothing of r1, whose row and
-	// tuple agree (c-census: every reference, triple by triple).
+	// tuple agree (c-census: every reference, triple by triple). graph_edges answers the tuple into
+	// r3 only while a block_refs row of it stands, so shaped_edge names that tuple too.
 	// The spec is a fragment of its issue's room, born so: its blocks are the room's nodes, keyed by
 	// the tree's ref_key (refs.DocumentRoomSQL), and so are the far ends the decision's pointers
 	// resolve to. choices.md plays no role, so it is a room of its own and its blocks' nodes are
@@ -185,7 +205,8 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 		"census: store kind=shaped tuples=3 rows=3 table=block_refs rows_without_a_tuple=1 tuples_without_a_row=1 ",
 		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + node("r2") + ": a row no tuple states\n",
 		"census: store kind=shaped difference at block:" + decision + " shaped -> block:" + node("r3") + ": a tuple no row projects\n",
-		"census: store REFUSED (2 difference(s))\n",
+		"census: store kind=shaped_edge difference at block:" + decision + " shaped -> block:" + node("r3") + ": a tuple no row projects\n",
+		"census: store REFUSED (3 difference(s))\n",
 	} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("census --store once a shaped tuple reaches the wrong node printed no line holding %q", want)

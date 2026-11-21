@@ -38,26 +38,27 @@ function askOpeners(lines: readonly string[], blockId: string): string[] {
 /**
  * Refuses an approval request while the document holds an open ask block. A request asks
  * the human to agree to every point of the latest version, and an open block is a question they
- * have not decided yet. Their answer is held on the ask, not in the text, so it writes no version
- * and moves no request. The live document's `ask` blocks are judged against the latest version,
- * the one the request would name; a block not yet in that version counts as open.
+ * have not decided yet. Their answer is held on the ask, not in the text. The live document's
+ * `ask` blocks are judged against the latest version, the one the request would name; a block not
+ * yet in that version counts as open.
  *
- * A person's answer is held once, on the ask's node, so a version this
- * release writes records no state on a block's opening line, and such a block is judged by the
- * server's read of its ask: it is open while its ask is open. A block copied from another
- * document's ask has no ask of its own and is judged by that source, whose state, id and document
- * the live text (`GET /artifacts/{id}/text`, read only for such a copy) answers in its `asks`
- * member, or, from a Dispatch of the release before, which sends none, writes on the copy's
- * opening line (liveTextAsks). A version the release before wrote records the state settlement
- * wrote into the block, and is read as it was written: a block it shows open counts as open even
- * when its ask is already answered or closed, since while that release serves its settlement
- * writes the answer into the text, which reaches a version when the document settles, about two
- * seconds later, or with the agent's next edit, whichever is first. An
- * answered block already carries its own record, so no edit is needed for that; a waiver carries
- * none, so the agent's next edit is where the human's decision gets written into the text. A
- * block is taken by the version alone only when every line opening it records a settled state:
- * one that records none sends it to the server's read, so a line quoting the opener (in code,
- * say) can add an open block but never hide one.
+ * A Dispatch of this release answers each ask's state from the ask itself - a block's own ask from
+ * the asks list, a copy's source from the live text's `asks` (`GET /artifacts/{id}/text`) - and
+ * this command needs nothing more: wherever the live text answers `asks`, which only such a
+ * Dispatch does, each block is judged by the server's ask, whatever state a stored version records
+ * on its opening line, which this release keeps there only for the readers of the release before.
+ * A Dispatch of the release before sends no `asks`, writes each answer into the block, and is read
+ * as it reads itself: by the state the latest version records on the block's opening line, so a
+ * block that version shows open counts as open even when its ask is already answered or closed,
+ * since the answer reaches a version when the document settles, about two seconds later, or with
+ * the agent's next edit, whichever is first; a copy is judged by its source, whose state, id and
+ * document that Dispatch writes on the copy's opening line (liveTextAsks). An answered block
+ * already carries its own record, so no edit is needed for that; a waiver carries none, so the
+ * agent's next edit is where the human's decision gets written into the text. A block whose every
+ * opening line records the state the server's ask holds, or that records none, is judged without
+ * asking which release serves, since both read it alike, so a line quoting the opener (in code,
+ * say) can add an open block but never hide one. The live text is read once, and only for a block
+ * that needs it.
  *
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
@@ -80,12 +81,18 @@ export async function refuseOpenDecisionBlocks(
   ]);
   const asks = new Map(documentAsks.map((ask) => [ask.block_id, ask]));
   const lines = version.markdown.split("\n");
-  // The live text's asks, read once, the first time a copy needs its source's state.
-  let liveAsks: Promise<readonly TextAsk[]> | undefined;
+  // The live text's asks, read once, the first time a block needs them: a Dispatch of this release
+  // answers `asks`, and one of the release before sends none and writes them on each opening line.
+  let live: Promise<{ readonly served: boolean; readonly asks: readonly TextAsk[] }> | undefined;
+  const liveText = () =>
+    (live ??= client.docRead(artifact.id).then((text) => ({
+      served: text.asks !== undefined && text.asks !== null,
+      asks: liveTextAsks(text),
+    })));
   const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
-  // Only a version the release before wrote shows open a block whose ask is answered or closed.
-  // While that release serves, its settlement writes an answer into the block, which settles into
-  // a version on its own; a waived one (resolved) gets the decision written in.
+  // A version of the release before shows open a block whose ask is answered or closed until the
+  // version its settlement writes the answer into; a waived one (resolved) gets the decision
+  // written in.
   const stillOpen = (named: string, state: string): string =>
     state === "answered"
       ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
@@ -125,20 +132,26 @@ export async function refuseOpenDecisionBlocks(
     const openers = askOpeners(lines, block.id);
     const states = openers.map(stateOf);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
-    // The release before wrote the block's state into the version, which shows it open.
-    if (states.includes("open")) {
-      if (ask === undefined) return openCopy(named, liveTextAsks({ markdown: openers.join("\n") }));
-      return ask.state === "open" ? named : stillOpen(named, ask.state);
+    const recordsOpen = states.includes("open");
+    const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
+    if (ask !== undefined) {
+      const open = ask.state === "open";
+      if ((!recordsOpen && !recordsSettled) || recordsOpen === open || (await liveText()).served) {
+        return open ? named : undefined;
+      }
+      return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
-    if (states.every((state) => state !== undefined)) return undefined;
-    // A line opening the block records no state: the server's read of its ask judges it.
-    if (ask !== undefined) return ask.state === "open" ? named : undefined;
-    liveAsks ??= client.docRead(artifact.id).then(liveTextAsks);
-    const served = (await liveAsks).filter((copy) => copy.block_id === block.id);
+    // A copy, judged by its source.
+    const text = await liveText();
+    if (!text.served && recordsSettled) return undefined;
+    if (!text.served && recordsOpen) {
+      return openCopy(named, liveTextAsks({ markdown: openers.join("\n") }));
+    }
+    const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =
-      served.length > 0 &&
-      served.every((copy) => copy.state !== undefined && copy.state !== "open");
-    return settled ? undefined : openCopy(named, served);
+      copies.length > 0 &&
+      copies.every((copy) => copy.state !== undefined && copy.state !== "open");
+    return settled ? undefined : openCopy(named, copies);
   };
   const open: string[] = [];
   for (const block of blocks) {
@@ -151,7 +164,7 @@ export async function refuseOpenDecisionBlocks(
     [
       `dispatch ${commandName(tool)} was not called: ${artifact.name} (version ${latest}) has ${count}. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.`,
       ...open.map((line) => `- ${line}`),
-      "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Their answer is held on the ask, not in the text: it writes no version and moves no approval, so once every block is answered, request approval of the latest version, after any version a line above says to wait for. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since any earlier approval. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason), write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
+      "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Their answer is held on the ask, not in the text: Dispatch records its state, and who answered and when, on the block's opening line, which settles into a version on its own about two seconds later and changes no word of the text, so once every block is answered, request approval of the latest version, after any version a line above says to wait for. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since any earlier approval. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason), write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
     ].join("\n")
   );
 }

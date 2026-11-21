@@ -79,14 +79,9 @@ interface DrawnAuthor {
   readonly shape: string;
 }
 
-/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). */
-const AUTHORLESS: readonly string[] = [
-  "check",
-  "child_issue",
-  "decision",
-  "plan_task",
-  "requirement",
-];
+/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). A decision is
+ *  none of them: its row draws who decided it, as the decisions read's entry names them. */
+const AUTHORLESS: readonly string[] = ["check", "child_issue", "plan_task", "requirement"];
 
 /** Each row that draws an author other than the one `stored` gives its node, or that draws one
  *  where its kind has none. A row of neither, which the seed gave no known author, is left out. */
@@ -140,14 +135,20 @@ test("a node draws its kind at the right of its row and every node starts at one
           `${where} does not focus that question at load`
         ).toBeFocused();
         // A waiting question's words are drawn whole and the focused row draws its body, so the
-        // row of the seed's 160 words is taller than the screen, which holds it from its top.
+        // row of the seed's 160 words is taller than the screen, which holds it from its top: at
+        // or below what stays at the top of the screen (the view row, at 390 px) and above the
+        // screen's foot. Read against the window's top alone, a row under that band passed.
         await expect
           .poll(
             async () => {
-              const top = rowOf(await drawnRows(page), question)?.box?.y ?? -1;
-              return top >= 0 && top < size.height;
+              const row = nodeRow(page, question).first();
+              const below = await belowWhatStays(row);
+              const top = (await row.boundingBox())?.y;
+              return below !== undefined && below >= 0 && top !== undefined && top < size.height;
             },
-            { message: `${where} holds the top of that question's row off screen` }
+            {
+              message: `${where} holds the top of that question's row under what stays at the top or off screen`,
+            }
           )
           .toBe(true);
       }
@@ -157,9 +158,9 @@ test("a node draws its kind at the right of its row and every node starts at one
         .toBeGreaterThan(0);
       const layouts = await rowLayouts(page, seeded.slugs.spec);
       expectRowLayouts(layouts, where, true, size.width);
-      // Decision 246: the spec's requirement is a statement and the decisions document's is a
-      // block, so the view draws a bullet of each colour, each on its own row, for the check
-      // above to read.
+      // Decision 246: the spec's requirement is a statement and the requirement inside the
+      // plan's decision is a block, so the view draws a bullet of each colour, each on its own
+      // row, for the check above to read.
       expect(
         layouts
           .filter((row) => row.type === "requirement" && !row.context)
@@ -168,7 +169,7 @@ test("a node draws its kind at the right of its row and every node starts at one
       ).toEqual(
         expect.arrayContaining([
           [`${seeded.slugs.spec}#b-r-one`, true],
-          [`${seeded.slugs.decisions}#b-r1`, false],
+          [`${seeded.slugs.plan}#b-r1`, false],
         ])
       );
       expectRowGroups(await rowGroups(page), where, size.width, addressesOf(seeded));
@@ -824,7 +825,16 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
+    // The planner, whom the registry does not list, by the title its session stamped on each
+    // write the seed made as it: its messages and asks, and the decisions it wrote, whose
+    // decider the decisions read names with that title (`DecisionEntry.decided_by.title`).
     const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
+    // An agent the registry does not list and whose own record stamps no title: the recorder of
+    // the result, whom the page names by its own word for an agent nothing names.
+    const unnamedAgent = {
+      author: CONTROL_LABELS.unnamed_author,
+      shape: GLYPH_TOKENS.authors.agent,
+    };
     const stored = new Map<string, DrawnAuthor>([
       [seeded.comment, reader],
       [seeded.longComment, reader],
@@ -837,15 +847,19 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
       [seeded.answeredLong, plannerAuthor],
       [seeded.waitingLong, plannerAuthor],
       [seeded.openQuestion, plannerAuthor],
-      [seeded.result, { author: CONTROL_LABELS.unnamed_author, shape: GLYPH_TOKENS.authors.agent }],
+      [seeded.result, unnamedAgent],
+      [seeded.shaping, plannerAuthor],
+      [seeded.changed, plannerAuthor],
+      [seeded.unsure, plannerAuthor],
+      [seeded.raw, plannerAuthor],
     ]);
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
       await expectSeedDrawn(page, seeded);
       // A person by their login and an agent by its role's word, or by the page's word for one
-      // that names none, each by its kind's shape: people share one, agents another. A node the
-      // model holds no author for draws none.
+      // that names none, each by its kind's shape: people share one, agents another. A decision
+      // draws who decided it. A node the model holds no author for draws none.
       await expect
         .poll(async () => authorOffences(await drawnRows(page), stored), {
           message: "a row draws its author other than by the stored actor's name and kind",

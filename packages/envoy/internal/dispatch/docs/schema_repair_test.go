@@ -75,6 +75,43 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 }
 
+// A repair names no token: the live tree is outside the Proof schema, so it renders no markdown
+// and has no token for any caller to name. One that names a token has named a token the
+// document has never had, which is refused rather than taken with the guard dropped, and the
+// unreadable document is left as it was; the repair that names none, the only way to fix such a
+// document, is taken after it.
+func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First\n")
+	first := newSchemaRepairService(database)
+	seedServiceText(t, first, artifactID, "before\n")
+	writeSchemaInvalidElement(t, first, artifactID)
+	if err := first.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown first service: %v", err)
+	}
+
+	second := newSchemaRepairService(database)
+	t.Cleanup(func() {
+		if err := second.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown second service: %v", err)
+		}
+	})
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	named := &model.EditPrecondition{Document: "sha256:" + strings.Repeat("a", 64)}
+	if _, err := joinedReplaceTextNaming(second, artifactID, "repaired\n", alice, named); !errors.Is(err, ErrPreconditionUnavailable) {
+		t.Fatalf("a repair naming a token = %v, want ErrPreconditionUnavailable", err)
+	}
+	if _, err := second.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
+		t.Fatalf("read after the refused repair: %v, want the document outside the schema, as it stood", err)
+	}
+	if _, err := joinedReplaceText(second, artifactID, "repaired\n", alice); err != nil {
+		t.Fatalf("the repair naming no token: %v", err)
+	}
+	if text, err := second.Text(context.Background(), artifactID); err != nil || text != "repaired\n" {
+		t.Fatalf("read the repaired document: %q (%v), want repaired markdown", text, err)
+	}
+}
+
 // A repair has no readable previous tree to compare, so it preserves every open ask by its stored
 // block ID and refuses a replacement that drops one.
 func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
@@ -115,6 +152,38 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	}
 	if state != "open" {
 		t.Fatalf("retained ask state = %q, want open", state)
+	}
+}
+
+// A repair is refused to an agent only for the answered asks whose block the document held before
+// it, as its block index holds them: an answered ask whose block a person removed earlier is no
+// block the repair drops, so it neither refuses the repair nor is named by its refusal. The spec
+// holds two answered asks; alice, a person, removes q-gone; the document then falls outside the
+// Proof schema, and an agent's session repairs it. A repair dropping q-kept too is refused for
+// q-kept alone, and one keeping q-kept is taken.
+func TestAnAgentsRepairIsRefusedOnlyForTheAnsweredAsksTheDocumentStillHeld(t *testing.T) {
+	const head = "# Spec\n\nThe corpus is written once.\n\n"
+	kept := removedRestoreAsk("q-kept", "Which build writes the corpus?")
+	issue := newRestoreIssue(t, head+removedRestoreAsk("q-gone", "Which store holds the corpus?")+kept)
+	issue.answer(issue.spec, "q-gone", "The database we run.")
+	issue.answer(issue.spec, "q-kept", "The base release.")
+	issue.replaceAsPerson(issue.spec, head+kept)
+	if removals := heldRemovalsOf(t, issue, blockAskOn(t, issue.service, issue.spec, "q-gone").ID); len(removals) != 1 || removals[0].ToID != "alice" {
+		t.Fatalf("alice's removal of q-gone left the removals %+v, want one to alice", removals)
+	}
+	writeSchemaInvalidElement(t, issue.service, issue.spec)
+	agent := model.Actor{Kind: "session", ID: "ses-repairing-agent"}
+
+	_, err := joinedReplaceText(issue.service, issue.spec, head+"Repaired without either ask.\n", agent)
+	var refused *ErrAnsweredAskKept
+	if !errors.As(err, &refused) || len(refused.Asks) != 1 || !strings.HasSuffix(refused.Asks[0].Block, "#b-q-kept") {
+		t.Fatalf("the agent's repair dropping q-kept answered %v, want ErrAnsweredAskKept naming q-kept alone", err)
+	}
+	if _, err := joinedReplaceText(issue.service, issue.spec, head+kept+"Repaired.\n", agent); err != nil {
+		t.Fatalf("the agent's repair keeping q-kept answered %v, want it taken: q-gone left the spec in alice's earlier write", err)
+	}
+	if text, err := issue.service.Text(context.Background(), issue.spec); err != nil || !strings.Contains(text, "Repaired.") {
+		t.Fatalf("the repaired spec reads %q (%v), want the agent's repair", text, err)
 	}
 }
 

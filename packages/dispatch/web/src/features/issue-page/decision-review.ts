@@ -1,5 +1,14 @@
-import type { Comment, Decision } from "../../api/types";
+import type {
+  Artifact,
+  Comment,
+  Decision,
+  DecisionEntry,
+  DisplayTree,
+  IssueDetails,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { ownTree, ownWords } from "../issue/decision-text";
+import { parseNodeReference } from "../refs/routes";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
@@ -59,23 +68,88 @@ export function inReviewList(
 }
 
 /**
+ * What `decision` says: the decisions read answers a decision's text as its one `decision` block
+ * (`decisionread`'s words, the block rendered alone) and the server's reading of it as that
+ * block's (`DecisionEntry.text_tree`), so its own words are that text with the lines that open and
+ * close the block left out (`ownWords`), and its own reading is the block's content at the top
+ * level (`ownTree`), where a section's blocks stood. A text or a reading that is no such block is
+ * its own already. `tree` is absent where the read sent no reading. The page reads no decisions
+ * read: its decisions are nodes of the tree read, whose words are their own. Part I's browser
+ * rows read a decisions read entry's words here (`e2e/issue-page-i.e2e.ts`).
+ */
+export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+} {
+  const text = ownWords(decision.text);
+  const tree = ownTree(decision.text_tree);
+  return tree === undefined ? { text } : { text, tree };
+}
+
+/** The fields of the issue read a decision's document is found by (`decisionDocumentId`): its
+ *  key, its documents and which of them is its spec. */
+type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
+  readonly artifacts?: readonly Pick<Artifact, "id" | "slug">[] | null;
+};
+
+/**
+ * The id of the document whose block `decision` is, among the issue's documents: the decisions
+ * read names an agent's decision by its block's address (`DecisionEntry.ref`: `spec#b-…` for a
+ * block of the issue's spec, `artifact/<slug>#b-…` for one of another document), and a Change's
+ * anchor names the document it is anchored in by its id (`Anchor.artifact_id`). Undefined for a
+ * person's decision, whose address is its ask's and names no block, for an address of another
+ * issue, and while the issue read carries no such document.
+ */
+export function decisionDocumentId(
+  issue: DecisionDocuments,
+  decision: Pick<DecisionEntry, "ref">
+): string | undefined {
+  const route = parseNodeReference(decision.ref);
+  if (route === undefined || !("key" in route) || route.key !== issue.key) return undefined;
+  if (!("block" in route) || route.block === undefined) return undefined;
+  if (route.kind === "spec") {
+    return issue.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id)?.id;
+  }
+  if (route.kind !== "artifact") return undefined;
+  return issue.artifacts?.find((artifact) => artifact.slug === route.slug)?.id;
+}
+
+/**
+ * The id of the block `decision` is: the block the read names its document by
+ * (`DecisionEntry.document`). Undefined for an entry that names none and whose address names no
+ * block, an ask on the issue itself.
+ */
+export function decisionBlockId(
+  decision: Pick<DecisionEntry, "document" | "ref">
+): string | undefined {
+  if (decision.document !== null) return decision.document.block_id;
+  // A decision a server of the release before answered names no document (`withEntries`): its
+  // address is its section's heading block in the decisions document, and that block is the one
+  // a Keep is written against and a Change is placed by.
+  // kept for one release: compat-objects
+  const route = parseNodeReference(decision.ref);
+  return route !== undefined && "block" in route ? route.block?.id : undefined;
+}
+
+/**
  * Each Change of a decision node, by the comment's node, to the decision node it changes: every
  * comment whose first maker - the first of the authors the read lists for it - is a person, that
  * the read hangs under a decision node that was not replaced, made after the decision last
- * changed and after it was last kept. The node a comment hangs under is the one its `parent`
- * names by the outline's rule (`parentsIn`), so a comment on a block of another document that
- * shares the decision's block id is no Change of it. An agent's comment under it is no Change,
- * and neither is one older than its words, which asked for a change the words have since had.
+ * changed and after it was last kept, as the node's `decision` answers both. The node a comment
+ * hangs under is the one its `parent` names by the outline's rule (`parentsIn`). An agent's
+ * comment under it is no Change, and neither is one older than its words, which asked for a
+ * change the words have since had, nor one the read records no time for.
  */
 function nodeChangeComments(tree: TreeAnswer): Map<TreeAnswerNode, TreeAnswerNode> {
   const changes = new Map<TreeAnswerNode, TreeAnswerNode>();
-  for (const [node, parent] of parentsIn(tree.nodes)) {
+  for (const [node, parent] of parentsIn(tree.nodes ?? [])) {
     if (
       parent.supertag === "decision" &&
-      parent.replaced !== true &&
+      parent.decision?.replaced !== true &&
       node.supertag === "comment" &&
-      node.author[0]?.kind === "user" &&
-      after(node.made_at, parent)
+      node.author?.[0]?.kind === "user" &&
+      node.made_at !== null &&
+      after(node.made_at, parent.decision ?? {})
     ) {
       changes.set(node, parent);
     }
@@ -85,10 +159,9 @@ function nodeChangeComments(tree: TreeAnswer): Map<TreeAnswerNode, TreeAnswerNod
 
 /**
  * The node each node of the read hangs under: the nearest node before it in the read's order that
- * its `parent` names, since a parent comes before its children and two nodes - blocks of two
- * documents - can share an id; else the first node of that id. The outline places a node by the
- * same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a Change is the comment the outline
- * draws under its decision.
+ * its `parent` names, since a parent comes before its children; else the first node of that id.
+ * The outline places a node by the same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a
+ * Change is the comment the outline draws under its decision.
  */
 function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAnswerNode> {
   const first = new Map<string, TreeAnswerNode>();
@@ -99,7 +172,7 @@ function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAn
   const latest = new Map<string, TreeAnswerNode>();
   for (const node of nodes) {
     const parent =
-      node.parent === null ? undefined : (latest.get(node.parent) ?? first.get(node.parent));
+      node.parent === null ? undefined : (latest.get(node.parent.id) ?? first.get(node.parent.id));
     if (parent !== undefined) parents.set(node, parent);
     latest.set(node.id, node);
   }
@@ -122,14 +195,16 @@ export function decisionNodeChanges(
   for (const [comment, decision] of nodeChangeComments(answer)) {
     const id = idOf(decision);
     const held = changes.get(id);
-    if (held === undefined || compareTimestamps(comment.made_at, held.made_at) > 0) {
+    // Every Change holds a time (`nodeChangeComments`).
+    if (held === undefined || compareTimestamps(comment.made_at ?? "", held.made_at ?? "") > 0) {
       changes.set(id, comment);
     }
   }
   return changes;
 }
 
-/** Whether a comment made at `at` is newer than the decision node's words and its last Keep. */
+/** Whether a comment made at `at` is newer than the decision node's words and its last Keep, as
+ *  its `decision` answers them. */
 function after(at: string, row: Partial<Pick<Decision, "changed_at" | "kept">>): boolean {
   const since = [row.changed_at, row.kept?.kept_at].filter(
     (moment): moment is string => typeof moment === "string"

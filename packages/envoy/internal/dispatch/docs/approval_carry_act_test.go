@@ -2,24 +2,26 @@ package docs
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // An answer an agent made for its person under an act - the agent's session and the scopes its
-// credential held - is held on the ask's node and its row like any other answer, so on a fleet
-// of one build it writes no version and the person's
-// approval stands through it, whatever the act holds. The release before carried an approval to
-// the version an answer wrote, and read the act's scopes to decide whether it could; that carry is
-// gone, and no carry reads an act: the version the roll window writes while two builds serve is
-// carried by R10's case, which compares the two renderings and each ask with its node alone
-// (carryVerdict, TestCarryVerdictOverTheApprovedAndTheNewVersion).
+// credential held - is held on the ask's node and its row like any other answer, and writes one
+// version, whose only change is the server-owned attributes of the ask's block that a version
+// keeps (keptAskState: the state, who answered and when), so R10's case carries the person's
+// approval across it, whatever the act holds. The release before carried an approval to the
+// version an answer wrote, and read the act's scopes to decide whether it could; that carry is
+// gone, and no carry reads an act: R10's case compares the two renderings and each ask with its
+// node alone (carryVerdict, TestCarryVerdictOverTheApprovedAndTheNewVersion).
 
 // actAnswerSpec is the two-block document these tests decide: region, the block an agent answers,
 // and wave, the block the person answers beside it.
@@ -62,19 +64,16 @@ func answerWithAct(login string, selected []string, act *model.ActorAct) model.A
 	return model.AskAnswer{User: login, Selected: selected, At: time.Now().UTC(), Act: act}
 }
 
-// An answer an agent made for its person carries no approval, whatever its act holds, and needs
-// none: on a fleet of one build an answer is held on the ask's node and its row alone, so it
-// changes no byte of the document, the settlement after it writes no version, and the approval
-// the person gave stands at the version she gave it to: once the whole fleet runs this build, a
-// person's answer changes no byte of any document, and an approval of that document stands
-// through it. That holds for an act holding the person scope alone, for
+// An answer an agent made for its person carries the approval only as any answer does, whatever
+// its act holds: the answers write one version, which changes only the server-owned attributes of
+// the ask blocks a version keeps (keptAskState), never the answers' words, and R10's case carries
+// the approval the person gave to it. That holds for an act holding the person scope alone, for
 // one holding approve, and for a narrow agent's answer beside the person's own, so no act's scopes
 // decide anything here. The release before carried an approval to the version an answer wrote,
-// and only where the act held approve; that carry is gone, and the version the roll window writes
-// while two builds serve is carried by R10's case, whoever answered
-// (TestCarryVerdictOverTheApprovedAndTheNewVersion, api's
+// and only where the act held approve; that carry is gone, and the version is carried by R10's
+// case, whoever answered (TestCarryVerdictOverTheApprovedAndTheNewVersion, api's
 // TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent).
-func TestAnActWithoutApproveCarriesNoApproval(t *testing.T) {
+func TestNoActDecidesTheCarryOfTheVersionAnAnswerWrites(t *testing.T) {
 	narrow := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "planner", Scopes: []string{model.ScopePerson}}
 	approving := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "architect", Scopes: []string{model.ScopePerson, model.ScopeApprove}}
 	for _, test := range []struct {
@@ -88,10 +87,8 @@ func TestAnActWithoutApproveCarriesNoApproval(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			database, service, artifactID := seededActDocument(t)
-			if latest := latestVersionNumber(t, service, artifactID); latest != 1 {
-				t.Fatalf("the seeded document stands at version %d, want 1, the version alice approves", latest)
-			}
-			approveStoredVersion(t, database, artifactID, 1, "alice")
+			approved := latestVersionNumber(t, service, artifactID)
+			approveStoredVersion(t, database, artifactID, approved, "alice")
 			before, err := service.Text(context.Background(), artifactID)
 			if err != nil {
 				t.Fatal(err)
@@ -101,15 +98,25 @@ func TestAnActWithoutApproveCarriesNoApproval(t *testing.T) {
 			answerActAsk(t, service, artifactID, "wave", answerWithAct("alice", []string{"One"}, test.wave))
 			settleCurrentGeneration(t, service, artifactID)
 
-			if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
-				t.Fatalf("the answers left the document reading %q (%v), want it as it was: no byte of it holds an answer", after, err)
+			after, err := service.Text(context.Background(), artifactID)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if latest := latestVersionNumber(t, service, artifactID); latest != 1 {
-				t.Fatalf("the answers left the document at version %d, want version 1, the one alice approved", latest)
+			if same, err := renderedWithoutAskServerAttributes(before, after); err != nil || !same {
+				t.Fatalf("the answers left the document reading %q (%v), want it as it was but for its ask blocks' server-owned attributes:\n%s", after, err, before)
 			}
-			if reviews, approvals := carriedReviews(t, database, artifactID); reviews != 1 || approvals != 0 {
-				t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval of version 1 alone, standing, and no event",
-					reviews, approvals)
+			if strings.Count(after, ` state="answered" answered_by="alice" answered_at="`) != 2 || strings.Contains(after, "selected=") {
+				t.Fatalf("the answers left the document reading %q, want each block holding its state, answerer and time and no answer's words", after)
+			}
+			if latest := latestVersionNumber(t, service, artifactID); latest != approved+1 {
+				t.Fatalf("the answers left the document at version %d, want version %d, the one version they wrote", latest, approved+1)
+			}
+			if reviews, approvals := carriedReviews(t, database, artifactID); reviews != 2 || approvals != 1 {
+				t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval of version %d carried to version %d",
+					reviews, approvals, approved, approved+1)
+			}
+			if reason := approvedReasonAt(t, service, artifactID, approved+1); reason != attributeRemovalReason(approved) {
+				t.Fatalf("the review carried to version %d reads %q, want %q", approved+1, reason, attributeRemovalReason(approved))
 			}
 			for _, block := range []string{"region", "wave"} {
 				if ask := blockAskOn(t, service, artifactID, block); ask.State != "answered" || ask.Answer == nil || ask.Answer.User != "alice" {
@@ -118,6 +125,21 @@ func TestAnActWithoutApproveCarriesNoApproval(t *testing.T) {
 			}
 		})
 	}
+}
+
+// renderedWithoutAskServerAttributes reports whether a and b, two markdown renderings of a
+// document, are the same once every ask block of each has its server-owned attributes taken off
+// (withoutAskServerAttributes), as R10's case compares two versions.
+func renderedWithoutAskServerAttributes(a, b string) (bool, error) {
+	trees := make([]*pmdoc.Node, 2)
+	for index, markdown := range []string{a, b} {
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			return false, err
+		}
+		trees[index], _ = withoutAskServerAttributes(tree)
+	}
+	return renderSame(trees[0], trees[1])
 }
 
 // answerActAsk answers the ask of the block blockID of artifactID with answer as the answer route

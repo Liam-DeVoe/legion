@@ -40,15 +40,19 @@ import { inputMethodKey } from "./useNodeEditing";
  * reachable from the keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by
  * what it does, as it names every other.
  *
- * Every block of the focused row's words that scrolls its own content - each code block, table,
- * a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can scroll it
- * (`RowText.tsx`'s `useOutOfTabOrder`). On that block, or inside it, the keys the browser
- * scrolls by are the browser's: the tree moves, folds and says nothing for them
- * (`scrollsABlock`), and Escape gives the row back, as it does from any control inside a row.
+ * Every block of the focused row's words whose content runs past its box - a code block, a
+ * table, a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can
+ * scroll it; one whose content fits has nowhere to scroll and keeps none (`RowText.tsx`'s
+ * `useOutOfTabOrder`). On that block, or inside it, the keys the browser scrolls by are the
+ * browser's: the tree moves, folds and says nothing for them (`scrollsABlock`), and Escape gives
+ * the row back, as it does from any control inside a row.
  */
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
   readonly container: RefObject<HTMLElement | null>;
+  /** Whether a row of the tree is being edited, which Escape in its editor leaves
+   *  (`tree-leave-caret`). */
+  readonly editing: boolean;
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
   readonly holdsEscape: boolean;
@@ -59,7 +63,8 @@ export interface TreeKeyboard {
   readonly onCycle: () => void;
   /** Puts the caret in one node's own text, in the row the key was pressed on. */
   readonly onEdit: (row: string, node: TreeNode) => void;
-  /** Says the caret has left a node's text, so the row gives the document back. */
+  /** Says the caret has left a node's text, so the row gives the document back and takes the
+   *  focus back. */
   readonly onEditEnd: () => void;
   /** Opens or closes one branch. */
   readonly onFold: (id: string, open: boolean) => void;
@@ -76,8 +81,8 @@ export interface TreeKeyboard {
   readonly onReveal: (id: string) => void;
   /** Roots the tree at one node; the issue's own id is the whole tree. */
   readonly onZoom: (id: string) => void;
-  /** Whether the tree is read one node at a time, which is how it is drawn at 1024 px and
-   *  below: there the arrows that would walk into a branch zoom into it instead. */
+  /** Whether the tree is read one node at a time, which is how it is drawn below 1024 px
+   *  (`ZOOMED_TREE_QUERY`): there the arrows that would walk into a branch zoom into it instead. */
   readonly oneNodeAtATime: boolean;
   /** Whether every read the tree is built from holds its answer (`slots/body.tsx`). Until then
    *  the next open question or the decision behind a row may be a node that has not arrived, so
@@ -207,9 +212,6 @@ export function moveToRow(target: HTMLElement, options?: FocusOptions): void {
 }
 
 export function useTreeKeymap(tree: TreeKeyboard): void {
-  // The row the caret was taken from, so Escape puts the reader back on it rather than on
-  // whichever row the tree would otherwise offer.
-  const caretFrom = useRef<HTMLElement | null>(null);
   // The key being pressed, noted as it sets out for its target: the keymap asks a binding's
   // `when` with no key in hand, and a binding of two keys - `j` and Down - leaves the one that
   // scrolls a block to the browser while the other still moves the reader.
@@ -693,7 +695,6 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           return;
         }
         tree.onReport("");
-        caretFrom.current = elements[on] ?? null;
         tree.onEdit(rowKeyOf(row), row.node);
       },
       when: () => onRowItself(drawn().elements) !== -1,
@@ -703,7 +704,9 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // (below). It extends the Escape the page already binds for its header controls, which
       // answers for a focused select and never for these two. The Escape that ends an input
       // method's composition is the input method's and leaves nothing (`inputMethodKey`): the
-      // keymap passes over one marked `isComposing`, and Safari's comes unmarked.
+      // keymap passes over one marked `isComposing`, and Safari's comes unmarked. It is offered
+      // from an editable inside the tree alone, while a row is edited: an editor elsewhere on the
+      // page has keys of its own, and no row's caret to leave.
       id: "tree-leave-caret",
       inEditable: true,
       keys: "Escape",
@@ -711,15 +714,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       palette: false,
       run: (event) => {
         if (inputMethodKey(event)) return;
-        const row = caretFrom.current;
-        caretFrom.current = null;
         (document.activeElement as HTMLElement | null)?.blur();
+        // The editing's end gives the row the caret came from the focus back (`useNodeEditing`).
         tree.onEditEnd();
-        row?.focus();
       },
-      when: () =>
-        caretFrom.current !== null &&
-        document.activeElement?.closest('[contenteditable="true"]') != null,
+      when: () => {
+        const editable = document.activeElement?.closest('[contenteditable="true"]');
+        return (
+          tree.editing && editable != null && tree.container.current?.contains(editable) === true
+        );
+      },
     },
     {
       // From a control the reader reached inside a row - a link or a control `f` stopped on,

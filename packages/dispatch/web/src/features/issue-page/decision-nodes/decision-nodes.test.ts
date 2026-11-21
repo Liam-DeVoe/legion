@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 
 import type { Ask, Decision, DecisionKeep, DecisionLink, DisplayTree } from "../../../api/types";
+import {
+  type TreeNodeExtra,
+  treeAnswer,
+  treeNode,
+  treeTuple as tuple,
+} from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import {
   type DecisionNode,
@@ -11,12 +17,11 @@ import {
 } from "./decision-nodes";
 
 /**
- * The decisions of a tree read's answer. Each
- * case writes the answer as the tree read's contract describes it: every node with
- * its `parent`, in the read's walk order, a typed block with the `document` it is written in, a
- * decision node with the members the decisions read answers for it, and the tuples
- * between them, `shaped` and `decided_by` among them, with the person a `decided_by` names held
- * as context.
+ * The decisions of a tree read's answer. Each case writes the answer as the route sends it
+ * (`tree-read/tree-fixtures.ts`): every node with its `parent`, in the read's walk order, a typed
+ * block with the `document` it is written in, a decision node with the model's decision the read
+ * answers on it (`decision`), and the tuples between them, `shaped` and `decided_by` among them,
+ * with the person a `decided_by` names held as context.
  */
 
 const KEY = "CORE-1";
@@ -45,23 +50,10 @@ function node(
   id: string,
   supertag: string,
   parent: string | null,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   const text = `Words of ${id}.`;
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent,
-    rank: null,
-    state: "live",
-    supertag,
-    text,
-    text_tree: reading(text),
-    visibility: "project",
-    ...extra,
-  };
+  return treeNode(id, supertag, parent, { text, text_tree: reading(text), ...extra });
 }
 
 /** A typed block of one of the issue's documents, at `position` in it. */
@@ -70,27 +62,25 @@ function block(
   supertag: string,
   document: Document,
   position: number,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
   return node(id, supertag, KEY, { document: { ...document, position }, ...extra });
 }
 
-/** A decision block of the spec, with the members the read answers on it: an agent's decision
- *  that waits for review, as the decisions read answers one, unless the case says
+/** A decision block of the spec, with the model's decision the read answers on it: an agent's
+ *  decision that waits for review, as the decisions read answers one, unless the case says
  *  otherwise. */
-function decision(id: string, extra: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
+function decision(id: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
+  const { decision: members, ...rest } = extra;
   return block(id, "decision", SPEC, 1, {
-    asks: [],
-    changed_at: "2026-11-06T00:00:00Z",
-    changed_version: 2,
-    kept: null,
-    kind: "agent",
-    links: [],
-    replaced: false,
-    text_sha256: `sum-${id}`,
-    unsure: false,
-    waiting_review: true,
-    ...extra,
+    ...rest,
+    decision: {
+      changed_at: "2026-11-06T00:00:00Z",
+      changed_version: 2,
+      text_sha256: `sum-${id}`,
+      waiting_review: true,
+      ...members,
+    },
   });
 }
 
@@ -98,22 +88,19 @@ function decision(id: string, extra: Partial<TreeAnswerNode> = {}): TreeAnswerNo
 const ISSUE = node(KEY, "issue", null, { text: "The issue page draws one ordered body" });
 
 /** The person a `decided_by` tuple names, which the read answers as context. */
-const ALICE = node("alice", "person", null, { mark: "context", text: "alice" });
+const ALICE = node("alice", "person", null, { role: "context", text: "alice" });
 
 /** One answer of the tree read: the issue's node, then `nodes` in the walk's order. */
 function answer(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[] = []): TreeAnswer {
-  return {
-    converted: false,
-    cursor: null,
-    nodes: [ISSUE, ...nodes],
-    tree: null,
-    tuples: [...tuples],
-    view_of: null,
-  };
+  return treeAnswer([ISSUE, ...nodes], tuples);
 }
 
-function tuple(kind: string, from: string, to: string): TreeTuple {
-  return { from, kind, to };
+/** The node of `tree` a case names `name`, as the read answers it: by its block id, else by its
+ *  own id. */
+function held(tree: TreeAnswer, name: string): TreeAnswerNode {
+  const found = (tree.nodes ?? []).find((one) => (one.block_id ?? one.id) === name);
+  if (found === undefined) throw new Error(`the answer holds no node ${name}`);
+  return found;
 }
 
 /** The address of block `id` of the document `slug` of this issue. */
@@ -179,15 +166,14 @@ const READS: DecisionReads = { issue: { key: KEY } };
 // carries `shaped` ties answer none.
 test("a decision node answers the shape decisionsParts reads", () => {
   const words = "Keep the model pure.\n\nThe tree reads one answer.";
-  const d1 = decision("d1", {
-    links: [linkTo(blockRef("spec", "r1"))],
-    text: words,
-    text_tree: reading("Keep the model pure.", "The tree reads one answer."),
-  });
   const tree = answer(
     [
       block("r1", "requirement", SPEC, 0),
-      d1,
+      decision("d1", {
+        decision: { links: [linkTo(blockRef("spec", "r1"))] },
+        text: words,
+        text_tree: reading("Keep the model pure.", "The tree reads one answer."),
+      }),
       node("c1", "comment", "d1", { author: [{ id: "alice", kind: "user" }] }),
       block("q1", "ask", SPEC, 2),
       ALICE,
@@ -211,7 +197,7 @@ test("a decision node answers the shape decisionsParts reads", () => {
       kept: null,
       kind: "agent",
       links: [linkTo(blockRef("spec", "r1"))],
-      node: d1,
+      node: held(tree, "d1"),
       ref: blockRef("spec", "d1"),
       replaced: false,
       text: words,
@@ -223,6 +209,20 @@ test("a decision node answers the shape decisionsParts reads", () => {
   ]);
 });
 
+// The read answers a decision's members on the node's own `decision`, the model's decision, and
+// nowhere else: a decision node that carries none is no decision, as one no document holds is
+// none, since no reader could say how it stands and a Keep would carry no sum.
+test("a decision node that carries no decision is no decision", () => {
+  const tree = answer([
+    decision("d-read"),
+    // The fixture gives every decision node a decision, so this one has its own taken away.
+    { ...block("d-bare", "decision", SPEC, 2), decision: undefined },
+    node("d-placed-nowhere", "decision", KEY, { decision: {} }),
+  ]);
+
+  expect(decisionNodes(tree, READS).map((one) => one.block_id)).toEqual(["d-read"]);
+});
+
 // A decision's `shaped` ties are its links, which the read answers on the node
 // with each link's `stale`, and which the review list and each statement's decisions are read
 // from alone.
@@ -232,7 +232,7 @@ test("a decision's links are its shaped ties", () => {
     [
       block("r1", "requirement", SPEC, 0),
       block("r2", "requirement", SPEC, 1),
-      decision("d1", { links: ties }),
+      decision("d1", { decision: { links: ties } }),
     ],
     [tuple("shaped", "d1", "r1"), tuple("shaped", "d1", "r2")]
   );
@@ -258,9 +258,11 @@ test("its review state is the read's", () => {
   });
   const tree = answer([
     decision("d-waiting"),
-    decision("d-kept", { kept: keep("d-kept", "2026-11-07T00:00:00Z"), waiting_review: false }),
-    decision("d-replaced", { replaced: true, waiting_review: false }),
-    decision("d-rewritten", { kept: keep("d-rewritten", "2026-11-04T00:00:00Z") }),
+    decision("d-kept", {
+      decision: { kept: keep("d-kept", "2026-11-07T00:00:00Z"), waiting_review: false },
+    }),
+    decision("d-replaced", { decision: { replaced: true, waiting_review: false } }),
+    decision("d-rewritten", { decision: { kept: keep("d-rewritten", "2026-11-04T00:00:00Z") } }),
   ]);
 
   expect(
@@ -289,26 +291,24 @@ test("its review state is the read's", () => {
 });
 
 // A person's decision is the question they answered, where it carries
-// `shaped` ties. It is a decision as today's decisions read answers a person's: of the kind
-// `person`, naming the ask it is, with its ties as links that are not stale, waiting for nobody's
-// review, never kept nor replaced, and made when it was answered. An ask block is that ask by the
-// block the asks read names, in the document that holds it (`block_artifact`, by its slug); an ask
-// of the conversation is its own. An open question with ties, and an answered one with none, are
-// no decision.
+// `shaped` ties. Where the read answers no person's decision on the ask, it is a decision as
+// today's decisions read answers a person's: of the kind `person`, naming the ask it is, with its
+// ties as links that are not stale, waiting for nobody's review, never kept nor replaced, and
+// made when it was answered. An ask block is that ask by the block the asks read names, in the
+// document that holds it (`block_artifact`, by its slug); an ask of the conversation is its own.
+// An open question with ties, and an answered one with none, are no decision.
 test("a person's decision is its answered ask", () => {
   const answered = { at: "2026-11-06T12:00:00Z", selected: ["REST"], text: null, user: "alice" };
-  const q1 = block("q1", "ask", SPEC, 1, {
-    text: "Which transport do we expose?",
-    text_tree: reading("Which transport do we expose?"),
-  });
-  const ask4 = node("ask-4", "ask", KEY);
   const tree = answer(
     [
       block("r1", "requirement", SPEC, 0),
-      q1,
+      block("q1", "ask", SPEC, 1, {
+        text: "Which transport do we expose?",
+        text_tree: reading("Which transport do we expose?"),
+      }),
       block("q2", "ask", SPEC, 2),
       block("q3", "ask", SPEC, 3),
-      ask4,
+      node("ask-4", "ask", KEY),
       ALICE,
     ],
     [
@@ -332,16 +332,18 @@ test("a person's decision is its answered ask", () => {
     ],
     issue: { key: KEY },
   };
+  const q1 = held(tree, "q1");
+  const ask4 = held(tree, "ask-4");
   /** The link an ask's `shaped` tie to `r1` is, as the decisions read answers a link. */
   const shapedR1 = (from: TreeAnswerNode): DecisionLink => ({
-    created_at: from.made_at,
+    created_at: from.made_at ?? "",
     created_version: 0,
-    from_block: from.id,
+    from_block: from.block_id ?? from.id,
     stale: false,
     to: {
       changed_at: null,
       changed_by: null,
-      id: "r1",
+      id: held(tree, "r1").id,
       kind: "block",
       made_at: null,
       made_by: null,
@@ -389,6 +391,59 @@ test("a person's decision is its answered ask", () => {
   ]);
 });
 
+// The read answers a person's decision on the answered ask's own node (`decision`), and where it
+// does its members are the read's: the time and the version the ask's words last changed, the sum
+// of its words and the links its `shaped` tuples are, rather than the ones worked out from the
+// asks read. The read's word that the ask is answered stands over the asks read's, which may be
+// older than it; an ask with no `shaped` tie is still no decision, and one the read answers no
+// person's decision on, and the asks read holds open, is still a question.
+test("a person's decision the read answers on its ask is read there", () => {
+  const link: DecisionLink = { ...linkTo(blockRef("spec", "r1")), from_block: "ask-5" };
+  const tree = answer(
+    [
+      block("r1", "requirement", SPEC, 0),
+      node("ask-5", "ask", KEY, {
+        decision: {
+          changed_at: "2026-11-06T09:00:00Z",
+          changed_version: 3,
+          links: [link],
+          text_sha256: "sum-ask-5",
+        },
+      }),
+      node("ask-6", "ask", KEY, { decision: {} }),
+      node("ask-7", "ask", KEY),
+    ],
+    [tuple("shaped", "ask-5", "r1"), tuple("shaped", "ask-7", "r1")]
+  );
+  const reads: DecisionReads = {
+    // The asks read still holds the first ask open: the read's word stands.
+    asks: [question("ask-5"), question("ask-7")],
+    issue: { key: KEY },
+  };
+
+  expect(decisionNodes(tree, reads)).toEqual([
+    {
+      asks: ["ask-5"],
+      block_id: "ask-5",
+      changed_at: "2026-11-06T09:00:00Z",
+      changed_version: 3,
+      document: undefined,
+      heading: "Words of ask-5.",
+      kept: null,
+      kind: "person",
+      links: [link],
+      node: held(tree, "ask-5"),
+      ref: `dispatch://${KEY}/ask/ask-5`,
+      replaced: false,
+      text: "Words of ask-5.",
+      text_sha256: "sum-ask-5",
+      text_tree: reading("Words of ask-5."),
+      unsure: false,
+      waiting_review: false,
+    },
+  ]);
+});
+
 // A decision is addressed in the document its `document` member names, and
 // Keep and a Change's anchor go to that document: the spec's, the decisions document's, and a
 // document of the issue the read marks the node with.
@@ -411,11 +466,10 @@ test("a decision of another document names that document", () => {
   ]);
 });
 
-// Two documents of an issue that has not converted can each hold a block of one id, and a tie
-// names its target by that id alone. A person's decision's `shaped` tie then names the first of
-// the two the answer holds, the block the outline's chip names (`nodesById`), so the decision and
-// the outline's chip name the same block.
-test("a shaped tie to an id two blocks share names the first, as the outline does", () => {
+// Two documents of an issue can each hold a block of one id. The read names each node by its
+// store id, which no other node holds, so a tie names the one block it reaches, and a person's
+// decision's `shaped` tie and the outline's chip (`nodesById`) name that same block.
+test("a shaped tie to a block id two documents share names the block it reaches, as the outline does", () => {
   const tree = answer(
     [
       block("r1", "requirement", SPEC, 0),
@@ -436,8 +490,9 @@ test("a shaped tie to an id two blocks share names the first, as the outline doe
     ],
     issue: { key: KEY },
   };
+  const [tie] = tree.tuples ?? [];
 
-  expect(nodesById(tree).get("r1")?.document?.slug).toBe(SPEC.slug);
+  expect(nodesById(tree).get(tie?.to.id ?? "")?.document?.slug).toBe(SPEC.slug);
   expect(decisionNodes(tree, reads).map((one) => one.links?.map((link) => link.to.ref))).toEqual([
     [blockRef("spec", "r1")],
   ]);
@@ -451,7 +506,7 @@ test("an unsure decision is one whose uncertainty is high", () => {
     decision("d-high", {
       attributes: { uncertainty: "high", uncertainty_reason: "A holiday moves it." },
     }),
-    decision("d-read", { unsure: true }),
+    decision("d-read", { decision: { unsure: true } }),
     decision("d-medium", { attributes: { uncertainty: "medium" } }),
     decision("d-sure"),
   ]);

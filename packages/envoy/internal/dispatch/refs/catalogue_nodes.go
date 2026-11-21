@@ -11,7 +11,7 @@ import (
 )
 
 // The catalogue of lens kinds and the constraints a requirement or a kind is held to
-// (dispatch://INFRA-1950/spec#b-r-lens-catalogue): a lens_kind node is a kind of the catalogue,
+// (spec requirement r-lens-catalogue): a lens_kind node is a kind of the catalogue,
 // addressed `dispatch://lens_kind/<slug>`, and a constraint node is addressed
 // `dispatch://constraint/<uuid>`. Both are nodes of the store alone, with no projection row, so
 // each is read from graph_nodes and its text from the attributes its row carries: a lens kind's

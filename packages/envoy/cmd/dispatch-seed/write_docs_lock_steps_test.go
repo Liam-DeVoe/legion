@@ -153,8 +153,10 @@ func (f *seedLockFixture) holdBlockNode(t *testing.T, holder pgx.Tx, index int) 
 // before the write runs is its primary key: the seq the index's first tuple draws. Nothing else
 // draws from the sequence while the write runs, and the write draws one seq for each base attribute
 // its document's node write states of that new node - its visibility, its state and its project -
-// before the index appends, so the index's first tuple draws the next seq past those, and its
-// insert waits on this row to learn whether it commits.
+// and, where the documents' rows carry the node columns, one for the part_of that write states
+// beside them to the document's issue (writeDocument), before the index appends, so the index's
+// first tuple draws the next seq past those, and its insert waits on this row to learn whether it
+// commits.
 func (f *seedLockFixture) holdIndexTuple(t *testing.T, holder pgx.Tx, index int) {
 	t.Helper()
 	ctx := context.Background()
@@ -162,6 +164,13 @@ func (f *seedLockFixture) holdIndexTuple(t *testing.T, holder pgx.Tx, index int)
 	node := graphstore.ArtifactNode(f.documentRefKey(index), f.run.plan.projects[document.Project].Key, "", seedAuthor, baseTime)
 	before := 2
 	if node.Project != "" || len(node.Parties) > 0 {
+		before++
+	}
+	marked, err := f.run.carriesNodeMarker(ctx, "artifacts")
+	if err != nil {
+		t.Fatalf("read whether the documents' rows carry the node columns: %v", err)
+	}
+	if marked && document.Issue >= 0 {
 		before++
 	}
 	var next int64

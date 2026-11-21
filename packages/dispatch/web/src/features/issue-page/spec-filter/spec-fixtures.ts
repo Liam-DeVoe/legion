@@ -14,6 +14,7 @@ import {
   SPEC_SLUG,
 } from "../decisions-filter/decisions-fixtures";
 import type { TreeAsk, TreeNode } from "../issue-tree";
+import { type TreeNodeExtra, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
 /**
@@ -114,68 +115,43 @@ export function shaped(ref: string): DecisionLink {
   };
 }
 
-/** One node of a read of the issue's tree, under the issue, with the fields a case needs on it. */
+/** One node of a read of the issue's tree, under the issue, with the fields a case needs on it,
+ *  as the route sends it (`tree-read/tree-fixtures.ts`' `treeNode`). */
 export function answerNode(
   id: string,
   supertag: string,
-  partial: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...partial,
-  };
+  return treeNode(id, supertag, KEY, extra);
 }
 
 /** One decision of the issue's decisions document as the Spec view read answers it, as context
- *  (`mark: "context"`): a decision block, with the members the decisions read
- *  answers for that decision, by the same names. */
-export function decision(block: string, partial: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
+ *  (`role: "context"`): a decision block, carrying the model's decision the read answers on it
+ *  (`decision`), an agent's that waits for no review unless the case says otherwise. */
+export function decision(block: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
+  const { decision: members, ...rest } = extra;
   return answerNode(block, "decision", {
-    asks: [],
-    changed_at: "2026-11-14T12:00:00Z",
-    changed_version: 1,
     document: { artifact_id: "artifact-dec", position: 0, slug: DECISIONS_SLUG },
-    kept: null,
-    kind: "agent",
-    links: [],
     made_at: "2026-11-14T12:00:00Z",
-    mark: "context",
-    replaced: false,
+    role: "context",
     text: block,
-    text_sha256: "",
-    unsure: false,
-    waiting_review: false,
-    ...partial,
+    ...rest,
+    decision: { changed_at: "2026-11-14T12:00:00Z", ...members },
   });
 }
 
 /** The Spec view read's answer (`?view=spec`), on one page: `nodes` under the issue's own node,
- *  with `tuples` between them. It is what the page holds on the issue's node
+ *  with `tuples` between them, each node and each end named as the route names it
+ *  (`tree-read/tree-fixtures.ts`' `treeAnswer`). It is what the page holds on the issue's node
  *  (`TreeNode.views.spec`), whose decisions the column draws. */
 export function specViewAnswer(
   nodes: readonly TreeAnswerNode[],
   tuples: readonly TreeTuple[] = []
 ): TreeAnswer {
-  return {
-    converted: false,
-    cursor: null,
-    nodes: [
-      answerNode(KEY, "issue", { parent: null, text: "The issue page draws one ordered body" }),
-      ...nodes,
-    ],
-    tree: null,
-    tuples: [...tuples],
-    view_of: null,
-  };
+  return treeAnswer(
+    [treeNode(KEY, "issue", null, { text: "The issue page draws one ordered body" }), ...nodes],
+    tuples
+  );
 }
 
 /** The address of one statement, which is one block of the issue's spec. */

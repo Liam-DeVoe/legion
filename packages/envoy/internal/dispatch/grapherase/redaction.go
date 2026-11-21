@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -27,33 +28,82 @@ type redactedEvent struct {
 // payload in memory (redactPayload), which apply then writes. An event about a comment is one
 // whose payload is that comment's own (model.CommentEventPayload carries it as `id`) or names it
 // as `comment_id` (a delivery receipt); an event about a block is a document event of its own
-// document (`artifact.*` and `block.*`, whose payload names it as `artifact_id`), which carries
-// its versions and their diffs. Any other event that holds the same bytes - another person's
-// comment, another document's version - is about another node, and stays.
+// document (`artifact.*` and `block.*`, whose payload names it as `artifact_id`) of a version the
+// block stood in, which carries that version and its diff. Any other event that holds the same
+// bytes - another person's comment, another document's version, a version of the block's own
+// document it did not stand in - is about another node, and stays.
+//
+// A document event is of a version the block stood in where the run deletes that version
+// (readVersions) or the block stood in it holding an erased text (blockStoodIn): at any other
+// version the words the event carries are another block's own, as they are in the text of a
+// block holding the node's block at such a version (readAncestorTexts). Each type is tested
+// against the versions its payload names. artifact.version (docs.ArtifactVersionEventPayload) is
+// tested against version.number, and one that carries a diff against the number before it too:
+// the diff is taken from that version (api's namedVersionDiff), whose lines it holds as removed
+// and context lines. artifact.human_edited (model.ArtifactHumanEditedEventPayload) is tested
+// against from_version and to_version, the two versions its diff is taken between.
+// artifact.approved and artifact.changes_requested (model.ArtifactReviewEventPayload) are tested
+// against version, the version the review is pinned to, and so would a block event be
+// (model.BlockInvalidEventPayload, model.BlockRepairedEventPayload), whose payload names its
+// version as `version`; but a block event names no `artifact_id`, so none is read. Nor is
+// artifact.created, artifact.renamed or artifact.removed, which name their document inside
+// `artifact`, and none of which carries a version's text.
+//
+// An event that names no version - a payload of a shape no type above writes - cannot be
+// narrowed to one, so it is read as about the block wherever its payload holds an erased text, as
+// readVersions reads a version no block-aware build indexed: an erased text left standing in the
+// log is the failure an erase exists to prevent, and the redaction takes it out only where it
+// stands as a block of its own.
 //
 // A document event's payload carries the whole document, so it holds the erased block's text
 // beside every sibling's: it is redacted where the erased text stands as a block of its own
 // (redactBlockQuote) and nowhere else, which leaves a sibling's line in a version's markdown or
-// in a diff as it was written. A comment's own event carries that comment's body and nothing
-// else of anybody's, so every one of those bytes goes wherever it stands in what a person wrote.
+// in a diff as it was written. A comment's own event carries what that comment's author wrote -
+// its body, and a suggestion's replacement - every byte of which goes wherever it stands, and
+// beside it what quotes other nodes: the quote of the document the comment is anchored to, that
+// document's name, the question of the ask it replies to and the text of the block its reply
+// answers (quotedFields). Those are redacted only as a quote of a document is, where the erased
+// text stands as a block of its own, so another node's words around it stay as they were
+// written. A delivery receipt quotes no other node.
 //
-// An event about the node whose payload holds an erased text in its structural values alone
-// (structuralKey) is not redacted, so it is none of these: the run leaves it whole, and the
-// search for the rows it leaves lists it (readLeft), so the listing says what the run does.
+// An event about the node whose payload the redaction leaves holding an erased text - in a
+// structural value (structuralKey), which it never rewrites, or in a value that quotes another
+// node - is searched for by the search for the rows the run leaves, which lists it (readLeft,
+// cleanedEvents), so the listing says what the run does. So is an event of a version of the
+// block's document it did not stand in, which the run does not read as about it.
 func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
 	}
-	var about, subject string
+	var about string
+	var args []any
 	switch {
 	case refs.ItemKind(e.Kind) == refs.ItemComment:
-		about, subject = `payload->>'id' = $1 or payload->>'comment_id' = $1`, e.ID
+		about, args = `payload->>'id' = $1 or payload->>'comment_id' = $1`, []any{e.ID}
 	case read.document != nil:
-		about, subject = `payload->>'artifact_id' = $1 and (type like 'artifact.%' or type like 'block.%')`, read.versioned.artifact
+		// held is the test of whether the block stood in the version a payload names, read off
+		// the versions the run deletes ($4) and the block's own texts (blockStoodIn), which an
+		// issue room's block keeps under the room's tree artifact ($5, read.document) at the
+		// numbers of the document it stands in ($1, read.versioned), whose events these are.
+		held := func(version string) string {
+			return `((` + version + `) = any($4::int[]) or ` + blockStoodIn("$5::uuid", "("+version+")") + `)`
+		}
+		about = `payload->>'artifact_id' = $1::text and (type like 'artifact.%' or type like 'block.%') and case
+			when type = 'artifact.version' and jsonb_typeof(payload->'version'->'number') = 'number'
+				then ` + held(`(payload->'version'->>'number')::int`) + `
+				     or (jsonb_typeof(payload->'diff') = 'string' and ` + held(`(payload->'version'->>'number')::int - 1`) + `)
+			when type = 'artifact.human_edited' and jsonb_typeof(payload->'from_version') = 'number'
+			                                    and jsonb_typeof(payload->'to_version') = 'number'
+				then ` + held(`(payload->>'from_version')::int`) + ` or ` + held(`(payload->>'to_version')::int`) + `
+			when jsonb_typeof(payload->'version') = 'number'
+				then ` + held(`(payload->>'version')::int`) + `
+			else true
+		end`
+		args = []any{read.versioned.artifact, read.texts, read.blockID, read.numbers, read.document.artifact}
 	default:
 		return nil
 	}
-	rows, err := tx.Query(ctx, `select id, type, payload::text from events where `+about+` order by id`, subject)
+	rows, err := tx.Query(ctx, `select id, type, payload::text from events where `+about+` order by id`, args...)
 	if err != nil {
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -70,7 +120,11 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
 	for _, event := range found {
-		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil)
+		comment := ""
+		if refs.ItemKind(e.Kind) == refs.ItemComment {
+			comment = e.ID
+		}
+		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
@@ -95,8 +149,16 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // back in.
 //
 // quoted says the payload quotes a document, whose blocks are other nodes': a text is then
-// replaced only where it stands as a block of its own (redactBlockQuote).
-func redactPayload(payload []byte, texts []string, marker string, quoted bool) ([]byte, []string, error) {
+// replaced only where it stands as a block of its own (redactBlockQuote). A value under one of
+// quotedFields quotes another node whatever the payload, and is replaced the same way.
+//
+// comment is the erased comment's id, empty for any other node. A payload that is that comment's
+// own (its `id`) and whose `body_truncated` is true carries only the first part of the body
+// (model.EventBody), cut at the last blank line, else line break, else character within the
+// event's bound, so the cut can fall inside a block: that block then stands in the payload in
+// part, which no erased text matches whole, and its bytes would stay. Every byte of that body is
+// the comment's own, so the whole value is replaced with the marker (ownCutBody).
+func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
 	var value any
@@ -105,16 +167,18 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 	}
 	var originals []string
 	// key is the key the value stands under, and the key of the array that holds it for an
-	// element of one: an array under a structural key is a list of structural values.
-	var redact func(value any, key string) any
-	redact = func(value any, key string) any {
+	// element of one: an array under a structural key is a list of structural values. parent is
+	// the key the object holding the value stands under, empty at the payload's top level, which
+	// with key names a field of quotedFields.
+	var redact func(value any, parent, key string) any
+	redact = func(value any, parent, key string) any {
 		switch held := value.(type) {
 		case string:
 			if structuralKey(key) {
 				return held
 			}
 			rewritten := held
-			if quoted {
+			if quoted || quotedFields[[2]string{parent, key}] {
 				rewritten = redactBlockQuote(held, texts, marker)
 			} else {
 				for _, text := range texts {
@@ -127,16 +191,23 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 			return rewritten
 		case []any:
 			for index := range held {
-				held[index] = redact(held[index], key)
+				held[index] = redact(held[index], parent, key)
 			}
 		case map[string]any:
 			for name := range held {
-				held[name] = redact(held[name], name)
+				held[name] = redact(held[name], key, name)
 			}
 		}
 		return value
 	}
-	value = redact(value, "")
+	cutBody, cut := ownCutBody(value, comment)
+	value = redact(value, "", "")
+	if cut {
+		value.(map[string]any)["body"] = marker
+		if !slices.Contains(originals, cutBody) {
+			originals = append(originals, cutBody)
+		}
+	}
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
@@ -147,6 +218,39 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 		return nil, nil, err
 	}
 	return bytes.TrimSpace(written.Bytes()), originals, nil
+}
+
+// ownCutBody answers the top-level `body` of value, a decoded payload, where the payload is the
+// comment's own (its `id` is comment) and says the event cut that body (`body_truncated` true),
+// and false otherwise, an empty comment included.
+func ownCutBody(value any, comment string) (string, bool) {
+	top, ok := value.(map[string]any)
+	if !ok || comment == "" || top["id"] != comment || top["body_truncated"] != true {
+		return "", false
+	}
+	body, ok := top["body"].(string)
+	return body, ok
+}
+
+// quotedFields are the values of a comment's own event (model.CommentEventPayload) that quote
+// another node rather than say what the comment's author wrote, each by the key of the object it
+// stands in, empty for the payload's top level, and its own key: the quote of the document the
+// comment is anchored to (model.Anchor's quote), that document's name (artifact_name), the
+// question of the ask the comment replies to (ask_question), and the text of the block of the
+// comment or the ask the reply answers (model.ReplyBlock's text). A delivery receipt
+// (model.CommentDeliveryEventPayload) carries none of them: its values are its structure and the
+// error its send answered, which is no node's text.
+//
+// Each is written by the comment's write from the node it quotes, so an erased text inside a
+// longer line of one is that node's words, which the erase of the comment leaves (R5). The
+// redaction reads each as it reads a quote of a document (redactBlockQuote), and replaces an
+// erased text there only where it stands as a block of its own - the whole value, or a whole line
+// of it - where nothing around it says whose words they are.
+var quotedFields = map[[2]string]bool{
+	{"anchor", "quote"}:     true,
+	{"", "artifact_name"}:   true,
+	{"", "ask_question"}:    true,
+	{"reply_block", "text"}: true,
 }
 
 // structuralNames and structuralSuffixes are the keys of an event payload whose values are its

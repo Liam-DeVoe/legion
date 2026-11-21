@@ -389,9 +389,10 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // issue's row - when the issue is closed: the close waits for it on that row, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled. The
-// withdrawal is held on the ask's node and its row and changes no byte of the document, so the
-// edit's own version is the only one written since the block,
-// it holds none of the block's state, and the text an agent reads shows the block resolved.
+// withdrawal is held on the ask's node and its row, and a version keeps the state of an ask that
+// is not open for the release before's readers, so the withdrawal settles into one version: the
+// edit's own version holds none of the block's state, the next differs from it only in the
+// block's opener showing it resolved, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	var documents *docs.Service
 	// hold names the room whose next settlement is held at its owner row, until release: the room
@@ -481,8 +482,11 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	requireLiveText(t, handler, spec, resolved)
 	awaitSettled(t, database, spec)
 	written := versionMarkdowns(t, database, spec)[versions:]
-	if len(written) != 1 || !strings.Contains(written[0], "#late-decision") {
-		t.Fatalf("the document's versions since the ask block was written are %q, want the edit's own alone: neither the settlement nor the close writes one", written)
+	if len(written) != 2 || !strings.Contains(written[0], "#late-decision") || strings.Contains(written[0], `state="`) {
+		t.Fatalf("the document's versions since the ask block was written are %q, want the edit's own, holding no state of the open ask, and one more", written)
+	}
+	if want := strings.Replace(written[0], `multiple="false"}`, `multiple="false" state="resolved"}`, 1); written[1] != want {
+		t.Fatalf("the version the withdrawal settled into = %q, want the edit's own with the block's opener showing it resolved: %q", written[1], want)
 	}
 	requireNoAnswerAttributes(t, "the edit's version", written[0])
 }

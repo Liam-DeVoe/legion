@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -60,11 +61,7 @@ type credentialReads struct {
 func (c *credentialReads) resolvedBy(resolver *server) model.Actor {
 	c.t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/references", nil)
-	if c.token != "" {
-		request.Header.Set("Authorization", "Bearer "+c.token)
-	} else {
-		request.Header.Set("X-Dispatch-User", c.login)
-	}
+	c.credential(request)
 	actor, _, err := resolver.optionalActor(request)
 	if err != nil {
 		c.t.Fatalf("%s: resolve the credential: %v", c.name, err)
@@ -72,18 +69,35 @@ func (c *credentialReads) resolvedBy(resolver *server) model.Actor {
 	return actor
 }
 
+// credential sets on request the header that carries the credential: the personal token as a
+// bearer, or the cookie's person.
+func (c *credentialReads) credential(request *http.Request) {
+	if c.token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.token)
+	} else {
+		request.Header.Set("X-Dispatch-User", c.login)
+	}
+}
+
+// serve answers request with the credential, logging the answer and keeping its body.
+func (c *credentialReads) serve(request *http.Request) *httptest.ResponseRecorder {
+	c.t.Helper()
+	c.credential(request)
+	response := httptest.NewRecorder()
+	c.handler.ServeHTTP(response, request)
+	read := request.Method + " " + request.URL.String()
+	if wantsDisplayTrees(request) {
+		read += " with " + displayTreesHeader + ": 1"
+	}
+	c.t.Logf("%s: %s: status=%d body=%s", c.name, read, response.Code, response.Body.String())
+	c.bodies = append(c.bodies, response.Body.String())
+	return response
+}
+
 // get reads target with the credential.
 func (c *credentialReads) get(target string) *httptest.ResponseRecorder {
 	c.t.Helper()
-	var response *httptest.ResponseRecorder
-	if c.token != "" {
-		response = agentRequest(c.t, c.handler, http.MethodGet, target, nil, c.token)
-	} else {
-		response = dispatchRequest(c.t, c.handler, http.MethodGet, target, nil, c.login)
-	}
-	c.t.Logf("%s: GET %s: status=%d body=%s", c.name, target, response.Code, response.Body.String())
-	c.bodies = append(c.bodies, response.Body.String())
-	return response
+	return c.serve(httptest.NewRequest(http.MethodGet, target, nil))
 }
 
 // ok reads target with the credential, failing on anything but 200.
@@ -126,6 +140,28 @@ func (c *credentialReads) node(address string) model.GraphNode {
 		c.t.Fatalf("%s: the read of %s at its address answers %d %s, want 200", c.name, address, response.Code, response.Body.String())
 	}
 	return decodeBody[model.GraphReferences](c.t, response).Node
+}
+
+// targets is what GET /api/v1/reference-targets answers for addresses, one member each in their
+// order, failing on anything but 200 or on a member count that is not theirs. With trees it is
+// read as the dashboard reads it, with `Dispatch-Trees: 1`, so that each member of kind block the
+// read answers the credential carries its text_tree.
+func (c *credentialReads) targets(trees bool, addresses ...string) []model.ReferenceTarget {
+	c.t.Helper()
+	target := referenceTargetsOf(addresses...)
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	if trees {
+		request.Header.Set(displayTreesHeader, "1")
+	}
+	response := c.serve(request)
+	if response.Code != http.StatusOK {
+		c.t.Fatalf("%s: GET %s (trees %t) answers %d %s, want 200", c.name, target, trees, response.Code, response.Body.String())
+	}
+	answered := decodeBody[model.ReferenceTargets](c.t, response).Targets
+	if len(answered) != len(addresses) {
+		c.t.Fatalf("%s: the reference targets of %v (trees %t) answer %d members, want one each", c.name, addresses, trees, len(answered))
+	}
+	return answered
 }
 
 // countedNode is a node whose backlink count the test keeps: what it is called, and its kind and
@@ -266,7 +302,7 @@ func requireOnlyTheFiveKindsTakeAuthor(t *testing.T) {
 }
 
 // TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse is c-visibility-page
-// (dispatch://INFRA-1950/verification#c-visibility-page): one node of each of the five registry
+// of the verification document: one node of each of the five registry
 // kinds that take author - a lens, a block of a lens's finding, a risk, a constraint and an
 // interaction - is answered to its author and to nobody else, and no other kind takes author.
 //
@@ -292,12 +328,14 @@ func requireOnlyTheFiveKindsTakeAuthor(t *testing.T) {
 // it was, the project lens and its chain of the two project lenses among it, so the same reads
 // that move for alice stand still for him. Each of her five nodes at its address answers him what
 // an address of its kind nobody holds answers, byte for byte, and no answer he read holds the text
-// of any of them, beside the same text found in hers. A second project finding written after her
-// hidden one reads, to him, at the rank alice reads of it, the store's key of its part_of, so no
-// gap is left where hers stands. Search answers no hit for any of the five words, to both, beside
-// the comment's word found. Alice's personal token reads her four nodes of the kinds that compare
-// the person, bob's reads none. Last, a comment asked for author is refused naming its kind, and
-// the comment list holds no new comment.
+// of any of them, beside the same text found in hers. Asked for trees, the batched reference read
+// gives alice's two credentials her finding's text tree, the tree of every word of it, and answers
+// bob's two the finding as the address nobody holds beside it, gone and with no tree. A second
+// project finding written after her hidden one reads, to him, at the rank alice reads of it, the
+// store's key of its part_of, so no gap is left where hers stands. Search answers no hit for any of
+// the five words, to both, beside the comment's word found. Alice's personal token reads her four
+// nodes of the kinds that compare the person, bob's reads none. Last, a comment asked for author is
+// refused naming its kind, and the comment list holds no new comment.
 func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 	requireOnlyTheFiveKindsTakeAuthor(t)
 
@@ -727,6 +765,58 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		for _, direction := range []string{"to", "from"} {
 			requireNobodysAnswer(t, fmt.Sprintf("%s: GET /api/v1/references?%s=%s, %s holding %q", bobToken.name, direction, node.address, node.name, node.text),
 				bobToken.references(direction, node.address), bobToken.references(direction, node.nobodys), node.id, node.nobodysID)
+		}
+	}
+
+	// The batched reference read answers bob each of alice's five as it answers him an address of
+	// its kind nobody holds: gone, named nothing. Alice's cookie, which wrote them, is answered each
+	// of them, and her personal token each of the four whose kind compares the author it proved.
+	for _, node := range hidden {
+		for _, reads := range []*credentialReads{aliceCookie, aliceToken, bobCookie, bobToken} {
+			answered := reads.targets(false, node.address, node.nobodys)
+			held, nobodys := answered[0], answered[1]
+			switch {
+			case reads == aliceCookie || reads == aliceToken && node.authorCompared:
+				if held.Gone || held.Kind != nobodys.Kind {
+					t.Errorf("%s: GET /api/v1/reference-targets answers %s, %s, as %+v, want it answered under the kind %q", reads.name, node.address, node.name, held, nobodys.Kind)
+				}
+			case reads == bobCookie || reads == bobToken:
+				if !held.Gone || held.Name != "" || held.Kind != nobodys.Kind || held.Ambiguous ||
+					!nobodys.Gone || nobodys.Name != "" || nobodys.Ambiguous {
+					t.Errorf("%s: GET /api/v1/reference-targets answers %s, %s holding %q, as %+v, and %s, which nobody holds, as %+v: want the two alike, gone and naming nothing",
+						reads.name, node.address, node.name, node.text, held, node.nobodys, nobodys)
+				}
+			}
+		}
+	}
+	// Asked for trees, the same read draws alice's finding whole for its author: her cookie and her
+	// personal token, which proves her, are given its text_tree, the tree of every word of it. Each
+	// of bob's credentials is answered it as the finding nobody holds beside it, gone, named
+	// nothing and with no tree, and no answer he read holds its words (below).
+	for _, node := range hidden {
+		if node.kind != graphstore.KindLensBlock {
+			continue
+		}
+		for _, reads := range []*credentialReads{aliceCookie, aliceToken, bobCookie, bobToken} {
+			answered := reads.targets(true, node.address, node.nobodys)
+			held, nobodys := answered[0], answered[1]
+			if !nobodys.Gone || nobodys.Name != "" || len(nobodys.TextTree) != 0 {
+				t.Errorf("%s: GET /api/v1/reference-targets with trees answers %s, which nobody holds, as %+v, want it gone with no tree",
+					reads.name, node.nobodys, nobodys)
+			}
+			if reads == aliceCookie || reads == aliceToken {
+				if held.Gone || held.Kind != "block" || len(held.TextTree) == 0 {
+					t.Errorf("%s: GET /api/v1/reference-targets with trees answers %s, %s, as %+v, want a block that is not gone with its text_tree",
+						reads.name, node.address, node.name, held)
+				} else if got := treeText(t, json.RawMessage(held.TextTree)); got != node.text {
+					t.Errorf("%s: the text_tree of %s, %s, holds the text %q, want %q", reads.name, node.address, node.name, got, node.text)
+				}
+				continue
+			}
+			if !held.Gone || held.Name != "" || len(held.TextTree) != 0 || held.Kind != nobodys.Kind || held.Ambiguous {
+				t.Errorf("%s: GET /api/v1/reference-targets with trees answers %s, %s holding %q, as %+v, and %s, which nobody holds, as %+v: want the two alike, gone, naming nothing and with no tree",
+					reads.name, node.address, node.name, node.text, held, node.nobodys, nobodys)
+			}
 		}
 	}
 

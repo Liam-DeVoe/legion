@@ -15,7 +15,7 @@ import (
 )
 
 // TestAReindexLeavesAProposedRequirementProposed holds the block index to restating every block
-// node it writes (blockNode, graphstore.Node's Restates; dispatch://INFRA-1950/spec#b-r-proposed).
+// node it writes (blockNode, graphstore.Node's Restates; spec requirement r-proposed).
 // A requirement a write marked proposed is written again, live, by the pass over a version that
 // changes its words, and stays proposed; the pass over a version that drops it writes it gone;
 // and the pass over a version that restores it writes it live. After each pass the row and the
@@ -122,7 +122,7 @@ func requireRestatedBlock(t *testing.T, document parentDocument, blockID, state 
 }
 
 // laterBlockState is the state this build marks a requirement with (graphstore.StateProposed),
-// which dispatch://INFRA-1149's release meets on the blocks this build marked, since it serves
+// which cybermonklabs/legion#3178's release meets on the blocks this build marked, since it serves
 // beside this build during a roll and alone after a rollback. Its test of that rule,
 // TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn, holds this build's block index too.
 const laterBlockState = graphstore.StateProposed
@@ -206,7 +206,7 @@ func TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn(t *testing.T) {
 // markBlockState writes, by SQL, a state of a block's node as a later release's build
 // writes it: one state tuple, an attribute of the node with the value itself as its far end
 // (graphstore.KindValue), carrying the write's time and writer at the sentinel cause, as the
-// store's writer states a base attribute it moved (write.go's baseAttributeTuple), and the node
+// store's writer states a base attribute it moved (write.go's queueAppend), and the node
 // row's state moved to match, its cause kept.
 func markBlockState(t *testing.T, document parentDocument, blockID, state string, who model.Actor, at time.Time) {
 	t.Helper()

@@ -84,7 +84,7 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	}
 	for name, want := range map[string][]storeAttributeRead{
 		graphstore.KindLensKind: {{Name: "words", Kind: "string"}},
-		graphstore.KindLens:     {{Name: "verdict", Kind: "string"}},
+		graphstore.KindLens:     {{Name: "verdict", Kind: "string"}, {Name: "artifact_id", Kind: "string"}},
 		graphstore.KindRisk:     {{Name: "heading", Kind: "string"}, {Name: "early_warning", Kind: "string"}, {Name: "prevention", Kind: "string"}},
 		graphstore.KindConstraint: {
 			{Name: "standard", Kind: "string"}, {Name: "reference", Kind: "string"}, {Name: "measurement", Kind: "string"},

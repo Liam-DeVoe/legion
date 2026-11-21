@@ -362,10 +362,11 @@ var (
 // (refs.ResolvedBlockSQL: its moved_to tuples, then the room the document is edited in, then the
 // address itself), so a block of a document converted into its issue's room is held to the
 // predicate of the room's node, `<tree ref_key>#<block>`; `<kind>/<uuid>#<block>` for an item's
-// (refs.ParseItemBlockNode).
+// (refs.ParseItemBlockNode). None of those is a finding of a lens, or any other standing kind, so
+// the predicate binds no staleness test (refs.NodeKinds).
 func searchPageAndTailSQL(legsSource string, seen int) string {
 	documentBlock := `(ar.ref_key || '#' || covered.block_id)`
-	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
+	visibleBlock := refs.VisibleEnd(searchBlockKinds, `case r.kind when 'document' then 'block' else r.kind || '_block' end`,
 		`case r.kind when 'document' then coalesce(`+refs.ResolvedBlockSQL(documentBlock)+`, `+documentBlock+`)
 		  else r.kind || '/' || r.id || '#' || covered.block_id end`,
 		true, searchParam(seen))
@@ -515,12 +516,14 @@ with q as (select
 // the registry's predicate here (refs.VisibleEnd, over the arms' own kind and id) reaches
 // every keyword arm at once; a meaning arm binds its own besides, because its candidate CTE
 // cuts to its limit before this filter ever sees a row. A search row's kind is the reader's
-// word for it, and `document` is the node kind `artifact`.
+// word for it, and `document` is the node kind `artifact`. A row is an issue, a document, an ask,
+// a comment or a message (searchRowKinds), none of them a standing kind, so the predicate binds no
+// staleness test (refs.NodeKinds).
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
 func searchKindsCTE(arms, exclude string, seen int) string {
-	visible := refs.VisibleEnd(`case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
+	visible := refs.VisibleEnd(searchRowKinds, `case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
 	if exclude != "" {
 		visible = `not (` + exclude + `) and ` + visible
 	}
@@ -534,6 +537,14 @@ func searchKindsCTE(arms, exclude string, seen int) string {
 func searchParam(number int) string {
 	return "$" + strconv.Itoa(number)
 }
+
+// searchRowKinds is the node kind of every row a search arm answers, as the graph addresses it:
+// an issue, a document, an ask, a comment and a message. searchBlockKinds is the node kind of every
+// block a meaning hit can name: a document's block and each item kind's (refs.ItemKind.BlockKind).
+var (
+	searchRowKinds   = refs.KindsOf("issue", "artifact", string(refs.ItemAsk), string(refs.ItemComment), string(refs.ItemMessage))
+	searchBlockKinds = refs.KindsOf(refs.BlockNodeKind, refs.ItemAsk.BlockKind(), refs.ItemComment.BlockKind(), refs.ItemMessage.BlockKind())
+)
 
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
 // "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or
@@ -1104,8 +1115,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	// q is capped as `dispatch search` caps it, counted after trimming so a query the command
 	// sends is never refused here, and a project must be a key (an empty one searches every
-	// project). Both ride in the URL; packages/contracts/AGENTS.md "Search limits" says what keeps
-	// it short.
+	// project). Both ride in the URL; the URL budget in SEARCH_QUERY_MAX's doc comment
+	// (packages/contracts/src/dispatch-tools.ts) says what keeps it short.
 	if length := itemblocks.Units16(searchText); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("q", length, contracts.SearchQueryMax)
 		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; "+contracts.SearchQueryHint)
@@ -1180,8 +1191,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// text: runSearch stamps that on the response itself, true only where the fallback ran.
 	response.Query.Operators = reading.operators()
 	response.Filters = searchAppliedFilters(parameters)
-	// Where each ask hit stands is read for this route alone: the write-time suggestions share
-	// the ranking (runFusedSearch) but never show it. TookMS counts the read.
+	// Where each ask hit stands is read for this route alone: the write-time suggestions
+	// (relatedSearch) rank the same bodies but never show it. TookMS counts the read.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {

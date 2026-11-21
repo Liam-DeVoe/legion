@@ -12,15 +12,19 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * parts, the review list, the Spec filter's column, the header's count, Keep and Change - reads
  * them with no change of its own.
  *
- * A decision is a node of supertag `decision`, whose members the read answers on the node by the
- * decisions read's names and values, or a person's: a question they
- * answered that carries `shaped` ties, whose members are the ones
- * today's decisions read gives a person's decision (`api/decisions.go`'s `readDecisions`).
+ * A decision is a node of supertag `decision` that carries the model's decision (`decision`, the
+ * contract's `Decision`), whose members the read answers there by the decisions read's names and
+ * values, or a person's: a question they answered that carries `shaped` ties. The read answers a
+ * person's decision on the answered ask's own `decision` too (`issue_tree_read.go`'s
+ * `readDecisions`), and where it does, its members are read there; where it answers none, they
+ * are the ones today's decisions read gives a person's decision (`api/decisions.go`'s
+ * `readDecisions`).
  *
  * Beside the answer this reads the issue's key, which a node of this issue is addressed in, its
  * documents and its open asks, and the asks read: the answer holds no ask's answer, and it names
- * an ask block by its block, so the issue's asks are what say an ask is answered and which ask a
- * block is (`askOfNode`), for the outline (`tree-read/tree-nodes.ts`) as for every decision.
+ * an ask block by its block, so the issue's asks are what say which ask a block is, and whether
+ * an ask is answered where the read carries no person's decision on it (`askOfNode`), for the
+ * outline (`tree-read/tree-nodes.ts`) as for every decision.
  *
  * This module is pure, and it imports no code of `issue-tree.ts` or of `tree-read/`, only their
  * types: the outline's steps (`tree-read/tree-nodes.ts`) are to read the decisions from here, and
@@ -64,18 +68,19 @@ export interface Lookup {
 
 /**
  * Every decision of `answer`, in the answer's own order: one for each node of supertag `decision`
- * and one for each answered question that carries `shaped` ties, and none for any other node. A
- * decision node the read places in no document has no address (`referenceOf`), which is how every
- * reader finds a decision, and no document Keep could be written against, so it is none. `lookup`
- * is the answer and `reads` looked up by the read's own ids (`lookupOf`), which a caller that
- * holds them already passes.
+ * that carries the model's decision, and one for each answered question that carries `shaped`
+ * ties, and none for any other node. A decision node that carries no `decision` is no decision,
+ * and neither is one the read places in no document: it has no address (`referenceOf`), which is
+ * how every reader finds a decision, and no document Keep could be written against. `lookup` is
+ * the answer and `reads` looked up by the read's own ids (`lookupOf`), which a caller that holds
+ * them already passes.
  */
 export function decisionNodes(
   answer: TreeAnswer,
   reads: DecisionReads,
   lookup: Lookup = lookupOf(answer, reads)
 ): DecisionNode[] {
-  return answer.nodes.flatMap((node) => {
+  return (answer.nodes ?? []).flatMap((node) => {
     const decided =
       node.supertag === "decision"
         ? fromDecision(node, lookup)
@@ -144,58 +149,91 @@ export function decisionQuote(decision: {
   return block === undefined ? undefined : wordsOf(block);
 }
 
-/**
- * A decision node, with the members the read answers on it as they are. The read answers each of
- * them on every decision node; the client types them optional since no other node carries them,
- * so one the read left out reads as the decisions read's own empty value (`model.Decision`'s, as
- * `readDecisions` starts each decision): an agent's, naming no ask and no link, never changed,
- * kept or replaced, and waiting on nobody.
- */
-function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
-  const ref = referenceOf(node, lookup);
-  if (node.document === undefined || ref === undefined) return undefined;
+/** The members of the model's decision every reader of a decision reads as the read answers
+ *  them: who it waits on, how it stands, when its words last changed, what it settles and what
+ *  it shaped, and the sum of its words that a Keep sends. */
+type ModelMembers = Pick<
+  Decision,
+  | "asks"
+  | "changed_at"
+  | "changed_version"
+  | "kept"
+  | "kind"
+  | "links"
+  | "replaced"
+  | "text_sha256"
+  | "waiting_review"
+>;
+
+/** The model's members of `decision`, the node's own `decision` as the read answers it. */
+function modelMembers(decision: Decision): ModelMembers {
   return {
-    ...blockAndWords(node),
-    asks: node.asks ?? [],
-    changed_at: node.changed_at ?? null,
-    changed_version: node.changed_version ?? 0,
-    document: node.document.artifact_id,
-    kept: node.kept ?? null,
-    kind: node.kind ?? "agent",
-    links: node.links ?? [],
-    ref,
-    replaced: node.replaced === true,
-    text_sha256: node.text_sha256 ?? "",
-    waiting_review: node.waiting_review === true,
+    asks: decision.asks,
+    changed_at: decision.changed_at,
+    changed_version: decision.changed_version,
+    kept: decision.kept,
+    kind: decision.kind,
+    links: decision.links,
+    replaced: decision.replaced,
+    text_sha256: decision.text_sha256,
+    waiting_review: decision.waiting_review,
   };
 }
 
 /**
- * A person's decision: an ask the asks read says is answered, where it carries `shaped` ties. It
- * carries none of a decision's members, so it reads as today's decisions read reads a person's
- * decision, a section of `decisions.md` that names the ask: of the kind `person`, naming the ask
- * itself, waiting for nobody's review, never kept nor replaced, made when it was answered and at
- * no version of a document, with no sum, since only a decision that waits is kept; and its links
- * are its `shaped` ties (`shapedLinks`). Undefined for any other ask.
+ * A decision node, with the members of the model's decision the read answers on it (its
+ * `decision`) as they are. A decision node that carries none is no decision: no reader could say
+ * how it stands or what it shaped, and a Keep would carry no sum.
+ */
+function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
+  const decision = node.decision;
+  const ref = referenceOf(node, lookup);
+  if (decision === undefined || node.document === undefined || ref === undefined) return undefined;
+  return {
+    ...blockAndWords(node),
+    ...modelMembers(decision),
+    document: node.document.artifact_id,
+    ref,
+  };
+}
+
+/**
+ * A person's decision: an answered ask, where it carries `shaped` ties. The ask is answered where
+ * the read answers the person's decision on its node (`decision`), which it does for an ask a
+ * person answered alone, and otherwise where the asks read says so; the read's word stands over
+ * the asks read's, which may be older or newer than it. Where the read answers the person's
+ * decision, its members are the read's. Where it answers none, the decision reads as today's
+ * decisions read reads a person's decision, a section of `decisions.md` that names the ask: of
+ * the kind `person`, naming the ask itself, waiting for nobody's review, never kept nor replaced,
+ * made when it was answered and at no version of a document, with no sum, since only a decision
+ * that waits is kept; and its links are its `shaped` ties (`shapedLinks`). Undefined for any
+ * other ask.
  */
 function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
   const ask = lookup.askOf(node);
   const ref = referenceOf(node, lookup);
-  if (ask?.state !== "answered" || ref === undefined) return undefined;
+  const answered = node.decision !== undefined || ask?.state === "answered";
+  if (!answered || ref === undefined) return undefined;
   if (!lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")) return undefined;
+  const members: ModelMembers =
+    node.decision === undefined
+      ? {
+          asks: ask === undefined ? [] : [ask.id],
+          changed_at: ask?.answer?.at ?? null,
+          changed_version: 0,
+          kept: null,
+          kind: "person",
+          links: shapedLinks(node, lookup),
+          replaced: false,
+          text_sha256: "",
+          waiting_review: false,
+        }
+      : modelMembers(node.decision);
   return {
     ...blockAndWords(node),
-    asks: [ask.id],
-    changed_at: ask.answer?.at ?? null,
-    changed_version: 0,
+    ...members,
     document: node.document?.artifact_id,
-    kept: null,
-    kind: "person",
-    links: shapedLinks(node, lookup),
     ref,
-    replaced: false,
-    text_sha256: "",
-    waiting_review: false,
   };
 }
 
@@ -205,7 +243,7 @@ function blockAndWords(
   node: TreeAnswerNode
 ): Pick<DecisionNode, "block_id" | "heading" | "node" | "text" | "text_tree" | "unsure"> {
   return {
-    block_id: node.id,
+    block_id: node.block_id ?? node.id,
     // A converted decision's old `##` heading is its first paragraph, so the
     // heading every accessible name reads ("Keep <heading>") is that paragraph's words.
     heading: decisionQuote(node) ?? "",
@@ -213,7 +251,7 @@ function blockAndWords(
     text: node.text,
     ...(node.text_tree === undefined ? {} : { text_tree: node.text_tree }),
     // The conversion writes an `Unsure:` paragraph as the attribute `uncertainty="high"`.
-    unsure: node.unsure === true || node.attributes.uncertainty === "high",
+    unsure: node.decision?.unsure === true || node.attributes?.uncertainty === "high",
   };
 }
 
@@ -227,18 +265,18 @@ function blockAndWords(
 function shapedLinks(node: TreeAnswerNode, lookup: Lookup): DecisionLink[] {
   return lookup.tuplesFrom(node.id).flatMap((tuple) => {
     if (tuple.kind !== "shaped") return [];
-    const ref = tieReference(tuple.to, lookup.nodeOf, (target) => referenceOf(target, lookup));
+    const ref = tieReference(tuple.to.id, lookup.nodeOf, (target) => referenceOf(target, lookup));
     if (ref === undefined) return [];
     return [
       {
-        created_at: node.made_at,
+        created_at: node.made_at ?? "",
         created_version: 0,
-        from_block: node.id,
+        from_block: node.block_id ?? node.id,
         stale: false,
         to: {
           changed_at: null,
           changed_by: null,
-          id: tuple.to,
+          id: tuple.to.id,
           kind: "block",
           made_at: null,
           made_by: null,
@@ -280,8 +318,8 @@ export function tieReference(
  * (`tree-read/tree-nodes.ts`'s `referenceOf`) and every reader of a decision address a node by: a
  * comment's and a message's own, an ask's by the ask it is (`askIdOf`, from `ask`, the row of the
  * issue's asks it is), and a typed block's, a decision's among them, in the document its
- * `document` member names. A node of another issue is addressed in that issue; `key` is this
- * issue's. Anything else has none.
+ * `document` member names, by its block id. A node of another issue is addressed in that issue;
+ * `key` is this issue's. Anything else has none.
  */
 export function nodeReference(
   node: TreeAnswerNode,
@@ -297,7 +335,7 @@ export function nodeReference(
   return node.document === undefined
     ? undefined
     : buildDispatchReference({
-        block: { id: node.id },
+        block: { id: node.block_id ?? node.id },
         key: issue,
         kind: "artifact",
         slug: node.document.slug,
@@ -338,11 +376,12 @@ export function askNodeId(
 
 /**
  * The row of the issue's asks (`issueAsks`) each ask node is, by the node id the outline draws
- * either by (`askNodeId`, and `tree-read/tree-nodes.ts`'s `treeIdOf`): an ask block of this issue
- * by its block and the slug of its document, which a row names by its `block_artifact`, else by
- * the issue's document its `artifact_id` names; an ask of the conversation by its own row's; and
- * a node of another issue by its own id. A later row of one place stands over an earlier one.
- * The outline and every reader of a decision find an ask's row by this one rule.
+ * either by (`askNodeId`, and `tree-read/tree-nodes.ts`'s `treeIdOfNode`): an ask block of this
+ * issue by its block id and the slug of its document, which a row names by its
+ * `block_artifact`, else by the issue's document its `artifact_id` names; an ask of the
+ * conversation by its own row's; and a node of another issue by its block id. A later row of one
+ * place stands over an earlier one. The outline and every reader of a decision find an ask's row
+ * by this one rule.
  */
 export function askOfNode(reads: DecisionReads): (node: TreeAnswerNode) => TreeAsk | undefined {
   const slugs = new Map((reads.issue.artifacts ?? []).map((one) => [one.id, one.slug]));
@@ -350,10 +389,11 @@ export function askOfNode(reads: DecisionReads): (node: TreeAnswerNode) => TreeA
   const asks = issueAsks(reads);
   const placed = new Map([...asks.values()].map((ask) => [askNodeId(ask, slugOf), ask]));
   return (node) => {
-    if (node.issue !== undefined && node.issue !== reads.issue.key) return placed.get(node.id);
-    if (node.document !== undefined) return placed.get(blockNodeId(node.document.slug, node.id));
+    const blockId = node.block_id ?? node.id;
+    if (node.issue !== undefined && node.issue !== reads.issue.key) return placed.get(blockId);
+    if (node.document !== undefined) return placed.get(blockNodeId(node.document.slug, blockId));
     const own = asks.get(node.id);
-    return placed.get(own === undefined ? node.id : askNodeId(own, slugOf));
+    return placed.get(own === undefined ? blockId : askNodeId(own, slugOf));
   };
 }
 
@@ -375,12 +415,12 @@ function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
   };
 }
 
-/** Each node of the answer by its read id, the first the answer holds where two share one - two
- *  documents' blocks of an issue that has not converted - so every reader of a node by its read
- *  id, the outline and every decision, finds the same one. */
+/** Each node of the answer by its read id, its store id, the first the answer holds where two
+ *  share one, so every reader of a node by its read id, the outline and every decision, finds the
+ *  same one. */
 export function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
   const nodes = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes) {
+  for (const node of answer.nodes ?? []) {
     if (!nodes.has(node.id)) nodes.set(node.id, node);
   }
   return nodes;
@@ -390,9 +430,9 @@ export function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
  *  answer's order. */
 export function tuplesByFrom(answer: TreeAnswer): Map<string, TreeTuple[]> {
   const tuples = new Map<string, TreeTuple[]>();
-  for (const tuple of answer.tuples) {
-    const from = tuples.get(tuple.from);
-    if (from === undefined) tuples.set(tuple.from, [tuple]);
+  for (const tuple of answer.tuples ?? []) {
+    const from = tuples.get(tuple.from.id);
+    if (from === undefined) tuples.set(tuple.from.id, [tuple]);
     else from.push(tuple);
   }
   return tuples;

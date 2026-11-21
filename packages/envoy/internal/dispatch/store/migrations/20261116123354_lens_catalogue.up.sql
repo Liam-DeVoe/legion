@@ -1,6 +1,6 @@
 -- 20261116123354_lens_catalogue.up.sql
 --
--- INFRA-1950: the lens catalogue is nodes of the store (dispatch://INFRA-1950/spec#b-r-lens-catalogue).
+-- The lens catalogue is nodes of the store (spec requirement r-lens-catalogue).
 -- This migration writes three things, each the way 20261113230000 writes a type node: as rows,
 -- with the tuples each row is the projection of, and no event.
 --
@@ -12,7 +12,9 @@
 --
 -- Two. The attribute nodes of the supertags that declare no block type, each tied to its type by an
 -- `attribute_of` tuple, so a reader of the store reads what each of this tree's types holds from
--- the store and not from Go: a lens kind's `words`; a lens's `verdict`; a risk's `heading`,
+-- the store and not from Go: a lens kind's `words`; a lens's `verdict`, and the `artifact_id` a
+-- lens on a document or on a block of one records, the `artifacts.id` of the row the artifacts
+-- table held at the document's address when a write placed the lens there; a risk's `heading`,
 -- `early_warning` and `prevention`; a constraint's `standard` and `reference`, or its
 -- `measurement`, `value` and where it was `taken_where`; and an interaction's `words`, the time it
 -- `ends_at` and each `frame` of it. An interaction's project is the base attribute `project`
@@ -21,13 +23,14 @@
 -- its type's attributes - and since none of these names is a base attribute, each is stored under
 -- its own name.
 --
--- Three. The ten lens kinds dispatch://INFRA-1297 records, each a `lens_kind` node holding its
--- words, and each with one `constrained_by` tuple to a `constraint` node holding the kind's primary
--- source (`standard`) and that source's `reference`, as INFRA-1950's research task read them in the
--- sources themselves. Every catalogue constraint is the far end of exactly one constrained_by tuple
--- from a lens_kind node, and this writes no other constraint node: that is the shape
--- dispatch://INFRA-3862's project clause reads as the catalogue, which every viewer sees. Every
--- node is project-visible and live, in no project and between no parties, made by this
+-- Three. The ten lens kinds of the lens research the catalogue is seeded from (a record outside
+-- this repository), each a `lens_kind` node holding its words, and each with one `constrained_by`
+-- tuple to a `constraint` node holding the kind's primary source (`standard`) and that source's
+-- `reference`, as this change's research task read them in the sources themselves. Every catalogue
+-- constraint is the far end of exactly one constrained_by tuple from a lens_kind node, and this
+-- writes no other constraint node: that is the shape cybermonklabs/legion#4177's project clause
+-- (the catalogue list of its refs/catalogue.go) reads as the catalogue, which every viewer sees.
+-- Every node is project-visible and live, in no project and between no parties, made by this
 -- migration's writer. A constraint's id is a uuid fixed here, so a second run writes the same node.
 -- A kind added later is `envoy-dispatch lens-kind-add`, which writes the same shape
 -- (graphstore.AddLensKind).
@@ -45,6 +48,7 @@ with change as (
 attributes (supertag, name, kind, position) as (
   values ('lens_kind', 'words', 'string', 0),
          ('lens', 'verdict', 'string', 0),
+         ('lens', 'artifact_id', 'string', 1),
          ('risk', 'heading', 'string', 0),
          ('risk', 'early_warning', 'string', 1),
          ('risk', 'prevention', 'string', 2),
@@ -107,10 +111,10 @@ where not exists (
 order by facts.from_kind, facts.from_id, facts.kind, facts.to_id;
 
 -- The catalogue: each kind's lens_kind node and its constraint node, and the one constrained_by
--- tuple from the first to the second. The words, the sources and the references are INFRA-1950's
+-- tuple from the first to the second. The words, the sources and the references are this change's
 -- research task's reading of each source itself (the pull request body names each), and
--- `second-order` takes Bastiat, whose essay states the idea, where INFRA-1297 cited Chesterton's
--- fence, which the further kinds of 20261116123355 hold as a kind of its own.
+-- `second-order` takes Bastiat, whose essay states the idea, where that lens research cited
+-- Chesterton's fence, which the further kinds of 20261116123355 hold as a kind of its own.
 with change as (
   select now() as at, '{"kind": "system", "id": "lens-catalogue"}'::jsonb as writer
 ),

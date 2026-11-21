@@ -8,7 +8,6 @@ import type {
 } from "@legion/contracts";
 import { expect, type Locator, type Page, type Response } from "@playwright/test";
 
-import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
 import {
   type Body,
   type Op,
@@ -17,6 +16,7 @@ import {
   type Result,
   routeUrl,
 } from "../web/src/api/paths";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
@@ -488,8 +488,8 @@ const TREE_HELD_MS = 30_000;
 export async function heldTreeAnswer(
   watch: TreeAnswerWatch,
   what: string,
-  holds: (answer: IssueTreeAnswer) => boolean
-): Promise<IssueTreeAnswer> {
+  holds: (answer: IssueTreeRead) => boolean
+): Promise<IssueTreeRead> {
   const message = `${what} never answered the read the row waits for`;
   await expect
     .poll(
@@ -523,7 +523,7 @@ export function treePagesOf(page: Page): () => Promise<TreePage[]> {
     const cursor = new URL(response.url()).searchParams.get("cursor");
     kept.push(
       response.json().then(
-        (body: IssueTreeAnswer) => ({ cursor, next: body.cursor }),
+        (body: IssueTreeRead) => ({ cursor, next: body.cursor }),
         // A body the browser let go of before it was read, as the page moved on, is no page.
         () => undefined
       )
@@ -558,21 +558,21 @@ export interface LensReadIds {
  * standard or its measurement. A node of another issue, and the context a view or a catalogue
  * tuple brings in, is none of them. Throws, naming the node, where the answer holds none.
  */
-export function lensReadIds(answer: IssueTreeAnswer, key: string, seeded: LensSeed): LensReadIds {
-  const own = answer.nodes.filter(
-    (node) => (node.issue === undefined || node.issue === key) && node.mark !== "context"
+export function lensReadIds(answer: IssueTreeRead, key: string, seeded: LensSeed): LensReadIds {
+  const own = (answer.nodes ?? []).filter(
+    (node) => (node.issue === undefined || node.issue === key) && node.role !== "context"
   );
   const idOf = (what: string, node: IssueTreeNode | undefined): string => {
     if (node === undefined) throw new Error(`the tree read of ${key} holds no ${what}`);
     return node.id;
   };
   const targetOf = (what: string, kind: string, from: string): string => {
-    const tuple = answer.tuples.find((one) => one.kind === kind && one.from === from);
+    const tuple = (answer.tuples ?? []).find((one) => one.kind === kind && one.from.id === from);
     if (tuple === undefined) throw new Error(`the tree read of ${key} holds no ${what}`);
-    return tuple.to;
+    return tuple.to.id;
   };
   const holding = (supertag: string, attribute: string, value: string | null) =>
-    own.find((node) => node.supertag === supertag && node.attributes[attribute] === value);
+    own.find((node) => node.supertag === supertag && node.attributes?.[attribute] === value);
   const preMortem = idOf("pre-mortem", holding("lens", "verdict", seeded.preMortem.verdict));
   const tradeOff = targetOf("trigger of the pre-mortem", "triggered_by", preMortem);
   const riskA = idOf("risk A", holding("risk", "heading", seeded.riskA.heading));
@@ -580,7 +580,7 @@ export function lensReadIds(answer: IssueTreeAnswer, key: string, seeded: LensSe
     check1: targetOf("check that prevents risk A", "prevented_by", riskA),
     finding: idOf(
       "finding",
-      own.find((node) => node.parent === tradeOff)
+      own.find((node) => node.parent?.id === tradeOff)
     ),
     measurement: idOf(
       "measurement constraint",
@@ -599,8 +599,8 @@ export function lensReadIds(answer: IssueTreeAnswer, key: string, seeded: LensSe
 }
 
 /** The read id of every lens `answer` holds, in its order. */
-export function lensIdsIn(answer: IssueTreeAnswer): string[] {
-  return answer.nodes.flatMap((node) => (node.supertag === "lens" ? [node.id] : []));
+export function lensIdsIn(answer: IssueTreeRead): string[] {
+  return (answer.nodes ?? []).flatMap((node) => (node.supertag === "lens" ? [node.id] : []));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -609,8 +609,8 @@ export function lensIdsIn(answer: IssueTreeAnswer): string[] {
 
 /** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
  *  page's own request context, as `issue-page-t.ts`'s gates read it. */
-async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeAnswer> {
-  const pageAt = async (cursor: string | null): Promise<IssueTreeAnswer> => {
+async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeRead> {
+  const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
     const path = routeUrl(
       "/api/v1/issues/{key}/tree",
       { key },
@@ -620,10 +620,10 @@ async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeAnsw
     if (!response.ok()) {
       throw new Error(`GET ${path} failed: ${response.status()} ${await response.text()}`);
     }
-    return (await response.json()) as IssueTreeAnswer;
+    return (await response.json()) as IssueTreeRead;
   };
   const first = await pageAt(null);
-  const rest: IssueTreeAnswer[] = [];
+  const rest: IssueTreeRead[] = [];
   let cursor = first.cursor;
   while (cursor !== null) {
     const next = await pageAt(cursor);
@@ -647,7 +647,9 @@ export async function findingGate(page: Page, key: string, seeded: LensSeed): Pr
   const answer = await requestedTreeRead(page, key);
   const { finding } = lensReadIds(answer, key, seeded);
   return {
-    met: answer.nodes.some((node) => node.supertag === "lens" && node.parent === finding),
+    met: (answer.nodes ?? []).some(
+      (node) => node.supertag === "lens" && node.parent?.id === finding
+    ),
     owed:
       "owed until a lens invoked on a finding stands under that finding in the tree read " +
       "(the node model's commit 5c85ffdc1b)",

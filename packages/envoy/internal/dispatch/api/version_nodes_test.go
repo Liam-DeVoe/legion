@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -27,13 +29,16 @@ import (
 // version (storeArtifact's insert of a file's version), and a named version (docs' writeVersionTx).
 // Each row and its node are read in one statement after the request, so the two are one snapshot;
 // each site's write refused at its commit, after every tuple is appended, leaves neither the row
-// nor the node nor a tuple out of it.
+// nor the node nor a tuple out of it. The issue is born converted, so its spec's node is a query
+// node and the spec's first version a `query version` holding the query's definition_version (R14).
 //
 // A row an older build stored with no node gets one from the backfill, dated at the row's own
 // created_at, and a second backfill writes no version node. A document made a query node through
-// graphstore.Write reads back with supertag `query` and its `query`, `takes` and `subtree` values,
-// and the version written after it is a `query version`. The store census reads zero differences
-// after every write and after the backfill.
+// graphstore.Write reads back with supertag `query` and its `query`, `takes`, `subtree` and
+// `definition_version` values, and the version written after it is a `query version` holding that
+// definition_version, while the node the backfill writes after it of a version stored before it is
+// a `query version` holding none. The store census reads zero differences after every write and
+// after the backfill.
 func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -70,15 +75,19 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	if issue.Key != key {
 		t.Fatalf("the create made %s, want %s", issue.Key, key)
 	}
-	requireVersionNode(t, database, issue.PrimaryArtifactID, 1, graphstore.SupertagDocumentVersion,
+	requireVersionNode(t, database, issue.PrimaryArtifactID, 1, graphstore.SupertagQueryVersion,
 		eventOf(t, database, "issue.created", "issue_key", key))
+	requireDefinitionVersion(t, database, key+"/spec", 1, strconv.Itoa(graphstore.QueryDefinitionVersion))
 	requireStoreCensusZero(t, database, "after the issue's create")
 
-	// A markdown upload, and its next version.
+	// A markdown upload, and its next version, which names the token of the version it replaces,
+	// as every upload over a document does (uploadBaseNamed).
 	upload := func(name, content string) *artifactUploadResponse {
 		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
-			map[string]string{"name": name, "content": content}, "alice")
+		path := "/api/v1/issues/" + key + "/artifacts"
+		response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
+			"name": name, "content": content, "precondition": uploadBaseNamed(t, handler, path, name),
+		}, "alice")
 		if response.Code != http.StatusCreated {
 			t.Fatalf("upload %s: status=%d body=%s", name, response.Code, response.Body.String())
 		}
@@ -144,7 +153,7 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	`, notes.ID, olderAt); err != nil {
 		t.Fatalf("store version 4 as an older build stores it: %v", err)
 	}
-	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census before the backfill: %v", err)
 	}
@@ -184,6 +193,14 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 		t.Errorf("the second backfill reports %#v for versions, want nothing written", done)
 	}
 
+	// A version an older build stored before the notes became a query node, with no node.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1, 5, 'Written before the notes were a query.', '[{"kind":"user","id":"bob"}]')
+	`, notes.ID); err != nil {
+		t.Fatalf("store version 5 as an older build stores it: %v", err)
+	}
+
 	// A document made a query node through graphstore.Write, and the version written after it.
 	query := graphstore.QueryNode(notes.RefKey, "VER", graphstore.QueryPlan, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -196,20 +213,67 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 		t.Errorf("the query node reads back as %+v (held %t, %v), want supertag %s in project VER", node, held, err, graphstore.SupertagQuery)
 	}
 	for attribute, want := range map[string]string{
-		graphstore.AttributeQuery:   graphstore.QueryPlan,
-		graphstore.AttributeTakes:   `["plan_task"]`,
-		graphstore.AttributeSubtree: "issue:" + key,
+		graphstore.AttributeQuery:             graphstore.QueryPlan,
+		graphstore.AttributeTakes:             `["plan_task"]`,
+		graphstore.AttributeSubtree:           "issue:" + key,
+		graphstore.AttributeDefinitionVersion: strconv.Itoa(graphstore.QueryDefinitionVersion),
 	} {
 		value, held, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindArtifact, notes.RefKey, attribute)
 		if err != nil || !held || value != want {
 			t.Errorf("the query node's %s is %q (held %t, %v), want %q", attribute, value, held, err, want)
 		}
 	}
+	// The backfill after it writes the node of the version stored before it: a query version,
+	// since its document is a query node as the pass runs, holding no definition_version, since
+	// what the query node holds now says nothing of the definition the version was written under.
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("run the backfill after the notes became a query node: %v", err)
+	}
+	requireVersionNode(t, database, notes.ID, 5, graphstore.SupertagQueryVersion, graphstore.NoEvent)
+	requireDefinitionVersion(t, database, notes.RefKey, 5, "")
 	if code := name().StatusCode; code != http.StatusCreated {
 		t.Fatalf("name the query's version: status=%d", code)
 	}
-	requireVersionNode(t, database, notes.ID, 5, graphstore.SupertagQueryVersion, versionEvent(t, database, notes.ID, 5))
+	requireVersionNode(t, database, notes.ID, 6, graphstore.SupertagQueryVersion, versionEvent(t, database, notes.ID, 6))
+	requireDefinitionVersion(t, database, notes.RefKey, 6, strconv.Itoa(graphstore.QueryDefinitionVersion))
 	requireStoreCensusZero(t, database, "after the query's version")
+}
+
+// versionDefinition reads the node of version number of the document at refKey: its supertag, and
+// the definition_version it holds, nil where it holds none.
+func versionDefinition(t *testing.T, database *store.Store, refKey string, number int) (string, *string) {
+	t.Helper()
+	var supertag string
+	var held *string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select n.supertag,
+		       (select case when t.asserted then t.to_id end from graph_tuples t
+		        where t.from_kind = n.kind and t.from_id = n.id and t.kind = $3 and t.to_kind = $4
+		        order by t.seq desc limit 1)
+		from graph_nodes n where n.kind = $1 and n.id = $2
+	`, graphstore.KindVersion, graphstore.VersionID(refKey, number), graphstore.AttributeDefinitionVersion,
+		graphstore.KindValue).Scan(&supertag, &held); err != nil {
+		t.Fatalf("read the node of version %d of %s: %v", number, refKey, err)
+	}
+	return supertag, held
+}
+
+// definitionHeld is a definition_version as a failure prints it: none where the node holds none.
+func definitionHeld(held *string) string {
+	if held == nil {
+		return "none"
+	}
+	return *held
+}
+
+// requireDefinitionVersion fails unless the node of version number of the document at refKey holds
+// the definition_version want, none where want is empty.
+func requireDefinitionVersion(t *testing.T, database *store.Store, refKey string, number int, want string) {
+	t.Helper()
+	_, held := versionDefinition(t, database, refKey, number)
+	if got, wanted := definitionHeld(held), cmp.Or(want, "none"); got != wanted {
+		t.Errorf("the version %s holds definition_version %s, want %s", graphstore.VersionID(refKey, number), got, wanted)
+	}
 }
 
 // requireVersionNode reads one version's row and its node in one statement and fails unless the

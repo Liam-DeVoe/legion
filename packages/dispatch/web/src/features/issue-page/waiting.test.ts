@@ -12,6 +12,7 @@ import { decisionNodes, decisionQuote } from "./decision-nodes/decision-nodes";
 import { buildIssueTree, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
+import { treeNode as fixtureNode, type TreeNodeExtra, treeAnswer } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -209,38 +210,20 @@ const change: Comment = {
   turn: null,
 };
 
-/** One node of the tree read's answer, under the issue unless the case gives it another parent,
- *  with nothing on it but what the case gives it. */
+/** One node of the tree read's answer, as the route sends it (`treeNode`), under the issue unless
+ *  the case gives it another parent, with nothing on it but what the case gives it. */
 function treeNode(
   id: string,
   supertag: string,
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {},
+  parent: string = KEY
 ): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: [],
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag,
-    text: "",
-    visibility: "project",
-    ...extra,
-  };
+  return fixtureNode(id, supertag, parent, extra);
 }
 
 /** The tree read's answer for the issue: its own node, then `nodes` in the read's order. */
 function answerOf(nodes: readonly TreeAnswerNode[]): TreeAnswer {
-  return {
-    converted: false,
-    cursor: null,
-    nodes: [treeNode(KEY, "issue", { parent: null }), ...nodes],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  };
+  return treeAnswer([fixtureNode(KEY, "issue", null), ...nodes]);
 }
 
 /** The spec's statement `r1` as the tree read answers it, a typed block of the spec. */
@@ -256,37 +239,49 @@ const askNodes = (issue.open_asks ?? []).map((ask) =>
 
 /** A person's comment as the tree read answers it, under the node `parent`. */
 function commentNode(comment: Comment, parent: string): TreeAnswerNode {
-  return treeNode(comment.id, "comment", {
-    author: [comment.author],
-    made_at: comment.created_at,
-    parent,
-    text: comment.body,
-  });
+  return treeNode(
+    comment.id,
+    "comment",
+    { author: [comment.author], made_at: comment.created_at, text: comment.body },
+    parent
+  );
 }
 
-/** An agent's decision as the tree read answers its node: a decision block of the spec, with the
- *  members the read answers on it (`waitingDecision`'s) and the words `The words of <id>.`,
- *  unless the case gives it others. */
+/** An agent's decision as the tree read answers its node: a decision block of the spec, carrying
+ *  the model's decision (`decision`, `waitingDecision`'s members) and the words
+ *  `The words of <id>.`, unless the case gives it others. */
 function decisionNode(
   id: string,
   shaped: readonly string[],
-  extra: Partial<TreeAnswerNode> = {}
+  extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
+  const { decision, ...rest } = extra;
   const row = waitingDecision(id, shaped);
   return treeNode(id, "decision", {
-    asks: row.asks,
-    changed_at: row.changed_at,
-    changed_version: row.changed_version,
     document: { artifact_id: spec.id, position: 1, slug: "spec" },
-    kept: row.kept,
-    kind: row.kind,
-    links: row.links,
-    replaced: row.replaced,
     text: `The words of ${id}.`,
-    text_sha256: row.text_sha256,
-    waiting_review: row.waiting_review,
-    ...extra,
+    ...rest,
+    decision: {
+      asks: row.asks,
+      changed_at: row.changed_at,
+      changed_version: row.changed_version,
+      kept: row.kept,
+      kind: row.kind,
+      links: row.links,
+      replaced: row.replaced,
+      text_sha256: row.text_sha256,
+      waiting_review: row.waiting_review,
+      ...decision,
+    },
   });
+}
+
+/** `node`, a decision node, with the model's decision the read answers on it changed by
+ *  `members`. */
+function withDecision(node: TreeAnswerNode, members: Partial<Decision>): TreeAnswerNode {
+  return node.decision === undefined
+    ? node
+    : { ...node, decision: { ...node.decision, ...members } };
 }
 
 /** Which addresses name a statement of the issue, as the header's count is handed them: by the
@@ -381,8 +376,18 @@ test("waitingOnReader counts a waiting decision node", () => {
   const tree = answerOf([
     statement,
     decisionNode("waits", ["r1"]),
-    decisionNode("kept", ["r1"], { kept: keep, waiting_review: false }),
-    decisionNode("replaced", ["r1"], { replaced: true, waiting_review: false }),
+    decisionNode("kept", ["r1"], {
+      decision: {
+        kept: keep,
+        waiting_review: false,
+      },
+    }),
+    decisionNode("replaced", ["r1"], {
+      decision: {
+        replaced: true,
+        waiting_review: false,
+      },
+    }),
     decisionNode("untied", []),
   ]);
 
@@ -446,10 +451,18 @@ test("the count and the tree agree on a decision node's Change the comments read
 // than both is a Change, and the decision waits on its agent, in the count as in the tree.
 test("a Change older than the decision's last change is no Change", () => {
   // The decision's words last changed at 10:00 (`waitingDecision`).
-  const keptAt = (at: string): Partial<TreeAnswerNode> => ({
-    kept: { artifact_id: spec.id, block_id: "d1", changed_version: 2, kept_at: at, kept_by: "bob" },
+  const keptAt = (at: string): TreeNodeExtra => ({
+    decision: {
+      kept: {
+        artifact_id: spec.id,
+        block_id: "d1",
+        changed_version: 2,
+        kept_at: at,
+        kept_by: "bob",
+      },
+    },
   });
-  const madeAt = (at: string, extra: Partial<TreeAnswerNode> = {}) =>
+  const madeAt = (at: string, extra: TreeNodeExtra = {}) =>
     waits(
       answerOf([
         statement,
@@ -504,11 +517,8 @@ test("a Change of a decision node is no Change of another document's decision of
     document: { artifact_id: "artifact-decisions", position: 0, slug: "decisions-md" },
   });
   const other = treeNode("d1", "decision", {
-    changed_at: changed.changed_at,
+    decision: { changed_at: changed.decision?.changed_at ?? null, waiting_review: true },
     document: { artifact_id: spec.id, position: 1, slug: "spec" },
-    kept: null,
-    replaced: false,
-    waiting_review: true,
   });
   const tree = answerOf([statement, changed, commentNode(asked, "d1"), other]);
   const root = buildIssueTree({ coverage, issue: quiet, tree, viewer: "alice" });
@@ -536,13 +546,12 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
       document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
     }),
     decisionNode("listed", ["r1"]),
-    {
-      ...tiedToPlan,
-      links: (tiedToPlan.links ?? []).map((link) => ({
+    withDecision(tiedToPlan, {
+      links: (tiedToPlan.decision?.links ?? []).map((link) => ({
         ...link,
         to: { ...link.to, id: plan.id, ref: `dispatch://${KEY}/artifact/plan-md#b-p1` },
       })),
-    },
+    }),
   ]);
 
   expect(waits(tree, coverage, planned)).toEqual([1, ["spec#b-listed"]]);
@@ -560,13 +569,12 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
 test("the count and the tree read a tie by one rule for a statement, whatever address it writes", () => {
   const tiedTo = (id: string, block: string, documentId: string, ref: string): TreeAnswerNode => {
     const decided = decisionNode(id, [block]);
-    return {
-      ...decided,
-      links: (decided.links ?? []).map((link) => ({
+    return withDecision(decided, {
+      links: (decided.decision?.links ?? []).map((link) => ({
         ...link,
         to: { ...link.to, id: documentId, ref },
       })),
-    };
+    });
   };
   const tied = [
     tiedTo("short", "r1", spec.id, `dispatch://${KEY}/spec#b-r1`),
@@ -603,8 +611,9 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   expect(tied).toHaveLength(5);
   for (const decided of tied) {
     const counted = waitingOnReader(planned, "alice", listed, answerOf([...requirements, decided]));
-    const marked = waitingDecisions.includes(blockNodeId("spec", decided.id));
-    expect(counted.decisions, decided.id).toBe(marked ? 1 : 0);
+    const block = decided.block_id ?? decided.id;
+    const marked = waitingDecisions.includes(blockNodeId("spec", block));
+    expect(counted.decisions, block).toBe(marked ? 1 : 0);
   }
 });
 

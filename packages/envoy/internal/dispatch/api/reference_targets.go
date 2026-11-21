@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -41,15 +42,17 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // answer by index or by reference; a reference named twice is answered twice.
 //
 // It is a GET with one repeated parameter, not a POST of a list: a POST of the page goes through
-// the write store with an Idempotency-Key (packages/dispatch/AGENTS.md), so a POST read would be
-// a second write path, and a GET is what a browser cache, a conditional read and the page's
-// request budget are counted by. GET /api/v1/references reads one node's edges and stays as it
-// is; this read names no edges at all.
+// the write store with an Idempotency-Key (packages/dispatch/web/src/features/writes/), so a POST
+// read would be a second write path, and a GET is what a browser cache, a conditional read and the
+// page's request budget are counted by. GET /api/v1/references reads one node's edges and stays
+// as it is; this read names no edges at all.
 //
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
 // route refuses its own), and so is a set past referenceTargetsMax, which is refused before
 // anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
-// target was deleted still has to draw.
+// target was deleted still has to draw. The read answers for the acting reader, as every read of
+// the graph does: a target reserved for an author who is not the reader, or at node state gone,
+// is answered gone, which is what an address nobody holds answers (refs.TargetNames).
 //
 // A reference whose item id or block id is written short is read as GET /api/v1/references reads
 // its ?to= (wholeReferences): as the one item that carries the prefix among the items of the
@@ -140,7 +143,7 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	if err := s.resolveBlockTargets(r.Context(), named); err != nil {
+	if err := s.resolveBlockTargets(r.Context(), who, named); err != nil {
 		return nil, err
 	}
 	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named)
@@ -152,27 +155,29 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 			answers[index].Name, answers[index].Gone = name, false
 		}
 	}
-	if err := s.blockTrees(r.Context(), answers, named, trees); err != nil {
+	if err := s.blockTrees(r.Context(), who, answers, named, trees); err != nil {
 		return nil, err
 	}
 	return answers, nil
 }
 
-// resolveBlockTargets writes, in place, the node each document block of named resolves to: the
-// far end of its address's moved_to tuples first, then the same block in its document's room,
-// then the address itself (refs.ResolveFarEnds, block_moved_to), as every reader of a reference
-// resolves one (T17 of this branch's plan). So a reference to a block of a document converted into
-// its issue's room, written at the document's own address, names the block the room's index
-// keeps under the room's tree, and its name and its text are read there. Every block of the set is
-// resolved in one statement, and a set that names no document block costs none.
-func (s *server) resolveBlockTargets(ctx context.Context, named []refs.Target) error {
+// resolveBlockTargets writes, in place, the node each document block of named resolves to for
+// who: the far end of its address's moved_to tuples first, then the same block in its document's
+// room, then the address itself (refs.ReadableFarEnds, block_moved_to), as every reader of a
+// reference resolves one (T17 of this branch's plan). So a reference to a block of a document
+// converted into its issue's room, written at the document's own address, names the block the
+// room's index keeps under the room's tree, and its name and its text are read there. A block who
+// may not see is reached through no address: the statement binds the block predicate for who, so
+// such an address stays as written and names what it names for that reader. Every block of the
+// set is resolved in one statement, and a set that names no document block costs none.
+func (s *server) resolveBlockTargets(ctx context.Context, who model.Actor, named []refs.Target) error {
 	var addresses []string
 	for _, target := range named {
 		if target.Kind == refs.BlockNodeKind {
 			addresses = append(addresses, target.ID)
 		}
 	}
-	resolved, err := refs.ResolveFarEnds(ctx, s.deps.Store.Pool, addresses)
+	resolved, err := refs.ReadableFarEnds(ctx, s.deps.Store.Pool, who, addresses)
 	if err != nil {
 		return err
 	}
@@ -246,8 +251,11 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // cut at refs.BlockExcerptRunes and holding a typed block's opening line. The texts are read in
 // one statement per kind of block the request names (refs.BlockTexts), beside the one per kind
 // the names cost, and no document is loaded for them: a block of a document, a comment or an ask
-// has its text read from the block index, and a block of a message has its text split again from
-// its message's body, since no table records it.
+// has its text read from the block index, a block of a message has its text split again from its
+// message's body, since no table records it, and a finding of a lens has its text read from the
+// store, through the predicate of a finding for who, the reader the names were resolved for. A
+// finding is no typed block, so no line of its text is a directive or a fence to cut: its tree is
+// of its whole text, the text the lens read answers for it, never passed to blockTextContent.
 //
 // A block is read only for a member that is not gone, and a member is not gone only where
 // refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
@@ -255,7 +263,7 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // not see out of the answer: such a block is gone, and no text of it is read.
 //
 // answers must have stopped growing: what is registered is a pointer into each member.
-func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {
+func (s *server) blockTrees(ctx context.Context, who model.Actor, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {
 	if trees == nil {
 		return nil
 	}
@@ -273,17 +281,18 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if len(blocks) == 0 {
 		return nil
 	}
-	texts, err := refs.BlockTexts(ctx, s.deps.Store.Pool, blocks)
+	texts, err := refs.BlockTexts(ctx, s.deps.Store.Pool, who, blocks)
 	if err != nil {
 		return err
 	}
-	contents := make(map[refs.Target]string, len(texts))
 	for target, whole := range texts {
-		contents[target] = blockTextContent(whole, target.Kind == "block")
+		if target.Kind != graphstore.KindLensBlock {
+			texts[target] = blockTextContent(whole, target.Kind == "block")
+		}
 	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
-			trees.text(&answers[index].TextTree, contents[target])
+			trees.text(&answers[index].TextTree, texts[target])
 		}
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -24,23 +25,32 @@ import (
 // read with refs.IssueDescendants, the server's one recursive `child_of` subtree walk. The
 // missing-plan-task gap is named only once the issue has a plan document, since the plan comes
 // after the spec's approval. A requirement whose block's node state is proposed is a question
-// still open (dispatch://INFRA-1950/spec#b-r-proposed), so it raises neither gap here and the
+// still open (spec requirement r-proposed), so it raises neither gap here and the
 // approval request's answer names none for it; one at settled or live is counted as every
-// requirement is, and dispatch://INFRA-1253 gives overtaken its meaning. A check or a plan task
+// requirement is, and cybermonklabs/legion#4180 gives overtaken its meaning. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
-// requirement is counted without it (queueServingBlockCounts). Nothing is ever refused
+// requirement is counted without it (queueServingBlockCounts). An issue that is a view on its
+// ancestor's spec (docs.ViewOf) holds no requirement of its own: its coverage lists the
+// requirements of that ancestor's spec that a check of the view, or of an issue under it, serves,
+// each counted over what the view and the issues under it hold (viewCoverage). A requirement block
+// of the view's own spec - one that reached it through its room, as a block a person pasted in the
+// browser, since every write route refuses one - is listed as no requirement of the view and
+// raises no missing check or plan task: it is named in the gaps alone, as a requirement on a view,
+// so it is moved into the ancestor's spec. Nothing is ever refused
 // for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
 // which prints each gap after `Coverage: `, and an approval request's answer, which names the
 // missing checks alone.
 
 // noRequirementsGap is the one gap line a spec that marks no requirement answers, in place of a
 // line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, as
-// RequirementCoverage.Gaps carries it; a document-level gap line is the requirement's block id
-// and one of these, which is what noCheckGap builds.
+// RequirementCoverage.Gaps carries it, and viewRequirementReason what a requirement block of a
+// view is; a document-level gap line is the requirement's block id and one of these, which is
+// what noCheckGap builds.
 const (
-	noRequirementsGap = "the spec marks no requirements"
-	noCheckReason     = "has no check"
-	noPlanTaskReason  = "has no plan task"
+	noRequirementsGap     = "the spec marks no requirements"
+	noCheckReason         = "has no check"
+	noPlanTaskReason      = "has no plan task"
+	viewRequirementReason = "is a requirement on a view"
 )
 
 // GET /api/v1/issues/{key}/coverage  (any authenticated caller)
@@ -76,28 +86,35 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // counts of what serves each requirement are read in one batch, one round trip, as the counts
 // alone were before the states were read. A spec edited in its issue's room has its blocks' rows
 // and nodes keyed by the room's tree artifact (refs.DocumentRoomSQL), so they are read there.
+// Both statements start from the requirements the live spec marks, each through a primary key,
+// so the plan Postgres makes without their values costs little and a connection soon keeps it
+// rather than planning each read again (queueServingBlockCounts). An issue that is a view
+// (docs.ViewOf) answers the coverage viewCoverage reads.
+//
 // trees is the reader of a request that answers the requirements' trees, nil for every other
-// caller: each requirement registers with it (requirementBlocksIn), in the row the answer
-// carries, the markdown typedBlocksIn reads the block's tree from, which is the rule GET
-// /api/v1/reference-targets reads the same block's tree by, and the caller resolves it. The rows
-// are filled in place, so each registered pointer is into the answer itself.
+// caller: each requirement the answer lists registers with it (registerRequirementTrees), in the
+// row the answer carries, the markdown typedBlocksIn reads the block's tree from, which is the
+// rule GET /api/v1/reference-targets reads the same block's tree by, and the caller resolves it.
+// The rows are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	var specNodeKey string
-	err := q.QueryRow(ctx, `
-		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
-		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = `+refs.DocumentRoomSQL("a.id")+`
-		                 where a.issue_key = $1 and a.is_primary), ''),
-		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&coverage.SpecArtifactID, &specNodeKey, &coverage.HasPlan)
+	spec, err := readCoverageSpec(ctx, q, issueKey)
 	if err != nil {
-		return model.IssueCoverage{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
+		return model.IssueCoverage{}, err
 	}
-	if coverage.SpecArtifactID == "" {
+	coverage.SpecArtifactID, coverage.HasPlan = spec.artifactID, spec.hasPlan
+	if spec.artifactID == "" {
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees)
+	view, err := docs.ViewOf(ctx, q, issueKey)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	if view != "" {
+		return s.viewCoverage(ctx, q, who, coverage, view, trees)
+	}
+	requirements, contents, err := s.requirementBlocksIn(ctx, spec.artifactID, trees != nil)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -105,17 +122,116 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
+	issues, err := coverageIssues(ctx, q, who, issueKey)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
+	if err := coverRequirements(ctx, q, who, issueKey, spec, requirements, issues, coverage.HasPlan); err != nil {
+		return model.IssueCoverage{}, err
+	}
+	coverage.Requirements = requirements
+	coverage.Gaps = requirementGaps(requirements)
+	registerRequirementTrees(trees, coverage.Requirements, contents)
+	return coverage, nil
+}
+
+// viewCoverage is the coverage of the view coverage.Issue on the spec of ancestor (docs.ViewOf),
+// read for who, coverage holding the view's spec and whether it has a plan: the requirements of
+// the ancestor's spec, in that spec's order, that a check of the view or of an issue under it
+// serves, each counted over what the view and the issues under it hold, as issueCoverage counts
+// the requirements of an issue that is no view; then, for each requirement block of the view's own
+// spec, the one line `<block id> is a requirement on a view` in the gaps and nothing else: such a
+// block is listed as no requirement of the view and lacks no check and no plan task. A view that
+// lists no requirement and holds none answers the single gap line.
+func (s *server) viewCoverage(ctx context.Context, q queryer, who model.Actor, coverage model.IssueCoverage, ancestor string, trees *displayTreeReader) (model.IssueCoverage, error) {
+	above, err := readCoverageSpec(ctx, q, ancestor)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	var contents []string
+	if above.artifactID != "" {
+		requirements, texts, err := s.requirementBlocksIn(ctx, above.artifactID, trees != nil)
+		if err != nil {
+			return model.IssueCoverage{}, err
+		}
+		issues, err := coverageIssues(ctx, q, who, coverage.Issue)
+		if err != nil {
+			return model.IssueCoverage{}, err
+		}
+		if err := coverRequirements(ctx, q, who, ancestor, above, requirements, issues, coverage.HasPlan); err != nil {
+			return model.IssueCoverage{}, err
+		}
+		for index, requirement := range requirements {
+			if requirement.Checks == 0 {
+				continue
+			}
+			coverage.Requirements = append(coverage.Requirements, requirement)
+			if texts != nil {
+				contents = append(contents, texts[index])
+			}
+		}
+	}
+	pasted, _, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, false)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	coverage.Gaps = requirementGaps(coverage.Requirements)
+	for _, requirement := range pasted {
+		coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+viewRequirementReason)
+	}
+	if len(coverage.Requirements) == 0 && len(pasted) == 0 {
+		coverage.Gaps = []string{noRequirementsGap}
+	}
+	registerRequirementTrees(trees, coverage.Requirements, contents)
+	return coverage, nil
+}
+
+// coverageSpec is what the coverage read reads of one issue's documents: its spec's id, the
+// ref_key its blocks' nodes are keyed under - the spec's own, or its room's where it is edited in
+// its issue's room (refs.DocumentRoomSQL) - and whether the issue has a plan document. An issue
+// with no spec holds "" in both.
+type coverageSpec struct {
+	artifactID, nodeKey string
+	hasPlan             bool
+}
+
+// readCoverageSpec is the coverageSpec of the issue issueKey, read through q.
+func readCoverageSpec(ctx context.Context, q queryer, issueKey string) (coverageSpec, error) {
+	var spec coverageSpec
+	if err := q.QueryRow(ctx, `
+		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
+		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = `+refs.DocumentRoomSQL("a.id")+`
+		                 where a.issue_key = $1 and a.is_primary), ''),
+		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
+	`, issueKey).Scan(&spec.artifactID, &spec.nodeKey, &spec.hasPlan); err != nil {
+		return coverageSpec{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
+	}
+	return spec, nil
+}
+
+// coverageIssues is the issue issueKey and every issue below it that who may see
+// (refs.IssueDescendants): the issues whose checks and plan tasks serve its coverage.
+func coverageIssues(ctx context.Context, q queryer, who model.Actor, issueKey string) ([]string, error) {
+	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{issueKey}, descendants...), nil
+}
+
+// coverRequirements fills in each of requirements, the requirement blocks of the spec of the issue
+// issueKey, for who: its reference, its node's state (queueRequirementStates), how many checks and
+// plan tasks of the documents of issues serve it (queueServingBlockCounts), both read in one batch,
+// and its gaps. A proposed requirement is a question still open and lacks nothing; any other lacks
+// a check where none serves it, and a plan task where hasPlan and none serves it.
+func coverRequirements(ctx context.Context, q queryer, who model.Actor, issueKey string, spec coverageSpec, requirements []model.RequirementCoverage, issues []string, hasPlan bool) error {
 	batch := &pgx.Batch{}
 	states := make(map[string]string, len(requirements))
 	served := map[string]servingCounts{}
-	queueRequirementStates(batch, who, specNodeKey, requirements, states)
-	queueServingBlockCounts(batch, who, coverage.SpecArtifactID, append([]string{issueKey}, descendants...), served)
+	queueRequirementStates(batch, who, spec.nodeKey, requirements, states)
+	queueServingBlockCounts(batch, who, spec.artifactID, requirements, issues, served)
 	if err := q.SendBatch(ctx, batch).Close(); err != nil {
-		return model.IssueCoverage{}, err
+		return err
 	}
 	for index := range requirements {
 		requirement := &requirements[index]
@@ -131,50 +247,57 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 			if requirement.Checks == 0 {
 				requirement.Gaps = append(requirement.Gaps, noCheckReason)
 			}
-			if coverage.HasPlan && requirement.PlanTasks == 0 {
+			if hasPlan && requirement.PlanTasks == 0 {
 				requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
 			}
 		}
-		for _, reason := range requirement.Gaps {
-			coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+reason)
-		}
 	}
-	coverage.Requirements = requirements
-	return coverage, nil
+	return nil
 }
 
-// requirementStatesQuery reads the node state of each requirement block whose node id is in $1
-// (`<ref_key>#<block id>`, kind block) for a reader ($2), in one statement: each block through the
-// block kind's predicate (refs.VisibleKind), with the state and the visibility the store holds of
-// it (refs.StoredNodeOf), null where the store holds no row of it.
+// requirementGaps is the gap line of each gap of each of requirements, in their order: the
+// requirement's block id and the reason.
+func requirementGaps(requirements []model.RequirementCoverage) []string {
+	gaps := []string{}
+	for _, requirement := range requirements {
+		for _, reason := range requirement.Gaps {
+			gaps = append(gaps, requirement.BlockID+" "+reason)
+		}
+	}
+	return gaps
+}
+
+// requirementStatesQuery reads, for a reader ($2), the node state the store holds of each
+// requirement block whose node id is in $1 (`<ref_key>#<block id>`): each row of one the store
+// holds, read by the primary key of `graph_nodes`, that passes the block kind's predicate over
+// that row (refs.VisibleKindRow). It answers no row for a requirement the store holds no row of,
+// and none for one the predicate hides from the reader.
 var requirementStatesQuery = `
-	select requirement.id, ` + refs.StoredNodeOf(`'`+refs.BlockNodeKind+`'`, `requirement.id`) + `
-	from unnest($1::text[]) as requirement(id)
-	where ` + refs.VisibleKind(refs.BlockNodeKind, `requirement.id`, `$2`)
+	select held.id, held.state
+	from graph_nodes held
+	where held.kind = '` + refs.StoredKindOf(refs.BlockNodeKind) + `' and held.id = any($1)
+	  and ` + refs.VisibleKindRow(refs.BlockNodeKind, "held", "$2")
 
 // queueRequirementStates queues, in b, the read of the node state of each requirement of the spec
 // whose blocks' nodes are keyed under refKey (requirementStatesQuery) for who - the spec's own
 // ref_key, or its room's where the spec is edited in its issue's room - and fills states with each
-// by block id once the batch is read. A requirement the store holds no row of reads live, as every
-// read of a node answers one (refs.StoredStateAndVisibility); one the predicate hides from who
-// answers no state, and the caller reads it live.
+// by block id once the batch is read. A requirement that query answers no row for reads live: one
+// the store holds no row of, as every read of a node answers one (refs.StoredStateAndVisibility),
+// and one the predicate hides from who, so who is told nothing of the state of a node they may not
+// see.
 func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requirements []model.RequirementCoverage, states map[string]string) {
+	prefix := refKey + "#"
 	ids := make([]string, len(requirements))
 	for index, requirement := range requirements {
-		ids[index] = refKey + "#" + requirement.BlockID
+		ids[index] = prefix + requirement.BlockID
 	}
 	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
-			var id string
-			var stored []string
-			if err := rows.Scan(&id, &stored); err != nil {
+			var id, state string
+			if err := rows.Scan(&id, &state); err != nil {
 				return fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
 			}
-			state, _, err := refs.StoredStateOf("requirement "+id, stored)
-			if err != nil {
-				return err
-			}
-			states[strings.TrimPrefix(id, refKey+"#")] = state
+			states[strings.TrimPrefix(id, prefix)] = state
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
@@ -210,28 +333,36 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 }
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
-// words, read live out of the document's markdown (typedBlocksIn). trees is the request's own
-// reader, nil for a caller that asked for no tree: each requirement registers with it, as its
-// text_tree, the markdown typedBlocksIn hands over from the block's stored text, so a requirement
-// answers here the tree the batched reference read answers for it. It registers once the slice
-// has stopped growing, since what is registered is a pointer into the row, and the caller fills
-// in the rest of each row in place.
-func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
+// words, read live out of the document's markdown (typedBlocksIn), and, where withContents is set,
+// each one's content beside it: the markdown typedBlocksIn hands over from the block's stored text,
+// which registerRequirementTrees registers as the requirement's text_tree, so a requirement answers
+// the tree the batched reference read answers for it.
+func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, withContents bool) ([]model.RequirementCoverage, []string, error) {
 	var requirements []model.RequirementCoverage
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", withContents, func(node *pmdoc.Node, id, content string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
-		if trees != nil {
+		if withContents {
 			contents = append(contents, content)
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	return requirements, contents, nil
+}
+
+// registerRequirementTrees registers with trees, the request's own reader, nil for a caller that
+// asked for no tree, each of contents as the text_tree of the requirement at its index of
+// requirements, the rows the answer carries. It registers once the rows have stopped growing,
+// since what is registered is a pointer into the row.
+func registerRequirementTrees(trees *displayTreeReader, requirements []model.RequirementCoverage, contents []string) {
+	if trees == nil {
+		return
 	}
 	for index, content := range contents {
 		trees.text(&requirements[index].TextTree, content)
 	}
-	return requirements, nil
 }
 
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.
@@ -240,42 +371,47 @@ type servingCounts struct {
 	planTasks int
 }
 
-// queueServingBlockCounts queues, in b, the count, for each block of the spec, of the `check` and
-// `plan_task` blocks of the documents of issues that name it in `serves`, and adds each to served
-// once the batch is read. The spec's blocks are the rows of the room it is edited in whose
+// queueServingBlockCounts queues, in b, the count, for each requirement of the spec, of the `check`
+// and `plan_task` blocks of the documents of issues that name it in `serves`, and adds each to
+// served once the batch is read. The spec's blocks are the rows of the room it is edited in whose
 // document is the spec (refs.DocumentRoomSQL, refs.BlockDocumentSQL): its own rows where it is its
 // own room. Both ends are current blocks of their documents: deleting the check deletes its row,
 // so its requirement is uncovered again. A check or a plan task whose block's node state is
-// proposed is a question still open and serves nothing yet
-// (dispatch://INFRA-1950/spec#b-r-proposed), so it is not counted; one at any other state is, and
+// proposed is a question still open and serves nothing yet (spec requirement r-proposed), so it is
+// not counted; one at any other state is, and
 // one the store holds no row of reads live, as every read of a node answers one. Its state is read
-// for who in the same statement, as requirementStatesQuery reads a requirement's: from the store's
-// row of the block (kind block, keyed by the row's node_id), through the block kind's predicate
-// over that row (refs.VisibleKindRow), with the kind, the state and the reader bound. So a block
-// the predicate hides from who answers who no state and is counted as live, and the count tells
-// who nothing of the state of a node who may not see.
+// for who in the same statement: from the store's row of the block (kind block, keyed by the row's
+// node_id), through the block kind's predicate over that row (refs.VisibleKindRow), with the
+// reader bound. So a block the predicate hides from who answers who no state and is counted as
+// live, and the count tells who nothing of the state of a node who may not see.
 //
 // That test is a scalar subquery and not a `not exists`, so it stays a probe of the row per
 // serving block, as the registry's own predicates are (refs.VisibleKind), rather than an anti-join
-// the planner weighs against every other join of the statement: Postgres plans this statement
-// again on every execution, since its issues are an array, and the anti-join cost that planning
-// half a millisecond more a read (dispatch://INFRA-1950's c-read-cost).
-func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID string, issues []string, served map[string]servingCounts) {
-	b.Queue(`
-		select t.block_id, s.type, count(*)
-		from block_refs r
-		join document_blocks t on t.node_id = r.to_id and t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and t.type = 'requirement'
-		  and `+refs.BlockDocumentSQL("t")+` = $1::uuid
-		join document_blocks s on s.artifact_id = r.artifact_id and s.block_id = r.block_id
-		join artifacts a on a.id = r.artifact_id
-		where r.kind = 'serves' and r.to_kind = 'block'
-		  and a.issue_key = any($2) and s.type in ('check', 'plan_task')
-		  and not coalesce((
-		      select true from graph_nodes serving
-		      where serving.kind = $3 and serving.id = s.node_id and serving.state = $4
-		        and `+refs.VisibleKindRow(refs.BlockNodeKind, "serving", "$5")+`), false)
-		group by t.block_id, s.type
-	`, specArtifactID, issues, refs.BlockNodeKind, graphstore.StateProposed, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+// the planner weighs against every other join of the statement. The state it probes for is the
+// literal `proposed`, the predicate of the partial index graph_nodes_proposed
+// (20261116172615_graph_nodes_proposed_index.up.sql), so the probe reads that index of the few
+// proposed rows whatever plan Postgres holds.
+//
+// The statement starts from the requirements the live spec marks, read by the primary key of
+// document_blocks (the artifact of the room the spec is edited in, and each requirement's block
+// id). A requirement block of the indexed spec that the live spec does not mark is counted for
+// nobody, which changes no answer: the route reads the counts of the live spec's requirements
+// alone. Starting there is what lets Postgres keep one plan of the statement. pgx prepares it, and
+// Postgres plans a prepared statement's first five executions on a connection with their values;
+// from then on it uses the plan made without them once that plan's estimated cost is below the
+// average cost of the plans it made with them on that connection, and keeps it. The plan made
+// without the values prices each array at ten elements. Started from the spec's artifact alone,
+// that plan took the spec for the average document of the store, thousands of blocks, so it cost
+// more and every execution was planned again: on the 8,001-block shape of check c-read-cost, about
+// 1.3 ms of planning a read against 0.5 ms of execution. Started from the requirements, it is kept
+// once a connection's reads average about five requirements, and requirementStatesQuery's once
+// they average about eight (measured on that shape).
+func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID string, requirements []model.RequirementCoverage, issues []string, served map[string]servingCounts) {
+	blockIDs := make([]string, len(requirements))
+	for index, requirement := range requirements {
+		blockIDs[index] = requirement.BlockID
+	}
+	b.Queue(servingBlockCountsQuery, specArtifactID, blockIDs, issues, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
 			var blockID, blockType string
 			var count int
@@ -296,6 +432,26 @@ func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID strin
 		return nil
 	})
 }
+
+// servingBlockCountsQuery counts, for each requirement block $2 of the spec $1, read in the room
+// the spec is edited in (refs.DocumentRoomSQL, refs.BlockDocumentSQL), the `check` and `plan_task`
+// blocks of the documents of the issues $3 that serve it and that are not proposed for the reader
+// $4 (queueServingBlockCounts).
+var servingBlockCountsQuery = `
+	select t.block_id, s.type, count(*)
+	from document_blocks t
+	join block_refs r on r.to_kind = 'block' and r.to_id = t.node_id
+	join document_blocks s on s.artifact_id = r.artifact_id and s.block_id = r.block_id
+	join artifacts a on a.id = r.artifact_id
+	where t.artifact_id = ` + refs.DocumentRoomSQL("$1::uuid") + ` and t.block_id = any($2) and t.type = 'requirement'
+	  and ` + refs.BlockDocumentSQL("t") + ` = $1::uuid
+	  and r.kind = 'serves' and a.issue_key = any($3) and s.type in ('check', 'plan_task')
+	  and not coalesce((
+	      select true from graph_nodes serving
+	      where serving.kind = '` + refs.StoredKindOf(refs.BlockNodeKind) + `' and serving.id = s.node_id
+	        and serving.state = '` + graphstore.StateProposed + `'
+	        and ` + refs.VisibleKindRow(refs.BlockNodeKind, "serving", "$4") + `), false)
+	group by t.block_id, s.type`
 
 // approvalCoverage is the coverage an approval request's answer carries for the document id
 // names, read for who, the requester, and whether that coverage could not be read. The gaps are

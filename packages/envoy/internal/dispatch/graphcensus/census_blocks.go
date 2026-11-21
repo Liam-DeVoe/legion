@@ -2,10 +2,7 @@ package graphcensus
 
 import (
 	"context"
-	"fmt"
 	"strconv"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -52,12 +49,15 @@ var blockProjections = []projection{{
 		join artifacts a on a.id = d.artifact_id
 		join artifacts document on document.id = ` + refs.BlockDocumentSQL("d") + `
 		where octet_length(d.node_id) <= ` + addressBound + ` and not (a.kind = 'tree' and ` + roomOwed("d.artifact_id") + `)`,
+	// A finding of a lens is a block no document holds, so no document_blocks row projects it
+	// (graphstore.FindingIDSQL).
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	owed:    `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	rowOwed: typedRowOwed,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
@@ -93,18 +93,20 @@ var blockProjections = []projection{{
 	// side that began at the rows could never find it. A block whose only links are its
 	// placement, its shaped, its from_ask, its decided_by, or tuples no block_refs row projects -
 	// its authored_by among them, which the block index states through graphstore.AuthorFacts -
-	// states no link here and is no node of this kind; the block kind holds its placement.
+	// states no link here and is no node of this kind; the block kind holds its placement. A
+	// finding of a lens is a block no document holds, so no block_refs row names it.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
 			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	rowOwed: typedRowOwed,
 }, {
 	name:     "block_rank",
 	nodeKind: refs.BlockNodeKind,
@@ -123,7 +125,7 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(left(` + currentValue(refs.AttributeRank) + `, 1), ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
@@ -137,7 +139,9 @@ var blockProjections = []projection{{
 		" block with no text, or with another text than the one its rows hold, is a difference, and an erase that" +
 		" rewrites both alike reads none; a block of a document still owed its index, or of an issue room any" +
 		" artifact of which is, is on neither side, since the reconciliation writes its text, and a census of" +
-		" documents that all owe theirs reads none of this kind",
+		" documents that all owe theirs reads none of this kind; and a block of a document of an issue that has not" +
+		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
+		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
 	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
 	// text of: the erase rewrites the quote of an erased block in both a holding block's rows and
@@ -149,13 +153,21 @@ var blockProjections = []projection{{
 		           where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null
 		           order by t.version desc limit 1), d.text_sha256))
 		from document_blocks d
-		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id") + `
+		  and not ` + rowUnstated("d"),
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(encode(sha256(convert_to(` + currentValue(graphstore.AttributeText) + `, 'UTF8')), 'hex'), ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n") + `
+		  and not exists (
+			select 1 from artifacts document
+			where document.ref_key = split_part(n.id, '#', 1) and ` + unconvertedUnstated("document") + `)`,
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	unstated: `
+		select count(*) from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id") + `
+		  and ` + rowUnstated("d"),
 	emptyAgrees: true,
 }, {
 	name:     "block_size",
@@ -175,7 +187,7 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(` + currentValue(refs.AttributePlanSize) + `, ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	emptyAgrees: true,
@@ -371,9 +383,9 @@ func authorNodeID(actor string) string {
 // documentOwed is true of the document whose id the SQL expression artifactID names while it owes
 // its block index, by either mark the block-index reconciliation lists a document by
 // (refs.OwedBlockIndexDebts, docs' owedDocuments): its version null, or this release's own mark,
-// store_owed_at, which the backfill and its drain set (writeBlockBatch, drainBlockIndexes) and a
-// release before this one neither reads nor clears. The reconciliation has yet to write the ranks
-// and the texts of its blocks.
+// store_owed_at, which the backfill sets (writeBlockBatch, markStaleDocuments) and a release
+// before this one neither reads nor clears. The reconciliation has yet to write the ranks and the
+// texts of its blocks.
 func documentOwed(artifactID string) string {
 	return `exists (select 1 from document_block_versions owed where owed.artifact_id = ` + artifactID +
 		` and (owed.version is null or owed.store_owed_at is not null))`
@@ -398,6 +410,32 @@ func roomOwed(artifactID string) string {
 			select 1 from document_rooms held where held.room = ` + artifactID + ` and ` + documentOwed("held.artifact_id") + `))`
 }
 
+// unconvertedUnstated is true of the artifacts row aliased alias where it is a document of an
+// issue that has not converted - no issue_trees row holds its issue - which no pass of this
+// build's rule has stated: its document_block_versions row holds stated_rule null or below
+// refs.BlockIndexMarkingRule, as the release before leaves every document it indexed. Such a
+// document's blocks hold no text this build's pass states until a pass of its rule reaches them,
+// so the census counts them as a class of their own (projection.unstated) and compares none of
+// them; a document of a converted issue, and one a pass of this rule has stated, it compares
+// whatever its issue. The column is read off the row as JSON (to_jsonb), so the statement runs
+// on a database before 20261120130000, which adds stated_rule, and reads every document there as
+// unstated.
+func unconvertedUnstated(alias string) string {
+	return `(` + alias + `.issue_key is not null
+		and not exists (select 1 from issue_trees tree where tree.issue_key = ` + alias + `.issue_key)
+		and not exists (
+			select 1 from document_block_versions stated
+			where stated.artifact_id = ` + alias + `.id
+			  and (to_jsonb(stated)->>'stated_rule')::integer >= ` + strconv.Itoa(refs.BlockIndexMarkingRule) + `))`
+}
+
+// rowUnstated is unconvertedUnstated of the document of the document_blocks row aliased alias, the
+// artifact its row is keyed by: a row of an issue room is keyed by the room's tree artifact, whose
+// issue has converted.
+func rowUnstated(alias string) string {
+	return `exists (select 1 from artifacts document where document.id = ` + alias + `.artifact_id and ` + unconvertedUnstated("document") + `)`
+}
+
 // roomNodeOwed is the owed predicate (projection.owed) of a block node of an issue room, one
 // whose id starts with a tree artifact's ref_key, while any artifact of its room owes its block
 // index (roomOwed): the room's reconciliation has yet to state what its rows project.
@@ -406,122 +444,12 @@ var roomNodeOwed = `exists (
 		where tree.kind = 'tree' and tree.ref_key = split_part(node.id, '#', 1) and ` + roomOwed("tree.id") + `)`
 
 // blockBackfills are the backfill's passes over the document blocks (backfillPasses): the blocks,
-// then the links out of them, since a link's node is its block's and the pointer pass stamps a
-// link only where its block's node stands (blockNodeStands), then the one drain of every stored
-// document's block index (drainBlockIndexes).
-var blockBackfills = []backfillPass{oneKind(backfillBlocks), oneKind(backfillBlockRefs), oneKind(drainBlockIndexes)}
-
-// blockDrainKind is the kind the backfill's report names the drain by.
-const blockDrainKind = "block_index_drain"
-
-// drainBlockIndexes marks every stored document owed its block index once, with this release's
-// own mark, document_block_versions.store_owed_at (migration 20261116221539), as the block pass
-// marks each document whose rows it names (writeBlockBatch), so the block-index reconciliation
-// (docs.Service.RunBlockIndexReconciliation) indexes each again, under the fence it already takes,
-// and gives every block an earlier build indexed what that build did not write: its rank, its
-// text, its placement and, for a plan node whose opening line writes one, its size, and, for a
-// top-level block of an issue's spec, Verification or plan document, its part_of to the issue
-// (refs.IndexBlocks). That index writes no document_blocks row for a block whose text is
-// unchanged, so no block's changed_version and no document_block_texts row moves for it.
-//
-// The mark is not the null version refs.RebuildAll sets. A pod of the release before this one,
-// during a roll or after a rollback, reads a null version as its own debt: it indexes the
-// document, writes its rows and states none of these values, and the document would be owed
-// nothing again, while the drain, done, never marks it twice. That release neither reads nor
-// clears store_owed_at, so this release's reconciliation, which lists a document holding it (docs'
-// owedDocuments) and whose fence wins at the version the document already stands at while it
-// holds it (refs' standsAtVersion), still reaches the document, and its pass clears the mark.
-//
-// issue_tree_block_drain records how far the drain has got, and the backfill runs at every boot,
-// so it marks the documents once: a run that finds the drain done marks nothing, and a run stopped
-// part way resumes after the last document its last committed batch marked. It reports the
-// documents it marked as the kind's Owed, and the kind as complete once the drain is done.
-func drainBlockIndexes(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: blockDrainKind}
-	if _, err := database.Pool.Exec(ctx, `
-		insert into issue_tree_block_drain default values on conflict (singleton) do nothing
-	`); err != nil {
-		return done, fmt.Errorf("record the block index drain: %w", err)
+// and the marking of every document no pass of the marking rule rule has stated, each mark of
+// that rule (backfillBlocks), then the links out of them, since a link's node is its block's and
+// the pointer pass stamps a link only where its block's node stands (blockNodeStands).
+func blockBackfills(rule int) []backfillPass {
+	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
+		return backfillBlocks(ctx, database, rule)
 	}
-	for {
-		marked, finished, err := drainBlockIndexBatch(ctx, database)
-		done.Owed += marked
-		if err != nil {
-			return done, err
-		}
-		if finished {
-			break
-		}
-	}
-	done.Complete = true
-	return done, nil
-}
-
-// drainBlockIndexBatch marks one batch of documents owed, in one transaction, and answers how many
-// it marked and whether the drain is done. It takes the drain's row first, so two runs take turns,
-// then the batch's owner rows and their document_block_versions rows in the store's order
-// (lockBlockDocuments), the rows a version write holds while it writes, so a write in flight
-// finishes before its document is marked and the mark is never lost under it. A document already
-// holding the mark is left as it is; one whose version is null is marked too, since a pod of the
-// release before may drain that version first.
-//
-// The cursor starts at the nil uuid, below every document's id, as the object pass's does
-// (zeroUUID), so the batch's read binds one bound of the keyset and no test of whether there is
-// one: under a generic plan that test would read from the first document every batch.
-func drainBlockIndexBatch(ctx context.Context, database *store.Store) (int64, bool, error) {
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		return 0, false, fmt.Errorf("begin a block index drain batch: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	var after string
-	var finished bool
-	if err := tx.QueryRow(ctx, `
-		select coalesce(after, $1::uuid)::text, done from issue_tree_block_drain for update
-	`, zeroUUID).Scan(&after, &finished); err != nil {
-		return 0, false, fmt.Errorf("read the block index drain: %w", err)
-	}
-	if finished {
-		return 0, true, tx.Commit(ctx)
-	}
-	rows, err := tx.Query(ctx, `
-		select b.artifact_id::text
-		from document_block_versions b
-		join artifacts a on a.id = b.artifact_id
-		where a.kind = 'doc' and b.artifact_id > $1::uuid
-		order by b.artifact_id
-		limit $2
-	`, after, backfillBatch)
-	if err != nil {
-		return 0, false, fmt.Errorf("list the documents a block index drain batch marks: %w", err)
-	}
-	documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return 0, false, fmt.Errorf("list the documents a block index drain batch marks: %w", err)
-	}
-	var marked int64
-	if len(documents) > 0 {
-		if err := lockBlockDocuments(ctx, tx, documents); err != nil {
-			return 0, false, err
-		}
-		tag, err := tx.Exec(ctx, `
-			update document_block_versions set store_owed_at = now()
-			where artifact_id = any($1::uuid[]) and store_owed_at is null
-		`, documents)
-		if err != nil {
-			return 0, false, fmt.Errorf("mark a batch of documents owed this release's block index: %w", err)
-		}
-		marked = tag.RowsAffected()
-		after = documents[len(documents)-1]
-	}
-	finished = len(documents) < backfillBatch
-	if _, err := tx.Exec(ctx, `
-		update issue_tree_block_drain set after = $1::uuid, done = $2
-	`, after, finished); err != nil {
-		return 0, false, fmt.Errorf("record how far the block index drain has got: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("commit a block index drain batch: %w", err)
-	}
-	return marked, finished, nil
+	return []backfillPass{oneKind(blocks), oneKind(backfillBlockRefs)}
 }

@@ -79,12 +79,15 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 // issue's row names under the issue's own row (dispatch://INFRA-1253 R9): a batch reads its rows
 // outside its transaction, so a reparent can commit between that read and the issue's lock. A
 // second transaction stands for the release before's PATCH: it takes the issue's row, as
-// lockPatchRows does, and moves the issue, whose row names no node, from LOCK-1 to LOCK-2. The
-// backfill starts while that transaction is open, so its batch reads LOCK-1; the test reads the run
-// waiting at the issue's row, and only then lets the reparent commit. The issue's row then names its
-// node, which states one child_of, to LOCK-2, the parent its row names, and graph_edges answers
-// LOCK-2 once and LOCK-1 nowhere. A pass that built child_of from its first read would hang the
-// issue under LOCK-1 in the store while its row names LOCK-2, and graph_edges would answer neither.
+// lockPatchRows does, and moves the issue, whose row names no node, from LOCK-1 to LOCK-2. That
+// release is in the fleet, as it is wherever its PATCH runs, so the batch's owner lock takes the
+// issue's row beside its advisory lock (store.LockOwners), as that release serialises on the row.
+// The backfill starts while that transaction is open, so its batch reads LOCK-1; the test reads
+// the run waiting at the issue's row, and only then lets the reparent commit. The issue's row then
+// names its node, which states one child_of, to LOCK-2, the parent its row names, and graph_edges
+// answers LOCK-2 once and LOCK-1 nowhere. A pass that built child_of from its first read would
+// hang the issue under LOCK-1 in the store while its row names LOCK-2, and graph_edges would
+// answer neither.
 // A second issue, LOCK-4, whose marked row the release before moved in place from LOCK-1 to LOCK-2
 // before the run, leaving its node's child_of at LOCK-1, is read as unmarked by the same pass: its
 // node then states LOCK-2 alone, the claim retracting LOCK-1.
@@ -111,6 +114,13 @@ func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatalf("seed the issues: %v", err)
+	}
+	// A process of the release before, registered as that release registers: no
+	// owner_lock_protocol, so the column's default 0, which keeps it in the owner lock's fleet.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into server_processes (instance, commit, signing_keys)
+		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
+		t.Fatalf("register a process of the release before: %v", err)
 	}
 
 	reparent, err := database.Pool.Begin(ctx)

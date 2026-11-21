@@ -581,6 +581,8 @@ export function SpecFilterBody({
 
   useTreeKeymap({
     container: tree,
+    // The view edits no statement (`onEdit`), so no row's editor holds Escape.
+    editing: false,
     holdsEscape,
     onCycle: NOTHING,
     // Enter on a statement goes to it in the conversation, where it is edited: this filter

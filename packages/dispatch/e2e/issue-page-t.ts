@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
-import type { IssueTreeAnswer } from "../web/src/api/client";
-import type { IssueDecisions } from "../web/src/api/types";
+import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
 import { CONTROL_LABELS, GAP_LINES } from "../web/src/features/issue-page/page-words";
 import type { Filter } from "../web/src/features/issue-page/presets";
 import {
@@ -764,7 +763,7 @@ export async function refuseTreeRead(page: Page, key: string): Promise<RefusedTr
 /** What the page received of the tree route, for one view or none. */
 export interface TreeAnswerWatch {
   /** The newest read whose every page has answered, its pages merged; undefined until one has. */
-  answer(): IssueTreeAnswer | undefined;
+  answer(): IssueTreeRead | undefined;
 }
 
 /** One page of a read as the page received it: in which place it arrived, the cursor its request
@@ -772,7 +771,7 @@ export interface TreeAnswerWatch {
 interface ReceivedPage {
   readonly arrived: number;
   readonly cursor: string | null;
-  readonly page: IssueTreeAnswer;
+  readonly page: IssueTreeRead;
 }
 
 /** Keeps every answer of the tree route whose `view` is `view` (none for null), from now on. */
@@ -793,7 +792,7 @@ function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
     arrivals += 1;
     const cursor = url.searchParams.get("cursor");
     void response.json().then(
-      (body: IssueTreeAnswer) => {
+      (body: IssueTreeRead) => {
         received.push({ arrived, cursor, page: body });
       },
       // A body the browser let go of before it was read, as the page moved on, is no answer.
@@ -805,8 +804,8 @@ function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
 
 /** The newest read every page of which has answered: a read starts at a page its request sent no
  *  cursor for, and goes on with each page whose cursor the page before it answered. */
-function newestRead(received: readonly ReceivedPage[]): IssueTreeAnswer | undefined {
-  const reads: IssueTreeAnswer[][] = [];
+function newestRead(received: readonly ReceivedPage[]): IssueTreeRead | undefined {
+  const reads: IssueTreeRead[][] = [];
   for (const { cursor, page } of [...received].sort((a, b) => a.arrived - b.arrived)) {
     const read = reads[reads.length - 1];
     if (cursor === null) reads.push([page]);
@@ -833,7 +832,7 @@ export function viewAnswerOf(page: Page, filter: TreeView): TreeAnswerWatch {
 }
 
 /** Waits until `watch` holds a read whose every page answered, and answers it. */
-export async function heldAnswer(watch: TreeAnswerWatch, what: string): Promise<IssueTreeAnswer> {
+export async function heldAnswer(watch: TreeAnswerWatch, what: string): Promise<IssueTreeRead> {
   const message = `${what} never answered its last page`;
   await expect.poll(() => watch.answer() !== undefined, { message }).toBe(true);
   const answer = watch.answer();
@@ -862,7 +861,7 @@ export const R2_COUNTED_KINDS: Readonly<Record<TreeView, readonly string[]>> = {
   verification: ["check"],
 };
 
-/** A node a view draws as a row, by the id its row carries, and how its view marks it. */
+/** A node a view draws as a row, by the id its row carries, and the role its view gives it. */
 export interface ViewNodeId {
   readonly id: string;
   readonly mark: "context" | "query";
@@ -876,15 +875,15 @@ export interface ViewNodeId {
  * documents and an ask's block by.
  */
 export function viewNodeIds(
-  answer: IssueTreeAnswer,
+  answer: IssueTreeRead,
   filter: TreeView,
   reads: TreeIdReads
 ): ViewNodeId[] {
   const idOf = treeIdOf(answer, reads);
   const kinds = R2_ROW_KINDS[filter];
   const named = new Set<string>();
-  return answer.nodes.flatMap((node): ViewNodeId[] => {
-    const mark = node.mark === "query" ? "query" : "context";
+  return (answer.nodes ?? []).flatMap((node): ViewNodeId[] => {
+    const mark = node.role === "query" ? "query" : "context";
     const foreign = node.issue !== undefined && node.issue !== reads.issue.key;
     const id = idOf(node.id);
     if (foreign || !kinds[mark].includes(node.supertag) || named.has(id)) return [];
@@ -895,11 +894,11 @@ export function viewNodeIds(
 
 /** What `filter`'s control counts of its view read `answer`: the nodes of its main kind the
  *  view's query took, each once (root R2). */
-export function viewCount(answer: IssueTreeAnswer, filter: TreeView): number {
+export function viewCount(answer: IssueTreeRead, filter: TreeView): number {
   const kinds = R2_COUNTED_KINDS[filter];
   return new Set(
-    answer.nodes.flatMap((node) =>
-      node.mark === "query" && kinds.includes(node.supertag) ? [node.id] : []
+    (answer.nodes ?? []).flatMap((node) =>
+      node.role === "query" && kinds.includes(node.supertag) ? [node.id] : []
     )
   ).size;
 }
@@ -953,7 +952,7 @@ export function blocksReads(requests: readonly ApiRequest[]): string[] {
  *  the model moves it onto the tree read, the tree read's view `?view=decisions`. */
 export type DecisionsRead =
   | { readonly answer: IssueDecisions; readonly kind: "decisions" }
-  | { readonly answer: IssueTreeAnswer; readonly kind: "view" };
+  | { readonly answer: IssueTreeRead; readonly kind: "view" };
 
 /** What the page received of its decisions read. */
 export interface DecisionsReadWatch {
@@ -987,7 +986,8 @@ export function decisionsReadOf(page: Page, key: string): DecisionsReadWatch {
 
 /** When each decision of `read` last changed (`changed_at`), by every id a row may draw it by:
  *  its block's id alone, and `<slug>#b-<block id>` for each of `slugs`, the slugs of the issue's
- *  documents; for a decision node of a view, its own id and its document's form of it. */
+ *  documents; for a decision node of a view, its block id and its document's form of it, from
+ *  the decisions read's object the node carries (`decision`). */
 export function decisionTimes(
   read: DecisionsRead | undefined,
   slugs: readonly string[]
@@ -1004,10 +1004,11 @@ export function decisionTimes(
       at(decision.block_id, [], decision.changed_at);
     }
   } else if (read?.kind === "view") {
-    for (const node of read.answer.nodes) {
+    for (const node of read.answer.nodes ?? []) {
       if (node.supertag !== "decision") continue;
-      const own = node.document === undefined ? [] : [blockNode(node.document.slug, node.id)];
-      at(node.id, own, node.changed_at);
+      const block = node.block_id ?? node.id;
+      const own = node.document === undefined ? [] : [blockNode(node.document.slug, block)];
+      at(block, own, node.decision?.changed_at);
     }
   }
   return times;
@@ -1015,16 +1016,15 @@ export function decisionTimes(
 
 /** Whether the seed's decisions are nodes of the tree read `answer`: it holds a decision node of
  *  this issue, and every decision the decisions read answers is one - a decision node of this
- *  issue whose id is the decision's `block_id`, in the document the decision's `ref` names where
- *  the node names its document. The check is this file's own, so the page's matching of
+ *  issue whose block id is the decision's `block_id`, in the document the decision's `ref` names
+ *  where the node names its document. The check is this file's own, so the page's matching of
  *  decisions to nodes can move under it. */
-export function decisionsAreNodes(
-  answer: IssueTreeAnswer,
-  read: DecisionsRead | undefined
-): boolean {
+export function decisionsAreNodes(answer: IssueTreeRead, read: DecisionsRead | undefined): boolean {
   const own = new Map(
-    answer.nodes.flatMap((node) =>
-      node.supertag === "decision" && node.issue === undefined ? [[node.id, node] as const] : []
+    (answer.nodes ?? []).flatMap((node) =>
+      node.supertag === "decision" && node.issue === undefined
+        ? [[node.block_id ?? node.id, node] as const]
+        : []
     )
   );
   if (own.size === 0 || read === undefined) return false;
@@ -1116,7 +1116,7 @@ export async function convertedGate(page: Page, key: string): Promise<Gate> {
   const path = treePath(key);
   const response = await page.request.get(path);
   expect(response.ok(), `GET ${path} answers ${response.status()}`).toBe(true);
-  const { converted } = (await response.json()) as IssueTreeAnswer;
+  const { converted } = (await response.json()) as IssueTreeRead;
   return {
     met: converted === true,
     owed:
@@ -1142,7 +1142,7 @@ const DECISIONS_ARE_NO_NODES =
   "the seed's decisions are no nodes of the tree read this base answers";
 
 /** The decisions work that makes each decision a node of the tree read (`decisionsAreNodes`). */
-export function decisionNodesGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
+export function decisionNodesGate(answer: IssueTreeRead, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:
@@ -1153,7 +1153,7 @@ export function decisionNodesGate(answer: IssueTreeAnswer, read: DecisionsRead |
 
 /** The page drawing the decisions from the tree read's nodes, which waits on the decisions work
  *  that makes them nodes reaching this branch's base (`decisionsAreNodes`). */
-export function partUGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
+export function partUGate(answer: IssueTreeRead, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:

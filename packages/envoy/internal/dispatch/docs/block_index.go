@@ -103,11 +103,13 @@ type BlockIndexTick struct {
 	Comments     int
 	AnotherBuild bool
 	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
-	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
-	// removed it stated gone, while this build owed the object pass
-	// (writeObjectNodesAnotherBuildWrote).
-	ObjectNodes int
-	OrphansGone int
+	// tick wrote the node of, OrphansGone how many document nodes whose row another build removed
+	// it stated gone, and StaleLensesGone how many nodes of stale lenses - each lens whose recorded
+	// row no longer stands at its document's address, and everything under it - it stated gone,
+	// while this build owed the object pass (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes     int
+	OrphansGone     int
+	StaleLensesGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -130,9 +132,9 @@ type BlockIndexTick struct {
 	// lookup instead of a probe for each owed row. That needs a migration and its census file
 	// (store/README.md), which this change does not.
 	//
-	// A document that holds no markdown version is owed an index for ever: indexOwedDocument
-	// passes over it, so nothing settles its mark. Its age is therefore true and keeps
-	// growing, which is what an operator needs to see about a row that will never drain.
+	// A document that holds no markdown version is owed an index only until a tick reaches it:
+	// indexOwedDocument's owner-locked re-read finds no markdown version and one statement clears
+	// its marks and states it at version 0, so its creation dates its debt only in between.
 	OldestOwedDocumentAt time.Time
 	// Cursor is where the next tick's batches start: the last owner each batch listed while that
 	// batch was full, and the start again once a batch lists fewer.
@@ -210,7 +212,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
-		tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
+		tick.ObjectNodes > 0 || tick.OrphansGone > 0 || tick.StaleLensesGone > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead || tick.Unreadable != logged.Unreadable ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -222,14 +224,16 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
 		// events= is how many events the tick read after its build's event cursor, marked= and
 		// comments= the documents it marked owed and the comments it gave their nodes from those
-		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
-		// orphaned document nodes it stated gone, and another_build= whether a live server process
+		// events, object_nodes=, orphans_gone= and stale_lenses_gone= the rows the object pass gave
+		// their nodes, the orphaned document nodes it stated gone and the nodes of stale lenses it
+		// stated gone, and another_build= whether a live server process
 		// of another build served, which decides nothing of which events the tick reads and makes
 		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
 			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
+			"stale_lenses_gone", tick.StaleLensesGone,
 			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead, "unreadable_rooms", tick.Unreadable,
@@ -357,6 +361,11 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err
+	}
+	if s.afterOwedDocumentsListed != nil {
+		if err := s.afterOwedDocumentsListed(owed); err != nil {
+			return tick, err
+		}
 	}
 	documentsFull := len(owed) == blockIndexDocumentBatch
 	liveAhead.forgetUnlisted(after, owed, documentsFull)
@@ -502,6 +511,9 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// through the two partial indexes owedDocuments lists them by, each row counted once as the
 	// listing lists it, and each costs one probe into its own versions by
 	// (artifact_id, number), the same read the owed listing makes for the version it indexes.
+	// Both count only what this build's own marking rule lists (refs.OwedMarkListed), so a mark of
+	// a higher rule that this build leaves to that rule's build, as a build of rule 1 does after a
+	// rollback from rule 2, is no backlog of this build's that only grows.
 	// `envoy-dispatch census --store --sizing` reads the same two figures from the database
 	// alone (graphcensus's blockIndexBacklogQuery), so an operator who cannot read the server's
 	// log can still read the backlog; both derive the debts from one text
@@ -509,7 +521,8 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	var oldestOwed *time.Time
 	if err := s.store.Pool.QueryRow(ctx, `
 		select (select count(*) from document_block_versions where version is null) +
-		       (select count(*) from document_block_versions where store_owed_at is not null and version is not null),
+		       (select count(*) from document_block_versions b
+		        where b.version is not null and `+refs.OwedMarkListed("b", "$1::integer")+`),
 		       (select min(owed.owed_at) from (`+refs.OwedBlockIndexDebts+`
 		       ) owed),
 		       (select count(*) from block_grammar_owed),
@@ -517,7 +530,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		       (select count(*) from comment_block_state where owed_at is not null) +
 		       (select count(*) from message_block_state where owed_at is not null) +
 		       (select count(*) from ask_block_state where owed_at is not null)
-	`).Scan(&tick.OwedDocuments, &oldestOwed, &tick.OwedItems, &tick.OwedTexts, &tick.OwedItemBlocks); err != nil {
+	`, s.markingRule).Scan(&tick.OwedDocuments, &oldestOwed, &tick.OwedItems, &tick.OwedTexts, &tick.OwedItemBlocks); err != nil {
 		return tick, fmt.Errorf("count what is owed a block index: %w", err)
 	}
 	if oldestOwed != nil {
@@ -944,6 +957,15 @@ func (liveAhead liveAheadDocuments) forgetUnlisted(after string, owed []owedDocu
 // column, so a document it indexes after either was set stays listed here until a pass of this
 // release states its blocks and clears the mark (refs.IndexBlocks). A document holding both is
 // listed by the first alone.
+//
+// The second arm lists a mark by the marking rule that set it (store_owed_rule,
+// refs.OwedMarkListed): a mark of this build's rule or a lower one as owed, and a mark of a higher
+// rule only where the store last stated the document below its version, which is work of this
+// build's own there. A document a higher rule marked whose stand is at its version is that rule's
+// to drain: this build's pass would lose the fence at that version (refs.BlockIndexing.queueStand)
+// and list it again every tick. Where this build's pass indexes a document under a higher rule's
+// mark, its stand states the version and leaves the mark, so the document is listed here no more
+// and the higher rule's build still lists it.
 func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocument, error) {
 	var cursor any
 	if after != "" {
@@ -961,10 +983,10 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 			 where version is null and ($1::uuid is null or artifact_id > $1::uuid)
 			 order by artifact_id limit $2)
 			union all
-			(select artifact_id from document_block_versions
-			 where store_owed_at is not null and version is not null
-			   and ($1::uuid is null or artifact_id > $1::uuid)
-			 order by artifact_id limit $2)
+			(select o.artifact_id from document_block_versions o
+			 where o.version is not null and `+refs.OwedMarkListed("o", "$3::integer")+`
+			   and ($1::uuid is null or o.artifact_id > $1::uuid)
+			 order by o.artifact_id limit $2)
 		) b
 		cross join lateral (
 			select coalesce(
@@ -973,7 +995,7 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 		) room
 		order by b.artifact_id
 		limit $2
-	`, cursor, blockIndexDocumentBatch)
+	`, cursor, blockIndexDocumentBatch, s.markingRule)
 	if err != nil {
 		return nil, fmt.Errorf("list the documents owed a block index: %w", err)
 	}
@@ -1051,15 +1073,17 @@ func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, 
 // stating nothing in the store, and only the second mark brings this build's pass to the document
 // after it, to name those rows' nodes and state what they project (refs.PlanBlocks). A mark the
 // document already holds keeps its time, so the debt stays dated from the write that first owed
-// it.
+// it. The mark is of rule, the marking rule of the build owing the debt (Service.markingRule),
+// and a mark of a higher rule the document already holds keeps its rule
+// (oweDocumentIndexStatement).
 //
 // A document that is gone owes no index: the row is written from the artifacts table, so nothing
 // is inserted for one. exec is the pool for a caller that owes the index on its own
 // (reindexScope), and the transaction that settles a queue row for the drain
 // (drainOwedDocument), which must owe the index with that write or do neither. A version write
 // queues the same statement in its write phase (queueDocumentIndexOwed).
-func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string) error {
-	if _, err := exec.Exec(ctx, oweDocumentIndexStatement, artifactID); err != nil {
+func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string, rule int) error {
+	if _, err := exec.Exec(ctx, oweDocumentIndexStatement, artifactID, rule); err != nil {
 		return fmt.Errorf("owe document %s a block index: %w", artifactID, err)
 	}
 	return nil
@@ -1068,15 +1092,22 @@ func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string) 
 // queueDocumentIndexOwed is oweDocumentIndex for a version write, which owes the index with its
 // own writes (indexDocument): queued in its write phase (write), after the version's insert,
 // whose artifacts row the statement reads where the transaction creates the document.
-func queueDocumentIndexOwed(ctx context.Context, tx pgx.Tx, artifactID string) error {
-	return writeExec(ctx, tx, fmt.Sprintf("owe document %s a block index", artifactID), oweDocumentIndexStatement, artifactID)
+func queueDocumentIndexOwed(ctx context.Context, tx pgx.Tx, artifactID string, rule int) error {
+	return writeExec(ctx, tx, fmt.Sprintf("owe document %s a block index", artifactID), oweDocumentIndexStatement, artifactID, rule)
 }
 
-// oweDocumentIndexStatement sets both marks of a debt (oweDocumentIndex) on document $1.
-const oweDocumentIndexStatement = `
-	insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where id = $1::uuid
+// oweDocumentIndexStatement sets both marks of a debt (oweDocumentIndex) on document $1, at the
+// marking rule $2: a null version, and this build's own mark, store_owed_at, with its rule in
+// store_owed_rule. A mark the document already holds keeps its time and keeps the higher of its
+// rule and $2, so a mark of a higher rule stays that rule's to drain; where no mark stands the row
+// takes $2, whatever rule a mark cleared before left on it, since the rule is read only where a
+// mark stands (refs.OwedRuleKept).
+var oweDocumentIndexStatement = `
+	insert into document_block_versions (artifact_id, store_owed_at, store_owed_rule)
+	select id, now(), $2::integer from artifacts where id = $1::uuid
 	on conflict (artifact_id) do update set version = null,
-		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
+		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
+		store_owed_rule = ` + refs.OwedRuleKept("document_block_versions", "excluded.store_owed_rule", "\n\t\t\t") + `
 `
 
 // drainOwedDocument drains one `artifact` row of the re-index queue by owing its document a block
@@ -1094,7 +1125,7 @@ func (s *Service) drainOwedDocument(ctx context.Context, source refs.Owed) (bool
 	if err != nil || !settled {
 		return false, err
 	}
-	if err := oweDocumentIndex(ctx, tx, source.ID); err != nil {
+	if err := oweDocumentIndex(ctx, tx, source.ID, s.markingRule); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -1131,7 +1162,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 		if !found || !refs.HoldsQuestionCandidate(body, s.serverURL) {
 			continue
 		}
-		if err := oweDocumentIndex(ctx, s.store.Pool, source.ID); err != nil {
+		if err := oweDocumentIndex(ctx, s.store.Pool, source.ID, s.markingRule); err != nil {
 			return err
 		}
 	}
@@ -1142,8 +1173,9 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // (indexRenderedVersion): references, excerpts, blocks, block texts and the indexed version. It
 // reads the document the server serves (TextWithBlocks) with no transaction held, then, under the
 // document owner's lock, which every version write holds first, re-checks that the latest version
-// is still the one listed and the document still owed, by either mark owedDocuments lists it by;
-// otherwise another writer has indexed it or will, and it does nothing.
+// is still the one listed and the document still owed, by either mark owedDocuments lists it by
+// and with the same rule for a mark of a higher marking rule (refs.OwedMarkListed); otherwise
+// another writer has indexed it or will, and it does nothing.
 //
 // The live text is indexed only where it is the latest version's text: when the document owes no
 // settlement, or owes one but its live markdown equals the version's stored markdown byte for
@@ -1169,23 +1201,46 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 //
 // The transaction reads, extracts and plans the whole index before its first write (queueWrites),
 // so it holds a transaction id only for the index's statements and the commit. Its re-read of the
-// owed row takes no row lock: every writer of document_block_versions - a version's own index, the
-// trigger a version insert fires, this backfill - holds the document owner's lock, taken above.
+// owed row takes no row lock. Every writer of a revision of document_block_versions - a version's
+// own index, the trigger a version insert fires, the backfill - holds the document owner's lock,
+// taken above, so no pass states a version between this read and the fence. Four writers of the
+// row take no owner lock, and none of them writes a revision: oweDocumentIndex, the re-index of a
+// scope that calls it (reindexScope) and refs.RebuildAll set version to null beside this build's
+// mark, store_owed_at with its rule in store_owed_rule; and the tick's marking
+// (markVersionedDocuments) sets that mark alone. That is why the fence stays safe beside them: a
+// null version admits every pass, and a mark bears only on a pass at the version the row already
+// stands at, as this one may be, which the fence's own statement decides against the row as it
+// stands when it runs (refs' queueStand). A pass the row then refuses fails there and commits
+// nothing, and a mark of a higher rule written in between stays.
+//
+// A document that holds no markdown version (listed at version 0: an image, a file, an issue's
+// tree before its first version) has nothing to read or index, and its mark would otherwise stand
+// for ever, since the backfill marks every row no pass of this build's rule has stated. So once the
+// re-read under the document owner's lock answers the document's row with no markdown version - a
+// document that is gone answers no row - one statement clears its marks and states it: version at
+// coalesce(version, 0), the version it leaves, as indexOwedRoom's clear sets it, store_owed_at
+// cleared where its mark is of the Service's marking rule or a lower one, and stated_version at
+// that version by that rule, so neither the backfill nor a tick marks it again. The statement tests
+// again that no markdown version stands. A first markdown version that commits between the listing
+// and the lock - the release before's, which states nothing in the store and never sets the mark
+// again - is found by the re-read, and the document keeps its mark for the next tick
+// (TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed). It indexes nothing and answers so.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
-	if document.version == 0 {
-		return false, false, nil
-	}
-	markdown, blocks, err := s.TextWithBlocks(ctx, document.id)
+	var markdown string
+	var blocks []model.ArtifactBlock
 	unreadable := false
-	switch {
-	case ctx.Err() != nil:
-		return false, false, ctx.Err()
-	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
-		slog.Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
-			"artifact", document.id, "error", err)
-		unreadable = true
-	case err != nil:
-		return false, false, err
+	if document.version != 0 {
+		markdown, blocks, err = s.TextWithBlocks(ctx, document.id)
+		switch {
+		case ctx.Err() != nil:
+			return false, false, ctx.Err()
+		case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
+			slog.Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
+				"artifact", document.id, "error", err)
+			unreadable = true
+		case err != nil:
+			return false, false, err
+		}
 	}
 
 	tx, err := s.store.Pool.Begin(ctx)
@@ -1201,29 +1256,55 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	var version int
-	var stored string
-	var versionAt time.Time
+	// The document's row, with its newest markdown version, null where it holds none: a document
+	// that is gone, or that has no block-index row, answers no row at all.
+	var newest *int
+	var newestMarkdown *string
+	var newestAt *time.Time
 	var owed bool
 	var markedAt *time.Time
 	err = tx.QueryRow(queued, `
 		select v.number, v.markdown, v.created_at,
-		       b.version is null or b.store_owed_at is not null,
+		       b.version is null or `+refs.OwedMarkListed("b", "$2::integer")+`,
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = b.artifact_id)
 		from document_block_versions b
-		join lateral (
+		left join lateral (
 			select number, markdown, created_at from artifact_versions
 			where artifact_id = b.artifact_id and markdown is not null
 			order by number desc limit 1
 		) v on true
 		where b.artifact_id = $1
-	`, document.id).Scan(&version, &stored, &versionAt, &owed, &markedAt)
+	`, document.id, s.markingRule).Scan(&newest, &newestMarkdown, &newestAt, &owed, &markedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil
 	}
 	if err != nil {
 		return false, false, fmt.Errorf("re-read the block index owed by %s: %w", document.id, err)
 	}
+	if newest == nil {
+		if document.version != 0 || !owed {
+			return false, false, nil
+		}
+		if s.beforeNoVersionClear != nil {
+			if err := s.beforeNoVersionClear(document.id); err != nil {
+				return false, false, err
+			}
+		}
+		if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of %s, which holds no markdown version", document.id), `
+			update document_block_versions b set version = coalesce(b.version, 0),
+				store_owed_at = case when b.store_owed_rule <= $2 then null else b.store_owed_at end,
+				stated_version = coalesce(b.version, 0), stated_rule = $2
+			where b.artifact_id = $1::uuid and (b.version is null or b.store_owed_at is not null)
+			  and not exists (select 1 from artifact_versions v where v.artifact_id = $1::uuid and v.markdown is not null)
+		`, document.id, s.markingRule); err != nil {
+			return false, false, err
+		}
+		if err := ledger.runQueue(ctx, nil); err != nil {
+			return false, false, err
+		}
+		return false, false, tx.Commit(ctx)
+	}
+	version, stored, versionAt := *newest, *newestMarkdown, *newestAt
 	if version != document.version || !owed {
 		return false, false, nil
 	}
@@ -1250,9 +1331,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	// row's source_seq is the legacy_source_seq of the tuple it projects (graphstore.UncausedTuple's
 	// LegacyFromCause), so the row learns it beside the store write that states it.
 	if err := write(queued, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(queued, b, stated, eventID); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, stated, eventID)
 		stampVersionEvent(b, document.id, document.id, version, versionAt, eventID)
 		return nil
 	}); err != nil {
@@ -1431,6 +1510,10 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 	var held []string
 	var owed bool
 	var markedAt *time.Time
+	// The documents of the room are those its layout holds (roomLayoutSQL): a retired document's
+	// fragment is none of them. Its mark counts beside theirs, and goes with theirs below, since
+	// no pass indexes it again: the room's passes keep its blocks as its retirement left them
+	// (refs.PlanBlocks).
 	if err := tx.QueryRow(queued, `
 		with marked as (
 			select b.version is null or b.store_owed_at is not null as owed
@@ -1439,7 +1522,8 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 			   or b.artifact_id in (select d.artifact_id from document_rooms d where d.room = $1::uuid)
 		)
 		select `+roomRevisionSQL("$1::uuid")+`,
-		       array(select d.artifact_id::text from document_rooms d where d.room = $1::uuid order by 1),
+		       array(select d.artifact_id::text from document_rooms d join artifacts a on a.id = d.artifact_id
+		             where d.room = $1::uuid and a.retired_at is null order by 1),
 		       coalesce((select bool_or(marked.owed) from marked), false),
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = $1::uuid)
 	`, room).Scan(&revision, &held, &owed, &markedAt); err != nil {
@@ -1509,11 +1593,18 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		}
 	}
 	// A document of the room holding no version is no part of the pass's fence, which cleared the
-	// marks of every document it indexed: its own mark goes here, so no mark of the room is left.
+	// marks of every document it indexed and stated each, and neither is a retired document of the
+	// room: each one's own mark goes here, so no mark of the room is left, and the same statement
+	// states it at the version it leaves by the Service's marking rule (refs.BlockIndexMarkingRule),
+	// so neither the backfill nor a tick marks it again; a mark of a higher rule stays for that rule's
+	// pass, as the fence leaves it (refs' queueStand).
 	if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of room %s", room), `
-		update document_block_versions set version = coalesce(version, 0), store_owed_at = null
-		where artifact_id = any($1::uuid[]) and (version is null or store_owed_at is not null)
-	`, documents); err != nil {
+		update document_block_versions set version = coalesce(version, 0),
+			store_owed_at = case when store_owed_rule <= $3 then null else store_owed_at end,
+			stated_version = coalesce(version, 0), stated_rule = $3
+		where (artifact_id = any($1::uuid[]) or artifact_id in (select d.artifact_id from document_rooms d where d.room = $2::uuid))
+		  and (version is null or store_owed_at is not null)
+	`, documents, room, s.markingRule); err != nil {
 		return false, false, false, err
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
@@ -1653,9 +1744,7 @@ func causeRoomFacts(ctx context.Context, tx pgx.Tx, room string, facts map[strin
 			if !held {
 				event = graphstore.NoEvent
 			}
-			if err := graphstore.QueueCaused(ctx, b, facts[document], event); err != nil {
-				return fmt.Errorf("append what the pass over room %s stated of %s: %w", room, document, err)
-			}
+			graphstore.QueueCaused(b, facts[document], event)
 		}
 		return nil
 	})

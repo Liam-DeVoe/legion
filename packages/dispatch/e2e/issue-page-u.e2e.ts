@@ -1,5 +1,4 @@
-import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
-import type { IssueDetails } from "../web/src/api/types";
+import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS, NODE_STATE_WORDS } from "../web/src/features/issue-page/page-words";
@@ -47,6 +46,7 @@ import {
   decisionRowId,
   decisionSum,
   decisionSumOf,
+  decisionsViewServedGate,
   type FilterReading,
   heldDecisionsRead,
   holdTreeReads,
@@ -88,12 +88,14 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  *
  * Each row checks its gates first, each with `owedUnless`, and skips where one is not on the
  * base, with an `owed` annotation naming the gate and the decisions that make it owed; it never
- * passes then. The gates are the server's tree read (`treeReadGate`), an issue whose documents
- * are nodes of its tree (`convertedGate`), and the seeds written as decision nodes of the tree
- * read (`decisionNodesGate`, over the decisions read `decisionsReadOf` keeps). The first two are
- * read before anything else once the page is open, the third once the page has received its
- * decisions read, which the page sends only once Decisions is pressed. On this branch's base the
- * server serves no tree read, so both rows are tagged `@owed` and skip on the first gate.
+ * passes then. The gates are the server's tree read (`treeReadGate`), its Decisions view
+ * (`decisionsViewServedGate`: the model's tree route answers `view=decisions` only once its task
+ * t16c lands, and refuses it with 400 before then), an issue whose documents are nodes of its tree
+ * (`convertedGate`), and the seeds written as decision nodes of the tree read
+ * (`decisionNodesGate`, over the decisions read `decisionsReadOf` keeps). The first three are read
+ * before anything else once the page is open, the fourth once the page has received its decisions
+ * read, which the page sends only once Decisions is pressed. Until the server serves the Decisions
+ * view, both rows are tagged `@owed` and skip on that gate.
  */
 
 /** How long row 1 may take: two seeded issues, each read through all four filters. */
@@ -225,16 +227,18 @@ function decisionsSent(requests: readonly ApiRequest[], key: string) {
 }
 
 /** Every `shaped` tie of the tree read from a decision of this issue to a statement of it: from a
- *  decision node that was not replaced, since a replaced one stands beside no statement in the
- *  Spec column, or from an ask the asks read says is answered, which is a person's decision. */
+ *  decision node that was not replaced, as the model's decision it carries (`decision`) answers,
+ *  since a replaced one stands beside no statement in the Spec column, or from an ask the asks
+ *  read says is answered, which is a person's decision. Each end of a tie names its node by the
+ *  node's store id (`IssueTreeEnd.id`). */
 function tiesToStatements(
-  answer: IssueTreeAnswer,
+  answer: IssueTreeRead,
   reads: TreeIdReads
 ): { readonly from: IssueTreeNode; readonly to: IssueTreeNode }[] {
-  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
-  return answer.tuples.flatMap((tuple) => {
-    const from = nodes.get(tuple.from);
-    const to = nodes.get(tuple.to);
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
+  return (answer.tuples ?? []).flatMap((tuple) => {
+    const from = nodes.get(tuple.from.id);
+    const to = nodes.get(tuple.to.id);
     if (
       tuple.kind !== "shaped" ||
       from === undefined ||
@@ -246,7 +250,7 @@ function tiesToStatements(
       return [];
     }
     const decides =
-      (from.supertag === "decision" && from.replaced !== true) ||
+      (from.supertag === "decision" && from.decision?.replaced !== true) ||
       (from.supertag === "ask" && askOfNode(from, reads)?.state === "answered");
     return decides ? [{ from, to }] : [];
   });
@@ -264,23 +268,24 @@ function decisionNames(
 }
 
 /** The decisions of the tree read that wait for alice's review, as the header counts them: a
- *  decision node of this issue the read answers as waiting, not replaced, that a `shaped` tie
- *  binds to a statement of this issue, and that no Change hangs under. */
-function decisionsWaitingOnAlice(answer: IssueTreeAnswer): number {
-  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+ *  decision node of this issue the read answers as waiting, not replaced, in the model's decision
+ *  it carries (`decision`), that a `shaped` tie binds to a statement of this issue, and that no
+ *  Change hangs under. */
+function decisionsWaitingOnAlice(answer: IssueTreeRead): number {
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const changes = decisionNodeChanges(answer);
-  return answer.nodes.filter(
+  return (answer.nodes ?? []).filter(
     (node) =>
       node.supertag === "decision" &&
       node.issue === undefined &&
-      node.waiting_review === true &&
-      node.replaced !== true &&
+      node.decision?.waiting_review === true &&
+      node.decision.replaced !== true &&
       !changes.has(node.id) &&
-      answer.tuples.some((tuple) => {
-        const to = nodes.get(tuple.to);
+      (answer.tuples ?? []).some((tuple) => {
+        const to = nodes.get(tuple.to.id);
         return (
           tuple.kind === "shaped" &&
-          tuple.from === node.id &&
+          tuple.from.id === node.id &&
           to?.supertag === "requirement" &&
           to.issue === undefined
         );
@@ -314,6 +319,7 @@ async function readRowOne(
 ): Promise<void> {
   const { key } = seeded;
   owedUnless(await treeReadGate(page, key));
+  owedUnless(await decisionsViewServedGate(page, key));
   owedUnless(await convertedGate(page, key));
   const tree = treeAnswerOf(page);
   const decisions = decisionsReadOf(page, key);
@@ -367,7 +373,7 @@ async function readRowOne(
   }
   const states = Object.fromEntries(
     (await viewNodesOf(key, "decisions")).flatMap((node) =>
-      node.supertag === "decision" && node.issue === undefined && node.mark !== "context"
+      node.supertag === "decision" && node.issue === undefined && node.role !== "context"
         ? [[decisionRowId(node), reviewWordOf(node)]]
         : []
     )
@@ -551,11 +557,12 @@ const ROW_ONE_SEEDS = [
   })),
 ];
 
-// c-decisions, owed: on this branch's base the server serves no tree read, so the row skips on
-// the gate of the server's tree read (`treeReadGate`). It waits too on an issue whose documents
-// are nodes of its tree (`convertedGate`), and on the seeds written as decision nodes of the tree
-// read (`decisionNodesGate`, read once Decisions is pressed). The check holds it owed until the
-// server on the base meets all three gates.
+// c-decisions, owed: the row skips on the gate of the server's tree read (`treeReadGate`) and of
+// its Decisions view (`decisionsViewServedGate`), which the model's tree route serves only once its
+// task t16c lands. It waits too on an issue whose documents are nodes of its tree
+// (`convertedGate`), and on the seeds written as decision nodes of the tree read
+// (`decisionNodesGate`, read once Decisions is pressed). The check holds it owed until the server
+// on the base meets all four gates.
 // SLOW(>=2s): two seeded issues, each load waited out, and the four filters each pressed, read
 // until it holds still, and released.
 test("every decision the page draws is a node with the review state the model holds @owed", async ({
@@ -569,10 +576,12 @@ test("every decision the page draws is a node with the review state the model ho
 // Row 2: Keep and Change act on the decision node.
 // ---------------------------------------------------------------------------------------------
 
-/** The path of a Keep of the decision node `node`: its own document and its block. */
+/** The path of a Keep of the decision node `node`: its own document and its block
+ *  (`block_id`). */
 function keepPath(node: IssueTreeNode): string {
   const document = encodeURIComponent(node.document?.artifact_id ?? "");
-  return `/api/v1/artifacts/${document}/blocks/${encodeURIComponent(node.id)}/keep`;
+  const block = encodeURIComponent(node.block_id ?? node.id);
+  return `/api/v1/artifacts/${document}/blocks/${block}/keep`;
 }
 
 /** A field of a request body, where the body is an object that holds it. */
@@ -597,11 +606,12 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
   return writes.filter((write) => write.method === "POST" && write.path === path);
 }
 
-// c-keep-change, owed: on this branch's base the server serves no tree read, so the row skips on
-// the gate of the server's tree read (`treeReadGate`). It waits too on an issue whose documents
-// are nodes of its tree (`convertedGate`), and on the seeds written as decision nodes of the tree
-// read (`decisionNodesGate`, read once Decisions is pressed): the check holds it owed until the
-// server on the base meets those three gates. Its Change clause asserts `anchor.block_id` on the
+// c-keep-change, owed: the row skips on the gate of the server's tree read (`treeReadGate`) and of
+// its Decisions view (`decisionsViewServedGate`), which the model's tree route serves only once its
+// task t16c lands. It waits too on an issue whose documents are nodes of its tree
+// (`convertedGate`), and on the seeds written as decision nodes of the tree read
+// (`decisionNodesGate`, read once Decisions is pressed): the check holds it owed until the server
+// on the base meets those four gates. Its Change clause asserts `anchor.block_id` on the
 // captured comment request, which the page sends (`DecisionActions.tsx`' `ChangeAnchor`); no
 // gate checks that the server reads it.
 // SLOW(>=2s): a seeded issue with a third decision written, a Keep and a Change each waited on
@@ -611,6 +621,7 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
   await phase(browser, seedReviewList, async (page, seeded) => {
     const { key } = seeded;
     owedUnless(await treeReadGate(page, key));
+    owedUnless(await decisionsViewServedGate(page, key));
     owedUnless(await convertedGate(page, key));
     // Before the page opens: a third decision the planner writes in the spec, tied to `r1`, so it
     // waits too and, newest of the three, heads the review list.
@@ -705,7 +716,11 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
         comments: sent.length,
       },
       "the Change anchors to its decision's block"
-    ).toEqual({ artifact: older.document?.artifact_id, block_id: older.id, comments: 1 });
+    ).toEqual({
+      artifact: older.document?.artifact_id,
+      block_id: older.block_id ?? older.id,
+      comments: 1,
+    });
     await expect
       .poll(
         async () => ({

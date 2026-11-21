@@ -22,6 +22,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   type TreeAnswer,
@@ -38,58 +39,42 @@ import {
  */
 
 const KEY = "CORE-1";
-const REFERENCE = `dispatch://${KEY}/artifact/decisions-md#b-d1`;
 
+/** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
+ *  written against and a Change is anchored in. */
 const document_: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  id: "artifact-decisions",
+  id: "artifact-spec",
   issue_key: KEY,
   kind: "doc",
-  name: "decisions.md",
-  primary: false,
+  name: "spec.md",
+  primary: true,
   project: "CORE",
-  ref_key: "artifact:artifact-decisions",
+  ref_key: "artifact:artifact-spec",
   session_id: null,
-  slug: "decisions-md",
+  slug: "spec",
   versions: [],
 };
 
+/** The decision's own address, as the tree read addresses a typed block of a document
+ *  (`decision-nodes.ts`' `nodeReference`). */
+const REFERENCE = `dispatch://${KEY}/artifact/${document_.slug}#b-d1`;
+
 /**
- * A decision node of `document_`, as the tree read answers one: an
- * agent's decision that waits for review, unless `extra` says otherwise. Its first paragraph is
- * the heading every accessible name reads and the words a Change is anchored to, so a decision
- * with one is a decision whose Change control is drawn.
+ * A decision node of `document_`, as the tree read answers one (`treeNode`), carrying the model's
+ * decision (`decision`): an agent's decision that waits for review, unless `extra` says
+ * otherwise. Its first paragraph is the heading every accessible name reads and the words a
+ * Change is anchored to, so a decision with one is a decision whose Change control is drawn.
  */
-function decisionNode(
-  id: string,
-  text: string,
-  extra: Partial<TreeAnswerNode> = {}
-): TreeAnswerNode {
-  return {
-    asks: [],
-    attributes: {},
-    author: [],
-    changed_at: null,
-    changed_version: 1,
+function decisionNode(id: string, text: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
+  const { decision, ...rest } = extra;
+  return treeNode(id, "decision", KEY, {
     document: { artifact_id: document_.id, position: 1, slug: document_.slug },
-    id,
-    kept: null,
-    kind: "agent",
-    links: [],
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    replaced: false,
-    state: "live",
-    supertag: "decision",
     text,
-    text_sha256: `sum-${id}`,
-    unsure: false,
-    visibility: "project",
-    waiting_review: true,
-    ...extra,
-  };
+    ...rest,
+    decision: { text_sha256: `sum-${id}`, waiting_review: true, ...decision },
+  });
 }
 
 /** The decision at `REFERENCE`. */
@@ -102,14 +87,7 @@ const ONE = decisionNode(
  *  is not fresh, so an enabled observer would read it again as it mounts. */
 function heldReads(nodes: readonly TreeAnswerNode[]): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(issueTreeKey(KEY), {
-    converted: false,
-    cursor: null,
-    nodes: [...nodes],
-    tree: null,
-    tuples: [],
-    view_of: null,
-  } satisfies TreeAnswer);
+  client.setQueryData(issueTreeKey(KEY), treeAnswer(nodes));
   return client;
 }
 
@@ -372,7 +350,7 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
  *  review so its node draws the Change. */
 async function quoteOf(fields: Pick<TreeAnswerNode, "text" | "text_tree">): Promise<string> {
   const user = userEvent.setup();
-  const { unmount } = renderActions([decisionNode(ONE.id, fields.text, fields)]);
+  const { unmount } = renderActions([decisionNode("d1", fields.text, fields)]);
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     return screen.getByTestId("decision-quote").textContent ?? "";
@@ -439,7 +417,11 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
     expect<unknown>(createComment.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: document_.id, block_id: ONE.id, quote: "One tree, five presets" },
+        anchor: {
+          artifact: document_.id,
+          block_id: ONE.block_id ?? ONE.id,
+          quote: "One tree, five presets",
+        },
         body: "Say where.",
       },
     ]);
@@ -476,7 +458,11 @@ test("Change anchors to the node's document and block", async () => {
     expect(
       createComment.mock.calls[0]?.[1]?.anchor,
       "the Change anchors to its decision's block"
-    ).toMatchObject({ artifact: document_.id, block_id: ONE.id, quote: "One tree, five presets" });
+    ).toMatchObject({
+      artifact: document_.id,
+      block_id: ONE.block_id ?? ONE.id,
+      quote: "One tree, five presets",
+    });
   } finally {
     unmount();
     createComment.mockRestore();
@@ -489,7 +475,7 @@ test("Change anchors to the node's document and block", async () => {
 test("Keep posts the node's document, block id and sum", async () => {
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
     artifact_id: document_.id,
-    block_id: ONE.id,
+    block_id: ONE.block_id ?? ONE.id,
     changed_version: 1,
     kept_at: "2026-11-17T00:00:00Z",
     kept_by: "alice",
@@ -568,7 +554,7 @@ function PageTreeRead(): null {
 test("Keep leaves a tree read in flight to finish and reads the tree again after it", async () => {
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
     artifact_id: document_.id,
-    block_id: ONE.id,
+    block_id: ONE.block_id ?? ONE.id,
     changed_version: 1,
     kept_at: "2026-11-17T00:00:00Z",
     kept_by: "alice",
@@ -694,7 +680,7 @@ test("a Change sent while the comments read is already invalidated reads the tre
 test("Keep drops every held view, the Spec view's among them", async () => {
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
     artifact_id: document_.id,
-    block_id: ONE.id,
+    block_id: ONE.block_id ?? ONE.id,
     changed_version: 1,
     kept_at: "2026-11-17T00:00:00Z",
     kept_by: "alice",

@@ -555,6 +555,46 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	}
 }
 
+// A closed issue born converted whose issue room owes a settlement - a browser on another
+// process's room wrote an ask block into its spec after the close, and that room, whose settle
+// delay is an hour, has not settled it - is swept by the repair, as a document that is its own
+// room is (TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess): the pending row is the
+// issue room's, keyed by the issue's tree artifact and by none of its documents, and the repair
+// finds it there. The issue is born converted on a fleet of this build alone (api's
+// fleetServesIssueRoom), and a process of the release before then joins it, so the close and the
+// sweep write block states (docs.WriteIssueAskStates).
+func TestRepairSweepsAClosedConvertedIssueWhoseRoomOwesASettlement(t *testing.T) {
+	f := newRepairFixture(t)
+	issue := createInteractionIssue(t, f.handler, "ROOM", "Converted and written after its close", "Context\n")
+	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	registerTwoBuilds(t, f.database)
+	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
+	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	peer := connectBrowserPeer(t, f.handler, other, issue.PrimaryArtifactID)
+	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
+		t.Fatalf("close %s: status=%d body=%s", issue.Key, closed.Code, closed.Body.String())
+	}
+	peer.appendParagraph(t, `:::ask{#other-room urgency="low" multiple="false"}`+"\nWritten in the other room?\n:::\n")
+	peer.barrier(t)
+	awaitOwedSettlement(t, f.database, issue.PrimaryArtifactID)
+	awaitLiveText(t, f.handler, issue.PrimaryArtifactID, "#other-room")
+	var owing string
+	if err := f.database.Pool.QueryRow(context.Background(), `
+		select string_agg(a.kind, ',' order by a.kind) from doc_settlements_pending p join artifacts a on a.id = p.artifact_id
+		where a.issue_key = $1`, issue.Key).Scan(&owing); err != nil || owing != "tree" {
+		t.Fatalf("the converted issue owes the settlements of %q (%v), want its issue room's alone, keyed by its tree", owing, err)
+	}
+
+	repair := repairNow(t, f)
+	if repair.Swept != 1 || repair.Withdrawn != 0 || repair.Restored != 0 {
+		t.Fatalf("repair = %+v, want the block the other room wrote into the converted issue's spec swept", repair)
+	}
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#other-room state="resolved"`)
+	if id := findBlockAsk(t, f.handler, issue.Key, issue.PrimaryArtifactID, "other-room"); id != "" {
+		t.Fatalf("the other room's block is ask %s on a closed issue", id)
+	}
+}
+
 // TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass proves the interval pass
 // does not read every closed issue's documents again each interval: a document whose owed
 // settlement was marked before the pass's bound is left for a full pass, while one marked after

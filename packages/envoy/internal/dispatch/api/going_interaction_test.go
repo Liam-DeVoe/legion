@@ -371,9 +371,9 @@ func TestARunIsReadByTheWholeCredentialThatAskedIt(t *testing.T) {
 
 // A pod of the release before records a run with no node, during a roll, and stores its frames with
 // no frame value. A frame this build writes of that run writes the run's node from its row first,
-// through the backfill's own writer for one run (graphcensus.WriteRun), with its authored_by, its
-// author's node and a frame value of every frame that pod stored, and then the frame itself, all in
-// the frame's one transaction.
+// through the one writer of a run's node from its row, which the backfill shares
+// (graphstore.WriteRun), with its authored_by, its author's node and a frame value of every frame
+// that pod stored, and then the frame itself, all in the frame's one transaction.
 func TestAFrameOfARunWithNoNodeWritesTheNodeFirst(t *testing.T) {
 	rig := newGoingRig(t)
 	ctx := context.Background()
@@ -449,7 +449,7 @@ func TestAFrameOfARunWithNoNodeWritesTheNodeFirst(t *testing.T) {
 // The erase of a run takes the run's interaction node row and then its going_requests row, each
 // `for update` (grapherase's lockProjectionRows), and every frame of this build takes the node's
 // row before the run's. A frame of a run a pod of the release before recorded with no node finds
-// no node to take, and writes it under the run's row (graphcensus.WriteRun); but where another
+// no node to take, and writes it under the run's row (graphstore.WriteRun); but where another
 // write committed the node after the frame looked, the frame finds that node under the run's row,
 // and an erase may hold it by then. A frame that waited for the node there would wait on the
 // erase while the erase waited on it for the run's row, and Postgres would end one of the two

@@ -455,13 +455,13 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
 	waitForNoPendingSettlement(t, service, artifactID, "the closed issue's document to settle the returned block")
-	// On a fleet of one build no attribute of an ask block holds a state: the closed issue's
-	// settlement saves the returned block, whose ask it leaves retracted,
-	// with none of the seven attributes a version can store, where the release before saved it
-	// resolved. The block is saved whole, its question included.
-	const saved = "\n" + block
+	// The closed issue's settlement saves the returned block, whose ask it leaves retracted, with
+	// what a version keeps of it on a fleet of one build: the state its ask's node holds, resolved
+	// (keptAskState), as the release before saved it. The block is saved whole, its question
+	// included.
+	const saved = "\n:::ask{#returning-ask urgency=\"med\" multiple=\"false\" state=\"resolved\"}\nWill it come back?\n:::\n"
 	if _, markdown, _ := latestDocumentVersion(t, service.store, artifactID); !strings.Contains(markdown, saved) {
-		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the returned block saved with no state:\n%s", markdown, block)
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the returned block saved resolved, as its ask's node holds it:%s", markdown, saved)
 	}
 	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the closed issue's settlement left the ask %s %+v, want it still retracted while DOC-1 is closed", ask.State, ask.Resolution)

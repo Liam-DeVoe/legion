@@ -282,7 +282,7 @@ async function invokeThroughMenu(
 ): Promise<void> {
   const held = await heldAnswer(tree, "the tree read");
   expect(
-    held.nodes.some((node) => node.id === target),
+    (held.nodes ?? []).some((node) => node.id === target),
     `the tree read holds no ${what}`
   ).toBe(true);
   const before = new Set(lensIdsIn(held));
@@ -370,7 +370,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
     expect(
-      answer.nodes.find((node) => node.id === ids.tradeOff)?.parent,
+      answer.nodes?.find((node) => node.id === ids.tradeOff)?.parent?.id,
       "the tree read does not place the trade-off analysis under its first statement"
     ).toBe(ids.statements[0]);
     const kinds = await lensCatalogue();
@@ -502,7 +502,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       lineReading(riskALines, "early_warning"),
       "risk A does not read Early warning: with its words"
     ).toEqual({ label: LENS_WORDS.early_warning, targets: [], words: lenses.riskA.early_warning });
-    const checkText = answer.nodes.find((node) => node.id === ids.check1)?.text ?? "";
+    const checkText = answer.nodes?.find((node) => node.id === ids.check1)?.text ?? "";
     expect(
       lineReading(riskALines, "prevented_by"),
       "risk A does not read Prevented by with check 1's chip"
@@ -1069,7 +1069,7 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
       rows.flatMap((row) => (row.id === standard || row.id === measurement ? [row.id] : [])),
       "the two constraints are not drawn in the read's order"
     ).toEqual(
-      answer.nodes.flatMap((node) =>
+      (answer.nodes ?? []).flatMap((node) =>
         node.id === ids.standard ? [standard] : node.id === ids.measurement ? [measurement] : []
       )
     );

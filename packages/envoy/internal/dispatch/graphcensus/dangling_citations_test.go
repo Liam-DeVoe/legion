@@ -2,7 +2,9 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,10 +169,21 @@ func citeFromNotes(t *testing.T, database *store.Store, notes testDocument, targ
 	}
 }
 
-// danglingOf is the counter's read of the database, in two sets of the citing node and its target.
-func danglingOf(t *testing.T, database *store.Store) (moved, returning []string) {
+// declining is a test of the returns the restore declines (ReturnDeclined) that declines the
+// returns of asks and no other, as docs' test answers for an ask whose block a person took out of
+// its spec: this package cannot read docs' (docs.ReturnDeclined, held to the restore in docs'
+// TestTheRestoreTakesBackOnlyWhatNoPersonRemoved). declining() declines none.
+func declining(asks ...string) ReturnDeclined {
+	return func(_ context.Context, _ graphstore.Queryer, work RestoreWork) (bool, error) {
+		return slices.Contains(asks, work.Ask), nil
+	}
+}
+
+// danglingOf is the counter's read of the database, its returns judged by declined, in two sets
+// of the citing node and its target.
+func danglingOf(t *testing.T, database *store.Store, declined ReturnDeclined) (moved, returning []string) {
 	t.Helper()
-	report, err := DanglingCitations(context.Background(), database.Pool)
+	report, err := DanglingCitations(context.Background(), database.Pool, declined)
 	if err != nil {
 		t.Fatalf("count the dangling citations: %v", err)
 	}
@@ -196,16 +209,21 @@ func danglingOf(t *testing.T, database *store.Store) (moved, returning []string)
 // its text and its block once.
 //
 // Before the restore the moved set reads zero, since the decisions document still holds the
-// block both its citations name, and the returning set reads the two nodes that cite the spec's old
-// address of the returning ask; a prose citation of an address the decisions document never held,
-// and a citation of an address the colliding ask's block id names, which a paragraph of the spec
-// holds, are no dangling citation. The collision census names that block id. The census's own lines
-// print both.
+// block both its citations name. A citation of a block of the decisions document an ordinary edit
+// deleted before this release is no citation of a move: the block's text stands in
+// document_block_texts, and no moved_to leaves its address. The returning set reads the two nodes
+// that cite the spec's old address of the returning ask; a prose citation of an address the
+// decisions document never held, and a citation of an address the colliding ask's block id names,
+// which a paragraph of the spec holds, are no dangling citation. The collision census names that
+// block id. The census's own lines print both. A return the restore declines - a person took its
+// block out of the spec - is no return it makes, and the returning set leaves its citations out;
+// and a counter given no test of which returns the restore declines refuses by name
+// (ErrNoReturnDeclined) rather than count them.
 //
-// The move of the second shape, written without its moved_to tuple, leaves both citations of the
-// old address dangling in the decisions document, and the moved set counts them (the control),
-// and goes on counting them once the document is retired, as the step retires it in the
-// transaction that empties it; with the tuple, they resolve and it reads zero, and once the
+// The move of the second shape, with its moved_to tuple, leaves no citation dangling. Once that
+// tuple is retracted, both citations of the old address dangle, and the moved set counts them (the
+// control), and goes on counting them once the document is retired, as the step retires it in the
+// transaction that empties it; asserted again, they resolve and it reads zero, and once the
 // returning ask's block is back in the spec, the returning set reads zero too.
 func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	database := storetest.Open(t)
@@ -214,6 +232,7 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	oldAddress := fixture.decisions.refKey + "#ask-b"
 	newAddress := fixture.spec.refKey + "#ask-b"
 	returningAddress := fixture.spec.refKey + "#ask-a"
+	editedOut := fixture.decisions.refKey + "#edited-out"
 	firstComment, secondComment := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
 	citeFromComment(t, database, firstComment, oldAddress)
 	citeFromNotes(t, database, fixture.notes, oldAddress)
@@ -221,6 +240,14 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	citeFromNotes(t, database, fixture.notes, returningAddress)
 	citeFromComment(t, database, firstComment, fixture.decisions.refKey+"#never-held")
 	citeFromComment(t, database, firstComment, fixture.spec.refKey+"#held-x")
+	// A block of the decisions document an ordinary edit of the release before deleted: version 1
+	// recorded its text, and the document's block index holds no row of it.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_texts (artifact_id, block_id, version, text) values ($1::uuid, 'edited-out', 1, 'A section an edit deleted.')
+	`, fixture.decisions.id); err != nil {
+		t.Fatalf("record the text of the block an edit deleted: %v", err)
+	}
+	citeFromComment(t, database, secondComment, editedOut)
 
 	work, err := ReadRestoreWork(ctx, database.Pool)
 	if err != nil {
@@ -238,12 +265,21 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 		t.Fatalf("the collision census is %+v, want held-x of CORE-1 alone", collisions)
 	}
 
-	moved, returning := danglingOf(t, database)
+	moved, returning := danglingOf(t, database, declining())
 	wantReturning := []string{"artifact:" + fixture.notes.id + " -> " + returningAddress, "comment:" + secondComment + " -> " + returningAddress}
 	if len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
 		t.Fatalf("before the move the counter reads moved %v and returning %v, want none and %v", moved, returning, wantReturning)
 	}
-	report := storeCensusOf(t, database)
+	if _, returning = danglingOf(t, database, declining(fixture.returning)); len(returning) != 0 {
+		t.Fatalf("with the return of %s declined the counter reads returning %v, want none: the restore writes no block back there", fixture.returning, returning)
+	}
+	if _, err := DanglingCitations(ctx, database.Pool, nil); !errors.Is(err, ErrNoReturnDeclined) {
+		t.Fatalf("the counter given no test of the returns the restore declines answered %v, want %v", err, ErrNoReturnDeclined)
+	}
+	report, err := StoreCensus(ctx, database.Pool.Config().ConnString(), false, declining())
+	if err != nil {
+		t.Fatalf("take the store census: %v", err)
+	}
 	var printed strings.Builder
 	report.WriteVerbose(&printed)
 	for _, line := range []string{
@@ -256,8 +292,9 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 		}
 	}
 
-	// The move of the second shape, as the restore makes it, but with no moved_to tuple: the block
-	// leaves the decisions document and stands in the spec, and the ask's row names the spec.
+	// The move of the second shape, as the restore makes it: the block leaves the decisions
+	// document and stands in the spec, the ask's row names the spec, and the old address takes its
+	// moved_to to the new one.
 	if _, err := database.Pool.Exec(ctx, `
 		delete from document_blocks where artifact_id = $1::uuid and block_id = 'ask-b'
 	`, fixture.decisions.id); err != nil {
@@ -267,10 +304,19 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 		t.Fatalf("name the spec on the moved ask's row: %v", err)
 	}
 	insertTestBlock(t, database, fixture.spec, "ask-b", "ask")
-	moved, _ = danglingOf(t, database)
+	move := graphstore.Tuple{FromKind: refs.BlockNodeKind, FromID: oldAddress, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: newAddress, Asserted: true}
+	appendTuple(t, database, move)
+	if moved, _ = danglingOf(t, database, declining()); len(moved) != 0 {
+		t.Fatalf("the move with its moved_to reads the moved set %v, want none", moved)
+	}
+
+	// The move's tuple retracted: both citations of the old address dangle.
+	move.Asserted = false
+	appendTuple(t, database, move)
+	moved, _ = danglingOf(t, database, declining())
 	wantMoved := []string{"artifact:" + fixture.notes.id + " -> " + oldAddress, "comment:" + firstComment + " -> " + oldAddress}
 	if !reflect.DeepEqual(moved, wantMoved) {
-		t.Fatalf("a move that wrote no moved_to reads the moved set %v, want its two citations %v", moved, wantMoved)
+		t.Fatalf("a move whose moved_to is retracted reads the moved set %v, want its two citations %v", moved, wantMoved)
 	}
 
 	// The document retired, as docs.RetireDocument retires it - retired_at set and its role
@@ -278,16 +324,14 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `update artifacts set retired_at = now(), role = null where id = $1::uuid`, fixture.decisions.id); err != nil {
 		t.Fatalf("retire the decisions document: %v", err)
 	}
-	if moved, _ = danglingOf(t, database); !reflect.DeepEqual(moved, wantMoved) {
+	if moved, _ = danglingOf(t, database, declining()); !reflect.DeepEqual(moved, wantMoved) {
 		t.Fatalf("once the decisions document is retired the moved set reads %v, want the move's two citations %v still", moved, wantMoved)
 	}
 
-	writeTestTuples(t, database, nil, []graphstore.Tuple{{
-		FromKind: refs.BlockNodeKind, FromID: oldAddress, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: newAddress,
-		At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
-	}})
+	move.Asserted = true
+	appendTuple(t, database, move)
 	insertTestBlock(t, database, fixture.spec, "ask-a", "ask")
-	moved, returning = danglingOf(t, database)
+	moved, returning = danglingOf(t, database, declining())
 	if len(moved) != 0 || len(returning) != 0 {
 		t.Fatalf("after the move and the return the counter reads moved %v and returning %v, want none of either", moved, returning)
 	}
@@ -297,11 +341,12 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 // tree artifact, `<tree ref_key>#<block id>`, while a citation names the spec's own address. The
 // counter reads each target through moved_to_reach alone, so the room step is that function's own
 // (migration 20261118165901), after the target's moved_to tuples and before the address itself.
-// The decisions document's ask block moves into the spec's fragment of the room: a move that wrote
-// no moved_to leaves its citation dangling (the control), and with a moved_to to the spec's
-// address of the block the citation resolves through the room to the tree's node. The returning
-// ask's old spec address dangles until its block stands in the room again, and then resolves by
-// the room step alone.
+// The decisions document's ask block moves into the spec's fragment of the room with a moved_to to
+// the spec's address of the block, and the citation resolves through the room to the tree's node.
+// The moved set is the addresses a moved_to was ever stated from, so once that tuple is retracted
+// the citation of the old address dangles (the control), and asserted again it resolves. The
+// returning ask's old spec address dangles until its block stands in the room again, and then
+// resolves by the room step alone.
 func TestTheDanglingCounterReadsAMoveIntoAnIssueRoom(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -327,31 +372,42 @@ func TestTheDanglingCounterReadsAMoveIntoAnIssueRoom(t *testing.T) {
 	citeFromComment(t, database, moving, oldAddress)
 	citeFromComment(t, database, returningComment, returningAddress)
 	wantReturning := []string{"comment:" + returningComment + " -> " + returningAddress}
-	if moved, returning := danglingOf(t, database); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
 		t.Fatalf("before the move the counter reads moved %v and returning %v, want none and %v", moved, returning, wantReturning)
 	}
 
+	// The move into the room, as the restore makes it: the block leaves the decisions document and
+	// stands in the spec's fragment of the room, and the old address takes its moved_to to the
+	// spec's address of the block.
 	if _, err := database.Pool.Exec(ctx, `
 		delete from document_blocks where artifact_id = $1::uuid and block_id = 'ask-b'
 	`, fixture.decisions.id); err != nil {
 		t.Fatalf("move the ask block out of the decisions document: %v", err)
 	}
 	insertTestBlock(t, database, tree, "ask-b", "ask")
-	wantMoved := []string{"comment:" + moving + " -> " + oldAddress}
-	if moved, _ := danglingOf(t, database); !reflect.DeepEqual(moved, wantMoved) {
-		t.Fatalf("a move into the room that wrote no moved_to reads the moved set %v, want its citation %v", moved, wantMoved)
-	}
-	writeTestTuples(t, database, nil, []graphstore.Tuple{{
-		FromKind: refs.BlockNodeKind, FromID: oldAddress, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: specAddress,
-		At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
-	}})
-	if moved, returning := danglingOf(t, database); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+	move := graphstore.Tuple{FromKind: refs.BlockNodeKind, FromID: oldAddress, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: specAddress, Asserted: true}
+	appendTuple(t, database, move)
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
 		t.Fatalf("with the moved_to to %s, whose block the room holds at %s#ask-b, the counter reads moved %v and returning %v, want none and %v",
 			specAddress, tree.refKey, moved, returning, wantReturning)
 	}
 
+	// The move's tuple retracted: the citation of the old address dangles.
+	move.Asserted = false
+	appendTuple(t, database, move)
+	wantMoved := []string{"comment:" + moving + " -> " + oldAddress}
+	if moved, _ := danglingOf(t, database, declining()); !reflect.DeepEqual(moved, wantMoved) {
+		t.Fatalf("a move into the room whose moved_to is retracted reads the moved set %v, want its citation %v", moved, wantMoved)
+	}
+
+	move.Asserted = true
+	appendTuple(t, database, move)
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+		t.Fatalf("with the moved_to asserted again the counter reads moved %v and returning %v, want none and %v", moved, returning, wantReturning)
+	}
+
 	insertTestBlock(t, database, tree, "ask-a", "ask")
-	if moved, returning := danglingOf(t, database); len(moved) != 0 || len(returning) != 0 {
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || len(returning) != 0 {
 		t.Fatalf("with the returning ask's block back in the room the counter reads moved %v and returning %v, want none of either", moved, returning)
 	}
 }

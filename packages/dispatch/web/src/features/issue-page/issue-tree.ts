@@ -305,12 +305,12 @@ export interface TreeViews {
 /**
  * Whether `node` is a statement: a `requirement` block of the issue's own spec, the document the
  * issue read names by `primary_artifact_id`, drawn before the coverage read answers as after it,
- * or a requirement that read holds. A `requirement` block of the plan, Verification or
- * decisions document keeps its type and is a block and nothing more: no row of the Spec filter
- * and none of its count, no context row of the Verification filter and none of its statements,
- * and nothing placed under it (`tree-read/tree-nodes.ts`' `draftServing`, which reads the same
- * rule on the tree read's nodes). The review list is no reader of this rule: it reads a
- * requirement the coverage read holds (`inReviewList`'s callers).
+ * or a requirement that read holds. A `requirement` block of the plan, of the Verification
+ * document or of any other document keeps its type and is a block and nothing more: no row of
+ * the Spec filter and none of its count, no context row of the Verification filter and none of
+ * its statements, and nothing placed under it (`tree-read/tree-nodes.ts`' `draftServing`, which
+ * reads the same rule on the tree read's nodes). The review list is no reader of this rule: it
+ * reads a requirement the coverage read holds (`inReviewList`'s callers).
  */
 export function isStatement(node: Pick<TreeNode, "statement">): boolean {
   return node.statement === true;
@@ -445,9 +445,9 @@ export function nodeWords(node: TreeNode): string {
  * `## # 1 rule` reads `# 1 rule`, and a list that follows a paragraph with no blank line ends
  * that paragraph, so the paragraph alone is the first block. A block that holds no words - a
  * horizontal rule, a paragraph that is only an image or a piece of HTML - is passed over, or the
- * line would be empty while the node has words. A decision's reading opens with its own `##`
- * heading, and `wordsOf` joins a heading and the paragraph after it with one space, so a line cut
- * from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
+ * line would be empty while the node has words. A decision's content opens with its own heading
+ * where it has one, and `wordsOf` joins a heading and the paragraph after it with one space, so a
+ * line cut from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
  *
  * A stored text is markdown, and its marks are no word of it, so its first block reads as that
  * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
@@ -660,9 +660,10 @@ export function assemble(
   const placements = new Map<string, readonly string[]>();
   for (const draft of drafts) {
     references.set(draft.id, draft.reference ?? draft.id);
-    // A parent named twice is one placement: a decision whose paragraphs each cite the same
-    // question arrives naming it once per paragraph (`api/decisions.go`), and drawing it twice
-    // there would count it twice in `held` and give both rows one key (`tree-keys.ts`).
+    // A parent named twice is one placement: a decision may name the same question twice - the
+    // read of the release before named it once for each paragraph of a section that cited it -
+    // and drawing it twice there would count it twice in `held` and give both rows one key
+    // (`tree-keys.ts`).
     const named = [...new Set(draft.parents)].filter((parent) => known.has(parent));
     placements.set(draft.id, named.length === 0 ? [key] : named);
   }

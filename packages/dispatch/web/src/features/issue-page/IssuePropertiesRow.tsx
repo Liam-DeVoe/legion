@@ -28,7 +28,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
-import { refetchFailedOnFocus } from "../refs/reference-target";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
@@ -39,22 +39,6 @@ import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
-
-/**
- * How the count's reads are kept fresh, but for the tree read, which keeps its own (`TREE_FRESH`):
- * the two others take the tree's `EVENT_FRESH` (`useIssueTree.ts`), which that file keeps to
- * itself, so the header holds this copy. They are refreshed by events, never
- * by age (decision 180): the feed's rules read the coverage and the tree again when an event can
- * change them, the reader's login does not change while the page is open, and a window focus
- * fetches again only a read in error (`refetchFailedOnFocus`).
- * TanStack judges staleness per observer, so a read here under the app's 30 s (`main.tsx`) would
- * read its key again on each window focus, and on each mount of the header 30 s after the last
- * read, although the tree beside it holds that key fresh.
- */
-const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
@@ -98,10 +82,12 @@ export function IssuePropertiesRow({
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the coverage's statements, and the decisions the tree read answers as nodes,
-  // with each Change it hangs under one - and kept fresh as the outline keeps them
-  // (`EVENT_FRESH`), so it costs no request of its own (`waiting.ts`). A statement is one by the
-  // rule the outline's review list reads (`coverageStatements`), so the count counts the very
-  // decisions the outline marks as waiting.
+  // with each Change it hangs under one - and kept fresh by the outline's own rule
+  // (`reference-target.ts`'s `EVENT_FRESH`), but for the tree read, which keeps its own
+  // (`TREE_FRESH`): events refresh them, never their age (decision 180). Staleness is per
+  // observer, so each read here takes that rule too, and the count costs no request of its own
+  // (`waiting.ts`). A statement is one by the rule the outline's review list reads
+  // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;

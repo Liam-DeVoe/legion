@@ -88,7 +88,7 @@ func ReadAskPlaces(ctx context.Context, q Queryer, anchor, owner, block *string)
 // (api's createAskFor and openApprovalAsk, docs' createAskBlock) and the boot step's backfill
 // states for a row written before. at is the asks row's created_at, so each relation is dated as
 // graph_edges' old arm dated it, and event the event that recorded the ask, or NoEvent for a write
-// held for its cause (WriteUncaused).
+// held for its cause (PlanUncaused).
 //
 // A later move of the ask - which the restore alone makes - states the three relations as
 // Claims through WriteArms instead (AskClaims), so the far ends it leaves are retracted.

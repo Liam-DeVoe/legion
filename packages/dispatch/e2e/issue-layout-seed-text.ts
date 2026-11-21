@@ -119,166 +119,98 @@ export function planTaskText(index: number): string {
   return `Task ${index} of the redesign is one step of the build.`;
 }
 
-/** The block id of the ask block a seeded spec's `## Decisions` part holds: the person's
- *  decision, a question the planner asked there and a person answered. */
-export const ANSWERED_ASK_BLOCK_ID = "a-addresses";
-
-/** The question that ask block asks. */
-const ANSWERED_QUESTION = "Which addresses must the new page still answer?";
-
-/** The block id of the reading inside that ask, which reads the person's answer. A reading joins
- *  an ask only once a person answered it, so a seed writes it after the answer. */
-export const ANSWERED_READING_BLOCK_ID = "g-addresses";
-
-/** The `shaped` attribute naming the blocks `blocks` of `issueKey`'s spec. */
-export function shapedAttribute(issueKey: string, blocks: readonly string[]): string {
-  return `shaped="${blocks.map((block) => specBlockRef(issueKey, block)).join(" ")}"`;
+/** The block id of decision `index` of a seeded spec's `## Decisions` part. */
+export function decisionBlockId(index: number): string {
+  return `d${index}`;
 }
 
-/** The requirements the answered ask's block shaped, as its `shaped` names them. */
-export function answeredAskShaped(issueKey: string): string[] {
-  const answered = seededDecisions(issueKey).find((decision) => decision.answered === true);
-  return (answered?.shapes ?? []).map((index) => specBlockRef(issueKey, requirementBlockId(index)));
-}
-
-/** A `decision` block as markdown: its id, the attributes its opening line writes, and its
- *  paragraphs. The fence is one colon longer than the `:::` of a typed block it may hold. */
-export function decisionBlock(
-  id: string,
-  attributes: readonly string[],
-  paragraphs: readonly string[]
-): string {
-  return `::::decision{${[`#${id}`, ...attributes].join(" ")}}\n${paragraphs.join("\n\n")}\n::::`;
-}
-
-/** An `ask` block as markdown: its id, the attributes its opening line writes, and its
- *  paragraphs. The fence is one colon longer than the `:::` of the reading it holds once a person
- *  answered it. */
-function askBlock(
-  id: string,
-  attributes: readonly string[],
-  paragraphs: readonly string[]
-): string {
-  return `::::ask{${[`#${id}`, ...attributes].join(" ")}}\n${paragraphs.join("\n\n")}\n::::`;
-}
-
-/** A `reading` block as markdown: its id and its paragraphs. */
-function readingBlock(id: string, paragraphs: readonly string[]): string {
-  return `:::reading{#${id}}\n${paragraphs.join("\n\n")}\n:::`;
-}
-
-/** A spec's `## Decisions` part, holding `blocks`. */
-export function decisionsPart(blocks: readonly string[]): string {
-  return `## Decisions\n\n${blocks.join("\n\n")}\n`;
-}
-
-/** One decision a seeded spec's `## Decisions` part holds, in document order, the last one
- *  replaced. Each is written as the conversion of a decisions document writes each section:
- *  its heading is its first paragraph and its body follows, the requirements its body links are
- *  its `shaped`, an `Unsure:` paragraph is its `uncertainty_reason` and leaves its words, and a
- *  section under `## Replaced` is `replaced="true"`. The person's decision, which cited the
- *  answered ask, is that ask's block, and its words are the reading inside it. */
+/** One decision of a seeded spec, with the facts its `decision` block carries as attributes: the
+ *  blocks it shaped (`shaped`), whether it settles the seed's answered ask (`from_ask`), whether
+ *  it is unsure (`uncertainty="high"`) and whether a later one replaced it (`replaced`). */
 interface SeededDecision {
-  readonly answered?: true;
-  readonly body?: string;
+  readonly body: string;
+  readonly fromAsk?: boolean;
   readonly heading: string;
-  readonly replaced?: true;
-  /** The requirements the decision shaped, by index. */
-  readonly shapes: readonly number[];
-  /** The rest of its id after `d-`. */
-  readonly slug: string;
-  readonly unsure?: string;
+  readonly replaced?: boolean;
+  readonly shaped: readonly string[];
+  readonly unsure?: boolean;
 }
 
-function seededDecisions(issueKey: string): SeededDecision[] {
-  const block = (index: number) => specBlockRef(issueKey, requirementBlockId(index));
+/** The decisions a seeded spec holds, in document order, the last one replaced. Each is the
+ *  planner's `decision` block of the spec's `## Decisions` part, a node of the store, whose facts
+ *  are its block's attributes (`SeededDecision`); its words still name what it shaped and the ask
+ *  it settles, as a reader would write them. */
+function seededDecisions(options: { askRef: string; issueKey: string }): SeededDecision[] {
+  const block = (index: number) => specBlockRef(options.issueKey, requirementBlockId(index));
   return [
     {
       body: `Chosen so the page makes no request per node. Shapes ${block(1)} and ${block(2)}.`,
       heading: "Draw the tree from one read",
-      shapes: [1, 2],
-      slug: "one-read",
+      shaped: [block(1), block(2)],
     },
     {
-      answered: true,
-      body: `Shapes ${block(3)}, ${block(4)} and ${block(5)}.`,
+      body: `Decided in ${options.askRef}. Shapes ${block(3)}, ${block(4)} and ${block(5)}.`,
+      fromAsk: true,
       heading: "Keep every address the old page answered",
-      shapes: [3, 4, 5],
-      slug: "addresses",
+      shaped: [block(3), block(4), block(5)],
     },
     {
+      body: "A reader who never finds the newest question would change this.",
       heading: "Fold to the frontier and not to a depth",
-      shapes: [],
-      slug: "frontier",
-      unsure: "a reader who never finds the newest question would change this.",
+      shaped: [],
+      unsure: true,
     },
     {
       body: "A word and a shape carry every state, so no reader depends on a colour.",
       heading: "Name every state with a word and a shape",
-      shapes: [],
-      slug: "state-words",
+      shaped: [],
     },
     {
       body: `One panel holds the properties and the conversation. Shapes ${block(4)}.`,
       heading: "Put every remaining property in one panel",
-      shapes: [4],
-      slug: "one-panel",
+      shaped: [block(4)],
     },
     {
       body: `A document is a node under the block that cites it. Shapes ${block(5)}.`,
       heading: "Draw a document under the block that cites it",
-      shapes: [5],
-      slug: "document-node",
+      shaped: [block(5)],
     },
     {
       body: `Replaced by the tree above: the rail hid 744 px at 1440 px. Shapes ${block(6)}.`,
       heading: "Keep the metadata rail behind a sideways scroll",
       replaced: true,
-      shapes: [6],
-      slug: "metadata-rail",
+      shaped: [block(6)],
     },
   ];
 }
 
-/** The block id of a seeded decision: the reading inside the answered ask for the person's
- *  decision, and `d-` and its slug for every other. */
-function seededDecisionId(decision: SeededDecision): string {
-  return decision.answered === true ? ANSWERED_READING_BLOCK_ID : `d-${decision.slug}`;
+/** The words that close decision `index`'s block of a seeded spec: the last of its words, which
+ *  hold no line break, so a caret at the block's end stands after them. */
+export function decisionClosingWords(issueKey: string, index: number): string {
+  return seededDecisions({ askRef: "", issueKey })[index - 1]?.body.split(". ").at(-1) ?? "";
 }
 
-/** The block id of each of the first `count` decisions, in document order: the person's decision
- *  is the reading inside the answered ask. */
-export function seededDecisionIds(count: number): string[] {
-  return seededDecisions("").slice(0, count).map(seededDecisionId);
-}
-
-/** The `## Decisions` part of a spec holding the first `count` decisions, of which the second is
- *  the answered ask's block; `reading` writes the reading inside it, which a write takes only
- *  once a person answered the ask. */
-export function decisionBlocks(options: {
+/** The spec's `## Decisions` part holding the first `count` seeded decisions, each a `decision`
+ *  block whose id is `decisionBlockId`, for a seed to append to the spec once `askRef`, the ask
+ *  the second one settles, has been answered. */
+export function decisionsPart(options: {
+  askRef: string;
   count: number;
   issueKey: string;
-  reading: boolean;
 }): string {
-  const blocks = seededDecisions(options.issueKey)
+  const blocks = seededDecisions(options)
     .slice(0, options.count)
-    .map((decision) => {
-      const id = seededDecisionId(decision);
-      const words = [decision.heading, ...(decision.body === undefined ? [] : [decision.body])];
-      const shaped = shapedAttribute(options.issueKey, decision.shapes.map(requirementBlockId));
-      if (decision.answered === true) {
-        const held = [ANSWERED_QUESTION];
-        if (options.reading) held.push(readingBlock(id, words));
-        return askBlock(ANSWERED_ASK_BLOCK_ID, ['urgency="high"', shaped], held);
-      }
-      const attributes = decision.shapes.length === 0 ? [] : [shaped];
-      if (decision.unsure !== undefined) {
-        attributes.push('uncertainty="high"', `uncertainty_reason="${decision.unsure}"`);
-      }
-      if (decision.replaced === true) attributes.push('replaced="true"');
-      return decisionBlock(id, attributes, words);
+    .map((decision, at) => {
+      const attributes = [
+        `#${decisionBlockId(at + 1)}`,
+        ...(decision.shaped.length > 0 ? [`shaped="${decision.shaped.join(" ")}"`] : []),
+        ...(decision.fromAsk === true ? [`from_ask="${options.askRef}"`] : []),
+        ...(decision.unsure === true ? ['uncertainty="high"'] : []),
+        ...(decision.replaced === true ? ['replaced="true"'] : []),
+      ];
+      return `:::decision{${attributes.join(" ")}}\n### ${decision.heading}\n\n${decision.body}\n:::`;
     });
-  return decisionsPart(blocks);
+  return `## Decisions\n\n${blocks.join("\n\n")}\n`;
 }
 
 function summaryCallout(): string {
@@ -372,15 +304,14 @@ export const SPINE_REQUIREMENTS = {
   unexplained: "r-unexplained",
 } as const;
 
-/** The block id of the answered ask `seedSpineCases` writes in its spec's `## Decisions` part,
- *  whose `shaped` ties `shapedElsewhere`, and of the reading inside it, which reads the answer. */
-export const SPINE_ASK_BLOCK_ID = "a-spine";
-export const SPINE_READING_BLOCK_ID = "g-spine";
+/** The block id of the one decision `seedSpineCases` writes, a `decision` block of the spec's
+ *  `## Decisions` part, which is the block the decisions read answers it under. */
+export const SPINE_DECISION_BLOCK_ID = "d-spine";
 
 /** The block id of the check `seedSpineCases` writes. */
 export const SPINE_CHECK_BLOCK_ID = "c-two";
 
-/** The question `seedSpineCases` asks in its ask block and answers. A chip names
+/** The question `seedSpineCases` asks and answers, which the one decision names. A chip names
  *  its target by the target's own words and by its address's short form - `LAY-1 ask` - and
  *  never by the target's id (`web/src/features/issue-page/NodeRow.tsx`'s `Chip`), so a spec looking
  *  for that edge looks for these words. */
@@ -403,27 +334,17 @@ The second requirement that same check serves.
 :::
 `;
 
-/** The spine's `## Decisions` part: the answered ask, whose block ties `shapedElsewhere` while
- *  the question it asks names no node at all; `reading` writes the reading inside it, which a
- *  write takes only once a person answered the ask. */
-export function spineDecisionBlocks(issueKey: string, reading: boolean): string {
-  const shapedElsewhere = specBlockRef(issueKey, SPINE_REQUIREMENTS.shapedElsewhere);
-  const held = [SPINE_ANSWERED_QUESTION];
-  if (reading) {
-    held.push(
-      readingBlock(SPINE_READING_BLOCK_ID, [
-        "Link a requirement the question does not.",
-        `Shapes ${shapedElsewhere}, while the question above is the one that was answered.`,
-      ])
-    );
-  }
-  return decisionsPart([
-    askBlock(
-      SPINE_ASK_BLOCK_ID,
-      [shapedAttribute(issueKey, [SPINE_REQUIREMENTS.shapedElsewhere])],
-      held
-    ),
-  ]);
+/** The spine's `## Decisions` part: one `decision` block whose `shaped` names `shapedElsewhere`
+ *  while the ask it settles (`from_ask`), which its words name too, is the answered question a
+ *  reader would read as that requirement's origin. */
+export function spineDecisionsPart(issueKey: string, askId: string): string {
+  const shaped = specBlockRef(issueKey, SPINE_REQUIREMENTS.shapedElsewhere);
+  const ask = `dispatch://${issueKey}/ask/${askId}`;
+  return (
+    `## Decisions\n\n:::decision{#${SPINE_DECISION_BLOCK_ID} shaped="${shaped}" from_ask="${ask}"}\n` +
+    "### Link a requirement the question does not\n\n" +
+    `Shapes ${shaped}, while ${ask} is the question that was answered.\n:::\n`
+  );
 }
 
 /** The spine's Verification document: one check whose `serves` names two requirements. */

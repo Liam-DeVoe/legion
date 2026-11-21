@@ -708,6 +708,21 @@ export const STATE_LINES = freeze({
    *  (`features/issue/SubscribedAgents.tsx`). */
   subscription_wider:
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
+  /** What the outline says over its rows, on load as much as later, of each read they come from
+   *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
+   *  which checks serve each statement, the checks' results, the questions, the comments, the
+   *  messages, and each document whose blocks it draws, named by the part the document plays: the
+   *  spec, the plan or Verification, since a decision is a block of a document and no document of
+   *  its own. The issue's decisions are nodes of the tree read, whose own failed line says so. */
+  names_unreadable: "Could not load the names this issue's rows cite.",
+  coverage_unreadable: "Could not load which checks serve each statement.",
+  results_unreadable: "Could not load the checks' results.",
+  asks_unreadable: "Could not load the questions.",
+  comments_unreadable: "Could not load the comments.",
+  messages_unreadable: "Could not load the messages.",
+  spec_unreadable: "Could not load the spec.",
+  plan_unreadable: "Could not load the plan.",
+  verification_unreadable: "Could not load the verification document.",
 } as const);
 
 /**
@@ -1249,9 +1264,10 @@ export const CONTROL_LABELS = freeze({
    *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
-  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
-   *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
-   *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
+  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task
+   *  and a note, whose reads carry none, and a decision whose entry in the decisions read names
+   *  no decider (`DecisionEntry.decided_by`). It is the page's own word, drawn with a shape of
+   *  its own (`AuthorKind`), so no reader takes it for somebody's name. */
   unknown_author: "Author unknown",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */

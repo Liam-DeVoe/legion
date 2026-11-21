@@ -1,10 +1,11 @@
-import { type QueryStatus, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
+import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -13,6 +14,8 @@ import type { SlotProps } from "../slot-props";
 import type { TreeBlocksRead } from "../tree-read/tree-read";
 import { useIssueTree } from "../useIssueTree";
 import {
+  type FailedRead,
+  queryTyped,
   VerificationFilterBody,
   type VerificationRead,
   type VerificationReads,
@@ -34,11 +37,13 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
   );
-  // The view with no words query, which is what the issue holds whatever a query left of it.
-  // With no query typed it is the view itself, so it is built a second time only under one.
+  // The view with no words query, where a query is typed (`queryTyped`, the body's one rule): what
+  // the issue holds whatever the query left of it. A query of spaces alone draws as no query does;
+  // with none typed the body reads the view itself, and nothing is built a second time.
+  const typed = queryTyped(address.filter);
   const whole = useMemo(
-    () => (address.filter === "" ? view.root : presetView(root, "verification", "", named).root),
-    [address.filter, named, root, view.root]
+    () => (typed ? presetView(root, "verification", "", named).root : undefined),
+    [named, root, typed]
   );
   return (
     <NoTooltips>
@@ -73,24 +78,12 @@ export function useVerificationReads(
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own. The
   // results read holds a result's commit, its verdict and its withdrawal, which the tree does
-  // not carry (`verification-filter/statement-state.ts`). Staleness is per observer: with the
-  // app's 30 s (`main.tsx`), pressing the view more than 30 s after the page read them read both
-  // again. Each holds what it read until an event refreshes its key (`staleTime: Infinity`), and
-  // the window's focus asks again only a read in error (`refetchFailedOnFocus`), as the page's
-  // reference reads do. These are this slot's observers alone: `useIssueTree`'s own observers of
-  // the same keys still ask again after the app's 30 s until they are given the same options, so
-  // in the page a view pressed more than 30 s after the page read them can still read them
-  // again, through those observers.
-  const coverage = useQuery({
-    ...issueCoverageQuery(issueKey),
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: refetchFailedOnFocus,
-  });
-  const results = useQuery({
-    ...issueResultsQuery(issueKey),
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: refetchFailedOnFocus,
-  });
+  // not carry (`verification-filter/statement-state.ts`). Both take the tree's `EVENT_FRESH`
+  // (held until an event refreshes their key; the window's focus asks again only a read in
+  // error), as `useIssueTree`'s own observers of the same keys do, so no observer reads them
+  // again by age and the view's reads cannot drift from the tree's.
+  const coverage = useQuery({ ...issueCoverageQuery(issueKey), ...EVENT_FRESH });
+  const results = useQuery({ ...issueResultsQuery(issueKey), ...EVENT_FRESH });
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The blocks read of the Verification document too: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-nodes.ts`). Drawn
@@ -113,28 +106,26 @@ export function useVerificationReads(
   // the query cache keeps that data when the stage mounts this slot again as the reader comes
   // back to the view. A view drawn by `isSuccess` would empty itself on one failed refetch, and
   // draw nothing on its return for as long as the refetch kept failing, and take its tab stop
-  // and the reader's presses with it. A read has failed where it holds no data and its status
-  // is error (`failedWithNothing`): it was refused before it first answered. The view draws its
-  // rows only once all three have answered, so it never says that an issue has no checks before
-  // they are in; where a read failed it says which, each with a Retry that asks that read alone
-  // again, rather than draw an empty view that gives the reader nothing to act on.
+  // and the reader's presses with it. A read has failed where it holds no data and a fetch of it
+  // was refused, whether it is in error, runs again, or waits to run again while the browser is
+  // offline (`standsFailed`, the page's one rule, which the outline uses for the same reads): it
+  // was refused before it first answered. The view draws its rows only once all three have
+  // answered, so it never says that an issue has no checks before they are in; where a read
+  // failed it says which, each with a Retry that asks that read alone again, rather than draw an
+  // empty view that gives the reader nothing to act on.
   const answered =
     coverage.data !== undefined &&
     results.data !== undefined &&
     // The blocks are the tree read's, which holds the statements too, so it is waited on always.
     blocks.data !== undefined;
-  const failed: { readonly read: VerificationRead; readonly retry: () => void }[] = [];
-  if (failedWithNothing(coverage)) {
-    failed.push({ read: "coverage", retry: () => void coverage.refetch() });
-  }
-  if (failedWithNothing(results)) {
-    failed.push({ read: "results", retry: () => void results.refetch() });
-  }
-  if (failedWithNothing(blocks)) {
-    failed.push({ read: "blocks", retry: () => void blocks.refetch() });
-  }
+  // Each read that failed with no answer held, by its name, with the press that asks that read
+  // alone again and whether it runs again; the body says them in an order of its own.
+  const failed: Partial<Record<VerificationRead, FailedRead>> = {};
+  if (standsFailed(coverage)) failed.coverage = failedRead(coverage);
+  if (standsFailed(results)) failed.results = failedRead(results);
+  if (standsFailed(blocks)) failed.blocks = failedRead(blocks);
   const reads: VerificationReads =
-    failed.length > 0
+    Object.keys(failed).length > 0
       ? { failed, state: "failed" }
       : answered
         ? { state: "answered" }
@@ -142,17 +133,18 @@ export function useVerificationReads(
   return { checks, reads };
 }
 
-/** Window focus asks a read again only while it is in error, so a read refused past its
- *  retries recovers on the open page while one that answered stays quiet, and it is asked even
- *  over the answer it holds, which no age makes stale (`staleTime: Infinity`). A copy of the
- *  unexported `refetchFailedOnFocus` of `features/refs/reference-target.ts`: the slot imports
- *  that one once a branch that exports it is under this one, and this copy goes. */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
-
-/** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
- *  had, which the view still draws from, so only a read that left nothing to draw says it
- *  failed, as the Spec view reads its own. */
-function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
-  return read.isError && read.data === undefined;
+/** What the line of a read that failed is given: which refusal it says, the read's own count of
+ *  its refusals (`errorUpdateCount`), as the outline gives it (`outline-reads.ts`); the press
+ *  that asks that read alone again; and whether it runs again (`isFetching`), while which the
+ *  line's Retry asks nothing more. */
+function failedRead(read: {
+  readonly errorUpdateCount: number;
+  readonly isFetching: boolean;
+  readonly refetch: () => Promise<unknown>;
+}): FailedRead {
+  return {
+    failure: read.errorUpdateCount,
+    retry: () => void read.refetch(),
+    retrying: read.isFetching,
+  };
 }

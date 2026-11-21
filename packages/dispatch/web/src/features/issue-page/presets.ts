@@ -20,7 +20,7 @@ import {
   type Preset,
 } from "./page-words";
 import { outOfCounts } from "./tree-fold";
-import { treeIdOfNode } from "./tree-read/tree-nodes";
+import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
 
 /**
@@ -132,7 +132,7 @@ export interface PresetView {
  *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
  *  names. Later parts of the page draw them. */
 export interface PresetLine {
-  /** The node's id in the view read. */
+  /** The node's id: a decision's block id (`block_id`), and the view read's id of any other. */
   readonly id: string;
   /** The node's own words, and the server's reading of them where the read sent one. */
   readonly text: string;
@@ -366,15 +366,15 @@ function heldFilterView(
   };
   index(root);
   // The tree's node each node of the view stands for: the one of its own id (`treeIdOfNode`), so
-  // two nodes of one read id, blocks of two documents, are two; else, for a view node that names
-  // no document, the first of its read id. And each one's parent: the nearest node before it that
-  // its `parent` names, since a parent comes before its children and two nodes can share a read
-  // id, else the tree's node of that read id. Where the view names the parent's kind beside it
-  // (`parent_line`), the parent is a node of that kind: the view may hold another document's
-  // node of the same read id, or the tree hold it first.
+  // two nodes of one block id, blocks of two documents, are two; else, for a view node that names
+  // no document, the one of its read id. And each one's parent: the nearest node before it that
+  // its `parent` names, since a parent comes before its children, else the tree's node of that
+  // read id. The view names the parent's kind beside its id (`parent.supertag`), so the parent is
+  // a node of that kind where the tree holds one of that read id.
   const treeOf = new Map<TreeAnswerNode, TreeNode>();
   const firstOf = new Map<string, TreeNode>();
-  for (const node of answer.nodes) {
+  const nodes = answer.nodes ?? [];
+  for (const node of nodes) {
     const tree = fromRead.get(treeIdOfNode(node, root.id)) ?? byRead.get(node.id);
     if (tree === undefined) continue;
     treeOf.set(node, tree);
@@ -384,23 +384,23 @@ function heldFilterView(
     firstOf.get(readId) ?? byRead.get(readId);
   const parentOf = new Map<TreeAnswerNode, TreeNode>();
   const latest = new Map<string, TreeNode>();
-  for (const node of answer.nodes) {
+  for (const node of nodes) {
     const nearest =
-      node.parent === null ? undefined : (latest.get(node.parent) ?? treeNodeOf(node.parent));
-    const kind = node.parent_line?.supertag;
+      node.parent === null ? undefined : (latest.get(node.parent.id) ?? treeNodeOf(node.parent.id));
     const parent =
-      node.parent === null || kind === undefined || nearest?.type === kind
+      node.parent === null || nearest?.type === node.parent.supertag
         ? nearest
-        : (ofRead.get(node.parent)?.find((one) => one.type === kind) ?? nearest);
+        : (ofRead.get(node.parent.id)?.find((one) => one.type === node.parent?.supertag) ??
+          nearest);
     if (parent !== undefined) parentOf.set(node, parent);
     const tree = treeOf.get(node);
     if (tree !== undefined) latest.set(node.id, tree);
   }
   const kinds: readonly string[] = ROW_KINDS[filter];
   const contextKinds: readonly string[] = CONTEXT_KINDS[filter];
-  const rows = answer.nodes.filter(
+  const rows = nodes.filter(
     (node) =>
-      treeOf.has(node) && (node.mark === "query" ? kinds : contextKinds).includes(node.supertag)
+      treeOf.has(node) && (node.role === "query" ? kinds : contextKinds).includes(node.supertag)
   );
   const rowIds = new Set(rows.map((node) => treeOf.get(node)?.id));
   // Where each row stands: under its parent where that is a row, and under Verification a check
@@ -411,9 +411,9 @@ function heldFilterView(
     const id = treeOf.get(node)?.id;
     if (id !== undefined && parent !== undefined && rowIds.has(parent)) homes.set(id, [parent]);
   }
-  for (const tuple of filter === "verification" ? answer.tuples : []) {
-    const to = treeNodeOf(tuple.to)?.id;
-    const from = treeNodeOf(tuple.from)?.id;
+  for (const tuple of filter === "verification" ? (answer.tuples ?? []) : []) {
+    const to = treeNodeOf(tuple.to.id)?.id;
+    const from = treeNodeOf(tuple.from.id)?.id;
     if (tuple.kind !== "serves" || to === undefined || from === undefined || !rowIds.has(to)) {
       continue;
     }
@@ -451,10 +451,10 @@ function heldFilterView(
     if (tree === undefined || above.has(tree.id)) return { drawn: false, rows: [] };
     const inner = new Set([...above, tree.id]);
     const parts = (below.get(tree.id) ?? []).map((child) => draw(child, tree, inner));
-    const own = named.has(tree.id) || (node.mark === "query" && holds(tree, wanted));
+    const own = named.has(tree.id) || (node.role === "query" && holds(tree, wanted));
     const placing =
       !own &&
-      node.mark !== "query" &&
+      node.role !== "query" &&
       (wanted === "" || holds(tree, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
     const line = drawn || !parts.some((part) => part.drawn) ? undefined : lineOfParent(tree);
@@ -504,23 +504,21 @@ function heldFilterView(
  * The line a row the view draws at the top carries for its parent in the view read, where that
  * parent is no row: the tree's node for it (`parent`), drawn as `lineOfParent` draws it, where the
  * tree holds it, and else the parent's id, kind and first line the view read answers beside the
- * node (`parent_line`), for a kind the page has a word for. The issue is no row's parent line.
+ * node (`parent`), for a kind the page has a word for. The issue is no row's parent line.
  */
 function viewParentLine(
   node: TreeAnswerNode,
   root: TreeNode,
   parent: TreeNode | undefined
 ): ParentLine | undefined {
-  if (node.parent === null || node.parent === root.id) return undefined;
+  if (node.parent === null || node.parent.id === root.id) return undefined;
   if (parent !== undefined) return lineOfParent(parent);
-  const read = node.parent_line;
+  const read = node.parent;
   const types: readonly string[] = NODE_TYPES;
-  if (read === undefined || read.supertag === "issue" || !types.includes(read.supertag)) {
-    return undefined;
-  }
+  if (read.supertag === "issue" || !types.includes(read.supertag)) return undefined;
   return {
     id: read.id,
-    line: read.line,
+    line: read.first_line,
     readId: read.id,
     type: read.supertag as NodeType,
   };
@@ -534,25 +532,27 @@ function viewLines(
   rowOf: (readId: string) => TreeNode | undefined,
   drawn: ReadonlySet<string>
 ): ReadonlyMap<string, readonly PresetLine[]> {
-  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
   const lines = new Map<string, PresetLine[]>();
   const add = (rowId: string, node: TreeAnswerNode | undefined, type: PresetLine["type"]) => {
     const row = rowOf(rowId)?.id;
     if (node?.supertag !== type || row === undefined || !drawn.has(row)) return;
+    const id = node.block_id ?? node.id;
     const held = lines.get(row);
-    if (held?.some((line) => line.id === node.id) === true) return;
+    if (held?.some((line) => line.id === id) === true) return;
+    const tree = readingOf(node);
     const line: PresetLine = {
-      id: node.id,
+      id,
       text: node.text,
-      ...(node.text_tree === undefined ? {} : { tree: node.text_tree }),
+      ...(tree === undefined ? {} : { tree }),
       type,
     };
     if (held === undefined) lines.set(row, [line]);
     else held.push(line);
   };
-  for (const tuple of answer.tuples) {
-    if (tuple.kind === "shaped") add(tuple.to, nodes.get(tuple.from), "decision");
-    if (tuple.kind === "constrained_by") add(tuple.from, nodes.get(tuple.to), "constraint");
+  for (const tuple of answer.tuples ?? []) {
+    if (tuple.kind === "shaped") add(tuple.to.id, nodes.get(tuple.from.id), "decision");
+    if (tuple.kind === "constrained_by") add(tuple.from.id, nodes.get(tuple.to.id), "constraint");
   }
   return lines;
 }
@@ -646,8 +646,8 @@ export function filterSignals(
     const words = (node: TreeAnswerNode): string =>
       node.text_tree === undefined ? node.text : wordsOf(node.text_tree);
     return new Set(
-      held.nodes.flatMap((node) =>
-        node.mark === "query" &&
+      (held.nodes ?? []).flatMap((node) =>
+        node.role === "query" &&
         kinds.includes(node.supertag) &&
         (wanted === "" || words(node).toLowerCase().includes(wanted))
           ? [node.id]

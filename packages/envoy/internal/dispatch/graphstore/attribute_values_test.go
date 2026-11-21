@@ -15,7 +15,7 @@ import (
 )
 
 // TestTheStoreRefusesAStateOrVisibilityOutsideItsValues holds every write of the store to the
-// values the node state and the node visibility take (dispatch://INFRA-1950/spec#b-r-state-closed).
+// values the node state and the node visibility take (spec requirement r-state-closed).
 // A node, a value tuple its writer states and a claim at any other value are refused with
 // ErrInvalidAttributeValue, as an InvalidAttributeValueError naming the attribute and the value,
 // before the write's first statement: the transaction the refused write ran in still commits, and
@@ -80,9 +80,9 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return Write(ctx, tx, nil, []Tuple{stateTuple(node, misspelledState)})
 			}},
-		{"WriteUncaused, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
+		{"QueueNodes, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
-				write, err := WriteUncaused(ctx, tx, []Node{misstated(node)}, nil)
+				write, err := writeHeldNodes(ctx, tx, []Node{misstated(node)}, nil)
 				if err != nil {
 					return err
 				}

@@ -123,8 +123,9 @@ shows what changed between that version and the one you are asked to approve, wi
 block left out of both, so you read what changed outside the questions you already answered; the
 agent's summary names it in a sentence.
 
-Your answer to an ask block writes no version, so it leaves your approval as it stands, and it
-carries no approval. Dispatch carries your approval to a later version only when that version's
+Your answer to an ask block writes one version, whose only change is the ask block's `state` and,
+where you answered, `answered_by` and `answered_at`, and Dispatch carries your approval across it;
+it carries no approval of its own. Dispatch carries your approval to a later version only when that version's
 text is the text you approved, such as an edit undone exactly, or when every change in it is one
 of these, none of which changes a decision:
 

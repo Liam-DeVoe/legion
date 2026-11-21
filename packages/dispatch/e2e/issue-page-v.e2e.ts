@@ -3,7 +3,6 @@ import AxeBuilder from "@axe-core/playwright";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
-  ANSWER_LINES,
   CHECK_WHEN_WORDS,
   type CheckState,
   CONTROL_LABELS,
@@ -12,6 +11,7 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   PRESET_NAMES,
+  STATE_LINES,
   VERIFICATION_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
@@ -634,9 +634,14 @@ test("the Verification view draws a check's links, its agent's role and a child'
       // press.
       const words = rowWords(statementA);
       const more = rowMore(statementA);
+      // The page measures a statement's cut once the statement stands within a screen of the
+      // viewport, in the frame after it comes there, so A is brought there before its cut is read.
+      await statementA.scrollIntoViewIfNeeded();
       await expect(more, `statement A draws no "more" at ${width} px`).toHaveText(cut);
+      // The line has just matched its cut words above, so one reading of it is settled.
+      const heldBack = Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, ""));
       expect(
-        Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, "")),
+        heldBack,
         `statement A's cut holds back 20 words or fewer at ${width} px`
       ).toBeGreaterThan(20);
       // The words of A are set on 24 px lines, so six of them are more than five lines' height
@@ -1089,9 +1094,9 @@ test("the Verification view keeps its rows when its document's blocks read fails
 // do not say once they have all answered, and once it answers each statement draws its check. A
 // read refused from the first load holds nothing to draw, and the view once drew an empty tree
 // for it, which says nothing a reader can act on. So the view says, over its tree, that it could
-// not load the checks, in one line with a Retry, and draws no card, no row and nothing its reads
-// do not say; once the refusal is lifted, that Retry asks the read again and the view settles on
-// each statement's check.
+// not load the verification document, in one line with a Retry, and draws no card, no row and
+// nothing its reads do not say; once the refusal is lifted, that Retry asks the read again and the
+// view settles on each statement's check.
 // SLOW(>=2s): a whole seeded issue loaded three times, two of them read for 1.5 s each while the
 // blocks read is held or refused, then the refused read asked again by Retry.
 test("the Verification view says nothing of a check's statements before the Verification document's blocks are read", async ({
@@ -1117,6 +1122,8 @@ test("the Verification view says nothing of a check's statements before the Veri
       const end = Date.now() + ms;
       const seen = new Set<string>();
       while (Date.now() < end) {
+        // One reading at one instant is the point here: a contradiction drawn at any moment
+        // fails the row.
         for (const one of contradictions(truth, await readServed(page, ids))) seen.add(one);
         // The gap between two readings of the view: a contradiction must not be drawn at any reading of the window, and the held or refused read keeps one on screen for the whole window, so a reading every 100 ms cannot miss it.
         await page.waitForTimeout(100);
@@ -1161,8 +1168,8 @@ test("the Verification view says nothing of a check's statements before the Veri
     ).toHaveCount(1);
     await expect(
       failedLine,
-      "the failed-read line does not say the view could not load the checks"
-    ).toContainText(ANSWER_LINES.checks_unreadable);
+      "the failed-read line does not say the view could not load the verification document"
+    ).toContainText(STATE_LINES.verification_unreadable);
     await expect(retry, "the blocks read's failed-read line draws no Retry").toHaveCount(1);
     await expect(
       verificationUnreadable(page),
@@ -1223,6 +1230,9 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     const words = card.locator("[data-node-words]").first();
     const more = card.locator("[data-node-more]");
     const link = words.locator(`a[href="${RUNBOOK}"]`);
+    // The page measures a statement's cut once the statement stands within a screen of the
+    // viewport, in the frame after it comes there, so it is brought there before its cut is read.
+    await card.scrollIntoViewIfNeeded();
     await expect(more, "the statement of 200 words is not cut").toHaveText(/^more · /u);
     // Whether the focused element is inside the statement's words and outside the box the cut
     // draws them in.
@@ -1249,8 +1259,10 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     let reached = false;
     for (let pressed = 0; pressed < 20 && !reached; pressed += 1) {
       await page.keyboard.press("Tab");
+      // Tab moves the focus within the press itself, so the focus read just after it is settled.
       const held = await focusHidden();
       if (held !== null) hidden.push(held);
+      // Tab moves the focus within the press itself, so this one reading of it is settled.
       reached = await more.evaluate((element) => element === document.activeElement);
     }
     expect(hidden, "Tab puts the focus on a link the cut statement hides").toEqual([]);
@@ -1298,7 +1310,8 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
     // band, and not to the empty tree, which has nothing to act on and from which Tab never
     // reaches Retry. The Verification document names this row for that reading. The view is on,
     // so the first `t k` turns it off and the second turns it on with the blocks read still
-    // refused; the expect's 15 s covers the read's retries.
+    // refused. Turning the view off and on asks the refused read again, and its line stays drawn
+    // while the read runs.
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("k");
@@ -1327,8 +1340,14 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
         () => document.activeElement === null || document.activeElement === document.body
       );
 
-    // Enter on Retry while the read is still refused: the read is asked again, refused again,
-    // and its line comes back, and at no reading is the focus on the page's body.
+    // Enter on Retry while the read is still refused: the read is asked again and refused again,
+    // its line drawn throughout, and at no reading is the focus on the page's body. A press on
+    // Retry while its read runs asks nothing more (`FailedReadLine`), so Enter waits for the run
+    // the view's return started to be refused; its Retry is busy (`aria-busy`) while its read runs.
+    await expect(
+      retry,
+      "the blocks read the view's return asked again is still out"
+    ).not.toHaveAttribute("aria-busy");
     await retry.focus();
     const asked = blocksRead.refusals();
     await page.keyboard.press("Enter");
@@ -1354,7 +1373,11 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
     ).toBe(true);
 
     // The refusal lifted, Enter on Retry: the read answers and the view draws its rows, the
-    // focus stays in the view, and the tree answers `j`.
+    // focus stays in the view, and the tree answers `j`. The refusal is lifted once the run the
+    // last Retry started has ended refused, so this press asks the read again.
+    await expect(retry, "the blocks read the Retry asked again is still out").not.toHaveAttribute(
+      "aria-busy"
+    );
     await blocksRead.lift();
     await retry.focus();
     await page.keyboard.press("Enter");

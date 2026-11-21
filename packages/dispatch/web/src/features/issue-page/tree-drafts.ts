@@ -34,6 +34,7 @@ import type { LensFacts } from "./lenses/lens-drafts";
 import {
   type AskState,
   type CheckState,
+  coverageGapKind,
   type GapKind,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
@@ -47,8 +48,8 @@ import { storedReading } from "./stored-reading";
 /**
  * The outline's rules for the drafts `buildIssueTree` places (root R4), which the tree read
  * keeps: how this issue addresses a node and names what a reference points
- * at (`treeContext`), a node's words read to plain words, and how a check stands
- * (`checkStanding`).
+ * at (`treeContext`), a node's words read to plain words, how a check stands (`checkStanding`),
+ * and the gaps a statement draws (`requirementGaps`).
  *
  * Every node is drafted from the tree read (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`),
  * which places and orders each one. Every function here is pure and takes the reads as its
@@ -117,7 +118,7 @@ export interface Draft {
   /** The server's reading of `text`, where the draft's read sends one (`TreeNode.tree`). */
   tree?: DisplayTree;
   type: NodeType;
-  /** Whether the model marks this decision unsure (`Decision.unsure`). */
+  /** Whether the model marks this decision unsure: its `uncertainty` is `high`. */
   unsure?: true;
   /** Whether this node waits on the reader: a decision in their review list (`inReviewList`),
    *  or an open question whose turn is the reader's own (`waiting_on_person`). */
@@ -269,7 +270,10 @@ export function treeContext(
   const kinds = new Map<string, NodeType>();
   for (const node of reads.tree?.nodes ?? []) {
     if (node.document !== undefined && node.issue === undefined && types.includes(node.supertag)) {
-      kinds.set(blockNodeId(node.document.slug, node.id), node.supertag as NodeType);
+      kinds.set(
+        blockNodeId(node.document.slug, node.block_id ?? node.id),
+        node.supertag as NodeType
+      );
     }
   }
   const nodeIdOfReference = nodeIdOf(reads.issue);
@@ -343,7 +347,7 @@ export function treeContext(
 /**
  * The page's word for one document of the issue, which a chip naming the whole document draws:
  * the name of the filter that draws what it holds (`PRESET_NAMES`) for the spec and for the
- * plan, Verification and decisions documents, and the page's word for a document
+ * plan and Verification documents, and the page's word for a document
  * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
  * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
  *
@@ -353,7 +357,10 @@ export function treeContext(
  * (`tree-read/tree-nodes.ts`' `blocksOfRole`). Where the issue names no id for a part - none
  * (`""`), or a Dispatch older than that part (absent) - no document plays it, and a document
  * flagged `primary` or carrying that part's `role` is named by the page's word for a document: a
- * chip naming "Spec" opens a document whose blocks the tree reads as that part.
+ * chip naming "Spec" or "Plan" opens a document whose blocks the tree reads as that part. A
+ * decisions document plays no part: a decision is a `decision` block of the spec or of another
+ * document, and a decisions document an earlier release stored is named by the page's word for a
+ * document too.
  */
 function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
@@ -521,8 +528,8 @@ function shortAddressesIn(node: DisplayTree, inCode: boolean): DisplayTree {
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
  * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
  * named by the page's word for the document, as every chip naming a whole document is
- * (`documentWord`): the filter's name for the spec and for the plan, Verification and decisions
- * documents, and "document" for any other, never the file name the issue's own read carries. It
+ * (`documentWord`): the filter's name for the spec and for the plan and Verification documents,
+ * and "document" for any other, never the file name the issue's own read carries. It
  * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec
  * filter's address. A citation of one block of a document names that block, which the text's
  * own link opens, and no chip.
@@ -601,6 +608,32 @@ export function askState(ask: Ask): AskState | undefined {
   const token =
     ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
   return words[token] === undefined ? undefined : (token as AskState);
+}
+
+/**
+ * The gaps on one statement: the ones the coverage read carries that the page draws
+ * (`coverageGapKind`), and `shaped_disagreement` where the statement has an origin - the node its
+ * own `from` names - and a decision that says it shaped the statement (`shapers`, each by its
+ * node id) is not that origin: the two edges disagree, and the page draws that rather than
+ * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
+ * draws none, and an absent `from` is no gap of its own (R10). A decision is what the decisions
+ * read's entries hold one to be (`isDecisionEntry`): an open or a declined ask decided nothing.
+ * `tree-read/tree-nodes.ts`' `draftRequirement` reads both edges from the tree read: the
+ * statement's `from` attribute and the `shaped` tuples that end at it from a decision.
+ */
+export function requirementGaps(
+  coverage: readonly string[],
+  origin: string | undefined,
+  shapers: ReadonlySet<string> | undefined
+): GapKind[] {
+  const gaps = coverage.flatMap((line): GapKind[] => {
+    const kind = coverageGapKind(line);
+    return kind === undefined ? [] : [kind];
+  });
+  if (origin !== undefined && [...(shapers ?? [])].some((shaper) => shaper !== origin)) {
+    gaps.push("shaped_disagreement");
+  }
+  return gaps;
 }
 
 /**
