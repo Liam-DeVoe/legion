@@ -141,7 +141,11 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
+		// A redirect is an answer the client does not follow (NewProber), never a refusal.
 		reason := "the Envoy listener refused the controller role lookup"
+		if response.StatusCode >= 300 && response.StatusCode < 400 {
+			reason = "the Envoy listener answered the controller role lookup with a redirect, which the probe does not follow"
+		}
 		if p.token == "" {
 			reason += " with no bearer token sent"
 		}

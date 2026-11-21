@@ -269,7 +269,7 @@ func TestProbeFollowsNoRedirect(t *testing.T) {
 	if targeted != "" || bearer != "" {
 		t.Fatalf("the probe followed the redirect to %q with Authorization %q", targeted, bearer)
 	}
-	if !strings.Contains(log.String(), "status=302") {
-		t.Errorf("the log %q does not name the redirect's status", log.String())
+	if !strings.Contains(log.String(), "status=302") || !strings.Contains(log.String(), "answered the controller role lookup with a redirect, which the probe does not follow") {
+		t.Errorf("the log %q does not name the redirect, not followed, and its status", log.String())
 	}
 }

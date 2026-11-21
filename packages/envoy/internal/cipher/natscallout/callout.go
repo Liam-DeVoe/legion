@@ -281,7 +281,11 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
 		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect())
 	if err != nil {
-		return nil, fmt.Errorf("natscallout: connect to the hub's %d BROKER_NATS_URLS entries: %w", len(settings.URLs), err)
+		entries := fmt.Sprintf("%d BROKER_NATS_URLS entries", len(settings.URLs))
+		if len(settings.URLs) == 1 {
+			entries = "1 BROKER_NATS_URLS entry"
+		}
+		return nil, fmt.Errorf("natscallout: connect to the hub's %s: %w", entries, err)
 	}
 	s := &Service{
 		conn: conn,

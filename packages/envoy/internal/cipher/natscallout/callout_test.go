@@ -371,4 +371,14 @@ func TestTheConnectErrorNamesTheHubsByCount(t *testing.T) {
 		require.NotContains(t, err.Error(), credential[i:i+10], "the connect error quotes the hub URL's credential")
 	}
 	require.NotContains(t, err.Error(), "hub-b", "the connect error quotes the hub URL")
+	// One hub is named in the singular.
+	_, err = start(t.Context(), Settings{
+		URLs:           []string{"nats://hub-b:4222/%zz"},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       exampleServices,
+	}, Deps{}, Decide)
+	require.Error(t, err)
+	require.True(t, strings.HasPrefix(err.Error(), "natscallout: connect to the hub's 1 BROKER_NATS_URLS entry: "), "the error does not name one hub in the singular: %v", err)
 }

@@ -2218,6 +2218,26 @@ func TestPluginsBlockRefusals(t *testing.T) {
 	}
 }
 
+// Each refusal of a plugin source's "@" after its host says what the operator changes: write the
+// credential's "?" or "#" percent-encoded for an "@" in the query or the fragment, and its "/" for
+// one in the path, which a "%40" in the path is too. The credential is made up.
+func TestAPluginSourcesAtRefusalSaysWhatToChange(t *testing.T) {
+	const madeUp = "madeUpPluginCredential0123"
+	for source, want := range map[string]string{
+		"https://cache.example/pi-legion.tgz?by=" + madeUp + "@x": `write such a credential percent-encoded (%3F, %23)`,
+		"https://" + madeUp + "/rest@cache.example/pi-legion.tgz": `write such a credential's "/" percent-encoded (%2F)`,
+		"https://cache.example/" + madeUp + "%40x/pi-legion.tgz":  `write such a credential's "/" percent-encoded (%2F)`,
+	} {
+		_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+source+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+		if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.plugins.pi_legion cannot be read: ") || !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal of a source with an @ past its host is %v, want it to say %q", err, want)
+		}
+		if err != nil && strings.Contains(err.Error(), madeUp) {
+			t.Errorf("the refusal %v quotes the source", err)
+		}
+	}
+}
+
 // A plugin source that carries a credential is refused naming the key alone: no refusal quotes
 // it. A source with userinfo and no http(s) scheme, one with a signed query and no host, a
 // scheme-relative one with userinfo, an http(s) one whose user is a token holding a "/" (so the

@@ -3847,7 +3847,11 @@ This is a breaking configuration change for a file that names a host in Unicode;
 `envoy_url` and each `nats_urls` entry are endpoints, not request URLs: they refuse a query string or fragment.
 This is a breaking configuration change for a file that has either; put credentials in URL userinfo or in a Secret, never in a query.
 `envoy_url`, `dispatch_url`, `daemon_url` and each `nats_urls` entry also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`).
+The check reads the decoded path, so a `%40` in the path is refused as an `@` is; an endpoint's path that holds one has to drop it.
 The refusal names the key, or a `nats_urls` entry by its position, and quotes none of the URL.
+A `runtime.kubernetes.plugins` http(s) source refuses an `@` (or `%40`) in its query, in its fragment, or in any path segment other than the plugins' scope `@sjawhar`, which a registry tarball URL holds as a segment of its own (`/@sjawhar/pi-legion/-/pi-legion-<v>.tgz`, Artifactory's `/api/npm/<repo>/@sjawhar/…`, GitHub Packages' `/download/@sjawhar/…`), naming the key alone.
+A credential pasted as the URL's user lands there when it holds a `/`, `?` or `#`: write it percent-encoded (`%2F`, `%3F`, `%23`); an `@` the path itself holds outside the scope, remove.
+No plugin refusal quotes the source, the version refusal included.
 A `nats_urls` entry with an `@` after its host, or holding a comma, is refused too, and so is one that does not parse, and a websocket entry whose path or host stops parsing once the NATS client's handshake decodes it.
 The NATS client reads a comma as the end of a server URL, so list each server as its own entry.
 A user name or password holding an unescaped `/`, `?`, `#`, space or comma ends the URL's host part early or splits it into two servers, so write such a credential percent-encoded (`%2F`, `%3F`, `%23`, `%20`, `%2C`).

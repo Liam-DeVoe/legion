@@ -20,8 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/sjawhar/envoy/natsurl"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -575,8 +573,8 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 		if u.Host == "" {
 			return "", noHost
 		}
-		if pluginUserinfoPastHost(u) {
-			return "", fmt.Errorf("%s cannot be read: %s", key, natsurl.UserinfoPastHostReason)
+		if why := pluginUserinfoPastHost(u); why != "" {
+			return "", fmt.Errorf("%s cannot be read: %s", key, why)
 		}
 		return u.String(), nil
 	}
@@ -588,26 +586,27 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 	return source, nil
 }
 
-// pluginUserinfoPastHost reports whether u, a plugin source's http(s) URL, holds an "@" after its
-// host: in its query, its fragment, or any path segment but the plugins' own scope
-// (runtime.PluginScope). That is where a token holding a "/" written as the user lands
-// (`https://<head>/<tail>@cache/x.tgz` parses with <head> as the host), and where one ending in
-// "/" leaves a segment that opens with "@" (`https://<head>/@cache/x.tgz`), which the daemon's boot
-// log and the state's settings print. A registry tarball URL of a plugin holds the scope as a
-// segment of its own (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`, Artifactory's
-// `/api/npm/<repo>/@sjawhar/…`, GitHub Packages' `/download/@sjawhar/…`), and is kept;
-// natsurl.UserinfoPastHost, which refuses any "@" in the path, is for URLs that name a server,
-// never a package.
-func pluginUserinfoPastHost(u *url.URL) bool {
+// pluginUserinfoPastHost is why u, a plugin source's http(s) URL, is refused for an "@" after its
+// host, or "" when it holds none: in its query or its fragment, or in any path segment but the
+// plugins' own scope (runtime.PluginScope). That is where a token holding a "/", "?" or "#"
+// written as the user lands (`https://<head>/<tail>@cache/x.tgz` parses with <head> as the host),
+// and where one ending in "/" leaves a segment that opens with "@" (`https://<head>/@cache/x.tgz`),
+// which the daemon's boot log and the state's settings print. The path is read decoded, so a
+// "%40" in it is an "@" too. A registry tarball URL of a plugin holds the scope as a segment of
+// its own (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`, Artifactory's `/api/npm/<repo>/@sjawhar/…`,
+// GitHub Packages' `/download/@sjawhar/…`), and is kept; natsurl.UserinfoPastHost, which refuses
+// any "@" in the path, is for URLs that name a server, never a package. Each reason says what the
+// operator changes.
+func pluginUserinfoPastHost(u *url.URL) string {
 	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
-		return true
+		return `an "@" stands in its query or its fragment, as it does where a credential in its userinfo holds a "?" or "#": write such a credential percent-encoded (%3F, %23), or name a source whose query and fragment hold no "@"`
 	}
 	for _, segment := range strings.Split(u.Path, "/") {
 		if strings.Contains(segment, "@") && segment != runtime.PluginScope {
-			return true
+			return `an "@" (or "%40") stands in its path other than as the plugins' scope ` + runtime.PluginScope + `, as it does where a credential in its userinfo holds a "/": write such a credential's "/" percent-encoded (%2F), and remove an "@" the path itself holds`
 		}
 	}
-	return false
+	return ""
 }
 
 // isLoopbackHost is localhost, with or without the root's trailing dot, or a loopback IP address.
