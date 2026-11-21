@@ -572,6 +572,7 @@ claude_envoy:
   - 'packages/pi-shared/test/image-manifest.ts'
   - 'packages/test-fixtures/src/**'
   - 'packages/pi-shared/test/daemon-state.ts'
+  - 'packages/pi-shared/test/wait-stand-in.ts'
   # why: .github/ci-notes/ci.md#claude_envoy-testsenvoy-channel-servertestts-holds-the-marketplace
   - '.claude-plugin/marketplace.json'
   - '.agents/plugins/marketplace.json'

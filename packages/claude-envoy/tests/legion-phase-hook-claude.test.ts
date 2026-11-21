@@ -135,13 +135,10 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
 // model's calls `PostToolUse` fires for. Every other test of this path drives the endpoint
 // directly and would pass just as well if Claude Code armed nothing.
 //
-// LEGION_TEST_CLAUDE names the binary: the one the worker image installs from this branch's
-// `packages/daemon/docker/claude-code/package-lock.json`
-// (`node_modules/@anthropic-ai/claude-code-linux-x64/claude`; the `node_modules/.bin/claude`
-// symlink is a `.exe` shim that does not exec on Linux). A run without one skips the whole file.
-// Unlike `packages/pi-legion/extensions/legion-phase-stall-omp.test.ts`, which also runs on
-// GitHub Actions because CI's pi-envoy job installs the Oh My Pi pin, nothing in CI installs the
-// Claude Code binary, so there is no host where a skip here would hide the only run of the check.
+// LEGION_TEST_CLAUDE names the binary. CI's claude-envoy job installs the release
+// `.claude-code-pin` pins with `bun add` and names its `node_modules/.bin/claude`
+// (`.github/actions/install-claude-code`), so this file runs on every pull request that job
+// selects; a pod installs it the same way under `$TMPDIR`. A run without one skips the whole file.
 //
 // What runs is real: a fresh `scripts/build.ts --out` build of this tree, whose generated `legion/`
 // plugin tree and built `dist/envoy-channel.js` (the pane's `legion` MCP server) are what main's
@@ -708,7 +705,10 @@ test.skipIf(claude === undefined)(
 // that task `"status":"running"` (measured on 2.1.310), the endpoint buys the quiet wait instead
 // of a reminder, and the task's own result starts the next turn with nothing prompting it. Only
 // the real binary shows all three: that the substitution reaches an `mcp_tool` hook's input at
-// all, that the run then ends rather than continuing, and that Claude Code wakes itself.
+// all, that the run then ends rather than continuing, and that Claude Code wakes itself. The
+// quiet lasts while the task runs and no longer: the woken turn leaves nothing running, its phase
+// is still owed and no wait stands, so its end earns the reminder (R6 of dispatch://INFRA-2040,
+// where a WAITING line buys nothing).
 test.skipIf(claude === undefined)(
   "a turn that ends with a background task running earns no reminder, and the task's result starts the next turn",
   async () => {
@@ -730,30 +730,38 @@ test.skipIf(claude === undefined)(
         ],
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],
         [{ type: "text", text: "The build is done." }],
+        // The continuation the woken turn's reminder bought.
+        [{ type: "text", text: "Still going." }],
       ],
     })
 
     // 1. The real server read the assignment's settling turn as leaving background work running,
-    // and the woken turn's as leaving none. Only the last two are read: the seed's `Stop` races
-    // the claim boot and records nothing when it wins, as in the cases above.
-    expect(run.backgroundWork.slice(-2)).toEqual([true, false])
-    // 2. No reminder followed: every hook answered with nothing, and no `Stop hook feedback`
-    // message was ever written into the session.
-    expect(run.hooks.map(({ answer }) => answer)).toEqual(run.hooks.map(() => ({})))
-    expect(syntheticMessages(run)).toEqual([])
-    expect(run.stopHookActive.slice(-2)).toEqual(["false", "false"])
+    // and the woken turn's and its continuation's as leaving none. Only the last three are read:
+    // the seed's `Stop` races the claim boot and records nothing when it wins, as in the cases
+    // above.
+    expect(run.backgroundWork.slice(-3)).toEqual([true, false, false])
+    // 2. No reminder followed the turn the task was still running at: every hook answered with
+    // nothing but the woken turn's `Stop`, which carried the reminder into one more turn, and that
+    // continuation's `Stop` was answered with nothing, so the run ended there.
+    const answers = run.hooks.map(({ answer }) => answer)
+    expect(answers.at(-2)).toEqual({ decision: "block", reason: REMINDER })
+    expect(answers.slice(0, -2)).toEqual(answers.slice(0, -2).map(() => ({})))
+    expect(answers.at(-1)).toEqual({})
+    expect(syntheticMessages(run)).toEqual([`Stop hook feedback:\n${REMINDER}`])
+    expect(run.stopHookActive.slice(-3)).toEqual(["false", "false", "true"])
     // 3. The task's result started the next turn: a fourth model request nothing prompted,
-    // carrying the task's own output, after a `system` `init` of its own.
-    expect(run.turns).toHaveLength(4)
+    // carrying the task's own output, after a `system` `init` of its own. The fifth is the
+    // reminder's continuation.
+    expect(run.turns).toHaveLength(5)
     expect(userText(run.turns[3] as Request)).toContain("background-done")
+    expect(userText(run.turns[4] as Request)).toContain(REMINDER)
     expect(run.events.filter((event) => event["subtype"] === "init")).toHaveLength(3)
-    // 4. The rhythm is still waiting underneath: the quiet is a wait the host's waiting delay
-    // ends, never a reminder forgotten.
+    // 4. The real server's own record: the reminder took the count to 1.
     expect(run.record).toEqual({
-      state: "waiting",
-      count: 0,
+      state: "active",
+      count: 1,
       reported: false,
-      lastMessage: "The build is done.",
+      lastMessage: "Still going.",
     })
   },
   180_000,
