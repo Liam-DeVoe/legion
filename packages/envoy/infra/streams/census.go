@@ -126,6 +126,12 @@ type CensusInput struct {
 	// the writer hold fills from the consumer-names records; the census reads their union, since
 	// every family's fresh names begin with that family's own base names.
 	RecordedFreshNames map[string][]string
+	// GoneNames are the base names of the notification stream's consumers whose family's store is
+	// gone (its database no longer exists), each to why. A consumer of the stream named one of them,
+	// or in its fresh form <name>~<nuid>, is left as it is and named (Report.Left), whatever its
+	// configuration: the records that alone tell an orphan from a selected name are gone with the
+	// store, which is no evidence to delete anything, so the census removes none of them.
+	GoneNames map[string]string
 }
 
 // ErrNotConverted is a census asked for before every family's cutover row is done.
@@ -142,10 +148,11 @@ var ErrNotConverted = errors.New("the census runs only after convert")
 // when STREAM.LIST's own total equals the streams it returned, its missing list is empty and
 // STREAM.NAMES agrees; otherwise the census is UNKNOWN and changes nothing. A consumer in a shape's
 // fresh form, <base>~<nuid>, is kept only when in.RecordedFreshNames names it: under a hold no
-// creator runs, so an unrecorded one is a crashed create's orphan, removed and named. The census
-// writes, so it runs only as the operator inside a hold (held; check is the read-only word), only
-// once every family is converted, and reads the recorded session consumers only after its barrier
-// on their bucket.
+// creator runs, so an unrecorded one is a crashed create's orphan, removed and named. A consumer of
+// a family whose store is gone (in.GoneNames) is left as it is and named, neither a change nor a
+// failure. The census writes, so it runs only as the operator inside a hold (held; check is the
+// read-only word), only once every family is converted, and reads the recorded session consumers
+// only after its barrier on their bucket.
 func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error) {
 	if err := requirePhase(ctx, "streams census", in.Phase, natsgrant.OperatorPhaseHeld); err != nil {
 		return Report{}, err
@@ -223,6 +230,10 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 			return report, nil
 		}
 		for _, consumer := range consumers {
+			if why, ok := goneName(in.GoneNames, name, consumer.Name); ok {
+				report.Left = append(report.Left, Finding{Stream: name, Consumer: consumer.Name, What: why})
+				continue
+			}
 			if reason := shapeMismatch(shapes, fresh, name, consumer); reason != "" {
 				if _, err := request(ctx, conn, "$JS.API.CONSUMER.DELETE."+name+"."+consumer.Name, nil); err != nil {
 					report.Failures = append(report.Failures, Finding{Stream: name, Consumer: consumer.Name, What: reason + ", and its delete failed: " + err.Error()})
@@ -331,6 +342,22 @@ func shapeMismatch(shapes []ConsumerShape, fresh map[string]bool, stream string,
 		return mismatch
 	}
 	return "its name matches no declared consumer"
+}
+
+// goneName is why consumer, of stream, is a gone family's (CensusInput.GoneNames): named one of
+// gone's names, or in that name's fresh form, on the notification stream; and false for any other.
+func goneName(gone map[string]string, stream, consumer string) (string, bool) {
+	if stream != bus.Stream {
+		return "", false
+	}
+	if why, ok := gone[consumer]; ok {
+		return why, true
+	}
+	if cut := strings.LastIndexByte(consumer, '~'); cut > 0 && nuidLike(consumer[cut+1:]) {
+		why, ok := gone[consumer[:cut]]
+		return why, ok
+	}
+	return "", false
 }
 
 // freshFormOf reports whether name is shape's fresh form, <shape>~<nuid>, the name a convert or a

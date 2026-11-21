@@ -2,6 +2,7 @@ package consumernames
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,10 +14,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/streams"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -144,30 +147,33 @@ const (
 // (Dispatch's durables) and daemon/<project key> for each daemon. A name in a set is one a record
 // selects or may still select: its current, its open operation's candidate, or a retired name
 // cleanup has not yet deleted (censusNamesOf). Every declared family has a set, empty when its
-// store holds no record.
+// store holds no record, but a daemon whose store is gone, which has none.
 type RecordedNames map[string]map[string]bool
 
 // ReadRecordedNames is the census's reader of every family's recorded names (RecordedNames), which
 // the census calls after its barrier on the selection bucket. It reads the bucket for the
 // session and listener sets (censusSelectionRecords) and each Postgres store for its family's set
 // (selection.PGStore.List, its sentinel row aside): Dispatch's when families names dispatch or
-// dispatchDatabaseFile names its store, and each daemon's that daemonDatabases names, <project>=
-// <file> as consumer-names' --daemon-database takes it, every daemon family of families among
-// them (censusDaemonProjects). Each file holds the store's database URL with the operator's
-// credential (openDatabase). A family families names whose store no flag names, a store it cannot
-// open or whose table is missing, and a bucket censusSelectionRecords refuses each fail the read,
-// named, and the census is then UNKNOWN and removes nothing.
-func ReadRecordedNames(ctx context.Context, conn *nats.Conn, families []string, dispatchDatabaseFile string, daemonDatabases []string) (RecordedNames, error) {
-	projects, err := censusDaemonProjects(families, daemonDatabases)
-	if err != nil {
-		return nil, fmt.Errorf("the recorded names: %w", err)
-	}
+// dispatchDatabaseFile names its store, from the database that file's URL names (openDatabase);
+// and each daemon's that daemonDatabases names, every daemon family of families among them, each
+// read by the census's rule for the daemon stores, at the address its Deployment names
+// (censusReadDaemonStores, with deployments). A daemon store the rule finds gone has no set, and
+// is answered instead, beside the names. A family families names whose store no flag names, a
+// store it cannot open or whose table is missing, a daemon store the rule leaves unreconciled, a
+// listing of the Deployments it cannot read, and a bucket censusSelectionRecords refuses each fail
+// the read, named, and the census is then UNKNOWN and removes nothing.
+func ReadRecordedNames(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families []string, dispatchDatabaseFile string, daemonDatabases []string) (RecordedNames, []writerhold.GoneStore, error) {
 	if slices.Contains(families, familyDispatch) && dispatchDatabaseFile == "" {
-		return nil, fmt.Errorf("the recorded names: %s's store: no --dispatch-database-file names it", familyDispatch)
+		return nil, nil, fmt.Errorf("the recorded names: %s's store: no --dispatch-database-file names it", familyDispatch)
+	}
+	daemons, closeDaemons, err := censusReadDaemonStores(ctx, deployments, families, daemonDatabases)
+	defer closeDaemons()
+	if err != nil {
+		return nil, nil, fmt.Errorf("the recorded names: %w", err)
 	}
 	sessions, listeners, err := censusSelectionRecords(ctx, conn)
 	if err != nil {
-		return nil, fmt.Errorf("the recorded names: %w", err)
+		return nil, nil, fmt.Errorf("the recorded names: %w", err)
 	}
 	names := RecordedNames{recordedSessions: {}, recordedListeners: {}}
 	for _, record := range sessions {
@@ -176,17 +182,27 @@ func ReadRecordedNames(ctx context.Context, conn *nats.Conn, families []string, 
 	for _, record := range listeners {
 		censusAddNames(names[recordedListeners], record)
 	}
-	var stores []string
-	if dispatchDatabaseFile != "" {
-		stores = append(stores, familyDispatch)
-	}
-	for _, project := range projects {
-		stores = append(stores, daemonFamily(project))
-	}
-	o := options{dispatchDatabaseFile: dispatchDatabaseFile, daemonDatabases: daemonDatabases}
 	var unread []string
-	for _, family := range stores {
-		set, err := censusStoreNames(ctx, o, family)
+	if dispatchDatabaseFile != "" {
+		set, err := censusStoreNames(ctx, options{dispatchDatabaseFile: dispatchDatabaseFile}, familyDispatch)
+		if err != nil {
+			unread = append(unread, fmt.Sprintf("%s's store: %v", familyDispatch, err))
+		} else {
+			names[familyDispatch] = set
+		}
+	}
+	var gone []writerhold.GoneStore
+	for _, s := range daemons {
+		family := daemonFamily(s.project)
+		switch {
+		case s.unreconciled != "":
+			unread = append(unread, fmt.Sprintf("%s's store: %s", family, s.unreconciled))
+			continue
+		case s.gone != nil:
+			gone = append(gone, *s.gone)
+			continue
+		}
+		set, err := censusListNames(ctx, s.db)
 		if err != nil {
 			unread = append(unread, fmt.Sprintf("%s's store: %v", family, err))
 			continue
@@ -194,23 +210,26 @@ func ReadRecordedNames(ctx context.Context, conn *nats.Conn, families []string, 
 		names[family] = set
 	}
 	if len(unread) > 0 {
-		return nil, fmt.Errorf("the recorded names: %s", strings.Join(unread, "; "))
+		return nil, nil, fmt.Errorf("the recorded names: %s", strings.Join(unread, "; "))
 	}
-	return names, nil
+	return names, gone, nil
 }
 
 // RecordedFreshNames is ReadRecordedNames in the form the census's input takes
-// (streams.CensusInput.RecordedFreshNames): family to the fresh names the records hold, each list
-// sorted, for the listener durables, Dispatch's durables and each daemon's. The session consumers'
-// names are left out: the census declares them by their records' shapes
-// (RecordedSessionConsumers). A read ReadRecordedNames refuses is refused, and the census is then
-// UNKNOWN and removes nothing.
-func RecordedFreshNames(ctx context.Context, conn *nats.Conn, families []string, dispatchDatabaseFile string, daemonDatabases []string) (map[string][]string, error) {
-	names, err := ReadRecordedNames(ctx, conn, families, dispatchDatabaseFile, daemonDatabases)
+// (writerhold.FreshNamesRead): family to the fresh names the records hold, each list sorted, for
+// the listener durables, Dispatch's durables and each daemon's
+// (streams.CensusInput.RecordedFreshNames); and for each daemon whose store is gone, each of its
+// consumers' names (enrollLogicalNames) to why (streams.CensusInput.GoneNames), so the census
+// leaves those consumers as they are and names each: a database that does not exist is evidence to
+// skip its store, not to delete what its records would have kept. The session consumers' names
+// are left out: the census declares them by their records' shapes (RecordedSessionConsumers). A
+// read ReadRecordedNames refuses is refused, and the census is then UNKNOWN and removes nothing.
+func RecordedFreshNames(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families []string, dispatchDatabaseFile string, daemonDatabases []string) (writerhold.FreshNamesRead, error) {
+	names, gone, err := ReadRecordedNames(ctx, conn, deployments, families, dispatchDatabaseFile, daemonDatabases)
 	if err != nil {
-		return nil, err
+		return writerhold.FreshNamesRead{}, err
 	}
-	fresh := make(map[string][]string, len(names))
+	read := writerhold.FreshNamesRead{Names: make(map[string][]string, len(names))}
 	for family, set := range names {
 		if family == recordedSessions {
 			continue
@@ -222,13 +241,22 @@ func RecordedFreshNames(ctx context.Context, conn *nats.Conn, families []string,
 			}
 		}
 		slices.Sort(list)
-		fresh[family] = list
+		read.Names[family] = list
 	}
-	return fresh, nil
+	for _, g := range gone {
+		if read.Gone == nil {
+			read.Gone = map[string]string{}
+		}
+		why := fmt.Sprintf("left, store gone: %s's database %s on instance %s does not exist", daemonFamily(g.Project), g.Database, g.Instance)
+		for _, name := range enrollLogicalNames(g.Project) {
+			read.Gone[name] = why
+		}
+	}
+	return read, nil
 }
 
-// censusStoreNames is every name family's intake_consumers records hold, read through the
-// store's list (selection.PGStore.List, which leaves its sentinel row out).
+// censusStoreNames is every name family's intake_consumers records hold, read from the store its
+// file names (openDatabase, censusListNames).
 func censusStoreNames(ctx context.Context, o options, family string) (map[string]bool, error) {
 	db, err := openDatabase(ctx, o, family)
 	if err != nil {
@@ -237,6 +265,12 @@ func censusStoreNames(ctx context.Context, o options, family string) (map[string
 	if pool, ok := db.(interface{ Close() }); ok {
 		defer pool.Close()
 	}
+	return censusListNames(ctx, db)
+}
+
+// censusListNames is every name the intake_consumers records on db hold, read through the store's
+// list (selection.PGStore.List, which leaves its sentinel row out).
+func censusListNames(ctx context.Context, db Database) (map[string]bool, error) {
 	records, err := selection.NewPGStore(db).List(ctx)
 	if errors.Is(err, selection.ErrNoStore) {
 		return nil, fmt.Errorf("it has no %s table", selection.IntakeConsumersTable)
@@ -258,11 +292,9 @@ func censusAddNames(set map[string]bool, record selection.Record) {
 	}
 }
 
-// censusDaemonProjects are the project keys of the daemon stores a census reads, sorted: one for
-// each daemonDatabases entry, <project>=<file> as consumer-names' --daemon-database takes it; and
-// each daemon family of families (daemon/<project key>) must be one of them, since a declared
-// daemon whose store it could not read would read as one with nothing recorded.
-func censusDaemonProjects(families, daemonDatabases []string) ([]string, error) {
+// censusNamedProjects are the project keys daemonDatabases names, sorted: one for each entry,
+// <project>=<file> as consumer-names' --daemon-database takes it, each project once.
+func censusNamedProjects(daemonDatabases []string) ([]string, error) {
 	var projects []string
 	for _, entry := range daemonDatabases {
 		project, file, ok := strings.Cut(entry, "=")
@@ -275,17 +307,167 @@ func censusDaemonProjects(families, daemonDatabases []string) ([]string, error) 
 		projects = append(projects, project)
 	}
 	slices.Sort(projects)
-	var unnamed []string
-	for _, family := range families {
-		if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok && !slices.Contains(projects, project) {
-			unnamed = append(unnamed, fmt.Sprintf("%s's store: no --daemon-database %s=<file> names it", family, project))
-		}
-	}
-	if len(unnamed) > 0 {
-		return nil, errors.New(strings.Join(unnamed, "; "))
-	}
 	return projects, nil
 }
+
+// censusUndefinedDatabase is Postgres's SQLSTATE for a database that does not exist: the answer
+// that makes a daemon store gone (censusReadDaemonStore).
+const censusUndefinedDatabase = "3D000"
+
+// censusDaemonRead is one daemon store as the census's rule for the daemon stores found it
+// (censusReadDaemonStore): read, with its store open and its sentinel row read; gone; or
+// unreconciled, and why.
+type censusDaemonRead struct {
+	project string
+	// db is the store, open at the address the rule checked, nil for one the rule did not open.
+	db       Database
+	state    selection.StoreState
+	revision uint64
+	// found is false for a store whose table holds no sentinel row.
+	found bool
+	// gone is the store confirmed gone, nil for any other.
+	gone *writerhold.GoneStore
+	// unreconciled is why the rule leaves the store as it is, "" for a store it read or found gone.
+	unreconciled string
+}
+
+// censusReadDaemonStores reads every daemon store a census names by the census's rule for the
+// daemon stores, which both its readers of them keep (ReadRecordedNames,
+// ReconcileDaemonStreamIDs). The stores are one for each daemonDatabases entry, <project>=<file>
+// as consumer-names' --daemon-database takes it (censusNamedProjects); each daemon family of
+// families (daemon/<project key>) must be one of them, and one that is not is unreconciled, since
+// a declared daemon whose store it could not read would read as one with nothing recorded. It
+// lists the daemons' Deployments once (deployments), and reads each store as
+// censusReadDaemonStore does. It answers the stores in the order of their project keys, and a
+// close of every store it opened, which the caller runs, error or not. A malformed entry, and a
+// listing of the Deployments it cannot read, are its error.
+func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDeployments, families, daemonDatabases []string) ([]censusDaemonRead, func(), error) {
+	var stores []censusDaemonRead
+	closeStores := func() {
+		for _, s := range stores {
+			if pool, ok := s.db.(interface{ Close() }); ok {
+				pool.Close()
+			}
+		}
+	}
+	projects, err := censusNamedProjects(daemonDatabases)
+	if err != nil {
+		return nil, closeStores, err
+	}
+	var listed []writerhold.DaemonDeployment
+	if len(projects) > 0 {
+		if deployments == nil {
+			return nil, closeStores, errors.New("no reader of the daemons' Deployments, against which each daemon store's address is checked")
+		}
+		if listed, err = deployments(ctx); err != nil {
+			return nil, closeStores, err
+		}
+	}
+	o := options{daemonDatabases: daemonDatabases}
+	for _, project := range projects {
+		stores = append(stores, censusReadDaemonStore(ctx, o, project, listed))
+	}
+	for _, family := range families {
+		project, ok := strings.CutPrefix(family, familyDaemonPrefix)
+		if !ok || slices.ContainsFunc(stores, func(s censusDaemonRead) bool { return s.project == project }) {
+			continue
+		}
+		stores = append(stores, censusDaemonRead{project: project, unreconciled: fmt.Sprintf("no --daemon-database %s=<file> names it", project)})
+	}
+	slices.SortFunc(stores, func(a, b censusDaemonRead) int { return strings.Compare(a.project, b.project) })
+	return stores, closeStores, nil
+}
+
+// censusReadDaemonStore reads project's daemon store, its file named by o's --daemon-database
+// entry, only at the address its Deployment names:
+//
+//   - exactly one Deployment of deployments names the project (writerhold.DaemonProjectAnnotation),
+//     and it names the store's database and instance (writerhold.DaemonStoreDatabaseAnnotation,
+//     writerhold.DaemonStoreInstanceAnnotation);
+//   - the URL on the file's first line names that database, and the instance its second line
+//     states, the one the operator's own proxy reaches with that URL, is that instance.
+//
+// A store that fails either is unreconciled, naming why, and is not opened. At that address it
+// reads the store's sentinel row (censusReadSentinel): a server that answers SQLSTATE 3D000, the
+// database does not exist, makes the store gone, with that answer; a server that does not answer,
+// or any other failed read, leaves it unreconciled, naming why; and so does a sentinel that names
+// another family than the store's, or none (censusSentinelFamily). A store whose table holds no
+// sentinel row is read, with found false.
+func censusReadDaemonStore(ctx context.Context, o options, project string, deployments []writerhold.DaemonDeployment) censusDaemonRead {
+	s := censusDaemonRead{project: project}
+	family := daemonFamily(project)
+	file, err := familyDatabaseFile(o, family)
+	if err != nil {
+		s.unreconciled = err.Error()
+		return s
+	}
+	config, err := pgxpool.ParseConfig(file.url)
+	if err != nil {
+		s.unreconciled = fmt.Sprintf("%s: its first line is no database URL (the URL is not echoed): %v", file.flag, err)
+		return s
+	}
+	var named []writerhold.DaemonDeployment
+	for _, d := range deployments {
+		if d.Annotations[writerhold.DaemonProjectAnnotation] == project {
+			named = append(named, d)
+		}
+	}
+	if len(named) != 1 {
+		names := make([]string, len(named))
+		for i, d := range named {
+			names[i] = d.Name
+		}
+		s.unreconciled = fmt.Sprintf("%d Deployments of namespace %s name project %s (annotation %s), not one, so no address is the store's: %s",
+			len(named), writerhold.DaemonNamespace, project, writerhold.DaemonProjectAnnotation, cmp.Or(strings.Join(names, ", "), "none"))
+		return s
+	}
+	deployment := named[0].Name
+	database := named[0].Annotations[writerhold.DaemonStoreDatabaseAnnotation]
+	instance := named[0].Annotations[writerhold.DaemonStoreInstanceAnnotation]
+	switch {
+	case database == "":
+		s.unreconciled = fmt.Sprintf("Deployment %s/%s has no annotation %s, so the store it reads is unknown", writerhold.DaemonNamespace, deployment, writerhold.DaemonStoreDatabaseAnnotation)
+	case instance == "":
+		s.unreconciled = fmt.Sprintf("Deployment %s/%s has no annotation %s, so the store it reads is unknown", writerhold.DaemonNamespace, deployment, writerhold.DaemonStoreInstanceAnnotation)
+	case config.ConnConfig.Database != database:
+		s.unreconciled = fmt.Sprintf("%s reaches database %q, and Deployment %s/%s reads database %q", file.flag, config.ConnConfig.Database, writerhold.DaemonNamespace, deployment, database)
+	case file.instance == "":
+		s.unreconciled = fmt.Sprintf("%s states no instance on its second line, so it does not show it reaches instance %q, which Deployment %s/%s reads", file.flag, instance, writerhold.DaemonNamespace, deployment)
+	case file.instance != instance:
+		s.unreconciled = fmt.Sprintf("%s states instance %q, and Deployment %s/%s reads instance %q", file.flag, file.instance, writerhold.DaemonNamespace, deployment, instance)
+	}
+	if s.unreconciled != "" {
+		return s
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		s.unreconciled = fmt.Sprintf("open its database (%s; the URL is not echoed): %v", file.flag, err)
+		return s
+	}
+	s.db = pool
+	s.state, s.revision, s.found, err = censusReadSentinel(ctx, pool)
+	var pg *pgconn.PgError
+	switch {
+	case errors.As(err, &pg) && pg.Code == censusUndefinedDatabase:
+		s.gone = &writerhold.GoneStore{Project: project, Database: database, Instance: instance, StatedInstance: file.instance, Answer: pg.Error()}
+	case err != nil:
+		s.unreconciled = err.Error()
+	case s.found:
+		if got, recorded := censusSentinelFamily(s.state); recorded && got != family {
+			s.unreconciled = fmt.Sprintf("its %s row names family %q, not %s, so the address its Deployment names holds another store", selection.PGSentinelKey, got, family)
+		}
+	}
+	return s
+}
+
+// censusSentinelFamily is the family a store's sentinel row names, and whether this build's
+// selection.StoreState records a family at all, the one place the census's check of it is gated.
+// It records none yet: until the selection package adds the field (StoreState.Family, JSON
+// "family"), a sentinel naming a family does not decode whole (censusReadSentinel refuses a field
+// it does not know), and every other sentinel names none, which must not leave every store
+// unreconciled. Once the field exists this answers state.Family and true, and a sentinel naming
+// another family, or none, leaves its store unreconciled (censusReadDaemonStore).
+func censusSentinelFamily(selection.StoreState) (string, bool) { return "", false }
 
 // censusNamesOf is every physical name record holds that the census keeps, once each: its
 // current, its open operation's candidate, and its retired names. An open operation's predecessor
@@ -343,86 +525,82 @@ const censusMaxConflicts = 10
 // table no migration made.
 const censusUndefinedTable = "42P01"
 
-// censusDaemonSentinel is one daemon store's sentinel row as ReconcileDaemonStreamIDs read it.
-type censusDaemonSentinel struct {
-	family   string
-	db       Database
-	state    selection.StoreState
-	revision uint64
-	// found is false for a store whose table holds no sentinel row.
-	found bool
-}
-
 // ReconcileDaemonStreamIDs is the census's writer of the daemon stores' stream identity
-// (selection.StoreState.StreamID). A Legion daemon reads no stream info and tags each last floor
-// with its store's recorded identity, so after a hold that can recreate ENVOY_NOTIFICATIONS a
-// floor read on the old stream must stop counting on the new one. It reads the stream's identity
-// on conn (selection.StreamIdentity of STREAM.INFO, a read every phase of the operator's grant
-// names), then every daemon store: one for each daemonDatabases entry, <project>=<file> as
-// consumer-names' --daemon-database takes it, the file holding the store's database URL with the
-// operator's credential (openDatabase); and each daemon family of families (daemon/<project
-// key>) must be one of them. It reads every store's sentinel row before it writes any, then
-// rewrites each sentinel whose stream_id differs from the stream's identity, every other field
-// kept, with selection.PGStore.WriteSentinel at the revision it read; a refused write
-// (selection.ErrConflict) reads the row again. It answers one line for each store it changed, in
-// the order of their project keys.
+// (selection.StoreState.StreamID; writerhold.StreamIDWriter). A Legion daemon reads no stream info
+// and tags each last floor with its store's recorded identity, so after a hold that can recreate
+// ENVOY_NOTIFICATIONS a floor read on the old stream must stop counting on the new one. It reads
+// the stream's identity on conn (selection.StreamIdentity of STREAM.INFO, a read every phase of
+// the operator's grant names), then every daemon store by the census's rule for them
+// (censusReadDaemonStores, with deployments): one for each daemonDatabases entry, <project>=<file>
+// as consumer-names' --daemon-database takes it, each daemon family of families (daemon/<project
+// key>) among them, each read only at the address its Deployment names. It reads every store's
+// sentinel row before it writes any, then rewrites each sentinel whose stream_id differs from the
+// stream's identity, every other field kept, with selection.PGStore.WriteSentinel at the revision
+// it read; a refused write (selection.ErrConflict) reads the row again. Its result names each
+// store it changed, each it found gone and each it left unreconciled, in the order of their
+// project keys.
 //
 // A store whose table holds no sentinel row yet (one enrol has not written) records no identity
-// and is left as it is. A store it cannot read fails the call before any write, naming the store:
-// a declared family no entry names, a file or database it cannot open, a missing table, and a
-// sentinel that does not decode or holds a field this build does not know, which a rewrite would
-// drop. A stream that carries no identity fails it too: an empty identity is never written over a
-// recorded one. A failed write after others answers the lines of those it changed and the error.
-func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, families, daemonDatabases []string) ([]string, error) {
-	projects, err := censusDaemonProjects(families, daemonDatabases)
-	if err != nil {
-		return nil, fmt.Errorf("the daemon stores' stream identity: %w", err)
+// and is left as it is. A store the rule finds gone, its database answering that it does not
+// exist, is no daemon's, and does not hold back the others. A store the rule leaves unreconciled
+// is named with why: a declared family no entry names, an address that is not its Deployment's, a
+// file or database it cannot open, a server that does not answer, a missing table, and a sentinel
+// that does not decode or holds a field this build does not know, which a rewrite would drop.
+// While any is, it writes nothing. A failed write after others leaves the stores changed so far
+// in the result, and the failed one and each still to write unreconciled. A malformed
+// daemonDatabases entry, a listing of the Deployments it cannot read, and a stream that carries no
+// identity fail the whole call, with nothing written: an empty identity is never written over a
+// recorded one.
+func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families, daemonDatabases []string) (writerhold.StreamIDResult, error) {
+	var result writerhold.StreamIDResult
+	if _, err := censusNamedProjects(daemonDatabases); err != nil {
+		return result, fmt.Errorf("the daemon stores' stream identity: %w", err)
 	}
 	info, err := streamInfo(ctx, conn, notifications)
 	if err != nil {
-		return nil, fmt.Errorf("the daemon stores' stream identity: the info of %s: %w", notifications, err)
+		return result, fmt.Errorf("the daemon stores' stream identity: the info of %s: %w", notifications, err)
 	}
 	current := selection.StreamIdentity(info)
 	if current == "" {
-		return nil, fmt.Errorf("the daemon stores' stream identity: %s carries no %s, so there is no identity to record", notifications, selection.StreamIdentityMetadataKey)
+		return result, fmt.Errorf("the daemon stores' stream identity: %s carries no %s, so there is no identity to record", notifications, selection.StreamIdentityMetadataKey)
 	}
-	o := options{daemonDatabases: daemonDatabases}
-	var unread []string
-	var read []censusDaemonSentinel
-	for _, project := range projects {
-		family := daemonFamily(project)
-		db, err := openDatabase(ctx, o, family)
+	stores, closeStores, err := censusReadDaemonStores(ctx, deployments, families, daemonDatabases)
+	defer closeStores()
+	if err != nil {
+		return result, fmt.Errorf("the daemon stores' stream identity: %w", err)
+	}
+	for _, s := range stores {
+		switch {
+		case s.unreconciled != "":
+			result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: s.unreconciled})
+		case s.gone != nil:
+			result.Gone = append(result.Gone, *s.gone)
+		}
+	}
+	if len(result.Unreconciled) > 0 {
+		return result, nil
+	}
+	stale := func(s censusDaemonRead) bool { return s.gone == nil && s.found && s.state.StreamID != current }
+	for i, s := range stores {
+		if !stale(s) {
+			continue
+		}
+		change, changed, err := censusRewriteStreamID(ctx, s, current)
 		if err != nil {
-			unread = append(unread, fmt.Sprintf("%s's store: %v", family, err))
-			continue
+			result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: fmt.Sprintf("its %s row's write failed: %v", selection.PGSentinelKey, err)})
+			for _, rest := range stores[i+1:] {
+				if stale(rest) {
+					result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: rest.project,
+						Reason: fmt.Sprintf("not written, since %s's write failed before it", daemonFamily(s.project))})
+				}
+			}
+			return result, nil
 		}
-		if pool, ok := db.(interface{ Close() }); ok {
-			defer pool.Close()
-		}
-		s := censusDaemonSentinel{family: family, db: db}
-		if s.state, s.revision, s.found, err = censusReadSentinel(ctx, db); err != nil {
-			unread = append(unread, fmt.Sprintf("%s's store: %v", family, err))
-			continue
-		}
-		read = append(read, s)
-	}
-	if len(unread) > 0 {
-		return nil, fmt.Errorf("the daemon stores' stream identity, nothing written: %s", strings.Join(unread, "; "))
-	}
-	var changed []string
-	for _, s := range read {
-		if !s.found || s.state.StreamID == current {
-			continue
-		}
-		line, err := censusRewriteStreamID(ctx, s, current)
-		if err != nil {
-			return changed, fmt.Errorf("%s's sentinel: %w", s.family, err)
-		}
-		if line != "" {
-			changed = append(changed, line)
+		if changed {
+			result.Changed = append(result.Changed, change)
 		}
 	}
-	return changed, nil
+	return result, nil
 }
 
 // censusReadSentinel reads the sentinel row of the intake_consumers table on db with its
@@ -453,9 +631,9 @@ func censusReadSentinel(ctx context.Context, db Database) (selection.StoreState,
 }
 
 // censusRewriteStreamID writes s's sentinel with stream_id current over the revision s read, and
-// answers the line naming the change. A refused write reads the row again and writes over the
-// revision read then, unless the row now records current, which answers no line.
-func censusRewriteStreamID(ctx context.Context, s censusDaemonSentinel, current string) (string, error) {
+// answers the change. A refused write reads the row again and writes over the revision read then,
+// unless the row now records current, or none, which answers no change.
+func censusRewriteStreamID(ctx context.Context, s censusDaemonRead, current string) (writerhold.StreamIDChange, bool, error) {
 	store := selection.NewPGStore(s.db)
 	state, revision := s.state, s.revision
 	for range censusMaxConflicts {
@@ -463,18 +641,18 @@ func censusRewriteStreamID(ctx context.Context, s censusDaemonSentinel, current 
 		next.StreamID = current
 		_, err := store.WriteSentinel(ctx, next, revision)
 		if err == nil {
-			return fmt.Sprintf("%s: stream_id %q -> %q", s.family, state.StreamID, current), nil
+			return writerhold.StreamIDChange{Project: s.project, From: state.StreamID, To: current}, true, nil
 		}
 		if !errors.Is(err, selection.ErrConflict) {
-			return "", err
+			return writerhold.StreamIDChange{}, false, err
 		}
 		var found bool
 		if state, revision, found, err = censusReadSentinel(ctx, s.db); err != nil {
-			return "", err
+			return writerhold.StreamIDChange{}, false, err
 		}
 		if !found || state.StreamID == current {
-			return "", nil
+			return writerhold.StreamIDChange{}, false, nil
 		}
 	}
-	return "", fmt.Errorf("it changed under %d writes: %w", censusMaxConflicts, selection.ErrConflict)
+	return writerhold.StreamIDChange{}, false, fmt.Errorf("it changed under %d writes: %w", censusMaxConflicts, selection.ErrConflict)
 }

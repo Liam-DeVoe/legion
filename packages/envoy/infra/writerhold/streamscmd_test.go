@@ -11,6 +11,11 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/envoy/infra/streams"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
@@ -50,12 +55,14 @@ func (h *heldStack) streamsRunReaders(readers CensusReaders, args ...string) (in
 
 // noStores is a writer of the daemon stores' stream ids for a stack with no daemon store: it
 // changes nothing.
-func noStores(context.Context, *nats.Conn, []string, []string) ([]string, error) { return nil, nil }
+func noStores(context.Context, *nats.Conn, DaemonDeployments, []string, []string) (StreamIDResult, error) {
+	return StreamIDResult{}, nil
+}
 
 // noFreshNames is a reader of the recorded fresh names for a stack with no selection record: it
 // names none.
-func noFreshNames(context.Context, *nats.Conn, []string, string, []string) (map[string][]string, error) {
-	return map[string][]string{}, nil
+func noFreshNames(context.Context, *nats.Conn, DaemonDeployments, []string, string, []string) (FreshNamesRead, error) {
+	return FreshNamesRead{Names: map[string][]string{}}, nil
 }
 
 // journalCommands are the hold's journal entries, each "<command> <state>".
@@ -282,11 +289,13 @@ func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
 
 // The census reads the recorded fresh consumer names (consumernames.RecordedFreshNames, passed
 // in) before it removes anything, and passes them to streams.Census as RecordedFreshNames. It gives
-// the reader its --family values, --dispatch-database-file and each --daemon-database entry. With
-// no reader, or a reader that cannot read a store, the census is UNKNOWN (exit 2) and writes no
-// done entry. The control is the same census with a reader, which is done. That an unrecorded
-// fresh-form consumer is removed and a recorded one kept is streams.Census's own rule, which #4687
-// tests, and t-7's rows test with the real reader.
+// the reader its --family values, --dispatch-database-file, each --daemon-database entry, and the
+// daemons' Deployments as the hold's own Kubernetes client lists them (KubeDaemonDeployments of
+// namespace legion), which hold the Deployment the row renders there. With no reader, or a reader
+// that cannot read a store, the census is UNKNOWN (exit 2) and writes no done entry. The control is
+// the same census with a reader, which is done. That an unrecorded fresh-form consumer is removed
+// and a recorded one kept is streams.Census's own rule, which #4687 tests, and t-7's rows test
+// with the real reader, a gone daemon store's consumers too.
 func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
@@ -306,24 +315,60 @@ func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 	code, _, stderr := h.streamsRunReaders(CensusReaders{Recorded: stub, Stores: noStores}, held...)
 	require.Equal(t, 2, code, "a census with no reader of the fresh names")
 	require.Contains(t, stderr, ErrNoFreshNamesReader.Error())
-	failing := func(context.Context, *nats.Conn, []string, string, []string) (map[string][]string, error) {
-		return nil, errors.New("the dispatch store cannot be read")
+	failing := func(context.Context, *nats.Conn, DaemonDeployments, []string, string, []string) (FreshNamesRead, error) {
+		return FreshNamesRead{}, errors.New("the dispatch store cannot be read")
 	}
 	code, _, stderr = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: failing, Stores: noStores}, held...)
 	require.Equal(t, 2, code, "a census whose fresh-names reader fails")
 	require.Contains(t, stderr, "the dispatch store cannot be read")
 	require.NotContains(t, h.journalCommands(id), CommandStreamsCensus+" done")
 
-	var gotFamilies, gotDaemons []string
+	_, err = h.s.Kube.Client.AppsV1().Deployments(DaemonNamespace).Create(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: "legion-daemon-p", Namespace: DaemonNamespace, Annotations: map[string]string{DaemonProjectAnnotation: "P"},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	var gotFamilies, gotDaemons, gotDeployments []string
 	var gotDispatch string
-	reader := func(_ context.Context, _ *nats.Conn, families []string, dispatch string, daemons []string) (map[string][]string, error) {
+	reader := func(ctx context.Context, _ *nats.Conn, deployments DaemonDeployments, families []string, dispatch string, daemons []string) (FreshNamesRead, error) {
 		gotFamilies, gotDispatch, gotDaemons = families, dispatch, daemons
-		return map[string][]string{"session": {}}, nil
+		listed, err := deployments(ctx)
+		if err != nil {
+			return FreshNamesRead{}, err
+		}
+		for _, d := range listed {
+			gotDeployments = append(gotDeployments, d.Name+" "+d.Annotations[DaemonProjectAnnotation])
+		}
+		return FreshNamesRead{Names: map[string][]string{"session": {}}}, nil
 	}
 	code, _, _ = h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: reader, Stores: noStores}, held...)
 	require.Zero(t, code, "the census with a reader of the fresh names")
 	require.Equal(t, []string{"session"}, gotFamilies)
 	require.Equal(t, "/run/dispatch-db", gotDispatch)
 	require.Equal(t, []string{"P=/run/daemon-db"}, gotDaemons)
+	require.Equal(t, []string{"legion-daemon-p P"}, gotDeployments, "the reader was not handed the hold's own Deployments")
 	require.Contains(t, h.journalCommands(id), CommandStreamsCensus+" done")
+}
+
+// KubeDaemonDeployments lists the Deployments of namespace legion alone, each by its name with its
+// annotations, and answers a list the API server refuses as its error. Control: a Deployment of
+// another namespace is not listed.
+func TestKubeDaemonDeploymentsListsTheDaemonsNamespace(t *testing.T) {
+	ctx := context.Background()
+	client := fake.NewClientset(
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "legion-daemon-a", Namespace: DaemonNamespace,
+			Annotations: map[string]string{DaemonProjectAnnotation: "A", DaemonStoreDatabaseAnnotation: "daemon_a"}}},
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "elsewhere", Namespace: "envoy",
+			Annotations: map[string]string{DaemonProjectAnnotation: "B"}}},
+	)
+	listed, err := KubeDaemonDeployments(client)(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []DaemonDeployment{{Name: "legion-daemon-a",
+		Annotations: map[string]string{DaemonProjectAnnotation: "A", DaemonStoreDatabaseAnnotation: "daemon_a"}}}, listed)
+
+	client.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("deployments is forbidden")
+	})
+	_, err = KubeDaemonDeployments(client)(ctx)
+	require.ErrorContains(t, err, "deployments is forbidden")
+	require.ErrorContains(t, err, "namespace legion")
 }

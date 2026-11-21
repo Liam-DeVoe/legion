@@ -430,9 +430,37 @@ func envFromFlags(open hubOpeners) env {
 	}
 }
 
-// openDatabase opens family's database from the file its flag names, which holds the database's
-// URL with the operator's credential, closed when the run ends.
+// openDatabase opens family's database from the URL its file holds (familyDatabaseFile), closed
+// when the run ends.
 func openDatabase(ctx context.Context, o options, family string) (Database, error) {
+	f, err := familyDatabaseFile(o, family)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.New(ctx, f.url)
+	if err != nil {
+		return nil, fmt.Errorf("open %s's database (%s; the URL is not echoed): %w", family, f.flag, err)
+	}
+	return pool, nil
+}
+
+// databaseFile is a family's database file as its flag names it. Its first line is the database's
+// URL with the operator's credential, which every command opens; a daemon's file has a second, the
+// connection name of the Cloud SQL instance the operator's own proxy reaches with that URL, which
+// the census compares with the daemon's Deployment (censusReadDaemonStores). A file of one line
+// serves every command but that comparison.
+type databaseFile struct {
+	// flag names the flag and value that named the file, as an error names it.
+	flag string
+	// url is the first line; instance the second, "" when the file has none.
+	url, instance string
+}
+
+// familyDatabaseFile reads family's database file from the flag that names it:
+// --dispatch-database-file for Dispatch, --daemon-database <project>=<file> for a daemon. A file
+// whose first line holds no URL is refused: a pool opened on an empty URL would reach whatever
+// server the environment names.
+func familyDatabaseFile(o options, family string) (databaseFile, error) {
 	file, flagName := o.dispatchDatabaseFile, "--dispatch-database-file"
 	if project, ok := strings.CutPrefix(family, familyDaemonPrefix); ok {
 		var named bool
@@ -443,15 +471,17 @@ func openDatabase(ctx context.Context, o options, family string) (Database, erro
 		}
 	}
 	if file == "" {
-		return nil, fmt.Errorf("%s's store needs %s", family, flagName)
+		return databaseFile{}, fmt.Errorf("%s's store needs %s", family, flagName)
 	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", flagName, err)
+		return databaseFile{}, fmt.Errorf("read %s: %w", flagName, err)
 	}
-	pool, err := pgxpool.New(ctx, strings.TrimSpace(string(raw)))
-	if err != nil {
-		return nil, fmt.Errorf("open %s's database (%s; the URL is not echoed): %w", family, flagName, err)
+	first, rest, _ := strings.Cut(string(raw), "\n")
+	second, _, _ := strings.Cut(rest, "\n")
+	f := databaseFile{flag: flagName, url: strings.TrimSpace(first), instance: strings.TrimSpace(second)}
+	if f.url == "" {
+		return databaseFile{}, fmt.Errorf("%s: its file's first line holds no database URL", flagName)
 	}
-	return pool, nil
+	return f, nil
 }

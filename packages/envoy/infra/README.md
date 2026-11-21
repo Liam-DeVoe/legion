@@ -3402,7 +3402,15 @@ workflows, so its done entry completes the record that `hold release` needs.
   after the hold's barrier on their bucket. A consumer in a family's fresh form, `<base>~<nuid>`, is
   kept only when a selection record names it: under a hold no creator runs, so an unrecorded one
   is a crashed create's orphan, and the census removes it and names it. The census writes, so it
-  runs only while the row is `held`; `check` is the read-only word.
+  runs only while the row is `held`; `check` is the read-only word. It reads each daemon store
+  (`--daemon-database PROJECT-KEY=F`) only at the address the daemon's Deployment in namespace
+  `legion` names, by its annotations `envoy-infra.consumer-names/project`,
+  `envoy-infra.consumer-names/store-database` and `envoy-infra.consumer-names/store-instance`: the
+  URL on the file's first line must name that database, and its second line, the Cloud SQL
+  instance the operator's proxy reaches, that instance. A store whose database the server answers
+  does not exist there (SQLSTATE 3D000) is gone: the census removes none of that daemon's
+  consumers and prints each `LEFT`, prints `GONE daemon/<P>: ...` and records `gone.daemon/<P>` in
+  its done entry. A store it cannot match, reach or read leaves it `UNKNOWN`, changing nothing.
 
 `check`'s token file holds the measurement job's platform token, presented as user `service`. Its
 settings are `--replicas`, `--stream-max-bytes` and `--session-max-age`, which default to
@@ -3482,15 +3490,17 @@ Every command takes the hold's flags as `envoy-infra hold` takes them: `--broker
 every held command reads the hub's Kubernetes objects (`--kube-namespace`, `--statefulset`,
 `--configmap`), and `restore --finish` also needs `--probe-token-file`. A family's store is
 `--dispatch-database-file F` for Dispatch and `--daemon-database PROJECT-KEY=F` for each daemon,
-each file holding the database URL with the operator's credential. Before it changes anything,
-every held command reads the hub's servers, the protected streams, the writer census and the
-report again, and refuses while any client but itself and the auth service is connected. It writes
-its intent, then its done or stop entry, in the hold's journal; a stop records what every run of
-it in the hold left, so `hold release` ends only a hold that changed nothing and `hold abort` is
-the way out otherwise. `streams census` reads the session consumers and the fresh names these
-records hold, and brings each daemon store's stream identity to the stream's, through this
-package's readers. Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN, a
-reading that is not whole, which is never a pass.
+each file holding the database URL with the operator's credential on its first line; a daemon's
+file holds on its second line the Cloud SQL instance connection name that URL reaches, which
+`streams census` checks against the daemon's Deployment (every other command reads the first line
+alone). Before it changes anything, every held command reads the hub's servers, the protected
+streams, the writer census and the report again, and refuses while any client but itself and the
+auth service is connected. It writes its intent, then its done or stop entry, in the hold's
+journal; a stop records what every run of it in the hold left, so `hold release` ends only a hold
+that changed nothing and `hold abort` is the way out otherwise. `streams census` reads the session
+consumers and the fresh names these records hold, and brings each daemon store's stream identity
+to the stream's, through this package's readers. Exit codes: 0 done; 1 refused, naming what; 2 a
+usage error, or UNKNOWN, a reading that is not whole, which is never a pass.
 
 ## The listener's sender limit
 

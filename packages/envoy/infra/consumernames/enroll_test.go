@@ -338,11 +338,12 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	h.replaceNotificationStream()
 	h.enrollWindow()
 	// The census's readers open each declared family's store from the file its flag names:
-	// Dispatch's, which the window converted and which holds no record, and the new project's.
+	// Dispatch's, which the window converted and which holds no record, and the new project's, at
+	// the address its daemon's Deployment names (censusDaemonDeployed).
 	dispatchFile, _ := censusStore(t, familyDispatch, dispatchMigrations...)
 	censusArgs := []string{"--family", familySession, "--family", familyDispatch, "--family", daemonFamily(project),
 		"--daemon-consumer", daemonFixedPrefix + project + "-dispatch=" + enrollDispatchFilter,
-		"--dispatch-database-file", dispatchFile, "--daemon-database", project + "=" + censusDatabaseFile(t, db)}
+		"--dispatch-database-file", dispatchFile, "--daemon-database", project + "=" + h.censusDaemonDeployed(project, db)}
 
 	// Control: the census, before any enroll, refuses naming the new project's family alone,
 	// changes nothing, and prints no report it did not make; its stop entry records it unchanged,

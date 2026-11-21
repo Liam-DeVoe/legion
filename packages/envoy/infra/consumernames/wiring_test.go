@@ -105,6 +105,7 @@ func TestEveryHeldCommandReachesTheHubThroughItsFlags(t *testing.T) {
 		{"enroll", holdrecord.WorkflowEnroll, func(h *stack) []string {
 			return []string{actionEnroll, "--daemon", "WIRE", "--daemon-database", "WIRE=" + daemonDB(h)}
 		}, true},
+		{"repair-sentinel", holdrecord.WorkflowSentinelRepair, func(*stack) []string { return []string{actionRepair} }, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := newStack(t)

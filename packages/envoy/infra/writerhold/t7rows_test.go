@@ -35,6 +35,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -476,6 +477,33 @@ func (h *t7Stack) file(family string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.files[family]
+}
+
+// t7Instance is the Cloud SQL instance connection name the rows' daemon stores are on, as each
+// daemon's Deployment annotates it and the operator's file states it.
+const t7Instance = "local:postgres:t7rows"
+
+// daemonDeployment renders project's daemon Deployment in the stack's Kubernetes, namespace
+// writerhold.DaemonNamespace, annotated with its project key and its store, the database the row
+// made for daemon/<project> on t7Instance, and writes t7Instance as the second line of that
+// store's file: the census's readers of the daemon stores read it only at that address
+// (consumernames.ReadRecordedNames, ReconcileDaemonStreamIDs).
+func (h *t7Stack) daemonDeployment(project string) {
+	h.t.Helper()
+	h.mu.Lock()
+	pool, file := h.dbs["daemon/"+project], h.files["daemon/"+project]
+	h.mu.Unlock()
+	require.NotNil(h.t, pool, "the row made no store of daemon/%s", project)
+	require.NoError(h.t, os.WriteFile(file, []byte(pool.Config().ConnString()+"\n"+t7Instance+"\n"), 0o600))
+	_, err := h.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace).Create(context.Background(), &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "legion-daemon-" + strings.ToLower(project), Namespace: writerhold.DaemonNamespace,
+			Annotations: map[string]string{
+				writerhold.DaemonProjectAnnotation:       project,
+				writerhold.DaemonStoreDatabaseAnnotation: pool.Config().ConnConfig.Database,
+				writerhold.DaemonStoreInstanceAnnotation: t7Instance,
+			}},
+	}, metav1.CreateOptions{})
+	require.NoError(h.t, err)
 }
 
 // dispatchMigrations are Dispatch's store's own migrations, so the table is the one its migration
@@ -1909,6 +1937,7 @@ func TestHoldTheCensusInsideTheCutover(t *testing.T) {
 	wake := "legion-go-" + project + "-wake"
 	h.fixedOf(jetstream.ConsumerConfig{Durable: wake, FilterSubject: bus.LegionWakeTopic, AckPolicy: jetstream.AckExplicitPolicy})
 	daemonDB := h.database("daemon/"+project, daemonMigrations...)
+	h.daemonDeployment(project)
 	daemon := project + "=" + h.file("daemon/"+project)
 	planted := jetstream.ConsumerConfig{Durable: "plant", AckPolicy: jetstream.AckExplicitPolicy, FilterSubject: "notifications.dispatch.issue.PRIV.>"}
 	h.fixedOf(planted)
@@ -2016,8 +2045,8 @@ func TestHoldTheCensusInsideTheCutover(t *testing.T) {
 
 	// Shapes that list only the fixed names: no fresh name recorded.
 	fixedOnly := censusReaders()
-	fixedOnly.FreshNames = func(context.Context, *nats.Conn, []string, string, []string) (map[string][]string, error) {
-		return map[string][]string{}, nil
+	fixedOnly.FreshNames = func(context.Context, *nats.Conn, writerhold.DaemonDeployments, []string, string, []string) (writerhold.FreshNamesRead, error) {
+		return writerhold.FreshNamesRead{Names: map[string][]string{}}, nil
 	}
 	events := pgCurrent(t, dispatchDB, bus.DispatchDeliveryDurable)
 	code, stdout, _ = h.streamsWith(fixedOnly, controlFlags...)
