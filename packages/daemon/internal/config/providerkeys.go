@@ -154,9 +154,9 @@ func resolveProviderKey(key ProviderKey, env []string, log *slog.Logger) (string
 }
 
 // runSecretsGet runs `secrets get <key.Secret> <flag>` — found on env's PATH — with the daemon's
-// stdin and env, returning its stdout. A failure carries the exit status and the child's stderr,
-// never its stdout, with keyNameShown in place of the key's name, in the command and wherever the
-// child's stderr quotes it.
+// stdin and env, returning its stdout. A failure carries the exit status and the child's stderr
+// as stderrShown prints it, never its stdout, with keyNameShown in place of the key's name in the
+// command.
 func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 	args := []string{"get", key.Secret, flag}
 	binary, ok := lookpath.On(pathValue(env), "secrets")
@@ -173,13 +173,32 @@ func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 		if !end.Ran() {
 			return nil, fmt.Errorf("provider_keys.%s: could not run %s: %w", key.Env, shownCommand(flag), err)
 		}
-		detail := ""
-		if text := strings.TrimSpace(stderr.String()); text != "" {
-			detail = ": " + strings.ReplaceAll(text, key.Secret, keyNameShown)
-		}
-		return nil, fmt.Errorf("provider_keys.%s: %s failed (%s)%s", key.Env, shownCommand(flag), end, detail)
+		return nil, fmt.Errorf("provider_keys.%s: %s failed (%s)%s", key.Env, shownCommand(flag), end, stderrShown(stderr.String(), key.Secret))
 	}
 	return stdout.Bytes(), nil
+}
+
+// heldRun is the shortest run of a key name's characters a printed stderr may not hold, the run
+// the printed-credential tests count as a leak.
+const heldRun = 10
+
+// stderrShown is the `secrets` child's stderr as a refusal prints it: with keyNameShown in place
+// of each exact copy of name, and dropped, its length printed instead, when what is left still
+// holds heldRun characters in a row of name, compared without case. The CLI is not this
+// repository's, so it can quote the name folded, wrapped, escaped or cut short.
+func stderrShown(stderr, name string) string {
+	text := strings.TrimSpace(stderr)
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, name, keyNameShown)
+	folded, lowerName := strings.ToLower(text), strings.ToLower(name)
+	for i := 0; i+heldRun <= len(lowerName); i++ {
+		if strings.Contains(folded, lowerName[i:i+heldRun]) {
+			return fmt.Sprintf(": its stderr (%d bytes) holds part of the key name, so it is not printed", len(strings.TrimSpace(stderr)))
+		}
+	}
+	return ": " + text
 }
 
 // pathValue is PATH's value in env, the last assignment winning, and "" when env holds none.

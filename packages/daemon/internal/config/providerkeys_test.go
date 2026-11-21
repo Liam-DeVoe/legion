@@ -32,6 +32,7 @@ case "$2:$3" in
   FAILING_VALUE_KEY:--value) echo 'AGENT NOTICE: TIMEOUT' >&2; exit 4 ;;
   KILLED_VALUE_KEY:--no-request) echo '{"key":"KILLED_VALUE_KEY","tier":"human"}' ;;
   KILLED_VALUE_KEY:--value) echo 'AGENT NOTICE: waiting for a grant' >&2; kill -KILL $$ ;;
+  FOLDED_NAME_KEY_0123:--no-request) echo "secretsd: no key $(printf %s "$2" | tr A-Z a-z)" >&2; exit 5 ;;
   *) echo "stub: unexpected $*" >&2; exit 99 ;;
 esac
 `
@@ -196,6 +197,9 @@ func TestMaterializeProviderKeysRefuses(t *testing.T) {
 		// The pasted key's variable is a name of its own, so that only its secretsd key's name holds
 		// the key.
 		{"a provider's key pasted where its name goes", "GEMINI_API_KEY", pasted, true, "provider_keys.GEMINI_API_KEY: secrets get [the key name] --no-request failed (exit 99): stub: unexpected get [the key name] --no-request"},
+		// A stderr that quotes the name other than exactly, here lower-cased, still holds a
+		// 10-character run of it, so it is dropped and only its length printed.
+		{"a stderr quoting the key name case-folded", "ENV_FOLDED_NAME_KEY", "FOLDED_NAME_KEY_0123", true, "provider_keys.ENV_FOLDED_NAME_KEY: secrets get [the key name] --no-request failed (exit 5): its stderr (37 bytes) holds part of the key name, so it is not printed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			environ, _ := secretsStub(t)
