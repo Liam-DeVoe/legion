@@ -359,7 +359,8 @@ begin confined
 # narrows what that person sees; a full member's list decides only which private projects it
 # sees, so carol's PRIV token sees PUB too (below).
 : >"$work/fill-empty"
-for caller in bob; do
+confined_callers=(bob)
+for caller in "${confined_callers[@]}"; do
   for path in "${object_reads[@]}"; do
     pub=$(resolve main "${path//\{P\}/PUB}")
     none=${path//\{P\}/ZZNONE}
