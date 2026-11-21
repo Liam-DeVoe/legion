@@ -14,6 +14,15 @@
 -- own transaction. A pair is written only where no row holds it. A listed project that is public
 -- when the record is written records nothing: what the session read of it was public then.
 --
+-- A row written already past its expires_at records its pairs too. A pair only narrows what the
+-- content rule passes, and every pair the row lists is a private project the listener said the
+-- session's credential names, so it is a fact, not a guess: dropping it would let a viewer who
+-- does not see that project watch the session once its list narrows, and treating such a row as
+-- naming every private project would record pairs no listener ever sent and hide the session from
+-- everyone not on every private project for good. Expiry decides what is read, not what is
+-- written: session_content_visible trusts no list of a row past its expires_at
+-- (access.TestAnExpiredListenerRecordStillRecordsTheProjectsItReached).
+--
 -- The function runs under the search_path of whoever writes route_roster and sets none, so it names
 -- each table it writes or reads by its schema, as session_clause_visible and
 -- session_content_visible name theirs: a writer whose search_path puts another schema first still
@@ -21,8 +30,10 @@
 -- (access.TestTheListenerTriggerWritesPublicsTablesWhateverTheWritersSearchPath).
 --
 -- This replaces the trigger's function. It neither rewrites nor refuses any existing row, and the
--- census answers 0. A rollback to the release before leaves the old function in place, which
--- writes no pair; the pairs already written stay, and that release reads none.
+-- census answers 0. An image rollback runs no down migration, so the database keeps this function
+-- under the release before, and every roster write that release makes still records its reached
+-- pairs: that release reads no pair, so they change nothing it answers, and they are there again
+-- for the release that reads them.
 create or replace function sync_route_roster_session_projects() returns trigger language plpgsql as $$
 begin
     insert into public.route_roster_session_projects (id, projects)

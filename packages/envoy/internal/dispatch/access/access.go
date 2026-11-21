@@ -315,8 +315,16 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 // function. The function runs under its caller's search_path and sets none, which would save and
 // restore the setting on every call, so every table it reads is named by its schema, as
 // session_clause_visible names its tables.
+//
+// The listener record it reads is the projection of route_roster's one row, which serves reads
+// only until its expires_at (routeRosterTTL past the listener's answer, by the database's clock).
+// A row past it is a listener answer nobody has asked again, whose lists may be older than a
+// session's credential is: a token traded again with a private project is still listed without
+// it. So a record past expires_at is no list at all: the session is judged as one whose listener
+// sent none, by the people its writes tied it to, and a session tied to nobody passes no viewer but
+// its own.
 func sessionContentFunctionBody() string {
-	held := `(select listener.projects from public.route_roster_session_projects listener where listener.id = true)`
+	held := `(select listener.projects from public.route_roster_session_projects listener join public.route_roster roster on roster.id = listener.id where listener.id = true and roster.expires_at > now())`
 	return fmt.Sprintf(`select coalesce(not exists (
 				select 1 from public.session_projects unseen
 				where unseen.session_id = $1 and not (($2->'sees') ? unseen.project_key)

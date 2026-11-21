@@ -122,11 +122,12 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 // middle of a refill a session can hold its pair in a project the viewer sees and not yet its pair
 // in a private project the viewer does not see. The arm of a viewer that is not open trusted the
 // pairs as the open arm, before it waited for the marker, did not: so while a project is private
-// and the marker is absent, bob, a restricted member who sees PRIV alone, reads no session but his
-// own - not ses_refilled, whose PRIV pair is back and whose OTHER pair is not, nor ses_listed,
-// which has no pair and a listener record naming PRIV. Once the marker is written he reads both
-// again, and with no private project he reads them by their pairs and records alone, marker or
-// none (R9).
+// and the marker is absent, bob, a restricted member who sees PRIV alone, and bob's token that
+// lists PRIV each read no session but bob's own - not ses_refilled, whose PRIV pair is back and
+// whose OTHER pair is not, nor ses_listed, which has no pair and a listener record naming PRIV (the
+// arm of a restricted viewer that reads a listed record). Once the marker is written both read
+// them again, and with no private project both read them by their pairs and records alone, marker
+// or none (R9).
 //
 // Control: SessionClause passing the marker for an open viewer alone, as it did, and bob reads
 // ses_refilled and ses_listed while the refill is unfinished.
@@ -161,14 +162,23 @@ func TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing
 		return got
 	}
 	others := []string{"ses_refilled", "ses_listed"}
-
-	bobPerson, bobAgent := resolve("bob", cookie(bob)), resolve("bob's session", bobSession)
-	if !bobPerson.AnyPrivate {
-		t.Fatalf("bob resolves as %+v, want a deployment that holds a private project", bobPerson)
+	restricted := func(state string) map[string]model.Viewer {
+		t.Helper()
+		return map[string]model.Viewer{
+			"bob":                         resolve(state+": bob", cookie(bob)),
+			"bob's token that lists PRIV": resolve(state+": bob's token that lists PRIV", personalToken(bob, "PRIV")),
+		}
 	}
-	for _, session := range others {
-		if passes(bobPerson, session) {
-			t.Errorf("unfilled, with PRIV private: SessionClause %s for bob = true, want false", session)
+
+	bobAgent := resolve("bob's session", bobSession)
+	for name, viewer := range restricted("unfilled") {
+		if !viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", name, viewer)
+		}
+		for _, session := range others {
+			if passes(viewer, session) {
+				t.Errorf("unfilled, with PRIV private: SessionClause %s for %s = true, want false", session, name)
+			}
 		}
 	}
 	if !passes(bobAgent, "ses_bob") {
@@ -178,9 +188,11 @@ func TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing
 	if _, err := database.Pool.Exec(ctx, `insert into session_projects_filled default values`); err != nil {
 		t.Fatalf("write the fill's marker: %v", err)
 	}
-	for _, session := range others {
-		if !passes(bobPerson, session) {
-			t.Errorf("filled: SessionClause %s for bob = false, want true", session)
+	for name, viewer := range restricted("filled") {
+		for _, session := range others {
+			if !passes(viewer, session) {
+				t.Errorf("filled: SessionClause %s for %s = false, want true", session, name)
+			}
 		}
 	}
 
@@ -190,15 +202,16 @@ func TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing
 	`); err != nil {
 		t.Fatalf("empty the marker and make every project public: %v", err)
 	}
-	bobPerson = resolve("bob, with no private project", cookie(bob))
-	if bobPerson.AnyPrivate {
-		t.Fatalf("bob resolves as %+v with every project public, want no private project", bobPerson)
-	}
-	if !passes(bobPerson, "ses_refilled") {
-		t.Error("unfilled, with no private project: SessionClause ses_refilled for bob = false, want true by its PRIV pair (R9)")
-	}
-	if passes(bobPerson, "ses_listed") {
-		t.Error("unfilled, with no private project: SessionClause ses_listed for bob = true, want false: with no private project a viewer that is not open reads a session by its pairs alone (R9)")
+	for name, viewer := range restricted("with no private project") {
+		if viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v with every project public, want no private project", name, viewer)
+		}
+		if !passes(viewer, "ses_refilled") {
+			t.Errorf("unfilled, with no private project: SessionClause ses_refilled for %s = false, want true by its PRIV pair (R9)", name)
+		}
+		if passes(viewer, "ses_listed") {
+			t.Errorf("unfilled, with no private project: SessionClause ses_listed for %s = true, want false: with no private project a viewer that is not open reads a session by its pairs alone (R9)", name)
+		}
 	}
 }
 

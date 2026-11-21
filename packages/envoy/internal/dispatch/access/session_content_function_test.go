@@ -145,6 +145,106 @@ func TestTheListenerTriggerWritesPublicsTablesWhateverTheWritersSearchPath(t *te
 	}
 }
 
+// TestAnExpiredListenerRecordListsNoProjectsForTheContentRule: the content rule trusts a session's
+// listener list only while route_roster's row has not passed its expires_at, since a row past it
+// is an answer nobody asked again, and a token traded again since may name a private project the
+// list leaves out. ses_stale's record lists PUB alone; its writes tied it to carol, who sees PRIV,
+// so its credential could read PRIV. With the row past its expires_at, alice, an open member who
+// does not see PRIV, may not watch it (SessionContentClause): the record is no list, and the
+// session is judged by its people. With the row fresh, its list lets her, as it did before. With no
+// private project she watches it either way (R9).
+//
+// Control: session_content_visible reading the record whatever its expires_at (the function before
+// this check), and alice watches ses_stale from the expired row.
+func TestAnExpiredListenerRecordListsNoProjectsForTheContentRule(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
+		insert into session_owners (session_id, login) values ('ses_stale', '`+carol+`');
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, '[{"session_id":"ses_stale","projects":["PUB"]}]', now() - interval '2 hours', now() - interval '1 hour');
+	`); err != nil {
+		t.Fatalf("seed ses_stale's tie and its expired listener record: %v", err)
+	}
+	watches := func(state string) bool {
+		t.Helper()
+		viewer, err := Resolve(ctx, database.Pool, cookie(alice))
+		if err != nil {
+			t.Fatalf("%s: alice: Resolve: %v", state, err)
+		}
+		var passes bool
+		if err := database.Pool.QueryRow(ctx, `select `+SessionContentClause("$2", "$1"), viewerArg(t, viewer), "ses_stale").Scan(&passes); err != nil {
+			t.Fatalf("%s: SessionContentClause ses_stale: %v", state, err)
+		}
+		return passes
+	}
+	if watches("the record expired, PRIV private") {
+		t.Error("with the listener record past its expires_at and PRIV private, alice may watch ses_stale, tied to carol, who sees PRIV: an expired record must list nothing")
+	}
+	if _, err := database.Pool.Exec(ctx, `update route_roster set expires_at = now() + interval '1 hour'`); err != nil {
+		t.Fatalf("make the record fresh: %v", err)
+	}
+	if !watches("the record fresh, PRIV private") {
+		t.Error("with the listener record fresh, listing PUB alone, alice may not watch ses_stale, want her to: the fresh list is trusted")
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update route_roster set expires_at = now() - interval '1 hour';
+		update projects set visibility = 'public';
+	`); err != nil {
+		t.Fatalf("expire the record and make every project public: %v", err)
+	}
+	if !watches("the record expired, no private project") {
+		t.Error("with no private project alice may not watch ses_stale, want her to (R9)")
+	}
+}
+
+// TestAnExpiredListenerRecordStillRecordsTheProjectsItReached: a listener record written already
+// past its expires_at still records each private project it lists for a session as one that
+// session reached (session_reached_projects). The pair is a project the listener said the
+// session's credential names, so recording it invents nothing, and it only narrows what the content
+// rule passes; expiry decides only that the list itself is not trusted to pass the session.
+// ses_late's record lists PRIV and expired an hour before it was written: the pair (ses_late, PRIV)
+// is recorded, and alice, who does not see PRIV, may not watch it once a fresh record lists PUB
+// alone.
+//
+// Control: the trigger recording pairs only from a row that has not expired, and the pair is
+// missing, so alice watches ses_late from the fresh record.
+func TestAnExpiredListenerRecordStillRecordsTheProjectsItReached(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, '[{"session_id":"ses_late","projects":["PRIV"]}]', now() - interval '2 hours', now() - interval '1 hour');
+	`); err != nil {
+		t.Fatalf("write ses_late's expired listener record: %v", err)
+	}
+	var reached int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from session_reached_projects where session_id = 'ses_late' and project_key = 'PRIV'`).Scan(&reached); err != nil {
+		t.Fatalf("read ses_late's reached pairs: %v", err)
+	}
+	if reached != 1 {
+		t.Errorf("an expired listener record listing PRIV for ses_late recorded (ses_late, PRIV) %d times, want once", reached)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update route_roster set sessions = '[{"session_id":"ses_late","projects":["PUB"]}]', sent_at = now(), expires_at = now() + interval '1 hour'
+	`); err != nil {
+		t.Fatalf("write a fresh record listing PUB alone: %v", err)
+	}
+	viewer, err := Resolve(ctx, database.Pool, cookie(alice))
+	if err != nil {
+		t.Fatalf("alice: Resolve: %v", err)
+	}
+	var passes bool
+	if err := database.Pool.QueryRow(ctx, `select `+SessionContentClause("$2", "$1"), viewerArg(t, viewer), "ses_late").Scan(&passes); err != nil {
+		t.Fatalf("SessionContentClause ses_late: %v", err)
+	}
+	if passes {
+		t.Error("alice may watch ses_late, whose expired record listed PRIV, once a fresh record lists PUB alone: the reached pair was not recorded")
+	}
+}
+
 // TestTheContentRuleAsksItsFunctionOncePerSessionAndNeverUnderR9: SessionContentClause asks
 // session_content_visible about every row its own SQL does not answer. For a read over fifty
 // sessions, by an open viewer and by one that is not open, of a deployment that holds a private
