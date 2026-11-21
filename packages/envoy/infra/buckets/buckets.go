@@ -411,6 +411,9 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 	if err != nil {
 		return err
 	}
+	// records is opened after the switch, so a create that finds every bucket opens no route of
+	// the broker; the recreate's change reads it, by then set, when RunHeld runs it.
+	var records *holdrecord.Client
 	c := writerhold.HeldCommand{
 		HoldID:        o.holdID,
 		Reason:        o.reason,
@@ -439,7 +442,15 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 		}
 	case "recreate":
 		c.Workflow, c.Command = holdrecord.WorkflowBucketsRecreate, CommandRecreate
-		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
+		c.Change = func(ctx context.Context, nc *nats.Conn, holdID string) (map[string]writerhold.Change, map[string]string, error) {
+			// Before any delete: every bucket named must be in the hold's backup.
+			d, _, err := records.Journal(ctx, holdID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := backupCovers(d, o.buckets); err != nil {
+				return nil, nil, err
+			}
 			return recreate(ctx, nc, stdout, o.buckets, o.replicas)
 		}
 	case "restore":
@@ -464,7 +475,7 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 			return nil, outputs, err
 		}
 	}
-	records, err := e.records(ctx, o.HubFlags, true)
+	records, err = e.records(ctx, o.HubFlags, true)
 	if err != nil {
 		return err
 	}

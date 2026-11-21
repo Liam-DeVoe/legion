@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/infra/writerhold"
+	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
 // ManifestFile is the backup's manifest, beside each bucket's directory.
@@ -29,10 +30,11 @@ type Manifest struct {
 	Buckets map[string]Archive `json:"buckets"`
 }
 
-// Archive is one bucket's archive in a backup: the sha256 of its data file and of jsm.go's meta
-// file (backup.json), and the stream's state the snapshot recorded, which a restore of it must
-// reproduce.
+// Archive is one bucket's archive in a backup: the stream it is a snapshot of, the sha256 of its
+// data file and of jsm.go's meta file (backup.json), and the stream's state the snapshot recorded,
+// which a restore of it must reproduce.
 type Archive struct {
+	Stream     string `json:"stream"`
 	SHA256     string `json:"sha256"`
 	MetaSHA256 string `json:"meta_sha256"`
 	LastSeq    uint64 `json:"last_seq"`
@@ -50,8 +52,9 @@ type snapshotMeta struct {
 
 // Backup snapshots each of buckets' streams on nc into dir/<bucket> (jsm.go's
 // SnapshotToDirectory, which takes its replies under nc's inbox prefix), then writes dir's
-// manifest, and returns the done entry's outputs: each bucket's archive sha256. It runs only
-// inside a hold, as `buckets backup`, the first command of the buckets-recreate and
+// manifest, and returns the done entry's outputs: each bucket's archive sha256, and the manifest's
+// absolute path (BackupManifestOutput), by which `buckets recreate` reads what the backup covered.
+// It runs only inside a hold, as `buckets backup`, the first command of the buckets-recreate and
 // buckets-restore workflows, since a snapshot names its own deliver subject. A dir that already
 // holds a manifest is refused, so a backup never overwrites one.
 func Backup(ctx context.Context, nc *nats.Conn, dir string, buckets []string, stdout io.Writer) (map[string]string, error) {
@@ -80,6 +83,7 @@ func Backup(ctx context.Context, nc *nats.Conn, dir string, buckets []string, st
 		if err != nil {
 			return nil, fmt.Errorf("the snapshot of KV_%s: %w", bucket, err)
 		}
+		archive.Stream = stream.Name()
 		manifest.Buckets[bucket] = archive
 		outputs["sha256."+bucket] = archive.SHA256
 		fmt.Fprintf(stdout, "backed up %s: %d messages to seq %d, sha256 %s\n", bucket, archive.Messages, archive.LastSeq, archive.SHA256)
@@ -92,7 +96,64 @@ func Backup(ctx context.Context, nc *nats.Conn, dir string, buckets []string, st
 	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
 		return nil, err
 	}
-	return outputs, os.Rename(tmp, filepath.Join(dir, ManifestFile))
+	path, err := filepath.Abs(filepath.Join(dir, ManifestFile))
+	if err != nil {
+		return nil, err
+	}
+	outputs[BackupManifestOutput] = path
+	return outputs, os.Rename(tmp, path)
+}
+
+// BackupManifestOutput is the output of `buckets backup`'s done entry that names its manifest.
+const BackupManifestOutput = "manifest"
+
+// backupCovers refuses, naming each bucket of buckets it does not cover, unless the latest done
+// `buckets backup` entry of the hold's journal d names a manifest that holds the bucket with its
+// stream's name (KV_<bucket>) and its last sequence. No such entry, and a manifest that is missing
+// or does not decode, refuse every bucket. `buckets recreate` runs it before its first delete, so
+// it deletes no bucket the hold's backup did not take.
+func backupCovers(d holdrecord.Done, buckets []string) error {
+	path := ""
+	for _, op := range d.Ops {
+		if op.Command == CommandBackup && op.State == "done" {
+			path = op.Outputs[BackupManifestOutput]
+		}
+	}
+	refuse := func(what string) error {
+		return &writerhold.Refusal{Step: writerhold.StepPreflight, What: "recreate deletes only what its hold's backup covered: " + what}
+	}
+	if path == "" {
+		return refuse(fmt.Sprintf("the hold's done buckets backup entry names no manifest, so none of %s is covered", strings.Join(buckets, ", ")))
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return refuse(fmt.Sprintf("read the backup's manifest %s: %v, so none of %s is covered", path, err, strings.Join(buckets, ", ")))
+	}
+	var m struct {
+		Buckets map[string]struct {
+			Stream  string  `json:"stream"`
+			LastSeq *uint64 `json:"last_seq"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return refuse(fmt.Sprintf("the backup's manifest %s does not decode: %v, so none of %s is covered", path, err, strings.Join(buckets, ", ")))
+	}
+	var missing []string
+	for _, bucket := range buckets {
+		archive, ok := m.Buckets[bucket]
+		switch {
+		case !ok:
+			missing = append(missing, bucket+" is not in the backup's manifest")
+		case archive.Stream != "KV_"+bucket:
+			missing = append(missing, fmt.Sprintf("%s's archive is of stream %q, not KV_%s", bucket, archive.Stream, bucket))
+		case archive.LastSeq == nil:
+			missing = append(missing, bucket+"'s archive records no last sequence")
+		}
+	}
+	if len(missing) > 0 {
+		return refuse(fmt.Sprintf("%s (manifest %s)", strings.Join(missing, "; "), path))
+	}
+	return nil
 }
 
 // readArchive reads the archive in bucketDir: its files' sha256 and the state its meta file holds.

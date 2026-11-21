@@ -351,6 +351,73 @@ func (h *heldBuckets) recreateHeld(buckets ...string) (int, string, string) {
 	return h.run(args...)
 }
 
+// `buckets recreate` deletes only a bucket its hold's backup covered: before any delete it reads
+// the hold's done `buckets backup` entry and that backup's manifest, and refuses, naming the
+// bucket, unless the manifest holds the bucket with its stream's name and last sequence. A backup
+// of envoy_roles alone, then a recreate of envoy_roles and envoy_interests: refused naming
+// envoy_interests, and neither bucket is deleted (each keeps its created time). A manifest that is
+// gone refuses every bucket. The control is the recreate of the bucket the backup covered, which
+// is done. At 36e8cf250e the recreate deleted envoy_interests, which no backup held.
+func TestHoldRecreateDeletesOnlyWhatItsBackupCovered(t *testing.T) {
+	h := newHeldBuckets(t)
+	ctx := context.Background()
+	created := func(bucket string) time.Time {
+		t.Helper()
+		nc, err := h.s.ConnectOperator(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer nc.Close()
+		js, _ := jetstream.New(nc)
+		s, err := js.Stream(ctx, "KV_"+bucket)
+		if err != nil {
+			t.Fatalf("read KV_%s: %v", bucket, err)
+		}
+		return s.CachedInfo().Created
+	}
+	roles, interests := created(bus.RoleClaimBucket), created(bus.InterestBucket)
+	dir := h.backupInto("recreate", bus.RoleClaimBucket)
+	id := h.row().HoldID
+
+	code, _, stderr := h.run("recreate", "--hold", id, "--bucket", bus.RoleClaimBucket, "--bucket", bus.InterestBucket)
+	if code != 1 || !strings.Contains(stderr, bus.InterestBucket) || !strings.Contains(stderr, "backup") {
+		t.Fatalf("a recreate of a bucket the backup did not cover = %d, want 1 naming %s\n%s", code, bus.InterestBucket, stderr)
+	}
+	if got := created(bus.InterestBucket); !got.Equal(interests) {
+		t.Fatalf("the refused recreate deleted KV_%s (created %s, was %s)", bus.InterestBucket, got, interests)
+	}
+	if got := created(bus.RoleClaimBucket); !got.Equal(roles) {
+		t.Fatalf("the refused recreate deleted KV_%s, which it should not have reached (created %s, was %s)", bus.RoleClaimBucket, got, roles)
+	}
+
+	manifest := filepath.Join(dir, ManifestFile)
+	raw, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(manifest); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = h.run("recreate", "--hold", id, "--bucket", bus.RoleClaimBucket)
+	if code != 1 || !strings.Contains(stderr, "manifest") {
+		t.Fatalf("a recreate whose backup's manifest is gone = %d, want 1 naming the manifest\n%s", code, stderr)
+	}
+	if got := created(bus.RoleClaimBucket); !got.Equal(roles) {
+		t.Fatalf("the recreate with no manifest deleted KV_%s", bus.RoleClaimBucket)
+	}
+
+	// The control: the manifest back, the recreate of the bucket it covered is done.
+	if err := os.WriteFile(manifest, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, stdout, stderr := h.run("recreate", "--hold", id, "--bucket", bus.RoleClaimBucket); code != 0 {
+		t.Fatalf("control: the recreate of the covered bucket = %d\n%s%s", code, stdout, stderr)
+	}
+	if got := created(bus.RoleClaimBucket); got.Equal(roles) {
+		t.Fatalf("control: the recreate left KV_%s as it was", bus.RoleClaimBucket)
+	}
+}
+
 // The old fence's fourth bypass, an unheld restore: `buckets restore --from <backup>` runs inside its
 // hold, and a listener started during it is refused; the restore completes with the backup's
 // messages. The control is that the listener is a writer: after the release it writes.
