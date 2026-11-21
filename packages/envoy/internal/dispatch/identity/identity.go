@@ -43,7 +43,7 @@ const (
 	SignedOutNotListed = "NOT_LISTED"
 	// SignedOutOutsideOff: the person signed in from outside the sign-in domain as a restricted
 	// member, and the server signs nobody from outside in any more (DomainRule: a deployment that
-	// turned DISPATCH_SIGNIN_OUTSIDE off).
+	// turned DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY off).
 	SignedOutOutsideOff = "OUTSIDE_SIGNIN_OFF"
 	// SignedOutWorkspaceAddress: the person signed in from outside the sign-in domain as a
 	// restricted member, and their address is now on a domain the Google Workspace owns

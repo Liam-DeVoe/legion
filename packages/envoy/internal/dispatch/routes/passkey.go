@@ -24,9 +24,10 @@ import (
 // /auth/passkey/register/finish takes what it made, enrolls the passkey with the link and signs the
 // person in, and /auth/passkey/login/begin and /login/finish sign in with a passkey already
 // enrolled. At the canonical (tailnet) origin each answers 404 exactly as a path no route serves
-// does, and at the outside origin GET /auth/start and GET /auth/callback answer that 404 too, so a
-// restricted member signs in there with a passkey alone. These are the only routes that do work for
-// a caller with no credential besides the Google sign-in's two.
+// does, and at the outside origin GET /auth/start and GET /auth/callback answer that 404 too
+// unless DISPATCH_SIGNIN_OUTSIDE=1 (googleSignInHere), so a restricted member signs in there with
+// a passkey alone. These are the only routes that do work for a caller with no credential besides
+// the Google sign-in's two.
 const (
 	passkeyCeremonyCookie = "dispatch_passkey_ceremony"
 	// passkeyCeremonyPath scopes the ceremony cookie to the ceremonies, so no other route reads it.
@@ -89,11 +90,14 @@ func (r *router) atOutside(req *http.Request) bool {
 }
 
 // googleSignInHere serves next, the Google sign-in's start or callback, except at the outside
-// origin of a deployment whose people from outside sign in with a passkey, where it answers the 404
-// a path no route serves answers.
+// origin of a deployment whose rule signs no Google account in there, where it answers the 404 a
+// path no route serves answers: only identity.OutsideRule (DISPATCH_SIGNIN_OUTSIDE=1) signs a
+// Google account from outside in at the outside origin. A passkey deployment signs its people
+// from outside in there with a passkey, and any other deployment that answers at an outside
+// origin (its passkeys turned off, or that origin kept for agents) signs nobody in there.
 func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if r.ctx.Passkeys != nil && r.atOutside(req) {
+		if _, outsideGoogle := r.ctx.SignInRule.(identity.OutsideRule); !outsideGoogle && r.atOutside(req) {
 			r.staticHandler(w, req)
 			return
 		}

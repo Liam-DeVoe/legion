@@ -34,7 +34,8 @@ func (r DomainRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, err
 
 // AdmitsRestricted is ErrOutsideSignInOff: DomainRule signs in nobody from outside the domain, so
 // no restricted member's credential acts under it (a deployment that turned
-// DISPATCH_SIGNIN_OUTSIDE off). OutsideRule, which embeds this rule, answers for itself.
+// DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY off). OutsideRule, which embeds this rule (as
+// PasskeyRule embeds OutsideRule), answers for itself.
 func (r DomainRule) AdmitsRestricted(_ context.Context, email string) error {
 	return fmt.Errorf("%s: %w", email, ErrOutsideSignInOff)
 }
@@ -126,14 +127,20 @@ func endSubject(ctx context.Context, people auth.PeopleStore, email string, read
 }
 
 // SignedOutReason is SignedOutOutsideOff for a restricted member whose sign-in no longer stands
-// (endedRestricted): DomainRule admits nobody from outside the domain, so only a deployment that
-// once signed people from outside in (OutsideRule) holds such a row, and its next hourly
-// confirmation under this rule ends it. Everyone else is told no reason, so a deployment that
-// never set DISPATCH_SIGNIN_OUTSIDE answers as it always has.
+// (endedRestricted), or whose account is a passkey's (auth.PersonMembership.Issuer): DomainRule
+// admits nobody from outside the domain, so only a deployment that once signed people from
+// outside in (OutsideRule, PasskeyRule) holds such a row. Its next hourly confirmation under this
+// rule ends a Google account's sign-in, while a passkey's cookie is refused at its next use with
+// nothing written (Membership.confirmPasskey), so its row still reads as standing and is told by
+// its account instead. Everyone else is told no reason, so a deployment that never set
+// DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY answers as it always has.
 func (r DomainRule) SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error) {
-	ended, err := endedRestricted(ctx, people, email)
-	if err != nil || !ended {
+	membership, found, err := people.Membership(ctx, email)
+	if err != nil || !found || membership.Kind != model.MemberRestricted {
 		return "", err
+	}
+	if membership.Issuer == "" && membership.SignInStands() {
+		return "", nil
 	}
 	return SignedOutOutsideOff, nil
 }

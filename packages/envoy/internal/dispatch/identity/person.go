@@ -33,8 +33,8 @@ var (
 	// sign-in the account already holds and fails only the request.
 	ErrMembershipUnreadable = errors.New("the access lists could not be read")
 	// ErrOutsideSignInOff means the rule signs in nobody from outside its domain (GroupRule,
-	// DomainRule: a deployment without DISPATCH_SIGNIN_OUTSIDE=1), so a restricted member it is
-	// asked about (RestrictedAdmission) is not admitted.
+	// DomainRule: a deployment with neither DISPATCH_SIGNIN_OUTSIDE=1 nor DISPATCH_SIGNIN_PASSKEY=1),
+	// so a restricted member it is asked about (RestrictedAdmission) is not admitted.
 	ErrOutsideSignInOff = errors.New("this deployment signs in nobody from outside its Google Workspace domain")
 )
 

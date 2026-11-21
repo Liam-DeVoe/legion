@@ -728,6 +728,23 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /api/v1/whoami with %s's own token answered %d %s, want 200", outsiderEmail, response.Code, response.Body.String())
 			}
 		},
+		"DISPATCH_SIGNIN_PASSKEY": func(t *testing.T) {
+			r := newPasskeyRig(t, nil)
+			if !r.boot.SignInPasskey {
+				t.Error("DISPATCH_SIGNIN_PASSKEY=1: SignInPasskey false")
+			}
+			google := map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com"}
+			if boot := resolveWith(t, google); boot.SignInPasskey {
+				t.Error("unset: SignInPasskey true")
+			}
+			google["DISPATCH_SIGNIN_PASSKEY"] = "true"
+			refusedWith(t, google, "DISPATCH_SIGNIN_PASSKEY")
+			// The router mounts the ceremonies at the outside origin
+			// (TestTheTailnetOriginServesNoPasskeyRoute holds them off the canonical one).
+			if begun := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}); begun.Code != http.StatusOK {
+				t.Errorf("DISPATCH_SIGNIN_PASSKEY=1: a sign-in's begin at the outside origin answered %d %s, want 200", begun.Code, begun.Body.String())
+			}
+		},
 		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,
 		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
