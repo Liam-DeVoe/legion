@@ -1295,6 +1295,22 @@ func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *
 	}
 	granted := row.grant.grant(t)
 	joined := mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
+	// pod-b's restart at the ack floor once pod-a's subscription goes recreates these consumers.
+	// That subscription goes relayFormerSettle after the decision (joinTerm), past the settle of
+	// pod-a's relays, each of which logs its hand-over as its last act on its consumer (relayNATS).
+	whole, failed := relayHandOverLines(relayCancelTermEnded)
+	for _, sessionID := range row.sessions {
+		mpEventually(t, 10*time.Second, row.a.instance+"'s relay of "+sessionID+" to hand its frames back", func() bool {
+			output := row.a.Output.String()
+			for _, record := range append(mpRecords(output, whole), mpRecords(output, failed)...) {
+				if record["session_id"] == sessionID && record["reason"] == relayCancelTermEnded.String() {
+					return true
+				}
+			}
+			return false
+		})
+		awaitSessionConsumerStored(t, row.publisher.client.Conn, sessionID)
+	}
 	mpReceiving(t, b, 30*time.Second)
 	mpWaitActive(t, b, 10*time.Second)
 	time.Sleep(5 * time.Second) // publish on past the hand-over

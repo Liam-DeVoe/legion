@@ -461,7 +461,8 @@ func (p *SessionPull) Detach() error {
 	p.detachOnce.Do(func() {
 		// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds
 		// unread, which is what Release returns. A drain hands those messages to receive, which
-		// queues them.
+		// queues each the pull takes: one past its bound, and one its consumer did not deliver,
+		// are not queued (PullBound, receive).
 		if err := p.sub.Drain(); err != nil {
 			// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed;
 			// its other error, a subscription with no connection, cannot arise here). The close
