@@ -216,17 +216,30 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 // daemonRequestError is err, a request of route that got no answer, as a refusal prints it: route
 // through redact.URL; a route that does not parse in fixed words, since url.Parse's error quotes
 // what it could not read (`invalid port ":<the password's head>"` for a password holding a "/");
-// and any other error through the URL rule with *url.Error's own quote of the URL left out. Its
-// error unwraps to err, so a deadline is still told from a refusal.
+// and any other error through the URL rule with *url.Error's own quote of the URL left out and,
+// when route carries userinfo, its host written as the mark (hostShown). Its error unwraps to
+// err, so a deadline is still told from a refusal.
 func daemonRequestError(route string, err error) error {
 	var transport *neturl.Error
 	if errors.As(err, &transport) {
 		if transport.Op == "parse" {
 			return &requestError{"the daemon: its address does not parse as a URL", err}
 		}
-		return &requestError{redact.URL(route) + ": " + redact.URLCredentials(transport.Err.Error()), err}
+		return &requestError{redact.URL(route) + ": " + hostShown(route, redact.URLCredentials(transport.Err.Error())), err}
 	}
-	return &requestError{redact.URL(route) + ": " + redact.URLCredentials(err.Error()), err}
+	return &requestError{redact.URL(route) + ": " + hostShown(route, redact.URLCredentials(err.Error())), err}
+}
+
+// hostShown is text, an error of a request of route, with route's host written as the mark of a
+// URL with credentials when route carries userinfo: a password holding an unencoded "@" leaves
+// its tail where the host goes, and a dial's or a resolver's error names the host (`lookup <the
+// password's tail>: no such host`), as the controller's liveness probe's errorShown reads it.
+func hostShown(route, text string) string {
+	u, err := neturl.Parse(route)
+	if err != nil || u.User == nil || u.Hostname() == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, u.Hostname(), redact.URLWithCredentials)
 }
 
 // requestError is daemonRequestError's error: its text, and the error it stands for.

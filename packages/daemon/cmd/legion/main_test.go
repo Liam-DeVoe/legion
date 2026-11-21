@@ -2327,6 +2327,24 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
 		}
 	})
+	t.Run("a password holding an @", func(t *testing.T) {
+		// The password's tail after its unencoded "@" is read as the host, which the resolver's
+		// error names: the host is written as the mark. The password is made up.
+		const head, tail = "madeUpHead0123", "madeUpTail0123.invalid"
+		t.Chdir(t.TempDir())
+		bearer := filepath.Join(t.TempDir(), "operator-token")
+		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		userinfo := "legion:" + head + "@"
+		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") ||
+			strings.Contains(errb.String(), head[:10]) || strings.Contains(errb.String(), tail[:10]) {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
+		}
+	})
 	// A daemon that answers its claims with a body that does not decode (a proxy's page, a daemon of
 	// another release): `legion claims retry --failed` and `legion claims suspend` read the list as
 	// `legion claims list` does, and name it through redact.URL, holding no part of a made-up
