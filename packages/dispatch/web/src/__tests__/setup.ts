@@ -8,6 +8,7 @@ import { configure } from "@testing-library/react";
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
+import { resetGoingStore } from "../features/going/going-store";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
@@ -192,6 +193,12 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// The command bar's store - where the bar is open, its conversation and the runs it follows - is
+// the tab's and outlives every render of the shell, as it does in a tab, where only a sign-out
+// clears it (`resetGoingStore`). A test that opened the bar and unmounted would leave the next
+// test's shell with the bar open over the page, taking every key a page binds - `/` reaches the
+// bar's box rather than the Agents page's - and a run it started would go on reading its stream.
+afterEach(resetGoingStore);
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
 // tick a row did not start must not land in another row as an update outside act. One armed on a
 // fake clock the row put back never fires and would leave the tick marked as armed, so no later
