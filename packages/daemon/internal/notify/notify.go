@@ -259,14 +259,14 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if keep && response.StatusCode == http.StatusAccepted {
 		return true, nil
 	}
-	answered, cut, readErr := listenerAnswer(response, refusalBodyLimit)
+	answer, answered, cut, readErr := listenerAnswer(response, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
 		return false, unreadAnswer("publish notice to "+topic, oauth2call.StatusLine(response.StatusCode), readErr)
 	}
 	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, oauth2call.StatusLine(response.StatusCode), excerpt(answered, cut))
-	return false, publishRefusal(response.StatusCode, answered, refusal)
+	return false, publishRefusal(response.StatusCode, answer, refusal)
 }
 
 // publishRefusal is the error a refused publish reads as: refusal, wrapping the error its body
@@ -278,33 +278,39 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 // listenerwire.APIError of a forward the listener's own NATS grant denied, ErrPublishDenied. A
 // listener of an earlier release leaves some members out, which decodes as their zero values; a
 // body that is not that JSON, as a proxy in front of the listener could write, and every other
-// status, is the plain refusal.
-func publishRefusal(status int, body []byte, refusal error) error {
+// status, is the plain refusal. Which refusal it is, is decided on the body as it came (the
+// listener's own shape, decoded from answer), never on the rule's reading of it, which is not
+// readable whole where an error names a URL beside the JSON quote that ends it; what an error
+// names of the body - a holder, an event id, the listener's error - prints as the rule reads it
+// (oauth2call.RoleLookup).
+func publishRefusal(status int, answer oauth2call.Answer, refusal error) error {
+	var words oauth2call.RoleLookup
+	_ = answer.Decode(&words)
 	switch status {
 	case http.StatusNotFound:
-		var answer listenerwire.RoleRefusal
-		if json.Unmarshal(body, &answer) != nil {
+		var lapsed listenerwire.RoleRefusal
+		if answer.Decode(&lapsed) != nil {
 			return refusal
 		}
 		switch {
-		case answer.Reason == ReasonHolderLapsed && answer.HolderState == StateUnresponsive:
+		case lapsed.Reason == ReasonHolderLapsed && lapsed.HolderState == StateUnresponsive:
 			return fmt.Errorf("%w: %w", refusal, ErrHolderUnresponsive)
-		case roleholder.IsNoHolderReason(string(answer.Reason)):
+		case roleholder.IsNoHolderReason(string(lapsed.Reason)):
 			return fmt.Errorf("%w: %w", refusal, ErrNoHolder)
 		}
 	case http.StatusGatewayTimeout:
-		var answer listenerwire.RoleSendFailure
-		if json.Unmarshal(body, &answer) == nil && (answer.Reason == ReasonReceiptTimeout || answer.Reason == ReasonDeliveryFailed) {
-			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: answer.Reason, Holder: answer.Holder, EventID: answer.EventID})
+		var failure listenerwire.RoleSendFailure
+		if answer.Decode(&failure) == nil && (failure.Reason == ReasonReceiptTimeout || failure.Reason == ReasonDeliveryFailed) {
+			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: failure.Reason, Holder: words.Holder.String(), EventID: words.EventID.String()})
 		}
 	case http.StatusForbidden:
 		var capability listenerwire.CapabilityRefusal
-		if json.Unmarshal(body, &capability) == nil && capability.Reason == "capability" {
-			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: capability.Holder})
+		if answer.Decode(&capability) == nil && capability.Reason == "capability" {
+			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: words.Holder.String()})
 		}
 		var denied listenerwire.APIError
-		if json.Unmarshal(body, &denied) == nil && strings.HasPrefix(denied.Error, publishDeniedPrefix) {
-			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: denied.Error})
+		if answer.Decode(&denied) == nil && strings.HasPrefix(denied.Error, publishDeniedPrefix) {
+			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: words.Error.String()})
 		}
 	}
 	return refusal
@@ -388,7 +394,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		// Read whole within answerBodyLimit and then unmarshalled, rather than decoded off the
 		// stream: the read drains the body, so this connection is reused for the delete that
 		// follows.
-		body, _, err := listenerAnswer(response, answerBodyLimit)
+		_, body, _, err := listenerAnswer(response, answerBodyLimit)
 		if err != nil {
 			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 		}
@@ -400,7 +406,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	case http.StatusNotFound:
 		return SessionRegistration{}, nil
 	}
-	body, cut, _ := listenerAnswer(response, refusalBodyLimit)
+	_, body, cut, _ := listenerAnswer(response, refusalBodyLimit)
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
 		session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
 }
@@ -441,7 +447,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return fmt.Errorf("look up the holder of role %s: %w", role, &RoleLookupRefused{Status: response.StatusCode, Reason: reason})
 	}
 	if response.StatusCode == http.StatusOK {
-		body, _, readErr := listenerAnswer(response, answerBodyLimit)
+		_, body, _, readErr := listenerAnswer(response, answerBodyLimit)
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
@@ -451,20 +457,24 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
-	body, cut, readErr := listenerAnswer(response, refusalBodyLimit)
+	answer, body, cut, readErr := listenerAnswer(response, refusalBodyLimit)
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
-		var refusal listenerwire.RoleRefusal
-		if json.Unmarshal(body, &refusal) != nil {
+		// The 404 is decided on as it came (oauth2call.RoleLookup, decoded from the answer): the
+		// lapsed holder and its state are the listener's ids, answered where the rule prints each
+		// as it came (RemoteText.SendBack), and the reason is compared as it came.
+		var refusal oauth2call.RoleLookup
+		if answer.Decode(&refusal) != nil {
 			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body, cut))
 		}
-		switch {
-		case refusal.Holder != "":
-			return refusal.Holder, cmp.Or(string(refusal.HolderState), "lapsed"), nil
-		case refusal.Reason == roleholder.Unclaimed:
+		if lapsed, named := refusal.Holder.SendBack(); named {
+			state, _ := refusal.HolderState.SendBack()
+			return lapsed, cmp.Or(state, "lapsed"), nil
+		}
+		if refusal.Holder.IsEmpty() && refusal.Reason.Equal(string(roleholder.Unclaimed)) {
 			return "", "", nil
 		}
 		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
@@ -503,23 +513,24 @@ func excerpt(body []byte, cut bool) string {
 }
 
 // listenerAnswer is the listener's answer to response, at most limit bytes, read through
-// oauth2call.ReadAnswer, and whether it was cut: a 2xx answer's bytes as the data they are, and
-// any other's as the rule prints them, with the bearer the call carried redacted, since every
+// oauth2call.ReadAnswer, and whether it was cut: the answer, which a caller decides on as it came
+// (Answer.Decode: publishRefusal, RoleHolder), and its bytes, a 2xx answer's as the data they are
+// and any other's as the rule prints them, with the bearer the call carried redacted, since every
 // refusal here is printed and whatever answers in the listener's place can echo the bearer. A body
 // past limit is its first limit bytes, cut; a read that failed is the read's error, and cut too,
 // as redact.ReadBounded's is.
-func listenerAnswer(response *http.Response, limit int64) (body []byte, cut bool, err error) {
-	answer, err := oauth2call.ReadAnswer(response, limit)
+func listenerAnswer(response *http.Response, limit int64) (answer oauth2call.Answer, body []byte, cut bool, err error) {
+	answer, err = oauth2call.ReadAnswer(response, limit)
 	cut = errors.Is(err, oauth2call.ErrAnswerTooLarge)
 	if err != nil && !cut {
-		return nil, true, err
+		return oauth2call.Answer{}, nil, true, err
 	}
 	if response.StatusCode/100 != 2 {
-		return []byte(answer.Words().String()), cut, nil
+		return answer, []byte(answer.Words().String()), cut, nil
 	}
 	var data bytes.Buffer
 	_, _ = answer.StreamTo(&data)
-	return data.Bytes(), cut, nil
+	return answer, data.Bytes(), cut, nil
 }
 
 // unreadAnswer is a listener answer of status whose body could not be read to its end (err), for
@@ -608,7 +619,7 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		// removed the registration, and so is any other body this route never writes. A body
 		// that could not be read to its end is neither: it may have said the listener kept the
 		// registration, so what the stop did is unknown (unreadAnswer).
-		body, _, readErr := listenerAnswer(response, refusalBodyLimit)
+		_, body, _, readErr := listenerAnswer(response, refusalBodyLimit)
 		if readErr != nil {
 			return SessionDeleted{}, unreadAnswer("delete session "+session, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
@@ -620,6 +631,6 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	case http.StatusNoContent, http.StatusNotFound:
 		return SessionDeleted{Deleted: true}, nil
 	}
-	body, cut, _ := listenerAnswer(response, refusalBodyLimit)
+	_, body, cut, _ := listenerAnswer(response, refusalBodyLimit)
 	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
 }

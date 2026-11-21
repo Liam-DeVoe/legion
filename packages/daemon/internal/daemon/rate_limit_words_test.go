@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/testreason"
 )
@@ -36,8 +37,12 @@ func TestARateLimitLineNamesGitHubsHeadersAsNumbersOrAsTheRuleReadsThem(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	read, err := oauth2call.ReadAnswer(response, 1<<20)
 	_ = response.Body.Close()
-	answer := githubrest.AnswerOf(http.MethodGet, "/repos/acme/widgets", response, []byte(`{"message":"API rate limit exceeded"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := githubrest.AnswerOf(http.MethodGet, "/repos/acme/widgets", response, read)
 	var logged bytes.Buffer
 	slog.New(slog.NewTextHandler(&logged, nil)).Warn("limited", limitAttributes(limitedRead{answer: answer, err: errors.New("refused"), wait: time.Minute})...)
 	said := logged.String() + " | " + limitSummary(answer)

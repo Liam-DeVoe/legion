@@ -368,10 +368,11 @@ func TestLimitSaysWhichLimitAnAnswerIs(t *testing.T) {
 			for name, value := range tc.headers {
 				response.Header.Set(name, value)
 			}
-			if limited, budget := Limit(response, []byte(tc.body)); limited != tc.limited || budget != tc.budget {
+			limited, budget := Limit(response, []byte(tc.body))
+			if limited != tc.limited || budget != tc.budget {
 				t.Errorf("Limit = %v, %q; want %v, %q", limited, budget, tc.limited, tc.budget)
 			}
-			if wait := retryAfter(response, []byte(tc.body), now); wait != tc.wait {
+			if wait := retryAfter(response, limited, now); wait != tc.wait {
 				t.Errorf("the wait = %s, want %s", wait, tc.wait)
 			}
 		})

@@ -266,7 +266,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 			exchanges++
 			exchange := exchanges
 			mu.Unlock()
-			fmt.Fprint(w, mintedFor(fmt.Sprintf("installation-%d", exchange), now.Add(time.Hour), asked.Permissions, "legion"))
+			fmt.Fprint(w, mintedFor(githubtest.InstallationToken(fmt.Sprint(exchange)), now.Add(time.Hour), asked.Permissions, "legion"))
 		case "/app":
 			verifyAppJWT(t, jwt[len("Bearer "):], &key.PublicKey, now, "12345")
 			fmt.Fprint(w, `{"slug":"legion-implementer"}`)
@@ -274,7 +274,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 			mu.Lock()
 			identities++
 			mu.Unlock()
-			if got := r.Header.Get("Authorization"); got != "token installation-1" {
+			if got := r.Header.Get("Authorization"); got != "token "+githubtest.InstallationToken("1") {
 				t.Fatalf("bot identity authorization = %q, want installation token", got)
 			}
 			fmt.Fprint(w, `{"id":271566630}`)
@@ -293,7 +293,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first token: %v", err)
 	}
-	if first.Token != "installation-1" || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
+	if first.Token != githubtest.InstallationToken("1") || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
 		t.Fatalf("first lease = %+v", first)
 	}
 	if _, err := tokens.Token(context.Background(), Implement, "SJAWHAR"); err != nil {
@@ -306,8 +306,8 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refreshed token: %v", err)
 	}
-	if refreshed.Token != "installation-2" {
-		t.Fatalf("refreshed token = %q, want installation-2", refreshed.Token)
+	if refreshed.Token != githubtest.InstallationToken("2") {
+		t.Fatalf("refreshed token = %q, want the second exchange's", refreshed.Token)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -355,7 +355,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 				return
 			}
 			_, asked := askedInExchange(t, r)
-			fmt.Fprint(w, mintedFor("installation-"+current, now.Add(time.Hour), asked.Permissions, "legion"))
+			fmt.Fprint(w, mintedFor(githubtest.InstallationToken(current), now.Add(time.Hour), asked.Permissions, "legion"))
 		case "/app":
 			fmt.Fprint(w, `{"slug":"legion-reviewer"}`)
 		case "/users/legion-reviewer[bot]":
@@ -386,7 +386,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 	installation = "88"
 	mu.Unlock()
 	lease, err := tokens.Token(context.Background(), Review, "acme")
-	if err != nil || lease.Token != "installation-88" {
+	if err != nil || lease.Token != githubtest.InstallationToken("88") {
 		t.Fatalf("a mint after the App was installed again = %+v, %v; want the new installation's token", lease, err)
 	}
 	mu.Lock()
@@ -416,7 +416,7 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 			exchanges++
 			n := exchanges
 			mu.Unlock()
-			fmt.Fprint(w, mintedFor(fmt.Sprintf("installation-%d", n), now.Add(time.Hour), asked.Permissions, "legion"))
+			fmt.Fprint(w, mintedFor(githubtest.InstallationToken(fmt.Sprint(n)), now.Add(time.Hour), asked.Permissions, "legion"))
 		case "/app":
 			fmt.Fprint(w, `{"slug":"legion-reviewer"}`)
 		case "/users/legion-reviewer[bot]":
@@ -486,7 +486,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 			bodies = append(bodies, raw)
 			exchange := len(bodies)
 			mu.Unlock()
-			fmt.Fprint(w, mintedFor(fmt.Sprintf("installation-%d", exchange), now.Add(time.Hour), asked.Permissions, "legion"))
+			fmt.Fprint(w, mintedFor(githubtest.InstallationToken(fmt.Sprint(exchange)), now.Add(time.Hour), asked.Permissions, "legion"))
 		case "/app":
 			fmt.Fprint(w, `{"slug":"legion-implementer"}`)
 		case "/users/legion-implementer[bot]":
@@ -514,8 +514,8 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cached read token: %v", err)
 	}
-	if read.Token != "installation-1" || write.Token != "installation-2" || again.Token != "installation-1" {
-		t.Fatalf("read=%q write=%q again=%q, want installation-1, installation-2, installation-1", read.Token, write.Token, again.Token)
+	if one, two := githubtest.InstallationToken("1"), githubtest.InstallationToken("2"); read.Token != one || write.Token != two || again.Token != one {
+		t.Fatalf("read=%q write=%q again=%q, want the first exchange's, the second's, the first's", read.Token, write.Token, again.Token)
 	}
 	if read.Identity != write.Identity || read.Identity.Name != "legion-implementer[bot]" {
 		t.Fatalf("read identity = %+v, write identity = %+v, want the same bot", read.Identity, write.Identity)
@@ -872,6 +872,9 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 		{"the remaining header", map[string]string{"X-RateLimit-Remaining": "0"}, `{"message":"Validation failed"}`},
 		{"a retry-after", map[string]string{"Retry-After": "60"}, `{"message":"Validation failed"}`},
 		{"the secondary limit in the body", nil, `{"message":"You have exceeded a secondary rate limit."}`},
+		// GitHub's own 422 carries its documentation URL right before a JSON quote, so the rule
+		// prints the whole body as not readable: the limit is read from the body as it came.
+		{"the secondary limit in a body beside its documentation URL", nil, `{"message":"You have exceeded a secondary rate limit.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits","status":"422"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, privatePEM := testAppKey(t)
@@ -942,7 +945,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 			mu.Unlock()
 			close(exchangeStarted)
 			<-releaseExchange
-			fmt.Fprint(w, mintedFor("installation", now.Add(time.Hour), asked.Permissions, "legion"))
+			fmt.Fprint(w, mintedFor(githubtest.InstallationToken(t.Name()), now.Add(time.Hour), asked.Permissions, "legion"))
 			return
 		}
 		switch r.URL.Path {
@@ -985,7 +988,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	default:
 	}
-	if first.Token != "installation" || second.Token != first.Token {
+	if first.Token != githubtest.InstallationToken(t.Name()) || second.Token != first.Token {
 		t.Fatalf("leases = %+v and %+v, want one installation token", first, second)
 	}
 	mu.Lock()
@@ -1015,6 +1018,13 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		w.Header().Set("X-RateLimit-Remaining", "4321")
 		http.Error(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`, http.StatusForbidden)
 	}
+	// secondaryLimitBesideItsURL is that limit as GitHub writes it, its documentation URL right
+	// before a JSON quote, which the rule prints, with the whole body, as not readable: the limit
+	// is read from the body as it came (oauth2call.Holds), and only its print is the rule's.
+	secondaryLimitBesideItsURL := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "4321")
+		http.Error(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits","status":"403"}`, http.StatusForbidden)
+	}
 	installed := func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`) }
 	for _, tc := range []struct {
 		name      string
@@ -1028,6 +1038,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		{name: "discovery 403 with retry-after", discovery: status(http.StatusForbidden, "Retry-After", "60"), transient: true},
 		{name: "discovery 403", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "4999")},
 		{name: "discovery 403 for a secondary rate limit", discovery: secondaryLimit, transient: true},
+		{name: "discovery 403 for a secondary rate limit beside its documentation URL", discovery: secondaryLimitBesideItsURL, transient: true},
 		{name: "discovery 401", discovery: status(http.StatusUnauthorized)},
 		{name: "discovery never answers", discovery: func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }, transient: true},
 		{name: "discovery body cut off mid-read", discovery: func(w http.ResponseWriter, _ *http.Request) {
@@ -1048,6 +1059,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		{name: "exchange 500", discovery: installed, exchange: status(http.StatusInternalServerError), transient: true},
 		{name: "exchange 422", discovery: installed, exchange: status(http.StatusUnprocessableEntity)},
 		{name: "exchange 403 for a secondary rate limit", discovery: installed, exchange: secondaryLimit, transient: true},
+		{name: "exchange 403 for a secondary rate limit beside its documentation URL", discovery: installed, exchange: secondaryLimitBesideItsURL, transient: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1062,7 +1074,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 						return
 					}
 					_, asked := askedInExchange(t, r)
-					fmt.Fprint(w, mintedFor("installation-1", time.Now().Add(time.Hour), asked.Permissions, "legion"))
+					fmt.Fprint(w, mintedFor(githubtest.InstallationToken(t.Name()), time.Now().Add(time.Hour), asked.Permissions, "legion"))
 				default:
 					t.Errorf("unexpected GitHub path %s", r.URL.Path)
 				}
@@ -1197,11 +1209,11 @@ func TestEveryGitHubCallOfTheStartsMintKeepsGitHubsAnswer(t *testing.T) {
 				case r.URL.Path == "/app/installations/77":
 					fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
 				case r.URL.Path == "/app/installations/77/access_tokens":
-					// The minted token shares no run with GitHub's message: the record of the bot
-					// user's read, which carried it, redacts every run of it of redact.TokenPiece
-					// characters or more from the answer, "installation" among them before.
+					// The minted token is GitHub's shape and shares no run with GitHub's message:
+					// the record of the bot user's read, which carried it, redacts every run of it
+					// of redact.TokenPiece characters or more from the answer.
 					_, asked := askedInExchange(t, r)
-					fmt.Fprint(w, mintedFor("ghs_7Qm3xK9vT2pL", time.Now().Add(time.Hour), asked.Permissions, "legion"))
+					fmt.Fprint(w, mintedFor(githubtest.InstallationToken(t.Name()), time.Now().Add(time.Hour), asked.Permissions, "legion"))
 				case r.URL.Path == "/app":
 					fmt.Fprint(w, `{"slug":"legion-implementer"}`)
 				case r.URL.Path == "/users/legion-implementer[bot]":

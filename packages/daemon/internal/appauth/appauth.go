@@ -99,19 +99,20 @@ type AnswerError struct {
 func (e *AnswerError) Error() string { return e.Err.Error() }
 func (e *AnswerError) Unwrap() error { return e.Err }
 
-// answered is err, the failure of a call GitHub answered with response, whose body is body,
-// carrying that answer (AnswerError), its path the request's under the Manager's base URL
+// answered is err, the failure of a call GitHub answered with response, read as read, carrying
+// that answer (AnswerError), its path the request's under the Manager's base URL
 // (githubrest.PathUnder).
-func (m *Manager) answered(response *http.Response, body []byte, err error) *AnswerError {
+func (m *Manager) answered(response *http.Response, read oauth2call.Answer, err error) *AnswerError {
 	path := githubrest.PathUnder(m.baseURL, response.Request.URL)
-	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
+	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, read)}
 }
 
-// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
-// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
-func (m *Manager) transient(response *http.Response, body []byte, err error) error {
-	refused := m.answered(response, body, err)
+// transient marks a response, read as read, as GitHub's trouble rather than an answer: a 5xx, or
+// a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body as it came
+// for a secondary limit GitHub names there alone). Either way err carries GitHub's answer
+// (answered).
+func (m *Manager) transient(response *http.Response, read oauth2call.Answer, err error) error {
+	refused := m.answered(response, read, err)
 	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
@@ -119,14 +120,15 @@ func (m *Manager) transient(response *http.Response, body []byte, err error) err
 }
 
 // refusalBody is the body GitHub sent with a refusal, read through oauth2call.ReadAnswer up to
-// responseBound, as the rule prints it with every credential the request carried redacted (the
-// App's JWT, an installation token), and the response closed: whatever answers in GitHub's place
-// can echo the request there. One that cannot be read is empty: the status and the headers still
-// say what the answer is.
-func refusalBody(response *http.Response) []byte {
+// responseBound, and the response closed: what the answer is, is decided on it as it came
+// (githubrest.AnswerOf, RateLimitSignals), and it prints only as the rule reads it (Words), with
+// every credential the request carried redacted (the App's JWT, an installation token), since
+// whatever answers in GitHub's place can echo the request there. One that cannot be read is
+// empty: the status and the headers still say what the answer is.
+func refusalBody(response *http.Response) oauth2call.Answer {
 	answer, _ := oauth2call.ReadAnswer(response, responseBound)
 	response.Body.Close()
-	return []byte(answer.Words().String())
+	return answer
 }
 
 // responseBound caps what the daemon reads of every GitHub answer but a token exchange's, which

@@ -535,7 +535,7 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, oauth2call.StatusLine(response.StatusCode), []byte(answer.Words().String()))
+		return dispatchError(response.StatusCode, oauth2call.StatusLine(response.StatusCode), answer)
 	}
 	if into == nil {
 		return nil
@@ -591,18 +591,25 @@ func daemonActor(key string) actor {
 	return actor{Kind: "session", ID: DaemonSession(key)}
 }
 
-func dispatchError(status int, statusText string, payload []byte) *Error {
-	var response struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
+// dispatchError is Dispatch's refusal with status, read as answer, as an *Error: Dispatch's code as
+// it came where the rule prints it unchanged (oauth2call.CodedRefusal, RemoteText.SendBack), so
+// what the refusal is (PermanentRefusal, Claimed) is decided on Dispatch's own code, and its error
+// as the rule reads it, decoded field by field, so an error naming a URL beside the JSON quote
+// that ends it costs the refusal nothing of its code. A body that is not Dispatch's refusal is
+// codeless, its words as the rule reads them its message, or statusText where it says nothing.
+func dispatchError(status int, statusText string, answer oauth2call.Answer) *Error {
+	refusal := &Error{Status: status}
+	var coded oauth2call.CodedRefusal
+	if answer.Decode(&coded) == nil {
+		refusal.Code, _ = coded.Code.SendBack()
+		refusal.Message = coded.Error.String()
+	} else {
+		refusal.Message = answer.Words().String()
 	}
-	if err := json.Unmarshal(payload, &response); err != nil {
-		response.Error = strings.TrimSpace(string(payload))
+	if refusal.Message == "" {
+		refusal.Message = statusText
 	}
-	if response.Error == "" {
-		response.Error = statusText
-	}
-	return &Error{Status: status, Code: response.Code, Message: response.Error}
+	return refusal
 }
 
 type issueSummaryResponse struct {

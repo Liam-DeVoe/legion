@@ -239,6 +239,10 @@
       {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLAnswer",
         "test": "print-cireconcile.graphQLAnswer"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/oauth2call.CodedRefusal",
+        "test": "print-oauth2call.CodedRefusal"
       }
     ],
     "reflection": [
@@ -5025,6 +5029,104 @@
         "preimage": "return oauth2call.Header(response, name).String()",
         "replacement": "return value"
       }
+    },
+    {
+      "id": "githubrest-decided-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARateLimitIsDecidedOnGitHubsWordsAsTheyCame",
+      "production": "githubrest AnswerOf: GitHub's secondary limit decided on the body as it came (oauth2call.Holds), printed as the rule reads it"
+    },
+    {
+      "id": "appauth-decided-as-it-came-422",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestARateLimited422IsGitHubsTroubleAndNotAGrant/the_secondary_limit_in_a_body_beside_its_documentation_URL",
+      "production": "appauth exchange: a 422's secondary limit decided on the body as it came (githubrest.RateLimitSignals)"
+    },
+    {
+      "id": "appauth-decided-as-it-came-403",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestGitHubsTroubleIsTransientAndItsAnswersAreNot",
+      "production": "appauth transient: a 403's secondary limit decided on the body as it came (githubrest.AnswerOf)"
+    },
+    {
+      "id": "daemon-decided-as-it-came-primary-limit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit",
+      "production": "daemon answerLimit: GitHub's primary-limit wording decided on the body as it came (githubrest.Answer.Says)"
+    },
+    {
+      "id": "daemon-decided-as-it-came-plan-refusal",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAConflictSecondReadCarriesTheBaseRules",
+      "production": "daemon unreadRules: the plan refusal decided on GitHub's message as it came (oauth2call.GitHubRefusal)"
+    },
+    {
+      "id": "ghbranch-decided-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas/already_exists",
+      "production": "ghbranch alreadyExists: a ref GitHub has decided on its message as it came (oauth2call.GitHubRefusal)"
+    },
+    {
+      "id": "cipher-decided-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerRefusalIsReadFromItsCodeAsItCame",
+      "production": "daemon cipher refusal: the broker's code decided as it came (oauth2call.CodedRefusal, SendBack)"
+    },
+    {
+      "id": "dispatch-decided-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchRefusalIsReadFromItsCodeAsItCame",
+      "production": "daemon dispatchError: Dispatch's code decided as it came (oauth2call.CodedRefusal, SendBack)"
+    },
+    {
+      "id": "notify-decided-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerRefusalIsReadFromItsWordsAsTheyCame",
+      "production": "notify publishRefusal and RoleHolder: the listener's refusals decided on the body as it came (Answer.Decode)"
+    },
+    {
+      "id": "legion-cli-decided-as-it-came",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonRefusalIsReadFromItsWordsAsTheyCame",
+      "production": "legion CLI: the controller secret's and credential's refusals decided on the body as it came (Answer.Decode, oauth2call.CodedRefusal)"
+    },
+    {
+      "id": "redact-scheme-is-no-credential",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestTheSchemeOfAnAuthorizationIsNoCredential",
+      "production": "redact requestTokens: an Authorization's scheme is no credential, so the space before an answer's word survives"
+    },
+    {
+      "id": "redact-rate-limit-message-unchanged",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestGitHubsRateLimitMessagePrintsUnchangedBesideAnInstallationToken",
+      "production": "GitHub's rate-limit message prints unchanged beside a GitHub-shaped installation token"
+    },
+    {
+      "id": "print-oauth2call.CodedRefusal",
+      "requirement": "r2-held",
+      "package": "./oauth2call",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oauth2call.CodedRefusal",
+      "production": "github.com/sjawhar/envoy/oauth2call.CodedRefusal: every printer at every placement"
+    },
+    {
+      "id": "daemon-boot-limit-names-github",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestABootEndsWhenItsRateLimitWaitsReachTheirBound",
+      "production": "the boot's limit error names GitHub's message whole beside the rig's GitHub-shaped token"
     },
     {
       "id": "print-oauth2call.RoleLookup",

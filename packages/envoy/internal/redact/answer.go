@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 // another party's bytes, which whatever answered in the server's place can have written to echo
 // the request back, credentials and all. It is opaque: its one field is unexported and points at
 // the bytes through pointers of their own (answer), so fmt, encoding/json and slog print the
-// status, addresses or nothing, and its four methods are the only ways out of it.
+// status, addresses or nothing, and its four methods and Holds are the only ways out of it.
 //
 //   - Decode fills a typed value from the body, holding every RemoteText it decodes with the
 //     request's record (Carried) so the value's words print with the request's credentials
@@ -24,6 +25,8 @@ import (
 //   - Status is the answer's HTTP status code.
 //   - StreamTo hands the bytes to a writer, for a body that is data and never prints: a file the
 //     answer downloads, an answer a proxy forwards.
+//   - Holds answers a test of the bytes as they came, for a caller that decides on what the
+//     answer says - a phrase of its wording (ContainsFold), a type it names - and keeps nothing.
 //
 // The answer census (cmd/redact-gate) fails on any read of a response's Body outside this
 // package but ReadAnswer's, so no client reads an answer's bytes any other way.
@@ -155,6 +158,37 @@ func (a Answer) Words() RemoteText {
 func (a Answer) StreamTo(w io.Writer) (int64, error) {
 	n, err := w.Write(a.bytes())
 	return int64(n), err
+}
+
+// Holds answers test of a's body as it came, read in place and kept nowhere: a decision a client
+// makes on what the answer says, before anything of it prints, such as whether GitHub's wording
+// names its rate limit (ContainsFold). A decision is made on the words as they came and never on
+// the rule's reading of them (Words().String()), which can be WordsNotReadable for a body whose one
+// URL sits beside a JSON quote, or can have a credential the request carried cut out of a word the
+// decision looks for; the rule is for what leaves the process. test is given the body once, whole,
+// and must keep nothing of it.
+func Holds(a Answer, test func(body []byte) bool) bool { return test(a.bytes()) }
+
+// ContainsFold reports whether body holds phrase, which must be lower-case ASCII, in whatever
+// case it is written, and copies nothing: Holds' test for a phrase of another party's wording.
+// Every answer a decision reads runs through it, most of them good ones of up to a client's
+// megabyte, and bytes.ToLower over such a body allocated and copied the whole of it to find a
+// phrase that is almost never there. The body is scanned for the phrase's first byte in either
+// case instead and only those windows compared, which on a megabyte of answer measured about half
+// the time the copy alone took.
+func ContainsFold(body []byte, phrase string) bool {
+	first := string([]byte{phrase[0], phrase[0] - 'a' + 'A'})
+	for from := 0; from+len(phrase) <= len(body); from++ {
+		at := bytes.IndexAny(body[from:len(body)-len(phrase)+1], first)
+		if at < 0 {
+			return false
+		}
+		from += at
+		if bytes.EqualFold(body[from:from+len(phrase)], []byte(phrase)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Decode fills v, which must point at a typed value, from the body as JSON, and holds every

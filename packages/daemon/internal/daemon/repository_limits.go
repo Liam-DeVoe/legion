@@ -51,14 +51,14 @@ const unnamedLimitWait = time.Minute
 // on), waited its RetryAfter, or a 403 whose body names the primary limit (primaryLimitMessage)
 // while its headers do not, waited unnamedLimitWait. GitHub has refused an installation's reads of
 // a repository with that 403 while the same installation's other requests were answered with
-// thousands of calls left in x-ratelimit-remaining. The body is read here, for the reads of a
-// default branch and the start's App calls alone, and not in githubrest, whose other callers each
-// decide what such an answer means for their own reads.
+// thousands of calls left in x-ratelimit-remaining. The body is read here, as it came
+// (githubrest.Answer.Says), for the reads of a default branch and the start's App calls alone, and
+// not in githubrest, whose other callers each decide what such an answer means for their own reads.
 func answerLimit(answer *githubrest.Answer) (time.Duration, bool) {
 	switch {
 	case answer.RateLimited:
 		return answer.RetryAfter, true
-	case answer.Status == http.StatusForbidden && strings.Contains(strings.ToLower(answer.Body), primaryLimitMessage):
+	case answer.Status == http.StatusForbidden && answer.Says(primaryLimitMessage):
 		return unnamedLimitWait, true
 	}
 	return 0, false

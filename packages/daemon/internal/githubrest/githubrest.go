@@ -79,15 +79,16 @@ func RetryAfter(err error) (time.Duration, Budget) {
 	return 0, ""
 }
 
-// spent is the budget a rate limit spent, read from its answer's headers and its body, body.
-// GitHub's secondary limit when the body names it (NamesSecondaryLimit), whatever
-// x-ratelimit-remaining says: octokit's throttling plugin, GitHub's own client, reads a message
-// saying "secondary rate" before that header, and this package reads the limit's older name,
-// "abuse detection mechanism", the same way. Else the secondary limit when the answer asks for a
-// Retry-After or leaves requests (no x-ratelimit-remaining: 0); and otherwise the primary budget
-// x-ratelimit-resource names, or the core budget, the REST API's own, when it names none.
-func spent(headers http.Header, body []byte) Budget {
-	if NamesSecondaryLimit(string(body)) || headers.Get("Retry-After") != "" || headers.Get("X-RateLimit-Remaining") != "0" {
+// spent is the budget a rate limit spent, read from its answer's headers and whether its body names
+// GitHub's secondary limit (named, namesSecondaryLimit): GitHub's secondary limit when the body
+// names it, whatever x-ratelimit-remaining says: octokit's throttling plugin, GitHub's own client,
+// reads a message saying "secondary rate" before that header, and this package reads the limit's
+// older name, "abuse detection mechanism", the same way. Else the secondary limit when the answer
+// asks for a Retry-After or leaves requests (no x-ratelimit-remaining: 0); and otherwise the
+// primary budget x-ratelimit-resource names, or the core budget, the REST API's own, when it names
+// none.
+func spent(headers http.Header, named bool) Budget {
+	if named || headers.Get("Retry-After") != "" || headers.Get("X-RateLimit-Remaining") != "0" {
 		return BudgetSecondary
 	}
 	if resource := headers.Get("X-RateLimit-Resource"); resource != "" {
@@ -157,9 +158,9 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
 // GitHub's response headers. The answer is read through oauth2call.ReadAnswer: an answer other
-// than 2xx is an *Answer whose body is GitHub's words as the rule prints them, with the token the
-// call carried redacted, and a decode's error quotes no value. When it is a rate limit, it names
-// the budget spent, the REST API's core budget when GitHub names no other.
+// than 2xx is an *Answer, decided on as it came and printed as the rule reads it, with the token
+// the call carried redacted, and a decode's error quotes no value. When it is a rate limit, it
+// names the budget spent, the REST API's core budget when GitHub names no other.
 func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
@@ -184,8 +185,7 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		answer := []byte(read.Words().String())
-		return "", response.Header, c.refusal(method, request.URL, response, answer)
+		return "", response.Header, c.refusal(method, request.URL, response, read)
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
@@ -195,23 +195,28 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
 // caller returns (AnswerOf), naming the path under the client's API (answerPath).
-func (c Client) refusal(method string, target *url.URL, response *http.Response, body []byte) *Answer {
-	return AnswerOf(method, c.answerPath(target), response, body)
+func (c Client) refusal(method string, target *url.URL, response *http.Response, read oauth2call.Answer) *Answer {
+	return AnswerOf(method, c.answerPath(target), response, read)
 }
 
-// AnswerOf is response, GitHub's answer other than 2xx to method at path, whose body is body, as an
-// *Answer: the status, the body as its caller read it - GitHub's words as the rule prints them,
-// with the token the call carried redacted (Client's call and appauth's refusalBody read it through
-// oauth2call.ReadAnswer) - the rate-limit headers as GitHub sent them, whether the answer is
-// GitHub's rate limit (RateLimited) and, when it is, how long to wait (retryAfter) and which budget
-// it spent (spent) — the REST API's core budget when GitHub names no other. Client builds every
-// answer it returns with it, and appauth builds the one its own errors carry (appauth.AnswerError),
-// so both read GitHub's answers one way.
-func AnswerOf(method, path string, response *http.Response, body []byte) *Answer {
-	refused := &Answer{Method: method, Path: path, Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
-		RateLimited: RateLimited(response, body), RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response)}
-	if refused.RateLimited {
-		refused.Budget = spent(response.Header, body)
+// AnswerOf is response, GitHub's answer other than 2xx to method at path, read as read
+// (oauth2call.ReadAnswer: Client's call and appauth's refusalBody read it so), as an *Answer: the
+// status, the body as the rule prints it - GitHub's words, with the token the call carried
+// redacted - the rate-limit headers as GitHub sent them, whether the answer is GitHub's rate limit
+// (RateLimited) and, when it is, how long to wait (retryAfter) and which budget it spent (spent) —
+// the REST API's core budget when GitHub names no other. What the answer is, is decided on the body
+// as it came, never on the rule's reading of it, which is for what the answer prints: the rule
+// prints a whole body whose one URL sits beside a JSON quote as not readable, as GitHub's own
+// documentation URL does, and cuts a word that holds a run of the token the call carried. Client
+// builds every answer it returns with it, and appauth builds the one its own errors carry
+// (appauth.AnswerError), so both read GitHub's answers one way.
+func AnswerOf(method, path string, response *http.Response, read oauth2call.Answer) *Answer {
+	named := oauth2call.Holds(read, namesSecondaryLimit)
+	limited := rateLimited(response, named)
+	refused := &Answer{Method: method, Path: path, Status: response.StatusCode, Body: strings.TrimSpace(read.Words().String()),
+		RateLimited: limited, RetryAfter: retryAfter(response, limited, time.Now()), Limit: limitHeaders(response), read: read}
+	if limited {
+		refused.Budget = spent(response.Header, named)
 	}
 	return refused
 }
@@ -240,48 +245,63 @@ func PathUnder(api string, target *url.URL) string {
 // guard reads no answer as a limit less often than before.
 var secondaryLimitMessages = []string{"secondary rate limit", "secondary rate-limit", "abuse detection mechanism"}
 
-// RateLimited says whether response, whose body is body, is GitHub's rate limit: a 429, or a 403
-// carrying x-ratelimit-remaining: 0 or a retry-after, or one whose body says it is the secondary
-// limit, which GitHub's REST documentation allows with neither header set. Those are the statuses
-// GitHub documents a limit on; a caller that reads another status as an answer of its own asks
-// RateLimitSignals before it does.
-func RateLimited(response *http.Response, body []byte) bool {
+// RateLimited says whether response, read as read, is GitHub's rate limit: a 429, or a 403 carrying
+// x-ratelimit-remaining: 0 or a retry-after, or one whose body, as it came, says it is the
+// secondary limit, which GitHub's REST documentation allows with neither header set. Those are the
+// statuses GitHub documents a limit on; a caller that reads another status as an answer of its own
+// asks RateLimitSignals before it does.
+func RateLimited(response *http.Response, read oauth2call.Answer) bool {
+	return rateLimited(response, oauth2call.Holds(read, namesSecondaryLimit))
+}
+
+// rateLimited is RateLimited of an answer whose body names the secondary limit or does not (named).
+func rateLimited(response *http.Response, named bool) bool {
 	if response.StatusCode == http.StatusTooManyRequests {
 		return true
 	}
 	if response.StatusCode != http.StatusForbidden {
 		return false
 	}
-	return RateLimitSignals(response, body)
+	return signals(response, named)
 }
 
-// RateLimitSignals says whether response's headers or its body, body, carry GitHub's rate limit,
-// whatever the status: x-ratelimit-remaining: 0, a retry-after, or a body naming the secondary
-// limit. A status GitHub does not document a limit on still means the limit and not the answer
-// when it carries one of these, so a caller reading such a status as a verdict of its own
-// (appauth's 422 for a permission set) asks this first.
-func RateLimitSignals(response *http.Response, body []byte) bool {
-	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
-		response.Header.Get("Retry-After") != "" ||
-		NamesSecondaryLimit(string(body))
+// RateLimitSignals says whether response's headers or its body, read as read and decided on as it
+// came, carry GitHub's rate limit, whatever the status: x-ratelimit-remaining: 0, a retry-after,
+// or a body naming the secondary limit. A status GitHub does not document a limit on still means
+// the limit and not the answer when it carries one of these, so a caller reading such a status as
+// a verdict of its own (appauth's 422 for a permission set) asks this first.
+func RateLimitSignals(response *http.Response, read oauth2call.Answer) bool {
+	return signals(response, oauth2call.Holds(read, namesSecondaryLimit))
 }
 
-// Limit is whether response, whose body is body, is GitHub's rate limit (RateLimited), and the
-// budget the limit spent (spent): the reading this package gives its own answers, for a caller
-// that reads GitHub's answers through another client, as the leak guard reads them through gh.
+// signals is RateLimitSignals of an answer whose body names the secondary limit or does not
+// (named).
+func signals(response *http.Response, named bool) bool {
+	return response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != "" || named
+}
+
+// Limit is whether response, whose body is body as a caller read it from another client, is
+// GitHub's rate limit (RateLimited), and the budget the limit spent (spent): the reading this
+// package gives its own answers, for a caller that reads GitHub's answers through another client,
+// as the leak guard reads them through gh.
 func Limit(response *http.Response, body []byte) (bool, Budget) {
-	if !RateLimited(response, body) {
+	named := namesSecondaryLimit(body)
+	if !rateLimited(response, named) {
 		return false, ""
 	}
-	return true, spent(response.Header, body)
+	return true, spent(response.Header, named)
 }
 
-// NamesSecondaryLimit says whether text, a GitHub answer's body or error message, says it is
-// GitHub's secondary rate limit (secondaryLimitMessages).
-func NamesSecondaryLimit(text string) bool {
-	message := strings.ToLower(text)
+// NamesSecondaryLimit says whether text, a GitHub answer's body or error message as it came, says
+// it is GitHub's secondary rate limit (secondaryLimitMessages).
+func NamesSecondaryLimit(text string) bool { return namesSecondaryLimit([]byte(text)) }
+
+// namesSecondaryLimit is NamesSecondaryLimit of body's bytes, each of secondaryLimitMessages
+// matched in whatever case it is written (oauth2call.ContainsFold): the test oauth2call.Holds
+// gives an answer's body as it came.
+func namesSecondaryLimit(body []byte) bool {
 	for _, named := range secondaryLimitMessages {
-		if strings.Contains(message, named) {
+		if oauth2call.ContainsFold(body, named) {
 			return true
 		}
 	}
@@ -294,9 +314,9 @@ func NamesSecondaryLimit(text string) bool {
 // hour, GitHub's primary rate limit's window, so a host clock behind GitHub's never stretches the
 // wait past it; else at least a minute, which is what a secondary limit named by its message alone
 // is waited. A reset this host's clock already reads as past is waited the minute too. Zero for an
-// answer that is not a rate limit.
-func retryAfter(response *http.Response, body []byte, now time.Time) time.Duration {
-	if !RateLimited(response, body) {
+// answer that is not a rate limit (limited, rateLimited).
+func retryAfter(response *http.Response, limited bool, now time.Time) time.Duration {
+	if !limited {
 		return 0
 	}
 	headers := response.Header
@@ -328,10 +348,12 @@ func nextPage(link string) string {
 }
 
 // Answer is a GitHub REST answer other than 2xx: the request's method and path (its query left
-// out), GitHub's HTTP status, the body GitHub sent with it, the rate-limit headers GitHub sent with
-// it (Limit), and whether it is a rate limit, which every further call on the same token meets
-// until the limit resets, with how long GitHub asks the caller to wait before its next call
-// (retryAfter; zero when it is not one) and the budget the limit spent (empty when it is not one).
+// out), GitHub's HTTP status, the body GitHub sent with it as the rule prints it, the rate-limit
+// headers GitHub sent with it (Limit), and whether it is a rate limit, which every further call on
+// the same token meets until the limit resets, with how long GitHub asks the caller to wait before
+// its next call (retryAfter; zero when it is not one) and the budget the limit spent (empty when
+// it is not one). Body is for what the answer prints - a message, a log line, an error - and
+// nothing decides on it: a caller decides on GitHub's words as they came, through Says and Decode.
 type Answer struct {
 	Method      string
 	Path        string
@@ -341,7 +363,23 @@ type Answer struct {
 	RetryAfter  time.Duration
 	Budget      Budget
 	Limit       LimitHeaders
+	// read is the answer as it came (AnswerOf), which Says and Decode read.
+	read oauth2call.Answer
 }
+
+// Says reports whether GitHub's body, as it came, holds phrase, which must be lower-case ASCII, in
+// whatever case it is written (oauth2call.ContainsFold): a decision on GitHub's wording, made on
+// its words and never on Body, the rule's reading of them, which can print the whole body as not
+// readable or cut a word that holds a run of the token the call carried. An Answer built without a
+// read says nothing.
+func (a *Answer) Says(phrase string) bool {
+	return oauth2call.Holds(a.read, func(body []byte) bool { return oauth2call.ContainsFold(body, phrase) })
+}
+
+// Decode fills v from GitHub's body as it came (oauth2call.Answer.Decode): the fields a caller
+// decides on, each RemoteText among them printing only as the rule reads it. Its error quotes no
+// value of the body.
+func (a *Answer) Decode(v any) error { return a.read.Decode(v) }
 
 // LimitHeaders is the rate-limit headers of a GitHub answer, "" for each it did not send:
 // Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (an epoch second) and

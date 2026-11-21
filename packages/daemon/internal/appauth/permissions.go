@@ -305,7 +305,7 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
-		failed := fmt.Errorf("GitHub App installation permissions read failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
+		failed := fmt.Errorf("GitHub App installation permissions read failed (%d): %s", response.StatusCode, body.Words())
 		if response.StatusCode == http.StatusNotFound {
 			return nil, fmt.Errorf("%w: %w", errInstallationGone, m.answered(response, body, failed))
 		}

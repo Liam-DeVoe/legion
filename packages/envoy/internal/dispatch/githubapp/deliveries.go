@@ -195,7 +195,7 @@ func RateLimit(status int, header http.Header, body redact.Answer) *RateLimitErr
 		return nil
 	}
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
-	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !holds(body, func(b []byte) bool { return containsFold(b, rateLimitPhrase) }) {
+	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !redact.Holds(body, func(b []byte) bool { return redact.ContainsFold(b, rateLimitPhrase) }) {
 		return nil
 	}
 	return answeredLimit(status, header, body)
@@ -349,15 +349,15 @@ func (e limitEntry) spent() bool { return e.Type == "RATE_LIMITED" }
 // secondaryWording is whether message, an entry's or the envelope's own, holds GitHub's wording of
 // a secondary limit.
 func secondaryWording(message string) bool {
-	return containsFold([]byte(message), secondaryRateLimitPhrase)
+	return redact.ContainsFold([]byte(message), secondaryRateLimitPhrase)
 }
 
 // readLimitEnvelope parses body's envelope when GitHub's RATE_LIMITED type or its secondary-limit
 // phrase is anywhere in it (graphQLLimitErrors), and answers false for a body that holds neither
 // or is no JSON.
 func readLimitEnvelope(body redact.Answer) (limitEnvelope, bool) {
-	if !holds(body, func(b []byte) bool {
-		return bytes.Contains(b, graphQLRateLimitedType) || containsFold(b, secondaryRateLimitPhrase)
+	if !redact.Holds(body, func(b []byte) bool {
+		return bytes.Contains(b, graphQLRateLimitedType) || redact.ContainsFold(b, secondaryRateLimitPhrase)
 	}) {
 		return limitEnvelope{}, false
 	}
@@ -417,56 +417,15 @@ func graphQLLimitWording(header http.Header, body redact.Answer) string {
 // them.
 var limitHeaders = []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"}
 
-// What the readers above look for: the two phrases GitHub writes in a sentence of its own
-// wording, each lower case and each matched in whatever case it is spelled, and the enum an
-// errors entry carries verbatim.
-var (
-	rateLimitPhrase          = []byte("rate limit")
-	secondaryRateLimitPhrase = []byte("secondary rate limit")
-	graphQLRateLimitedType   = []byte("RATE_LIMITED")
+// What the readers above look for, in the bytes as they came (redact.Holds): the two phrases
+// GitHub writes in a sentence of its own wording, each lower case and each matched in whatever
+// case it is spelled (redact.ContainsFold), and the enum an errors entry carries verbatim.
+const (
+	rateLimitPhrase          = "rate limit"
+	secondaryRateLimitPhrase = "secondary rate limit"
 )
 
-// containsFold reports whether body holds phrase, which must be lower-case ASCII, in whatever
-// case it is written, and copies nothing. Every answer a limit is read from runs through it,
-// most of them good ones of up to this client's megabyte, and bytes.ToLower over such a body
-// allocated and copied the whole of it to find a phrase that is almost never there. The body is
-// scanned for the phrase's first byte in either case instead and only those windows compared,
-// which on a megabyte of answer measured about half the time the copy alone took.
-func containsFold(body, phrase []byte) bool {
-	first := string([]byte{phrase[0], phrase[0] - 'a' + 'A'})
-	for from := 0; from+len(phrase) <= len(body); from++ {
-		at := bytes.IndexAny(body[from:len(body)-len(phrase)+1], first)
-		if at < 0 {
-			return false
-		}
-		from += at
-		if bytes.EqualFold(body[from:from+len(phrase)], phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-// holds answers test of body's bytes, read in place (redact.Answer.StreamTo) and kept nowhere:
-// the search for GitHub's own phrases (containsFold) and its RATE_LIMITED type that RateLimit and
-// readLimitEnvelope make before they parse anything of an answer of up to a megabyte.
-func holds(body redact.Answer, test func([]byte) bool) bool {
-	scan := bodyTest{test: test}
-	_, _ = body.StreamTo(&scan)
-	return scan.held
-}
-
-// bodyTest is the writer holds reads an answer's bytes through, which answers test of each write
-// and keeps nothing of the bytes. StreamTo writes an answer once, whole.
-type bodyTest struct {
-	test func([]byte) bool
-	held bool
-}
-
-func (b *bodyTest) Write(p []byte) (int, error) {
-	b.held = b.held || b.test(p)
-	return len(p), nil
-}
+var graphQLRateLimitedType = []byte("RATE_LIMITED")
 
 // rateLimitWait is how long GitHub asks for before the next request under a limit it answered
 // with, read now through serverwait.Read, else the one minute GitHub asks for when the answer

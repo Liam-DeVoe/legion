@@ -104,8 +104,9 @@ func appTokensWith(t *testing.T, discover func(w http.ResponseWriter, r *http.Re
 		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			// A mint names the permissions its token holds, and refuses an answer wider than it
 			// asked for (appauth), so the stand-in answers with them as the request named them,
-			// as GitHub does.
-			mintedToken(w, "installation-token", exchangeBody(t, r))
+			// as GitHub does, and with a token in GitHub's shape (githubtest.InstallationToken),
+			// which shares no run with GitHub's messages.
+			mintedToken(w, githubtest.InstallationToken(t.Name()), exchangeBody(t, r))
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
 			// A mint reads what the installation is granted before it asks for a token and cuts
 			// its request down to it (appauth's exchangeGranted). The stand-in's installation is
@@ -660,7 +661,7 @@ func TestABootWaitsOutARateLimitOnTheMintOfItsRepositoryReads(t *testing.T) {
 		switch exchanges.Add(1) {
 		case 1:
 			held, _ := json.Marshal(exchangeBody(t, r))
-			fmt.Fprintf(w, `{"token":"installation-token","expires_at":%q,"repository_selection":"all","permissions":%s}`,
+			fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"repository_selection":"all","permissions":%s}`, githubtest.InstallationToken(t.Name()),
 				time.Now().Add(10*time.Minute).Format(time.RFC3339), held)
 			return true
 		case 2:

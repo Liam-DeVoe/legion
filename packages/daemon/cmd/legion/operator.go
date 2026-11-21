@@ -140,7 +140,7 @@ func (c *operatorCall) send(ctx context.Context, op operator, method, path strin
 func (c *operatorCall) request(ctx context.Context, op operator, method, path string, body any) (int, []byte, bool) {
 	bounded, cancel := c.bound(ctx)
 	defer cancel()
-	status, answer, err := op.do(bounded, method, path, body)
+	status, answer, _, err := op.do(bounded, method, path, body)
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
@@ -174,22 +174,25 @@ type operator struct {
 }
 
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
-// Authorization when op carries one. It answers the status and the body the daemon served, read
-// through oauth2call.ReadAnswer: a 2xx body as the data it is, and a refusal's as the rule prints
+// Authorization when op carries one. It answers the status, the body the daemon served, read
+// through oauth2call.ReadAnswer - a 2xx body as the data it is, and a refusal's as the rule prints
 // it, with the bearer and any credential the request carried redacted, since every caller prints a
-// refusal. Only a request that got no answer is an error.
-func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
+// refusal - and the answer itself, which a caller that decides what a refusal is decodes as it
+// came (Answer.Decode), since the rule's reading of a whole refusal is not readable where its
+// sentence names a URL beside the JSON quote that ends it. Only a request that got no answer is an
+// error.
+func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, oauth2call.Answer, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, fmt.Errorf("encode the request: %w", err)
+			return 0, nil, oauth2call.Answer{}, fmt.Errorf("encode the request: %w", err)
 		}
 		reader = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, oauth2call.Answer{}, err
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -199,19 +202,19 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, oauth2call.Answer{}, err
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return 0, nil, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
+		return 0, nil, oauth2call.Answer{}, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
 	}
 	if response.StatusCode/100 != 2 {
-		return response.StatusCode, []byte(answer.Words().String()), nil
+		return response.StatusCode, []byte(answer.Words().String()), answer, nil
 	}
 	var served bytes.Buffer
 	_, _ = answer.StreamTo(&served)
-	return response.StatusCode, served.Bytes(), nil
+	return response.StatusCode, served.Bytes(), answer, nil
 }
 
 // daemonAddress is the API root of the daemon a command reaches: the one LEGION_DAEMON_URL names —

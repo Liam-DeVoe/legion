@@ -1389,7 +1389,7 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	}
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	status, answer, err := op.do(timed, http.MethodGet, claimsRoute, nil)
+	status, answer, _, err := op.do(timed, http.MethodGet, claimsRoute, nil)
 	if err != nil || status/100 != 2 {
 		return nil
 	}

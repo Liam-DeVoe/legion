@@ -59,17 +59,35 @@ type GitHubRefusal struct {
 	Message RemoteText `json:"message"`
 }
 
-// RoleLookup is the Envoy listener's answer to a role lookup (GET /v1/roles/<role>) as a module
-// outside this one decodes it (Answer.Decode) to log what it names: the holder on a 200, and on a
-// 404 the reason no live session holds the role and the lapsed holder's state, the shapes of
-// listenerwire.RoleHolder and listenerwire.RoleRefusal. Each is the listener's words, or a
+// CodedRefusal is the {"code","error"} JSON a service of this repository refuses a request with -
+// Dispatch's, the secrets broker's, the Legion daemon's - as a module outside this one decodes it
+// (Answer.Decode): a caller decides on the code as it came, where the rule prints it unchanged
+// (RemoteText.SendBack), and prints the error as the rule reads it, each word another party's, or
+// a stand-in's, with the credentials the request carried redacted. Decoded field by field, a
+// refusal whose error names a URL beside the JSON quote that ends it keeps its code, where the
+// rule's reading of the whole body is not readable. It is declared here, beside the box, so its
+// print test is this module's (holders_print_test.go).
+type CodedRefusal struct {
+	Code  RemoteText `json:"code"`
+	Error RemoteText `json:"error"`
+}
+
+// RoleLookup is the Envoy listener's answer naming a role's holder as a module outside this one
+// decodes it (Answer.Decode) to log or print what it names: a role lookup's (GET /v1/roles/<role>)
+// holder on a 200, and on a 404 the reason no live session holds the role and the lapsed holder's
+// state, the shapes of listenerwire.RoleHolder and listenerwire.RoleRefusal, and a role publish's
+// refusal, whose holder, event id and error a 504 (listenerwire.RoleSendFailure) and a 403
+// (listenerwire.CapabilityRefusal, listenerwire.APIError) name. Each is the listener's words, or a
 // stand-in's, and prints only as the rule reads them, with the credentials the request carried
-// redacted; a caller that tells answers apart compares them (RemoteText.Equal). It is declared here,
-// beside the box, so its print test is this module's (holders_print_test.go).
+// redacted; a caller that tells answers apart compares them (RemoteText.Equal), or decides on the
+// listener's own shape decoded from the answer as it came. It is declared here, beside the box, so
+// its print test is this module's (holders_print_test.go).
 type RoleLookup struct {
 	Holder      RemoteText `json:"holder"`
 	HolderState RemoteText `json:"holder_state"`
 	Reason      RemoteText `json:"reason"`
+	EventID     RemoteText `json:"event_id"`
+	Error       RemoteText `json:"error"`
 	LastSeen    *int64     `json:"last_seen"`
 }
 
@@ -85,6 +103,14 @@ func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 func StreamAnswer(resp *http.Response, limit int64) io.ReadCloser {
 	return redact.StreamAnswer(resp, limit)
 }
+
+// Holds is redact.Holds: a test of an answer's body as it came, read in place and kept nowhere,
+// for a decision made on what the answer says before anything of it prints.
+func Holds(a Answer, test func(body []byte) bool) bool { return redact.Holds(a, test) }
+
+// ContainsFold is redact.ContainsFold: whether body holds phrase, lower-case ASCII, in whatever
+// case it is written.
+func ContainsFold(body []byte, phrase string) bool { return redact.ContainsFold(body, phrase) }
 
 // StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and
 // its standard reason phrase, never the phrase the answering party wrote (Response.Status).

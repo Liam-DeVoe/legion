@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -36,7 +37,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}}})
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "github-installation-token", "expires_at": "2026-10-24T13:00:00Z"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": githubtest.InstallationToken(t.Name()), "expires_at": "2026-10-24T13:00:00Z"})
 		default:
 			t.Errorf("GitHub endpoint asked %s %s", r.Method, r.URL.Path)
 		}
@@ -75,7 +76,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 		t.Fatal(err)
 	}
 	minted, err := minters[policy.TypeGitHubApp](context.Background(), secrets.MintRequest{Value: string(app), GitHubOwners: []string{"acme-org"}})
-	if err != nil || !strings.Contains(minted.Value, "github-installation-token") {
+	if err != nil || !strings.Contains(minted.Value, githubtest.InstallationToken(t.Name())) {
 		t.Fatalf("github-app minter = %q, %v; want the GitHub endpoint's installation token", minted.Value, err)
 	}
 	login := `{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`

@@ -5,13 +5,13 @@ package ghbranch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -54,7 +54,7 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 
 	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
-	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
+	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer) {
 		return nil
 	}
 	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
@@ -109,11 +109,12 @@ func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository)
 	return Repository{Name: name, DefaultBranch: info.DefaultBranch}, nil
 }
 
-// alreadyExists says whether a 422's body is GitHub's answer to a ref it already has. GitHub answers
-// other refusals of a create with 422 too, such as a malformed ref name or an unknown commit.
-func alreadyExists(body string) bool {
-	var refusal struct {
-		Message string `json:"message"`
-	}
-	return json.Unmarshal([]byte(body), &refusal) == nil && refusal.Message == "Reference already exists"
+// alreadyExists says whether a 422 is GitHub's answer to a ref it already has, decided on GitHub's
+// message as it came (oauth2call.GitHubRefusal, decoded from the answer): the rule's reading of the
+// body, which the answer prints, is not readable whole beside the documentation URL GitHub sends.
+// GitHub answers other refusals of a create with 422 too, such as a malformed ref name or an
+// unknown commit.
+func alreadyExists(answer *githubrest.Answer) bool {
+	var refusal oauth2call.GitHubRefusal
+	return answer.Decode(&refusal) == nil && refusal.Message.Equal("Reference already exists")
 }

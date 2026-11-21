@@ -136,12 +136,14 @@ func characterOffset(s string, n int) int {
 // requestTokens is every credential r carries, for Tokens: every value it carries under a name a
 // wire contract does not declare public (publicRequestNames). That is the whole value of each such
 // header (a Cookie its client's jar added, an instance metadata token, a proof, whatever its
-// name), with the part after a scheme where the value names one and a Basic pair's user and
-// password, each also unescaped (x/oauth2 escapes them); the user and password of its URL and each
-// such value of its query; and each such value of its form or string of its JSON body, read
-// through GetBody so the request is left as it was, a subject or an actor token among them. A name
-// nobody listed counts, so a new parameter is a credential until a contract declares it public. A
-// request without GetBody names no body value; every one net/http or x/oauth2 builds has it.
+// name), but for an Authorization or a Proxy-Authorization that names a scheme, whose scheme
+// (Bearer, token, Basic, any word before its first space) is the header's grammar and no
+// credential, so only the part after it counts; and a Basic pair's user and password, each also
+// unescaped (x/oauth2 escapes them); the user and password of its URL and each such value of its
+// query; and each such value of its form or string of its JSON body, read through GetBody so the
+// request is left as it was, a subject or an actor token among them. A name nobody listed counts,
+// so a new parameter is a credential until a contract declares it public. A request without
+// GetBody names no body value; every one net/http or x/oauth2 builds has it.
 func requestTokens(r *http.Request) []string {
 	if r == nil {
 		return nil
@@ -151,9 +153,12 @@ func requestTokens(r *http.Request) []string {
 		if publicHeader(name) {
 			continue
 		}
+		authorization := http.CanonicalHeaderKey(name) == "Authorization" || http.CanonicalHeaderKey(name) == "Proxy-Authorization"
 		for _, value := range values {
-			tokens = append(tokens, value)
 			scheme, credential, ok := strings.Cut(strings.TrimSpace(value), " ")
+			if !authorization || !ok {
+				tokens = append(tokens, value)
+			}
 			if !ok {
 				continue
 			}

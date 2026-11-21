@@ -498,7 +498,7 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
+	status, body, _, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {
 		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
@@ -560,13 +560,15 @@ func removeDirs(created []string) {
 // deployment that gates no step, which the daemon answers as `[]`.
 func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (string, []record.DesignStep, error) {
 	const route = "/legion/v1/controller/secret"
-	status, body, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
+	status, body, answered, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
 		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
 	if status/100 != 2 {
+		// Which refusal it is, is decided on the daemon's sentence as it came (Answer.Decode),
+		// and the refusal prints as the rule reads it (refusal).
 		var refused legionclaim.Refusal
-		if status == http.StatusBadRequest && json.Unmarshal(body, &refused) == nil &&
+		if status == http.StatusBadRequest && answered.Decode(&refused) == nil &&
 			strings.Contains(refused.Message, `unknown field "pluginContract"`) {
 			return "", nil, fmt.Errorf("%s%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", daemonURL, route, contract)
 		}

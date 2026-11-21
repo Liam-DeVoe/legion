@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -137,22 +137,22 @@ func baseRules(ctx context.Context, github githubrest.Client, base string) recor
 
 // unreadRules is what a failed read of the base's rules comes to: no rules for GitHub's refusal of
 // rulesets to a plan that has none (planRefusal), and otherwise rules the daemon could not read,
-// Unread naming GitHub's answer - the request, its status and GitHub's message - or the error.
+// Unread naming GitHub's answer - the request, its status and GitHub's message - or the error. The
+// refusal is decided on GitHub's message as it came (oauth2call.GitHubRefusal, decoded from the
+// answer), and the message prints as the rule reads it.
 func unreadRules(err error) record.BaseRules {
 	var answer *githubrest.Answer
 	if !errors.As(err, &answer) {
 		return record.BaseRules{Unread: err.Error()}
 	}
-	var body struct {
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal([]byte(answer.Body), &body)
-	if answer.Status == http.StatusForbidden && !answer.RateLimited && strings.Contains(body.Message, planRefusal) {
+	var refusal oauth2call.GitHubRefusal
+	_ = answer.Decode(&refusal)
+	if answer.Status == http.StatusForbidden && !answer.RateLimited && refusal.Message.Contains(planRefusal) {
 		return record.BaseRules{}
 	}
 	unread := fmt.Sprintf("GitHub answered %s %s with %d", answer.Method, answer.Path, answer.Status)
-	if body.Message != "" {
-		unread += ": " + body.Message
+	if !refusal.Message.IsEmpty() {
+		unread += ": " + refusal.Message.String()
 	}
 	return record.BaseRules{Unread: unread}
 }

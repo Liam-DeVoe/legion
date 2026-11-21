@@ -2022,7 +2022,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 		return err == nil
 	})
 	// Mint a second capability, which supersedes the one this controller holds.
-	status, _, err := (operator{base: d.url, bearer: controllerOperatorToken}).do(context.Background(), http.MethodPost,
+	status, _, _, err := (operator{base: d.url, bearer: controllerOperatorToken}).do(context.Background(), http.MethodPost,
 		"/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion})
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("mint a second capability: status %d, err %v", status, err)

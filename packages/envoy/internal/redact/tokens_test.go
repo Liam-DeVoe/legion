@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // pieceToken is shaped as Dispatch's tokens are, `dsp_` and 43 base64url characters, and ends in
@@ -129,6 +131,40 @@ func TestRequestTokensReadsEveryCredentialARequestCarries(t *testing.T) {
 	}
 	if body, _ := io.ReadAll(request.Body); string(body) != form.Encode() {
 		t.Errorf("requestTokens consumed the request's body: %q", body)
+	}
+}
+
+// The scheme of an Authorization header - Bearer, token, DPoP, any word before its first space -
+// is the header's grammar and no credential: an answer's words beside the credential's own are not
+// cut where they share characters with the scheme and the space after it. Here the credential is a
+// word-shaped stand-in, so the word of the answer that is a run of it is cut, and the space before
+// that word survives.
+func TestTheSchemeOfAnAuthorizationIsNoCredential(t *testing.T) {
+	const said = "API rate limit exceeded for installation ID 7."
+	for _, scheme := range []string{"Bearer", "token", "DPoP"} {
+		request, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/repos/acme/widgets", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", scheme+" installation-token")
+		if got, want := Tokens(said, -1, requestTokens(request)...), "API rate limit exceeded for "+Redacted+" ID 7."; got != want {
+			t.Errorf("under %s, the answer %q reads %q, want %q", scheme, said, got, want)
+		}
+	}
+}
+
+// GitHub's rate-limit message prints unchanged beside an installation token in GitHub's own shape
+// (githubtest.InstallationToken), which holds no run of any word of it: only a stand-in of words
+// cuts one (TestTheSchemeOfAnAuthorizationIsNoCredential).
+func TestGitHubsRateLimitMessagePrintsUnchangedBesideAnInstallationToken(t *testing.T) {
+	const said = "API rate limit exceeded for installation ID 7."
+	request, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:1/repos/acme/widgets", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+githubtest.InstallationToken(t.Name()))
+	if got := Tokens(said, -1, requestTokens(request)...); got != said {
+		t.Errorf("the answer %q reads %q, want it unchanged", said, got)
 	}
 }
 
