@@ -231,8 +231,8 @@ type modelState struct {
 	Unresolved bool   // rollback: a logical name with no start, which only restore --key resolves
 	NoStart    bool   // cutover: a cohort member with no safe start, which only replay --key resolves
 	Doomed     string // a command that failed for good after its intent: every later run of it fails
-	StopLatest string // under WayOut, the commands whose latest entry is a stop, which hold abort's admission reads
-	Left       byte   // under WayOut, the stops of other commands than hold set and release: 0 none, 'U' each left nothing changed, 'C' one changed or recorded nothing
+	StopLatest string // in the rule sets since the bundle (stopsRecorded), the commands whose latest entry is a stop, which hold abort's admission reads
+	Left       byte   // likewise, the stops of other commands than hold set and release: 0 none, 'U' each left nothing changed, 'C' one changed or recorded nothing
 	Cur        [2]modelDisk
 	Step1      [2]modelDisk
 	Restores   int
@@ -421,7 +421,8 @@ func toDone(sc modelScenario, s modelState) Done {
 	// Under WayOut, each command whose latest entry is a stop, after its done entries and before the
 	// intents. What hold release's rule reads of the stops of other commands than hold set and hold
 	// release is whether every one left nothing changed (Left), and every such stop carries that
-	// answer. StopLatest is set only under WayOut, so every other rule set's record is as before.
+	// answer. StopLatest is set only in the rule sets since the bundle (stopsRecorded), so the
+	// bundle's profiles keep the bundle's record.
 	var stops []Operation
 	for _, c := range list(s.StopLatest) {
 		o := Operation{Command: c, State: stateStop}
@@ -741,18 +742,19 @@ func refuse(r rules, t modelTable, sc modelScenario, s modelState, k int, why st
 }
 
 // refuseLeft is refuse whose stop records what the command left: 'U' nothing changed, 'C' a change.
-// Under WayOut a stop of a command other than hold set and hold release joins Left, which hold
-// release's rule reads; other rule sets never set it, so their states are as the bundle's.
+// In the rule sets since the bundle (stopsRecorded) the record keeps the stop, and a stop of a
+// command other than hold set and hold release joins Left, which hold release's rule reads; the
+// bundle's rule sets never set either, so their states are as the bundle's.
 func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool, left byte) modelEdge {
 	c := s.Slots[k].Cmd
 	ns := idle(s, k)
 	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
 		ns.Intent = delSet(ns.Intent, c)
-		if r.WayOut {
+		if stopsRecorded(r) {
 			ns.StopLatest = addSet(ns.StopLatest, c)
 		}
 		label := c + ": " + why + ", stop entry"
-		if r.WayOut && c != cmdSet && c != CommandRelease {
+		if stopsRecorded(r) && c != cmdSet && c != CommandRelease {
 			if left == 'C' || ns.Left == 0 {
 				ns.Left = left
 			}
@@ -769,6 +771,13 @@ func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, wh
 		suffix = ", its intent left pending"
 	}
 	return modelEdge{to: ns, label: c + ": " + why + suffix, op: true}
+}
+
+// stopsRecorded reports whether the record keeps each command's latest stop, as the code writes
+// it: in every rule set with a rule added since the frozen bundle. The bundle's profiles leave the
+// stops out, as the bundle did, so their counts stay the bundle's.
+func stopsRecorded(r rules) bool {
+	return r.WayOut || r.EveryCommandStoppable || r.EndIsFinal || r.BackupCommand
 }
 
 // transient lists the refusals the hold's design states for a command, whose way out is the
@@ -1643,7 +1652,7 @@ var (
 // and without EveryCommandStoppable.
 var pinnedBound2 = map[string]modelCount{
 	"v63":                       {184186, 0, nil},
-	"v63-WayOut":                {43159, 3426, map[string]int{classWayOut: 3426}},
+	"v63-WayOut":                {171152, 9480, map[string]int{classWayOut: 9480}},
 	"v63-EveryCommandStoppable": {156014, 4095, map[string]int{classWayOut: 4095}},
 }
 
@@ -1741,6 +1750,17 @@ func TestTheHoldJournalModel(t *testing.T) {
 				// The fix is every command's stop, not the buckets commands' alone: without it the
 				// hold is stranded in workflows that run no buckets command.
 				for _, w := range []string{"cutover", "rollback", "selection-recovery", "streams-update", "streams-census"} {
+					if got.classIn[classWayOut][w] == 0 {
+						t.Errorf("control %s found no %s in %s", p.Name, classWayOut, w)
+					}
+				}
+			}
+			if p.Name == currentRules.Name+"-WayOut" {
+				// Without WayOut no workflow but hub-restore has a way out of a stopped command: the
+				// record keeps each stop, as the code writes it, so hold release reads the stopped
+				// command as a change in every workflow, the buckets ones included.
+				for _, w := range []string{"cutover", "rollback", "selection-recovery", "buckets-create", "buckets-recreate",
+					"buckets-restore", "streams-update", "streams-census"} {
 					if got.classIn[classWayOut][w] == 0 {
 						t.Errorf("control %s found no %s in %s", p.Name, classWayOut, w)
 					}
