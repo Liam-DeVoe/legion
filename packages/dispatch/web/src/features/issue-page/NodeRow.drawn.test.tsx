@@ -130,7 +130,7 @@ function knowParties(queryClient: QueryClient, { login, role, session }: Parties
 
 /** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
  *  the render that draws it, as the page publishes its one batched read and hands it its rows
- *  (`useIssueTree.ts`, `ConversationRows.tsx`); nothing where it is undefined. */
+ *  (`useIssueTree.ts`, `IssueTree.tsx`); nothing where it is undefined. */
 function Named({
   children,
   published,

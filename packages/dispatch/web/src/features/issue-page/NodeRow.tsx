@@ -450,22 +450,25 @@ export function NodeRow({
 }
 
 /**
- * A node's one line (R1), as every place that draws one draws it - a folded branch's line and a
- * parent's line under a filter: its node's first line, projected from its words by the shared
- * plain-text projection (`lineReading`) and cut by R1's first-line rule (`firstLineOf`), with an
- * ellipsis only where the cut ended inside a sentence (`drawnLine`), so a heading never runs into
- * the paragraph after it. A reference in it reads as the same reference in the node's row does
- * (`RowText.tsx`): as its target's current name once it resolves, and as the words its author
- * wrote until then (R8, INFRA-1196 decision 350); and a numbered step keeps its number (decisions
- * 66 and 88). The issue's own line is its key, which the page writes before its projected title
- * and R1's rule reads a label after (`LineReading.key`). Each role is read by the issue the
- * node's record is on. `line` is `undefined` until the projection has answered, which is one
- * pre-paint commit on a page whose engine is loaded, and `""` for a node whose words hold none.
+ * A node's one line (R1), as every place that draws one draws it - a folded branch's line, a
+ * parent's line under a filter and a crumb above a zoom (`IssueTree.tsx`): its node's first line,
+ * projected from its words by the shared plain-text projection (`lineReading`) and cut by R1's
+ * first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a sentence
+ * (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it reads as
+ * the same reference in the node's row does (`RowText.tsx`): as its target's current name once it
+ * resolves, and as the words its author wrote until then (R8, INFRA-1196 decision 350); and a
+ * numbered step keeps its number (decisions 66 and 88). The issue's own line is its key, which
+ * the page writes before its projected title and R1's rule reads a label after
+ * (`LineReading.key`). Each role is read by the issue the node's record is on. `line` is
+ * `undefined` until the projection has answered, which is one pre-paint commit on a page whose
+ * engine is loaded, and `""` for a node whose words hold none.
  * `reads` draws nothing and the caller mounts it where it draws the line.
  */
 export function useNodeLine(
   node: Pick<TreeNode, "id" | "source" | "text" | "tree" | "type">,
-  { surface }: { readonly surface: "node-row-first-line" | "node-row-parent-line" }
+  {
+    surface,
+  }: { readonly surface: "node-row-first-line" | "node-row-parent-line" | "outline-crumb" }
 ): { line: string | undefined; reads: ReactNode } {
   const { id, source, text: stored, tree, type } = node;
   const reading = useMemo(

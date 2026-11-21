@@ -1094,15 +1094,16 @@ type Held = string | typeof PROJECTED | Through | Props | ProseRecord;
 /**
  * The dashboard's own records that carry a writer's stored text under a field the contract's
  * scan cannot name, each by the type name it is declared under, with the paths of its fields
- * that hold that text: the new issue page's node, the reading a chip names its target by, and
- * the line a filter names a parent by. A value declared as one of them - a prop, a parameter -
- * is that text: handed whole to a call whose answer is drawn, as G's folded line once handed a
- * node to `firstLineOf(lineWords(node))`, it draws it, and so does one of those fields read off
- * it, as `chipWords(wordsOf(chip.reading.tree))` would, unless the call is the projection, whose
- * answer is its line. A chip's `reading.words` is the page's word for a document and no
- * writer's.
+ * that hold that text: the new issue page's node, the facts of the focused one the panel names
+ * it by, the reading a chip names its target by, and the line a filter names a parent by. A
+ * value declared as one of them - a prop, a parameter - is that text: handed whole to a call
+ * whose answer is drawn, as G's folded line once handed a node to
+ * `firstLineOf(lineWords(node))`, it draws it, and so does one of those fields read off it, as
+ * `chipWords(wordsOf(chip.reading.tree))` would, unless the call is the projection, whose answer
+ * is its line. A chip's `reading.words` is the page's word for a document and no writer's.
  */
 const PROSE_RECORDS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["FocusedNode", ["text", "tree"]],
   ["NodeChip", ["reading.tree"]],
   ["ParentLine", ["text", "tree"]],
   ["TreeNode", ["text", "tree"]],
@@ -1227,6 +1228,37 @@ function importsOf(tree: ts.SourceFile): Map<string, string> {
     if (bindings !== undefined && ts.isNamedImports(bindings)) {
       for (const element of bindings.elements) {
         names.set(element.name.text, statement.moduleSpecifier.text);
+      }
+    }
+  }
+  return names;
+}
+
+/** The constants `tree` declares at its top level as an object it writes out, as a table of the
+ *  page's own words is (`issue-page/slots/body.tsx`'s `ABSENT_LINES`, whose lines each hold a
+ *  `heading`): a member read off one is words the file wrote, whatever the member is called,
+ *  and never a stored text, which comes from a read. */
+function wordTablesOf(tree: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of tree.statements) {
+    if (
+      !ts.isVariableStatement(statement) ||
+      (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+    ) {
+      continue;
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      let value = declaration.initializer;
+      while (
+        value !== undefined &&
+        (ts.isAsExpression(value) ||
+          ts.isSatisfiesExpression(value) ||
+          ts.isParenthesizedExpression(value))
+      ) {
+        value = value.expression;
+      }
+      if (value !== undefined && ts.isObjectLiteralExpression(value)) {
+        if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text);
       }
     }
   }
@@ -1373,6 +1405,7 @@ function proseAnswersOf(trees: readonly ts.SourceFile[]): Map<string, ProseAnswe
 function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswer>): RawDraw[] {
   const file = tree.fileName;
   const imports = importsOf(tree);
+  const tables = wordTablesOf(tree);
   /** Each function's names that hold a stored text's field, or the projection's line of one. */
   const held = new Map<ts.Node, Map<string, Held>>();
   const hold = (scope: ts.Node, name: string, what: Held): void => {
@@ -1495,6 +1528,10 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       }
     }
     if (!STORED_PROSE_FIELDS.has(leaf.name.text)) {
+      return undefined;
+    }
+    // A member of a table of words the file writes out is the file's own words (`wordTablesOf`).
+    if (what === undefined && tables.has(root?.text ?? "")) {
       return undefined;
     }
     // What the projection answered is its line, whatever member of the answer holds it, and a
@@ -2900,6 +2937,27 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "fixture.tsx:4 body a JSX child",
       "fixture.tsx:6 reason the aria-valuetext attribute",
     ]);
+  });
+
+  // Part I's outline says in its own place that an address names nothing the issue holds, under
+  // a heading from a table of its own words (`slots/body.tsx`'s `ABSENT_LINES`). A member of
+  // such a table is no stored text, whatever it is called; the same member read off a value that
+  // came from a read still is.
+  test("a member of a table of words the file writes out draws no stored text; a record's does", () => {
+    const source = [
+      "const LINES = {",
+      '  absent: { heading: "Not found", line: "Nothing here." },',
+      "} as const;",
+      "export function Gone({ decision }: { decision: Decision }) {",
+      "  return (",
+      "    <div>",
+      "      <h2>{LINES.absent.heading}</h2>",
+      "      <p>{decision.heading}</p>",
+      "    </div>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual(["fixture.tsx:8 heading a JSX child"]);
   });
 
   // The new issue page's node, chip and parent line carry a writer's stored text under fields the
