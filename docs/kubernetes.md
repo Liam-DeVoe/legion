@@ -2494,6 +2494,51 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release whose testing move follows Dispatch's check states
+
+This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (daemon API contract 206, the entry of `packages/daemon/internal/api/version.go` that names `CheckStatesContract`).
+A tester completes naming its `test` record, and the move waits until the daemon holds every state event of the issue through the record's `check_states_serial`.
+At the head that record names, a check that fails sends the issue back to `implementing`, every check passing moves it to `reviewing`, and a check with no state, a state Dispatch could not read or a CI run still going holds it.
+
+**Deploy envoy-dispatch first, then the daemon.**
+The daemon of this release waits for states that only an envoy-dispatch of the same change publishes, and for the serial that only such a Dispatch stores on a `test` record.
+A daemon deployed before it holds no state of any check, so each tester's completion waits in `testing`, telling the architect once that the move waits for Dispatch's states at the tested head.
+An envoy-dispatch deployed first publishes the events to a daemon of the release before, which takes them as no fact, and the boot catch-up of the daemon that follows reads each issue's log from the start.
+A tester's plugin of the release before, in a turn when the daemon is upgraded, still sends `pass` or `fail`: this daemon takes the completion and ignores the verdict, and the states decide.
+
+**The way back is two transactions, run with this release's daemon stopped, before the earlier image is pinned.**
+Run the newer migration's first.
+`20261121074614_phase_verdict_gone` drops `phases.verdict`, which every earlier release reads and writes by name, so the earlier daemon cannot read a phase row while the column is gone.
+Its header's way back adds the column again at its default, drops `phases.states_serial` and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases add column if not exists verdict text not null default '';
+alter table phases drop column if exists states_serial;
+delete from schema_version where version = 20261121074614;
+commit;
+SQL
+```
+
+Each tester's row that this release completed then reads as a completion with no verdict, which moves no issue in the earlier release: a tester whose issue is still in `testing` completes again under that release.
+The queued notices need nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
+Then run the way back in the header of `20261121065041_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+drop table if exists check_states;
+drop table if exists check_state_sets;
+drop table if exists check_state_serials;
+alter table issues drop column if exists check_states_seq;
+delete from schema_version where version = 20261121065041;
+commit;
+SQL
+```
+
+The earlier release names none of the three tables and not the column, so this second transaction is owed to the roll-forward alone: its first catch-up of each issue reads the event log from the start again, so each state event the earlier release took as no fact is held as well.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3024,6 +3069,7 @@ The migrations recorded above this one are these.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261121065041_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
+20261121074614_phase_verdict_gone drops `phases.verdict`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, since every earlier release reads and writes `phases.verdict`.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
