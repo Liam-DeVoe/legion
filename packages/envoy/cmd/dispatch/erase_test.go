@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -393,6 +394,94 @@ func TestTheCommentEraseTakesItsKeywordVersionsAndTheFillWritesNoneOfItsTextAgai
 	}
 	t.Logf("the fill wrote again %d keyword version(s) of the erased comment %s: %q",
 		len(eraseKeywordVersions(t, database, comment)), comment, eraseKeywordVersions(t, database, comment))
+}
+
+// R5: an event carries a comment's body whole up to contracts.DispatchEventBodyMax (32,000 UTF-16
+// units) and only its first part past that (model.EventBody), cut at the last blank line within
+// the bound, else at the last line break, else at the last character. A block holds up to 32,000
+// units as well, so a body whose first block fills the bound and breaks its lines with no blank
+// line between them is cut inside that block: the event holds the block's head, which no erased
+// text matches whole. The comment here is that body, its secret on the first line, written
+// through the API, and the test reads its comment.created event cut inside the first block with
+// the secret in it (the control). The comment's erase takes every byte of the cut body out of its
+// events, and no column of the database holds the secret afterwards. The keyword table is then
+// emptied, as the fill empties it for a log that was reset, and the fill runs again over the
+// whole log (textversions.FillToHorizon): the comment has no row and no blocks left, so the fill
+// reads its cut body from the event (body_from 'cut'), and no version it writes holds the secret.
+func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	databaseURL := database.Pool.Config().ConnString()
+	server := startDispatchProcess(t, databaseURL)
+	server.waitHealthy(t)
+	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERC","name":"Erase a cut body"}`, http.StatusCreated)
+
+	secret := eraseTestSecret()
+	first := cutBodyBlock("The passphrase is "+secret+" and nobody else may read it.", contracts.DispatchEventBodyMax)
+	body := first + "\n\nA second block of the same comment."
+	issue, _ := createEraseIssue(t, server, "ERC", "A comment past the event's bound", "# Spec\n\nNothing secret is written here.\n")
+	comment := writeEraseComment(t, server, issue, body)
+	var cut string
+	var truncated bool
+	if err := database.Pool.QueryRow(ctx, `
+		select payload->>'body', coalesce((payload->>'body_truncated')::boolean, false)
+		from events where type = 'comment.created' and payload->>'id' = $1`, comment).Scan(&cut, &truncated); err != nil {
+		t.Fatalf("read comment %s's comment.created event: %v", comment, err)
+	}
+	if !truncated || !strings.Contains(cut, secret) || len(cut) >= len(first) || !strings.HasPrefix(first, cut) {
+		t.Fatalf("comment %s's comment.created event carries %d bytes of its %d-byte first block, truncated %t, holding the secret %t; want the head of that block alone, cut inside it with the secret in it, so this test would prove nothing",
+			comment, len(cut), len(first), truncated, strings.Contains(cut, secret))
+	}
+
+	erasure, err := confirmErase(ctx, databaseURL, "comment", comment, time.Millisecond)
+	if err != nil || !erasure.Applied {
+		t.Fatalf("erase comment:%s: applied %t, %v", comment, erasure != nil && erasure.Applied, err)
+	}
+	var held int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events
+		where (payload->>'id' = $1 or payload->>'comment_id' = $1) and position($2 in payload::text) > 0`,
+		comment, secret).Scan(&held); err != nil {
+		t.Fatalf("read comment %s's events after the erase: %v", comment, err)
+	}
+	if held != 0 {
+		t.Errorf("after the erase %d event(s) of comment %s still hold the secret in the head of the body their event cut", held, comment)
+	}
+	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
+		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
+	}
+
+	// The fill again, from no row, over the log the erase redacted, with the server stopped so
+	// the test's fill is the one that writes.
+	server.Terminate(t)
+	server.WaitExit(t, "SIGTERM")
+	if _, err := database.Pool.Exec(ctx, `delete from search_text_versions; delete from search_text_versions_fill`); err != nil {
+		t.Fatalf("empty the keyword table and its cursor row: %v", err)
+	}
+	if err := textversions.FillToHorizon(ctx, database, events.NewHorizon(database.Pool)); err != nil {
+		t.Fatalf("fill the keyword table again over the log the erase redacted: %v", err)
+	}
+	if held := eraseKeywordVersionsHolding(t, database, secret); len(held) != 0 {
+		t.Errorf("after the fill ran again the keyword versions %q hold the secret", held)
+	}
+	t.Logf("the fill wrote again %q of the erased comment %s", eraseKeywordVersions(t, database, comment), comment)
+}
+
+// cutBodyBlock is one paragraph of exactly units ASCII characters whose lines end in a single line
+// break and never in a blank line, its first line opening with line, and its last character none
+// of white space, so the block's stored text is the whole of it: a block that fills an event's
+// bound, which an event's cut (model.EventBody) can only split at one of its own line breaks.
+func cutBodyBlock(line string, units int) string {
+	var block strings.Builder
+	block.WriteString(line)
+	for number := 2; block.Len() < units; number++ {
+		block.WriteString(fmt.Sprintf("\nLine %d of a long paragraph.", number))
+	}
+	cut := []byte(block.String()[:units])
+	if last := len(cut) - 1; cut[last] == '\n' || cut[last] == ' ' {
+		cut[last] = 'x'
+	}
+	return string(cut)
 }
 
 // eraseKeywordVersions is every keyword version (search_text_versions) of comment, as

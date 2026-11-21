@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -682,5 +683,50 @@ func TestTheBlockEraseRewritesTheKeywordVectorsOfItsIssueAtTheVersionsItDeletes(
 	}
 	if held := keywordVersionsHolding(t, database, word); len(held) != 0 {
 		t.Errorf("after the erase the keyword versions %q still hold the erased word", held)
+	}
+}
+
+// R5: a copy of a comment's body past contracts.DispatchEventBodyMax (32,000 UTF-16 units) holds
+// only its first part, cut as model.EventBody cuts an event's body: at the last blank line within
+// the bound, else at the last line break, else at the last character. An accepted suggestion
+// names the version it writes after the comment's body cut that way (api's comment action), and
+// that version is the document's, another node's row, which the run lists and leaves. The
+// comment's body here opens with a block that fills the bound and breaks its lines with no blank
+// line between them, so the cut falls inside that block and the version's summary holds no text
+// of the comment whole; the listing names it all the same, as a row the run leaves holding the
+// word.
+func TestTheEraseListsAVersionNamedAfterTheCutHeadOfACommentsLongBody(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const word = "narwhal5bandolier"
+	var long strings.Builder
+	long.WriteString("The word is " + word + ".")
+	for long.Len() < contracts.DispatchEventBodyMax {
+		long.WriteString("\nA line of a long paragraph.")
+	}
+	// Exactly the bound, ending in no white space, so the block's text is the whole of it and
+	// the cut can fall only at one of its line breaks.
+	first := long.String()[:contracts.DispatchEventBodyMax-1] + "."
+	body := first + "\n\nA second block."
+	head, cut := model.EventBody(body)
+	if !cut || !strings.Contains(head, word) || len(head) >= len(first) || !strings.HasPrefix(first, head) {
+		t.Fatalf("the body's cut is %d bytes of its %d-byte first block, cut %t, holding the word %t; want the head of that block alone, so this test would prove nothing",
+			len(head), len(first), cut, strings.Contains(head, word))
+	}
+	if _, err := database.Pool.Exec(ctx, `update comments set body = $2 where id = $1::uuid`, seeded.comment, body); err != nil {
+		t.Fatalf("write the comment's body: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors, summary)
+		values ($1::uuid, 2, 'Accepted the suggestion.', '[{"kind":"user","id":"alice"}]', $2)`,
+		seeded.document.artifactID, head); err != nil {
+		t.Fatalf("write the version the suggestion's accept named: %v", err)
+	}
+
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	if !listed(listing, "leave public.artifact_versions", seeded.document.refKey+" version 2", "summary") {
+		t.Errorf("the listing does not name version 2 of %s, named after the cut head of the comment's body, as a row the run leaves holding it:\n%s",
+			seeded.document.refKey, strings.Join(listing.Listing, "\n"))
 	}
 }
