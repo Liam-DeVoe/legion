@@ -315,7 +315,7 @@ func Hook(t testing.TB) *Hooks {
 // a run already down, reported late, changes nothing.
 func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	e := eventOf(me)
-	var released, passed []*Hold
+	var released []*Hold
 	h.mu.Lock()
 	e.N = len(h.events) + 1
 	h.events = append(h.events, e)
@@ -338,8 +338,8 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 				continue
 			}
 			hold.fired, hold.event = true, e
+			close(hold.reached)
 			if hold.Released() {
-				passed = append(passed, hold)
 				continue
 			}
 			parked = hold
@@ -352,11 +352,7 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	for _, hold := range released {
 		hold.Release()
 	}
-	for _, hold := range passed {
-		close(hold.reached)
-	}
 	if parked != nil {
-		close(parked.reached)
 		<-parked.release
 	}
 }
