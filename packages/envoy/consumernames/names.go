@@ -435,14 +435,10 @@ func (n *Names) recordDeleteFloor(ctx context.Context, sel Selection, info *jets
 			return sel, stepError(sel.Logical, OperationDelete, op.Old, err)
 		}
 		record.Start = floor + 1
-	} else if lf := record.LastFloor; lf != nil && lf.Name == op.Old {
-		id, err := n.cfg.StreamID(ctx)
-		if err != nil {
-			return sel, err
-		}
-		if lf.StreamID == id {
-			record.Start = lf.Floor + 1
-		}
+	} else if start, ok, err := n.lastFloorStart(ctx, record, op.Old); err != nil {
+		return sel, err
+	} else if ok {
+		record.Start = start
 	}
 	record.Op.FloorRecorded = true
 	return n.write(ctx, sel, record)
@@ -468,19 +464,29 @@ func (n *Names) clearDeleted(ctx context.Context, sel Selection) (Selection, err
 	return next, err
 }
 
+// lastFloorStart is the sequence after record's last floor, when that floor was read from name on
+// this stream: both identities non-empty and equal, since a stream that carries no identity cannot
+// be told from one recreated with its sequences begun again.
+func (n *Names) lastFloorStart(ctx context.Context, record Record, name string) (uint64, bool, error) {
+	lf := record.LastFloor
+	if lf == nil || lf.Name != name || lf.StreamID == "" {
+		return 0, false, nil
+	}
+	id, err := n.cfg.StreamID(ctx)
+	if err != nil || id != lf.StreamID {
+		return 0, false, err
+	}
+	return lf.Floor + 1, true, nil
+}
+
 // safeStart is the start of a missing current: the sequence after the record's last floor when
-// that was read from the current on this stream, else the saved start, else ErrNoSafeStart. It
-// never searches the server's other consumers and never uses a first-create rule.
+// that was read from the current on this stream (lastFloorStart), else the saved start, else
+// ErrNoSafeStart. It never searches the server's other consumers and never uses a first-create
+// rule.
 func (n *Names) safeStart(ctx context.Context, sel Selection) (uint64, error) {
 	record := sel.Record
-	if lf := record.LastFloor; lf != nil && lf.Name == record.Current {
-		id, err := n.cfg.StreamID(ctx)
-		if err != nil {
-			return 0, err
-		}
-		if lf.StreamID == id {
-			return lf.Floor + 1, nil
-		}
+	if start, ok, err := n.lastFloorStart(ctx, record, record.Current); err != nil || ok {
+		return start, err
 	}
 	if record.Start > 0 {
 		return record.Start, nil
