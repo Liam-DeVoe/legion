@@ -166,6 +166,25 @@ func sessionOfProjects(entry session.SessionEntry, state session.State, projects
 		slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
 }
 
+// edgeSessionShown is sessionOfProjects for the edge's decisions that grant a session to projects:
+// the list, the registry and registration reads, and the send route's target. The entry is the
+// session cache's, which the watcher fills from entries that carry no headers, and a record the
+// server wrote at the session's key - a RePublish of another stream naming the key's subject, whose
+// body that stream's writer chose - reads as a record naming its key, a machine, a time and any
+// projects it likes. So an entry that would grant the session is confirmed by the session's newest
+// message on the bucket's stream, read from the stream's leader with the headers stored with it
+// (session.SessionRegistry.StoredByWriter): a message the server wrote, or none, reads as absent,
+// and so does a read that fails, the edge granting nothing it could not confirm. An entry that
+// grants nothing costs no read. The relay grants nothing on a stored record (edgeAdmissions), so it
+// asks no such read.
+func edgeSessionShown(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry, state session.State, projects []string) bool {
+	if !sessionOfProjects(entry, state, projects) {
+		return false
+	}
+	stored, err := sessions.StoredByWriter(ctx, entry.SessionID)
+	return err == nil && stored
+}
+
 // rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of
 // projects (contracts.ParseRoleClaimKey), in their order.
 func rolesOfProjects(roles, projects []string) []string {

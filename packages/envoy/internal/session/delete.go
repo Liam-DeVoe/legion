@@ -160,11 +160,20 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.ReadStored(ctx, sessionID, r.recordOf(sessionID)) })
+		read := func() (nats.KeyValueEntry, error) { return kv.ReadStored(ctx, sessionID, r.recordOf(sessionID)) }
+		if attempt > 0 {
+			// The delete before this one was refused at the revision its read reported. A
+			// record the server wrote - a RePublish of another stream, whose body can read as
+			// this session's - is reported by a direct get at that stream's sequence, so the
+			// retry reads the key's newest message from the stream's leader, with the headers
+			// it is stored with and at the sequence it is stored at.
+			read = func() (nats.KeyValueEntry, error) { return kv.NewestFromLeader(ctx, sessionID) }
+		}
+		entry, answered, err := bus.Bounded(ctx, read)
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, nats.ErrKeyNotFound) || (err == nil && entry.Operation() != nats.KeyValuePut) {
 			return EntryDeleted, nil
 		}
 		if err != nil {
@@ -172,21 +181,25 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 		}
 		revision := entry.Revision()
 		stored, err := DecodeEntry(sessionID, entry.Value())
+		if err == nil && bus.WrittenByServer(entry) {
+			err = fmt.Errorf("%w: stored under %s, it is a message the server wrote", ErrEntryUnbound, sessionID)
+		}
 		if err != nil {
 			// A value this build cannot read names no instance and no moment, so it belongs
 			// to nobody and is older than every stop: it is deleted as an entry that meets
 			// every condition is, and the delete is not blocked by a record no reader can act
 			// on. A value that is not this session's registration (DecodeEntry: another
-			// session's record copied here, a JetStream answer) is the same: every reader
-			// reads it as no record, and the instance and moment it names are another
-			// session's or none. What json.Unmarshal decoded before an error is dropped for
-			// that reason: on a type error it still fills every field it could read, wherever
-			// the bad field sits, so a value carrying a client instance id or a heartbeat
-			// would otherwise be compared against the caller's and kept — the opposite of what
-			// this branch decides. Its revision is the one the stream's leader reports
-			// (ReadStored), the sequence the value is stored at: a copy the server stored
-			// carries its source's Nats-Sequence header ahead of its own, and a delete fenced
-			// on the revision a direct get reports for it is refused at every attempt.
+			// session's record copied here, a JetStream answer, a message the server wrote)
+			// is the same: every reader reads it as no record, and the instance and moment it
+			// names are another session's, a writer's choice or none. What json.Unmarshal
+			// decoded before an error is dropped for that reason: on a type error it still
+			// fills every field it could read, wherever the bad field sits, so a value
+			// carrying a client instance id or a heartbeat would otherwise be compared against
+			// the caller's and kept — the opposite of what this branch decides. Its revision
+			// is the one the stream's leader reports (ReadStored, or the retry's read), the
+			// sequence the value is stored at: a copy the server stored carries its source's
+			// Nats-Sequence header ahead of its own, and a delete fenced on the revision a
+			// direct get reports for it is refused at every attempt.
 			stored = SessionEntry{}
 			r.logger().Warn("session registry deleting a malformed value under a conditional delete",
 				slog.String("key", entry.Key()),

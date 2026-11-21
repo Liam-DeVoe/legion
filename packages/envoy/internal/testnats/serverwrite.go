@@ -75,6 +75,41 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 	}
 }
 
+// RepublishesKey stores body as key's newest record in bucket the way a RePublish does: a stream
+// of its own, named after key, RePublishes the message it stores on a subject of its own to key's
+// subject, so the server stores body there with that stream's Nats-Stream, Nats-Subject and
+// Nats-Sequence headers, the last naming that stream's sequence (1) and not the one the bucket
+// stores it at. Any user that may create a stream and publish to it can write one this way. It
+// waits until the bucket's stream holds a message on key's subject newer than the one it held
+// before, read from the stream's leader, and returns that message's stream sequence.
+func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []byte) uint64 {
+	t.Helper()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	stream, subject := "REPUBLISH_"+bucket+"_"+key, "republish."+bucket+"."+key
+	if _, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{subject}, Storage: natsgo.MemoryStorage,
+		RePublish: &natsgo.RePublish{Source: subject, Destination: KVSubject(bucket, key)}}); err != nil {
+		t.Fatalf("create the republishing stream %s: %v", stream, err)
+	}
+	t.Cleanup(func() { _ = js.DeleteStream(stream) })
+	before := LastSequence(t, conn, bucket, key)
+	if _, err := js.Publish(subject, body); err != nil {
+		t.Fatalf("publish the body to %s: %v", subject, err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if stored := LastSequence(t, conn, bucket, key); stored > before {
+			return stored
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's RePublish was not stored under %s within 10 s (newest sequence %d)", stream, KVSubject(bucket, key), before)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // LastSequence is the stream sequence of the newest message bucket's stream holds for key, read
 // from the stream's leader, and 0 when it holds none.
 func LastSequence(t testing.TB, conn *natsgo.Conn, bucket, key string) uint64 {

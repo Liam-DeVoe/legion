@@ -993,6 +993,29 @@ func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID strin
 	return r.applyRead(sessionID, epoch, got, err)
 }
 
+// StoredByWriter reports whether sessionID's newest message on the session bucket's stream, read
+// from the stream's leader with the headers the stream stored with it (bus.KeyValue.NewestFromLeader),
+// is a record a writer stored: a put carrying none of the headers the server writes
+// (bus.WrittenByServer). A message the server wrote - a direct get's copy of another key's record,
+// or a RePublish of another stream naming the key's subject, whatever body that stream was given -
+// can read as a record of sessionID (DecodeEntry) naming any projects, and neither the watcher's
+// entries nor a direct get carry the headers that tell it apart. A key the stream holds no message
+// for, or whose newest message is a delete or purge marker, is no writer's record either. It is the
+// edge listener's confirmation of a session it is about to show or send to across what a cached
+// entry says (cmd/listener's edgeSessionShown); every other reader has no use for its cost, a read
+// the leader alone answers.
+func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) (bool, error) {
+	kv, _ := r.watcher.Handle()
+	newest, err := kv.NewestFromLeader(ctx, sessionID)
+	switch {
+	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
+	}
+	return newest.Operation() == nats.KeyValuePut && !bus.WrittenByServer(newest), nil
+}
+
 // applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err
 // are that read's answer, and epoch the watcher epoch it was taken in. A key the bucket refuses
 // is not found, since no session can register under it; any other error is the read's own. The
