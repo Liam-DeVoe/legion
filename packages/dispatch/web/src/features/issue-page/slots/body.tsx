@@ -7,6 +7,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAddressTarget } from "../address-target";
+import { useCurrentPoint } from "../current-point";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
 import { issueAddress } from "../issue-address";
@@ -57,6 +58,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "conversation", address.filter, named, memo),
     [address.filter, memo, named, root]
   );
+  // The conversation's current point (R12), read from the whole tree so a filter does not move it.
+  const point = useCurrentPoint(root);
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // The document a row of the outline is being edited in, and that document's one editor, which
@@ -86,6 +89,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
           onEditing={onEditing}
+          point={point}
           readsHeld={readsHeld}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

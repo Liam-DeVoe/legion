@@ -17,6 +17,7 @@ import { isViewer } from "../refs/actor";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
+import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
@@ -90,6 +91,7 @@ export function IssueTree({
   isClosed,
   onEditing,
   openBody,
+  point,
   readsHeld = true,
   request,
   reveal,
@@ -130,6 +132,10 @@ export function IssueTree({
    *  there, such as a decision waiting for their review (R7). It opens that body and takes no
    *  focus, which stays the reader's. */
   openBody?: string;
+  /** The ids from the issue down to the conversation's current point (`current-point.ts`'s
+   *  `useCurrentPoint`, R12), read from the whole tree rather than from the view, so a filter
+   *  does not move it. Undefined draws no mark. */
+  point?: readonly string[];
   /** Whether every read the tree is built from holds an answer, which a failed read never does
    *  (`slots/body.tsx`). Until then a node the tree lacks may not have arrived yet, so `q` and `w`
    *  with nowhere to go say nothing (`useTreeKeymap.ts`). Held unless the page says otherwise. */
@@ -261,6 +267,9 @@ export function IssueTree({
     head?.kind === "node" && head.node.id === root.id
       ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
       : drawn;
+  // The rows that carry the conversation's current point (R12). `rows` is a new list at every
+  // render, so there is nothing to memoise this on.
+  const points = pointMarks(rows, point);
   const breadcrumb: readonly TreeNode[] =
     rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
@@ -727,6 +736,7 @@ export function IssueTree({
             onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
             {...(openBody === undefined ? {} : { openBody })}
             pinned={pinned}
+            points={points}
             {...(report === undefined
               ? {}
               : { report: { line: report.line, row: report.row ?? tabStop } })}

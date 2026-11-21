@@ -1398,6 +1398,14 @@ function glyphNames(): Readonly<Record<string, string>> {
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 
 /**
+ * The value of `aria-current` on the row of the conversation's current point
+ * (dispatch://INFRA-3949 R12). A screen reader says it in its own words for the current location,
+ * so the page adds no hidden text and every row keeps its accessible name. It is no word the page
+ * draws, so no list of the page's words below holds it.
+ */
+export const CURRENT_POINT = "location" as const;
+
+/**
  * The words of `text`, as the page's vocabulary counts them: lowercase, each run of letters and
  * digits a word, an apostrophe inside a word kept, and every other character a break. A reader
  * of the page splits drawn text the same way, so the two sides compare word for word.

@@ -885,6 +885,23 @@ export const pageFocusedRow =
 export const pageOwnWordsRule = "shadow-[inset_2px_0_0_var(--color-page-ink)] pl-2.5";
 /** A folded branch's bullet keeps a halo of the hairline grey around it (`.card.collapsed`). */
 export const pageFoldedHalo = "shadow-[0_0_0_4px_var(--color-page-hair)]";
+/** The conversation's current point (dispatch://INFRA-3949 R12): a quiet ring 2 px off the
+ *  bullet's dot on the point's own row. It is an outline and not a shadow because a folded
+ *  branch's halo is a box-shadow, and the ring has to stand outside it without the two classes
+ *  fighting over one property; an outline is also still drawn in forced colours, where a shadow
+ *  is not. The colour is part B's `--color-page-quiet` (styles.css), which Tailwind serves as
+ *  `outline-page-quiet`. */
+export const pagePointRing = "outline-[1.5px] outline-offset-2 outline-page-quiet";
+/** The same ring on a folded branch's bullet (R12), 5 px off the dot so it stands outside the
+ *  4 px halo (`pageFoldedHalo`). */
+export const pagePointRingFolded = "outline-[1.5px] outline-offset-[5px] outline-page-quiet";
+/** A lighter ring on the bullet of each row above the current point on its path while the
+ *  point's own row is folded away (R12), so the reader sees which branch to open: thinner, and
+ *  in part B's `--color-page-bullet`, served as `outline-page-bullet`. An outline for the same
+ *  reasons as `pagePointRing`. */
+export const pagePathRing = "outline-1 outline-offset-2 outline-page-bullet";
+/** The path's ring on a folded branch's bullet (R12), outside its 4 px halo. */
+export const pagePathRingFolded = "outline-1 outline-offset-[5px] outline-page-bullet";
 /** Each kind of node's colour (the prototype's `--k`): its bullet's fill, and the words of the
  *  tag that names a typed kind at the right of its row (R34). An agent's words have the quiet
  *  grey bullet and no tag; a person's the ink. The tag's word says the kind, and the author's

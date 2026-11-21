@@ -21,7 +21,13 @@ import {
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
-import { pageFailedText, pageMutedText } from "../../theme/classes";
+import {
+  pageFailedText,
+  pageMutedText,
+  pagePathRing,
+  pagePathRingFolded,
+  pagePointRing,
+} from "../../theme/classes";
 import type { UploadResult } from "../artifacts/ArtifactUpload";
 import { heldSends } from "../conversation/held-sends";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
@@ -31,6 +37,7 @@ import { nodeRouteFromHref, shortForm } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { useCurrentPoint } from "./current-point";
 import { IssueComposer } from "./IssueComposer";
 import { IssueTree } from "./IssueTree";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
@@ -274,6 +281,8 @@ function Page({
   root: TreeNode;
 }): ReactNode {
   held.writer = useOutlineWriter();
+  // The conversation's current point, as the body slot reads it from the whole tree (R12).
+  const point = useCurrentPoint(root);
   return (
     <div data-issue-page="">
       {place.viewOn === true ? (
@@ -288,6 +297,7 @@ function Page({
           holdsEscape={false}
           isClosed={place.closed === true}
           onEditing={() => {}}
+          point={point}
           reveal={undefined}
           root={root}
           rootRow
@@ -2189,4 +2199,205 @@ test("the box draws an upload's lines and a late send's in the page's colours", 
   } finally {
     realClock();
   }
+});
+
+// The conversation's current point (dispatch://INFRA-3949 R12): the outline marks on one row the
+// node the reader's next turn answers - the box's target while the reader holds one, else the open
+// question that waits on them, else the node of the newest act - with `aria-current="location"`
+// and a quiet ring on its bullet, and while that row is folded away a lighter ring on the bullet
+// of each row above it on its path. The outlines below carry the time of each act, so the newest
+// of them is known.
+
+/** The time of an act of the cases below, `hours` into the day: the later act has more hours. */
+function hour(hours: number): string {
+  return `2026-11-05T${String(hours).padStart(2, "0")}:00:00Z`;
+}
+
+/** `made` as the model holds it once it records when it was made, as it does for a turn, a
+ *  question and a result. */
+function madeAt(made: TreeNode, at: string): TreeNode {
+  return { ...made, at };
+}
+
+/** The outline of the target's and the new act's cases: bob's comment, then the reader's own,
+ *  the newer, and a statement of the spec, which is no act; then `later`, newer still. */
+function timedOutline(...later: TreeNode[]): TreeNode {
+  return node({
+    children: [
+      madeAt(commentNode("comment-1", BOB, "Earlier words"), hour(1)),
+      madeAt(commentNode("comment-2", ALICE, "My own words"), hour(2)),
+      statementNode(),
+      ...later,
+    ],
+    id: KEY,
+    type: "issue",
+  });
+}
+
+/** The outline of the open question's case: question ask-1, asked first, waiting on the reader
+ *  until `ask` says otherwise, and the reader's comment after it; then `later`. */
+function questionOutline(ask: Partial<TreeNode>, ...later: TreeNode[]): TreeNode {
+  return node({
+    children: [
+      { ...madeAt(askNode("ask-1", "open"), hour(1)), waiting: true, ...ask },
+      madeAt(commentNode("comment-2", ALICE, "My own words"), hour(2)),
+      ...later,
+    ],
+    id: KEY,
+    type: "issue",
+  });
+}
+
+/** The outline of the folded path's case: bob's comment, his reply under it, and under that the
+ *  reader's answer to the reply, the newest act, two levels down; and a statement of the spec. */
+function branchOutline(): TreeNode {
+  const answer = madeAt(commentNode("comment-1b", ALICE, "My answer to it"), hour(3));
+  const reply = madeAt(commentNode("comment-1a", BOB, "A reply"), hour(2));
+  const first = madeAt(commentNode("comment-1", BOB, "Earlier words"), hour(1));
+  return node({
+    children: [
+      { ...first, children: [{ ...reply, children: [answer], held: 1 }], held: 2 },
+      statementNode(),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+}
+
+/** What the outline draws of the current point, in reading order: each row that carries
+ *  `aria-current`, by its node id and the attribute's value, and each row that carries the mark,
+ *  by its node id and its `data-current-point`. */
+interface DrawnPoint {
+  readonly current: readonly string[];
+  readonly marks: readonly string[];
+}
+
+/** The current point as the outline draws it now (`DrawnPoint`). */
+function drawnPoint(): DrawnPoint {
+  const rows = [...document.querySelectorAll<HTMLElement>("[data-node-row]")];
+  return {
+    current: rows
+      .filter((row) => row.hasAttribute("aria-current"))
+      .map((row) => `${row.dataset.nodeId} ${row.getAttribute("aria-current")}`),
+    marks: rows
+      .filter((row) => row.dataset.currentPoint !== undefined)
+      .map((row) => `${row.dataset.nodeId} ${row.dataset.currentPoint}`),
+  };
+}
+
+/** The current point as `drawnPoint` reads it where it is the row of `nodeId`, and no other. */
+function pointOn(nodeId: string): DrawnPoint {
+  return { current: [`${nodeId} location`], marks: [`${nodeId} here`] };
+}
+
+/** The point folded away below the rows of `nodeIds`, which carry the path's mark, and no row
+ *  `aria-current`. */
+function pathThrough(...nodeIds: string[]): DrawnPoint {
+  return { current: [], marks: nodeIds.map((nodeId) => `${nodeId} path`) };
+}
+
+/** The dot of the bullet of the row of `nodeId`, which carries the ring. */
+function dotOf(nodeId: string): HTMLElement {
+  const dot = rowOf(nodeId).querySelector<HTMLElement>("[data-node-bullet] i");
+  if (dot === null) throw new Error(`the row of ${nodeId} drew no bullet`);
+  return dot;
+}
+
+// R12: at rest the point is the newest act's row, the reader's comment; a Reply on bob's older
+// comment moves it there and off the reader's; and ending the reply - with Escape in the box, or
+// with the target line's control that writes on the issue instead - moves it back. No other row
+// carries the mark or `aria-current` at any step.
+test("the current point follows the box's target as it is set and ended", async () => {
+  const user = userEvent.setup();
+  const page = renderPage({}, timedOutline());
+  expect(drawnPoint()).toEqual(pointOn("comment-2"));
+
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  expect(drawnPoint()).toEqual(pointOn("comment-1"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(drawnPoint()).toEqual(pointOn("comment-2"));
+
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-1")));
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(drawnPoint()).toEqual(pointOn("comment-2"));
+});
+
+// R12: a new act landing moves the point to it - here the read a landed comment makes, which
+// draws the outline again with bob's newer comment in it - and the mark is no control and takes no
+// focus: the focus stays on the row the reader is on, and the point's row is no tab stop.
+test("a new act landing moves the current point to it, and the mark takes no focus", async () => {
+  const page = renderPage({}, timedOutline());
+  expect(drawnPoint()).toEqual(pointOn("comment-2"));
+  await act(async () => rowOf("comment-1").focus());
+  const focused = document.activeElement;
+  expect(focused).toBe(rowOf("comment-1"));
+
+  page.redrawOutline(timedOutline(madeAt(commentNode("comment-3", BOB, "Newer words"), hour(3))));
+  await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-3")));
+  expect(document.activeElement).toBe(focused);
+  expect(rowOf("comment-3")).toHaveAttribute("tabindex", "-1");
+});
+
+// R12: with nothing aimed, a question that waits on the reader is the point, though the reader's
+// comment came after it. Answered, it waits on nobody, and the point is the newest act: the
+// question itself, by its answer given after that comment, and then a newer act once one lands.
+test("the current point is the question that waits on the reader, then the newest act once it is answered", async () => {
+  const page = renderPage({}, questionOutline({}));
+  expect(drawnPoint()).toEqual(pointOn("ask-1"));
+
+  const answered: Partial<TreeNode> = {
+    answer: { at: hour(3), by: BOB, selected: ["No"], text: "Not yet" },
+    question: false,
+    state: "answered",
+    waiting: false,
+  };
+  page.redrawOutline(questionOutline(answered));
+  await waitFor(() => expect(rowOf("ask-1")).toHaveAttribute("data-node-state", "answered"));
+  expect(drawnPoint()).toEqual(pointOn("ask-1"));
+
+  page.redrawOutline(
+    questionOutline(answered, madeAt(commentNode("comment-3", BOB, "Newer words"), hour(4)))
+  );
+  await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-3")));
+});
+
+// R12: while the point's row is folded away, each row above it on its path carries the path's
+// mark and the lighter ring - outside the halo on a folded branch's bullet - and no row carries
+// `aria-current`; unfolded, the point's own row alone is marked, with the quiet ring. The reply's
+// Fold, pressed by hand, puts the path back, and its Unfold the point.
+test("the rows above a folded-away point carry the path's ring, and its own row the point's", async () => {
+  const user = userEvent.setup();
+  renderPage({}, branchOutline());
+  // The page opens with bob's comment folded, the newest act two levels under it.
+  expect(drawnPoint()).toEqual(pathThrough("comment-1"));
+  expect(dotOf("comment-1")).toHaveClass(pagePathRingFolded);
+
+  // Bob's comment unfolded and his reply still folded: both are on the path, each ringed as its
+  // bullet is drawn.
+  await user.click(within(rowOf("comment-1")).getByRole("button", { name: CONTROL_LABELS.unfold }));
+  await waitFor(() => expect(drawnPoint()).toEqual(pathThrough("comment-1", "comment-1a")));
+  expect(dotOf("comment-1")).toHaveClass(pagePathRing);
+  expect(dotOf("comment-1a")).toHaveClass(pagePathRingFolded);
+
+  const toggle = (name: string) =>
+    user.click(within(rowOf("comment-1a")).getByRole("button", { name }));
+  await toggle(CONTROL_LABELS.unfold);
+  await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-1b")));
+  expect(dotOf("comment-1b")).toHaveClass(pagePointRing);
+  expect(dotOf("comment-1")).not.toHaveClass("outline-page-bullet");
+
+  await toggle(CONTROL_LABELS.fold);
+  await waitFor(() => expect(drawnPoint()).toEqual(pathThrough("comment-1", "comment-1a")));
+  expect(dotOf("comment-1")).toHaveClass(pagePathRing);
+  expect(dotOf("comment-1a")).toHaveClass(pagePathRingFolded);
+  await toggle(CONTROL_LABELS.unfold);
+  await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-1b")));
+  expect(dotOf("comment-1b")).toHaveClass(pagePointRing);
 });

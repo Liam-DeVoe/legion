@@ -20,6 +20,10 @@ import {
   pageKindTag,
   pageMutedText,
   pageOwnWordsRule,
+  pagePathRing,
+  pagePathRingFolded,
+  pagePointRing,
+  pagePointRingFolded,
   pageQuietText,
   pageRowAct,
   pageRowActs,
@@ -30,6 +34,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
+import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -54,6 +59,7 @@ import {
   ANSWER_LINES,
   type AuthorKind,
   CONTROL_LABELS,
+  CURRENT_POINT,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
@@ -110,6 +116,7 @@ export function NodeRow({
   author,
   body,
   context,
+  current,
   document,
   editing,
   expanded,
@@ -143,6 +150,10 @@ export function NodeRow({
   /** Whether the view draws this row only as the ancestor of a match: the row is faint and
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
+  /** Whether this row carries the conversation's current point: `here` on the point's own row,
+   *  `path` on a row above it on its path while its own row is folded away (R12); undefined on
+   *  every other row. */
+  current?: PointMark;
   /** The document this row's node is a block of, which its body writes against: a decision's
    *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
    *  no block of a document of this issue. */
@@ -253,9 +264,13 @@ export function NodeRow({
   const more = clamp !== undefined && !body;
   return (
     <div
+      // The conversation's current point (R12), named by the screen reader's own words for the
+      // current location. It is no control: it takes no focus and answers no press.
+      aria-current={current === "here" ? CURRENT_POINT : undefined}
       aria-expanded={expanded}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-current-point={current}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -286,6 +301,7 @@ export function NodeRow({
       <div className={`${NODE_ROW_LAYOUT.box} ${focused ? pageFocusedRow : ""}`} data-node-card="">
         <Bullet
           collapsed={collapsed}
+          current={current}
           expanded={expanded}
           onToggle={onToggle}
           tabStops={tabStops}
@@ -596,15 +612,21 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
  * would open its body, and a folded row with its body open draws its words whole, not the one
  * line the fold is for (R1). On a phone the fold control's box is 24 px square, the least target
  * WCAG 2.5.8 allows (`NODE_ROW_LAYOUT.foldControl`).
+ *
+ * A row that carries the conversation's current point rings the dot (R12, `pointRing`): quietly
+ * on the point's own row, lighter on each row above it on its path while its own row is folded
+ * away. The ring is drawn, never a control, and moves no focus.
  */
 function Bullet({
   collapsed,
+  current,
   expanded,
   onToggle,
   tabStops,
   tone,
 }: {
   collapsed: boolean;
+  current?: PointMark;
   expanded?: boolean;
   onToggle: () => void;
   tabStops: boolean;
@@ -613,7 +635,7 @@ function Bullet({
   const dot = (
     <i
       aria-hidden="true"
-      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
+      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""} ${pointRing(current, collapsed)}`}
     />
   );
   if (expanded === undefined) {
@@ -637,6 +659,15 @@ function Bullet({
       {dot}
     </button>
   );
+}
+
+/** The ring on the bullet's dot of a row that carries the conversation's current point (R12): the
+ *  quiet ring on the point's own row and the lighter one on a row above it on its path, each set
+ *  outside the halo on a folded branch's dot; nothing on every other row. */
+function pointRing(current: PointMark | undefined, collapsed: boolean): string {
+  if (current === "here") return collapsed ? pagePointRingFolded : pagePointRing;
+  if (current === "path") return collapsed ? pagePathRingFolded : pagePathRing;
+  return "";
 }
 
 /**

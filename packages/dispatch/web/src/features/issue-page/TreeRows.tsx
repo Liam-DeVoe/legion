@@ -5,6 +5,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
+import type { PointMark } from "./current-point";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
@@ -35,6 +36,7 @@ export function TreeRows({
   onToggle,
   openBody,
   pinned,
+  points,
   report,
   rows,
   tabStop,
@@ -62,6 +64,9 @@ export function TreeRows({
   openBody?: string;
   /** The keys of the rows whose bodies the reader pinned open. */
   pinned: ReadonlySet<string>;
+  /** Each row that carries the conversation's current point, by its key (`current-point.ts`'s
+   *  `pointMarks`, R12): no row is marked where it is undefined. */
+  points?: ReadonlyMap<string, PointMark>;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
@@ -97,6 +102,7 @@ export function TreeRows({
         }
         const place = documentOfNode(row.node.id, artifacts);
         const mark = threads.get(row.node.id);
+        const current = points?.get(key);
         return (
           <NodeRow
             {...(row.node.answer === undefined
@@ -115,6 +121,7 @@ export function TreeRows({
               drawsBody(cycle, row.level)
             }
             context={context.has(row.node.id)}
+            {...(current === undefined ? {} : { current })}
             {...(place === undefined ? {} : { document: place.artifact })}
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
