@@ -11,4 +11,4 @@ body: |-
   `codegraph({ action: … })`, is gone.
 time: 2026-11-21T03:21:42Z
 custom:
-    Issue: codegraph-role-prompts
+    Issue: pr4732
