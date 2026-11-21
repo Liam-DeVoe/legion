@@ -13,9 +13,10 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -36,7 +37,9 @@ import {
   agentsOwn,
   agentWritten,
   firstLaunch,
+  hostProvided,
   nameWords,
+  runEntries,
   runIdentity,
   SCENARIOS,
   textWords,
@@ -68,6 +71,9 @@ const GH_STANDIN = bundled(path.join(import.meta.dir, "gh-standin.ts"));
 const withoutDocker = skipWithout("docker");
 // The routes rule reads a label's daemon's routes with daemon-routes.go, which `go run` compiles.
 const withoutGo = skipWithout("go");
+// A label's real install (composeRuns) runs make_omp_home, which reads the caller's jj
+// configuration, and install-plugin-profile.sh, which runs the pinned Oh My Pi through mise.
+const withoutInstall = skipWithout("mise", "jj");
 /** This checkout, the one the head label is built from. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
 /** The checkout a run built here names in its built-from unless its row names another. */
@@ -11001,6 +11007,17 @@ sleep() { command sleep 0.05; }`;
         place: "<run>/jj.toml",
         options: () => ({ files: { "jj.toml": '[user]\nname = "rig-worker"\n' } }),
       },
+      {
+        // A file cmd_profile writes into the label's HOME, which base_env copies into the run:
+        // the guard reads it (run-names.ts's RIG_HOME) where it passes over the label's plugins
+        // beside it (LABELS_OWN).
+        what: "the profile's settings in the HOME the run copies from the label's install",
+        word: "threads-closed",
+        place: "<run>/home/.omp/profiles/legion/agent/config.yml",
+        options: () => ({
+          files: { "home/.omp/profiles/legion/agent/config.yml": "# the threads-closed run\n" },
+        }),
+      },
     ];
     const missed: string[] = [];
     for (const plant of plants) {
@@ -11074,6 +11091,110 @@ sleep() { command sleep 0.05; }`;
     });
   });
 
+  // Catches: a guard that passes over a link of the run to a path outside it and outside the trees
+  // the label and the host provide (the architect's ruling of 2026-11-21T17:22:22Z). The walker
+  // reads the path a link names and never what it points to: inside the run the walker reads that
+  // path as itself, and the label's install and the host's native module cache and git exec path
+  // are the product's and the host's, not read. Anything else is neither the rig's to read nor the
+  // label's or the host's to pass over, so the launch is refused, naming the link.
+  test("a link of the run to a file outside it and the trees the label and the host provide refuses the launch, naming the link", () => {
+    // No path of the run names `link`, a case of askgate's (SCENARIOS).
+    const work = freshDir("launch-pointer-outside");
+    const name = "threads-closed-correct-head-1";
+    const run = runDirOf(work, name);
+    const target = path.join(work, "elsewhere", "notes.md");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "Move the nightly export to 04:00 UTC.\n");
+    mkdirSync(path.join(run, "cwd"), { recursive: true });
+    symlinkSync(target, path.join(run, "cwd", "notes.md"));
+    const ran = path.join(run, "agent-ran");
+    const { result } = launched(work, name, `: >${ran}`);
+    expect({
+      code: result.code,
+      refused: result.stderr.split("\n").find((line) => line.includes("cannot be read whole")),
+      ran: existsSync(ran),
+    }).toEqual({
+      code: 1,
+      refused: expect.stringContaining(
+        `the world of ${path.basename(run)} cannot be read whole: <run>/cwd/notes.md is a link to ${target}, outside the run, the label's install (${installOf(work, "head")}),`
+      ),
+      ran: false,
+    });
+  });
+
+  // Catches: a walker that enters a link of the run, or opens what a link points to outside the
+  // run. INFRA-764's round 31 at c42409bc: Bun's recursive readdirSync enters a link to a
+  // directory, so the walker read the label's plugins through the links of the run's HOME into
+  // <work>/installs/<id>/ and the host's native module cache through its .omp/natives link
+  // (124 MiB), refused every run on `var SPEC_WRITING_POINTER` in pi-envoy's dist/dispatch.js and
+  // reached 1,170 MiB. Here the run holds a link of each kind the rig makes (into the label's
+  // install, the host's natives, the host's git exec path, and the run itself), each tree outside
+  // holding that word, and its HOME holds the word in a file of the label's Oh My Pi (agent.db),
+  // which the rig does not write (run-names.ts's RIG_HOME). The guard, run as launch runs it with
+  // the host's two trees read from its environment (HOME, GIT_EXEC_PATH), passes; and every file
+  // and directory of the trees outside keeps the access time the row gave it, so the walker opened
+  // nothing whose real path is outside the run. The row reads a file of its own after the guard as
+  // the control: on a filesystem that keeps no access time it fails rather than seeing nothing.
+  test("the guard opens nothing a link of the run points to outside it, and reads nothing of the run's HOME the rig did not write", () => {
+    const work = freshDir("guard-trees");
+    const run = path.join(work, "runs", "0123456789ab");
+    const install = path.join(work, "installs", "ba9876543210");
+    const host = path.join(work, "host-home");
+    const gitExec = path.join(work, "git-core");
+    const word =
+      'var SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs says.";\n';
+    for (const [file, text] of [
+      [path.join(install, "pi-envoy", "dist", "dispatch.js"), word],
+      [path.join(host, ".omp", "natives", "18.18.6", "pi_natives.linux-x64-modern.node"), word],
+      [path.join(gitExec, "git-checkout"), word],
+      [path.join(run, "prompt.txt"), "Review the pull request.\n"],
+      [path.join(run, "cwd", "notes.md"), "Move the nightly export to 04:00 UTC.\n"],
+      [path.join(run, "home", ".omp", "profiles", "legion", "agent", "agent.db"), word],
+      [path.join(work, "profiles", "head", "checkout"), `${work}\n`],
+    ]) {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, text);
+    }
+    for (const [link, target] of [
+      ["home/.omp/natives", path.join(host, ".omp", "natives")],
+      [
+        "home/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-envoy",
+        path.join(install, "pi-envoy"),
+      ],
+      ["lib/git-core/git-checkout", path.join(gitExec, "git-checkout")],
+      ["cwd/notes-link.md", "notes.md"],
+    ]) {
+      mkdirSync(path.dirname(path.join(run, link)), { recursive: true });
+      symlinkSync(target, path.join(run, link));
+    }
+    const outside = [install, path.join(host, ".omp"), gitExec].flatMap((tree) => [
+      tree,
+      ...runEntries(tree).map(({ file }) => path.join(tree, file)),
+    ]);
+    const control = path.join(work, "control");
+    writeFileSync(control, "read after the guard\n");
+    for (const one of [...outside, control]) utimesSync(one, 0, statSync(one).mtime);
+    const guard = Bun.spawnSync(
+      [
+        "bun",
+        path.join(import.meta.dir, "run-names.ts"),
+        "guard",
+        run,
+        path.join(run, "sessions"),
+        work,
+        install,
+      ],
+      { env: { ...childEnv, HOME: host, GIT_EXEC_PATH: gitExec }, stdout: "pipe", stderr: "pipe" }
+    );
+    readFileSync(control);
+    expect({
+      code: guard.exitCode,
+      stderr: guard.stderr.toString(),
+      opened: outside.filter((one) => statSync(one).atimeMs !== 0),
+      control: statSync(control).atimeMs !== 0,
+    }).toEqual({ code: 0, stderr: "", opened: [], control: true });
+  });
+
   /** The batch's services and what a run reaches of them, over rig.sh sourced whole: the
    * namespace and tmux probes and the listener, which write nothing into a run; the given
    * Postgres and NATS, which nothing here reaches; the Envoy listener's and the Dispatch server's
@@ -11125,10 +11246,15 @@ sleep() { command sleep 0.05; }`;
    * checkout as cmd_profile records one, the batch's services come up as services_up brings them
    * up, and a run that cannot be composed is named on stderr (`could not compose <run>`). Both
    * labels are built from this checkout, since the base label's own checkout is none this test
-   * has; each label's install is what load_label reads of one (its profile's settings), since
-   * `rig.sh profile` packs the plugins with the pinned Oh My Pi and installs a model route whose
-   * credentials no test holds. Returns bash's result and each run as the rig left it, archived
-   * (stop_run), by the name its record gives it. */
+   * has. Each label's install is a real one, made as cmd_profile makes it (make_omp_home, then
+   * install-plugin-profile.sh for pi-envoy and pi-legion, which packs each plugin and installs it
+   * with the pinned Oh My Pi through the caller's mise, then install_model_route), so the HOME
+   * every run copies holds the plugins' links into the install and the natives link into the
+   * host's cache, as a batch's does: the route is the provider route, on a provider file of the
+   * row's own whose key command no run calls, since the gateway and key-file routes need
+   * credentials no test holds; and no superpowers skills are copied, which a model's read probes.
+   * Returns bash's result and each run as the rig left it, archived (stop_run), by the name its
+   * record gives it. */
   function composeRuns(
     dir: string,
     labels: readonly string[],
@@ -11157,22 +11283,43 @@ sleep() { command sleep 0.05; }`;
         ([, value]) => value !== ""
       )
     );
+    const providerFile = path.join(dir, "provider.yml");
+    writeFileSync(
+      providerFile,
+      `${JSON.stringify({
+        providers: {
+          gateway: {
+            api: "anthropic-messages",
+            baseUrl: "https://gateway.internal.example/anthropic",
+            apiKey: "!cat /dev/null",
+          },
+        },
+      })}\n`
+    );
     const result = bash(
       [
         `. ${JSON.stringify(path.join(import.meta.dir, "rig.sh"))}`,
         ...WHOLE_WORLD_SERVICES,
         ...stubs,
-        // Each label's profile, as cmd_profile records it, on this checkout.
+        // Each label's profile, as cmd_profile records it, on this checkout, and its install as
+        // cmd_profile makes it, on the caller's own PATH and mise, which hold the pinned Oh My Pi
+        // that the stand-in mise above would answer for.
         "for label in $LABELS; do",
         "  id=$(printf '%s' \"$label\" | sha256sum | cut -c1-12)",
         "  P=$work/profiles/$label I=$work/installs/$id",
-        '  mkdir -p "$P" "$I/home/.omp/profiles/legion/agent"',
+        '  mkdir -p "$P" "$I"',
         '  printf \'%s\\n\' "$root" >"$P/checkout"',
         "  printf 'legion\\n' >\"$P/profile\"",
         '  printf \'%s\\n\' "$id" >"$P/install"',
         '  cp "$root/.omp-pin" "$P/pin"',
         '  printf \'checkout %s\\n\' "$root" >"$P/built-from"',
-        "  printf 'extensionHandlers:\\n  toolCallTimeoutMs: 120000\\n' >\"$I/home/.omp/profiles/legion/agent/config.yml\"",
+        "  (",
+        "    export PATH=$INSTALL_PATH MISE_DATA_DIR=$INSTALL_MISE_DATA_DIR",
+        '    . "$root/scripts/e2e/lib/omp-home.sh" && make_omp_home "$I/home" &&',
+        '      bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile legion --home "$I/home" --dest "$I/pi-envoy" &&',
+        '      bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile legion --home "$I/home" --dest "$I/pi-legion" &&',
+        '      LEGION_E2E_MODEL_ROUTE=provider LEGION_E2E_MODEL_PROVIDER=gateway LEGION_E2E_MODEL_PROVIDER_FILE=$PROVIDER_FILE install_model_route "$root" legion "$I"',
+        '  ) >"$P/install.log" 2>&1 || { printf \'could not install label %s: %s\\n\' "$label" "$(tail -n 5 "$P/install.log")" >&2; exit 1; }',
         '  : >"$P/superpowers"',
         '  : >"$P/ready"',
         "done",
@@ -11199,6 +11346,13 @@ sleep() { command sleep 0.05; }`;
         ...go,
         TMPDIR: SCRATCH,
         PATH: `${bin}:${childEnv.PATH}`,
+        INSTALL_PATH: childEnv.PATH,
+        // The caller's own mise store, where its mise installed the pin (mise's default under the
+        // caller's HOME, which childEnv's HOME is not).
+        INSTALL_MISE_DATA_DIR:
+          process.env.MISE_DATA_DIR ??
+          path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"), "mise"),
+        PROVIDER_FILE: providerFile,
         LABELS: labels.join(" "),
         SKILL_SCENARIOS_WORK: rigWork,
         SKILL_SCENARIOS_SOURCE: "nightly-export",
@@ -11231,11 +11385,25 @@ sleep() { command sleep 0.05; }`;
   // The files are read through the guard's own walker (run-names.ts's `worldFiles`) as it reads
   // them at a run's first launch, which no launch on the run's record (logs/launches) makes: it
   // passes over AGENTS_OWN and reads what an agent can write (AGENT_WRITTEN) as the rig wrote it,
-  // and reads services-from less the rig's own directory, a residual of the ruling of
-  // 2026-11-18T08:40Z.
-  test.skipIf(withoutGo)(
+  // reads services-from less the rig's own directory, a residual of the ruling of
+  // 2026-11-18T08:40Z, reads of the HOME the rig's own files alone (RIG_HOME), and reads each link
+  // by the path it names, refusing one outside the run and the trees the label and the host
+  // provide. Each label is on a real install (composeRuns), so the walker meets the links of the
+  // HOME the guard meets: INFRA-764's round 31 at c42409bc, where the row's labels had a HOME of
+  // one file, the guard went through those links into the plugins and the host's natives, refused
+  // every run and was killed at 1,170 MiB. So the row also names what the walker met of the HOME,
+  // and holds the guard's own peak (ru_maxrss), as launch runs it in each run, under
+  // GUARD_PEAK_LIMIT.
+  test.skipIf(withoutGo || withoutInstall)(
     "no file rig.sh writes, copies or builds into a run before its agent starts names a word of the measurement",
     () => {
+      /** The most the guard may hold at once, as launch runs it on a composed run: 256 MiB. The
+       * peaks measured on 2026-11-21 in a Legion pod (gVisor, where a bare `bun -e 1` peaks at
+       * 139 MiB): 167.9 to 193.5 MiB over this row's 38 runs (193.5 for
+       * reviewer-text-findings-defect-base-1), and 182.6 MiB over a copy of round 31's run
+       * 4f4d19499cf8 with its services-from named for this checkout. At c42409bc the guard peaked
+       * at 1,170 MiB on that run, and the pod's memory guard killed it near 1 GiB. */
+      const GUARD_PEAK_LIMIT = 256 * 1024 * 1024;
       const labels = ["head", "base"];
       const runs = labels.flatMap((label) =>
         Object.entries(SCENARIOS).flatMap(([scenario, { variable, cases }]) =>
@@ -11245,42 +11413,94 @@ sleep() { command sleep 0.05; }`;
           }))
         )
       );
+      const dir = freshDir("whole-world");
+      // launch's guard, run through a program that records its peak, `<run> <bytes>` a line.
+      const peaks = path.join(dir, "peaks");
+      const measure = path.join(dir, "measure.ts");
+      writeFileSync(
+        measure,
+        [
+          'import { appendFileSync } from "node:fs";',
+          "const argv = Bun.argv.slice(2);",
+          'const guard = Bun.spawnSync(["bun", ...argv], { stdio: ["inherit", "inherit", "inherit"] });',
+          `appendFileSync(${JSON.stringify(peaks)}, \`\${argv[2]} \${guard.resourceUsage.maxRSS}\\n\`);`,
+          "process.exit(guard.exitCode ?? 1);",
+          "",
+        ].join("\n")
+      );
       const { result, composed } = composeRuns(
-        freshDir("whole-world"),
+        dir,
         labels,
         runs.map(({ argument }) => argument),
-        [],
+        [
+          'eval "unmeasured_$(declare -f bun)"',
+          `bun() { if [ "$1" = "$here/run-names.ts" ] && [ "$2" = guard ]; then command bun ${JSON.stringify(measure)} "$@"; else unmeasured_bun "$@"; fi; }`,
+        ],
         { SKILL_SCENARIOS_COMPOSE_ONLY: "1" }
       );
       // Every file of each run as the guard reads it at the first launch, through its own walker
-      // (run-names.ts's `worldFiles`), by its path and its text.
+      // (run-names.ts's `worldFiles`), by its path and its text, with the trees the run's label
+      // and the host provide as the guard reads them (childEnv's HOME, which make_omp_home linked
+      // the install's natives under).
       const vocab = vocabulary(labels);
       const named: string[] = [];
       const first: string[] = [];
+      const home = new Set<string>();
       for (const [name, run] of [...composed].sort()) {
         if (!firstLaunch(run)) first.push(name);
-        for (const { file, text } of worldFiles(run)) {
-          const inName = textWords(file, vocab);
-          const word = inName ?? textWords(text, vocab);
-          if (word === undefined) continue;
-          const at = Math.max(0, text.toLowerCase().replaceAll("_", "-").indexOf(word));
-          named.push(
-            `${name}: <run>/${file} names "${word}"${inName === undefined ? `: ${text.slice(Math.max(0, at - 60), at + 60)}` : ""}`
-          );
+        const { label } = JSON.parse(readFileSync(`${run}.json`, "utf8"));
+        try {
+          for (const { file, text, link } of worldFiles(
+            run,
+            hostProvided(installOf(path.join(dir, "work"), label), childEnv)
+          )) {
+            if (file.startsWith("home/")) home.add(`${link ? "link" : "file"} <run>/${file}`);
+            const inName = textWords(file, vocab);
+            const word = inName ?? textWords(text, vocab);
+            if (word === undefined) continue;
+            const at = Math.max(0, text.toLowerCase().replaceAll("_", "-").indexOf(word));
+            named.push(
+              `${name}: <run>/${file} names "${word}"${inName === undefined ? `: ${text.slice(Math.max(0, at - 60), at + 60)}` : ""}`
+            );
+          }
+        } catch (error) {
+          named.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
+      const measured = (existsSync(peaks) ? readFileSync(peaks, "utf8") : "")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => line.split(" "));
       expect({
         code: result.code,
         stderr: result.stderr,
         runs: [...composed.keys()].sort(),
         named,
         notFirst: first,
+        home: [...home].sort(),
+        guards: measured.length,
+        over: measured
+          .filter(([, bytes]) => Number(bytes) > GUARD_PEAK_LIMIT)
+          .map(
+            ([at, bytes]) =>
+              `${path.basename(at ?? "")}: ${(Number(bytes) / 1048576).toFixed(1)} MiB`
+          ),
       }).toEqual({
         code: 0,
         stderr: "",
         runs: runs.map(({ name }) => name).sort(),
         named: [],
         notFirst: [],
+        home: [
+          "file <run>/home/.jjconfig-operator-paths.toml",
+          "file <run>/home/.omp/profiles/legion/agent/config.yml",
+          "file <run>/home/.omp/profiles/legion/agent/models.yml",
+          "link <run>/home/.omp/natives",
+          "link <run>/home/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-envoy",
+          "link <run>/home/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-legion",
+        ],
+        guards: runs.length,
+        over: [],
       });
     },
     1_200_000
@@ -11368,7 +11588,7 @@ await state(file, Number(turn), run);
   // on the agent's own ask, which says `text-only`: seed.ts's `state` prints no ask's text into
   // <run>/fixture.log, which the guard reads at every turn; the same word in the seed's line of
   // fixture.log, which the rig wrote before the first turn (spec-writing-head-2), refuses that run.
-  test.skipIf(withoutGo)(
+  test.skipIf(withoutGo || withoutInstall)(
     "after a run's first launch the rig writes nothing into what an agent of the run can write",
     () => {
       const dir = freshDir("later-launches");
@@ -11397,12 +11617,16 @@ await state(file, Number(turn), run);
         { LAUNCHED: launchedDir, STATE_READER: reader }
       );
       /** The files of the run copied to `at` that the first launch reads and no later one does:
-       * AGENT_WRITTEN's, outside AGENTS_OWN, each a regular file, by its path under the run. */
+       * AGENT_WRITTEN's, outside AGENTS_OWN, each a regular file by its bytes and each link by the
+       * path it names, by its path under the run. No link is entered (run-names.ts's
+       * `runEntries`): the HOME's links reach the label's plugins and the host's natives. */
       const written = (at: string) => {
         const files = new Map<string, Buffer>();
-        for (const file of readdirSync(at, { recursive: true, encoding: "utf8" }))
-          if (agentWritten(file) && !agentsOwn(file) && lstatSync(path.join(at, file)).isFile())
-            files.set(file, readFileSync(path.join(at, file)));
+        for (const { file, entry } of runEntries(at))
+          if (agentWritten(file) && !agentsOwn(file))
+            if (entry.isSymbolicLink())
+              files.set(file, Buffer.from(`a link to ${readlinkSync(path.join(at, file))}`));
+            else if (entry.isFile()) files.set(file, readFileSync(path.join(at, file)));
         return files;
       };
       const records: Record<string, number[]> = {};

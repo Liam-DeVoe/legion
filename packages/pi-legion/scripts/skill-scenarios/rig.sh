@@ -1472,9 +1472,9 @@ tmux_ready() {
 # Nothing the rig composes for the agent names the run's scenario, case or label, or a name the
 # rig gave its world: before the agent starts, `run-names.ts guard` reads every variable of its
 # pane, every mount of its namespace, its working and session directories, its system prompt and
-# every file of the run's directory, by its path and its text, the ones the rig builds (the gh
-# bundle) included, for a word of the vocabulary (run-names.ts's `worldNames`, through its one
-# walker of a run's files, `worldFiles`), and the run fails, naming the word and where it is,
+# everything of the run's directory the rig wrote, by its path and its text, the files it builds
+# (the gh bundle) included, for a word of the vocabulary (run-names.ts's `worldNames`, through its
+# one walker of a run's files, `worldFiles`), and the run fails, naming the word and where it is,
 # where one is there. It reads nothing whose words are an agent's own (run-names.ts's
 # AGENTS_OWN, each with why): the agents' transcripts, output and logs, an earlier agent's HOME
 # and TMPDIR, the repositories' version-control records, and a message one agent of the run sent
@@ -1484,6 +1484,21 @@ tmux_ready() {
 # included, is the rig's (run-names.ts's `promptOf`); a reviewer-wake.json it cannot parse fails
 # the run. On 2026-11-16, 16 of the 36 runs of the batch at c273084d reasoned from the run's
 # name, which every path of the run carried.
+#
+# It reads what the rig wrote for the run, never what the label's checkout or the host provides
+# (the architect's ruling of 2026-11-21T17:22:22Z). Of the HOME base_env copies from the label's
+# install it reads the files cmd_profile writes there alone (run-names.ts's RIG_HOME, each with
+# its write: the profile's settings and model route, envoy.json, the superpowers skills and
+# make_omp_home's jj overlay), and the label's packed plugins there are the label's
+# (run-names.ts's LABELS_OWN). It enters no link (lstat): it reads the path a link names, and a
+# link that names a path inside the run is read no further, since the walker reads that path as
+# itself; one into the label's install ($I, passed as the guard's fourth argument) or into the
+# host's native module cache or git exec path (run-names.ts's `hostProvided`: make_omp_home's
+# natives, the `git --exec-path` world_remote links $R/lib/git-core into) is not read; and one
+# anywhere else fails the run, naming the link. It holds one file's text at a time. INFRA-764's
+# round 31 at c42409bc: the walker went through the HOME's links into the label's plugins, refused
+# every run on a scenario's name in pi-envoy's dist/dispatch.js, and, read whole with the host's
+# natives (124 MiB), the guard reached 1,170 MiB and the pod's memory guard killed it twice.
 #
 # What an agent of the run can write is read at the run's first launch alone (run-names.ts's
 # AGENT_WRITTEN, each with the write that reaches it): its working directory, the issue workspace
@@ -1506,10 +1521,13 @@ tmux_ready() {
 # agent never started and no launch on its record: everything the rig writes, copies and builds
 # into the run before its first agent is there, and nothing of an agent's. rig.test.ts's "no file
 # rig.sh writes, copies or builds into a run before its agent starts names a word of the
-# measurement" composes every scenario's run so, as cmd_run composes it, and reads every file of
-# it through the guard's walker: at 9083afb5 the gh bundle carried the route table's evidence, a
-# scenario's name in a file that no row had built, and the guard refused every reviewer of
-# INFRA-764's round 30.
+# measurement" composes every scenario's run so, as cmd_run composes it, each label on a real
+# install (make_omp_home, install-plugin-profile.sh, install_model_route), its links included, and
+# reads every file of it through the guard's walker and every run with the guard itself, holding
+# the guard's peak memory under a bound: at 9083afb5 the gh bundle carried the route table's
+# evidence, a scenario's name in a file that no row had built, and the guard refused every
+# reviewer of INFRA-764's round 30; at c42409bc the row's labels had a HOME of one file, so no row
+# met the plugins' links that refused every run of round 31.
 launch() {
   local system='' extra='' omp unshare kind path other hidden
   omp=$(pinned_omp "$pin") || exit 1
@@ -1527,7 +1545,7 @@ launch() {
       case $hidden in "${path%/}"/?*) fail "launch: the run's world shows $path ($kind), which holds $hidden, a path it hides (world_paths)" ;; esac
     done <"$R/namespace.txt"
   done <"$R/namespace.txt"
-  bun "$here/run-names.ts" guard "$R" "${sessions_dir:-$R/sessions}" "$work" ||
+  bun "$here/run-names.ts" guard "$R" "${sessions_dir:-$R/sessions}" "$work" "$I" ||
     fail "launch: the world of ${R##*/} names the run or the rig (above), so its agent does not start"
   if [ -n "${SKILL_SCENARIOS_COMPOSE_ONLY:-}" ]; then
     note "${R##*/}: composed, and the guard read its world; SKILL_SCENARIOS_COMPOSE_ONLY starts no agent"

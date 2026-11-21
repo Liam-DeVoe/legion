@@ -109,7 +109,10 @@ export const STEP_NAMESPACE_NAME = "legion-step-record";
 /** RFC 4122's OID namespace (Go's `uuid.NameSpaceOID`). */
 const NAMESPACE_OID = "6ba7b812-9dad-11d1-80b4-00c04fd430c8";
 
-/** A version 5 uuid of `name` in `namespace` (Go's `uuid.NewSHA1`). */
+/** A version 5 uuid of `name` in `namespace` (Go's `uuid.NewSHA1`). SHA-1 is what RFC 4122 fixes
+ * for version 5 and what the daemon hashes with, so the id is the daemon's own:
+ * `packages/daemon/internal/workflow/steps.go:105` (`stepRecordNamespace`) and `:115` (each
+ * step record's id). It keeps nothing secret. */
 function uuidV5(namespace: string, name: string): string {
   const hash = createHash("sha1")
     .update(Buffer.from(namespace.replaceAll("-", ""), "hex"))

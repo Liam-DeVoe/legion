@@ -474,12 +474,13 @@ variable of the pane (its name and its value: the profile, the Legion project, i
 Envoy topics are made of, HOME, TMPDIR, PATH), every mount of the namespace (each is a mount point
 and the host source `/proc/self/mountinfo` names, so the work directory's own path is held too),
 the working and session directories, the system prompt (`/proc/1`'s command line and the file it
-names), and every file of the run's directory, by its path and its text, read whole: the rig's
-records, the stand-ins in `bin/`, what the rig builds (the `gh` bundle `lib/gh.js`), the pane, the
-prompt, the HOME copied from the label's install, the seeds' ids, the fixtures and the world's
-repositories. The run fails, naming the word and the place with the text around it, where one is
-there. One walker reads a run's files (`run-names.ts`'s `worldFiles`), and at every launch it
-passes over what an agent wrote, whose words are its own (`AGENTS_OWN`, each entry with why):
+names), and everything of the run's directory the rig wrote, by its path and its text, one file at
+a time: the rig's records, the stand-ins in `bin/`, what the rig builds (the `gh` bundle
+`lib/gh.js`), the pane, the prompt, the files `rig.sh profile` writes into the HOME the run copies
+from the label's install, the seeds' ids, the fixtures and the world's repositories. The run fails,
+naming the word and the place with the text around it, where one is there. One walker reads a
+run's files (`run-names.ts`'s `worldFiles`), and at every launch it passes over what an agent
+wrote, whose words are its own (`AGENTS_OWN`, each entry with why):
 
 - a message one agent of the run sent the next, which `run_threads_closed` relays into the
   reviewer's prompt and keeps whole in `<run>/reviewer-wake.json` (the architect's ruling of
@@ -525,6 +526,32 @@ no agent's words into a file the guard reads either: `seed.ts state` writes a sp
 asks to `state-<turn>.json` and prints only their count into `fixture.log`, where the agent's ask
 would otherwise refuse its next turn.
 
+The guard reads what the rig wrote for the run, never what the label's checkout or the host
+provides (the architect's ruling of 2026-11-21T17:22:22Z). Of the HOME `base_env` copies from the
+label's install (`cp -a "$I/home" "$R/home"`) it reads the files `rig.sh profile` writes there
+alone (`RIG_HOME`, each entry with its write): the profile's settings and model route
+(`agent/config.yml` and `agent/models.yml`, from `install_model_route`'s installer), the Envoy
+configuration `--envoy-json` merges (`agent/envoy.json`), the superpowers skills
+(`install_superpowers`) and `make_omp_home`'s jj overlay (`.jjconfig-operator-paths.toml`). The
+label's packed plugins under `.omp/profiles/<profile>/plugins/` are the label's (`LABELS_OWN`, a
+third list beside `AGENTS_OWN` and `AGENT_WRITTEN`), and no other file of that HOME is read
+either, since no write of the rig's makes it. The walker enters no link: it lists each directory
+by `lstat`, reads the path each link names for the guard's words, and judges where that path is.
+A path inside the run is read as itself and no further. One inside the label's
+install (`<work>/installs/<id>/`, the install `load_label` records, which `launch` passes to the
+guard), the host's native module cache (where `make_omp_home` links each install's
+`.omp/natives`: `$XDG_DATA_HOME/omp/natives` where `$XDG_DATA_HOME/omp` is a directory, else
+`~/.omp/natives`) or the host's git exec path (`git --exec-path`, whose programs `world_remote`
+links into `<run>/lib/git-core`) is not read. One anywhere else refuses the launch, naming the
+link. The guard holds one file's text at a time. In INFRA-764's round 31 at `c42409bc` the walker
+went through the HOME's links, since Bun's recursive `readdirSync` enters a link to a directory:
+it refused every run on `var SPEC_WRITING_POINTER` in `pi-envoy/dist/dispatch.js`, and with the
+host's natives (124 MiB) read whole it reached 1,170 MiB, where the pod's memory guard killed it
+twice. `rig.test.ts`'s "the guard opens nothing a link of the run points to outside it, and reads
+nothing of the run's HOME the rig did not write" holds a link of each kind to the access times of
+the trees it points into, and its "a link of the run to a file outside it and the trees the label
+and the host provide refuses the launch, naming the link" holds the refusal.
+
 `services-from` names the rig's own directory in every run, and the walker reads it less that
 directory (the residual below). `rig.test.ts`'s "no file rig.sh writes, copies or builds into a
 run before its agent starts names a word of the measurement" holds the same walker to every world
@@ -532,9 +559,17 @@ the rig composes, as it reads it at the first launch. It sources `rig.sh` whole,
 services up with `services_up` (the listener, the Dispatch server, `seed.ts` and the processes a
 run starts beside its agent stubbed; the label's build of `daemon-pane.go`, which composes the
 pane and its system prompt, built), and runs `cmd_run` for each scenario and case of `SCENARIOS`
-and both labels, both built from the test's own checkout, under `SKILL_SCENARIOS_COMPOSE_ONLY`,
-which ends a run once `launch`'s guard has read its world, records no launch and starts no
-agent; then it reads every file of each run through `worldFiles`. The `gh` bundle holds every
+and both labels, both built from the test's own checkout, each on a real install made as `rig.sh
+profile` makes it (`make_omp_home`, then `install-plugin-profile.sh` for both plugins, which packs
+each and installs it with the pinned Oh My Pi through the caller's mise, then the provider model
+route on a provider file of the row's own, since the other routes need credentials no test holds),
+so each run's HOME holds the plugins' links and the natives link a batch's does, under
+`SKILL_SCENARIOS_COMPOSE_ONLY`, which ends a run once `launch`'s guard has read its world, records
+no launch and starts no agent; then it reads every file of each run through `worldFiles`, names
+what the walker met of the HOME, and holds the guard's own peak (`ru_maxrss`), as `launch` ran it
+in each run, under 256 MiB. In a Legion pod, where a bare `bun -e 1` peaks at 139 MiB, the guard
+peaked at 167.9 to 193.5 MiB over the row's 38 runs and at 182.6 MiB over a copy of round 31's
+run `4f4d19499cf8`, where it reached 1,170 MiB at `c42409bc`. The `gh` bundle holds every
 module `gh-standin.ts` imports, so the evidence of the world's routes, which names recorded runs
 by the names they ran under, is in a module the stand-in does not import
 (`gh-route-evidence.ts`'s `ROUTE_EVIDENCE`), and the stand-in reads `gh-routes.ts`'s routes and

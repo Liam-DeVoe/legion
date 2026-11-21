@@ -13,24 +13,27 @@
 //                                           exits 1, naming the variable and every case, for a
 //                                           variable that names none, and 2 for no scenario of
 //                                           SCENARIOS
-//   run-names.ts guard <run dir> <sessions dir> <work dir>
+//   run-names.ts guard <run dir> <sessions dir> <work dir> <install>
 //                                           exits 0 when nothing the run's agent is about to read
 //                                           names a word of the vocabulary (`worldNames`), and 1,
 //                                           printing the first word and where it is, when
 //                                           something does, and 1, printing why, when the run's
-//                                           system prompt cannot be read (`systemPromptOf`) or its
+//                                           system prompt cannot be read (`systemPromptOf`), its
 //                                           <run>/reviewer-wake.json cannot be parsed
-//                                           (`promptOf`): rig.sh's launch asks before every agent
-//                                           starts, and starts none of a world that names one or
-//                                           that it cannot read whole. At a later launch of the
-//                                           run (one <run>/logs/launches records, `firstLaunch`)
-//                                           it reads nothing an agent of the run can write
-//                                           (AGENT_WRITTEN)
+//                                           (`promptOf`) or a link of the run points outside it,
+//                                           the label's install <install> (load_label's I) and
+//                                           the host's trees (`hostProvided`, `worldFiles`):
+//                                           rig.sh's launch asks before every agent starts, and
+//                                           starts none of a world that names one or that it
+//                                           cannot read whole. At a later launch of the run (one
+//                                           <run>/logs/launches records, `firstLaunch`) it reads
+//                                           nothing an agent of the run can write (AGENT_WRITTEN)
 import {
   existsSync,
   lstatSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   type Stats,
   statSync,
@@ -685,14 +688,16 @@ export function rigText(prompt: string, relayed: readonly RelayedAt[]): string {
 
 /** The paths of a run whose words are an agent's own whenever they are there, which the walker of
  * a run's files (`worldFiles`) passes over at every launch, each with why: everything else under
- * the run's directory is read at the run's first launch (AGENT_WRITTEN is read there alone), by
- * launch's guard before every agent (`worldNames`) and by rig.test.ts's "no file rig.sh writes,
- * copies or builds into a run before its agent starts names a word of the measurement", which
- * reads each scenario's composed run through the same walker. The architect's ruling of
- * 2026-11-21T13:57:03Z: the guard reads every file the rig wrote before the agent starts, the
- * built ones included, after the gh bundle (<run>/lib/gh.js) carried a scenario's name into every
- * run at 9083afb5, which no row had built. Each pattern is matched against a path under the run's
- * directory. */
+ * the run's directory is read at the run's first launch (AGENT_WRITTEN is read there alone), but
+ * the HOME copied from the label's install, of which the files the rig writes are read alone
+ * (RIG_HOME, LABELS_OWN), and a link, of which its target's path is read and never what it points
+ * to. It is read by launch's guard before every agent (`worldNames`) and by rig.test.ts's "no file
+ * rig.sh writes, copies or builds into a run before its agent starts names a word of the
+ * measurement", which reads each scenario's composed run through the same walker. The
+ * architect's ruling of 2026-11-21T13:57:03Z: the guard reads every file the rig wrote before the
+ * agent starts, the built ones included, after the gh bundle (<run>/lib/gh.js) carried a
+ * scenario's name into every run at 9083afb5, which no row had built. Each pattern is matched
+ * against a path under the run's directory. */
 export const AGENTS_OWN: readonly { readonly path: RegExp; readonly why: string }[] = [
   {
     path: /^reviewer-wake\.json$/,
@@ -769,6 +774,55 @@ export const AGENT_WRITTEN: readonly { readonly path: RegExp; readonly why: stri
   },
 ];
 
+/** The files of the run's HOME the rig writes, each with the write that makes it: of that HOME the
+ * walker of a run's files (`worldFiles`) reads these alone. base_env copies the label's HOME into
+ * the run whole (`cp -a "$I/home" "$R/home"`), and beside the rig's writes that HOME holds the
+ * label's install (LABELS_OWN) and links into the host's trees (`hostProvided`), which the guard
+ * does not read: it reads what the rig wrote for the run, not what the label's checkout or the
+ * host provides (the architect's ruling of 2026-11-21T17:22:22Z). Each write is cmd_profile's,
+ * into the label's install before any run, by a step of its own or by the checkout's installer it
+ * runs; nothing of rig.sh writes into a run's HOME after base_env's copy. The HOME is
+ * AGENT_WRITTEN's, so these are read at a run's first launch alone. Each pattern is matched
+ * against a path under the run's directory. */
+export const RIG_HOME: readonly { readonly path: RegExp; readonly why: string }[] = [
+  {
+    path: /^home\/\.jjconfig-operator-paths\.toml$/,
+    why: "the overlay that pins each ~/ value of the operator's jj configuration to the operator's HOME and turns jj's fsmonitor off: make_omp_home (scripts/e2e/lib/omp-home.sh, its `: >\"$overlay\"` and two `>>\"$overlay\"`), which cmd_profile runs on the install's HOME",
+  },
+  {
+    path: /^home\/\.omp\/profiles\/[^/]+\/agent\/config\.yml$/,
+    why: "the profile's settings, which load_label reads: cmd_profile's install_model_route, through the route's installer (install-model-gateway.sh's and install-key-file-model-route.sh's `cat >\"$agent/config.yml\"` and omp_setup_wizard_off, or install_provider_route's `>\"$agent/config.yml\"`)",
+  },
+  {
+    path: /^home\/\.omp\/profiles\/[^/]+\/agent\/models\.yml$/,
+    why: "the profile's model route: cmd_profile's install_model_route, through the route's installer (install-model-gateway.sh's and install-key-file-model-route.sh's `cat >\"$agent/models.yml\"`, or install_provider_route's bun, which writes \"$agent/models.yml\")",
+  },
+  {
+    path: /^home\/\.omp\/profiles\/[^/]+\/agent\/envoy\.json$/,
+    why: "the Envoy configuration `rig.sh profile <label> <checkout> --envoy-json <file>` merges into the profile's agent directory (cmd_profile's jq and mv)",
+  },
+  {
+    path: /^home\/\.omp\/profiles\/[^/]+\/agent\/skills\//,
+    why: "the superpowers skills install_superpowers copies into the profile's user skills (`cp -RL`), for a label built with SKILL_SCENARIOS_SUPERPOWERS",
+  },
+];
+
+/** The trees of the run's HOME that are the label's install, each with why, which the walker of a
+ * run's files (`worldFiles`) passes over at every launch, beside AGENTS_OWN and AGENT_WRITTEN:
+ * what the label's checkout installs is the product the run measures, and a production pane's
+ * HOME holds it as well, so its words are no text of the rig's (the architect's ruling of
+ * 2026-11-21T17:22:22Z). Of the rest of the HOME the walker reads RIG_HOME's files alone, and a
+ * link there, as anywhere in the run, by the path it names (`worldFiles`). INFRA-764's round 31 at
+ * c42409bc: the walker followed the plugins' links into the label's install and refused run
+ * 4f4d19499cf8 on `var SPEC_WRITING_POINTER` in the Envoy plugin's dist/dispatch.js. Each pattern
+ * is matched against a path under the run's directory. */
+export const LABELS_OWN: readonly { readonly path: RegExp; readonly why: string }[] = [
+  {
+    path: /^home\/\.omp\/profiles\/[^/]+\/plugins\//,
+    why: "the label's packed plugins, as `omp plugin install` puts them in the profile (install-plugin-profile.sh, which cmd_profile runs for pi-envoy and for pi-legion): omp-plugins.lock.json, and node_modules/@sjawhar/pi-envoy and pi-legion, links into the label's install (<work>/installs/<id>/pi-envoy and pi-legion)",
+  },
+];
+
 /** Whether `file`, a path under a run's directory, is AGENTS_OWN's, which no launch reads. */
 export function agentsOwn(file: string): boolean {
   return AGENTS_OWN.some(({ path: own }) => own.test(file));
@@ -778,6 +832,17 @@ export function agentsOwn(file: string): boolean {
  * alone reads. */
 export function agentWritten(file: string): boolean {
   return AGENT_WRITTEN.some(({ path: written }) => written.test(file));
+}
+
+/** Whether `file`, a path under a run's directory, is LABELS_OWN's, which no launch reads. */
+export function labelsOwn(file: string): boolean {
+  return LABELS_OWN.some(({ path: own }) => own.test(file));
+}
+
+/** Whether `file`, a path under a run's directory, is a file the rig writes into the run's HOME
+ * (RIG_HOME), which the first launch alone reads. */
+export function rigHome(file: string): boolean {
+  return RIG_HOME.some(({ path: written }) => written.test(file));
 }
 
 /** The run's record of its launches, a line for each (`<time> <tmux session>`), which rig.sh's
@@ -794,35 +859,129 @@ export function firstLaunch(runDir: string): boolean {
   return !existsSync(file) || readFileSync(file, "utf8").trim() === "";
 }
 
-/** Every file under `runDir`, the run's directory, in byte order, as the agent about to start can
- * read it: each regular file, a link never followed, with no part of AGENTS_OWN, and, at a later
- * launch of the run (`firstLaunch`), with no part of AGENT_WRITTEN either, by its path under the
- * run and its text. The prompt is the rig's text of it (`promptOf`, `rigText`), and services-from
- * is read less the rig's own directory, which the run's service provenance names in every run
- * (services_from: each program it runs, by where it is): a residual of the architect's ruling of
- * 2026-11-18T08:40Z (class-search.json's "<run>/services-from is readable under gVisor"). That
- * directory is read here, where only the launch guard (`worldNames`) and rig.test.ts's whole-world
- * row reach it, and no reader of a run (health.ts, score.ts, judge.ts), which reads a run by what it
- * recorded alone. */
-export function worldFiles(runDir: string): { file: string; text: string }[] {
+/** The trees outside a run that a link of the run may point into, whose files the guard does not
+ * read (`worldFiles`): the label's install and the host's. */
+export interface Provided {
+  /** The label's install, <work>/installs/<id> (load_label's I), which holds its packed plugins. */
+  readonly install: string;
+  /** The host's native module cache, which make_omp_home links each install's .omp/natives to. */
+  readonly natives: string;
+  /** The host's git exec path, which world_remote links each program of into <run>/lib/git-core. */
+  readonly gitExec: string;
+}
+
+/** The trees the label and the host provide a run (Provided), with `install` the label's install
+ * and the host's two as the rig made its links into them, read from `env`: the native module cache
+ * as make_omp_home picks it (scripts/e2e/lib/omp-home.sh), $XDG_DATA_HOME/omp/natives where
+ * $XDG_DATA_HOME/omp is a directory and $HOME/.omp/natives otherwise, and the exec path as
+ * world_remote reads it, `git --exec-path`. A throw, naming why, where git names none. */
+export function hostProvided(
+  install: string,
+  env: Readonly<Record<string, string | undefined>> = process.env
+): Provided {
+  const data = env.XDG_DATA_HOME ?? "";
+  const natives =
+    data !== "" &&
+    existsSync(path.join(data, "omp")) &&
+    statSync(path.join(data, "omp")).isDirectory()
+      ? path.join(data, "omp", "natives")
+      : path.join(env.HOME ?? "", ".omp", "natives");
+  const git = Bun.spawnSync(["git", "--exec-path"], {
+    env: { ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const gitExec = git.stdout.toString().trim();
+  if (git.exitCode !== 0 || gitExec === "")
+    throw new Error(
+      `\`git --exec-path\` named no exec path (exit ${git.exitCode}: ${git.stderr.toString().trim()}), so no link into it can be told from one outside the run`
+    );
+  return {
+    install: path.resolve(install),
+    natives: path.resolve(natives),
+    gitExec: path.resolve(gitExec),
+  };
+}
+
+/** Every entry under `dir`, by its path under it, in byte order, with what lstat says of it: a
+ * link is an entry of its own, and nothing it points to is listed, so no walk of these enters one.
+ * Bun's recursive readdirSync enters a link to a directory, and at c42409bc the walker read the
+ * label's plugins and the host's natives (124 MiB) through the links of a run's HOME. */
+export function runEntries(dir: string): { file: string; entry: Stats }[] {
+  const entries: { file: string; entry: Stats }[] = [];
+  const list = (below: string) => {
+    for (const name of readdirSync(path.join(dir, below))) {
+      const file = below === "" ? name : `${below}/${name}`;
+      const entry = lstatSync(path.join(dir, file));
+      entries.push({ file, entry });
+      if (entry.isDirectory()) list(file);
+    }
+  };
+  list("");
+  return entries.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+}
+
+/** One thing of a run the walker read (`worldFiles`): its path under the run, and its text, which
+ * for a link is the path the link names. */
+export interface WorldFile {
+  readonly file: string;
+  readonly text: string;
+  readonly link: boolean;
+}
+
+/** Everything under `runDir`, the run's directory, the agent about to start can read and the rig
+ * wrote, in byte order (`runEntries`), one at a time, so the guard holds one file's text at a
+ * time: with no part of AGENTS_OWN, and, at a later launch of the run (`firstLaunch`), with no part
+ * of AGENT_WRITTEN either; of the HOME copied from the label's install, RIG_HOME's files alone,
+ * and nothing of LABELS_OWN; by its path under the run and its text. No link is entered: a link's
+ * text is the path it names (readlink), read for the guard's words, and where that path is decides
+ * the rest. Inside the run, nothing more, since the walker reads what is there as itself. Inside
+ * the label's install, the host's native module cache or its git exec path (`provided`), nothing
+ * is read, those being the product's and the host's. Anywhere else, a throw naming the link: what
+ * it points to is neither the rig's to read nor the label's or the host's to pass over (the
+ * architect's ruling of 2026-11-21T17:22:22Z, on round 31, where the walker went through the HOME's
+ * links into the plugins and the host's natives, refused every run and was killed at 1,170 MiB).
+ * The prompt is the rig's text of it (`promptOf`, `rigText`), and services-from is read less the
+ * rig's own directory, which the run's service provenance names in every run (services_from: each
+ * program it runs, by where it is): a residual of the architect's ruling of 2026-11-18T08:40Z
+ * (class-search.json's "<run>/services-from is readable under gVisor"). That directory is read
+ * here, where only the launch guard (`worldNames`) and rig.test.ts's whole-world row reach it, and
+ * no reader of a run (health.ts, score.ts, judge.ts), which reads a run by what it recorded
+ * alone. */
+export function* worldFiles(runDir: string, provided: Provided): Generator<WorldFile> {
+  const run = path.resolve(runDir);
   const rigDirectory = realpathSync(import.meta.dir);
-  const files: { file: string; text: string }[] = [];
-  const first = firstLaunch(runDir);
-  const prompt = promptOf(runDir);
-  for (const file of readdirSync(runDir, { recursive: true, encoding: "utf8" }).sort()) {
+  const first = firstLaunch(run);
+  const prompt = promptOf(run);
+  const trees = [provided.install, provided.natives, provided.gitExec];
+  for (const { file, entry } of runEntries(run)) {
     if (agentsOwn(file) || (!first && agentWritten(file))) continue;
-    const at = path.join(runDir, file);
-    if (!lstatSync(at).isFile()) continue;
+    const at = path.join(run, file);
+    if (entry.isSymbolicLink()) {
+      const target = readlinkSync(at, "utf8");
+      yield { file, text: target, link: true };
+      const where = path.resolve(path.dirname(at), target);
+      if (
+        within(run, where) === undefined &&
+        trees.every((tree) => within(tree, where) === undefined)
+      )
+        throw new Error(
+          `<run>/${file} is a link to ${target}, outside the run, the label's install (${provided.install}), the host's native module cache (${provided.natives}) and its git exec path (${provided.gitExec}), so what it points to is neither the rig's to read nor the label's or the host's to pass over`
+        );
+      continue;
+    }
+    if (!entry.isFile() || labelsOwn(file) || (file.startsWith("home/") && !rigHome(file)))
+      continue;
     if (file === "prompt.txt" && prompt !== undefined)
-      files.push({ file, text: rigText(prompt.text, prompt.relayed) });
+      yield { file, text: rigText(prompt.text, prompt.relayed), link: false };
     else if (file === "services-from")
-      files.push({
+      yield {
         file,
         text: readFileSync(at, "utf8").replaceAll(rigDirectory, "<the rig's directory>"),
-      });
-    else files.push({ file, text: readFileSync(at, "utf8") });
+        link: false,
+      };
+    else yield { file, text: readFileSync(at, "utf8"), link: false };
   }
-  return files;
 }
 
 /** The first word of the vocabulary (`vocabulary` of `labels`) in what the rig composes for the
@@ -834,17 +993,26 @@ export function worldFiles(runDir: string): { file: string; text: string }[] {
  * its working directory and session directory; its system prompt, which its command line,
  * /proc/1's, carries, and the text of the prompt file that argument names, which its Oh My Pi
  * reads (`systemPromptOf`, which refuses a system prompt it cannot read, and so does the guard);
- * and every file of the run's directory, by its path and its text (`worldFiles`: its prompt less
- * each message the rig relayed into it from another agent of the run, which `promptOf` refuses
- * to read where <run>/reviewer-wake.json cannot be parsed, and so does the guard; nothing of
- * AGENTS_OWN; and, at a later launch, nothing of AGENT_WRITTEN), each named with the text around
- * the word. */
+ * and everything of the run's directory the rig wrote, by its path and its text, one file at a
+ * time (`worldFiles`: its prompt less each message the rig relayed into it from another agent of
+ * the run, which `promptOf` refuses to read where <run>/reviewer-wake.json cannot be parsed, and so
+ * does the guard; nothing of AGENTS_OWN; of its HOME, RIG_HOME's files alone; each link by the path
+ * it names, which `worldFiles` refuses where that path is outside the run and the trees `provided`
+ * names, and so does the guard; and, at a later launch, nothing of AGENT_WRITTEN), each named with
+ * the text around the word. */
 export function worldNames(
   runDir: string,
   sessionsDir: string,
-  labels: readonly string[]
+  labels: readonly string[],
+  provided: Provided
 ): Named | undefined {
   const vocab = vocabulary(labels);
+  const named = (place: string, value: string, name: boolean): Named | undefined => {
+    const word = name ? nameWords(value, vocab) : textWords(value, vocab);
+    if (word === undefined) return undefined;
+    const at = Math.max(0, folded(value).search(literal(word)));
+    return { place, word, value: value.slice(Math.max(0, at - 60), at + 140) };
+  };
   const checks: { place: string; value: string; name: boolean }[] = [];
   for (const [key, value] of paneVars(path.join(runDir, "pane.env"))) {
     checks.push({ place: `the variable name ${key}`, value: key, name: true });
@@ -864,15 +1032,15 @@ export function worldNames(
     if (system.place !== "<run>/system-args")
       checks.push({ place: system.place, value: system.text, name: false });
   }
-  for (const { file, text } of worldFiles(runDir)) {
-    checks.push({ place: `the path <run>/${file}`, value: file, name: false });
-    checks.push({ place: `<run>/${file}`, value: text, name: false });
-  }
   for (const { place, value, name } of checks) {
-    const word = name ? nameWords(value, vocab) : textWords(value, vocab);
-    if (word === undefined) continue;
-    const at = Math.max(0, folded(value).search(literal(word)));
-    return { place, word, value: value.slice(Math.max(0, at - 60), at + 140) };
+    const found = named(place, value, name);
+    if (found !== undefined) return found;
+  }
+  for (const { file, text, link } of worldFiles(runDir, provided)) {
+    const found =
+      named(`the path <run>/${file}`, file, false) ??
+      named(link ? `the link <run>/${file}'s target` : `<run>/${file}`, text, false);
+    if (found !== undefined) return found;
   }
   return undefined;
 }
@@ -892,13 +1060,14 @@ if (import.meta.main) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-  } else if (command === "guard" && rest.length === 3) {
-    const [runDir = "", sessionsDir = "", work = ""] = rest;
+  } else if (command === "guard" && rest.length === 4) {
+    const [runDir = "", sessionsDir = "", work = "", install = ""] = rest;
     let named: Named | undefined;
     try {
-      named = worldNames(runDir, sessionsDir, workLabels(work));
+      named = worldNames(runDir, sessionsDir, workLabels(work), hostProvided(install));
     } catch (error) {
-      // A world the guard cannot read whole (`systemPromptIn`'s refusals) is one it cannot clear.
+      // A world the guard cannot read whole (`systemPromptIn`'s refusals, a link outside the run
+      // and the trees the label and the host provide) is one it cannot clear.
       console.error(
         `the world of ${path.basename(runDir)} cannot be read whole: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -912,7 +1081,7 @@ if (import.meta.main) {
     }
   } else {
     console.error(
-      "usage: run-names.ts case <scenario> | guard <run dir> <sessions dir> <work dir>"
+      "usage: run-names.ts case <scenario> | guard <run dir> <sessions dir> <work dir> <install>"
     );
     process.exit(2);
   }

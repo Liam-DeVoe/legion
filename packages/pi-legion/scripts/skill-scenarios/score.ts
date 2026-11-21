@@ -4806,8 +4806,9 @@ function ranAt(dir: string, entries: SessionEntry[], recorded: string | undefine
  * was run for holds one run fewer. */
 const NO_ARM = "?\t?";
 /** An arm as `--arm` names it: the score's key of a scenario (with its case) and a label, `:` in
- * place of the tab (`tester-proof:head`, `askgate:facts:on`). */
-const armOf = (key: string) => key.replace("\t", ":");
+ * place of the tab (`tester-proof:head`, `askgate:facts:on`). A key holds one tab (the arm counts'
+ * keys, built in `scoreRuns`, and `NO_ARM`); `replaceAll` says so whatever it holds. */
+const armOf = (key: string) => key.replaceAll("\t", ":");
 /** Ends the score: each of `lines` on stderr after `score: `, no row and no count, and exit 2. */
 function stop(lines: readonly string[]): never {
   for (const line of lines) console.error(`score: ${line}`);
