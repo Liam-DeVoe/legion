@@ -87,10 +87,10 @@ func notRepoPaths(path string) []string {
 // decode of the base of its own, and each object that the writer is handed is the writer's own: a
 // writer is a function of the package, which can name no variable of the sweep, built inside the
 // one guard of the package's variables (writerCalled), and it gets a tree or files of its own and
-// copies of the place and the value, which the sweep compares after the call with copies taken
-// before it (changeKept); and the input that the sweep derives is no object that a writer was
-// handed, but bytes encoded from the writer's tree or a copy of the writer's files taken after the
-// read back (changedFile, filesWritten). So a writer that writes another value,
+// copies of the place and the value; inside the call that the guard compares around, the sweep
+// takes the bytes of what the writer gave and left, and after it compares those with copies taken
+// before the call (changeKept); and the input that the sweep derives is no object that a writer was
+// handed, but those bytes (changedFile, filesWritten). So a writer that writes another value,
 // writes it at another place, under another key or under another file name, changes another place
 // of the file too, or changes the value or the place that it is handed, before or after a right
 // write, fails by name, and one that keeps what it was handed and changes it in a later call
@@ -333,20 +333,21 @@ const refusedCommitsResults = `the results of the refused commit count nowhere, 
 // (countedCommit) is commit taken out of results.json, and with no state of a subject at commit:
 // the places that a refusal of the check at commit may move toward true, each to the state given
 // here. The results that it means, those of base but each of c whose commit is commit, as the
-// reader reads them, come from a decode of base of their own, made before the writer runs. The
-// writer (resultsWithout) reads each record by a scenario decoded for it alone, and
-// withoutResultsOf compares that scenario after the call with another decode, made before it, so
-// that a writer that changes the results that it is handed fails by name.
+// reader reads them, and the place of each record to take out come from a decode of base of their
+// own, made before the writer runs; the writer (resultsWithout) is handed a copy of those places
+// and the tree of results.json decoded for it alone, and the reader reads its write back.
 func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) map[string]string {
 	t.Helper()
 	s := decodedScenario(t, base)
-	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
-	handed, before := decodedScenario(t, base), decodedScenario(t, base)
-	fsys := cloneFiles(base)
-	editTree(t, fsys, "results.json", func() treeEdit { return resultsWithout(t, handed, c.ID, commit) })
-	if !reflect.DeepEqual(handed, before) {
-		t.Fatalf("the sweep took the results of %s at %s out of results.json, and its writer changed the scenario that it was handed", c.ID, commit)
+	var out []int
+	for i, r := range s.Results {
+		if r.Check == c.ID && countedCommit(s, c, r) == commit {
+			out = append(out, i)
+		}
 	}
+	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
+	fsys := cloneFiles(base)
+	editTree(t, fsys, "results.json", func() treeEdit { return resultsWithout(slices.Clone(out)) })
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
 		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
 	}
@@ -363,14 +364,12 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) m
 }
 
 // resultsWithout is the writer of withoutResultsOf: the tree of results.json that it is handed
-// without each result of the check id whose commit (countedCommit) is commit, where s, the scenario
-// of the same files that it is handed, reads each record.
-func resultsWithout(t *testing.T, s Scenario, id, commit string) treeEdit {
+// without each record at a place of out.
+func resultsWithout(out []int) treeEdit {
 	return func(v any) any {
-		c := checkOf(t, s, id)
 		kept := []any{}
 		for i, record := range v.([]any) {
-			if r := s.Results[i]; r.Check != c.ID || countedCommit(s, c, r) != commit {
+			if !slices.Contains(out, i) {
 				kept = append(kept, record)
 			}
 		}
@@ -386,17 +385,6 @@ func decodedScenario(t *testing.T, base fstest.MapFS) Scenario {
 		t.Fatalf("the base: %v", err)
 	}
 	return s
-}
-
-// checkOf is the check id of the current approved spec of s.
-func checkOf(t *testing.T, s Scenario, id string) Check {
-	t.Helper()
-	current, _ := s.Approved.Current()
-	i := slices.IndexFunc(current.Checks, func(c Check) bool { return c.ID == id })
-	if i < 0 {
-		t.Fatalf("the approved spec holds no check %s", id)
-	}
-	return current.Checks[i]
 }
 
 // plantedOnElsewhere is the right of a planted_on added to a failing example where it names a commit

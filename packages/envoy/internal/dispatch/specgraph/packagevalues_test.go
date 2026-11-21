@@ -16,15 +16,57 @@ import (
 // changedFile, filesWritten and editTree each call with the writer's builder and the call of the
 // writer: it takes a copy of each variable of the package (packageValuesNow), then builds the
 // writer (build), then calls it (call), then compares each variable with its copy
-// (packageValuesKept). Each of the three takes a builder, not a writer, so no code of a writer runs
-// before the copy: a writer that changes a variable of the package, in the code that builds it or
-// in the call, fails by name, as one that changes a table of the reader (relationKinds, slug, ...)
-// would change the verdict of each later input.
-func writerCalled[W any](t *testing.T, name string, build func() W, call func(W)) {
+// (packageValuesKept), and gives what call gave. Each of the three takes a builder, not a writer,
+// so no code of a writer runs before the copy; and call turns what the writer gives and what it
+// leaves (its tree, its files, its copy of the change) into bytes of the caller's own before the
+// compare, so no code of a writer runs after it: the type of what call gives is plain data
+// (plainType), with no interface, function, channel or pointer, where a method of a value that the
+// writer left, such as its MarshalJSON, could run. So a writer that changes a variable of the
+// package, in the code that builds it, in the call, or in a method of a value that it leaves in
+// what it gives, fails by name, as one that changes a table of the reader (relationKinds, slug,
+// ...) would change the verdict of each later input.
+func writerCalled[W, R any](t *testing.T, name string, build func() W, call func(W) R) R {
 	t.Helper()
+	if at, plain := plainType(reflect.TypeFor[R](), "", map[reflect.Type]bool{}); !plain {
+		t.Fatalf("the guard of a writer of %s hands back a %v, whose %s is no plain data, so a method of a value that the writer left there could run after the compare", name, reflect.TypeFor[R](), at)
+	}
 	values := packageValuesNow()
-	call(build())
+	got := call(build())
 	packageValuesKept(t, name, values)
+	return got
+}
+
+// plainType is whether a value of the type t is plain data, on which no method that a writer
+// chose can run: a bool, a number or a string, or a slice, an array, a map or a struct of plain
+// data; and else the first place of t that is no plain data (an interface, a function, a channel
+// or a pointer), by its path from at. seen holds the structs on the path, so a type that holds
+// itself ends.
+func plainType(t reflect.Type, at string, seen map[reflect.Type]bool) (string, bool) {
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.String:
+		return "", true
+	case reflect.Slice, reflect.Array:
+		return plainType(t.Elem(), at+"[]", seen)
+	case reflect.Map:
+		if p, plain := plainType(t.Key(), at+"[key]", seen); !plain {
+			return p, false
+		}
+		return plainType(t.Elem(), at+"[]", seen)
+	case reflect.Struct:
+		if seen[t] {
+			return "", true
+		}
+		seen[t] = true
+		for i := range t.NumField() {
+			if p, plain := plainType(t.Field(i).Type, at+"."+t.Field(i).Name, seen); !plain {
+				return p, false
+			}
+		}
+		return "", true
+	}
+	return fmt.Sprintf("place %q, a %v,", at, t), false
 }
 
 // packageValue is the copy of one variable of the package that packageValuesNow takes, by the
