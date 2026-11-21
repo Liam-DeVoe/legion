@@ -1648,17 +1648,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.NatsUrl == nil {
 		return dispatchSettings{}, errors.New("natsUrl is required")
 	}
-	// The pods connect to NATS as one identity: the seed, or, behind the auth service, their
-	// projected token for natsAudience, which the bus refuses beside a seed when it starts.
-	if args.NatsAudience != "" {
-		if err := core.CheckEnvValue("natsAudience", "a projected ServiceAccount token's audience", args.NatsAudience); err != nil {
-			return dispatchSettings{}, err
-		}
-		if args.NatsSeedSecret != nil {
-			return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is set beside natsAudience: each NATS connection presents one credential, which natsAudience makes its pod's projected ServiceAccount token, so unset natsSeedSecret")
-		}
-	} else if args.NatsSeedSecret == nil {
-		return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is required unless natsAudience is set")
+	if err := resolveDispatchNATSCredential(args); err != nil {
+		return dispatchSettings{}, err
 	}
 	// agentSecretsAudience and oidcAudience are read as their verifiers read them, trimmed
 	// (dispatchAudience), and either set to whitespace alone is refused by name.

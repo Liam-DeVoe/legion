@@ -27,11 +27,6 @@ import (
 // workloads that dial the NATS hub through it name. With natsInCluster none of the four renders.
 const dispatchSOCKS5Port = 1055
 
-// agentSecretsTokenSeconds is the lifetime of the projected ServiceAccount token envoy-dispatch
-// presents to the secrets broker. The broker refuses a token living longer than an hour from its
-// issue, so the kubelet mints it for exactly that and rewrites it before it expires.
-const agentSecretsTokenSeconds = 3600
-
 // clusterLocal is the in-cluster DNS name of Service name in namespace: what one pod calls
 // another workload's Service at.
 func clusterLocal(name, namespace string) string {
@@ -751,9 +746,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		// Dispatch reads at call time. No secret is stored for it, so nothing waits on a grant.
 		appEnv = append(appEnv, valueEnv("DISPATCH_AGENT_SECRETS_URL", s.agentSecretsURL), valueEnv("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "/var/run/secrets/dispatch/agent-secrets-account-token"))
 		appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("agent-secrets-account-token"), MountPath: pulumi.String("/var/run/secrets/dispatch"), ReadOnly: pulumi.Bool(true)})
-		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("agent-secrets-account-token"), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
-			corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(s.agentSecretsAudience), ExpirationSeconds: pulumi.Int(agentSecretsTokenSeconds), Path: pulumi.String("agent-secrets-account-token")}},
-		}}})
+		appVolumes = append(appVolumes, projectedTokenVolume("agent-secrets-account-token", s.agentSecretsAudience))
 	}
 	if s.oidcAudience != "" {
 		// Dispatch verifies a caller's projected ServiceAccount token itself, which is how the

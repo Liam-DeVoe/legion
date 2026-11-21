@@ -3,14 +3,37 @@ package gcp
 import (
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+
+	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
-// serviceTokenSeconds is the lifetime of the projected ServiceAccount token each pod presents to
-// the NATS auth service with natsAudience. The auth service refuses a token living longer than an
-// hour from its issue, so the kubelet mints each for exactly that and rewrites it at 80% of that
-// life, 48 minutes, ahead of the 50 minutes at which the bus moves to a later token
-// (natscred.ServiceRenewBefore).
+// serviceTokenSeconds is the lifetime of each projected ServiceAccount token the app presents to
+// the secrets broker and each pod presents to the NATS auth service with natsAudience. Both refuse
+// a token living longer than an hour from its issue, so the kubelet mints each for exactly that and
+// rewrites it at 80% of that life, 48 minutes, ahead of the 50 minutes at which the bus moves to a
+// later token (natscred.ServiceRenewBefore).
 const serviceTokenSeconds = 3600
+
+// resolveDispatchNATSCredential holds the inputs that choose the pods' NATS credential, before
+// anything registers: natsAudience, an audience no whitespace or control character may sit in, or
+// else natsSeedSecret, and never both, since each connection presents one credential and the bus
+// refuses a token beside a seed when it starts. Each refusal names its input.
+func resolveDispatchNATSCredential(args *DispatchArgs) error {
+	if args.NatsAudience == "" {
+		if args.NatsSeedSecret == nil {
+			return core.InputErrorf("natsSeedSecret", "natsSeedSecret is required unless natsAudience is set")
+		}
+		return nil
+	}
+	if err := core.CheckEnvValue("natsAudience", "a projected ServiceAccount token's audience", args.NatsAudience); err != nil {
+		return err
+	}
+	if args.NatsSeedSecret != nil {
+		return core.InputErrorf("natsSeedSecret", "natsSeedSecret is set beside natsAudience: each NATS connection presents one credential, which natsAudience makes its pod's projected ServiceAccount token, so unset natsSeedSecret")
+	}
+	return nil
+}
 
 // Where the pods' NATS credential is mounted, each volume named for its one file. Both Envoy
 // containers mount it at dispatchCredentialMount: the seed, the one file of its
@@ -63,7 +86,7 @@ func newDispatchNATSCredential(s dispatchSettings, args *DispatchArgs, database 
 	if s.natsAudience != "" {
 		return dispatchNATSCredential{
 			serviceTokenFile: dispatchNatsTokenFile,
-			appEnv:           valueEnv("NATS_SERVICE_TOKEN_FILE", dispatchNatsTokenFile),
+			appEnv:           valueEnv(bus.ServiceTokenFileEnvVar, dispatchNatsTokenFile),
 			volume:           projectedTokenVolume(dispatchNatsTokenName, s.natsAudience),
 			mount:            credentialMount(dispatchNatsTokenName),
 		}, nil
