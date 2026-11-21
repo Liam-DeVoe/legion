@@ -298,9 +298,8 @@ A Bun test waits and is guarded as R2 and R5 above say:
 - A row that reads a file a live process appends to, such as the transcript of a pane it drives, reads it through `@legion/test-fixtures/transcript-lines`.
   `completeLines` and `writtenLines` leave out a last line the writer has not finished, and `endsWhole` says whether a read ends on a finished line, so a poll answers "not yet" rather than parsing half a line.
 
-- Every `bun test` command but packages/claude-envoy's `test` script loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
-  That script stays main's `bun test --timeout=60000` until #4655, which carries that package's own commands.
-  The preload marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
+- Every `bun test` command loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
+  It marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
   A hook that no mark directly precedes counts from an earlier mark, so its waits end earlier than its own clock would allow, never later (`packages/test-fixtures/src/row-deadline.ts`).
   So a row's second `afterEach` counts from the mark before its first, and the time the first took is gone from it.
 
