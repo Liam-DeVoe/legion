@@ -860,8 +860,12 @@
 #      arithmetic has to be written beside it. A step that writes its budget as an expression
 #      is read the same way, as writing none, which refuses it where it holds a retried call:
 #      the same file's `Run the lane under one seed with --reruns ${{ matrix.reruns }}` step
-#      writes `timeout-minutes: ${{ matrix.step_minutes }}` (:264), and passes because it holds
-#      no retried call.
+#      writes `timeout-minutes: ${{ matrix.step_minutes }}` (:264), and e2e.yaml's `Run the
+#      proof` step writes `timeout-minutes: ${{ matrix.run_timeout_minutes }}`, each row's figure
+#      derived by hand in .github/e2e-scripts.json and .github/ci-notes/e2e.md, which
+#      select-e2e-proofs.sh holds strictly below the row's job key. Both pass because neither
+#      holds a retried call this check reads: the proof step's retries are in scripts/e2e/'s
+#      libraries, outside .github/scripts/ (dispatch://INFRA-1545, round 48).
 #
 #      PYTHON IS READ IN ONE PLACE ONLY, which is the other gap worth stating here. Rule 6
 #      reads a `urlopen` written in a heredoc of a `.sh` under .github/scripts, so those

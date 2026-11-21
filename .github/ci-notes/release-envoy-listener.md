@@ -78,3 +78,23 @@ kills leaves what it fetched in the module cache, and the next attempt resumes f
   a build job like any other and the retry belongs in it; `.github/scripts/check-release-credentials.sh`
   pins the command set of the credentialed `release_publish`, not of this one. It restores no
   module cache, so the cold figure is the one every run pays.
+
+## The build steps whose notices script the gate does not read
+
+`Build envoy binary`, in `build`, and `Build agent-secrets binaries`, in `release_build`, each run
+`scripts/go-third-party-notices.sh`, the first once and the second once for each archive it packs.
+The script installs go-licenses through `.github/scripts/ci-retry.sh` at the 180 s module bound,
+5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
+directory is named by the go-licenses version and the host's Go version, not by the GOOS or
+GOARCH the packages target, so every call after the first finds that build and fetches nothing,
+and each step waits for one ladder. `.github/scripts/check-download-retry.sh` reads no script
+outside `.github/scripts/`, so it prices none of that, and each budget is derived by hand
+(dispatch://INFRA-2899 owns the reach that would make it the check's): the ladder beside the
+step's measured duration, which holds its builds, over the 20 successful runs of this workflow
+created from 2026-11-20T23:00Z to 2026-11-21T08:25Z.
+
+- `Build envoy binary`: 54 s at most over its 40 runs, both legs (job 136709424404 of run
+  44857506208, the arm64 leg). 54 + 1050 = 1104 s -> 19 min, under `build`'s 67.
+- `Build agent-secrets binaries`: 172 s at most over its 12 runs (job 136751939257 of run
+  44873151474; the other runs released nothing and skipped it). 172 + 1050 = 1222 s -> 21 min,
+  under `release_build`'s 56.

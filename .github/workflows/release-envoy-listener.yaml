@@ -204,6 +204,9 @@ jobs:
       # binary compiles in (scripts/go-third-party-notices.sh, run with the build's own GOOS and
       # GOARCH), which fails the build when one cannot be determined.
       - name: Build envoy binary
+        # why: .github/ci-notes/release-envoy-listener.md#the-build-steps-whose-notices-script-the-gate-does-not-read
+        # 54 + 1050 = 1104 s -> 19 min.
+        timeout-minutes: 19
         run: |
           mkdir -p out
           GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false -o out/envoy-listener ./cmd/listener
@@ -601,6 +604,9 @@ jobs:
       # and fails the build when one cannot be determined.
       - name: Build agent-secrets binaries
         if: steps.version.outputs.skip != 'true'
+        # why: .github/ci-notes/release-envoy-listener.md#the-build-steps-whose-notices-script-the-gate-does-not-read
+        # 172 + 1050 = 1222 s -> 21 min.
+        timeout-minutes: 21
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |

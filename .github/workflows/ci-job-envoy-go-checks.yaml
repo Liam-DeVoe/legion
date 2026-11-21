@@ -57,19 +57,17 @@ jobs:
     # is the runner time this change exists to cut.
     #
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes the paragraph above derives and
-    # the budget this job was written with, plus its slowest retried step alone - the step that
-    # runs packages/envoy/loadtest/cluster/cluster.test.sh, which renders the nats chart through
-    # render-nats.sh and so holds that script's three retried fetches: the chart index and the
-    # chart archive at 5 x 60 + 150 = 450 s each and the helm install at 5 x 180 + 150 = 1050 s,
-    # 1950 s together. THAT IS NO LONGER THIS JOB'S SLOWEST STEP: setup-bun's two
-    # `ci_tools_fetch` calls are 3416 s at this change's bound, where they were 1482 s when this
-    # comment was written, so the step that sizes the job is setup-bun again, above those
-    # 1950 s, above the Go module download and the workspace install at 1050 s each and above
-    # the ci-ok report's 2160 s.
-    # 1800 + 3416 = 5216 s -> 87 min. The gate reads no script outside .github/scripts/, so it
-    # prices none of render-nats.sh's three sites into that step: that 1950 is a reader's figure
-    # and dispatch://INFRA-2899 owns the reach that would make it the check's. The 3416 is the
-    # check's own, and rule 8's job-derivation clause refused this key until it carried it.
+    # the budget this job was written with, plus its slowest retried step alone: setup-bun's two
+    # `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2160 s, the Go module download and
+    # the workspace install at 1050 s each, and the two steps that run scripts outside
+    # .github/scripts/: the cluster test's 1423 s (render-nats.sh's one retried fetch, the helm
+    # install at 5 x 180 + 150 = 1050 s, beside the 373 s that step measured) and the pack's
+    # 1087 s (go-third-party-notices.sh's install of go-licenses at that same 1050 s, beside the
+    # 37 s the pack measured). 1800 + 3416 = 5216 s -> 87 min. The gate reads no script outside
+    # .github/scripts/, so it prices neither of those two steps: their figures are a reader's,
+    # derived in .github/ci-notes/ci-job-envoy-go-checks.md, and dispatch://INFRA-2899 owns the
+    # reach that would make them the check's. The 3416 is the check's own, and rule 8's
+    # job-derivation clause refused this key until it carried it.
     timeout-minutes: 87
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,6 +250,9 @@ jobs:
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
+        # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
+        # 373 + 1050 = 1423 s -> 24 min.
+        timeout-minutes: 24
         run: bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
@@ -319,6 +320,9 @@ jobs:
         working-directory: packages/envoy
       # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
       - name: Pack envoy binaries
+        # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
+        # 37 + 1050 = 1087 s -> 19 min.
+        timeout-minutes: 19
         run: |
           for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
             out="../../out/pr-artifacts/envoy-$arch"

@@ -2222,6 +2222,7 @@ broker_multiprocess:
 airlock_lean:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-airlock-lean.yaml'
   - *go_workspace
   - 'packages/envoy/internal/cipher/proxyrules/**'

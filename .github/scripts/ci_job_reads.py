@@ -1184,6 +1184,7 @@ AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
+AIRLOCK_TOOLCHAIN_STEP = "Install the Lean toolchain lean-toolchain names"
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
 # ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
@@ -3690,6 +3691,8 @@ GATES = [
                                         "reads that row's two sources"),
         (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                                f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),
+        (CI_RETRY, f"{at(AIRLOCK_JOB, AIRLOCK_TOOLCHAIN_STEP)} sources it: the Lean toolchain installs "
+                   "through retry_fetch before lake build reads it"),
         (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
         (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it, and check k15 of "
                                 f"{ENVOY}/scripts/airlock-check.sh runs the same script, so the two cannot drift"),

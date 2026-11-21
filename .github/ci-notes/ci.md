@@ -709,7 +709,9 @@ side runs the job. Both sides live under internal/cipher/proxyrules, which one g
 names, and the Go side also compiles internal/fold, the case fold it compares names
 in; the axiom check is a script of its own, which check k15 runs too; the Lean
 toolchain comes from the elan the job's action installs, and that action reads the
-`elan` row of the tool manifest through the fetch helper every install goes through.
+`elan` row of the tool manifest through the fetch helper every install goes through;
+and the toolchain itself is installed in a step of its own through the one retry,
+.github/scripts/ci-retry.sh (*ci_retry), before `lake build` reads it.
 
 ## envoy_smoke: Every file packages/envoy/docker/Dockerfile builds from
 
@@ -1066,11 +1068,14 @@ every job of the file but the exempt ones, and the re-run term to every job but 
 passing required check, so each refuses such an attempt in a step of its own instead.
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
-Caches: one step of the jobs this workflow calls saves an Actions cache entry itself,
-dispatch-two-builds' `Cache the previous build` (ci-job-dispatch-two-builds.yaml), which keeps
-the build of the previous commit that job compares against; three actions its jobs call can
-save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
-this paragraph's end).
+Caches: no step of the jobs this workflow calls saves an Actions cache entry. dispatch-two-builds
+restores the two builds it compares the tree against (ci-job-dispatch-two-builds.yaml's `Restore
+the previous build` and `Restore the first-rollout build`), which ci-caches.yaml's dispatch-builds
+job builds and saves on a push to main, since an entry a pull request or a merge group saves lands
+in a scope no other run reads (dispatch://INFRA-1545, R4). Two actions its jobs call can save one,
+and only in a dispatched run (architecture-check and spec-check, at this paragraph's end); a third,
+setup-bun, saves only where its caller passes `save: 'true'` on a push to main, which no job of
+this workflow does and no run of it is.
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of six families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
@@ -1111,17 +1116,18 @@ repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright,
 ~/.cache/ms-playwright restore would carry nothing they do not already have, and
 ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores
 (dispatch://INFRA-1443). A seventh family, bun, holds ~/.bun/bin: .github/actions/setup-bun
-restores it on every ref, keyed on the version .bun-version pins and with no restore-keys (a Bun
-binary of another version is one setup-bun rejects after paying for the restore, where a
-near-miss Go entry is still most of a module cache), and passes no-cache: true on every ref, so
-setup-bun takes the restored binary as an existing installation and downloads the
-51,794,595-byte release asset on a miss alone (dispatch://INFRA-1545). The action saves that
-family itself, on a push to main alone, which is no event of this workflow, and no job here
-writes a bun entry at all. The browsers job called that action on every one of those pushes
-until it went, so what writes the entry now is the three workflows left that run on a push to
-main and call it - docs-pages.yaml through docs-site.yaml, release.yaml and
-release-envoy-listener.yaml - each on a push its own `paths:` selects, where the browsers job
-took every push to main. The restore is made in every job but tool-fallback and
+restores it on every ref, keyed on the runner's architecture, the build variant and the version
+.bun-version pins and with no restore-keys (a Bun binary of another version is one setup-bun
+rejects after paying for the restore, where a near-miss Go entry is still most of a module
+cache), and passes no-cache: true on every ref, so setup-bun takes the restored binary as an
+existing installation and downloads the 51,794,595-byte release asset on a miss alone
+(dispatch://INFRA-1545). The action saves that family only where its caller passes `save:
+'true'` and the run is a push to main, and one job passes it: ci-caches.yaml's bun job, which
+runs on every push to main, as each Go family has one saving job there. The key names the
+runner's architecture, so each architecture needs an entry and a saving job of its own, and the
+bun job runs one leg on ubuntu-24.04 and one on ubuntu-24.04-arm. No job here passes the input,
+and no run of this workflow is a push, so no job here writes a bun entry at all. The restore is
+made in every job but tool-fallback and
 tool-fallback-arm: that action reads the id of the job that called it and holds its restore
 back for those two on every ref, so a restored Bun cannot stand in for the install each of their
 cases is a reading of. An eighth family,

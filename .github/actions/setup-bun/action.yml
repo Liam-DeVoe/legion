@@ -22,19 +22,21 @@ description: >-
   fetches on a miss is 51,794,595 bytes. That branch of setup-bun runs before any cache logic of
   its own, which is why no-cache: true does not cost the restore.
 
-  The bun-cache-save step of this action is what writes that family, and only on a push to main,
-  since only an event that writes the default branch's cache scope leaves an entry every later
-  run can read. There is no job whose purpose is to write it: the save is a step inside this
-  action, so the entry appears when a workflow that runs on such a push happens to call this
-  action. ci.yaml runs on no push at all, so no job of the router writes it, and ci-caches.yaml
-  calls this action nowhere — its own line 45 says so, and the browsers job that once did is
-  gone. The three that remain are docs-pages.yaml (through docs-site.yaml), release.yaml and
-  release-envoy-listener.yaml, AND EACH OF THE THREE IS PATH-FILTERED: 211, 36 and 24 patterns
-  at this head. So a push to main that touches none of those paths writes no entry, and the
-  family a later run restores is whatever the last qualifying push left. A pull request's job
-  therefore reads a cache it cannot refresh and must survive its absence, which is what the
-  second source below and the install's own retries are for (review of
-  dispatch://INFRA-1545 read this description against the three callers).
+  The bun-cache-save step of this action is what writes that family, and only where the caller
+  passes `save: 'true'` and the run is a push to main: only an event that writes the default
+  branch's cache scope leaves an entry every later run can read, and the input names the one job
+  that writes it, as each Go family has one saving job. That job is
+  .github/workflows/ci-caches.yaml's `bun`, which runs on every push to main, with no `paths:`,
+  and passes the input on each of its two legs. THE KEY NAMES THE RUNNER'S ARCHITECTURE, SO EACH
+  ARCHITECTURE NEEDS AN ENTRY AND A SAVING JOB OF ITS OWN: a Bun binary is a binary of one
+  architecture, and an entry one architecture saved is one no job of the other restores, so the
+  `bun` job runs one leg on ubuntu-24.04 (x64) and one on ubuntu-24.04-arm (arm64), the two
+  runners this action's callers run on. No other caller passes the input, so no pull-request run,
+  no merge-queue run and no other run on main writes the family, and the restore each job makes
+  reads what the leg of its architecture left. An x86_64 runner without avx2 reads the baseline
+  build's key, which the x64 leg fills only when it lands on such a runner itself, so such a job
+  downloads the release asset when no entry is there, as any job does on a miss (review of
+  dispatch://INFRA-1545 read this description against the callers).
 
   ci.yaml's tool-fallback and tool-fallback-arm jobs restore nothing: both prove what an install
   reads when the release asset serves nothing, and a Bun the Actions cache restored would be
@@ -77,6 +79,15 @@ description: >-
   ~/.bun/bin is on this job's PATH from the setup-bun step, so either way no later step of the
   job runs a bun no digest answers for, under either name.
 
+inputs:
+  save:
+    description: >-
+      'true' saves the bun family's entry where the restore missed, on a push to main and on no
+      other event. .github/workflows/ci-caches.yaml's `bun` job alone passes it, one leg per
+      runner architecture; every other caller leaves it 'false' and only restores.
+    required: false
+    default: 'false'
+
 runs:
   using: composite
   steps:
@@ -107,14 +118,15 @@ runs:
     # near-miss Go module cache is still most of a module cache, while a Bun binary of another
     # version is one setup-bun rejects after paying for the restore.
     #
-    # runner.arch is in the key because one job of this repository's CI runs on arm64 —
-    # release-envoy-listener.yaml's docker job builds its arm64 leg on ubuntu-24.04-arm — and an
-    # entry is written once and never replaced. Without it the two architectures share one key,
-    # and which way the restore is wrong is then decided by whichever ran first: an x64 binary
-    # restored on the arm leg leaves `bun --revision` failing, so that leg downloads the release
-    # asset on every run and the restore buys it nothing; and an arm64 binary saved first on a
-    # push to main leaves every x64 job restoring a binary it cannot run and downloading too,
-    # with no way to replace the entry. With it, each architecture keeps an entry of its own.
+    # runner.arch is in the key because the jobs of this repository's CI that call this action
+    # run on ubuntu-24.04 and on ubuntu-24.04-arm, and an entry is written once and never
+    # replaced. Without it the two architectures share one key, and which way the restore is
+    # wrong is then decided by whichever saved first: an x64 binary restored on an arm64 job
+    # leaves `bun --revision` failing, so that job downloads the release asset on every run and
+    # the restore buys it nothing; and an arm64 binary saved first leaves every x64 job restoring
+    # a binary it cannot run and downloading too, with no way to replace the entry. With it, each
+    # architecture keeps an entry of its own, which the leg of ci-caches.yaml's `bun` job that
+    # runs on that architecture saves.
     #
     # Every job but the two that prove the second source. ci.yaml's tool-fallback and
     # tool-fallback-arm fault every source they can reach and then read what each case
@@ -264,12 +276,13 @@ runs:
         fi
         printf 'row=%s\nsource=%s\n' "$row" "$source" >> "$GITHUB_OUTPUT"
 
-    # What the two steps above left in ~/.bun/bin, kept for every later run: on a push to main
-    # for the scope reason the description gives, and only where the restore missed, since an
-    # entry already under this key is never replaced and re-uploading 51,794,595 bytes would buy
-    # nothing. A job whose restore was skipped reports no hit at all, which reads as a miss
-    # here; the two jobs that skip it run in ci.yaml, which runs on no push, so neither reaches
-    # this step.
+    # What the two steps above left in ~/.bun/bin, kept for every later run: only where the
+    # caller passed `save: 'true'`, which ci-caches.yaml's `bun` job alone does, and on a push to
+    # main, for the scope reason the description gives; and only where the restore missed, since
+    # an entry already under this key is never replaced and re-uploading 51,794,595 bytes would
+    # buy nothing. A job whose restore was skipped reports no hit at all, which reads as a miss
+    # here; the two jobs that skip it pass no `save` and run in ci.yaml, which runs on no push, so
+    # neither reaches this step.
     # It runs before the digest check rather than after it because the check is this action's
     # last step and has to stay that way: a step after it runs with the bun it allowed on PATH,
     # which is what rule 9 of .github/scripts/check-bun-version.sh refuses. So an entry can be
@@ -278,7 +291,7 @@ runs:
     # PATH and names `cache` as the source. The run that wrote it fails; no run that reads it
     # passes.
     - id: bun-cache-save
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+      if: inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bun/bin

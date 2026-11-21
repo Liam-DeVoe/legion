@@ -72,25 +72,32 @@ name: CI caches
 # .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
 # record of their restores and saves.
 #
-# One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
-# content of the Lean toolchain the model names rather than a Go version. Two others that were
-# no Go family went with the jobs that read them - the Playwright browsers and the .deb files of
-# the apt list the browser suite installed - because dispatch-browser.yaml's shard and alone
-# jobs run in the image this repository builds, which carries the browsers and their host
-# packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
-# restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
-# with them.
+# Four families here are no Go family. The elan home the airlock-lean job restores, whose key is
+# the content of the Lean toolchain the model names rather than a Go version. The bun family,
+# ~/.bun/bin, which .github/actions/setup-bun restores in every job that calls it and saves only
+# where its caller passes `save: 'true'` on a push to main: the bun job below is the one caller
+# that does, the family's one saving job as each Go family has one. The key names the runner's
+# architecture, so each architecture needs an entry and a saving job of its own, and the bun job
+# runs a leg on each runner the action's callers run on, ubuntu-24.04 and ubuntu-24.04-arm. And
+# the two builds dispatch-two-builds runs the tree against, the previous release's and the
+# first-rollout release's, which that job restores and this workflow's dispatch-builds job builds
+# and saves. Two others that were no Go family went with the jobs that read them - the
+# Playwright browsers and the .deb files of the apt list the browser suite installed - because
+# dispatch-browser.yaml's shard and alone jobs run in the image this repository builds, which
+# carries the browsers and their host packages, so neither entry has a restore left to serve
+# (dispatch://INFRA-1443). A save whose restore is gone is what check-ci-filters.sh refuses, so
+# the two jobs that wrote them are gone with them.
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
-# with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
-# writes it on main, and five workflows that run there call it. No job of this workflow calls
-# that action any more: the browsers job did, and it went with the two entries above.
+# with ci.yaml's docs job.
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
-# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for
+# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum, the Bun version
+# .bun-version pins, a release's commit beside the hash of the script that builds it or, for
 # go-envoy-infra, the hash of the infra workspace's module files, not a file list, so what the
-# push touched decides nothing, and a run whose keys are all there is seconds.
+# push touched decides nothing, and a run whose keys are all there is seconds, but for the
+# dispatch-builds job's checkout of the whole history, which its key needs.
 on:
   push:
     branches: [main]
@@ -290,6 +297,9 @@ jobs:
       # lint just builds those objects cold on every run.
       - name: Write every Go release archive's third-party notices and cross-build the commands
         if: steps.go-notices.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-notices-step-whose-script-the-gate-does-not-read
+        # 674 + 1050 = 1724 s -> 29 min.
+        timeout-minutes: 29
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
 
       - if: steps.go-notices.outputs.cache-hit != 'true'
@@ -689,15 +699,13 @@ jobs:
   # toolchain are binaries of it, and the content of the lean-toolchain the model names, since
   # that file is what decides which toolchain elan installs, so the entry is refreshed when the
   # model moves to another Lean and at no other time. install-elan puts elan under
-  # $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss, which is
-  # the whole of what is saved. It runs on ubuntu-24.04-arm, the runner airlock-lean runs on.
+  # $RUNNER_TEMP/elan and the toolchain step below downloads the named toolchain into it on a
+  # miss, which is the whole of what is saved. It runs on ubuntu-24.04-arm, the runner
+  # airlock-lean runs on.
   elan:
     runs-on: ubuntu-24.04-arm
-    # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
-    # this job was written with — one toolchain download and one build of the model on a miss,
-    # and a run that finds the key costs the checkout alone — plus its slowest retried step
-    # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 1708 s, this job's
-    # only retried call. 1800 + 1708 = 3508 s -> 59 min.
+    # why: .github/ci-notes/ci-caches.md#the-elan-jobs-budget
+    # 1800 + 1708 = 3508 s -> 59 min.
     timeout-minutes: 59
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -717,8 +725,21 @@ jobs:
         uses: ./.github/actions/install-elan
         timeout-minutes: 29
 
-      # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
-      # airlock-lean will find rather than elan alone.
+      # The toolchain lean-toolchain names, retried as airlock-lean's step of the same name is and
+      # at its bound (.github/ci-notes/ci-job-airlock-lean.md#the-lean-toolchain-step-and-its-bound).
+      - name: Install the Lean toolchain lean-toolchain names
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-elan-jobs-budget
+        # 5 x 120 + 150 = 750 s -> 13 min.
+        timeout-minutes: 13
+        run: |
+          . .github/scripts/ci-retry.sh
+          toolchain=$(cat packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain)
+          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain"
+
+      # What airlock-lean builds, after the toolchain step, as airlock-lean builds it: the build
+      # reads the toolchain from $RUNNER_TEMP/elan and downloads nothing, so the entry holds the
+      # toolchain airlock-lean's build will find there.
       - name: Build what airlock-lean builds
         if: steps.elan-cache.outputs.cache-hit != 'true'
         run: lake build
@@ -729,3 +750,134 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
+
+  # The bun family, ~/.bun/bin, which .github/actions/setup-bun restores in every job that calls
+  # it, keyed on the runner's OS and architecture, the build variant and the version .bun-version
+  # pins. This is the family's one saving job: the action saves only where its caller passes
+  # `save: 'true'` and the run is a push to main, and no other caller passes it, as each Go family
+  # above has one saving job. THE KEY NAMES THE RUNNER'S ARCHITECTURE, SO EACH ARCHITECTURE NEEDS
+  # AN ENTRY AND A SAVING JOB OF ITS OWN: a Bun binary runs on one architecture, and an entry an
+  # x64 leg saved is one no arm64 job restores. So one leg per runner the action's callers run on,
+  # ubuntu-24.04 (x64) and ubuntu-24.04-arm (arm64). The action's own restore is the lookup: a
+  # leg whose key is there restores the entry, finds the pinned Bun in it and saves nothing, so a
+  # run that finds both keys costs a checkout and a restore on each leg.
+  bun:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # why: .github/ci-notes/ci-caches.md#the-bun-jobs-budget
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fill the bun family for this runner's architecture
+        uses: ./.github/actions/setup-bun
+        # why: .github/ci-notes/ci-caches.md#the-bun-jobs-budget
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+        with:
+          save: 'true'
+
+  # The two builds ci.yaml's dispatch-two-builds job runs the tree against, each made by
+  # packages/envoy/scripts/build-dispatch-build.sh from a commit of this repository: the previous
+  # release's, keyed on that release's commit, and the pinned first-rollout release's. That job
+  # restores both and saves neither, since an entry a pull request or a merge group saves lands
+  # in a scope no other run reads (dispatch://INFRA-1545, R4), so this job fills them on a push
+  # to main, as the families above are filled. Each key is the text of that job's restore, which
+  # check-ci-filters.sh holds this job's save to. On ubuntu-24.04, the runner dispatch-two-builds
+  # runs on: the key names the runner's architecture, and each build's server is a binary of it.
+  # The whole history and the tags, as that job checks them out: the script resolves the previous
+  # release from the tags in the history of origin/main, and refuses a commit older than its floor
+  # release, which it reads by its tag.
+  dispatch-builds:
+    runs-on: ubuntu-24.04
+    # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+    # 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
+    env:
+      # The first-rollout build's commit, the pin ci-job-dispatch-two-builds.yaml's env holds
+      # under this name and firstRolloutRelease in
+      # packages/envoy/cmd/dispatch/twobuild_harness_test.go holds too: the key below is that
+      # job's restore key, so the two pins move together.
+      FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve the previous build's commit
+        id: previous
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - id: previous-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+          lookup-only: true
+
+      - id: first-rollout-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
+          lookup-only: true
+
+      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-bun
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+
+      - name: Build the previous build
+        if: steps.previous-build.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
+        env:
+          PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+
+      - if: steps.previous-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+
+      - name: Build the first-rollout build
+        if: steps.first-rollout-build.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
+
+      - if: steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}

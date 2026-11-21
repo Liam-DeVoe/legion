@@ -535,6 +535,34 @@ the `pair_released` function, so rule 8 reads both as runs the step waits for
 (dispatch://INFRA-1545, round 37); the body stays inline there, as
 .github/scripts/check-release-credentials.sh requires of a job holding a credential.
 
+publish and worker_image_release hold a credential, and the credentialed publish jobs of the
+three release workflows are an exception of R2 of dispatch://INFRA-1545, so no step of either
+retries anything. They carry these keys because their steps run release-push.sh, which the build
+jobs run too and which therefore keeps its one retried fetch, the leak engine's in `leak_guard`:
+.github/scripts/check-download-retry.sh's rule 8 charges each step that runs the script that
+fetch at each of `leak_guard`'s six call sites, 2700 s a run, and refuses a step holding it that
+carries no `timeout-minutes`, a job whose key no comment prices, and a run of the script inside a
+shell function, which it cannot count. With the 10 minutes and the bare steps these two jobs
+carry on main, that check refuses every one of their release-push.sh steps and both keys, and
+`pair_member`'s call as well.
+
+## The legion build step and its notices script
+
+`Build legion`, in legion_build, runs .github/scripts/release-build-legion.sh, which runs
+scripts/go-third-party-notices.sh once for each target of .github/go-release-targets.json. That
+script installs go-licenses through .github/scripts/ci-retry.sh at the 180 s module bound,
+5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
+directory is named by the go-licenses version and the host's Go version, not by the GOOS or
+GOARCH the packages target, so every call after the first finds that build and fetches nothing,
+and the step waits for one ladder. .github/scripts/check-download-retry.sh reads
+release-build-legion.sh but no script outside .github/scripts/, so it prices none of that, and
+the budget is derived by hand (dispatch://INFRA-2899 owns the reach that would make it the
+check's): the ladder beside the step's measured duration, which holds the cross-builds and the
+notices, 427 s at most over the 11 runs of the step in the 30 successful runs of this workflow
+created from 2026-11-20T12:23Z to 2026-11-21T08:25Z (job 136642681904 of run 44839077231; the
+other runs released no legion and skipped it). 427 + 1050 = 1477 s -> 25 min, under
+legion_build's 196, whose slowest retried step is still the plugin-version step's 10800 s.
+
 ## Why legion_build downloads its Go modules before the build
 
 The modules this job's build compiles, downloaded once and retried, so the build itself reads the

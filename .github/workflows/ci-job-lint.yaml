@@ -280,6 +280,9 @@ jobs:
       # step restores: one script, so the fill cannot warm anything but what this step builds.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        # why: .github/ci-notes/ci-job-lint.md#the-notices-step-whose-script-the-gate-does-not-read
+        # 132 + 1050 = 1182 s -> 20 min.
+        timeout-minutes: 20
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
 
       - name: Report ci-ok when this job decides a merge-group run
