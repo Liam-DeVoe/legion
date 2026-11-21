@@ -388,9 +388,10 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 // commits while another transaction holds the change log's lock, since the write never takes it,
 // and its change rows wait in the outbox for its drain, which waits for the lock. Let go, the drain
 // moves every one of them, and the only transaction the samples see hold the lock from then on is
-// the drain. The time from the release to the write's answer, which bounds the drain's hold from
-// above, is logged. Before the outbox the write waited for the lock before it wrote anything, and
-// held it for the whole write.
+// the drain. The samples start before the release, so a sample can see the gate's own hold; that
+// hold is left out by its identity, its backend and its transaction's start. The time from the
+// release to the write's answer, which bounds the drain's hold from above, is logged. Before the
+// outbox the write waited for the lock before it wrote anything, and held it for the whole write.
 func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -408,6 +409,15 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
 	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1, $2)`, changeLockClass, changeLockObject); err != nil {
 		t.Fatalf("take the change log's lock: %v", err)
+	}
+	// The gate's identity, by which a sample of its own hold is told from the drain's: its backend
+	// and its transaction's start, which now() answers in a transaction and a sample reads as
+	// xact_start. The backend alone would not do: the drain may run on the connection the gate
+	// gives back, the same backend in a transaction of its own.
+	var gatePID uint32
+	var gateStart time.Time
+	if err := gate.QueryRow(ctx, `select pg_backend_pid(), now()`).Scan(&gatePID, &gateStart); err != nil {
+		t.Fatalf("read the gate's backend and transaction start: %v", err)
 	}
 	done := make(chan error, 1)
 	answered := make(chan time.Time, 1)
@@ -449,6 +459,9 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 		t.Errorf("the drain moved %v into the log, want the %d pending changes, its readings' and its day rows'", kinds, pending)
 	}
 	for _, hold := range holds {
+		if hold.PID == gatePID && hold.XactStart.Equal(gateStart) {
+			continue
+		}
 		if !isDrain(hold) {
 			t.Errorf("a transaction other than the correction's drain held the change log's lock after its release: %s", hold)
 		}
