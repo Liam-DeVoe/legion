@@ -124,7 +124,10 @@ const (
 //   - callbacksHandBack: the callback of the second message waits before it routes the message
 //     (beforeReceive) until the stop has handed back what it held (released), and then hands the
 //     message back itself. Its publish goes on only when the row thaws the link, so the stop
-//     decides whether to wait for that hand-back while its publish is still held.
+//     decides whether to wait for that hand-back while its publish is still held. The stop's drain
+//     loop waits in beforeDrainWait until that hand-back has reached its publish hook, where the
+//     row puts the production wait back. So the 30 s guard is gone before the loop starts, and
+//     each of its reads of whether NATS is connected waits at most bus.ConnLockWait.
 //
 // It returns once the write is held, with the stop under way. The stop's deadline is
 // intakeStopBudget, set to budget.
@@ -240,6 +243,24 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) h
 	row.delivery = subscribedDelivery(holder.intake)
 	trace.name(row.delivery, "holder")
 	row.delivery.beforeHandBackPublish.Store(&hook)
+	// In a callback row, the stop's drain loop waits in its hook (beforeDrainWait) until the test's
+	// goroutine has seen the callback's hand-back reach its publish hook, which puts the wait back.
+	// So each read of the loop waits at most bus.ConnLockWait. Without this hook, a read that starts
+	// under the 30 s guard and takes nats.go's lock only after the test's goroutine holds the write
+	// can wait past the subtest's own 30 s wait. A stop row needs no such hook: the stop's own
+	// hand-back reaches the publish hook on the stop's goroutine before the loop starts. The test's
+	// goroutine closes drainMayBegin in either row, and ended lets the loop begin when the test ends
+	// early.
+	drainMayBegin := make(chan struct{})
+	if by == callbacksHandBack {
+		beforeDrain := func() {
+			select {
+			case <-drainMayBegin:
+			case <-ended:
+			}
+		}
+		row.delivery.beforeDrainWait.Store(&beforeDrain)
+	}
 	row.from = row.recorded.count()
 	trace.stopBegins(row.from)
 	done := make(chan struct{})
@@ -269,6 +290,7 @@ func stopWithAHeldHandBack(t *testing.T, budget time.Duration, by heldPublish) h
 	case <-time.After(30 * time.Second):
 		t.Fatal(unreached + consumerState(publisher))
 	}
+	close(drainMayBegin)
 	row.thaw = link.HoldWriteLock(t, holderConn)
 	// Registered after every cleanup of the row's own, so a failure is read before they move the
 	// link, stop the processes or close the clients.
@@ -651,9 +673,12 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	// The callback of the second message runs once the stop has handed back what it held, as
 	// nats.go runs a message the client had buffered during the drain. It hands the message back
 	// itself (receive, giveBack, handBack), and its publish waits in beforeHandBackPublish until the
-	// row thaws the link. With the write held, the stop's drain loop gives up, since its connected
-	// read does not answer, and the stop then decides whether to wait for that hand-back. The
-	// subtest requires that the stop waits for it (handBacksWaiting) with its hold live, and then
+	// row thaws the link. The stop's drain loop begins only once that hand-back has reached
+	// beforeHandBackPublish, where the row puts the production wait back (stopWithAHeldHandBack). So
+	// the row's 30 s guard is gone before the loop starts, and each of the loop's connected reads
+	// waits at most bus.ConnLockWait. With the write held, the drain loop gives up, since its
+	// connected read does not answer, and the stop then decides whether to wait for that hand-back.
+	// The subtest requires that the stop waits for it (handBacksWaiting) with its hold live, and then
 	// reads what the landing subtest reads.
 	//
 	// Control: with the hand-back counted only once its publish begins, in publishHandBack (the

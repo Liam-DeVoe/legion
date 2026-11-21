@@ -74,6 +74,11 @@ type intakeDelivery struct {
 	// beforeReceive, when set, runs first in each call of the callback, with the message
 	// (receive). It is nil outside tests: a test sets it to hold one message's callback.
 	beforeReceive atomic.Pointer[func(*natsgo.Msg)]
+	// beforeDrainWait, when set, runs once in the stop, after the stop has handed back the messages
+	// it held and before its wait for the drain's end begins (stop). It is nil outside tests: a test
+	// sets it to start that wait only once the callback's hand-back has reached its publish, where
+	// the test puts callNATSWait back, so each read of that wait waits at most the production wait.
+	beforeDrainWait atomic.Pointer[func()]
 	// beforeHandBackPublish, when set, runs before each hand-back is published, after the rule has
 	// let it through (publishHandBack). It is nil outside tests: a test sets it to hold the publish
 	// there while the test's own goroutine takes nats.go's connection lock.
@@ -290,6 +295,9 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.mu.Unlock()
 		for _, msg := range held {
 			d.handBack(msg)
+		}
+		if hook := d.beforeDrainWait.Load(); hook != nil {
+			(*hook)()
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid. It ends
