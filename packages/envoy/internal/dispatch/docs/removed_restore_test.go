@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -114,6 +115,29 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 		t.Fatalf("the decisions document holds %d sections, want two", len(sections))
 	}
 	heading := refs.BlockAddress(issue.refKey(decisions), sections[0].headingID())
+
+	// The store census's dangling counter reads its returning set by the restore's own test of a
+	// person's removal (ReturnDeclined): over the restore's work before the step runs, it declines
+	// the returns of q-person and q-scoped, which the restore declines below, and not q-agent's,
+	// which it writes back. q-marked's node holds its removal already, so it is no return.
+	work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool)
+	if err != nil {
+		t.Fatalf("read the restore's work: %v", err)
+	}
+	judged := map[string]bool{}
+	for _, item := range work {
+		if item.Shape != graphcensus.RestoreReturns {
+			continue
+		}
+		declined, err := ReturnDeclined(ctx, issue.database.Pool, item)
+		if err != nil {
+			t.Fatalf("judge the return of %s: %v", name[item.Ask], err)
+		}
+		judged[name[item.Ask]] = declined
+	}
+	if want := map[string]bool{"q-person": true, "q-scoped": true, "q-agent": false}; !maps.Equal(judged, want) {
+		t.Fatalf("the restore's test declines the returns %v, want %v", judged, want)
+	}
 
 	step := NewDecisionStep(issue.database, "", nil)
 	step.UseDocuments(issue.service)

@@ -134,14 +134,14 @@ type Erasure struct {
 	// out that other items still hold, until the project's next refresh pass, which counts it in
 	// full. It is not recorded, for the reason above.
 	NotRecounted []NotRecounted `json:"-"`
-	// Writers are who wrote or answered the node, each once and in order: the person or session
-	// at the far end of every authored_by, decided_by and answered_by tuple out of an ask's node,
-	// of every authored_by and decided_by out of a block's - a decision's, a reading's, a finding's
-	// of a lens - and of every authored_by out of a run of the command bar, a lens, a risk or a
-	// constraint, that the run deletes, asserted or retracted (writesTheNode). Once those tuples
-	// and the node's rows are gone nothing else names them, while their nodes stand: a session's
-	// always, since no erase removes one. The store census reads them off this record
-	// (graphcensus's erasedWriters), a person until an erase of that person runs after this one.
+	// Writers are who wrote, answered, removed or kept the node, each once and in order: the
+	// person or session at the far end of every tuple out of an ask's node or a block's - a
+	// decision's, a reading's, a finding's of a lens - and of every authored_by out of a run of the
+	// command bar, a lens, a risk or a constraint, that names one (writesTheNode) and that the run
+	// deletes, asserted or retracted. Once those tuples and the node's rows are gone nothing else
+	// names them, while their nodes stand: a session's always, since no erase removes one. The
+	// store census reads them off this record (graphcensus's erasedWriters), a person until an
+	// erase of that person runs after this one.
 	Writers []ErasedWriter `json:"writers"`
 	// Digest is the SHA-256 of Listing. A run without --confirm prints it, and a run with
 	// --confirm erases only when the listing it reads under its own locks has the digest it was

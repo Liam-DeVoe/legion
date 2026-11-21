@@ -24,7 +24,7 @@ import (
 // logs every kind it read, so a failure says which side of which kind drifted.
 func requireTheCensusAgreesOver(t *testing.T, database *store.Store, what string, populated ...string) *graphcensus.StoreReport {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census %s: %v", what, err)
 	}

@@ -125,9 +125,11 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 
 // otherBuild keeps a row of the registry live for a process of the build commit, as a process of
 // that build serving beside this tree's registers one (processes.Register): with the key set,
-// dashboard build, embedder and file store of the newest process of the build beside, so it is
-// admitted beside this tree's processes, and with the base release's own schema numbers
-// (earlierBuildSchemaVersion, earlierBuildSchemaCreatable), as a process of it registers them. So
+// dashboard build, embedder, file store and owner lock protocol of the newest process of the build
+// beside, so it is admitted beside this tree's processes and leaves the owner lock out of its
+// legacy mode, as the base release, which registers store.OwnerLockProtocol too, does; and with
+// the base release's own schema numbers (earlierBuildSchemaVersion, earlierBuildSchemaCreatable),
+// as a process of it registers them. So
 // this tree's fleet guard (docs' anotherBuildServes) reads two builds: the roll window, in which
 // this tree keeps the server-owned attributes of each ask block in step with its asks row for the
 // earlier build's pages (docs' rollWindowAskAttributes). A page that
@@ -150,12 +152,31 @@ func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, 
 	instance := uuid.NewString()
 	tag, err := conn.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
-			schema_version, schema_creatable, embedder_identity, file_store)
-		select $1::uuid, $2, dashboard_build, signing_keys, now(), now(), $4, $5, embedder_identity, file_store
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
+		select $1::uuid, $2, dashboard_build, signing_keys, now(), now(), $4, $5, embedder_identity, file_store, owner_lock_protocol
 		from server_processes where commit = $3 order by heartbeat_at desc limit 1
 	`, instance, commit, beside, earlierBuildSchemaVersion, earlierBuildSchemaCreatable)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("register a process of the build %s beside the build %q: %v (%d rows)", commit, beside, err, tag.RowsAffected())
+	}
+	// The row carries the owner lock protocol of the build beside, as a process of the base
+	// release registers the same one (processes.Register, store.OwnerLockProtocol): a row at the
+	// column's default, 0, would fire owner_lock_legacy_registration and hold every owner lock of
+	// the database in the legacy mode for store.OwnerLockMarkWindow, past stop, which no roll
+	// beside the base release takes.
+	var protocol int
+	var marked, legacy bool
+	if err := conn.QueryRow(ctx, `
+		select (select owner_lock_protocol from server_processes where instance = $1::uuid),
+			exists (select from owner_lock_legacy_mark),
+			public.owner_lock_fleet($2, $3)`,
+		instance, store.OwnerLockLegacyWindow.Seconds(), store.OwnerLockMarkWindow.Seconds(),
+	).Scan(&protocol, &marked, &legacy); err != nil {
+		t.Fatalf("read the owner lock protocol of the process of the build %s and the owner lock's fleet: %v", commit, err)
+	}
+	if protocol != store.OwnerLockProtocol || marked || legacy {
+		t.Fatalf("the process of the build %s registers owner_lock_protocol %d, an earlier build's mark stamped %v, an earlier build in the owner lock's fleet %v; want %d, no mark and no earlier build",
+			commit, protocol, marked, legacy, store.OwnerLockProtocol)
 	}
 	done := make(chan struct{})
 	var wait sync.WaitGroup

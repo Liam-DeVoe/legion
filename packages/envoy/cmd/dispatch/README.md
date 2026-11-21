@@ -873,7 +873,7 @@ Run the commands from a checkout of this repository with `bun install` run, each
 
 2. `curl -s https://<dispatch>/healthz` prints a body with `"idempotency_keys":true`: this build judges `Idempotency-Key` (Keyed writes, below).
    The field is a fact of the build, so a `503` for a database or NATS that is down carries it too;
-   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends no write again to it.
+   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends a failed write again under its key and asks nothing first, so that build must not serve.
 
 3. `bun scripts/e2e/lib/dispatch-keyed-comment.ts --url https://<dispatch> --bearer-file <token file> --issue <scratch issue>` posts one comment twice under one `Idempotency-Key`, as a page whose first answer was lost asks again.
    It passes when the repeat is Dispatch's stored answer and the issue holds the comment once:
@@ -944,15 +944,18 @@ So the two surfaces a client crosses a roll on, the body it sends and the route 
 **The release that moves live updates to `/ws/live` and keys every write (INFRA-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
 An earlier server ignores the `Idempotency-Key` header and keeps no key, so while both serve one database a write can run twice:
 one an earlier server ran whose answer was lost is run again by its retry on a new server, which holds no key for it, and a retry of one a new server ran runs again on an earlier one.
-The page and the `dispatch` command both retry a write whose answer was lost, and the command's check that Dispatch keeps keys (the key echoed back, or `/healthz`) reads whichever server answered it.
+The page and the `dispatch` command both retry a write whose answer was lost, under its key, and ask nothing first.
 Stop the earlier release, or scale it to zero, before this one serves:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica;
 a deployment running more than one replica, which rolls, is scaled to zero first, as for `0117` (Database migrations, below).
 The compose auto-deployer stops the old container before it starts the new one.
 Releases after this one roll again.
 A rollback to an earlier release brings the same hazard back, the other way:
-a tab still open, and a `dispatch` client that saw this release keep keys within the last five minutes (`KEYED_LAYER_MEMORY_MS`), retry a write whose answer was lost against the earlier server, which runs it again.
+a tab still open, and every `dispatch` client, which sends a failed write again under its key and asks nothing first, retry a write whose answer was lost against the earlier server, which runs it again.
 Fix forward instead; if you must roll back, stop this release first, knowing a write in flight at that moment may land twice.
+A rollback to a build whose keyed layer passes a caller it cannot resolve on to the handler, rather than answering that caller itself, brings the double write back too, for every `dispatch` client that sends a failed write again with no `/healthz` read (`packages/envoy-client/README.md`), for as long as that build serves:
+that build can run a keyed write with no key, so a write whose answer was lost, sent again under its key, can land twice.
+Once a deployment's sessions run such a client, do not roll Dispatch back past `b1c42d1d7d` (the first build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
 Once `0141_drop_broadcast_idempotency_keys` has applied, a rollback past this release also loses broadcasts:
 the earlier build's broadcast send reads and writes the table `0141` drops, so every broadcast send fails while the rest of that build keeps working.
 A tab opened before the deploy needs a reload:
@@ -1617,6 +1620,9 @@ A lease taken per pass would move the fill from one process to another at each p
 The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
 So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
 A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
+`DISPATCH_SEARCH_FILL=off`, read once at boot, defers the fill: the process starts no fill, takes no hold, writes no row of the table or its cursor, and logs `dispatch: the keyword fill is deferred; this process fills no keyword table` once (`setting=DISPATCH_SEARCH_FILL value=off`).
+No route reads the table yet (Search, below), so search answers alike with the fill off, and a later boot with it `on` or unset starts the fill from the cursor where it stands.
+`on` and unset start the fill; any other value refuses the boot, naming the variable.
 
 - The hold has the values of the delivery intakes' holds.
   It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.
@@ -1846,7 +1852,7 @@ What the operator does:
   Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
   The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch on main that names none fails the check.
   On a dispatch of another branch that names none, a full run started by hand, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
-  It fails a head file whose first replaces line is not the base's first identity, a head file that accepts no text of the base's, and a base file whose version the head no longer has a file of, each naming the lines to add, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
+  It fails a head file whose first replaces line is not the base's first identity, a head file whose replaces lines do not begin with the base's, in the base's order, then one naming the base's file itself, name and checksum, since each of those is an identity or a text a database the base accepts may record, and a base file whose version the head no longer has a file of, each naming the lines to begin with, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
   A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
 
 **The limit.**
@@ -2713,7 +2719,7 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but for the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below).
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -3428,7 +3434,7 @@ The kinds are:
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks that holds no row, no node and no unmarked row, and for a kind a deployment can hold none of (a run, its frames, and each `<kind>_visibility_state`), whose line adds that it refuses nothing.
-A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
+A database that is not a store of this build holds no kind to read: where `graph_nodes` does not exist, or a migration this binary embeds is not yet applied (an earlier release's store, before this build migrates it), the census prints `census: store absent (<reason>)` and refuses, since it read nothing; with `--sizing` it runs the growth pass all the same and exits 0.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
 
@@ -3624,7 +3630,7 @@ No command erases that text: the object's own route changes its current text, an
 A node of one of those kinds, at any state but `gone`, with no row behind it holds no text: it is a document an earlier build removed during a roll or after a rollback without stating its node gone, the project census's `orphaned` class, and the erase removes it and its tuples, which is that class's one remedy.
 
 It changes only the rows that derive from the node, and what derives from a node is fixed by the node, never by a search for its bytes.
-Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, for a run of the command bar its `going_requests` row and its `going_events` rows (which carry no such pair, and which it takes `for update` after the node's row, the run's row before its frames), its own embedding rows and window state, and the events about it.
+Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, for a run of the command bar its `going_requests` row and its `going_events` rows (which carry no such pair, and which it takes `for update` after the node's row, the run's row before its frames), its own embedding rows and window state, its own keyword versions, and the events about it.
 So `envoy-dispatch erase --node interaction:<uuid>` leaves no row, node or tuple of the run, and no backfill writes it back.
 An ask's node is projected onto its `asks` row and each of its follower rows (`20261116094058` gave both tables the same pair), and the erase deletes neither: it refuses the ask while its `asks` row stands, and a follower row goes with that row.
 A finding of a lens is a `block` node whose id names its lens; a tuple into it names it `lens_block`, the kind the graph addresses it by, and the erase reads and deletes the tuples into it under both, and takes no document from its id.
@@ -3652,6 +3658,7 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
 - **The events about the node** (`events.payload`): a comment's own events, whose payload is the comment or names it as `comment_id`, and a block's document events (`artifact.*`, `block.*`).
   A document event's payload quotes the whole document, so in it the erased text is replaced only where it stands as a block of its own, as in a container's text, and a sibling's line in a version's markdown or a diff stands.
   A comment's own event quotes other nodes beside what its author wrote - the anchor's `quote` of the document it is anchored to, that document's `artifact_name`, the `ask_question` of the ask it replies to and the `text` of the `reply_block` it answers (`grapherase.quotedFields`) - and in those the erased text is replaced only where it stands as a block of its own, so another node's words around it stand.
+  A comment's own event whose `body_truncated` is true carries only the first part of its body (`model.EventBody`), cut at the last blank line, else line break, else character within 32,000 units, so the cut can fall inside a block and leave that block's head, which no erased text matches whole: such a `body` is the comment's own text to its last byte, and is replaced whole with the marker.
   The log is append-only, so the row stays with its id, its time and its actor, and the bytes go only from inside the JSON string values that carry what somebody wrote.
   A key is never touched, and neither is a value under a structural key: an identifier (`id`, every key ending in `_id`, `_key`, `_slug` or `_logins`, `reply_to`, `answers`, `editors`, an actor's `owner`, `session`, `service` and `project`, and a digest, `sha256`, every key ending in `_sha256` and `content_sha256_source`), an address (`target`, `route` and every key ending in `_route`, `ref`, `node`, `slug`), a state or kind enumeration (`kind`, `type`, `state`, `status`, `role`, `delivery`, `turn`, `scopes`, `mime`, `waiting_on`, and every key ending in `_type`, `_kinds`, `_state`, `_status` or `_waiting_on`) or a time (`at` and every key ending in `_at`), at every depth of every event type alike (`grapherase.structuralKey`).
   So an erase of `kind` leaves every `"kind"` key and the kind each one names and redacts a body reading `kind`, an erase of `sent` leaves a receipt's `state` reading `sent`, and an erase of a text that is part of a session's id leaves that id whole.
@@ -3672,6 +3679,12 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
   The match is byte for byte on markdown: where the erased block holds the erased bytes but its markdown spells them otherwise - an escaped `*` or `_`, for one - the seed would keep them, so the run lists the document as **not redacted** and refuses, removing nothing.
 
 - **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
+
+- **The keyword versions** (`search_text_versions`), which the keyword fill writes from the event log: every version of the node's own text goes, and an issue whose spec lost a version has the `search` of each of its versions that names that version (`spec_artifact_id`, `spec_version`) written again, by the expression the fill writes it with (`textversions.RestateIssueVectors`), which then reads no markdown for the version that went and keeps the issue's key and the title the row holds.
+  The listing names each by its key and its `event_seq`, as deleted or as rewritten.
+  The erase holds the fill back by its cursor row, the one row of `search_text_versions_fill`, which it takes `for share` before it reads under its locks, creating it where none is (`textversions.HoldFillBack`): a batch takes that row `for update` before it reads anything, so a batch in flight, which may have read the erased text, commits before the erase reads, and no batch writes until the erase ends.
+  A batch that waits on the row past its 5-second `lock_timeout` fails, and the fill tries it again.
+  A fill that reads the comment's events after the erase, as one does after a reset of the log empties the table, reads them redacted and writes the marker as the comment's version, so the table holds no erased byte however often it is filled again.
 
 - **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved, in two steps.
   Inside the transaction, under the locks, the erase takes out of each project's statistics every lexeme an item it deleted or rewrote no longer holds (`api.ForgetErasedTermsTx`): `search_term_stats` holds lexemes, and one of the erased text that stood there after the commit would be the erased words, still stored.
@@ -3700,6 +3713,7 @@ It removes nothing until an operator has read what it would.
 Run with `--node` alone, it reads every row it would delete, rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no writer, prints that listing - each version and review with its document, its issue and its version, each event row with its id, each row it leaves with its table and key - with its SHA-256 on a `listing digest:` line, and exits 1.
 Run with `--confirm <digest>`, it first searches again for the rows it leaves, in a read-only transaction of its own that takes no lock, then takes its locks, reads the rest of the listing again in a transaction of its own under them, and erases only when that listing has the digest it was given; a listing that changed since is refused with both digests, exit 1, and nothing is removed.
 The listing's search for the rows it leaves reads every text, jsonb, bytea and tsvector column of every table, so a store a later build adds is listed without anyone naming it; a pgvector `vector` holds the numbers an embedder made of a text and never the text, and is not searched.
+It searches for each erased text whole and, for a text longer than an event carries, for the first part that a copy carries in its place (`model.EventBody`, the text trimmed first as a version an accepted suggestion names is): such a copy is cut at a line break or a character as well as at a blank line, so it can end inside a block and hold no erased text whole, and the listing still names the row.
 That search scans every table, and every writer of an issue or a document takes the owner's lock first, so a confirmed run searches before it takes its first lock and no write to the node's issue or document waits for the search.
 A row holding the erased bytes written between the search and the locks is therefore not on the listing the digest covers, and the run leaves it as it leaves every row it lists.
 Once it has committed, the run searches again, outside its locks, in a read-only transaction of its own, and prints each row that search finds and the first did not under a `rows that hold the erased bytes and derive from another node, written after the search and found after the commit, left as they are: <n>` line, after the term statistics lines and before the `text_trees` line; like the listing, those rows go into the report alone and not into `graph_erasures`.
@@ -3707,8 +3721,9 @@ A search after the commit that fails leaves the erase standing: the sweep of `te
 Once it holds its locks, a confirmed run holds the writers of the node's issue or document for the rest of its work: the read of the rest of the listing, the erase and the commit.
 Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
 
-It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then everything else.
+It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then the keyword fill's cursor row `for share`, then everything else.
 Taking those rows before it writes anything is what orders it against the block index tick's window arm, which holds a comment's row `for no key update` and no owner row while it writes that comment's windows: the erase waits at the row before it has deleted a window, rather than deleting the windows first and meeting the arm in a deadlock.
+The fill takes its cursor row first and alone in each batch and takes no owner row, so the erase waiting there while it holds its owners meets no cycle.
 The owner rows are the node's own - a comment's issue, or the owner of the document it is on - and a block's document's: the document's issue, or the document's own row when no issue owns it.
 It takes no owner row of a row it leaves, since it writes none of them.
 It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
@@ -4327,8 +4342,10 @@ A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 
 Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the refusal of a caller it could not resolve, or the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
-A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other:
-the agents' client resends a failed write only against a Dispatch whose answer carried the echo in the last five minutes, or whose `/healthz` said so in that time (`packages/envoy-client/README.md`).
+A check tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other: the deploy check reads `/healthz` (`scripts/e2e/lib/dispatch-keyed-comment.ts`).
+The agents' client reads no `/healthz`: every Dispatch that carries `b1c42d1d7d` runs this layer on every write route, so it sends a failed write again under its key and asks nothing first, whatever the echo says.
+It reads the echo to settle a refusal: a fresh 4xx, or a `422 KEY_REUSED`, that echoes exactly its key is final (`answerEvent`, `packages/envoy-client/README.md`), so a change that drops or moves the echo turns such a refusal back into an unsettled write.
+It also reads the echo to judge a 2xx: once an answer of the same write echoed the key, a 2xx without exactly that key is something in Dispatch's place, so a change that drops the echo from a 2xx alone turns that write's success into an unsettled write.
 
 ## Access log
 
@@ -4603,6 +4620,7 @@ Each item below names a path with its method and identity, then its purpose.
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
   It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
+  `envoy_dispatch_document_replacements_unguarded_total`, with no label, counts the whole-document uploads that replaced a document naming no token for the version they replace, which Dispatch takes unchecked until every deployed `dispatch` client sends one (INFRA-4980); each also logs one INFO line naming the artifact and the document (`api.noteUnguardedReplacement`), and no caller: the access log's line for the same upload names the caller and its User-Agent, so the two are joined on the upload's path and time.
   It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
   Nothing scrapes it yet.
 
@@ -5485,7 +5503,7 @@ Each item below names a path with its method and identity, then its purpose.
     It goes into a pull request, which can be public, so the reading keeps only plain words: a word every rune of which is a visible letter, a digit or one of `. , ; : ! ? ' " - ( ) /`.
     Every other rune drops its word whole: many of them, such as emphasis and strikethrough (`*`, `_`, `~`), code, HTML, links, escapes, character references, math, mentions and every Unicode dash, quotation mark or invisible character, can split, join, hide or forge a key or a host once the pull request renders it, and the rule allows these few runes rather than list which; `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` and `it’s` leave the line too, while the record keeps the whole reading.
     Of the plain words it also leaves out every one that holds `://`, a host below `.internal.` or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of a project this Dispatch holds, judged as written and under NFKC; a public host written as `www.` and a domain, which GitHub renders as a link, stays.
-    The public text check refuses a host below `.internal.` and not one ending in `.internal`: it guards the whole repository, where names such as `metadata.google.internal` and `host.docker.internal` are well known, while the line is pasted into public text with no reader in between.
+    The public text check refuses a host below `.internal.` everywhere, and one ending in `.internal` only in a pull request's own text, where it still lets `metadata.google.internal` and `host.docker.internal` pass: over the whole repository such names are well known, while the line is pasted into public text with no reader in between and drops them too.
     A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)` and `fix/acme-12-lines` each hold one.
     `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
     What is left, when it is longer than 80 runes, is cut at the last blank within its first 80 runes, or, where those runes hold no blank, at the limit itself, with `…` where it was cut; a cut text is judged again, since a cut at the limit can fall inside a word and leave a key the whole word did not hold; a reading of which nothing is left, before the cut or after that second judging, says `The reading holds only words this line leaves out.`, and a result with no reading says `The role recorded no reading.`

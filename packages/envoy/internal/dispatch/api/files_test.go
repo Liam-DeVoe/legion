@@ -251,10 +251,11 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		name, insert string
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, false)`, true},
+		{"bucketless process", fmt.Sprintf(`insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, %d)`, store.OwnerLockProtocol), true},
+		// A build that predates the fleet columns predates the owner lock protocol too: its row reads 0.
 		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, true},
-		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, true)`, false},
-		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
+		{"process with a bucket", fmt.Sprintf(`insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, %d)`, store.OwnerLockProtocol), false},
+		{"lapsed bucketless process", fmt.Sprintf(`insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', %d)`, store.OwnerLockProtocol), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			memory := filestest.NewMemory()

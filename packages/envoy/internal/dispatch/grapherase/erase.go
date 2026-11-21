@@ -112,18 +112,20 @@ func ParseNode(value string) (kind, id string, err error) {
 //
 // What derives from a node is fixed by the node (erasedRead): its tuples on both sides, its
 // projection rows and the rows that cannot exist without one, its own embedding rows and window
-// state, the events about it, for a block its own document - the versions at which its own block
-// held the text and the approvals over them, the document's editing state, its search rows and
-// its windows - and the excerpts cut from its text, for a comment the editing state of every
-// document whose margin record holds its body, and for a run of the command bar its
-// going_requests row and its going_events rows (runTables), so a run erased is a run no backfill
-// writes back. The run deletes those, or rewrites them with the marker where it may take no row
-// away. Every other row that holds the same bytes derives from another node and is that node's
-// text - a sibling block of the same document among them: the run lists it with its address and
-// changes nothing in it. An operator erases the text of a comment, a block or a run of the
-// command bar by a run over that node; an issue's, a document's, an ask's or a message's text is
-// in its own row and the events about it, which no run reaches, and is changed through that
-// object's own route (an issue's title, a document's name and versions).
+// state, its own keyword versions (search_text_versions), the events about it, for a block its own
+// document - the versions at which its own block held the text and the approvals over them, the
+// document's editing state, its search rows, the keyword versions of its issue that name one of
+// those versions where it is the issue's spec, and its windows - and the excerpts cut from its
+// text, for a comment the editing state of every document whose margin record holds its body, and
+// for a run of the command bar its going_requests row and its going_events rows (runTables), so a
+// run erased is a run no backfill writes back. The run deletes those, or rewrites them with the
+// marker where it may take no row away. Every other row that holds the same bytes derives from
+// another node and is that node's text - a sibling block of the same document among them: the
+// run lists it with its address and changes nothing in it. An operator erases the text of a
+// comment, a block or a run of the command bar by a run over that node; an issue's, a document's,
+// an ask's or a message's text is in its own row and the events about it, which no run reaches,
+// and is changed through that object's own route (an issue's title, a document's name and
+// versions).
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -251,18 +253,19 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // apply removes and rewrites every row the listing named as deriving from the node, in the one
 // order the foreign keys allow. Before anything goes it reads the keys of the display trees of
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
-// (forgetEmbeddings). Then go the whole text of the node's block, the rows that cannot exist
-// without a projection row, the projection rows, a run's frames and its row, and the approvals and
-// the versions they stood on. Then it rewrites what it may not remove - the blocks holding the
-// node's block and the mentions whose excerpt was cut from it, the events about it, the search
-// vectors that stood on a version that went, the embedding rows of what it leaves
-// (restateEmbeddings), and the live state of every document whose history it replaces - takes out
-// of the term statistics of every project whose items moved the lexemes the run removed
-// (api.ForgetErasedTermsTx, which reads no item but the ones the run changed: counting those
-// projects again is recountTermStats's, after the commit), and deletes the display trees of the
-// texts that went. Last go the tuples the listing named and the node (graphstore.EraseNode), which
-// refuses the run where a tuple landed since, and the record of what the run did goes in. Every
-// row it writes is one the read under its locks listed (erasedRead).
+// (forgetEmbeddings). Then go the whole text of the node's block and its Keep, the rows that
+// cannot exist without a projection row, the projection rows, a run's frames and its row, and the
+// approvals and the versions they stood on. Then it rewrites what it may not remove - the blocks
+// holding the node's block and the mentions whose excerpt was cut from it, the events about it,
+// the search vectors that stood on a version that went and the keyword vectors of its spec issue
+// that did, once the node's own keyword versions have gone (restateKeywordVersions), the
+// embedding rows of what it leaves (restateEmbeddings), and the live state of every document
+// whose history it replaces - takes out of the term statistics of every project whose items moved
+// the lexemes the run removed (api.ForgetErasedTermsTx, which reads no item but the ones the run
+// changed: counting those projects again is recountTermStats's, after the commit), and deletes
+// the display trees of the texts that went. Last go the tuples the listing named and the node
+// (graphstore.EraseNode), which refuses the run where a tuple landed since, and the record of what
+// the run did goes in. Every row it writes is one the read under its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
@@ -337,6 +340,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := e.restateSearch(ctx, tx, read.artifacts); err != nil {
 		return err
 	}
+	if err := e.restateKeywordVersions(ctx, tx, read); err != nil {
+		return err
+	}
 	if err := e.restateEmbeddings(ctx, tx, forgotten); err != nil {
 		return err
 	}
@@ -392,12 +398,16 @@ func (e *Erasure) recountTermStats(ctx context.Context, conn *pgx.Conn) {
 }
 
 // eraseBlockTexts deletes the whole text of the node's block at every version, which is the
-// most of the bytes an erased block holds. document_block_texts is keyed by
-// (artifact_id, block_id, version) and carries a foreign key to artifacts alone (migration
-// 0121), so the walk of single-column references into a projected table never names it and
-// the text would outlive the node that held it. It is deleted by the document and the block id
-// the node's address names (ownDocument), so the texts of a block a version dropped, which has
-// no document_blocks row left, go as well. Any other node names no block and deletes nothing.
+// most of the bytes an erased block holds, and the block's Keep, the decision_keeps row whose
+// text_sha256 digests the erased words beside the keeper's login, which a decision a later version
+// writes under the same id would otherwise read as its own (decisionread). Both tables are keyed by
+// the document and the block id - document_block_texts by (artifact_id, block_id, version) and
+// decision_keeps by (artifact_id, block_id) - and carry a foreign key to artifacts alone
+// (migrations 0121 and 20261101162254), so the walk of single-column references into a projected
+// table never names either, and each would outlive the node that held it. Each is deleted by the
+// document and the block id the node's address names (ownDocument), so the texts of a block a
+// version dropped, which has no document_blocks row left, go as well. Any other node names no
+// block and deletes nothing.
 func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if read.document == nil {
 		return nil
@@ -408,6 +418,12 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 		return fmt.Errorf("delete the texts of the block %s:%s: %w", e.Kind, e.ID, err)
 	}
 	e.removed("document_block_texts", tag.RowsAffected())
+	tag, err = tx.Exec(ctx, `delete from decision_keeps where artifact_id = $1::uuid and block_id = $2`,
+		read.document.artifact, read.blockID)
+	if err != nil {
+		return fmt.Errorf("delete the Keep of the block %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.removed("decision_keeps", tag.RowsAffected())
 	return nil
 }
 

@@ -1442,21 +1442,35 @@ func requireTheLongRoleIsCountedPastTheBound(t *testing.T, report []kindCensus) 
 // requireTheSizingRunsBeforeTheMigration runs `envoy-dispatch census --store --sizing` of this
 // build over the database the older build left, before this build has migrated it. R4 takes its
 // readings on such a database, so the growth pass must read only tables that exist before this
-// branch's first migration: the census reads no kind and says the store is absent, the growth
-// pass names the store's tables as not held, and the command exits 0 on the growth pass alone.
+// branch's first migration, and the census reads the store only over a database migrated to this
+// build: the census reads no kind and says the store is absent with the reason, the growth pass
+// names graph_nodes as held exactly where the older build holds it - the fork point with main holds
+// none, a parent that is a store's own release holds its own - and the command exits 0 on the
+// growth pass alone.
 func requireTheSizingRunsBeforeTheMigration(t *testing.T, databaseURL string) {
 	t.Helper()
+	ctx := context.Background()
+	var held bool
+	if err := censusConnect(t, ctx, databaseURL).QueryRow(ctx, `select to_regclass('graph_nodes') is not null`).Scan(&held); err != nil {
+		t.Fatalf("read whether the older build holds graph_nodes: %v", err)
+	}
 	code, out := runDispatchCommand(t, cmdtest.Build(t, "envoy-dispatch"), databaseURL, "census", "--store", "--sizing")
-	t.Logf("census --store --sizing before this build's migrations:\n%s", out)
+	t.Logf("census --store --sizing before this build's migrations (graph_nodes held=%t):\n%s", held, out)
 	if code != 0 {
 		t.Fatalf("census --store --sizing exited %d over the database before this build's migrations, want 0: the growth pass reads only what exists before them", code)
 	}
 	// The command's output comes back with its last line ending in no line feed, so each line is
 	// looked for with one put back.
 	printed := out + "\n"
+	// The growth pass names a table the database does not hold as held=false, and one it holds by
+	// its size.
+	graphNodes := "census: sizing table name=graph_nodes held=false\n"
+	if held {
+		graphNodes = "census: sizing table name=graph_nodes altered="
+	}
 	for _, line := range []string{
 		"census: store absent (",
-		"census: sizing table name=graph_nodes held=false\n",
+		graphNodes,
 		"census: sizing tuples-a-write kind=block_parent_moved ",
 		"census: store absent, sizing ok\n",
 	} {
