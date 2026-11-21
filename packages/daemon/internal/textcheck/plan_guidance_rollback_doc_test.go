@@ -20,8 +20,8 @@ import (
 const (
 	// planGuidanceKey is the key this release adds, as legion.yaml and the guide write it.
 	planGuidanceKey = "plan_guidance"
-	// planGuidanceKeyTable is internal/config's table of the top-level keys, two directories above
-	// this package.
+	// planGuidanceKeyTable is internal/config's table of the top-level keys, a path from the
+	// repository's root, four directories above this package (shippedText).
 	planGuidanceKeyTable = "packages/daemon/internal/config/keytable.go"
 	// planGuidanceRollbackSection is the heading of the guide's section that gives the way back.
 	planGuidanceRollbackSection = "Rolling back the release that gives each owner the deployment's plan guidance"

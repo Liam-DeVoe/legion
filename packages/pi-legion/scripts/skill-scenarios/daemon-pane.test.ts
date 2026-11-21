@@ -326,9 +326,9 @@ test.skipIf(skip)(
 );
 
 // daemon-pane.go's own copies of the daemon's plan guidance — its rule of an owner's launch, its
-// copy of the guidance file and its join of a prompt — are held to the daemon's at this checkout
-// by daemon-pane_test.go, compiled with the program inside this daemon module. A test binary exits
-// 0 on a -test.run that selects no test, so the row reads each test's own PASS line.
+// read and its copy of the guidance file, and its join of a prompt — are held to the daemon's at
+// this checkout by daemon-pane_test.go, compiled with the program inside this daemon module. A test
+// binary exits 0 on a -test.run that selects no test, so the row reads each test's own PASS line.
 test.skipIf(skip)(
   "holds the tool's restatement of the plan guidance to the daemon's at this checkout",
   () => {

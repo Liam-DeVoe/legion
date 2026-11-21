@@ -3,9 +3,10 @@
 // The live proof's driver for the plan guidance: a deployment whose configuration sets
 // plan_guidance gives that text to the launch of the owner of a person's issue and to no other
 // launch, serves the file's path in its settings, and `legion config check` names it.
-// scripts/e2e/plan-guidance.sh builds this driver with `-tags e2e`, owns the nats-server and the
-// PostgreSQL it runs against, and runs TestPlanGuidanceControlLive, a deployment that sets no
-// plan_guidance, before TestPlanGuidanceLive.
+// scripts/e2e/plan-guidance.sh builds this driver with `-tags e2e` and owns the nats-server it runs
+// against; it starts no database, and the PostgreSQL is the server LEGION_TEST_PG_DSN names. It
+// runs TestPlanGuidanceControlLive, a deployment that sets no plan_guidance, before
+// TestPlanGuidanceLive.
 //
 // Dispatch is the real server this checkout builds (startHandoffDispatch), on a database of its
 // own, where a person creates the issue in a project of the run's own. The daemon is the whole

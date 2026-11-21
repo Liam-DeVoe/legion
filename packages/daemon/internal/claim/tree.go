@@ -17,8 +17,10 @@ func IsTreeArchitect(role Role, issue, tree string) bool {
 // architect and a sub-architect alike. It is the one rule of who an owner is: the composer gives
 // an owner the architect's prompt parts (prompts.Compose), the daemon gives an owner's launch the
 // deployment's plan guidance and no other (daemon.OwnsPlan), and the plan routes take an owner's
-// grant (the api server's architectGrant). A release that makes an owner of another role changes
-// this one body.
+// grant (the api server's architectGrant), which today gates every operation of a tree's architect
+// too. A release that makes an owner of another role changes this body and splits architectGrant:
+// its plan routes keep this rule, and a tree architect's operations take a check of the architect
+// role, as architectGrant's comment says.
 func OwnsPlan(role Role) bool { return role == RoleArchitect }
 
 // IsController is whether a claim is the project controller's: on the controller role, with no

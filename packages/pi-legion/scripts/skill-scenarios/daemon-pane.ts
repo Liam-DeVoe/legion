@@ -4,10 +4,11 @@
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
  * handoff words, its resolution of the real gh, its join and write of a system prompt, and its rule
- * of an owner's launch and copy of a plan guidance, which the program carries because one program
- * runs against each label's checkout of the daemon module, and an older one names them otherwise
- * or lacks them; each one's comment says so. `daemon-pane_test.go` holds the last two to the
- * daemon's at this checkout (`goInDaemonModule` compiles it with the program under `go test -c`).
+ * of an owner's launch and its read and copy of a plan guidance, which the program carries because
+ * one program runs against each label's checkout of the daemon module, and an older one names them
+ * otherwise or lacks them; each one's comment says so. `daemon-pane_test.go` holds four of them to
+ * the daemon's at this checkout, the owner rule, the read, the copy and the join of a prompt
+ * (`goInDaemonModule` compiles it with the program under `go test -c`).
  * `workerPane` builds a phase worker's whole pane environment over it, and `composeRolePrompt` the
  * prompt a launch of any role starts with.
  */
