@@ -90,18 +90,17 @@ func notRepoPaths(path string) []string {
 // least its floors of inputs of each base, of those that the reader reads and of those that it
 // refuses (sweepFloors), so that a fault that drops inputs, a sweep that does not derive an input
 // that it built, and a fault that moves inputs from one kind to the other fail by name too. One
-// right, which sweepInputs gives
-// the input where it writes it: a repository path of a tree written " " is a real path, since git
-// holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree
-// changed at a path that a tie covers, and a result there, a failure among them, carries no more
-// across it (R8: "A result at one commit also counts at another commit when no code that the check
-// runs changed between the two"); a base whose failure at one commit carries to another shows it. A
-// path of a fault written " " is no path, as one of only white space is none, so its record does
-// not say what its fault changed, and as the newest failing example it reads unknown,
-// no_fault_paths where it was the one path and blank_fault_path beside a real one: it has no right,
-// and a base whose failing example of two paths that missed its fault is newer than a caught one
-// shows that it needs none. A content label is no path, and one of " " names no content, so the
-// reader refuses it and it has no right.
+// right, which sweepInputs gives the input where it writes it: a repository path of a tree written
+// " " is a real path, since git holds a file of that name (git ls-tree of a tree that holds one
+// lists the path " "), so the tree changed at a path that a tie covers, and a result there, a
+// failure among them, carries no more across it (R8: "A result at one commit also counts at another
+// commit when no code that the check runs changed between the two"); a base whose failure at one
+// commit carries to another shows it. A path of a fault written " " is no path, as one of only
+// white space is none, so its record does not say what its fault changed, and as the newest failing
+// example it reads unknown, no_fault_paths where it was the one path and blank_fault_path beside a
+// real one: it has no right, and a base whose failing example of two paths that missed its fault is
+// newer than a caught one shows that it needs none. A content label is no path, and one of " "
+// names no content, so the reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
