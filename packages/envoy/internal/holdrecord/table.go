@@ -109,6 +109,13 @@ type entry struct {
 	ownStopLifts bool
 }
 
+// excludesLifted reports whether e's excludes refuse c no longer: under stopLiftsExcludes, once
+// some command's latest entry since the latest done hold prove is a stop, and under ownStopLifts
+// also once c's own latest entry is a stop or its own intent is pending.
+func (e entry) excludesLifted(d Done, c string) bool {
+	return e.stopLiftsExcludes && (stoppedSinceProve(d) || (e.ownStopLifts && (latestIsStop(d.Ops, c) || slices.Contains(pending(d), c))))
+}
+
 // table is one rule set's workflow table and rules.
 type table struct {
 	rows  map[Workflow][]entry
@@ -279,12 +286,11 @@ func (t table) Decide(d Done, req modelRequest) error {
 	if d.Complete && t.Rules.AfterCompleteStrict && !t.afterComplete(d, req) {
 		return wrap(ErrAlreadyDone, "the record is complete")
 	}
-	for _, x := range e.excludes {
-		if e.stopLiftsExcludes && (stoppedSinceProve(d) || (e.ownStopLifts && (latestIsStop(d.Ops, c) || slices.Contains(pending(d), c)))) {
-			break
-		}
-		if hasDone(d.Ops, x) {
-			return wrap(ErrExcluded, x)
+	if !e.excludesLifted(d, c) {
+		for _, x := range e.excludes {
+			if hasDone(d.Ops, x) {
+				return wrap(ErrExcluded, x)
+			}
 		}
 	}
 	if e.needsStop && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
