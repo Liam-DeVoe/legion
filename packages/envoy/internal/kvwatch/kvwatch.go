@@ -90,8 +90,9 @@ type Read struct {
 	MaxAge time.Duration
 	// LastSeq is the stream's last sequence as the same read of it found it, before the watch
 	// created this read's watcher: a record at a later revision was stored after the read's first
-	// request, so the copy keeps a key it took at such a revision through the read's sweep
-	// (Copy.BeginRead). 0 is a stream that had stored nothing.
+	// request, so the copy keeps a key it took at such a revision through the read's sweep, unless
+	// the sequence moved back since the read before (Copy.BeginRead). 0 is a stream that had stored
+	// nothing.
 	LastSeq uint64
 }
 

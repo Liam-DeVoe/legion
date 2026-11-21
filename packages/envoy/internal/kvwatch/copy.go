@@ -23,6 +23,8 @@ type Copy[V any] struct {
 	revisions map[string]uint64
 	marks     marks
 	readEpoch uint64
+	// readSeq is the stream's last sequence the latest read began at (Read.LastSeq).
+	readSeq uint64
 }
 
 // Rows is how one copy turns a record into its entry, and what the cache that keeps it records
@@ -92,17 +94,32 @@ func (c *Copy[V]) Remove(key string) {
 //
 // The read's marks start with every key the copy took at a revision past the stream's last
 // sequence as the watch read it before it created the read's watcher (Read.LastSeq): a
-// write-through, read-through or delete that landed after that, and reached the copy before this
-// call. Its record is the bucket's, and the read's evidence of it comes before the read begins: a
-// record the watcher's snapshot holds the scan delivers anyway, and one stored after the snapshot
-// the watcher delivers only after the read completes, so without its mark the sweep would remove
-// a row the bucket holds until that update arrived, or until the next read when the connection
-// ended first.
+// write-through, read-through or delete, or a record the replaced watcher delivered, that the
+// bucket stored after that read of the stream and that reached the copy before this call. Its
+// record is the bucket's. One the watcher's snapshot holds, the scan delivers anyway; one stored
+// after the snapshot, the watcher delivers only after its scan's end. Without its mark, the sweep
+// that completes the read would remove a row the bucket holds, until that update arrived, or until
+// the next read when the connection ended first.
+//
+// Two reads mark none of them. A recreated bucket's first read has no fence left to mark from, so
+// a write through the old bucket's handle that lands in the new bucket in that gap is still
+// removed until its record arrives. And a read that begins at a last sequence below the one the
+// read before it began at reads a sequence space that moved back under the same stream (a
+// JetStream restore keeps the stream's creation time, so the watch sees no recreated bucket): the
+// revisions the copy took before are no evidence of what the restored bucket holds. Two watches
+// that overlap, each reading the stream before the other installs, can also give the later install
+// the lower last sequence; that read marks nothing, and a write in its gap is removed until its
+// record arrives.
 func (c *Copy[V]) BeginRead(read Read) {
 	c.marks.begin()
 	c.readEpoch = read.Epoch
+	movedBack := read.LastSeq < c.readSeq
+	c.readSeq = read.LastSeq
 	if read.Recreated {
 		clear(c.revisions)
+	}
+	if movedBack {
+		return
 	}
 	for key, revision := range c.revisions {
 		if revision > read.LastSeq {
