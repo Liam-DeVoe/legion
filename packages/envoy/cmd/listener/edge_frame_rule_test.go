@@ -342,6 +342,30 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		requireWithheld(t, rig, 1)
 	})
 
+	t.Run("a frame whose envelope names another project than its relay header", func(t *testing.T) {
+		rig := newScopeRig(t)
+		const session = "ses_scope_relabelled"
+		client, _ := registerScopeSession(t, rig, session)
+		publisher := testnats.Connect(t, rig.url)
+		// The relay header names an issue of the token's project and the envelope is an event of
+		// another project: both are what a publisher on the relay subject writes.
+		relabelled := listenerTestEnvelope(otherIssue, "edge-scope-relabelled-"+id.New())
+		header := natsgo.Header{}
+		header.Set(relayHeaderSubject, ownIssue)
+		header.Set(relayHeaderStreamSeq, "1")
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "forged." + relabelled.EventID, Header: header, Data: marshalListenerEnvelope(t, relabelled)}); err != nil {
+			t.Fatalf("publish the relabelled frame: %v", err)
+		}
+		own := publishScopeFrame(t, publisher, session, ownIssue)
+		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		if frames[0].item.EventID != own.EventID {
+			t.Fatalf("the socket's first frame is %s, its envelope's topic %s under the relay header %s, want %s's frame %s: an event of %s under a header of %s reached it",
+				frames[0].item.EventID, frames[0].item.Topic, frames[0].subject, scopeProject, own.EventID, scopeOtherProject, scopeProject)
+		}
+		noScopeFrame(t, client, time.Second, "after the frame of "+scopeProject)
+		requireWithheld(t, rig, 1)
+	})
+
 	t.Run("a role claim naming it for another project's role", func(t *testing.T) {
 		rig := newScopeRig(t)
 		const session = "ses_scope_claimed"

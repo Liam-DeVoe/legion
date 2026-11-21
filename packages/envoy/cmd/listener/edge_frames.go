@@ -31,43 +31,63 @@ const withheldProjectNotHeld = "project_not_held"
 // frame of the message stored on subject with data, and why:
 //
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
-//     answer_unknown;
+//     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
 //   - a message on an agent subject passes only on the session's own (ownFrameAgentSubject), and
 //     there by the topic its envelope names: the session's own agent subject is a message to the
 //     session, a send or a dead letter, which passes; any other topic is a forward, a role's
 //     message forwarded to the claim's holder among them, judged as a frame of that topic. A
 //     forward of a GitHub event or of another agent subject, and an envelope that does not
 //     decode, are withheld;
-//   - every other frame passes when contracts.SubjectProject gives it a project the token lists.
+//   - every other frame passes when contracts.SubjectProject gives it a project the token lists
+//     and, where its envelope names a topic, that topic is of the same project: the subject a
+//     relay header names and the envelope it carries are both what a publisher on the relay
+//     subject writes, so a frame whose envelope names another project's event under a header of
+//     the token's project is withheld.
 func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects []string, subject string, data []byte) (withhold bool, reason string) {
+	topic, named := envelopeTopic(data)
 	if strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
+		if named && !strings.HasPrefix(topic, contracts.GithubTopicPrefix) {
+			return true, withheldProjectNotHeld
+		}
 		if repositories == nil {
 			return true, withheldAnswerUnknown
 		}
 		return repositories.relayVerdict(projects, subject, data)
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
-		if !ownFrameAgentSubject(sessionID, projects, subject) {
+		if !ownFrameAgentSubject(sessionID, projects, subject) || !named {
 			return true, withheldProjectNotHeld
 		}
-		var envelope struct {
-			Topic string `json:"topic"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil || envelope.Topic == "" {
-			return true, withheldProjectNotHeld
-		}
-		if ownFrameAgentSubject(sessionID, projects, envelope.Topic) {
+		if ownFrameAgentSubject(sessionID, projects, topic) {
 			return false, ""
 		}
-		if strings.HasPrefix(envelope.Topic, contracts.GithubTopicPrefix) || strings.HasPrefix(envelope.Topic, contracts.AgentTopicPrefix) {
+		if strings.HasPrefix(topic, contracts.GithubTopicPrefix) || strings.HasPrefix(topic, contracts.AgentTopicPrefix) {
 			return true, withheldProjectNotHeld
 		}
-		subject = envelope.Topic
+		subject = topic
 	}
-	if project, _, ok := contracts.SubjectProject(subject); ok && projectHeld(projects, project) {
-		return false, ""
+	project, _, ok := contracts.SubjectProject(subject)
+	if !ok || !projectHeld(projects, project) {
+		return true, withheldProjectNotHeld
 	}
-	return true, withheldProjectNotHeld
+	if named {
+		if topicProject, _, ok := contracts.SubjectProject(topic); !ok || topicProject != project {
+			return true, withheldProjectNotHeld
+		}
+	}
+	return false, ""
+}
+
+// envelopeTopic is the topic of the envelope that data holds, and false when data decodes as no
+// envelope or its envelope names no topic.
+func envelopeTopic(data []byte) (string, bool) {
+	var envelope struct {
+		Topic string `json:"topic"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Topic == "" {
+		return "", false
+	}
+	return envelope.Topic, true
 }
 
 // ownFrameAgentSubject reports whether subject is sessionID's own agent subject in a form a
