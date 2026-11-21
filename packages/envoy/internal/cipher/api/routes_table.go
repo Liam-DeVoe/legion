@@ -539,8 +539,9 @@ func routes() []apiRoute {
 		// the broker toward the store's own truth. A caller that sends no proof is answered 202 at
 		// once, the same for every name, and the reread runs after that answer; a session that
 		// signs the call is answered once the reread is done, with whether the broker now serves
-		// the name, why not, and as which type; and a proof the broker does not accept as a
-		// session's is 401 PROOF_INVALID, whatever the name.
+		// the name, why not, and as which type; a proof the broker does not accept as a session's
+		// is 401 PROOF_INVALID, whatever the name; and a session whose person Dispatch holds is
+		// refused as on every session route, 403 MEMBERSHIP_HELD or 503 HOLD_UNCHECKABLE.
 		{http.MethodPost, "/v1/secrets/{name}/reread", public((*server).rereadSecret)},
 		// A person's approval page for one credential-request record, an HTML page on the broker's
 		// own origin: the record's secret names, the enrollment the broker verified asked, the

@@ -323,6 +323,43 @@ func TestHeldSessionRouteIsRefused(t *testing.T) {
 	expectServed(t, "a pod's read of its own enrollment, which names no person, while Dispatch refuses the broker's account", status, body)
 }
 
+// TestHeldSessionRereadIsRefused: POST /v1/secrets/{name}/reread, which authenticates a session
+// that signs it itself (rereadSecret), refuses a session whose enrollment names a person Dispatch
+// holds 403 MEMBERSHIP_HELD, as every session route does, and the broker's record of the refusal
+// names the session; bob's session is answered what the broker serves, and a caller with no proof
+// is answered 202 as before, the same for every name. While Dispatch refuses the broker's own
+// account, ada's session is 503 HOLD_UNCHECKABLE.
+//
+// Control: rereadSecret asking no hold after the proof verifies, as it did: ada's reread answers
+// 200 with whether the broker serves the name, and the test fails there.
+func TestHeldSessionRereadIsRefused(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	b := newHoldBroker(t)
+	ada, adaKey := b.newSessionEnrollment(t, "session-"+t.Name()+"-ada", heldAda)
+	bob, bobKey := b.newSessionEnrollment(t, "session-"+t.Name()+"-bob", servedBob)
+	b.hold()
+	reread := func(enrollment string, key *ecdsa.PrivateKey) (int, []byte) {
+		t.Helper()
+		return b.session(t, key, enrollment, http.MethodPost, "/v1/secrets/WORKER_TOKEN/reread", nil)
+	}
+
+	status, body := reread(ada, adaKey)
+	expectRefused(t, "ada's session's reread while Dispatch holds her", heldAda, status, body)
+	expectRecordNames(t, capture, "ada's session's reread", body, answer.CallerSession, ada)
+	status, body = reread(bob, bobKey)
+	if got := decode[wireReread](t, body); status != http.StatusOK || got.Name != "WORKER_TOKEN" || !got.Served {
+		t.Errorf("bob's session's reread answered %d %s, want 200 serving WORKER_TOKEN", status, body)
+	}
+	if status, body := b.req(t, http.MethodPost, "/v1/secrets/WORKER_TOKEN/reread", nil, nil); status != http.StatusAccepted {
+		t.Errorf("a reread with no proof answered %d %s, want 202", status, body)
+	}
+
+	b.refuseAccount()
+	status, body = reread(ada, adaKey)
+	expectUncheckable(t, "ada's session's reread while Dispatch refuses the broker's account", heldAda, status, body)
+}
+
 // TestHeldLauncherRouteIsRefused: a machine login whose credential names a person Dispatch holds
 // is refused 403 MEMBERSHIP_HELD on a launcher route, enrolling nothing, and the broker's record
 // of the refusal names the machine login; bob's is served. While Dispatch refuses the broker's

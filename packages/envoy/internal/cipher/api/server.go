@@ -486,8 +486,11 @@ func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCo
 
 // refuseHeldSession is refuseHeld for a session proof, whose proof row names no operator: it reads
 // the enrollment's own, by its id, in one statement, and only when the broker has a gate to ask.
-// An enrollment gone since its proof verified is refused as a proof that is not live, and a pod's
-// enrollment names no operator, so it is asked nothing.
+// An enrollment gone since its proof verified is refused as a proof that is not live. A pod's
+// enrollment names the person BROKER_POD_OPERATORS mapped its account to when its login was made,
+// and is asked about that person, as a person's session is; any other pod's names none, and is
+// asked nothing. authenticate calls it on every session route but those that only end access or
+// renew, and rereadSecret on a reread a session signs.
 func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrollmentID string) bool {
 	if s.deps.Hold == nil {
 		return false
@@ -510,8 +513,8 @@ func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrol
 // or cannot tell, reporting whether it refused: 403 MEMBERSHIP_HELD naming the person in the gate's
 // words (hold.Gate.HeldWords), or 503 HOLD_UNCHECKABLE, tested first, so a held answer the gate
 // could not keep is a 503. The 503 says why in hold.Reason's fixed words, and the gate's own error
-// goes to the log alone. No person (a pod's enrollment, a service's login) is asked nothing, and
-// neither is anyone on a broker with no gate.
+// goes to the log alone. No person (an unmapped pod's enrollment, a service's login) is asked
+// nothing, and neither is anyone on a broker with no gate.
 func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person string) bool {
 	if person == "" {
 		return false
