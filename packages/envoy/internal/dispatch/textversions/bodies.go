@@ -10,18 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// laterTextChanges names, of each kind of post, the event types that change its text after the
-// event that created it. A post's present row holds the text of one of its events only where no
-// committed event of these types of the same post comes after that one (presentBody). Each kind's
-// statement is given its own types alone, and a kind with none reads its row alone
-// (presentBodyReads). A comment's is comment.edited, which INFRA-1523's edit and delete types
-// join once their rules come; no build edits a message, so a message has none yet, and its types
-// go here once one does.
-var laterTextChanges = map[string][]string{
-	kindComment: {"comment.edited"},
-	kindMessage: nil,
-}
-
 // wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
 // first source that holds it (decideVersions): the post's present row where no later event of
 // the post changes its text (presentBody), then, for a comment.created, revision 1 of its blocks
@@ -53,13 +41,14 @@ func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 // presentBodyQuery reads the body of post $1 from its present row in the table its kind names
 // (%s), where no event after the one read, of the event's owner (issue $2, or document $3 for a
 // comment on a document of no issue) at a seq above that event's ($4), is of a type that changes
-// the post's text ($5, the kind's laterTextChanges) and names the post: the row and the later
-// events are read in the statement's one snapshot, so a row that answers holds the text the event
-// wrote, and no row answers where a later event changes it or the post has no row. The later
-// events are read through the owner's unique (issue_key, seq) or (artifact_id, seq) index, from
-// the event's seq up, not through the log: an owner's events take their ids and their seqs in the
-// same order, since each append takes the owner's lock before either and holds it until its
-// transaction ends (events.Broker), so they are the owner's events whose id is above the event's.
+// the post's text ($5, the kind's later types in presentBodyReads) and names the post: the row
+// and the later events are read in the statement's one snapshot, so a row that answers holds the
+// text the event wrote, and no row answers where a later event changes it or the post has no row.
+// The later events are read through the owner's unique (issue_key, seq) or (artifact_id, seq)
+// index, from the event's seq up, not through the log: an owner's events take their ids and their
+// seqs in the same order, since each append takes the owner's lock before either and holds it
+// until its transaction ends (events.Broker), so they are the owner's events whose id is above
+// the event's.
 //
 // The payload of a later event is read only where its type is one of $5, which the CASE holds
 // whatever plan Postgres runs: the fill's connection caches the statement, and the plan Postgres
@@ -74,12 +63,13 @@ const presentBodyQuery = `
 	            and case when l.type = any($5::text[]) then l.payload->>'id' = $1 end)`
 
 // presentRowQuery reads the body of post $1 from its present row in the table its kind names
-// (%s), for a kind whose text no event changes after the one that wrote it (its laterTextChanges
-// is empty), so the row holds the text of each of its events and no later event is read.
+// (%s), for a kind whose text no event changes after the one that wrote it (presentBodyReads
+// gives it no later types), so the row holds the text of each of its events and no later event
+// is read.
 const presentRowQuery = `select p.body from public.%s p where p.id = $1::text::uuid`
 
 // presentBodyRead is how presentBody reads the present body of a kind of post: its statement,
-// and the event types that change the post's text after the event read (laterTextChanges), which
+// and the event types that change the post's text after the event read (presentBodyReads), which
 // the statement takes as $5 (presentBodyQuery); with none, the statement reads the row alone
 // (presentRowQuery). presentBody takes the statement's arguments from the same value (arguments),
 // so the statement and the arguments it is given always agree.
@@ -88,16 +78,22 @@ type presentBodyRead struct {
 	laterTypes []string
 }
 
-// presentBodyReads is the read of each kind of post's present body, over the table of its rows.
+// presentBodyReads is the read of each kind of post's present body, over the table of its rows,
+// with the event types that change the post's text after the event that created it. A post's
+// present row holds the text of one of its events only where no committed event of these types
+// of the same post comes after that one (presentBody). Each kind's statement is given its own
+// types alone, and a kind with none reads its row alone (presentRowQuery). A comment's is
+// comment.edited, which INFRA-1523's edit and delete types join once their rules come; no build
+// edits a message, so a message has none yet, and its types go here once one does.
 var presentBodyReads = map[string]presentBodyRead{
-	kindComment: presentBodyReadOf("comments", laterTextChanges[kindComment]),
-	kindMessage: presentBodyReadOf("messages", laterTextChanges[kindMessage]),
+	kindComment: presentBodyReadOf("comments", "comment.edited"),
+	kindMessage: presentBodyReadOf("messages"),
 }
 
 // presentBodyReadOf is the read of the present body of a post whose rows are in table and whose
 // text the event types laterTypes change after the event that wrote it: presentRowQuery where
 // there are none, else presentBodyQuery.
-func presentBodyReadOf(table string, laterTypes []string) presentBodyRead {
+func presentBodyReadOf(table string, laterTypes ...string) presentBodyRead {
 	if len(laterTypes) == 0 {
 		return presentBodyRead{sql: fmt.Sprintf(presentRowQuery, table)}
 	}

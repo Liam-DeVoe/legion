@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -182,15 +181,17 @@ func notUUID(field string) error {
 	return fmt.Errorf("%w: its %s is not a uuid", errUnreadablePayload, field)
 }
 
-// isUUID is whether id is a uuid as Postgres's uuid input reads it, which a statement can cast
-// to uuid: one uuid.Parse reads, but its urn:uuid: form, which Postgres refuses. Every form
-// uuid.Parse reads is longer than that prefix. A rule sends each id the batch casts through it,
-// so an id that is not one stops the fill at its event (errUnreadablePayload), named, rather than
-// failing the batch's statement on every retry.
+// isUUID is whether id is a uuid in its canonical form: 36 characters, 8-4-4-4-12 hex digits of
+// either case with a hyphen between each two groups. That form is one of those Postgres's uuid
+// input reads, so a statement can cast an id that passes to uuid, and it is the form each
+// Dispatch writer writes, since every payload id is an id::text. A rule sends each id the batch
+// casts through it, so any other id stops the fill at its event (errUnreadablePayload), named,
+// rather than failing the batch's statement on every retry: one Postgres refuses, and also one
+// it reads, such as the braced form or 32 hex digits, which no writer writes. At 36 characters
+// uuid.Validate checks exactly the hyphens and the hex digits; at other lengths it reads more
+// forms, the urn:uuid: one among them, which Postgres refuses.
 func isUUID(id string) bool {
-	const urn = "urn:uuid:"
-	_, err := uuid.Parse(id)
-	return err == nil && !strings.EqualFold(id[:len(urn)], urn)
+	return len(id) == 36 && uuid.Validate(id) == nil
 }
 
 // newVersion is the version e starts of item (kind, id) of issueKey, with the columns every row
@@ -452,7 +453,7 @@ type decided struct {
 //
 //   - A post whose event cut its body (body_truncated) takes it whole, in this order: from its
 //     present row where, in the one snapshot that reads the row, no committed event of the post
-//     after the event changes its text (laterTextChanges: a comment's comment.edited, and none
+//     after the event changes its text (presentBodyReads: a comment's comment.edited, and none
 //     of an issue message's, which no build edits), so the row still holds the text the event
 //     wrote (presentBody, bodyFromRow); for a comment.created, from revision 1 of its blocks when
 //     every block of that revision was inserted by the comment's own transaction

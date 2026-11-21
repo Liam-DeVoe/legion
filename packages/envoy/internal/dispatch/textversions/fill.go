@@ -312,11 +312,14 @@ const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.paylo
 // bytes of its payload and, of a post whose event cut its body, that body as the post's present
 // row holds it: the read's part of the batch's bound, which batchBytes states. Of an ask's event
 // ($6, askTypes) it reads the ask's body (askBodySQL), and null of every other event. Each read
-// of a payload's value as a uuid is guarded, so a payload no rule can read reaches the rules,
-// which name it (isUUID), rather than failing the statement. Its project is the one the log names
-// for it: its own, its issue's or its document's. Its document is the one that owns it, for an
-// event of a document of no issue, through which presentBody finds the later events of a comment
-// on that document.
+// of a payload's value as a uuid is guarded by Postgres's own uuid input (pg_input_is_valid), so
+// a payload no rule can read reaches the rules, which name it, rather than failing the statement.
+// The rules' guard (isUUID) passes only the canonical form, a subset of the forms Postgres reads
+// that holds each form a Dispatch writer writes: an id of any other form, even one Postgres
+// reads, stops the fill at its event, named. Its project is the one the log names for it: its
+// own, its issue's or its document's. Its document is the one that owns it, for an event of a
+// document of no issue, through which presentBody finds the later events of a comment on that
+// document.
 const readEventsQuery = `
 with candidates as (
        select e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,

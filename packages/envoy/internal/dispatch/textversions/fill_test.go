@@ -390,42 +390,90 @@ func TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone(t *testing.T
 
 // TestOnlyAnIDTheFillCastsMustBeAUUID holds each id a statement of the batch casts to uuid to
 // the rules: an issue's primary_artifact_id, an artifact.version's artifact_id and a cut post's
-// id. One that is not a uuid as Postgres reads one is a payload the rules cannot read, so the
-// fill writes the rows of every event before it and stops there, with an error that names it,
-// rather than failing a statement on every retry. A urn:uuid: id is one of them: uuid.Parse reads
-// it and Postgres does not. A whole post's id, which the fill never casts, need not be a uuid: its
+// id. The rules pass only a uuid's canonical form, a subset of the forms Postgres's uuid input
+// reads, which holds each form a Dispatch writer writes: Postgres reads as a uuid each id of the
+// test that the rules pass, and the rules pass the canonical form in lower, upper and mixed case.
+// Any other id is a payload the rules cannot read, so the fill writes the rows of every event
+// before it and stops there, with an error that names it, rather than failing a statement on
+// every retry: one that is no uuid, and one that holds a uuid in a form uuid.Parse reads and
+// Postgres refuses (a urn:uuid:, or a uuid between two spaces, between two letters, or between a
+// brace and a parenthesis). A whole post's id, which the fill never casts, need not be a uuid: its
 // version is written, and the fill moves past it.
 func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
+	const canonical = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 	key := otherIssue
 	actor := model.Actor{Kind: "user", ID: "alice"}
-	issueEvent := func(eventType, primary string) model.Event {
-		return model.Event{IssueKey: &key, Type: eventType, Actor: actor,
-			Payload: map[string]any{"key": key, "title": "Audit the verifiers", "primary_artifact_id": primary}}
+	issueEvent := func(eventType string) func(primary string) model.Event {
+		return func(primary string) model.Event {
+			return model.Event{IssueKey: &key, Type: eventType, Actor: actor,
+				Payload: map[string]any{"key": key, "title": "Audit the verifiers", "primary_artifact_id": primary}}
+		}
 	}
-	post := func(eventType, id string, cut bool) model.Event {
-		return model.Event{IssueKey: &key, Type: eventType, Actor: actor, Payload: map[string]any{
-			"id": id, "issue_key": key, "body": "The verifiers read the old key until Monday.", "body_truncated": cut}}
+	artifactVersion := func(artifactID string) model.Event {
+		return model.Event{IssueKey: &key, Type: "artifact.version", Actor: actor,
+			Payload: map[string]any{"artifact_id": artifactID, "version": map[string]any{"number": 1, "size": 40}}}
 	}
-	for _, test := range []struct {
+	post := func(eventType string, cut bool) func(id string) model.Event {
+		return func(id string) model.Event {
+			return model.Event{IssueKey: &key, Type: eventType, Actor: actor, Payload: map[string]any{
+				"id": id, "issue_key": key, "body": "The verifiers read the old key until Monday.", "body_truncated": cut}}
+		}
+	}
+	type testCase struct {
 		name  string
-		event model.Event
+		event func(id string) model.Event
+		id    string
 		stops bool
-	}{
-		{"an issue.created whose primary_artifact_id is no uuid", issueEvent("issue.created", "spec.md"), true},
-		{"an issue.updated whose primary_artifact_id is a urn:uuid:", issueEvent("issue.updated", "urn:uuid:"+uuid.NewString()), true},
-		{"an artifact.version whose artifact_id is no uuid", model.Event{IssueKey: &key, Type: "artifact.version", Actor: actor,
-			Payload: map[string]any{"artifact_id": "spec.md", "version": map[string]any{"number": 1, "size": 40}}}, true},
-		{"a cut comment.created whose id is no uuid", post("comment.created", "comment-1", true), true},
-		{"a cut message.created whose id is no uuid", post("message.created", "message-1", true), true},
-		{"a whole comment.created whose id is no uuid", post("comment.created", "comment-1", false), false},
+	}
+	tests := []testCase{
+		{"an issue.created whose primary_artifact_id is no uuid", issueEvent("issue.created"), "spec.md", true},
+		{"an artifact.version whose artifact_id is no uuid", artifactVersion, "spec.md", true},
+		{"a cut comment.created whose id is no uuid", post("comment.created", true), "comment-1", true},
+		{"a cut message.created whose id is no uuid", post("message.created", true), "message-1", true},
+		{"a whole comment.created whose id is no uuid", post("comment.created", false), "comment-1", false},
+	}
+	for _, form := range []struct{ name, id string }{
+		{"a urn:uuid:", "urn:uuid:" + canonical},
+		{"a uuid between two spaces", " " + canonical + " "},
+		{"a uuid between two letters", "x" + canonical + "y"},
+		{"a uuid between a brace and a parenthesis", "{" + canonical + ")"},
 	} {
+		tests = append(tests,
+			testCase{"an issue.updated whose primary_artifact_id is " + form.name, issueEvent("issue.updated"), form.id, true},
+			testCase{"an artifact.version whose artifact_id is " + form.name, artifactVersion, form.id, true},
+			testCase{"a cut comment.created whose id is " + form.name, post("comment.created", true), form.id, true})
+	}
+
+	t.Run("Postgres reads as a uuid each id the rules pass", func(t *testing.T) {
+		database := storetest.Open(t)
+		ids := []string{canonical, strings.ToUpper(canonical), "a0EEbc99-9C0b-4eF8-Bb6d-6bB9bd380A11"}
+		for _, id := range ids {
+			if !isUUID(id) {
+				t.Errorf("the rules refuse %q, a uuid's canonical form", id)
+			}
+		}
+		for _, test := range tests {
+			ids = append(ids, test.id)
+		}
+		for _, id := range ids {
+			var reads bool
+			if err := database.Pool.QueryRow(t.Context(), `select pg_input_is_valid($1, 'uuid')`, id).Scan(&reads); err != nil {
+				t.Fatalf("ask Postgres whether its uuid input reads %q: %v", id, err)
+			}
+			if isUUID(id) && !reads {
+				t.Errorf("the rules pass %q, which Postgres's uuid input refuses", id)
+			}
+		}
+	})
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			database := storetest.Open(t)
 			textversionstest.SeedProject(t, database)
 			broker := events.NewBroker()
 			before := textversionstest.WriteIssue(t, database, broker, 1)
 			seedOtherIssue(t, database)
-			id := textversionstest.CommitEvents(t, database, broker, test.event)[0]
+			event := test.event(test.id)
+			id := textversionstest.CommitEvents(t, database, broker, event)[0]
 			after := textversionstest.WriteIssue(t, database, broker, 3)
 
 			err := FillToHorizon(t.Context(), database, events.NewHorizon(database.Pool))
@@ -436,7 +484,7 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 				textversionstest.RequireOnlyRowsOf(t, database, slices.Concat(before, textversionstest.OneEach(id), after))
 				return
 			}
-			named := fmt.Sprintf("event %d (%s)", id, test.event.Type)
+			named := fmt.Sprintf("event %d (%s)", id, event.Type)
 			if !errors.Is(err, errUnreadablePayload) || !strings.Contains(err.Error(), named) {
 				t.Fatalf("the fill answered %v; want the rules' unreadable payload, naming %s", err, named)
 			}
