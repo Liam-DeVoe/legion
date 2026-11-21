@@ -22,7 +22,8 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - Truncate inside a flex control with `components/TruncatedText.tsx`.
 
 - Search, sort and filter controls: a page draws these.
-  `components/one-definition.test.ts` refuses a page's own search box, `<table>`, panel and hand-written control mark, but not a `<select>`.
+  `components/one-definition.test.ts` refuses a page's own search box, `<table>`, panel, hand-written control mark and value import of the table library, but not a `<select>`.
+  In the seven features it names in `ADDRESS_FEATURES`, it also refuses every read or write of the address that goes round `lib/page-address.ts`.
 
   - `components/ControlRow.tsx`: the one row a page's controls sit in.
 
@@ -46,7 +47,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
   - `components/Chip.tsx`: the one interactive chip, a toggle or a removable value.
 
-- `lib/page-address.ts`: the one module that reads and writes a page's narrowing in the address.
+- `lib/page-address.ts`: the module that reads and writes a page's narrowing in the address, for the seven features in `ADDRESS_FEATURES`; `features/architecture/` still reads the router itself.
 
 - `components/focus-place.ts`: the shell's one focus rescue; `components/row-marker.ts` says what it treats as a row.
 

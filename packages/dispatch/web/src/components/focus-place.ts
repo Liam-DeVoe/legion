@@ -1224,14 +1224,16 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
- * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
+ * effects, so every component's own hand-off has had its turn first: whatever moves the focus
+ * in the commit that took the control away or in an effect after it - every `useFocusPlace`
  * hand-off (ControlRow, DataTable, PanelTrigger and the pages' own), SelectionBar's
- * `returnFocus`, AskCard's, the Inbox reading column's hand-off to its own stop (`Inbox.tsx`, the
- * layout effect after `paneScroller`), which runs on the layout lane so that it comes before this
- * check, `useDialog`'s return to the opener, the Agents composer's take-back. Each knows its own
- * target better than a place counted in the page does - the row marked last, the opener, the
- * composer's box - so the rescue answers only a loss none of them answered, and acts only while
- * the focus is still lost. A component's own hand-off to its region's stop is the exception
+ * `returnFocus`, AskCard's, `MultiSelect`'s return to its trigger, `useDialog`'s return to the
+ * opener, the Agents composer's take-back and the issue page's own keeper among them - and the
+ * Inbox reading column's hand-off to its own stop (`Inbox.tsx`, the layout effect after
+ * `paneScroller`), which runs on the layout lane so that it comes before this check. Each knows
+ * its own target better than a place counted in the page does - the row marked last, the opener,
+ * the composer's box - so the rescue answers only a loss none of them answered, and acts only
+ * while the focus is still lost. A component's own hand-off to its region's stop is the exception
  * `leaveUncaused` names. The rescue leaves alone a loss the reader left (above), and a loss on a
  * page the reader has since left, since the new page owns its focus. A taken element that is
  * back by then gets the focus back, whoever caused its loss; after a loss the reader did not
