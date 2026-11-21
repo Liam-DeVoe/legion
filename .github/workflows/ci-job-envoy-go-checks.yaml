@@ -63,13 +63,14 @@ jobs:
     # open-items.md). The job's bound is its slowest time, 1,208 s in run 44717243297 at 66058706
     # (job 136223826114), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
     # and run 44657415021, job 136039517954), 988 s in run 44687712471 at 56f4dabc (job
-    # 136126010901) and 1,042 s in run 44790111577 at 85f6b018 (job 136476756211), 20.13
-    # minutes, plus the largest -timeout of its go test calls, the alone step's 2m, plus 6:
-    # 20.13 + 2 + 6 = 28.13, so 29. Its other go commands are builds, the
-    # darwin vet and two `go run`s, which run no test binary and carry no -timeout. The step that
-    # tests the API's wall-clock measurements alone is in this pair too, and its comment gives its
-    # reading. The steps that grew, against run 44657415021: the daemon-release-gate.sh verdict
-    # test 162 s against 11 s (main's #4449 added its cases; 137 s at 56f4dabc); the autodeploy.sh
+    # 136126010901), 1,042 s in run 44790111577 at 85f6b018 (job 136476756211) and 1,000 s in run
+    # 44846096964 at 28ce7c74 (job 136669775694), 20.13 minutes, plus the largest -timeout of its
+    # go test calls, the alone step's 2m, plus 6: 20.13 + 2 + 6 = 28.13, so 29. Its other go
+    # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
+    # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
+    # and its comment gives its reading. The steps that grew, against run 44657415021: the
+    # daemon-release-gate.sh verdict test 162 s against 11 s (main's #4449 added its cases; 137 s
+    # at 56f4dabc); the autodeploy.sh
     # test 62 s against 13 s, loadtest/vm 190 s against 153 s and loadtest/cluster 184 s against
     # 168 s (main's #4387 changed deploy/scripts and both load-test drivers; 13 s, 155 s and 169 s
     # at 56f4dabc); and the darwin vet 194 s against 143 s and the API's wall-clock step 178 s

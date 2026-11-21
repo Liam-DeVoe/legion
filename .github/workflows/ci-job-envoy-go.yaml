@@ -43,7 +43,9 @@ jobs:
     # five: envoy-go-race's -timeout and timeout-minutes, and again envoy-go-docs-finalizers'
     # -timeout and timeout-minutes and envoy-go-checks' timeout-minutes. Run 44790111577 at
     # 85f6b018 raised two: this job's package list's -timeout and, with it, this job's
-    # timeout-minutes; every other limit holds against it. The comment on each limit, and the
+    # timeout-minutes; every other limit holds against it. Run 44846096964 at 28ce7c74 raised
+    # three: envoy-go-race-docs' -timeout and timeout-minutes and envoy-go-race's timeout-minutes;
+    # every other limit holds against it. The comment on each limit, and the
     # table below for this job's calls, give the reading that set it; every limit no dispatch run
     # raised is the pair's. The pair ran envoy-go-checks on x64 (ubuntu-24.04) and the other five
     # jobs on arm64 (ubuntu-24.04-arm), where main's #4308 moved them, as the pairs from d58c9ed8
@@ -74,7 +76,8 @@ jobs:
     #   skip count          cmd/cipherd       263.2 s    44657322918  136026779841    8.77     9m
     #
     # The package list's reading is that of cmd/cipher, then cmd/agent-secrets, 555.3 s: run
-    # 44790111577 read the package under its old path. The skip count is the step "Count the
+    # 44790111577 read the package under its old path, and run 44846096964 (job 136669775711)
+    # read cmd/cipher at 524.3 s. The skip count is the step "Count the
     # database broker suites' skips", whose go test writes its stream to broker.json through the
     # script's --keep: its reading is the package time there of cmd/cipherd, then cmd/broker,
     # 263.2 s and 260.8 s in the pair (jobs 136026779841 and 136039517737). Its
@@ -104,9 +107,10 @@ jobs:
     # 136476756402), against 1,328 s and 1,278 s in the pair (jobs 136026779841 and
     # 136039517737), 22.88 minutes, plus the largest -timeout of its go test calls, the package
     # list's 19m, plus 6: 22.88 + 19 + 6 = 47.88, so 48; the pair's 1,328 s gives
-    # 22.13 + 19 + 6 = 47.13, 48 as well. The skip count's step limit of 19 minutes is not a
-    # -timeout, though it equals the package list's 19m, and it fires before the job's: that step
-    # took 346 s of that job, so the job less that step plus 19 minutes is 1,027 + 1,140 = 2,167 s,
+    # 22.13 + 19 + 6 = 47.13, 48 as well; run 44846096964 (job 136669775711) took 1,309 s, under
+    # it. The skip count's step limit of 19 minutes is not a -timeout, though it equals the
+    # package list's 19m, and it fires before the job's: that step took 346 s of run
+    # 44790111577's 1,373 s job, so the job less that step plus 19 minutes is 1,027 + 1,140 = 2,167 s,
     # 36.12 minutes, under the job's 48.
     # The other steps after the unit step have limits of their own under that: the store-form
     # count runs under backend-count.sh's -timeout of 5 minutes, the skip counter's test under its

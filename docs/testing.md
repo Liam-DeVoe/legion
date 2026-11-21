@@ -396,7 +396,7 @@ CI leaves that package out of `envoy-go`'s package list and runs it under `-race
 which gives it 39 minutes (`--timeout 39m`) and counts its skips
 (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
 runs its seventeen source-guard tests by name, and `envoy-go-claim-model` its two claim model tests.
-`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 54 (`-timeout 54m`).
+`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 55 (`-timeout 55m`).
 A plain run covers, by name, the few tests of those two packages that the race build leaves out or runs smaller.
 `envoy-go` runs those of `docs` in the race-impossible call of its unit step.
 Those of `api` are its xid window tests, whose assertion is a wall-clock time measured in the test's own process, so they run away from that call's load: alone on the runner, as the first test step of `envoy-go-checks` (`.github/workflows/ci-job-envoy-go-checks.yaml`).
