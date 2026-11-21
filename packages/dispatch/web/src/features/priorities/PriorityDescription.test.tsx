@@ -3,6 +3,7 @@ import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { onFakeClock } from "../../__tests__/fake-clock";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -54,31 +55,35 @@ function countPageParses(): { parsed: number[]; restore: () => void } {
 }
 
 test("a stored description is drawn from the server's tree, and nothing on the page or in the parse worker parses it", async () => {
-  const worker = installFakeParseWorker();
-  const { parsed, restore } = countPageParses();
-  const view = render(
-    <PriorityDescription
-      canWrite={false}
-      description={NESTED}
-      descriptionTree={NESTED_TREE}
-      label="Description of P1"
-      onSave={() => {}}
-    />
-  );
-  try {
-    const body = view.container.firstElementChild as HTMLElement;
-    // Drawn in the commit that mounted it, with no parse owed: a text with no tree this long
-    // would be the worker's, marked pending meanwhile.
-    expect(body).not.toHaveAttribute("data-markdown-pending");
-    expect(body.textContent).toBe(NESTED);
-    expect(body.querySelector("em, strong")).toBeNull();
-    await act(() => flushTasks());
-    expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
-    expect(parsed).toEqual([]);
-  } finally {
-    restore();
-    view.unmount();
-  }
+  // On the fake clock, so the stand-in's zero-delay timers, and any the engine sets, run in
+  // `flushTasks` and wait no real time: a body sent a task late still shows in the reads below.
+  await onFakeClock(async () => {
+    const worker = installFakeParseWorker();
+    const { parsed, restore } = countPageParses();
+    const view = render(
+      <PriorityDescription
+        canWrite={false}
+        description={NESTED}
+        descriptionTree={NESTED_TREE}
+        label="Description of P1"
+        onSave={() => {}}
+      />
+    );
+    try {
+      const body = view.container.firstElementChild as HTMLElement;
+      // Drawn in the commit that mounted it, with no parse owed: a text with no tree this long
+      // would be the worker's, marked pending meanwhile.
+      expect(body).not.toHaveAttribute("data-markdown-pending");
+      expect(body.textContent).toBe(NESTED);
+      expect(body.querySelector("em, strong")).toBeNull();
+      await act(() => flushTasks());
+      expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
+      expect(parsed).toEqual([]);
+    } finally {
+      restore();
+      view.unmount();
+    }
+  });
 });
 
 test("a description the reader has just written is drawn from its own text, never from the tree of the stored one", async () => {

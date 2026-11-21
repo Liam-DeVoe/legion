@@ -44,10 +44,11 @@ let headless: Promise<HeadlessProofEditor> | undefined;
  * for; and `flushTasks` steps a row over the tasks the stand-in and the engine queue: the
  * stand-in's `ready`, set at zero delay as the worker is made, and the body the engine posts once
  * it comes. Under a fake clock nothing else moves that clock, so the task is run here, as Testing
- * Library's own waits run theirs: `markdown-engine.test.ts`'s threshold row runs that way.
+ * Library's own waits run theirs: `markdown-engine.test.ts`'s threshold row and
+ * `PriorityDescription.test.tsx`'s stored-description row run that way.
  *
  * This one stays on the real clock (INFRA-1505) for the rows that drive the stand-in there:
- * `flushTasks`'s callers, all in `MarkdownBody.test.tsx`, and that file's other worker rows read
+ * `flushTasks`'s callers in `MarkdownBody.test.tsx`, and that file's other worker rows read
  * what one slice of a paint leaves, whose budget is read from `performance.now()`, which
  * `jest.useFakeTimers()` freezes (that file's `nextTask`); `MarkdownPreview.test.tsx`'s long-body
  * row waits on it only for the stand-in's own answer.
@@ -208,7 +209,8 @@ export function restoreParseWorker(): void {
 
 /** Lets the tasks already queued run, so a body the engine was about to send has been sent by the
  *  time a row counts what it sent. Its callers are `MarkdownBody.test.tsx`'s worker rows, on the
- *  real clock (`tick`). */
+ *  real clock, and `PriorityDescription.test.tsx`'s stored-description row, on the fake one
+ *  (`tick`). */
 export async function flushTasks(): Promise<void> {
   for (let tries = 0; tries < 5; tries += 1) {
     await tick();
