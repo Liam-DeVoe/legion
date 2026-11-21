@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -224,5 +226,131 @@ func TestARouteAnswers503WhileK7CannotAnswer(t *testing.T) {
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", claim), http.StatusOK, "control: the same claim once the source answers")
 	if got, err := rig.deps.registry.RoleClaim(t.Context(), contracts.RoleClaimKey("PRIV", "lead-reviewer")); err != nil || got.HolderSessionID != holder {
 		t.Fatalf("control: the claim wrote holder %q, %v; want %s", got.HolderSessionID, err, holder)
+	}
+}
+
+// privacyTeamTopic is a topic of no project every relay row's session follows.
+const privacyTeamTopic = "notifications.team.privacy-rows"
+
+// expectOnly fails the test unless standIn receives exactly want, in stream order, and nothing more
+// within a short window.
+func expectOnly(t *testing.T, standIn *sessionStandIn, asked string, want ...contracts.Envelope) {
+	t.Helper()
+	if len(want) > 0 {
+		requireFrames(t, standIn.collect(t, len(want), 30*time.Second), want...)
+	}
+	select {
+	case frame := <-standIn.frames:
+		t.Fatalf("%s: the session received frame %d (%s) beyond %d expected", asked, frame.seq, frame.item.Topic, len(want))
+	case <-time.After(700 * time.Millisecond):
+	}
+}
+
+// TestTheRelayDecidesEachFrameFromAFreshRead: the relay over real session consumers decides each
+// frame of a project from a fresh privacy read, by the member rule. E is a full member's session
+// whose token lists no project, V a full member's listing PRIV, R a restricted member's listing
+// PRIV. With one answer listing PRIV, a PRIV frame reaches V and R and is withheld from E, and a
+// PUB frame reaches E and V and never R (a full member's list limits only private projects; a
+// restricted member's limits every project). After PUB's switch to private, the next PUB frame is
+// withheld from V and E, and R receives neither. After PRIV's switch to public, the next PRIV frame
+// reaches E. With no privacy answer, a frame of no project reaches all three at once, a PRIV frame
+// reaches V and R at once and is held for E, and a PUB frame is held for E and V and never reaches
+// R. Each row's control is the row beside it: the same session before the switch, or the other
+// member kind, gets the other answer, so no row passes for a reason it does not name.
+func TestTheRelayDecidesEachFrameFromAFreshRead(t *testing.T) {
+	rig := newPrivacyRig(t, true)
+	rig.source.answer(privacyListingPRIV)
+	decisions := func() int64 {
+		return rig.counter(t, `envoy_listener_project_decisions_total{answer="public"}`) + rig.counter(t, `envoy_listener_project_decisions_total{answer="private"}`)
+	}
+	if decisions() != 0 {
+		t.Fatal("the decision counters are not present at 0 before the first frame")
+	}
+	e := rig.session(t, "ses_rows_e", false, nil, everyIssueTopic, privacyTeamTopic)
+	v := rig.session(t, "ses_rows_v", false, []string{"PRIV"}, everyIssueTopic, privacyTeamTopic)
+	r := rig.session(t, "ses_rows_r", true, []string{"PRIV"}, everyIssueTopic, privacyTeamTopic)
+
+	// One answer listing PRIV.
+	priv, _ := rig.storeEvent(t, privIssueSubject)
+	pub, _ := rig.storeEvent(t, pubIssueSubject)
+	expectOnly(t, v, "V, one answer listing PRIV", priv, pub)
+	expectOnly(t, r, "R, one answer listing PRIV", priv)
+	expectOnly(t, e, "E, one answer listing PRIV", pub)
+	if decisions() == 0 {
+		t.Fatal("the frames decided from a read counted no decision")
+	}
+
+	// PUB switched private: the next PUB frame reaches none of the three.
+	rig.source.answer(`{"projects":[{"project":"PRIV","slack_channels":[],"slack_channels_changed_at":null},{"project":"PUB","slack_channels":[],"slack_channels_changed_at":null}]}`)
+	rig.storeEvent(t, pubIssueSubject)
+	expectOnly(t, v, "V, after PUB's switch to private")
+	expectOnly(t, e, "E, after PUB's switch to private")
+	expectOnly(t, r, "R, after PUB's switch to private")
+
+	// PRIV switched public: the next PRIV frame reaches E.
+	rig.source.answer(privacyNone)
+	privPublic, _ := rig.storeEvent(t, privIssueSubject)
+	expectOnly(t, e, "E, after PRIV's switch to public", privPublic)
+	expectOnly(t, v, "V, after PRIV's switch to public", privPublic)
+	expectOnly(t, r, "R, after PRIV's switch to public", privPublic)
+
+	// No privacy answer.
+	rig.source.failWith(http.StatusBadGateway)
+	team, _ := rig.storeEvent(t, privacyTeamTopic)
+	for name, standIn := range map[string]*sessionStandIn{"E": e, "V": v, "R": r} {
+		requireFrames(t, standIn.collect(t, 1, 10*time.Second), team)
+		_ = name
+	}
+	privHeld, _ := rig.storeEvent(t, privIssueSubject)
+	rig.storeEvent(t, pubIssueSubject)
+	expectOnly(t, v, "V, no privacy answer", privHeld)
+	expectOnly(t, r, "R, no privacy answer", privHeld)
+	expectOnly(t, e, "E, no privacy answer")
+}
+
+// TestRolesSetRefusesAProjectTheTokenDoesNotSee: in the required mode with PUB public, a claim of a
+// PUB role by a restricted member's session whose token lists INFRA answers 403
+// project_not_listed and writes no claim, and so does one whose token lists INFRA and carries no
+// restricted claim; one by a full member's session listing INFRA is taken, and so is one by a
+// restricted member's session listing PUB. In the all-public mode all four are taken - the
+// control under which the restricted INFRA claim is written - and the full member's row is the
+// control for a check that restricts every project to the list.
+func TestRolesSetRefusesAProjectTheTokenDoesNotSee(t *testing.T) {
+	for _, required := range []bool{true, false} {
+		t.Run(fmt.Sprintf("required %v", required), func(t *testing.T) {
+			rig := newPrivacyRig(t, required)
+			full, restricted := false, true
+			for _, row := range []struct {
+				name, sessionID, role string
+				restricted            *bool
+				projects              []string
+				refused               bool
+			}{
+				{"a restricted member listing INFRA", "ses_claim_restricted_infra", "PUB.reviewer-a", &restricted, []string{"INFRA"}, true},
+				{"a token listing INFRA with no restricted claim", "ses_claim_unmarked_infra", "PUB.reviewer-b", nil, []string{"INFRA"}, true},
+				{"a full member listing INFRA", "ses_claim_full_infra", "PUB.reviewer-c", &full, []string{"INFRA"}, false},
+				{"a restricted member listing PUB", "ses_claim_restricted_pub", "PUB.reviewer-d", &restricted, []string{"PUB"}, false},
+			} {
+				token := rig.personToken(row.sessionID, row.projects...)
+				if row.restricted != nil {
+					token = rig.memberToken(row.sessionID, *row.restricted, row.projects...)
+				}
+				requireStatus(t, rig.subscribe(t, token, row.sessionID), http.StatusOK, row.name+"'s registration")
+				answer := rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, row.sessionID, row.role))
+				claimed, err := rig.deps.registry.RoleClaim(t.Context(), store.RoleClaimKeyOf(row.role))
+				if err != nil {
+					t.Fatalf("%s: read the claim of %s: %v", row.name, row.role, err)
+				}
+				if required && row.refused {
+					if answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), projectNotListed) || claimed.HolderSessionID != "" {
+						t.Errorf("%s: answered %d %s with holder %q, want 403 %s and no claim", row.name, answer.Code, answer.Body.String(), claimed.HolderSessionID, projectNotListed)
+					}
+					continue
+				}
+				if answer.Code != http.StatusOK || claimed.HolderSessionID != row.sessionID {
+					t.Errorf("%s (required %v): answered %d %s with holder %q, want the claim taken", row.name, required, answer.Code, answer.Body.String(), claimed.HolderSessionID)
+				}
+			}
+		})
 	}
 }
