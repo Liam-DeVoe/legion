@@ -40,5 +40,9 @@ test("a lib from before Dispatch's own listener is refused, naming ACCEPT_ROOT",
 
 test("this checkout's lib passes", () => {
   const root = join(import.meta.dir, "..", "..", "..");
-  expect(guard(join(import.meta.dir, "dispatch-identity.sh"), root)).toEqual({ code: 0, out: "went on\n", err: "" });
+  expect(guard(join(import.meta.dir, "dispatch-identity.sh"), root)).toEqual({
+    code: 0,
+    out: "went on\n",
+    err: "",
+  });
 });

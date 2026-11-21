@@ -58,7 +58,10 @@ function stubListener(): { url: string; received: Received[] } {
       received.push({
         path,
         authorization: request.headers.get("Authorization") ?? "",
-        proof: parts.length === 3 ? JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) : {},
+        proof:
+          parts.length === 3
+            ? JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8"))
+            : {},
       });
       if (path === "/v1/interests/s-1") return Response.json({ session_id: "s-1", topics: ["a"] });
       return Response.json({ error: "not found" }, { status: 404 });
@@ -121,7 +124,10 @@ test("a read presents the token the broker minted under DPoP, its proof naming G
 
 test("a 404 is an answer: its status printed, its body kept, exit 0", async () => {
   const listener = stubListener();
-  const { code, stdout, out } = await get(machine(stubBroker().url), `${listener.url}/v1/roles/absent`);
+  const { code, stdout, out } = await get(
+    machine(stubBroker().url),
+    `${listener.url}/v1/roles/absent`
+  );
   expect(code).toBe(0);
   expect(stdout).toBe("404\n");
   expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({ error: "not found" });

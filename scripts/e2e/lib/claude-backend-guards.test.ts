@@ -353,7 +353,9 @@ printf 'status %s: %s\\n' "$status" "$found"`;
       expect(run(agent([...rig, "ENVOY_TOKEN_FILE=/rig/secrets/envoy-token"])).out.trim()).toBe(
         "status 0: ENVOY_TOKEN_FILE set, want unset"
       );
-      expect(run(agent([...rig, "ENVOY_TOKEN=dummy"])).out.trim()).toBe("status 0: ENVOY_TOKEN set, want unset");
+      expect(run(agent([...rig, "ENVOY_TOKEN=dummy"])).out.trim()).toBe(
+        "status 0: ENVOY_TOKEN set, want unset"
+      );
     },
     slow
   );

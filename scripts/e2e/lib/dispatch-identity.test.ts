@@ -64,7 +64,8 @@ function watch(what: string, ...streams: ReadableStream<Uint8Array>[]): Printed 
     for (const waiter of waiting.splice(0)) {
       const found = text.match(waiter.pattern);
       if (found) waiter.resolve(found);
-      else if (ended) waiter.reject(new Error(`${what} ended before it printed ${waiter.pattern}:\n${text}`));
+      else if (ended)
+        waiter.reject(new Error(`${what} ended before it printed ${waiter.pattern}:\n${text}`));
       else waiting.push(waiter);
     }
   };
@@ -107,8 +108,10 @@ function entry(name: string): string | undefined {
 /** The status Dispatch's listener answers GET /v1/sessions with, under authorization if given. */
 async function sessionsStatus(authorization?: string): Promise<number> {
   const url = entry("ENVOY_URL");
-  if (url === undefined) throw new Error(`dispatch_identity_dispatch_env names no ENVOY_URL: ${dispatchEnv}`);
-  const headers: Record<string, string> = authorization === undefined ? {} : { Authorization: authorization };
+  if (url === undefined)
+    throw new Error(`dispatch_identity_dispatch_env names no ENVOY_URL: ${dispatchEnv}`);
+  const headers: Record<string, string> =
+    authorization === undefined ? {} : { Authorization: authorization };
   const answer = await fetch(`${url}/v1/sessions`, { headers, signal: AbortSignal.timeout(5000) });
   await answer.arrayBuffer();
   return answer.status;
@@ -179,8 +182,12 @@ describe.skipIf(skip)("dispatch_identity_start", () => {
 
   test("Dispatch's listener names its one credential and Dispatch as the role marks' sender", () => {
     const log = readFileSync(join(evidence, "logs", "dispatch_identity_listener.log"), "utf8");
-    expect(log).toMatch(/listener API auth: oidc http:\/\/127\.0\.0\.1:\d+ for system:serviceaccount:e2e:dispatch"/);
-    expect(log).toContain('listener role marks: accepted from system:serviceaccount:e2e:dispatch alone"');
+    expect(log).toMatch(
+      /listener API auth: oidc http:\/\/127\.0\.0\.1:\d+ for system:serviceaccount:e2e:dispatch"/
+    );
+    expect(log).toContain(
+      'listener role marks: accepted from system:serviceaccount:e2e:dispatch alone"'
+    );
   });
 
   test("dispatch_identity_stop stops Dispatch's listener", async () => {

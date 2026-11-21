@@ -27,7 +27,9 @@ import {
 import { messageFor } from "../../../packages/envoy-client/src/errors";
 
 function usage(why: string): never {
-  process.stderr.write(`listener-get: ${why}\nusage: bun listener-get.ts --out FILE [--max-time SECONDS] URL\n`);
+  process.stderr.write(
+    `listener-get: ${why}\nusage: bun listener-get.ts --out FILE [--max-time SECONDS] URL\n`
+  );
   process.exit(2);
 }
 
@@ -40,7 +42,8 @@ while (args.length > 0) {
   if (arg === "--out") out = args.shift() ?? usage("--out needs a file");
   else if (arg === "--max-time") {
     maxTime = Number(args.shift());
-    if (!Number.isInteger(maxTime) || maxTime < 1) usage("--max-time needs a whole number of seconds >= 1");
+    if (!Number.isInteger(maxTime) || maxTime < 1)
+      usage("--max-time needs a whole number of seconds >= 1");
   } else if (url === "" && !arg.startsWith("--")) url = arg;
   else usage(`unexpected argument ${arg.startsWith("--") ? arg : "(a second URL)"}`);
 }
@@ -51,12 +54,15 @@ try {
 } catch {
   usage("the URL is not an absolute http(s) URL");
 }
-if (target.protocol !== "http:" && target.protocol !== "https:") usage("the URL is not an absolute http(s) URL");
+if (target.protocol !== "http:" && target.protocol !== "https:")
+  usage("the URL is not an absolute http(s) URL");
 const path = target.pathname;
 
 const route = brokerRouteConfigured(process.env);
 if (!route.traded) {
-  process.stderr.write(`listener-get: GET ${path}: this machine has no broker token to present, since ${route.gap}\n`);
+  process.stderr.write(
+    `listener-get: GET ${path}: this machine has no broker token to present, since ${route.gap}\n`
+  );
   process.exit(2);
 }
 
@@ -72,7 +78,9 @@ try {
   const made = brokerCredential(process.env).headers("GET", url, undefined, signal);
   headers = made instanceof Promise ? await made : made;
 } catch (error) {
-  process.stderr.write(`listener-get: GET ${path}: the broker token could not be made: ${messageFor(error)}\n`);
+  process.stderr.write(
+    `listener-get: GET ${path}: the broker token could not be made: ${messageFor(error)}\n`
+  );
   finish(1);
 }
 let response: Response;

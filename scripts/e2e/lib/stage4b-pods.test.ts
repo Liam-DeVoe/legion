@@ -715,7 +715,9 @@ if absent=$(pod_connect absent); then echo "absent read: $absent"; fi`);
     const { exitCode, out } = judge({ pods: { "pod-a": movedPod() }, envs, claims });
     expect(exitCode).toBe(1);
     expect(out).not.toContain(value);
-    expect(out).toEndWith(`FAIL: claim-b's tester in pod pod-a has ${name} in its Oh My Pi's environment\n`);
+    expect(out).toEndWith(
+      `FAIL: claim-b's tester in pod pod-a has ${name} in its Oh My Pi's environment\n`
+    );
   });
 
   test("after the respelling, a role still told the old spelling fails, naming the respelled input", () => {
