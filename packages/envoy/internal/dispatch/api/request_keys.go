@@ -48,11 +48,11 @@ import (
 //     commits a recovery point answers what it made, read now (keyedReplays); a route whose answer
 //     is one comment or issue message answers that post, read now (keyedRereads); any other
 //     answers its stored status and body - unless that answer is a success holding a comment or
-//     a message that is deleted now or a document version a delete renamed, or naming a document
-//     in which a comment's insert suggestion, deleted since, stood when the answer was stored or
-//     before, so it may hold that suggestion's words (answerEndedByDelete), whenever the delete
-//     began, and is then never replayed: a delete is timed from before it waited for the lock a
-//     keyed write may hold, so no time says which of the two read the post first. A repeat that
+//     a message that is deleted now or a document version a delete renamed, or a related-item hit
+//     for a document in which a comment's insert suggestion, deleted since, was made at any time,
+//     so it may hold that suggestion's words (answerEndedByDelete), whenever the delete began, and
+//     is then never replayed: a delete is timed from before it waited for the lock a keyed write
+//     may hold, so no time says which of the two read the post first. A repeat that
 //     arrives while its first request still runs is never spooled (requestKeyInFlight): its body
 //     is read off the connection and discarded, and the repeat is judged by its digest once that
 //     body has arrived, by what the key holds then (answerDrainedRepeat).
@@ -740,10 +740,7 @@ func (m *boundaryMask) flush() {
 	m.pending = nil
 }
 
-// heldRequestKey is the row a repeat found under its key. claimed is when the key was first
-// claimed (request_keys.created_at), which only a kept answer naming a document is timed against
-// (answerEndedByDelete says why); whether a delete ended an answer holding a deleted post is not
-// timed at all.
+// heldRequestKey is the row a repeat found under its key.
 type heldRequestKey struct {
 	digest    string
 	method    string
@@ -757,7 +754,6 @@ type heldRequestKey struct {
 	committed bool
 	lapsed    bool
 	expired   bool
-	claimed   time.Time
 }
 
 // keyState is what a repeat finds its key holding, decided once from the row (heldRequestKey.state)
@@ -935,12 +931,11 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 		select request_digest, method, path, attempt, status, headers, response,
 		       response is not null, recovery, committed_at is not null,
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
-		       created_at < now() - make_interval(secs => $4), created_at
+		       created_at < now() - make_interval(secs => $4)
 		from request_keys where login = $1 and idempotency_key = $2
 	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
 		&held.digest, &held.method, &held.path, &held.attempt, &held.status, &held.headers,
 		&held.response, &held.kept, &held.recovery, &held.committed, &held.lapsed, &held.expired,
-		&held.claimed,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return held, false, nil
@@ -1125,8 +1120,8 @@ func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey, ended bool) 
 	cause := fmt.Sprintf("it was larger than the %d bytes a key keeps", keyedAnswerKept)
 	if ended {
 		cause = "it holds a comment or a message that was deleted, a document version name a delete replaced, " +
-			"or names a document in which a comment's insert suggestion, deleted since, stood when the answer was " +
-			"stored or before, so the answer may hold its words"
+			"or a related-item hit for a document in which a comment's insert suggestion, deleted since, was made " +
+			"at any time, so the answer may hold its words"
 	}
 	if held.committed {
 		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
@@ -1141,13 +1136,15 @@ func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey, ended bool) 
 
 // answerEndedQuery is answerEndedByDelete's statement: $1 is the id of every object the kept
 // answer holds, $2 and $3, pairwise, the document and the number of every version it lists, and
-// $4 the document every document hit in it names (answerHoldings); $5 is when the key was
-// claimed and $6 docs.InsertMarkPath. Its first three arms read no time: a post deleted now, and
-// a version a delete renamed, end the answer whenever the delete began (answerEndedByDelete says
-// why). The fourth reads the key's time against the comment's creation alone, never against its
-// delete. Each arm reads by an index: the two primary keys, artifact_versions' unique
-// (artifact_id, number), and the comments of a document by their anchor's
-// (comments_anchor_artifact), whose versions are read by that same unique key.
+// $4 the document every document hit in it names (answerHoldings); $5 is docs.InsertMarkPath.
+// None of its four arms reads a time: a post deleted now, a version a delete renamed, and a
+// document hit on which a deleted insert's comment was made end the answer whenever the delete
+// began, and the last whenever the comment was made (answerEndedByDelete says why). The fourth
+// gathers the mark ids of each hit document's deleted comments first, so it walks each stored
+// insert tree of that document once for all of them (docs.InsertMarkPath), not once a comment.
+// Each arm reads by an index: the two primary keys, artifact_versions' unique (artifact_id,
+// number), and the comments of a document by their anchor's (comments_anchor_artifact), whose
+// versions are read by that same unique key.
 const answerEndedQuery = `
 	select exists (select 1 from comments where id = any($1::uuid[]) and deleted_at is not null)
 	    or exists (select 1 from messages where id = any($1::uuid[]) and deleted_at is not null)
@@ -1157,14 +1154,15 @@ const answerEndedQuery = `
 	        where v.renamed_by_delete is not null
 	    )
 	    or exists (
-	        select 1 from comments c
-	        where (c.anchor->>'artifact_id')::uuid = any($4::uuid[])
-	          and c.deleted_at is not null and $5::timestamptz >= c.created_at
-	          and exists (
-	              select 1 from artifact_versions v
-	              where v.artifact_id = (c.anchor->>'artifact_id')::uuid and v.insert_tree is not null
-	                and jsonb_path_exists(v.insert_tree, $6::jsonpath, jsonb_build_object('id', c.anchor->>'mark_id'))
-	          )
+	        select 1 from (
+	            select (c.anchor->>'artifact_id')::uuid as artifact_id, jsonb_agg(c.anchor->>'mark_id') as ids
+	            from comments c
+	            where (c.anchor->>'artifact_id')::uuid = any($4::uuid[]) and c.deleted_at is not null
+	            group by 1
+	        ) deleted
+	        join artifact_versions v on v.artifact_id = deleted.artifact_id
+	        where v.insert_tree is not null
+	          and jsonb_path_exists(v.insert_tree, $5::jsonpath, jsonb_build_object('ids', deleted.ids))
 	    )
 `
 
@@ -1185,22 +1183,21 @@ const answerEndedQuery = `
 //   - a version, listed in its document's versions, that a delete renamed
 //     (artifact_versions.renamed_by_delete, renameAcceptedVersion): an accept named it after the
 //     suggestion's body (acceptedVersionName), and the answer holds that name;
-//   - a hit standing for a document (a related-item hit of kind document, with its snippet), in
-//     an answer whose key was claimed once an insert suggestion's comment on that document was
-//     made, the comment now deleted: at or after the comment's created_at, whenever the delete
-//     came. The insert is the mark a stored version's insert tree holds as one
-//     (docs.InsertMarkPath, the rule the version's mask finds it by), named by the comment's
-//     anchor. The hit's snippet is cut from the document's latest version, which held the
-//     insert's words while it stood: the pending insert's words are the comment's own
+//   - a hit standing for a document (a related-item hit of kind document, with its snippet) on
+//     which an insert suggestion's comment was made, the comment now deleted, whenever it was
+//     made and whenever the delete came. The insert is the mark a stored version's insert tree
+//     holds as one (docs.InsertMarkPath, the rule the version's mask finds it by), named by the
+//     comment's anchor. The hit's snippet is cut from the document's latest version, which held
+//     the insert's words while it stood: the pending insert's words are the comment's own
 //     (docs.MaskedVersionText), and the delete takes them out of every later version
 //     (docs.SettleVersion).
 //
 // An id that stands only in a text - a citation in markdown, a link - or in a member that names a
 // post from another object (reply_to, comment_id) holds no part of the post, and ends nothing; a
-// document named anywhere but in a hit, and a document hit claimed before every such comment was
-// made, end nothing either. The block text a reply carries of the post it answers (reply_block)
-// is left out: every keyed route whose answer can hold one answers a repeat with the post read
-// again (keyedRereads, keyedReplays; TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh).
+// document named anywhere but in a hit ends nothing either. The block text a reply carries of the
+// post it answers (reply_block) is left out: every keyed route whose answer can hold one answers a
+// repeat with the post read again (keyedRereads, keyedReplays;
+// TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh).
 //
 // The first two read no time, neither the delete's nor the key's. A delete's deleted_at is when its
 // transaction began (clearDeletedPostBody), before it waited for the owner's lock
@@ -1211,23 +1208,28 @@ const answerEndedQuery = `
 // replay: the stored answer is answered ANSWER_NOT_KEPT, and a recovery replay keeps none of its
 // replayKeptMembers.
 //
-// The third is timed, since a document hit is no post: its snippet holds the insert's words only
-// where the answer was cut while the insert stood, and no fact kept with the answer says from
-// which version it was cut. Its window opens at the comment's created_at, when the comment's
-// transaction began, and has no end at the delete, for the same race as the first two: deleted_at
-// is when the delete's transaction began, so a check that claimed its key after that and read the
-// document before the delete committed holds the words under a key newer than deleted_at (census
-// v20 of dispatch://INFRA-1523, V.22). Nothing kept says when the delete committed, so every
-// answer claimed since the comment was made ends, which reaches wider than the snippets that hold
-// the words - a check that read a version from before the insert, the version the delete wrote,
-// or the document after the delete committed - and the architect ruled for that reach (his
-// rulings of 2026-11-20 22:18Z and 2026-11-21 00:17Z): ending an answer only makes its caller
-// read again, as a write that landed with no copy of its answer does, and never takes away text a
-// reader still needs, which the next read gives as it stands. Its bound is the key's own life: a
-// key keeps its answer for contracts.IdempotencyKeyTTL, 24 hours (IDEMPOTENCY_KEY_TTL_MS,
-// packages/contracts), and a repeat after that runs as a new request (keyExpired), so an answer
-// ended that need not have been costs one read more inside its day and nothing else. An answer
-// whose key was claimed before the comment was made is replayed.
+// The third reads no time either, though a document hit is no post: its snippet holds the
+// insert's words only where the answer was cut while the insert stood, and no fact kept with the
+// answer says from which version it was cut. It has no end at the delete, for the same race as
+// the first two: deleted_at is when the delete's transaction began, so a check that claimed its
+// key after that and read the document before the delete committed holds the words under a key
+// newer than deleted_at (census v20 of dispatch://INFRA-1523, V.22). Nor has it a start at the
+// key's claim: a comment made after the key was claimed and before the answer was stored can be
+// in that answer, and a takeover runs the request again under the key's first claim
+// (request_keys.created_at). What would bound it is when the answer was stored, and no column
+// holds that time: the statement that stores the answer stores no time (settleRequestKey), and
+// committed_at is when the request's first transaction that wrote began
+// (markRequestKeyCommitted), never set for a related-item check, which writes nothing. So every
+// answer holding a hit for the document ends, whenever the comment was made, which reaches wider
+// than the snippets that hold the words - a check kept before the insert existed, one that read
+// the version the delete wrote, or the document after the delete committed - and the architect
+// ruled for that reach (his rulings of 2026-11-20 22:18Z and 2026-11-21 00:17Z): ending an answer
+// only makes its caller read again, as a write that landed with no copy of its answer does, and
+// never takes away text a reader still needs, which the next read gives as it stands. Its bound
+// is the key's own life: a key keeps its answer for contracts.IdempotencyKeyTTL, 24 hours
+// (IDEMPOTENCY_KEY_TTL_MS, packages/contracts), and a repeat after that runs as a new request
+// (keyExpired), so an answer ended that need not have been costs one read more inside its day and
+// nothing else.
 func (s *server) answerEndedByDelete(ctx context.Context, held heldRequestKey) (bool, error) {
 	holdings := answerHoldingsOf(held.storedSuccess())
 	if len(holdings.ids) == 0 {
@@ -1236,7 +1238,7 @@ func (s *server) answerEndedByDelete(ctx context.Context, held heldRequestKey) (
 	var ended bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, answerEndedQuery,
 		holdings.ids, holdings.versionDocuments, holdings.versionNumbers,
-		holdings.hitDocuments, held.claimed, docs.InsertMarkPath,
+		holdings.hitDocuments, docs.InsertMarkPath,
 	).Scan(&ended); err != nil {
 		return false, fmt.Errorf("read whether a delete ended a kept answer: %w", err)
 	}

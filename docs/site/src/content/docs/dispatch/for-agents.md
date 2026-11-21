@@ -404,8 +404,8 @@ broadcast or a message to a session is answered with what the write made, read n
 comment's edit, resolve, reopen, accept, reject or reply, or of an issue message's edit or reply,
 with that post as it stands now. Any other repeat gets the first answer, or, where Dispatch gives
 no copy (a first answer over 1 MiB, a success holding a comment or an issue message deleted since
-or a document version a delete renamed, or one naming a document in which a comment's insert
-suggestion, deleted since, stood when the answer was stored or before, so it may hold that
+or a document version a delete renamed, or one holding a related-item hit for a document in which
+a comment's insert suggestion, deleted since, was made at any time, so it may hold that
 suggestion's words), the first answer's status and the code `ANSWER_NOT_KEPT`. When the write
 landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed answer
 reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A

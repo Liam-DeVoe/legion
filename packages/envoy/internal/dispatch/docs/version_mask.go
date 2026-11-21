@@ -233,10 +233,11 @@ func insertMarkID(mark pmdoc.Mark) (string, bool) {
 // whose text held a deleted insert's words (api's answerEndedByDelete and goingItemText).
 const insertMarkFilter = `@.type == "` + string(MarkSuggestion) + `" && @.attrs.kind == "insert"`
 
-// InsertMarkPath finds, in a stored insert tree, the insert suggestion's mark (insertMarkFilter)
-// whose id is the path's variable id: jsonb_path_exists(insert_tree, InsertMarkPath,
-// jsonb_build_object('id', <mark id>)), as answerEndedByDelete asks it of each comment.
-const InsertMarkPath = `$.** ? (` + insertMarkFilter + ` && @.attrs.id == $id)`
+// InsertMarkPath finds, in a stored insert tree, an insert suggestion's mark (insertMarkFilter)
+// whose id is one of the path's variable ids, an array of mark ids: jsonb_path_exists(insert_tree,
+// InsertMarkPath, jsonb_build_object('ids', <mark ids>)), which walks a tree once for all of them,
+// as answerEndedByDelete asks it once a version for the deleted comments of its document.
+const InsertMarkPath = `$.** ? (` + insertMarkFilter + ` && @.attrs.id == $ids[*])`
 
 // InsertMarkIDsPath is the id of every insert suggestion's mark (insertMarkFilter) a stored insert
 // tree holds, an id answered as often as the walk reaches its mark: jsonb_path_query(insert_tree,

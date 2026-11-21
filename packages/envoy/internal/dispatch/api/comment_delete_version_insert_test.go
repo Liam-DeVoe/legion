@@ -27,32 +27,7 @@ func TestAStoredVersionGivesNoWordOfAPendingInsertDeletedSince(t *testing.T) {
 	if err := json.Unmarshal(named.Body.Bytes(), &version); err != nil || version.Number < 2 {
 		t.Fatalf("the named version = %s (%v), want a version after the first", named.Body.String(), err)
 	}
-	waitForArtifactVersion(t, f.handler, f.artifactID, version.Number)
-	reads := map[string]string{
-		"by id":   fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", f.artifactID, version.Number),
-		"by slug": fmt.Sprintf("/api/v1/issues/%s/artifacts/spec/versions/%d", f.issueKey, version.Number),
-	}
-	read := func(path string) string {
-		t.Helper()
-		response := dispatchRequest(t, f.handler, http.MethodGet, path, nil, "bob")
-		if response.Code != http.StatusOK {
-			t.Fatalf("GET %s: status=%d body=%s", path, response.Code, response.Body.String())
-		}
-		return response.Body.String()
-	}
-	// The positive control: while the insert stands pending, each read of the version gives its words.
-	for name, path := range reads {
-		if body := read(path); !strings.Contains(body, insertedWords) {
-			t.Fatalf("the version read %s before the delete gives no %q, so its check after the delete cannot fail: %s", name, insertedWords, body)
-		}
-	}
-
-	deleteThreadComment(t, f.handler, f.insert.ID, "alice")
-	for name, path := range reads {
-		if body := read(path); strings.Contains(body, insertedWords) {
-			t.Errorf("the version read %s after the insert's delete gives its words %q: %s", name, insertedWords, body)
-		}
-	}
+	versionGivesNoWordOfTheInsertOnceDeleted(t, f, version.Number, "the version")
 }
 
 // Census v20 of dispatch://INFRA-1523, V.1: an upload of the text the document already holds
@@ -83,6 +58,14 @@ func TestAnUnchangedUploadsVersionGivesNoWordOfAPendingInsertDeletedSince(t *tes
 	if after := documentMarkdown(t, f.handler, f.artifactID); after != text {
 		t.Fatalf("the upload of the document's own text changed it: %q, want %q", after, text)
 	}
+	versionGivesNoWordOfTheInsertOnceDeleted(t, f, version, "the version an unchanged upload stored")
+}
+
+// versionGivesNoWordOfTheInsertOnceDeleted reads version of f's spec, once it is written, by its id
+// and by the issue's slug: each read gives the pending insert's words while the insert stands, and
+// none once alice deletes its comment. named is how a failure after the delete names the version.
+func versionGivesNoWordOfTheInsertOnceDeleted(t *testing.T, f anchorsOnAnInsert, version int, named string) {
+	t.Helper()
 	waitForArtifactVersion(t, f.handler, f.artifactID, version)
 	reads := map[string]string{
 		"by id":   fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", f.artifactID, version),
@@ -106,7 +89,7 @@ func TestAnUnchangedUploadsVersionGivesNoWordOfAPendingInsertDeletedSince(t *tes
 	deleteThreadComment(t, f.handler, f.insert.ID, "alice")
 	for name, path := range reads {
 		if body := read(path); strings.Contains(body, insertedWords) {
-			t.Errorf("the version an unchanged upload stored, read %s after the insert's delete, gives its words %q: %s", name, insertedWords, body)
+			t.Errorf("%s, read %s after the insert's delete, gives its words %q: %s", named, name, insertedWords, body)
 		}
 	}
 }

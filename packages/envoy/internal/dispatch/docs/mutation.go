@@ -713,9 +713,10 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	var canonical string
 	var read pmdoc.WrittenReadBack
 	var unchanged bool
-	// found is the live tree a write that changes nothing found rendering as the replacement, the
-	// markdown its caller's version stores (unchangedStampOf), and nil for every other write.
-	var found *pmdoc.Node
+	// unchangedTree is the live tree a write that changes nothing found rendering as the
+	// replacement, the markdown its caller's version stores (unchangedStampOf), and nil for every
+	// other write.
+	var unchangedTree *pmdoc.Node
 	// The rendering of the replacement, which this write makes to tell whether the upload changes
 	// the document and answers its caller with: the write leaves that very tree in the fork,
 	// unless it has anchors to carry over, so applyLive takes this rendering for the fork it
@@ -785,7 +786,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		}
 		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
-			unchanged, found = true, current
+			unchanged, unchangedTree = true, current
 			return nil
 		}
 		type reanchor struct {
@@ -898,7 +899,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// it found renders as that markdown, a pending insert's words included, so that version stores
 	// its insert tree (RenderStampOf).
 	if unchanged {
-		ledgerFrom(ctx).wroteUnchanged(artifactID, canonical, unchangedStampOf(artifactID, found))
+		ledgerFrom(ctx).wroteUnchanged(artifactID, canonical, unchangedStampOf(artifactID, unchangedTree))
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second

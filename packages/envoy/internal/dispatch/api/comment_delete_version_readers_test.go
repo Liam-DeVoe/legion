@@ -156,10 +156,12 @@ func TestAPinnedShortBlockIDsCandidatesGiveNoWordOfAPendingInsertDeletedSince(t 
 // V.22: a related-item check sent under a key while an insert suggestion stood in a project
 // document lists that document with a snippet cut from its version holding the words. Once the
 // insert's author deletes it, a repeat of that key is told the answer is not kept, as for a write
-// that landed with no copy of its answer, and gives none of the words; a check whose key was claimed
-// before the insert existed is replayed as it was kept. The time is the key's against the
-// comment's (answerEndedByDelete).
-func TestAKeptRelatedCheckFromWhileAnInsertStoodIsNotReplayedAfterItsDelete(t *testing.T) {
+// that landed with no copy of its answer, and gives none of the words. So is a repeat of a check
+// kept before the insert existed, though its snippet never held them: nothing kept says when an
+// answer was stored, so the arm reads no time (answerEndedByDelete), and the architect ruled for
+// that over-reach - a key keeps its answer 24 hours, so an answer ended that need not have been
+// costs its caller one read again.
+func TestAKeptRelatedCheckFromWhileOrBeforeAnInsertStoodIsNotReplayedAfterItsDelete(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
 	createTestProject(t, handler, "CORE")
 	notes := createProjectDocument(t, handler, "CORE", "Design notes", "The brown fox jumps\n")
@@ -202,9 +204,9 @@ func TestAKeptRelatedCheckFromWhileAnInsertStoodIsNotReplayedAfterItsDelete(t *t
 		t.Errorf("the repeat after the delete gives the insert's words %q: %s", insertedWords, again.Body.String())
 	}
 	kept := check("before-the-insert")
-	if kept.Code != before.Code || !replayed(kept) || kept.Body.String() != before.Body.String() {
-		t.Errorf("the repeat of the check kept before the insert: status=%d replayed=%t body=%s, want it replayed as kept: %d %s",
-			kept.Code, replayed(kept), kept.Body.String(), before.Code, before.Body.String())
+	if code, _ := refusalOf(t, kept); kept.Code != before.Code || !replayed(kept) || code != contracts.IdempotencyAnswerNotKept {
+		t.Errorf("the repeat of the check kept before the insert: status=%d replayed=%t body=%s, want %d %s, replayed, as the ruled over-reach ends it",
+			kept.Code, replayed(kept), kept.Body.String(), before.Code, contracts.IdempotencyAnswerNotKept)
 	}
 }
 
@@ -265,6 +267,64 @@ func TestAKeptRelatedCheckClaimedAfterTheInsertsDeleteBeganIsNotReplayed(t *test
 	}
 	if strings.Contains(again.Body.String(), insertedWords) {
 		t.Errorf("the repeat of the check claimed after the delete began gives the insert's words %q: %s", insertedWords, again.Body.String())
+	}
+}
+
+// V.22's window has no start at the key's claim: a related-item check whose key was claimed before
+// the insert's comment was made, and whose answer was stored after, can hold the insert's words -
+// the check read the document once the comment was made, or a takeover ran it again under the
+// key's first claim (request_keys.created_at). The row leaves that state rather than running the
+// race, as the row above does: the check is kept while the insert stands, and its key's created_at
+// is moved to before the comment's. Once the insert's author deletes it, a repeat of the key is
+// told the answer is not kept, and gives none of the words (answerEndedByDelete).
+func TestAKeptRelatedCheckClaimedBeforeTheInsertWasMadeIsNotReplayedAfterItsDelete(t *testing.T) {
+	documentService, handler, database := browserDocumentService(t)
+	createTestProject(t, handler, "CORE")
+	notes := createProjectDocument(t, handler, "CORE", "Design notes", "The "+insertedWords+" brown fox jumps\n")
+	insert := suggestProjectInsert(t, handler, database, documentService, notes, "m-insert")
+	nameVersion(t, handler, notes.ID, "With the insert pending")
+	refreshTermStats(t, database, "CORE")
+	const key = "claimed-before-the-insert-was-made"
+	check := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return keyedRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/related",
+			map[string]any{"title": "brown fox jumps", "keywords_only": true}, "alice", key)
+	}
+	// The positive control: the check lists the document with the insert's words in its snippet,
+	// so its repeat can fail.
+	during := check()
+	if body := during.Body.String(); during.Code != http.StatusOK || !strings.Contains(body, `"kind":"document"`) ||
+		!strings.Contains(body, notes.ID) || !strings.Contains(body, insertedWords) {
+		t.Fatalf("the check while the insert stood: status=%d body=%s, want 200 listing the document %s with %q",
+			during.Code, body, notes.ID, insertedWords)
+	}
+
+	ctx := context.Background()
+	moved, err := database.Pool.Exec(ctx, `
+		update request_keys k set created_at = c.created_at - interval '1 second'
+		from comments c where c.id = $1 and k.idempotency_key = $2
+	`, insert.ID, key)
+	if err != nil || moved.RowsAffected() != 1 {
+		t.Fatalf("move the created_at of key %s before comment %s's: %v (%d rows)", key, insert.ID, err, moved.RowsAffected())
+	}
+	// The control: the key now reads as claimed before the comment was made, which is the state
+	// this row stands for.
+	var claimedBefore bool
+	if err := database.Pool.QueryRow(ctx, `
+		select k.created_at < c.created_at
+		from comments c, request_keys k where c.id = $1 and k.idempotency_key = $2
+	`, insert.ID, key).Scan(&claimedBefore); err != nil || !claimedBefore {
+		t.Fatalf("the created_at of key %s is before comment %s's: %t (%v), want true", key, insert.ID, claimedBefore, err)
+	}
+
+	deleteThreadComment(t, handler, insert.ID, "alice")
+	again := check()
+	if code, _ := refusalOf(t, again); again.Code != during.Code || !replayed(again) || code != contracts.IdempotencyAnswerNotKept {
+		t.Errorf("the repeat of the check claimed before the insert was made: status=%d replayed=%t body=%s, want %d %s, replayed",
+			again.Code, replayed(again), again.Body.String(), during.Code, contracts.IdempotencyAnswerNotKept)
+	}
+	if strings.Contains(again.Body.String(), insertedWords) {
+		t.Errorf("the repeat of the check claimed before the insert was made gives the insert's words %q: %s", insertedWords, again.Body.String())
 	}
 }
 

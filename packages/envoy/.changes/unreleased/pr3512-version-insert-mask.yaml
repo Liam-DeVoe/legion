@@ -13,8 +13,8 @@ body: |-
   suggestion's mark, in the new nullable column artifact_versions.insert_tree (migration
   20261120213507), which the read masks by the mark's id; the version an upload that changes
   nothing stores keeps the live tree the upload found. The end of a kept related-item check that
-  listed the document under a key claimed once the insert's comment was made, whenever the delete
-  came, and the record of the comments whose words an answer run read, read insert_tree too
+  listed the document, whenever the insert's comment was made and whenever the delete came, and
+  the record of the comments whose words an answer run read, read insert_tree too
   (docs.InsertMarkPath, docs.InsertMarkIDsPath), so the insert's delete ends that answer and
   withdraws that run. The delete of a comment whose pending insert it rejects also writes the
   document's next version, without the words, in its own transaction (docs.SettleVersion), so no

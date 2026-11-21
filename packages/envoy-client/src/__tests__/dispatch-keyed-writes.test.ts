@@ -2218,8 +2218,8 @@ describe("DispatchClient's writes", () => {
         201,
         "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
           "or a message that was deleted, or a document version name a delete replaced, or " +
-          "names a document in which a comment's insert suggestion, deleted since, stood when " +
-          "the answer was stored or before",
+          "a related-item hit for a document in which a comment's insert suggestion, deleted " +
+          "since, was made at any time",
       ],
       [
         refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),

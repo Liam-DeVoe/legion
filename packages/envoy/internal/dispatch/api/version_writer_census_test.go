@@ -96,7 +96,7 @@ var versionStamps = map[string]map[string]map[string]versionRowWriter{
 				"markdown was rendered from, which each of its callers renders"},
 		},
 		"ReplaceText": {
-			"unchangedStampOf(artifactID, found)": {fills: true, why: "an upload that changes nothing: it " +
+			"unchangedStampOf(artifactID, unchangedTree)": {fills: true, why: "an upload that changes nothing: it " +
 				"records no operation, so its transaction holds no tree it wrote, and the stamp of the live tree " +
 				"it found rendering as the replacement is kept for its version (Ledger.wroteUnchanged)"},
 		},
@@ -211,7 +211,7 @@ func checkVersionStamps(t *testing.T, sources []moduleSource) {
 	t.Helper()
 	stampers := stampFunctions(sources)
 	var unlisted, unfilled []string
-	answered := map[string]map[string]map[string]bool{}
+	answered := map[[3]string]bool{}
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
 		for _, site := range stampSites(source, stampers) {
@@ -221,13 +221,7 @@ func checkVersionStamps(t *testing.T, sources []moduleSource) {
 				unlisted = append(unlisted, fmt.Sprintf("%s %s: %s", path, site.function, site.text))
 				continue
 			}
-			if answered[file] == nil {
-				answered[file] = map[string]map[string]bool{}
-			}
-			if answered[file][site.function] == nil {
-				answered[file][site.function] = map[string]bool{}
-			}
-			answered[file][site.function][site.text] = true
+			answered[[3]string{file, site.function, site.text}] = true
 			if stamp.fills && !stampLiteralSetsInsertTree(site.expression) {
 				unfilled = append(unfilled, fmt.Sprintf("%s %s: %s", path, site.function, site.text))
 			}
@@ -247,7 +241,7 @@ func checkVersionStamps(t *testing.T, sources []moduleSource) {
 	for file, functions := range versionStamps {
 		for function, sites := range functions {
 			for text := range sites {
-				if !answered[file][function][text] {
+				if !answered[[3]string{file, function, text}] {
 					stale = append(stale, file+" "+function+": "+text)
 				}
 			}
