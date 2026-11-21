@@ -172,12 +172,19 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once, and
 	// the wait for it is bounded by the test binary's deadline less 30 s (testwait.Remaining)
 	// rather than by a span of its own, which a loaded server could outrun.
+	// A read that fails, the server held past the row's deadline among them, makes the next poll
+	// read again, and the wait's own message names the last count read and the last failure.
 	var waiting uint64
+	var unread error
 	if !testwait.Holds(testwait.Remaining(t), 10*time.Millisecond, func() bool {
-		waiting = githubWaiting(t, requests, github)
+		count, err := githubWaiting(requests, github)
+		if unread = err; err != nil {
+			return false
+		}
+		waiting = count
 		return waiting == uint64(len(backlog))
 	}) {
-		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d", waiting, len(backlog))
+		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d%s", waiting, len(backlog), lastFailure(unread))
 	}
 
 	run, cancel := context.WithCancel(ctx)
@@ -198,16 +205,20 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// deadline less 30 s (testwait.Remaining) and not by a span the handlers' store work must
 	// finish inside.
 	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
-		if githubWaiting(t, requests, github) == 0 {
+		count, err := githubWaiting(requests, github)
+		if unread = err; err != nil {
+			return false
+		}
+		if waiting = count; waiting == 0 {
 			return true
 		}
 		if begun := counter.begun.Load(); begun > drainLegion {
 			t.Fatalf("%d transactions begun with %d messages still waiting, want one for each of the %d Legion events and none for any other",
-				begun, githubWaiting(t, requests, github), drainLegion)
+				begun, waiting, drainLegion)
 		}
 		return false
 	}) {
-		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, requests, github))
+		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait at the last read%s", len(backlog), time.Since(started).Round(time.Millisecond), waiting, lastFailure(unread))
 	}
 	drained := time.Since(started)
 	stop()
@@ -419,13 +430,21 @@ func drainJSON(value any) []byte {
 // by consumerOldestBound, one second. Those bounds stay in the daemon: they keep its state route
 // from waiting on a NATS server that does not answer, which is that route's contract and not this
 // row's subject. Read through them, a NATS server the machine held 2.1 s failed this row.
-func githubWaiting(t *testing.T, requests context.Context, github jetstream.Consumer) uint64 {
-	t.Helper()
+func githubWaiting(requests context.Context, github jetstream.Consumer) (uint64, error) {
 	info, err := github.Info(requests)
 	if err != nil {
-		t.Fatalf("read the GitHub consumer's info: %v", err)
+		return 0, fmt.Errorf("read the GitHub consumer's info: %w", err)
 	}
-	return info.NumPending + uint64(info.NumAckPending)
+	return info.NumPending + uint64(info.NumAckPending), nil
+}
+
+// lastFailure is how a wait's message names the last read that failed, or nothing when the last
+// read answered.
+func lastFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "; the last read failed: " + err.Error()
 }
 
 // isLagLine reports whether line, one JSON object the row's logger wrote, is lagWatch's warn line:
