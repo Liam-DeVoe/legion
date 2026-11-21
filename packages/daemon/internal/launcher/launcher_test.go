@@ -1731,8 +1731,8 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 	}
 	before := upstreamDials()
 
-	g.cancel()
 	stopped := time.Now()
+	g.cancel()
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
 		t.Fatalf("the session socket refused a dial during the wedged child's stop grace: %v", err)
