@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -439,6 +440,80 @@ func dropSettledSnapshot(t *testing.T, store *Store, key string) {
 	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
 		t.Fatalf("write the record without its settled snapshot: %v", err)
 	}
+}
+
+// A settlement that reached the stream though its publication answered an error is the last one
+// consumers hold, and the record cannot tell it from one that never landed, so releasing the
+// claim forgets the record's settled snapshot (ReleaseClaim). Here the head settles on the
+// pull_request run's failing ci-ok, then on the dispatched run's passing ci-ok, whose publication
+// lands and answers an error. When the dispatched run's event arrives, the record is back at the
+// first settlement, and the correction, naming the dispatched run excluded, goes out all the same,
+// so a consumer holding the dispatched run's green turns red.
+func TestASettlementThatLandedWithAnErrorIsCorrected(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	store := openStore(t, conn)
+	handler := webhook.GitHubHandler(countedSecret, "@legion", "", unpublished{t}, store)
+	number := strconv.Itoa(countedNumber)
+	pub := &landedPub{}
+	settle := func() {
+		t.Helper()
+		setLastEventAt(t, store, countedOwner, countedRepo, number, countedSHA, 0)
+		runSummaryTick(store, pub, time.Second, logging.New("test"))
+	}
+	countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, pullRunSuite, "pull_request"))
+	countedPost(t, handler, "check_run", checkRunBody(countedNumber, pullRunCheck, pullRunSuite, countedCheckRun, "completed", "failure", "2026-11-21T04:30:00Z"))
+	countedPost(t, handler, "check_suite", checkSuiteBody(countedNumber, pullRunSuite, "completed", "failure", "2026-11-21T04:30:01Z"))
+	waitCacheChecks(t, store, countedOwner, countedRepo, number, countedSHA, 1)
+	settle()
+
+	countedPost(t, handler, "check_run", checkRunBody(countedNumber, dispatchCheck, dispatchSuite, countedCheckRun, "completed", "success", "2026-11-21T04:40:00Z"))
+	pub.failNext()
+	settle()
+	if got := pub.count(); got != 2 {
+		t.Fatalf("settlements landed = %d once the dispatched run's success settled, want 2", got)
+	}
+
+	countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, dispatchSuite, "workflow_dispatch"))
+	settle()
+	if got := pub.count(); got != 3 {
+		t.Fatalf("settlements landed = %d after the dispatched run's event, want 3: %+v", got, getState(t, store, countedOwner, countedRepo, number, countedSHA))
+	}
+	var last Summary
+	if err := json.Unmarshal([]byte(pub.last().Payload), &last); err != nil {
+		t.Fatalf("decode the last settlement: %v", err)
+	}
+	if !slices.Contains(last.Failed.Checks, countedCheckRun) ||
+		!slices.Equal(last.ExcludedCheckRuns, []CheckRunRef{{Name: countedCheckRun, ID: dispatchCheck}}) {
+		t.Errorf("the last settlement fails %v and excludes %+v, want %s failing and check run %d excluded",
+			last.Failed.Checks, last.ExcludedCheckRuns, countedCheckRun, uint64(dispatchCheck))
+	}
+}
+
+// landedPub keeps every settlement it is given, and answers an error for the one after failNext,
+// as a publication the stream stored and whose answer was lost does.
+type landedPub struct {
+	recPub
+	fail bool
+}
+
+func (p *landedPub) Publish(e contracts.Envelope) error {
+	if err := p.recPub.Publish(e); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.fail {
+		p.fail = false
+		return errors.New("nats: timeout: the stream may have stored the message")
+	}
+	return nil
+}
+
+func (p *landedPub) failNext() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fail = true
 }
 
 // The store counts a GitHub Actions run only when an event GitHub documents as evaluated for a pull

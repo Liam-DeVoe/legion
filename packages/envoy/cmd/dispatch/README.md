@@ -474,6 +474,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A check run of any other App counts.
   A run that does not count, whose jobs can carry the pull request run's check names, is not in the head's checks, replaces no check of the head, and its suite and its runs take no part in the settlement.
   A run the store had counted before it learned its event leaves the record, and every later settlement of the head names it in `excluded_check_runs`, so the daemon drops it and takes the lower id that stands in its place (`packages/contracts/README.md`).
+  A settled head that a suite held only until its event showed GitHub does not count it is not settled again: the write that takes that suite out, back at what the head's last published settlement said (`State.SettledSnapshot`: its snapshot, check links and excluded runs), leaves the head settled and publishes nothing.
+
+- The CI store learns a suite's event from two places.
   The query asks each suite for `workflowRun { event }`, which costs it no point, and the listener learns the event from each `workflow_run` webhook that lists the pull request; a pass that reads a head's events corrects a record written before the store read them.
   A head the query answers with too many check runs in a suite, or too many suites, is read over REST, but the events of the suites the query did answer are recorded first, so the store judges that head's runs by them.
   The event of a suite that is not completed is recorded on its own, with nothing else of the suite (`cistore.Writer.RecordRunEvent`), and a run that is not completed is written only when its suite's event is one the store does not count, which can only take that run out of the record.
@@ -483,13 +486,15 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   at INFO, `ci reconcile counts check suites of a head read over REST whose workflow run event the CI record does not hold`, for a head read over REST, which is no fault.
   A suite whose event the record holds is named in neither.
   An `errors` entry against a suite's `workflowRun` field, or a field under it, costs that suite its event alone and refuses nothing else of the head.
-  Deploy every Legion daemon first, then the listener, then Dispatch.
+
+- Deploy every Legion daemon first, then the listener, then Dispatch.
   A daemon of an earlier release ignores `excluded_check_runs`, so a correction it receives keeps the excluded run's verdict, and nothing publishes that correction again once its head has settled: a later pass of Dispatch over the corrected record changes nothing.
   So no listener may name an excluded run while a daemon of an earlier release reads its settlements; a daemon of this release reads a settlement with no such field by the rule it always had.
   Before the listener's pins move to a release that names excluded runs, `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>`, with the main commit that brought `excluded_check_runs` to the daemon's intake, prints `GATE OPEN`: every Legion daemon the deployment pins runs a build at or after that commit.
   Dispatch goes after the listener because its writer applies the counting rule to records too, and a listener of an earlier release would publish such a correction without the field.
   Deploy Dispatch right after the listener: until then a Dispatch writer of the earlier release drops the suite events, the waiting, excluded and superseded runs and each check's suite from each record it writes, so a name can lose the run waiting to stand for it, and the first pass of a Dispatch of this release, which writes every head again, puts them back.
-  Roll back in the reverse order: Dispatch, then the listener, then a daemon. An earlier listener drops the events, the excluded runs and the suite of each check from each record it writes, and keeps the newest check run of each name whatever started its run.
+  Roll back in the reverse order: Dispatch, then the listener, then a daemon.
+  An earlier listener drops the events, the excluded runs and the suite of each check from each record it writes, and keeps the newest check run of each name whatever started its run.
 
 - The pass reads the commit statuses of a repository's heads only where the App's token for that repository holds Commit statuses, at read or write (`githubapp.Client.RepositoryTokenWithStatuses`).
   It reads that from the `permissions` GitHub answers with the token itself (`POST /app/installations/{id}/access_tokens`), not from the installation: the client keeps a token until 5 minutes before it expires, so a token minted before a person approved Commit statuses does not hold it while the installation already does.

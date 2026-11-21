@@ -197,6 +197,72 @@ func TestAWaitingRunThatMayStillStandNeverGivesWayAtTheRecordsBound(t *testing.T
 	}
 }
 
+// The runs a re-run replaced while its suite's event was not known (State.Superseded) give way at
+// the record's bound, all but the newest of each name, so a head whose events never arrive does not
+// overflow on them. In the record below each name stands on a run of suite 900, whose event is not
+// known, and keeps two earlier runs of that suite, as large as the bound allows. A check of another
+// App takes it past the bound with both and not with the newer alone. The write lands with the new
+// check, the record is not overflowed, and each name keeps its newer superseded run.
+func TestSupersededRunsGiveWayAtTheRecordsBoundButTheNewestOfEachName(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	store := openStore(t, conn)
+	h := head{"example-org", "example-repo", "63", "3a171e00000000000000000000000000000000fd"}
+	run := func(i int, id uint64) Check {
+		return Check{
+			Name: fmt.Sprintf("dispatch-browser / binaries %04d", i), CheckRunID: checkRunID(id),
+			URL:    fmt.Sprintf("https://github.com/example-org/example-repo/actions/runs/44860489318/job/%d", id),
+			Status: "completed", Conclusion: "success", ObservedAt: "2026-11-21T03:21:34Z",
+			SuiteID: "900", AppID: contracts.GithubActionsAppID,
+		}
+	}
+	st := State{Owner: h.owner, Repo: h.repo, Number: h.number, SHA: h.sha, Checks: map[string]Check{}, Superseded: map[string]Check{}}
+	for i := 0; ; i++ {
+		standing, older, newer := run(i, 136713000000+uint64(i)), run(i, 136711000000+uint64(i)), run(i, 136712000000+uint64(i))
+		st.Checks[standing.Name] = standing
+		st.Superseded[waitingKey(older.CheckRunID)] = older
+		st.Superseded[waitingKey(newer.CheckRunID)] = newer
+		if recordSize(t, st) > maxRecordBytes {
+			delete(st.Checks, standing.Name)
+			delete(st.Superseded, waitingKey(older.CheckRunID))
+			delete(st.Superseded, waitingKey(newer.CheckRunID))
+			break
+		}
+	}
+	names := len(st.Checks)
+	st.Schema = recordSchema
+	st.LastEventAt = time.Now().UnixMilli()
+	seedRecord(t, store, h, st)
+
+	added := pastTheBound(h)
+	with := plusCheck(st, added)
+	trimmed := plusCheck(st, added)
+	trimmed.Superseded = cloneChecks(st.Superseded)
+	if dropped := trimmed.trimSuperseded(); dropped != names {
+		t.Fatalf("trimming the superseded runs drops %d, want the older of each of the %d names", dropped, names)
+	}
+	if recordSize(t, with) <= maxRecordBytes || recordSize(t, trimmed) > maxRecordBytes {
+		t.Fatalf("the record with the added check is %d bytes with its %d superseded runs and %d with the newer of each name, want past the %d-byte bound only with all of them",
+			recordSize(t, with), len(with.Superseded), recordSize(t, trimmed), maxRecordBytes)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := store.Record(ctx, added); err != nil {
+		t.Fatalf("record a check past the bound its older superseded runs alone take the record past: %v", err)
+	}
+	got := getState(t, store, h.owner, h.repo, h.number, h.sha)
+	if got.Overflowed || len(got.Superseded) != names || len(got.Checks) != names+1 {
+		t.Fatalf("after the write the record is overflowed %v with %d superseded runs and %d checks, want not overflowed, %d superseded runs and %d checks",
+			got.Overflowed, len(got.Superseded), len(got.Checks), names, names+1)
+	}
+	for _, check := range got.Superseded {
+		if check.CheckRunID < 136712000000 {
+			t.Fatalf("the record kept the superseded run %+v, want the newer of its name", check)
+		}
+	}
+}
+
 // cloneChecks is a copy of checks.
 func cloneChecks(checks map[string]Check) map[string]Check {
 	out := make(map[string]Check, len(checks)+1)

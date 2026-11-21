@@ -214,8 +214,9 @@ type State struct {
 	// run replaced while the event of its own suite was not known (applyCheckRun). A settlement may
 	// have named it, and a consumer that missed the settlements after that one still holds it as
 	// its name's newest run, so it joins Excluded if its suite turns out uncounted, and is dropped
-	// once its suite turns out counted (learnRunEvent, resolveSuperseded). Nothing but the record's
-	// own writes reads it. It is left out of a record that holds none.
+	// once its suite turns out counted (learnRunEvent, resolveSuperseded). At the record's bound all
+	// but the newest of each name give way (trimSuperseded). Nothing but the record's own writes
+	// reads it. It is left out of a record that holds none.
 	Superseded map[string]Check `json:"superseded_checks,omitempty"`
 	// Statuses holds the newest terminal commit status of each context, keyed by context
 	// (recordStatus), and is left out of a record that holds none.
@@ -225,12 +226,14 @@ type State struct {
 	EmittedCount   uint64            `json:"emitted_count"`
 	SettledEmitted bool              `json:"settled_emitted"`
 	Claim          *SettlementClaim  `json:"claim,omitempty"`
-	// SettledSnapshot is the snapshot (Hash) of the last settlement published for this record
-	// (MarkSettled). A write that brings the record back to that snapshot, with no claim in
-	// flight, leaves the head settled (resettle): consumers hold that snapshot already, so a
-	// suite that held the head only until its event showed GitHub does not count it publishes
-	// nothing. A record with none, which a listener of a release before the field wrote, settles
-	// again as it always did; such a listener drops the field at its next write of the record.
+	// SettledSnapshot is the view (settledView) of the last settlement published for this record,
+	// kept by MarkSettled only where the record is still what it published, and forgotten where a
+	// claim is released or reclaimed (ReleaseClaim, ReclaimSettlement), since that publication may
+	// have landed. A write in which a suite leaves because GitHub does not count it, and which brings
+	// the record back to that view with no claim in flight, leaves the head settled (learnEvent,
+	// resettle): consumers hold that settlement already. A record with none, which a listener of a
+	// release before the field wrote, settles again as it always did; such a listener drops the
+	// field at its next write of the record.
 	SettledSnapshot string `json:"settled_snapshot,omitempty"`
 	// Overflowed says the listener never settles this head again, because the head is past what it
 	// can publish: a check run or check suite was refused because it would take the record past
@@ -367,6 +370,34 @@ func (s State) Hash() string {
 	}
 	for _, name := range statusContexts(s.Statuses) {
 		h.Write([]byte("status\x00" + name + "\x00" + s.Statuses[name].State + "\x01"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// settledView is what a settlement of s says that a consumer keeps: the snapshot (Hash), each
+// check's link, which a failing check's entry carries, and the runs the record excluded
+// (Summary.ExcludedCheckRuns). Two records of one view publish the same settlement but for its
+// generation and the statuses' times, links and descriptions, which a newer status of the same
+// state changes with no settlement (recordStatus). State.SettledSnapshot keeps the view of the
+// last settlement published.
+func settledView(s State) string {
+	h := sha256.New()
+	h.Write([]byte(s.Hash() + "\x02"))
+	names := make([]string, 0, len(s.Checks))
+	for name := range s.Checks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		h.Write([]byte("link\x00" + name + "\x00" + s.Checks[name].URL + "\x01"))
+	}
+	excluded := make([]string, 0, len(s.Excluded))
+	for id := range s.Excluded {
+		excluded = append(excluded, id)
+	}
+	sort.Strings(excluded)
+	for _, id := range excluded {
+		h.Write([]byte("excluded\x00" + id + "\x00" + s.Excluded[id] + "\x01"))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -869,10 +900,12 @@ func (s *Store) Record(ctx context.Context, observation contracts.CIObservation)
 func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (Recorded, error) {
 	var eventUnknown bool
 	changed, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+		learned, _ := st.learnEvent(observation.SuiteID, observation.RunEvent)
 		changed, moved := st.applyCheckRun(observation)
 		if moved {
 			touch(st)
 		}
+		changed = changed || learned
 		eventUnknown = st.standingOf(observation.AppID, observation.SuiteID) == unknown
 		return changed
 	})
@@ -893,15 +926,12 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 // and how record reads it. It keeps the observation's run count only for a suite that is not
 // completed (Suite.RunCount), so a completed suite is written as it was before the count, and an
 // observation that repeats the stored suite, its count included, changes nothing. The event of
-// the suite's workflow run, when the observation carries it, is recorded first (learnRunEvent),
+// the suite's workflow run, when the observation carries it, is recorded first (learnEvent),
 // and a suite GitHub does not count for the pull request is not recorded at all.
 func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (Recorded, error) {
 	var eventUnknown bool
 	changed, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
-		changed, moved := st.learnRunEvent(observation.SuiteID, observation.RunEvent)
-		if moved {
-			touch(st)
-		}
+		changed, _ := st.learnEvent(observation.SuiteID, observation.RunEvent)
 		standing := st.standingOf(observation.AppID, observation.SuiteID)
 		eventUnknown = standing == unknown
 		if standing == uncounted {
@@ -944,7 +974,7 @@ func (s *Store) RecordRunEvent(ctx context.Context, observation contracts.CIObse
 	return err
 }
 
-// recordRunEvent records one suite's event (learnRunEvent) and reports whether that changed the
+// recordRunEvent records one suite's event (learnEvent) and reports whether that changed the
 // head's record. An event that takes a suite and its check runs out of the record re-arms the head
 // (touch); one that takes nothing out does not, and leaves the quiet period as it was, except on a
 // record it is the first write of, whose last event is then the event's own arrival, so the
@@ -956,11 +986,8 @@ func (s *Store) recordRunEvent(ctx context.Context, observation contracts.CIObse
 			observation.RunEvent, observation.SuiteID)
 	}
 	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
-		changed, moved := st.learnRunEvent(observation.SuiteID, observation.RunEvent)
-		switch {
-		case moved:
-			touch(st)
-		case changed && st.LastEventAt == 0:
+		changed, left := st.learnEvent(observation.SuiteID, observation.RunEvent)
+		if changed && !left && st.LastEventAt == 0 {
 			st.LastEventAt = time.Now().UnixMilli()
 		}
 		return changed
@@ -1035,6 +1062,21 @@ func rearm(st *State) {
 func touch(st *State) {
 	rearm(st)
 	st.LastEventAt = time.Now().UnixMilli()
+}
+
+// learnEvent records the event of a suite's workflow run (learnRunEvent) and reports whether that
+// changed st and whether an uncounted suite left it. A suite that leaves re-arms the head (touch),
+// and where that brings the record back to its last published settlement the head stays settled
+// (resettle): the suite held the head only until its event showed GitHub does not count it. This
+// is the one write that settles a head again with no publication; every other change of the
+// head's checks re-arms it as before.
+func (st *State) learnEvent(suiteID, event string) (changed, left bool) {
+	changed, left = st.learnRunEvent(suiteID, event)
+	if left {
+		touch(st)
+		resettle(st)
+	}
+	return changed, left
 }
 
 // bumpGeneration advances the delivery identity after a mutation invalidates a
@@ -1184,7 +1226,8 @@ func (s *Store) ClaimStillHeld(key string, generation uint64, hash string) (bool
 		state.Hash() == hash, nil
 }
 
-// ReclaimSettlement releases a claim from a replica that died before publish.
+// ReclaimSettlement releases a claim from a replica that died before or after publish, and
+// forgets the record's settled snapshot as ReleaseClaim does.
 // The caller determines the stale threshold from its configured debounce.
 func (s *Store) ReclaimSettlement(key string, generation uint64, staleBefore int64) (bool, error) {
 	_, reclaimed, err := s.casState(key, func(state *State) (bool, error) {
@@ -1194,19 +1237,25 @@ func (s *Store) ReclaimSettlement(key string, generation uint64, staleBefore int
 			return false, nil
 		}
 		state.Claim = nil
+		state.SettledSnapshot = ""
 		bumpGeneration(state)
 		return true, nil
 	})
 	return reclaimed, err
 }
 
-// ReleaseClaim clears this generation's claim after a failed publication.
+// ReleaseClaim clears this generation's claim after a failed publication. A publication that
+// answered an error may still have reached the stream, as one a replica claimed and never marked
+// may have (ReclaimSettlement), so the record no longer knows its last published settlement and
+// forgets its settled snapshot (State.SettledSnapshot): the head then settles again at its next
+// re-arm, as every head did before the record kept one.
 func (s *Store) ReleaseClaim(key string, generation uint64) (bool, error) {
 	_, released, err := s.casState(key, func(state *State) (bool, error) {
 		if state.Claim == nil || state.Claim.Generation != generation {
 			return false, nil
 		}
 		state.Claim = nil
+		state.SettledSnapshot = ""
 		bumpGeneration(state)
 		return true, nil
 	})
@@ -1216,31 +1265,33 @@ func (s *Store) ReleaseClaim(key string, generation uint64) (bool, error) {
 // MarkSettled records a successfully published claim without changing its
 // generation. A re-arm that happened after publication keeps its newer snapshot
 // unsettled, but it must not erase the fact that the obsolete snapshot emitted.
-// The claim's snapshot is the one published, so it is the record's settled
-// snapshot from now on (State.SettledSnapshot), and a record already back at it
-// is settled (resettle).
+// Where the record is still the snapshot it published, at the claim's
+// generation, what it holds is what the settlement said, so it keeps that as its
+// settled snapshot (State.SettledSnapshot, settledView); where it moved since,
+// it keeps none, and the head settles again at its next re-arm.
 func (s *Store) MarkSettled(key string, generation uint64) (bool, error) {
 	_, marked, err := s.casState(key, func(state *State) (bool, error) {
 		if state.Claim == nil || state.Claim.Generation != generation {
 			return false, nil
 		}
 		state.EmittedCount++
+		state.SettledSnapshot = ""
 		if state.Generation == generation && state.Claim.Hash == state.Hash() {
 			state.SettledEmitted = true
+			state.SettledSnapshot = settledView(*state)
 		}
-		state.SettledSnapshot = state.Claim.Hash
 		state.Claim = nil
-		resettle(state)
 		return true, nil
 	})
 	return marked, err
 }
 
-// resettle settles st again, with no publication, where st is back at the snapshot of its last
-// published settlement (State.SettledSnapshot) and no claim is in flight: every consumer holds
-// that snapshot already. A record that holds no settled snapshot is left as it is.
+// resettle settles st again, with no publication, where st is back at its last published
+// settlement (State.SettledSnapshot, settledView) and no claim is in flight: every consumer holds
+// that settlement already. A record that holds no settled snapshot is left as it is. learnEvent
+// calls it, for a write in which a suite left because GitHub does not count it.
 func resettle(st *State) {
-	if st.SettledEmitted || st.Claim != nil || st.SettledSnapshot == "" || st.Hash() != st.SettledSnapshot {
+	if st.SettledEmitted || st.Claim != nil || st.SettledSnapshot == "" || settledView(*st) != st.SettledSnapshot {
 		return
 	}
 	st.SettledEmitted = true

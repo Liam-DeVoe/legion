@@ -25,8 +25,10 @@ body: |-
   written before is corrected at the next pass that reads its head's events. A re-run of a counted
   run still replaces its check. A settled head that a check suite held only until its event showed
   GitHub does not count it, its webhook before its run's `workflow_run`, is not settled again: the
-  record keeps the snapshot it last published (`settled_snapshot`), and a write that brings it back
-  to that snapshot publishes nothing. Deploy every daemon first, then the listener, then Dispatch right
+  record keeps what its last published settlement said (`settled_snapshot`), and the write that
+  takes that suite out and brings the record back to it publishes nothing. A release or a reclaim
+  of a claim forgets it, since that publication may have landed. Deploy every daemon first, then
+  the listener, then Dispatch right
   after it: a daemon of the earlier release ignores `excluded_check_runs`, and a correction it
   ignored is not published again once its head has settled, so the listener's pins move only once
   `scripts/daemon-release-gate.sh` prints `GATE OPEN` for the commit that brought the field to the

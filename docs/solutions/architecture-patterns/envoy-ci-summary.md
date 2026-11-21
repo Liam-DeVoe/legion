@@ -16,9 +16,11 @@ every write of the record stamps.
 
 1. `Record` and `RecordSuite` CAS-update the aggregate. A new record starts at
    generation 0; every later aggregate-hash change and every re-arm advances the
-   state version, then clears `SettledEmitted`. A write that brings the record back to
-   its `settled_snapshot`, with no claim in flight, sets `SettledEmitted` again and
-   publishes nothing: every consumer holds that snapshot already.
+   state version, then clears `SettledEmitted`. A write in which a suite leaves because
+   GitHub does not count its workflow run, and which brings the record back to the snapshot,
+   check links and excluded runs of its last published settlement (`settled_snapshot`), with
+   no claim in flight, sets `SettledEmitted` again and publishes nothing; every other change
+   re-arms as before.
 2. The reconcile loop runs a pass only on a tick at which a record changed or fell due. It takes
    the records its rebuildable cache marked changed and the queued records whose deadline passed,
    and selects those `due` to settle: unsettled, terminal, quiet for the debounce and, when it has
@@ -29,11 +31,13 @@ every write of the record stamps.
    publishes nothing.
 4. The claimant renders that durable snapshot and publishes with
    `github.checks.<owner>/<repo>.pr.<number>.<sha>.g<generation>`.
-5. `MarkSettled` records the emission in `EmittedCount`, keeps the claim's hash as
-   `settled_snapshot` and clears its claim. A record without `settled_snapshot`, which a
-   listener of an earlier release wrote, settles again at every re-arm, as before. A
-   publish failure calls `ReleaseClaim`, which advances the state version; a
-   generation or hash change makes cleanup refuse an obsolete claim.
+5. `MarkSettled` records the emission in `EmittedCount` and clears its claim. Where the
+   record is still what it published, it keeps that settlement's view as `settled_snapshot`;
+   otherwise it keeps none. A record without `settled_snapshot`, which a listener of an
+   earlier release wrote, settles again at every re-arm, as before. A
+   publish failure calls `ReleaseClaim`, which advances the state version and forgets
+   `settled_snapshot`, since the publication may have landed; `ReclaimSettlement` forgets it
+   too. A generation or hash change makes cleanup refuse an obsolete claim.
 
 All local cache write-through and watcher updates carry a KV revision and only
 apply at or above the cached revision. This prevents an older claim/mark write

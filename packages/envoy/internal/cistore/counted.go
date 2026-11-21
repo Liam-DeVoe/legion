@@ -77,9 +77,10 @@ func (st *State) standingOf(appID, suiteID string) standing {
 }
 
 // learnRunEvent records event, the event that started the workflow run of the check suite
-// suiteID, and applies what it says. changed reports whether st changed, and moved whether its
-// checks or suites did, which re-arms the head (touch). An event the record already holds for the
-// suite changes nothing: GitHub never changes the event of a run.
+// suiteID, and applies what it says. changed reports whether st changed, and left whether an
+// uncounted suite left its checks or suites, which re-arms the head (touch) and may bring it back to
+// its last published settlement (resettle). An event the record already holds for the suite
+// changes nothing: GitHub never changes the event of a run.
 //
 // A counted suite's check runs that stand for a name now stand for good, so nothing waiting for
 // those names can take their place and the record drops what waits for them, and what it keeps of
@@ -90,7 +91,7 @@ func (st *State) standingOf(appID, suiteID string) standing {
 // missed the settlements after it still holds it as its name's newest run. That is how a record
 // that counted the suite before it knew the event, a record written before the store read events
 // among them, is corrected.
-func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
+func (st *State) learnRunEvent(suiteID, event string) (changed, left bool) {
 	if suiteID == "" || event == "" {
 		return false, false
 	}
@@ -127,20 +128,20 @@ func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
 	}
 	if _, held := st.Suites[suiteID]; held {
 		delete(st.Suites, suiteID)
-		moved = true
+		left = true
 	}
 	for name, check := range st.Checks {
 		if check.SuiteID == suiteID {
 			st.standInstead(name)
-			moved = true
+			left = true
 		}
 	}
-	return true, moved
+	return true, left
 }
 
-// applyCheckRun folds one check run's observation into st: first the event of its suite's workflow
-// run, when the observation carries it (learnRunEvent), and then the run itself. changed reports
-// whether st changed, and moved whether the head's checks did, which re-arms the head (touch).
+// applyCheckRun folds one check run's observation into st, the event of its suite's workflow run
+// already applied (Store.record calls learnRunEvent first). changed reports whether st changed, and
+// moved whether the head's checks did, which re-arms the head (touch).
 //
 // A counted or unknown run stands for its name as before: the newest check-run id, and for one id
 // the newest observation (observationMayReplace). An uncounted run stands for nothing and changes
@@ -156,7 +157,6 @@ func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
 // not the head's checks (sameView), so a head settled before the record kept them is not settled
 // again for them.
 func (st *State) applyCheckRun(observation contracts.CIObservation) (changed, moved bool) {
-	changed, moved = st.learnRunEvent(observation.SuiteID, observation.RunEvent)
 	if st.Checks == nil {
 		st.Checks = map[string]Check{}
 	}
@@ -316,6 +316,28 @@ func (st *State) trimWaiting() int {
 	for id, check := range st.Waiting {
 		if check.CheckRunID < floor[check.Name] {
 			delete(st.Waiting, id)
+			dropped++
+		}
+	}
+	return dropped
+}
+
+// trimSuperseded drops, of the runs a newer run replaced while their suite's event was not known
+// (State.Superseded), all but the newest of each name, and reports how many it dropped. The newest
+// is the one a consumer that missed only the last settlement before the replacement holds, so it
+// is the one the correction most needs to name. It is what a record past its bound gives way after
+// the waiting runs that can no longer stand (Store.atBounds).
+func (st *State) trimSuperseded() int {
+	newest := map[string]checkRunID{}
+	for _, check := range st.Superseded {
+		if check.CheckRunID > newest[check.Name] {
+			newest[check.Name] = check.CheckRunID
+		}
+	}
+	dropped := 0
+	for id, check := range st.Superseded {
+		if check.CheckRunID != newest[check.Name] {
+			delete(st.Superseded, id)
 			dropped++
 		}
 	}
