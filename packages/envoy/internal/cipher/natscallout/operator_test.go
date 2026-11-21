@@ -170,8 +170,8 @@ var (
 
 // operatorRig is the clustered hub each phase's grant is exercised on: three members of
 // testnats.StartClusterWithCallout, one auth service replica deciding with Decide and keeping its
-// decisions, the operator's hold signing key and a HoldRead the test sets, and an admin static
-// user that makes the streams the deployment's programs make.
+// decisions, the operator's hold signing key and a hold view whose read the test sets, and an
+// admin static user that makes the streams the deployment's programs make.
 type operatorRig struct {
 	cluster   *testnats.Cluster
 	keys      testnats.CalloutKeys
@@ -186,8 +186,8 @@ type operatorRig struct {
 	listens atomic.Int64
 }
 
-// newOperatorRig starts the rig with a hold signing key of its own. read is the replica's
-// HoldRead; nil is the rig's own stub, whose row setPhase writes. sessions are the sessions the
+// newOperatorRig starts the rig with a hold signing key of its own. read is the replica's hold
+// view's read; nil is the rig's own stub, whose row setPhase writes. sessions are the sessions the
 // broker's introspection answers live.
 func newOperatorRig(t *testing.T, read func(context.Context) (natshold.Reading, bool, error), sessions ...*session) *operatorRig {
 	t.Helper()
@@ -1343,11 +1343,11 @@ func requireAsBefore(t *testing.T, deps Deps, services []config.NATSService, row
 	}
 }
 
-// With BROKER_NATS_HOLD_READ false the broker passes no HoldRead, and the hold rule is inert: every
-// decision of t-e-3's decision tests is answered as before, with the operator and the probe listed
-// beside them and the operator's signing keys given, and the operator is answered with released's
-// grant. (The broker's refusal to start with the setting on and no operator entry is its command's
-// test.)
+// With BROKER_NATS_HOLD_READ false the broker builds no hold view (Deps.Hold nil), and the hold
+// rule is inert: every decision of t-e-3's decision tests is answered as before, with the operator
+// and the probe listed beside them and the operator's signing keys given to a view with no read,
+// and the operator is answered with released's grant. (The broker's refusal to start with the
+// setting on and no operator entry is its command's test.)
 //
 // Run by hand, the control is the rule active without its setting, a broker that reads no row as
 // unknown: a listener is refused hold_unknown, and the test fails naming it.
@@ -1355,7 +1355,7 @@ func TestTheHoldRuleIsInertWithoutItsSetting(t *testing.T) {
 	now := time.Now()
 	a := newSession(t, "ses_a", 15*time.Minute)
 	deps := tE3Deps(now, a)
-	deps.HoldKeys = newHoldSigner(t).HoldKeys
+	deps.Hold = NewHoldView(nil, newHoldSigner(t).HoldKeys, nil)
 	deps.Now = func() time.Time { return now }
 	requireAsBefore(t, deps, holdServices, tE3Rows(t, now, a))
 	operator, err := Decide(t.Context(), Deps{ServiceToken: serviceTokens(map[string]platformToken{
@@ -1366,7 +1366,7 @@ func TestTheHoldRuleIsInertWithoutItsSetting(t *testing.T) {
 }
 
 // With no operator entry nothing changes: every decision of t-e-3's decision tests is answered as
-// before, with HoldRead nil, which reads nothing, and with a HoldRead answering held, which no
+// before, with no hold view, which reads nothing, and with a view whose row reads held, which no
 // listed entry's grant follows.
 //
 // Run by hand, the control is a decision path that decides a listed daemon entry as the operator:
@@ -1380,7 +1380,7 @@ func TestWithNoOperatorEntryNothingChanges(t *testing.T) {
 	stub := &holdStub{}
 	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")))
 	held := tE3Deps(now, a)
-	held.HoldRead, held.HoldKeys = stub.read, signer.HoldKeys
+	held.Hold = NewHoldView(stub.read, signer.HoldKeys, nil)
 	requireAsBefore(t, held, exampleServices, rows)
 }
 
@@ -1569,8 +1569,9 @@ func newOperatorRigSigned(t *testing.T, read func(context.Context) (natshold.Rea
 	if read == nil {
 		read = r.hold.read
 	}
-	deps := Deps{Introspect: introspector(sessions...), ServiceToken: readUnsignedToken, HoldRead: read, HoldKeys: signer.HoldKeys,
-		Metrics: NewMetrics(r.registry)}
+	metrics := NewMetrics(r.registry)
+	deps := Deps{Introspect: introspector(sessions...), ServiceToken: readUnsignedToken, Metrics: metrics,
+		Hold: NewHoldView(read, signer.HoldKeys, metrics)}
 	r.service = startReplica(t, r.cluster.URLs(), keys, holdServices, deps, r.decisions.wrap(Decide))
 	return r
 }

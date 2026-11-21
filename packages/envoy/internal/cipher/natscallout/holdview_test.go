@@ -49,7 +49,7 @@ func (s holdSigner) reading(t testing.TB, gen uint64, phase natsgrant.OperatorPh
 	return natshold.Reading{Gen: gen, Phase: string(phase), HoldID: holdID, SignedAt: signedAt, Sig: sig}
 }
 
-// holdAnswer is one answer a stub HoldRead gives: the row and whether one was found, or an error.
+// holdAnswer is one answer a stub hold read gives: the row and whether one was found, or an error.
 type holdAnswer struct {
 	reading natshold.Reading
 	found   bool
@@ -59,8 +59,8 @@ type holdAnswer struct {
 // rowOf is the answer that finds reading.
 func rowOf(reading natshold.Reading) holdAnswer { return holdAnswer{reading: reading, found: true} }
 
-// holdStub is a HoldRead whose answer the test sets, counting each call. It is safe to read from
-// the auth service's decisions while the test sets the next answer.
+// holdStub is a hold view's read whose answer the test sets, counting each call. It is safe to
+// read from the auth service's decisions while the test sets the next answer.
 type holdStub struct {
 	mu     sync.Mutex
 	answer holdAnswer
@@ -101,7 +101,7 @@ func holdUnknownGauge(t *testing.T, registry *metrics.Registry) string {
 // and whatever it read before: no row; a phase outside the three; a Postgres error; a timeout,
 // after a reading of each phase; a row no listed key signed, or none; and a verified gen below the
 // highest this view has read. It reads the row at every State, and envoy_broker_hold_unknown is 1
-// exactly while its last reading was unknown. A view with no HoldRead, the setting off, answers
+// exactly while its last reading was unknown. A view over no read, the setting off, answers
 // released, known, and reads nothing.
 //
 // It fails when the view reads a missing row as released (the "no row" row), or keeps a reading
@@ -143,7 +143,7 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			registry := metrics.New()
 			stub := &holdStub{}
-			view := newHoldView(Deps{HoldRead: stub.read, HoldKeys: signer.HoldKeys, Metrics: NewMetrics(registry)})
+			view := NewHoldView(stub.read, signer.HoldKeys, NewMetrics(registry))
 			for index, step := range row.steps {
 				stub.set(step.answer)
 				phase, known := view.State(t.Context())
@@ -158,14 +158,44 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 			require.Equal(t, len(row.steps), stub.called(), "the view did not read the row at every State")
 		})
 	}
-	t.Run("no HoldRead: the setting off", func(t *testing.T) {
+	t.Run("no read: the setting off", func(t *testing.T) {
 		registry := metrics.New()
-		view := newHoldView(Deps{HoldKeys: signer.HoldKeys, Metrics: NewMetrics(registry)})
+		view := NewHoldView(nil, signer.HoldKeys, NewMetrics(registry))
+		require.Nil(t, view, "a view over no read is the setting off, which is no view")
 		phase, known := view.State(t.Context())
 		require.True(t, known)
 		require.Equal(t, natsgrant.OperatorPhaseReleased, phase)
 		require.Equal(t, "0", holdUnknownGauge(t, registry))
 	})
+}
+
+// Every decision made through one Deps reads one HoldView, so they share its floor: a listener
+// admitted under the operator's signed held at gen 3 is refused hold_unknown, as a replay, once a
+// database writer puts the operator's older signed released at gen 2 back, though the two Decide
+// calls share nothing but deps. A caller that started no replica (Start) reads the same floor as
+// one that did.
+//
+// Run by hand, the control is a Decide that makes a view of its own for each decision, as Deps
+// did while it held the read and the keys and Start made the replica's view: the second decision
+// admits the listener over the put-back row, and the test fails naming it.
+func TestDecisionsThroughOneDepsShareTheHoldFloor(t *testing.T) {
+	signer := newHoldSigner(t)
+	stub := &holdStub{}
+	now := time.Now()
+	deps := Deps{
+		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
+		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil),
+	}
+	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")))
+	_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
+	require.NoError(t, err, "the listener was refused under the operator's signed held")
+	stub.set(rowOf(signer.reading(t, 2, natsgrant.OperatorPhaseReleased, "hold-1")))
+	decision, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
+	var refused *Refusal
+	require.True(t, errors.As(err, &refused), "the listener %s was admitted over the operator's older row put back: %+v", listenerAccount, decision)
+	require.Equal(t, labelHoldUnknown, refused.Label)
+	require.ErrorIs(t, refused.Cause, signedrecord.ErrReplay)
+	require.Equal(t, 2, stub.called())
 }
 
 // openPool is a pool on dsn, closed when the test ends.
@@ -260,20 +290,18 @@ func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
 	table := holdTable{pool: pool, signer: newHoldSigner(t)}
 	now := time.Now()
 	registry := metrics.New()
-	deps := Deps{
+	read := func(ctx context.Context) (natshold.Reading, bool, error) { return natshold.Read(ctx, pool, schema) }
+	running := Deps{
 		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
-		HoldRead:     func(ctx context.Context) (natshold.Reading, bool, error) { return natshold.Read(ctx, pool, schema) },
-		HoldKeys:     table.signer.HoldKeys, Metrics: NewMetrics(registry),
+		Hold:         NewHoldView(read, table.signer.HoldKeys, NewMetrics(registry)),
 	}
-	running := deps
-	running.hold = newHoldView(running)
 	listener := func(deps Deps) error {
 		_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
 		return err
 	}
 	requireUnknown := func(what string, cause error) {
 		t.Helper()
-		phase, known := running.hold.State(t.Context())
+		phase, known := running.Hold.State(t.Context())
 		require.False(t, known, "%s read as %s", what, phase)
 		err := listener(running)
 		var refused *Refusal
@@ -284,7 +312,7 @@ func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
 
 	released := table.write(t, 2, natsgrant.OperatorPhaseReleased, "hold-1")
 	held := table.write(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")
-	phase, known := running.hold.State(t.Context())
+	phase, known := running.Hold.State(t.Context())
 	require.True(t, known)
 	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
 	require.NoError(t, listener(running), "a listener was refused under the operator's signed held")
@@ -299,15 +327,15 @@ func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
 	requireUnknown("the operator's older released at gen 2, written back", signedrecord.ErrReplay)
 	require.Equal(t, "1", holdUnknownGauge(t, registry))
 
-	restarted := deps
-	restarted.hold = newHoldView(restarted)
-	phase, known = restarted.hold.State(t.Context())
+	restarted := running
+	restarted.Hold = NewHoldView(read, table.signer.HoldKeys, nil)
+	phase, known = restarted.Hold.State(t.Context())
 	require.True(t, known, "a new view did not accept the older signed row: the residual is not what the design states")
 	require.Equal(t, natsgrant.OperatorPhaseReleased, phase)
 	require.NoError(t, listener(restarted))
 
 	table.replace(t, held)
-	phase, known = running.hold.State(t.Context())
+	phase, known = running.Hold.State(t.Context())
 	require.True(t, known, "the operator's signed held at the floor read as unknown")
 	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
 }
