@@ -21,6 +21,10 @@ import (
 // it keeps.
 const SessionConsumerRecordsBucket = "envoy_session_consumers"
 
+// recordsStream is the records bucket's stream, which the census keeps: it is the hold's own, made
+// by INFRA-4015's create-bucket, and not of the declared set the build configures.
+const recordsStream = "KV_" + SessionConsumerRecordsBucket
+
 // CutoverDone is a family's cutover row's state once INFRA-4015's convert has moved it.
 const CutoverDone = "done"
 
@@ -68,6 +72,7 @@ func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 			shapes = append(shapes, ConsumerShape{Stream: stream.Name, Ordered: true})
 		}
 	}
+	shapes = append(shapes, ConsumerShape{Stream: recordsStream, Ordered: true})
 	for _, machineID := range set.ListenerMachineIDs {
 		shapes = append(shapes, ConsumerShape{
 			Stream: bus.Stream, Name: bus.ListenerDurable(machineID), FilterSubjects: bus.StreamSubjects(),
@@ -151,6 +156,11 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 	for _, info := range streams {
 		name := info.Config.Name
 		stream, ok := streamset.Find(declared, name)
+		if name == recordsStream {
+			// The records bucket is not the build's to configure (INFRA-4015's create-bucket makes it),
+			// so it is kept, and only read for what reads another stream.
+			stream, ok = streamset.Stream{Name: name, Protected: true}, true
+		}
 		if !ok {
 			if _, err := request(ctx, conn, "$JS.API.STREAM.DELETE."+name, nil); err != nil {
 				report.Failures = append(report.Failures, Finding{Stream: name, What: "undeclared, and its delete failed: " + err.Error()})

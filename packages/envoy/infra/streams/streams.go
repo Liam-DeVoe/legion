@@ -28,7 +28,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -230,9 +229,8 @@ func Ensure(ctx context.Context, conn *nats.Conn, settings streamset.Settings, p
 
 // Update makes every protected stream of the declared set that is missing on conn, with the
 // build's configuration, and raises each that is there by today's reconcile rules
-// (internal/bus/stream.go): the notification stream's subjects only added, its limits only raised
-// and its envoy_stream_id kept (bus.EnsureNotificationStream); a bucket's copies raised
-// (bus.EnsureKeyValue) and the session bucket's age set (bus.SetKeyValueMaxAge). It stops, naming
+// (streamset.Ensure): the notification stream's subjects only added, its limits only raised and
+// its envoy_stream_id kept; a bucket's copies raised and the session bucket's age set. It stops, naming
 // the stream and the setting, at the first stream with any other difference
 // (streamset.Difference.Raise), which only a census or a restore puts right. It runs as the
 // operator inside a hold, whose grant holds those creates and updates, and refuses to run unless
@@ -269,7 +267,7 @@ func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, p
 				continue
 			}
 		}
-		if err := makeOrRaise(ctx, conn, js, stream, settings); err != nil {
+		if err := streamset.Ensure(ctx, conn, js, stream); err != nil {
 			report.Failures = append(report.Failures, Finding{Stream: stream.Name, What: err.Error()})
 			return report, nil
 		}
@@ -280,25 +278,6 @@ func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, p
 		report.Changes = append(report.Changes, Finding{Stream: stream.Name, What: what})
 	}
 	return report, nil
-}
-
-// makeOrRaise makes stream on conn, or raises it, with the build's configuration under settings:
-// the notification stream by a start's own create and reconcile, a bucket by its program's own open
-// (bus.EnsureKeyValue, which makes it or raises its copies) and, for the session bucket, its age.
-func makeOrRaise(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, stream streamset.Stream, settings streamset.Settings) error {
-	if stream.Bucket == nil {
-		_, err := bus.EnsureNotificationStream(ctx, conn, js, stream.Config)
-		return err
-	}
-	if _, err := bus.EnsureKeyValue(ctx, conn, js, stream.Bucket); err != nil {
-		return err
-	}
-	if stream.Bucket.Bucket == bus.SessionBucket {
-		if _, err := bus.SetKeyValueMaxAge(ctx, conn, js, bus.SessionBucket, stream.Bucket.TTL); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func differences(drift []streamset.Difference) string {

@@ -9,6 +9,7 @@
 package streamset
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -373,4 +374,60 @@ func sourceNames(sources []*nats.StreamSource) []string {
 		names[index] = source.Name
 	}
 	return names
+}
+
+// Ensure makes stream on conn, through js, with the build's configuration when the server has
+// none, or raises the one it has by a start's own rules: the notification stream by a start's
+// create and reconcile (bus.EnsureNotificationStream: subjects only added, limits only raised, its
+// id kept), a bucket by its program's own open (bus.EnsureKeyValue, which makes it or raises its
+// copies) and, for the session bucket, its age (bus.SetKeyValueMaxAge), and MeasureStream by a
+// create when it is missing. conn must be a connection no client beside the auth service owns
+// (bus.StreamsOperatorMadeEnvVar), whose grant holds the creates and updates: the operator's inside
+// a hold (envoy-infra streams update), or a test's or a dev stack's own admin user. A transient
+// stream is the hold's own to make, and is refused.
+func Ensure(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, stream Stream) error {
+	switch {
+	case stream.Transient:
+		return fmt.Errorf("%s is the writer hold's to make", stream.Name)
+	case stream.Name == bus.Stream:
+		_, err := bus.EnsureNotificationStream(ctx, conn, js, stream.Config)
+		return err
+	case stream.Bucket == nil:
+		if _, err := js.StreamInfo(stream.Name, nats.Context(ctx)); !errors.Is(err, nats.ErrStreamNotFound) {
+			return err
+		}
+		config := stream.Config
+		_, err := js.AddStream(&config, nats.Context(ctx))
+		return err
+	}
+	if _, err := bus.EnsureKeyValue(ctx, conn, js, stream.Bucket); err != nil {
+		return err
+	}
+	if stream.Bucket.Bucket == bus.SessionBucket {
+		if _, err := bus.SetKeyValueMaxAge(ctx, conn, js, bus.SessionBucket, stream.Bucket.TTL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// EnsureStreams makes or raises every protected stream of the declared set under settings on conn
+// (Ensure), in Declared's order, and stops at the first that fails, naming it. It is how a test's
+// fixture and a dev stack make their streams as their own admin user before any program connects
+// beside the auth service, which makes none (bus.StreamsOperatorMadeEnvVar); in a deployment the
+// operator's update makes them (envoy-infra streams update).
+func EnsureStreams(ctx context.Context, conn *nats.Conn, settings Settings) error {
+	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	if err != nil {
+		return err
+	}
+	for _, stream := range Declared(settings) {
+		if !stream.Protected || stream.Transient {
+			continue
+		}
+		if err := Ensure(ctx, conn, js, stream); err != nil {
+			return fmt.Errorf("make %s: %w", stream.Name, err)
+		}
+	}
+	return nil
 }
