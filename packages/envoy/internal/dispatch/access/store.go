@@ -247,14 +247,67 @@ func OwnerNotAllowed(login string) error {
 
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.
 // Whether the deployment lets a project be private at all is the caller's to decide first.
+//
+// A switch from public to private takes the project from every full member its list does not
+// name, and a session's transcript keeps what the session read of it while it was public. So the
+// switch records it, in tx, as a project each such session reached (session_reached_projects),
+// which the content rule reads as a project the session acted in (SessionContentClause):
+//
+//   - for every session tied to a person who saw the project before the switch and does not after
+//     it (recordReachedProjects, given the people session_owners ties who saw it while it was
+//     public; a restricted member its list never named never saw it, and keeps their sessions);
+//   - for every session the listener record holds (route_roster_session_projects) that no person
+//     is tied to, whatever it lists: a full member's credential reads every public project
+//     whatever its list names, and with no tie nothing says whose credential acted in it.
+//
+// A switch to the visibility the project already has, or to public, records nothing.
 func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visibility string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	if visibility != model.ProjectPublic && visibility != model.ProjectPrivate {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w, not %q", ErrVisibilityInput, visibility)
 	}
+	// The project's visibility and who saw it are read under its owner lock, the lock
+	// updateProject takes before the row, so they are what the write replaces.
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	var madePrivate bool
+	var saw []string
+	if visibility == model.ProjectPrivate {
+		if err := tx.QueryRow(ctx, `
+			select coalesce(p.visibility = 'public', false), coalesce(array(
+				select distinct tied.login from session_owners tied
+				left join people tied_person on tied_person.email = tied.login
+				where `+PersonSeesProjectSQL("tied.login", "coalesce(tied_person.member_kind, 'full')", "p")+`
+				order by tied.login), '{}')
+			from projects p where p.key = $1
+		`, key).Scan(&madePrivate, &saw); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read who sees project %s before it is made private: %w", key, err)
+		}
+	}
 	if err := updateProject(ctx, tx, key, `update projects set visibility = $2 where key = $1`, visibility); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
-	return appendProjectChange(ctx, tx, ev, key, model.AccessVisibilityChanged, "", by)
+	access, event, err := appendProjectChange(ctx, tx, ev, key, model.AccessVisibilityChanged, "", by)
+	if err != nil || !madePrivate {
+		return access, event, err
+	}
+	if err := recordReachedProjects(ctx, tx, []string{key}, saw); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into session_reached_projects (session_id, project_key)
+		select distinct held.session, $1::text
+		from route_roster_session_projects listener
+		cross join lateral jsonb_object_keys(listener.projects) as held (session)
+		where listener.id = true and held.session <> ''
+			and not exists (select 1 from session_owners tied where tied.session_id = held.session)
+			and not exists (
+				select 1 from session_reached_projects recorded
+				where recorded.session_id = held.session and recorded.project_key = $1::text)
+	`, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("record project %s against the listed sessions no person is tied to: %w", key, err)
+	}
+	return access, event, nil
 }
 
 // MaxSlackChannels is how many Slack channels a project names.

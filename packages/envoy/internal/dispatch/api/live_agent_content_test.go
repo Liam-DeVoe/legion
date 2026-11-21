@@ -52,6 +52,13 @@ type contentAgentRig struct {
 
 func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig {
 	t.Helper()
+	return newContentAgentRigWith(t, options, nil)
+}
+
+// newContentAgentRigWith is newContentAgentRig whose server reads its agent stream through wrap,
+// given the rig's in-memory stream; nil reads the stream itself.
+func newContentAgentRigWith(t *testing.T, options testServerOptions, wrap func(*agentstream.Memory) agentstream.Source) contentAgentRig {
+	t.Helper()
 	roster := `[
 		{"session_id":"` + contentCarolPodSession + `","title":"Carol's pod","capabilities":["btw"],"last_seen":900,"projects":["PRIV"]},
 		{"session_id":"` + contentBobSession + `","title":"Bob's","capabilities":["btw"],"last_seen":800,"projects":["PRIV"]},
@@ -70,6 +77,9 @@ func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig
 		stream.SetReplay(session, agentstream.Frame(`{"v":1,"kind":"replay","session":"`+session+`"}`))
 	}
 	options.envoyURL, options.agentStream = listener.URL, stream
+	if wrap != nil {
+		options.agentStream = wrap(stream)
+	}
 	seed := seedPrivateProjectWith(t, options)
 	seedPeople(t, seed.database, contentDora)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+contentDora, nil, http.StatusOK)
