@@ -107,12 +107,12 @@ const WORLD =
         .parse(JSON.parse(readFileSync(worldFile, "utf8")));
 /** `GET /legion/v1/state`: the one issue the worker holds, admitted in the phase its role works
  * (`workflow.RoleFor`, through daemon-pane.go), on the world's one repository and its default
- * branch, which the project's mapping names as its one repository, the default, of its one
- * owner: the same repository and branch the pane's addressing and the run's Dispatch issue
- * name. `capabilities` is the
+ * branch, which `repositories.live` names as the one repository a live record names, with both
+ * role Apps installed on it: the same repository and branch the pane's addressing and the run's
+ * Dispatch issue name. `capabilities` is the
  * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
  * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
- * durable consumers and `repositories` the project's mapping, each of which the reader requires;
+ * durable consumers and `repositories` the repositories the live records name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
  * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
@@ -143,9 +143,7 @@ const STATE =
         wakesWaiting: [],
         capabilities: [],
         repositories: {
-          owners: [WORLD.repo.split("/")[0]],
-          mapped: [{ repo: WORLD.repo, default: true }],
-          refused: [],
+          live: [{ repo: WORLD.repo, apps: { implement: true, review: true } }],
           withoutWebhookApp: [],
           caches: [],
         },
