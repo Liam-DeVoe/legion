@@ -1430,6 +1430,99 @@ func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
 	}
 }
 
+// slowProcessStop is the rig's runtime with the process stop of one claim held: the stop closes
+// stopping and waits until proceed closes, as the Sandbox runtime's stop waits on the pod's
+// launcher for up to the boot timeout and the stop grace. Every other call goes straight to the
+// fake.
+type slowProcessStop struct {
+	*fake.Runtime
+	token             claim.Token
+	stopping, proceed chan struct{}
+}
+
+func (s slowProcessStop) Suspend(ctx context.Context, loc runtime.Locator) error {
+	if loc.Claim == s.token {
+		select {
+		case <-s.stopping:
+		default:
+			close(s.stopping)
+		}
+		<-s.proceed
+	}
+	return s.Runtime.Suspend(ctx, loc)
+}
+
+// R2 ("approving the version or undoing the change releases the work") and spec step 7 (the
+// opening "starts each claim that the hold stopped"), for the hold's stop made now whose lock on
+// the tree's work hold row the database ends while the decision runs. The implementer reads the
+// close message and ends the turn it started, so the stop's row asks for the stop at once. The
+// process stop takes longer than the store's idle bound (store.idleBound, 30 s), so Postgres ends
+// the lock's idle transaction, and the person's approval commits the opening while the process is
+// still being stopped: the opening reads the implementer live and starts nothing of it. The stop
+// is then written. A claim the hold stopped while no hold stands must still be started; it must
+// not wait, stopped by a hold that has ended, for the next boot of the daemon.
+func TestWorkHoldStartsAStopMadeNowWhoseLockTheDatabaseEnded(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	token := r.token(claim.RoleImplementer)
+	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(slow.proceed) })
+	t.Cleanup(letGo)
+	r.sup.deps.Runtime = slow
+	machine := r.live(claim.RoleImplementer)
+	launched := r.launches(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+	if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.workerClose(4) {
+		t.Fatalf("the implementer was told %q, want the work close", got)
+	}
+	// The turn the close message starts, ended as the message asks, before the stop's row runs.
+	r.clock.advance(time.Second)
+	r.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
+	endTurn(r.ctx, t, machine, token)
+
+	ran := r.inBackground(func() error { return r.runner.RunOnce(r.ctx) })
+	select {
+	case <-slow.stopping:
+	case err := <-ran:
+		t.Fatalf("the implementer's stop row returned %v before it stopped the process", err)
+	}
+	opened := r.inBackground(func() error {
+		result, err := intake.ApplyFact(r.ctx, r.pool, "test", "approved-4-during-the-stop", r.approval(4, 12), r.engine, r.admission)
+		if err == nil && result.Refusal != nil {
+			err = fmt.Errorf("the approval was refused: %+v", result.Refusal)
+		}
+		return err
+	})
+	select {
+	case err := <-opened:
+		if err != nil {
+			t.Fatalf("apply the approval: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the opening still waits 60 s into the process stop: the database did not end the stop decision's lock on the tree's work hold row")
+	}
+	letGo()
+	if err := <-ran; err != nil {
+		t.Fatalf("drain the outbox: %v", err)
+	}
+	r.drain()
+	r.clock.advance(65 * time.Second)
+	r.drain()
+
+	var holds int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from work_holds where tree = $1`, r.tree.key).Scan(&holds); err != nil {
+		t.Fatalf("read the work holds: %v", err)
+	}
+	if holds != 0 {
+		t.Fatalf("the tree keeps %d work hold rows after the opening, want none", holds)
+	}
+	if state, by := r.stored(claim.RoleImplementer); state == supervise.StateSuspended && by == supervise.SuspendedByHold {
+		t.Fatalf("after the opening and the drain the implementer is stored suspended by %q with no work hold standing, "+
+			"%d stop rows and %d starts queued, and the runtime started it %d times since the stop: nothing starts it before the next boot",
+			by, len(r.holdStops(claim.RoleImplementer)), r.startsSince(claim.RoleImplementer, 0), r.launches(claim.RoleImplementer)-launched)
+	}
+}
+
 // Spec step 4, H22 to H24, check a3d61f8e: with the tester stopped by the hold and the implementer
 // in the turn its stop is held for, a task, a notice, a wake, a CI settlement, admission's slot
 // repair, and a daemon restart during the drain and after it leave every claim the hold stopped
