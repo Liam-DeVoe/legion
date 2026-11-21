@@ -102,10 +102,10 @@ test("every action is listed under its scope, in the help's order, with its keys
   }
 });
 
-// The new issue page's keys are the catalogue's (R14): its outline's are listed under Issue, its
-// chords are today's tab actions, and Details' key is listed under Global, each with the keys it
-// has. Today's issue page and the new one are never drawn together, nor the margin and Details,
-// so the keys they share carry no note.
+// The new issue page's keys are the catalogue's (R14): its outline's, and the Enter of its Plan
+// and Verification views, are listed under Issue, its chords are today's tab actions, and
+// Details' key is listed under Global, each with the keys it has. Today's issue page and the new
+// one are never drawn together, nor the margin and Details, so the keys they share carry no note.
 test("the new issue page's actions are listed under their scopes with their default keys", () => {
   const view = drawSection();
   try {
@@ -131,6 +131,8 @@ test("the new issue page's actions are listed under their scopes with their defa
       ["issue.tree-answer", ["a"]],
       ["issue.tree-cycle", ["z"]],
       ["issue.tree-edit", ["Enter"]],
+      ["issue.plan-go-to-step", ["Enter"]],
+      ["issue.verification-facts", ["Enter"]],
       ["issue.tree-leave-caret", ["Esc"]],
       ["issue.tree-leave", ["Esc"]],
       ["issue.tab-spec", ["t", "s"]],

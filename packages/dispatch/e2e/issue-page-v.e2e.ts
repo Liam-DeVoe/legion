@@ -994,8 +994,8 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "axe finds the view's tree breaking a rule of its structure"
     ).toEqual([]);
 
-    // `t` then `k` with the focus on a row of the view turns it off: the tree's keys do nothing
-    // while a chord is pending, so the page's keymap takes the second key.
+    // `t` then `k` with the focus on a row of the view turns it off: the tree's keys are the page
+    // keymap's, which tries the chord `t k` before the tree's own `k`.
     await verificationCard(page, nodeOf(1)).focus();
     await page.keyboard.press("t");
     await page.keyboard.press("k");

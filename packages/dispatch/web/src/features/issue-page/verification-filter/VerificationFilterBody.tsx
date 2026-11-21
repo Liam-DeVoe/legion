@@ -30,7 +30,8 @@ import {
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
-import { appKeymap } from "../../shell/keymap";
+import { type ActionBinding, useKeymap } from "../../shell/keymap";
+import type { KeymapActionId } from "../../shell/keymap-catalogue";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
@@ -122,9 +123,10 @@ export function queryTyped(query: string): boolean {
  * top of a view taller than the screen above it. Then come each statement, with its checks in
  * one group under it, each check that serves no statement, and each other row. One row holds
  * the tree's tab stop (WAI-ARIA's roving tabindex): the issue's, until the stop moves, and again
- * when the row that held it is no longer drawn. The tree answers the outline's keys (`j`, `k`,
- * the arrows, Home, End, Enter, `o`) by a handler of its own, and the page's `?` lists none of
- * them: a binding of the page's keymap is a row of that list.
+ * when the row that held it is no longer drawn. The tree answers the outline's actions (by
+ * default `j`, `k`, the arrows, Home, End and `o`) and an Enter of its own, which opens or shuts
+ * the facts of the focused row's checks, all of them actions of the page's keymap: the page's
+ * `?` and Settings list each, and a key a person gives one in Settings works here too.
  *
  * What it says of a statement and of a check is `statement-state.ts`, which is pure. What it
  * says of the issue - the summary, the chips' counts, how each statement stands and so the
@@ -277,65 +279,103 @@ export function VerificationFilterBody({
   };
   /** Enter on a check's row or a statement's, and a pointer's press on a statement's words: each
    *  check's facts opened, or each shut where all of them are drawn. On a check's row that is the
-   *  press its words take, the opposite of what is drawn. The answer is whether the row reached a
-   *  check. */
-  const pressChecks = (row: HTMLElement): boolean => {
+   *  press its words take, the opposite of what is drawn. */
+  const pressChecks = (row: HTMLElement): void => {
     const reached = checksOf(row);
     const open = !reached.every((check) => check.drawn);
     for (const check of reached) press(check.id, open);
-    return reached.length > 0;
   };
   /** `o`, on a row or on a control inside it: the facts of each check it reaches kept drawn once
    *  the focus leaves, or let go where the reader kept them, as the outline's `o` keeps a row's
-   *  body open. The answer is whether the row reached a check. */
-  const keepChecks = (row: HTMLElement): boolean => {
-    const reached = checksOf(row);
-    for (const check of reached) {
+   *  body open. */
+  const keepChecks = (row: HTMLElement): void => {
+    for (const check of checksOf(row)) {
       press(check.id, presses.get(check.id) === true ? undefined : true);
     }
-    return reached.length > 0;
   };
-  // The tree's keys, which are the outline's. The page's keymap listens on `window` and leaves a
-  // key a handler held back, so this handler holds back each key it acts on, and only those:
-  // every other key reaches the keymap.
-  const keyDown = (event: KeyboardEvent<HTMLElement>) => {
-    // A key with Ctrl, Alt or Meta is the browser's or another binding's; a key that goes on
-    // with a chord the reader began is the keymap's, so `t k` from inside the view turns it
-    // off; and a key a control inside a row held back is that control's.
-    if (event.altKey || event.ctrlKey || event.metaKey || event.defaultPrevented) return;
-    if (appKeymap.pending() !== "") return;
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) return;
-    // A key typed into a field or into text the reader edits is typing. The view draws
-    // neither; a field a row draws keeps its keys.
-    if (target.isContentEditable || target.matches("input, select, textarea")) return;
-    // A key the tree does nothing with reaches the keymap before the rows are read.
-    const key = event.key;
-    if (!TREE_KEYS.has(key)) return;
-    const elements = [...event.currentTarget.querySelectorAll<HTMLElement>(TREE_ROW)];
-    // The row the focus is on, or the one that holds the control it is on: the innermost, so a
-    // check's words and the links in them are the check's, and a chip is the issue's.
-    const row = target.closest<HTMLElement>(TREE_ROW);
-    const at = row === null ? -1 : elements.indexOf(row);
-    if (row === null || at === -1) return;
-    const to = moveTarget(key, row, elements, at);
-    if (to != null) {
-      event.preventDefault();
-      // The row the focus moves to takes the tree's one tab stop, so Tab back into the tree
-      // lands on the row the reader left. It takes the focus as an outline's row does
-      // (`moveToRow`), so Home on the first row or End on the last, which leave the focus where
-      // it is, still bring that row back on screen where the reader scrolled it off.
+  // The tree's keys: the outline's actions (`useTreeKeymap.ts`'s `issue.tree-*`) and the view's
+  // own Enter (`issue.verification-facts`), registered in the page's keymap, so a key a person
+  // gives one of them in Settings works here too. Each is taken only while the focus is on a row
+  // of this tree, or on a control inside one, and only where it acts there: every other key, and
+  // a key whose binding does not apply, reaches the rest of the keymap and the browser. The
+  // keymap itself takes no press whose Ctrl, Alt or Meta the binding's key does not hold, no key
+  // a control held back and no key typed into a field, and gives a key that goes on with a chord
+  // the reader began to that chord, so `t k` from inside the view turns it off (`keymap.ts`'s
+  // `handleKeyDown`).
+  const tree = useRef<HTMLDivElement | null>(null);
+  /** The row the focus is on, or the one that holds the control it is on: the innermost, so a
+   *  check's words and the links in them are the check's, and a chip is the issue's. With it,
+   *  the tree's rows (`elements`) and where it stands among them (`at`); undefined where the
+   *  focus is on no row of this tree. */
+  const focusedRow = ():
+    | { readonly at: number; readonly elements: HTMLElement[]; readonly row: HTMLElement }
+    | undefined => {
+    const active = document.activeElement;
+    const row = active instanceof HTMLElement ? active.closest<HTMLElement>(TREE_ROW) : null;
+    if (row === null) return undefined;
+    const elements = [...(tree.current?.querySelectorAll<HTMLElement>(TREE_ROW) ?? [])];
+    const at = elements.indexOf(row);
+    return at === -1 ? undefined : { at, elements, row };
+  };
+  /** Where `move` takes the focus from the focused row, or undefined where it goes nowhere. */
+  const moveFrom = (move: TreeMove): HTMLElement | undefined => {
+    const focused = focusedRow();
+    return focused === undefined
+      ? undefined
+      : moveTarget(move, focused.row, focused.elements, focused.at);
+  };
+  /** A key that moves the focus, taken only where its move goes somewhere. The row the focus
+   *  moves to takes the tree's one tab stop, so Tab back into the tree lands on the row the
+   *  reader left. It takes the focus as an outline's row does (`moveToRow`), so Home on the first
+   *  row or End on the last, which leave the focus where it is, still bring that row back on
+   *  screen where the reader scrolled it off. */
+  const moveKey = (action: KeymapActionId, move: TreeMove): ActionBinding => ({
+    action,
+    run: () => {
+      const to = moveFrom(move);
+      if (to === undefined) return;
       const id = to.dataset.verificationRow;
       if (id !== undefined) setRovingId(id);
       moveToRow(to);
-      return;
-    }
-    // Enter is the row's only on the row itself: on a control inside it, a chip, a link or a
-    // check's words, it is that control's own.
-    const acted =
-      key === "Enter" ? target === row && pressChecks(row) : key === "o" && keepChecks(row);
-    if (acted) event.preventDefault();
-  };
+    },
+    when: () => moveFrom(move) !== undefined,
+  });
+  useKeymap("issue", [
+    moveKey("issue.tree-next", "next"),
+    moveKey("issue.tree-previous", "previous"),
+    moveKey("issue.tree-first", "first"),
+    moveKey("issue.tree-last", "last"),
+    moveKey("issue.tree-unfold", "into"),
+    moveKey("issue.tree-fold", "out"),
+    {
+      // Enter is the row's only on the row itself: on a control inside it, a chip, a link or a
+      // check's words, it is that control's own. It is taken only where the row reaches a check.
+      action: "issue.verification-facts",
+      run: () => {
+        const focused = focusedRow();
+        if (focused !== undefined) pressChecks(focused.row);
+      },
+      when: () => {
+        const focused = focusedRow();
+        return (
+          focused !== undefined &&
+          focused.row === document.activeElement &&
+          checksOf(focused.row).length > 0
+        );
+      },
+    },
+    {
+      action: "issue.tree-pin",
+      run: () => {
+        const focused = focusedRow();
+        if (focused !== undefined) keepChecks(focused.row);
+      },
+      when: () => {
+        const focused = focusedRow();
+        return focused !== undefined && checksOf(focused.row).length > 0;
+      },
+    },
+  ]);
   return (
     <div className={BODY} data-verification-body="">
       {/* Each read that failed before it first answered, the page's one line for a failed read
@@ -366,7 +406,7 @@ export function VerificationFilterBody({
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
-        onKeyDown={keyDown}
+        ref={tree}
         role="tree"
         tabIndex={-1}
       >
@@ -712,49 +752,37 @@ const TREE_ROW = "[data-node-row]";
 const CHECK_ROW = "[data-verification-check]";
 const STATEMENT_ROW = "[data-verification-card]";
 
-/** The keys the tree's handler acts on, the outline's: `j`, `k`, the arrows, Home and End move,
- *  Enter presses and `o` keeps. Every other key is the page keymap's. */
-const TREE_KEYS: ReadonlySet<string> = new Set([
-  "j",
-  "k",
-  "ArrowDown",
-  "ArrowUp",
-  "Home",
-  "End",
-  "ArrowRight",
-  "ArrowLeft",
-  "Enter",
-  "o",
-]);
+/** A move one of the tree's keys makes (`moveTarget`): to the next row or the one before, to the
+ *  first or the last, into a statement's checks (the outline's Unfold, Right by default) or out
+ *  of a check to its statement (the outline's Fold, Left by default). */
+type TreeMove = "next" | "previous" | "first" | "last" | "into" | "out";
 
-/** Where a key moves the focus from `row`, the `at`th of the tree's rows (`elements`): the next
+/** Where `move` takes the focus from `row`, the `at`th of the tree's rows (`elements`): the next
  *  row or the one before, the first or the last, a statement's first check, or the statement a
- *  check is drawn under. Right and Left go nowhere from any other row, and no other key moves. */
+ *  check is drawn under. Into and out go nowhere from any other row. */
 function moveTarget(
-  key: string,
+  move: TreeMove,
   row: HTMLElement,
   elements: readonly HTMLElement[],
   at: number
-): HTMLElement | null | undefined {
-  switch (key) {
-    case "j":
-    case "ArrowDown":
+): HTMLElement | undefined {
+  switch (move) {
+    case "next":
       return elements[Math.min(at + 1, elements.length - 1)];
-    case "k":
-    case "ArrowUp":
+    case "previous":
       return elements[Math.max(at - 1, 0)];
-    case "Home":
+    case "first":
       return elements[0];
-    case "End":
+    case "last":
       return elements.at(-1);
-    case "ArrowRight":
-      return row.matches(STATEMENT_ROW) ? row.querySelector<HTMLElement>(CHECK_ROW) : undefined;
-    case "ArrowLeft":
-      return row.matches(CHECK_ROW)
-        ? row.parentElement?.closest<HTMLElement>(STATEMENT_ROW)
+    case "into":
+      return row.matches(STATEMENT_ROW)
+        ? (row.querySelector<HTMLElement>(CHECK_ROW) ?? undefined)
         : undefined;
-    default:
-      return undefined;
+    case "out":
+      return row.matches(CHECK_ROW)
+        ? (row.parentElement?.closest<HTMLElement>(STATEMENT_ROW) ?? undefined)
+        : undefined;
   }
 }
 

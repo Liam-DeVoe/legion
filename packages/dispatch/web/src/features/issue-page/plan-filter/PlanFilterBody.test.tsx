@@ -20,6 +20,8 @@ import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { setActionKeys } from "../../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../../shell/userPreference";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import {
@@ -223,13 +225,16 @@ type DrawnBody = RenderResult & { readonly redraw: (root: TreeNode, reads: PlanR
  *  how the plan's and the spec's blocks reads stand, as the slot hands them on
  *  (`slots/view-plan.tsx`): answered unless a case gives another. `client` is the query client,
  *  by default one whose reads never go stale. `container` is the element the body is drawn in,
- *  by default one the test adds to the page. `redraw` draws the same body again where it is
- *  mounted, over another `root` and `reads`, as the slot does when the issue's reads change. */
+ *  by default one the test adds to the page. `login` is who the keys are for, whose keys stored
+ *  in this browser the page's keymap takes (`keymap-keys.ts`): nobody signed in, and so every
+ *  action on its defaults, unless a case gives one. `redraw` draws the same body again where it
+ *  is mounted, over another `root` and `reads`, as the slot does when the issue's reads change. */
 function renderBody(
   root: TreeNode,
   {
     client: given,
     container,
+    login,
     plan,
     reads = ANSWERED,
     reveal,
@@ -237,6 +242,7 @@ function renderBody(
   }: {
     client?: QueryClient;
     container?: HTMLElement;
+    login?: string;
     plan?: readonly TreeNode[];
     reads?: PlanReads;
     reveal?: readonly TreeNode[];
@@ -259,7 +265,7 @@ function renderBody(
   const draw = (shown: TreeNode, held: PlanReads): ReactNode => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <KeymapProvider>
+        <KeymapProvider login={login}>
           <MarginProvider>
             <FocusedNodeProvider>
               <IssueScope />
@@ -577,6 +583,32 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     expect(place?.getAttribute("data-path")).toBe(`/issues/${KEY}#b-t2`);
   } finally {
     view.unmount();
+  }
+});
+
+// R14: the chart's keys are the outline's actions of the keymap's catalogue, so a key a person
+// gives one of them in Settings (`keymap-keys.ts`) moves the reader through the bars as it moves
+// her through the outline, and the default key it replaced does nothing here any more. Down is a
+// key nobody changes, so it still moves.
+test("a key alice gave Move to the next row moves to the next bar, and j no longer does", async () => {
+  setViewport(1440);
+  setActionKeys("alice", "issue.tree-next", ["n"]);
+  const user = userEvent.setup();
+  const view = renderBody(
+    issue([task("t1"), task("t2", { needs: ["t1"] }), task("t3", { needs: ["t2"] })]),
+    { login: "alice" }
+  );
+  try {
+    act(() => rowOf(view, "t1").focus());
+    await user.keyboard("j");
+    expect(focusedRow(), "j moved the focus").toBe(D("t1"));
+    await user.keyboard("n");
+    expect(focusedRow(), "n did not move the focus to the next bar").toBe(D("t2"));
+    await user.keyboard("{ArrowDown}");
+    expect(focusedRow(), "Down did not move the focus to the next bar").toBe(D("t3"));
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "shell.keymap"));
   }
 });
 

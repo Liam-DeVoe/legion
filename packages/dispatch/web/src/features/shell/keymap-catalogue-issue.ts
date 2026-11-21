@@ -1,7 +1,7 @@
 import type { ScopeTable } from "./keymap-catalogue";
 
 /** The `issue` scope's actions, by id (`keymap-catalogue.ts` names each `issue.<id>`): today's
- *  issue page's, then the new issue page's outline's. */
+ *  issue page's, then the new issue page's outline's and its Plan and Verification views'. */
 export const ISSUE_ACTIONS = {
   // Today's issue page: `issue/IssuePage.tsx`, `issue/IssueHeader.tsx` and the Conversation tab.
   // The new issue page registers the actions of `issue-both` too: the header's keys
@@ -340,6 +340,24 @@ export const ISSUE_ACTIONS = {
   },
   "tree-edit": {
     label: "Put the caret in the focused row",
+    keys: [],
+    fixedKeys: ["Enter"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  // The Enter of the Plan view's chart (`issue-page/plan-filter/PlanFilterBody.tsx`) and of the
+  // Verification view's tree (`issue-page/verification-filter/VerificationFilterBody.tsx`), each
+  // drawn on the new issue page in the outline's place. Their other keys are the outline's
+  // actions above; Enter does something else on each, so each has an action of its own.
+  "plan-go-to-step": {
+    label: "Go to the focused step in the conversation",
+    keys: [],
+    fixedKeys: ["Enter"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "verification-facts": {
+    label: "Open or close the facts of the focused row's checks",
     keys: [],
     fixedKeys: ["Enter"],
     palette: false,

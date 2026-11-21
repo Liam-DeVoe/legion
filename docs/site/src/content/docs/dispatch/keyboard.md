@@ -344,10 +344,43 @@ On the header, `s`, `p`, `0` – `3`, `e` and `Shift+P` work as on today's issue
 `Shift+R` approve and request changes while the focus is on an approval chip whose request waits
 on you.
 
+The Plan and Verification filters show their own rows in place of the outline. Their rows take
+the outline's keys, but `Enter` does a different thing on each filter. A key that you change for
+the outline also works on these rows.
+
+Under **Chart**, the Plan filter takes these keys while the focus is on the page itself or on a
+row of the chart. Under **Steps**, the rows are the outline's rows and take all of its keys.
+
+| Keys | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | From the page itself, move into the chart, at the row you were on last |
+| `j` or `↓` / `k` or `↑` | Next / previous step |
+| `Home` / `End` | First / last step, while the focus is in the chart |
+| `f` | Move to the next link on the focused row |
+| `Escape` | From a link in a row, go back to the row. From a row, leave the chart. |
+| `Enter` | Go to the focused step in the conversation (from the row) |
+
+The steps that need each other are one row. `j`, `k` and the arrows do not stop on that row.
+
+The Verification filter takes these keys while the focus is on a row of the filter, or on a link
+or control in a row.
+
+| Keys | Action |
+| --- | --- |
+| `j` or `↓` / `k` or `↑` | Next / previous row |
+| `Home` / `End` | First / last row |
+| `→` | From a statement, move to its first check |
+| `←` | From a check, move back to its statement |
+| `o` | Keep the facts of the focused row's checks open, or let them close again |
+| `Enter` | Open or close the facts of the focused row's checks (from the row) |
+
+On a row that has no checks, such as the issue's row, `Enter` and `o` do nothing.
+
 The `t` keys are the same actions on both issue pages, so a key that you change works on both.
 Settings lists each of them once, with what it does on each page, such as **Spec: open its tab
 (on the new page, its filter)**. Settings lists the outline's keys under **Issue**, and **Open or
-close Details** under **Global**.
+close Details** under **Global**. It also lists the `Enter` of the Plan filter and the `Enter` of
+the Verification filter under **Issue**.
 
 ## Document
 

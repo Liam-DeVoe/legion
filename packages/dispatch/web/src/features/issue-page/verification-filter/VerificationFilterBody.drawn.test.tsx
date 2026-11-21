@@ -20,7 +20,9 @@ import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { appKeymap } from "../../shell/keymap";
+import { appKeymap, useKeymapScope } from "../../shell/keymap";
+import { setActionKeys } from "../../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../../shell/userPreference";
 import { measureNearWords } from "../clamp-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
@@ -85,15 +87,24 @@ beforeAll(async () => {
  *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
  *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
  *  the view with no query where a case builds it itself (`whole`), which is otherwise built as
- *  the slot builds it, and whether the body is drawn inside the stage the page draws a view in
+ *  the slot builds it, whether the body is drawn inside the stage the page draws a view in
  *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
- *  tree itself takes it (`ViewStage`). */
+ *  tree itself takes it (`ViewStage`), and who the keys are for (`login`), whose keys stored in
+ *  this browser the page's keymap takes (`keymap-keys.ts`): nobody signed in, and so every
+ *  action on its defaults, unless a case gives one. */
 interface DrawOptions {
+  readonly login?: string;
   readonly named?: readonly string[];
   readonly query?: string;
   readonly reads?: VerificationReads;
   readonly staged?: boolean;
   readonly whole?: TreeNode;
+}
+
+/** The page's own `issue` scope, which the view's keys are registered in. */
+function IssueScope(): ReactNode {
+  useKeymapScope("issue");
+  return null;
 }
 
 /** A query client for one drawn body, which answers nothing on its own. */
@@ -108,12 +119,15 @@ function testClient(): QueryClient {
  *  the view with no query as the slot builds it, which is given only where a query is typed: a
  *  query that is not empty once trimmed, as `presetView` reads it. It is drawn inside
  *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
- *  `staged` inside `ViewStage` around that, as the page's stage draws the slot. A case that
- *  draws the body again with other reads passes it to `rerender` with the same `client`. */
+ *  `staged` inside `ViewStage` around that, as the page's stage draws the slot. The page's keymap
+ *  hears its keys, as `KeymapProvider` binds it to `window`, with the page's `issue` scope
+ *  pushed, which the view's keys are registered in. A case that draws the body again with other
+ *  reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   {
+    login,
     named = [],
     query = "",
     reads = { state: "answered" },
@@ -140,7 +154,12 @@ function bodyOf(
   );
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter>{staged ? <ViewStage>{slot}</ViewStage> : slot}</MemoryRouter>
+      <MemoryRouter>
+        <KeymapProvider login={login}>
+          <IssueScope />
+          {staged ? <ViewStage>{slot}</ViewStage> : slot}
+        </KeymapProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }
@@ -203,14 +222,16 @@ function failing(blockId: string): CheckBlock {
   });
 }
 
-/** Each key a handler held back, in the order pressed, from now until `stop` is called. */
+/** Each key held back, by a handler or by the page's keymap, in the order pressed, from now until
+ *  `stop` is called. It listens on `window` after the keymap, which `drawBody` bound there
+ *  first, so it reads each key once the keymap has taken it or left it. */
 function holdKeys(): { held: string[]; stop: () => void } {
   const held: string[] = [];
   const hold = (event: KeyboardEvent) => {
     if (event.defaultPrevented) held.push(event.key);
   };
-  document.addEventListener("keydown", hold);
-  return { held, stop: () => document.removeEventListener("keydown", hold) };
+  window.addEventListener("keydown", hold);
+  return { held, stop: () => window.removeEventListener("keydown", hold) };
 }
 
 /** The reads named refused once before they first answered, each by its name with its own
@@ -2352,12 +2373,13 @@ test("each control of the view is a tab stop", async () => {
   }
 });
 
-// The view's tree answers the outline's keys by a handler of its own. `j`, `k`, the arrows, Home
-// and End move the focus from the row it is on, or from the row that holds the control it is on,
-// and the tab stop moves with it; Enter on a row presses its checks' facts, `o` keeps them drawn,
-// and a pointer opens them from a check's latest result, from its words and from its statement's
-// words. The tree holds back each key it acts on and no other, and a key that goes on with a
-// chord the reader began is the page's keymap's, so `t k` from inside the view reaches it.
+// The view's tree answers the outline's actions of the page's keymap and an Enter of its own.
+// `j`, `k`, the arrows, Home and End move the focus from the row it is on, or from the row that
+// holds the control it is on, and the tab stop moves with it; Enter on a row presses its checks'
+// facts, `o` keeps them drawn, and a pointer opens them from a check's latest result, from its
+// words and from its statement's words. The keymap holds back each key the tree acts on and no
+// other, and a key that goes on with a chord the reader began is that chord's, so `t k` from
+// inside the view reaches it.
 test("the view's tree answers the outline's keys, and a check's facts open from its words, its result and its statement", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
@@ -2510,9 +2532,10 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     expect(standing().focus).toBe("issue");
     expect(opened()).toEqual(["true", "true", "false"]);
 
-    // The page's keymap listens on `window`, as `KeymapProvider` binds it. While a chord the
-    // reader began is pending, no key is the tree's: `j` moves nothing, and `k` goes on with
-    // `t` to the keymap's `t k`.
+    // The view's keys are the page keymap's now, which listens on `window`, as `KeymapProvider`
+    // binds it. A key that does not go on with a chord the reader began is read afresh, as on the
+    // outline (`keymap.ts`'s `handleKeyDown`): `j` after `t` moves to the next row. `k` goes on
+    // with `t` to the keymap's `t k`. The keys held back are the keymap's.
     let turnedOff = 0;
     const unregister = appKeymap.register("global", [
       {
@@ -2524,21 +2547,18 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
         },
       },
     ]);
-    const keymap = render(<KeymapProvider>{null}</KeymapProvider>);
     try {
       held.length = 0;
       await user.keyboard("t");
       expect(appKeymap.pending()).toBe("t");
       await user.keyboard("j");
-      expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
+      expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
       await user.keyboard("tk");
       expect(turnedOff).toBe(1);
       expect(appKeymap.pending()).toBe("");
-      expect(standing()).toEqual({ focus: "issue", stop: ["issue"] });
-      // The keymap's own hold comes after the document's listener; the tree held back none.
-      expect(held).toEqual([]);
+      expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
+      expect(held).toEqual(["t", "j", "t", "k"]);
     } finally {
-      keymap.unmount();
       unregister();
       // A chord a failed step left half typed is let go, so no later test types into it.
       appKeymap.handleKeyDown(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -2546,6 +2566,44 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
   } finally {
     stop();
     view.unmount();
+  }
+});
+
+// R14: the tree's keys are the outline's actions of the keymap's catalogue, so a key a person
+// gives one of them in Settings (`keymap-keys.ts`) moves the reader through the view's rows as it
+// moves her through the outline, and the default key it replaced does nothing here any more. Down
+// is a key nobody changes, so it still moves.
+test("a key alice gave Move to the next row moves to the view's next row, and j no longer does", async () => {
+  setActionKeys("alice", "issue.tree-next", ["n"]);
+  const user = userEvent.setup();
+  const one = passing("c-one");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
+  const unserved = statementNode("r2", "Nothing serves this one.", []);
+  const view = drawBody([served, unserved], [one], { login: "alice" });
+  try {
+    const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+    const names = ["issue", "r1", "c-one", "r2"];
+    /** The row the focus is on, and each row that holds the tree's tab stop, by their names. */
+    const standing = () => ({
+      focus: names[rows.indexOf(document.activeElement as HTMLElement)],
+      stops: rows.flatMap((row, at) => (row.getAttribute("tabindex") === "0" ? [names[at]] : [])),
+    });
+    act(() => rows[0]?.focus());
+    await user.keyboard("j");
+    expect(standing(), "j moved the focus").toEqual({ focus: "issue", stops: ["issue"] });
+    await user.keyboard("n");
+    expect(standing(), "n did not move the focus to the next row").toEqual({
+      focus: "r1",
+      stops: ["r1"],
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(standing(), "Down did not move the focus to the next row").toEqual({
+      focus: "c-one",
+      stops: ["c-one"],
+    });
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "shell.keymap"));
   }
 });
 
