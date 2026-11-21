@@ -13,15 +13,20 @@ import (
 )
 
 // threadSeed is verification v16's seed (seedPrivateProject) holding the threads this file reads:
-// in each project, carol's comment, ask and message on its issue; a session s1 that has acted in
-// PRIV, so a member of PRIV sees it (access.SessionClause); and a direct message each of alice and
-// bob sent to s1, two conversations that belong to no project. alice sends hers before s1 acts in
-// PRIV, while she may still see s1, and bob his after, once PRIV's list lets him see it.
+// in each project, carol's comment, ask and message on its issue; a session s1 of carol's that has
+// acted in PRIV, so a member of PRIV sees it (access.SessionClause); a direct message each of alice
+// and bob sent to s1, two conversations that belong to no project; and bob's direct message to
+// threadBobSession, a session only bob's own credential proved, which wrote in PRIV and whose
+// listener sent no list. alice sends hers before s1 acts in PRIV, while she may still see s1, and
+// bob his after, once PRIV's list lets him see it.
 type threadSeed struct {
 	privateSeed
-	comment, ask, message  map[string]string
-	aliceDirect, bobDirect string
+	comment, ask, message                map[string]string
+	aliceDirect, bobDirect, bobOwnDirect string
 }
+
+// threadBobSession is bob's own session: his broker-issued token proved it, in PRIV.
+const threadBobSession = "s-bob"
 
 // seedThreads stands up threadSeed through the server's own routes, on a test server whose fake
 // Envoy listener holds s1 live (sessionListener), as a direct message needs.
@@ -51,6 +56,10 @@ func seedThreads(t *testing.T) threadSeed {
 		map[string]any{"body": "s1 works on PRIV."}, http.StatusCreated))
 	threads.bobDirect = createdID(t, postAgentMessage(t, seed.handler, "s1",
 		map[string]any{"body": "bob asks s1 something.", "delivery": "aside"}, seedBob))
+	seed.asSessionOf(t, seedBob, threadBobSession, seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+		map[string]any{"body": "bob's session works on PRIV."}, http.StatusCreated)
+	threads.bobOwnDirect = createdID(t, postAgentMessage(t, seed.handler, threadBobSession,
+		map[string]any{"body": "bob asks his own session something.", "delivery": "aside"}, seedBob))
 	return threads
 }
 
@@ -80,8 +89,10 @@ var (
 // TestThreadsOfAPrivateProjectAnswerAsMissing: an ask, a comment, a message and the event log of a
 // private project are read, by every caller that does not see it, exactly as an id or a key no row
 // holds is read - the same status and the same bytes - and found by every caller that does. A
-// direct conversation is read by its parties alone: bob, a restricted member, reads his own and
-// not alice's. A comment list kept for carol is never handed to alice, though the cache holds it.
+// direct conversation is read by its parties alone, and is its session's content
+// (access.SessionContentClause): bob, a restricted member, reads neither alice's conversation with
+// carol's s1 nor his own, since s1 is carol's and her credential reads PUB, which bob does not
+// see. A comment list kept for carol is never handed to alice, though the cache holds it.
 func TestThreadsOfAPrivateProjectAnswerAsMissing(t *testing.T) {
 	threads := seedThreads(t)
 	missing := uuid.NewString()
@@ -144,16 +155,15 @@ func TestThreadsOfAPrivateProjectAnswerAsMissing(t *testing.T) {
 		})
 	}
 
-	t.Run("bob reads only his own direct messages", func(t *testing.T) {
-		if own := threads.request(t, callerBob, http.MethodGet, "/api/v1/messages/"+threads.bobDirect, nil); own.Code != http.StatusOK {
-			t.Errorf("bob reads his own direct message as %d %s, want 200", own.Code, own.Body.String())
-		}
+	t.Run("bob reads no conversation with another person's session", func(t *testing.T) {
+		requireSameAnswer(t, threads.privateSeed, callerBob, "his own direct message to carol's s1",
+			"/api/v1/messages/"+threads.bobDirect, "/api/v1/messages/"+missing)
 		requireSameAnswer(t, threads.privateSeed, callerBob, "alice's direct message",
 			"/api/v1/messages/"+threads.aliceDirect, "/api/v1/messages/"+missing)
 		window := threads.request(t, callerBob, http.MethodGet, "/api/v1/agents/s1/messages", nil)
-		if window.Code != http.StatusOK || !strings.Contains(window.Body.String(), threads.bobDirect) ||
+		if window.Code != http.StatusOK || strings.Contains(window.Body.String(), threads.bobDirect) ||
 			strings.Contains(window.Body.String(), threads.aliceDirect) {
-			t.Errorf("bob's conversations with s1 = %d %s; want his own and not alice's", window.Code, window.Body.String())
+			t.Errorf("bob's conversations with s1 = %d %s; want neither his own nor alice's", window.Code, window.Body.String())
 		}
 		for _, event := range eventLogOf(t, threads.privateSeed, callerBob) {
 			if event.Project == seedPublic || strings.Contains(string(event.Payload), threads.aliceDirect) {
@@ -164,6 +174,13 @@ func TestThreadsOfAPrivateProjectAnswerAsMissing(t *testing.T) {
 			strings.Contains(inbox.Body.String(), threads.ask[seedPublic]) {
 			t.Errorf("bob's inbox = %d %s; want PRIV's ask and not PUB's", inbox.Code, inbox.Body.String())
 		}
+		// bob's conversation with his own session, which only his person proved and whose
+		// listener sent no list. The content rule's arm for a viewer that is not open reads a
+		// listener list as well as the ties, so today it answers as missing; once that arm
+		// passes a session whose ties name the viewer alone, with or without a list, bob reads
+		// it, and this row wants 200.
+		requireSameAnswer(t, threads.privateSeed, callerBob, "his own direct message to his own session, which lists no projects",
+			"/api/v1/messages/"+threads.bobOwnDirect, "/api/v1/messages/"+missing)
 	})
 
 	t.Run("alice's inbox holds nothing of PRIV", func(t *testing.T) {
