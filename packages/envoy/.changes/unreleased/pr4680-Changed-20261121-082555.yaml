@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Every Envoy NATS client (envoy-dispatch, envoy-listener, envoy-mcp, natstail, the auth service and `redeliver-webhooks`) now refuses at start a NATS server list that names no server or holds a blank entry, naming the problem (`bus: refusing a NATS server list that names no server`). Before, nats.go dialed its default, `nats://127.0.0.1:4222`, in its place, so a process with no `natsUrls` in `envoy.json` and no `NATS_URLS` reached whatever server listened on that port. envoy-dispatch with `DISPATCH_NATS_DISABLED=1` makes no NATS client and is unchanged.'
+time: 2026-11-21T08:25:55.991759324Z
+custom:
+    Issue: pr4680

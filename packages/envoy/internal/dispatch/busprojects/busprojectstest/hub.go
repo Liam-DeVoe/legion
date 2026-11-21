@@ -269,26 +269,32 @@ func ProofToken(account, audience string) string {
 }
 
 // ProofClient is the hub-admission client of the hub at url, its client URL or several
-// comma-separated as nats.go takes a server list, or no server at all for an empty url, as
-// cmd/dispatch is to build one per hub of DISPATCH_PRIVATE_HUBS (it builds none at this head): a
-// bus client that connects as a service presenting token, which it reads from a file at each
-// connect, and that connects in the background, so a hub that refuses it leaves it retrying rather
-// than failing its construction.
-// It stays inside the proof's grant, so the hub refuses it nothing and it logs no permissions
-// violation: its reply inboxes are under ProofInboxPrefix (bus.WithInboxPrefix), and it never
-// reads the stream's subjects, a publish the grant refuses (bus.WithoutStreamSubjects). It closes
-// when the test ends.
+// comma-separated as nats.go takes a server list (NewProofClient), and fails the test when it
+// cannot be built.
 func ProofClient(t testing.TB, url, token string) *bus.Client {
+	t.Helper()
+	client, err := NewProofClient(t, strings.Split(url, ","), token)
+	if err != nil {
+		t.Fatalf("make the hub-admission client of %s: %v", url, err)
+	}
+	return client
+}
+
+// NewProofClient is the hub-admission client of the hub whose servers are servers, or why it
+// cannot be built, as cmd/dispatch is to build one per hub of DISPATCH_PRIVATE_HUBS (it builds
+// none at this head): a bus client that connects as a service presenting token, which it reads
+// from a file at each connect, and that connects in the background, so a hub that refuses it
+// leaves it retrying rather than failing its construction. It stays inside the proof's grant, so
+// the hub refuses it nothing and it logs no permissions violation: its reply inboxes are under
+// ProofInboxPrefix (bus.WithInboxPrefix), and it never reads the stream's subjects, a publish the
+// grant refuses (bus.WithoutStreamSubjects). A client it builds closes when the test ends.
+func NewProofClient(t testing.TB, servers []string, token string) (*bus.Client, error) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "hub-admission-token")
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatalf("write the hub-admission token: %v", err)
 	}
 	environment := map[string]string{bus.ServiceTokenFileEnvVar: file}
-	var servers []string
-	if url != "" {
-		servers = strings.Split(url, ",")
-	}
 	client, err := bus.Connect(servers,
 		bus.WithName("envoy-dispatch-hub-admission"),
 		bus.WithEnvironment(func(name string) (string, bool) { value, ok := environment[name]; return value, ok }),
@@ -296,8 +302,8 @@ func ProofClient(t testing.TB, url, token string) *bus.Client {
 		bus.WithoutStreamSubjects(),
 		bus.WithConnectInBackground())
 	if err != nil {
-		t.Fatalf("make the hub-admission client of %s: %v", url, err)
+		return nil, err
 	}
 	t.Cleanup(client.Close)
-	return client
+	return client, nil
 }

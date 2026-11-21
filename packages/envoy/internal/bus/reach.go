@@ -28,11 +28,33 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 // ErrRemoteNATS is what a connect refuses a NATS server this machine does not run with.
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
+// ErrNoNATSServer is a connect's refusal of a server list that names no server or holds a blank
+// entry (refuseNoServer).
+var ErrNoNATSServer = errors.New("bus: refusing a NATS server list that names no server")
+
+// refuseNoServer reports urls naming no server, or an entry that is blank. nats.go fills an empty
+// list with its DefaultURL, nats://127.0.0.1:4222, and reads a blank entry as that port on this
+// machine, so such a client would reach whatever listens on the default NATS port, presenting its
+// credential there: on a shared machine, another process's server, the hazard a test server on
+// a loopback address of its own (testport) closes for the tests. Every connect refuses it first,
+// before its environment is read.
+func refuseNoServer(urls []string) error {
+	if len(urls) == 0 {
+		return fmt.Errorf("%w: nats.go would dial its default, nats://127.0.0.1:4222, in its place", ErrNoNATSServer)
+	}
+	for i, raw := range urls {
+		if strings.TrimSpace(raw) == "" {
+			return fmt.Errorf("%w: entry %d of %d is blank, which nats.go reads as port 4222 on this machine", ErrNoNATSServer, i+1, len(urls))
+		}
+	}
+	return nil
+}
+
 // refuseRemoteNATS reports the first url naming another machine, unless the run opted in through
-// lookup (the connect's environment, WithEnvironment). An empty urls is nats.go's own default,
-// this machine's server, and passes. A set SOCKS5ProxyEnvVar is remote reach whatever the URLs
-// say: the proxy chooses the server a connection reaches, so a loopback URL no longer names this
-// machine's.
+// lookup (the connect's environment, WithEnvironment). A set SOCKS5ProxyEnvVar is remote reach
+// whatever the URLs say: the proxy chooses the server a connection reaches, so a loopback URL no
+// longer names this machine's. A list naming no server never reaches it: refuseNoServer refuses it
+// first.
 func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 	if allow, _ := lookup(AllowRemoteEnvVar); allow == "1" {
 		return nil

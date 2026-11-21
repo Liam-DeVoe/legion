@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects/busprojectstest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -265,21 +266,20 @@ func TestAHubWithNoAuthenticationRefusesTheProof(t *testing.T) {
 	require.Equal(t, busprojects.AdmissionRefused, a.Report().Hubs[0].Admission)
 }
 
-// TestAHubClientNamingNoServerFailsTheProof: a hub client that names no server, which bus.Connect
-// builds without complaint, fails the proof: no server was asked, so nothing decided, and the
-// report reads the hub refused.
+// TestAHubClientNamingNoServerFailsTheProof: a hub client that names no server, or a blank one,
+// cannot be built, so no admission holds it and no proof can pass on it: bus.Connect refuses it
+// before any dial, where nats.go would dial its default server, port 4222 on this machine, for it.
 //
-// Control: drop bus.Client.ProveAdmission's guard on a client with no server; its loop over the
-// servers runs no time, the proof passes with nothing dialed, and the test fails.
+// Control: drop bus.Connect's refusal of such a list (refuseNoServer in newClient); the client is
+// built, dialing nats.go's default in the background, and the test fails naming the list.
 func TestAHubClientNamingNoServerFailsTheProof(t *testing.T) {
-	a, _ := admissionOverURLs(t, "")
-	a.SetListeners(busprojectstest.ReadyListener(t))
-
-	err := a.Prove(t.Context())
-	require.Error(t, err, "the proof passed for a hub client that names no server")
-	require.ErrorContains(t, err, "the client names no server, so no server was asked")
-	require.False(t, a.Ready())
-	require.Equal(t, busprojects.AdmissionRefused, a.Report().Hubs[0].Admission)
+	for name, servers := range map[string][]string{"no server": nil, "a blank server": {" "}} {
+		t.Run(name, func(t *testing.T) {
+			client, err := busprojectstest.NewProofClient(t, servers, proofToken())
+			require.ErrorIs(t, err, bus.ErrNoNATSServer, "a hub-admission client was built for %q", servers)
+			require.Nil(t, client)
+		})
+	}
 }
 
 // TestEveryServerOfAHubClientAdmitsTheProof: a hub client that names two servers, one of them
