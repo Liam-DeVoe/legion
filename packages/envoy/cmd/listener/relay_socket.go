@@ -88,6 +88,11 @@ const (
 	// relaySocketMaxPerSession is how many sockets one session may hold open on one replica; the
 	// next is refused 429.
 	relaySocketMaxPerSession = 4
+	// relaySocketMaxPerCaller is how many sockets one caller - a person, or the service a token
+	// that names no person is - may hold open on one replica, over all of its sessions; the next is
+	// refused 429. One person trading many tokens, each for a session of its own, so cannot take
+	// every place of a replica (relaySocketMaxPerListener) from everyone else.
+	relaySocketMaxPerCaller = 16
 	// relaySocketMaxPerListener is how many sockets one replica holds open, of every session; the
 	// next is refused 503, on which its client opens it on another replica.
 	relaySocketMaxPerListener = 256
@@ -109,12 +114,17 @@ const (
 	// clients together, the replica's count (relaySockets.buffered) of the bytes each socket took
 	// and has not yet written: 256 MiB, a quarter of the listener container's default 1Gi
 	// (infra/gcp, defaultClusteredHubListenerMemory), whoever opened the sockets. The frame that
-	// would take the count past it closes its socket 1013 slow_consumer,
-	// so one person's many slow sockets cannot hold more, though they can close other sockets of
-	// the replica while they fill it. Beside it, each socket remembers at most
-	// relaySocketMaxReplies receipt subjects of about 150 bytes each, about 150 KiB a socket and
-	// 38 MiB for relaySocketMaxPerListener of them, which the count does not hold.
+	// would take the count past it closes its socket 1013 slow_consumer. Beside it, each socket
+	// remembers at most relaySocketMaxReplies receipt subjects of about 150 bytes each, about
+	// 150 KiB a socket and 38 MiB for relaySocketMaxPerListener of them, which the count does not
+	// hold.
 	relaySocketReplicaPendingBytes = 256 << 20
+	// relaySocketCallerPendingBytes bounds what one caller's sockets on a replica hold for their
+	// clients together (relayCaller.buffered): a quarter of the replica's budget, 64 MiB, so one
+	// person's many slow sockets fill at most that share of it, and no one caller alone closes
+	// other callers' sockets by filling it. The frame that would take a caller past it closes its
+	// socket 1013 slow_consumer.
+	relaySocketCallerPendingBytes = relaySocketReplicaPendingBytes / 4
 	// relayFrameMaxBytes is the largest message the hub carries (nats-server's max_payload, 1 MiB),
 	// and so the largest relay frame.
 	relayFrameMaxBytes = 1 << 20
@@ -196,11 +206,12 @@ type relaySockets struct {
 	relaySocketCheckEvery time.Duration
 	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener),
 	// pendingMsgs and pendingBytes what one socket holds for its client
-	// (relaySocketPendingMsgs, relaySocketPendingBytes), and budget what all of them hold
-	// together (relaySocketReplicaPendingBytes); only a test changes them.
+	// (relaySocketPendingMsgs, relaySocketPendingBytes), budget what all of them hold together
+	// (relaySocketReplicaPendingBytes), and callerBudget what one caller's hold together
+	// (relaySocketCallerPendingBytes); only a test changes them.
 	maxSockets                int
 	pendingMsgs, pendingBytes int
-	budget                    int64
+	budget, callerBudget      int64
 	// buffered is the bytes every socket of the replica holds for its client, which budget
 	// bounds (relaySocket.enqueue).
 	buffered atomic.Int64
@@ -208,10 +219,32 @@ type relaySockets struct {
 	// verifier's.
 	now func() time.Time
 
-	mu      sync.Mutex
-	open    map[string]map[*relaySocket]struct{}
+	mu   sync.Mutex
+	open map[string]map[*relaySocket]struct{}
+	// callers is each caller holding a socket open, by relayCallerKey.
+	callers map[string]*relayCaller
 	count   int
 	stopped bool
+}
+
+// relayCaller is one caller's sockets on the replica: how many are open, under relaySockets.mu,
+// and the bytes they hold for their clients, which relaySockets.callerBudget bounds. It is
+// forgotten once its last socket is released. A frame such a socket's pump is still writing
+// then gives its bytes back to the record forgotten, and a socket the caller opens meanwhile is
+// counted under a fresh one: what that leaves out is the frame of each socket being closed, until
+// its write returns.
+type relayCaller struct {
+	sockets  int
+	buffered atomic.Int64
+}
+
+// relayCallerKey is the caller a socket's sockets and bytes are counted against: its person, or
+// the service its token names when it names no person (a Caller names one of the two).
+func relayCallerKey(caller ciphertoken.Caller) string {
+	if caller.Person != "" {
+		return "person " + caller.Person
+	}
+	return "service " + caller.Service
 }
 
 // newRelaySockets serves relay sockets on client's connection, admitting the callers brokers
@@ -235,8 +268,10 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 		pendingMsgs:           relaySocketPendingMsgs,
 		pendingBytes:          relaySocketPendingBytes,
 		budget:                relaySocketReplicaPendingBytes,
+		callerBudget:          relaySocketCallerPendingBytes,
 		now:                   time.Now,
 		open:                  map[string]map[*relaySocket]struct{}{},
+		callers:               map[string]*relayCaller{},
 	}
 }
 
@@ -256,7 +291,8 @@ func relaySocketRoute(sockets *relaySockets) http.Handler {
 // it is one NATS subject token (natsgrant.SessionToken), since its relay subject would otherwise be
 // a wildcard, or reach under another session's, on this replica's connection; then it is held to
 // the token's session, and the upgrade is refused 400 without the subprotocol, 429 past
-// relaySocketMaxPerSession and 503 once the listener is stopping.
+// relaySocketMaxPerSession or relaySocketMaxPerCaller, and 503 past the replica's cap of sockets or
+// once the listener is stopping (admit).
 func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -331,9 +367,10 @@ func (s *relaySockets) attach(socket *relaySocket, conn *websocket.Conn) bool {
 	return true
 }
 
-// admit records socket as open, or answers the status it is refused with: 503 once the listener
-// is stopping or holds its cap of sockets (maxSockets), on which the client opens it on another
-// replica, and 429 when its session already holds relaySocketMaxPerSession.
+// admit records socket as open, counted against its session and its caller, or answers the status
+// it is refused with: 503 once the listener is stopping or holds its cap of sockets (maxSockets),
+// on which the client opens it on another replica, and 429 when its session already holds
+// relaySocketMaxPerSession or its caller relaySocketMaxPerCaller.
 func (s *relaySockets) admit(socket *relaySocket) (int, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -344,6 +381,11 @@ func (s *relaySockets) admit(socket *relaySocket) (int, string) {
 	if len(held) >= relaySocketMaxPerSession {
 		return http.StatusTooManyRequests, "this session already holds the most relay sockets a replica serves it"
 	}
+	key := relayCallerKey(socket.admitted)
+	caller := s.callers[key]
+	if caller != nil && caller.sockets >= relaySocketMaxPerCaller {
+		return http.StatusTooManyRequests, "this token's person or service already holds the most relay sockets a replica serves one"
+	}
 	if s.count >= s.maxSockets {
 		return http.StatusServiceUnavailable, "this replica holds the most relay sockets it serves; open the socket again on another replica"
 	}
@@ -351,7 +393,13 @@ func (s *relaySockets) admit(socket *relaySocket) (int, string) {
 		held = map[*relaySocket]struct{}{}
 		s.open[socket.session] = held
 	}
+	if caller == nil {
+		caller = &relayCaller{}
+		s.callers[key] = caller
+	}
 	held[socket] = struct{}{}
+	caller.sockets++
+	socket.caller = caller
 	s.count++
 	return 0, ""
 }
@@ -360,12 +408,17 @@ func (s *relaySockets) admit(socket *relaySocket) (int, string) {
 func (s *relaySockets) release(socket *relaySocket) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, held := s.open[socket.session][socket]; held {
-		s.count--
+	if _, held := s.open[socket.session][socket]; !held {
+		return
 	}
+	s.count--
 	delete(s.open[socket.session], socket)
 	if len(s.open[socket.session]) == 0 {
 		delete(s.open, socket.session)
+	}
+	socket.caller.sockets--
+	if socket.caller.sockets == 0 {
+		delete(s.callers, relayCallerKey(socket.admitted))
 	}
 }
 
@@ -404,6 +457,9 @@ type relaySocket struct {
 	// admitted is the caller the upgrade was admitted as, which every later answer is compared
 	// with.
 	admitted ciphertoken.Caller
+	// caller is the admitted caller's count on the replica, set by admit: its sockets and the
+	// bytes they hold.
+	caller *relayCaller
 	// expires is when the upgrade's answer said the token stops being live, zero when it named no
 	// expiry.
 	expires time.Time
@@ -425,9 +481,10 @@ type relaySocket struct {
 
 	// queueMu guards queue, the frames the socket took from its subscription and has not yet
 	// begun to write, oldest first, and heldMsgs and heldBytes, what it holds for its client: the
-	// queue and the frame the pump is writing. enqueue adds to them, and to the replica's count
-	// (relaySockets.buffered), and settle alone takes from all three, for the pump's frame and
-	// for the queue end drops. wake tells the pump the queue holds a frame.
+	// queue and the frame the pump is writing. enqueue adds to them, and to its caller's count and
+	// the replica's (relayCaller.buffered, relaySockets.buffered), and settle alone takes from all
+	// of them, for the pump's frame and for the queue end drops. wake tells the pump the queue
+	// holds a frame.
 	queueMu   sync.Mutex
 	queue     []queuedFrame
 	heldMsgs  int

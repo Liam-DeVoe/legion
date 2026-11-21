@@ -96,8 +96,8 @@ type relaySocketRigConfig struct {
 	// own by default.
 	pendingMsgs, pendingBytes int
 	// budget is what the replica's sockets together may hold, relaySocketReplicaPendingBytes by
-	// default.
-	budget int64
+	// default, and callerBudget what one caller's may, relaySocketCallerPendingBytes by default.
+	budget, callerBudget int64
 }
 
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
@@ -118,6 +118,10 @@ func withPendingLimits(msgs, bytes int) relaySocketRigOption {
 
 func withReplicaBudget(bytes int64) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.budget = bytes }
+}
+
+func withCallerBudget(bytes int64) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.callerBudget = bytes }
 }
 
 func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySocketRig {
@@ -181,6 +185,9 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	if config.budget > 0 {
 		sockets.budget = config.budget
 	}
+	if config.callerBudget > 0 {
+		sockets.callerBudget = config.callerBudget
+	}
 	sockets.now = clock.now
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: client, relaySockets: sockets}, "edge-b", logger)
@@ -238,6 +245,16 @@ func (rig *relaySocketRig) open(t *testing.T, session string) (*relaySocketClien
 	token := "access-token-of-" + session + "-" + t.Name()
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
 	return rig.openWith(t, session, token), token
+}
+
+// openAs is open for a session of person, another person than the rig's.
+func (rig *relaySocketRig) openAs(t *testing.T, person, session string) *relaySocketClient {
+	t.Helper()
+	token := "access-token-of-" + session + "-" + t.Name()
+	answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+	answer.Person = person
+	rig.broker.Says(token, answer)
+	return rig.openWith(t, session, token)
 }
 
 // openWith opens session's socket with token, failing the test unless the upgrade admits it.

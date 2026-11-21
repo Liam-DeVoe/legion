@@ -1,0 +1,103 @@
+package main
+
+// relay_socket_caller_test.go holds the relay socket's in-process rows of what one caller takes
+// from a replica: at most its cap of the replica's sockets (relaySocketMaxPerCaller) and its share
+// of the replica's byte budget (relaySocketCallerPendingBytes). They run on the rig of
+// relay_socket_fixture_test.go.
+
+import (
+	"net/http"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// relaySocketOtherPerson is a second person, whose sockets the rows hold apart from the rig's.
+const relaySocketOtherPerson = "another-outside@example.com"
+
+// One person holds at most relaySocketMaxPerCaller sockets on a replica, over all of their
+// sessions, and the next is refused 429, so other people still open theirs. The replica's cap here
+// is one place more than that: one person opens their cap over four sessions of their own, their
+// next socket is refused 429, and another person's socket opens in the last place and is sent its
+// frame. Control: admit counting no caller; the person's next socket takes the last place, and the
+// row fails naming it.
+func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withMaxSockets(relaySocketMaxPerCaller+1))
+	sessionOf := func(i int) string { return "ses_edge_many_" + strconv.Itoa(i/relaySocketMaxPerSession) }
+	for i := range relaySocketMaxPerCaller {
+		rig.open(t, sessionOf(i))
+	}
+	next := sessionOf(relaySocketMaxPerCaller)
+	token := "access-token-of-" + next
+	rig.broker.Says(token, relaySocketAnswer(next, rig.caller.JKT(), time.Hour, relaySocketProject))
+	if _, response, err := rig.dialAs(t, next, rig.upgradeHeader(t, next, token), relaySubprotocol); err == nil || response == nil || response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the person's socket past their cap of %d = %v (%s), want 429", relaySocketMaxPerCaller, err, describeUpgrade(response))
+	}
+
+	const other = "ses_edge_other_person"
+	client := rig.openAs(t, relaySocketOtherPerson, other)
+	client.sub(1, bus.DeliverSubject(other))
+	client.ping()
+	<-client.pongs
+	sent := publishRelayFrame(t, rig.owner.url, other, natsgo.Header{})
+	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != sent.Reply {
+		t.Fatalf("the other person's socket was sent %s, want the msg %s", frame.raw, sent.Reply)
+	}
+}
+
+// What one person's sockets on a replica hold for their clients together stays within their share
+// of its budget (relaySocketCallerPendingBytes; here 2 MiB of 8 MiB), so their slow clients cannot
+// fill the budget another person's socket needs. The person's four sockets are held from writing:
+// each pump's write waits on its socket's write lock, which the row holds, so every frame sent to
+// them stays counted. They are sent 15 frames of 512 KiB, past their share and within the budget,
+// and past the share their sockets close 1013 slow_consumer. Another person's socket, open all the
+// while, is then sent one frame of 512 KiB, and receives it. Control: enqueue reserving nothing of
+// the caller's share; the person's sockets hold all 15 frames, the other person's frame would take
+// the replica past its budget, and the row fails naming that socket's close.
+func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
+	const budget, share = 8 << 20, 2 << 20
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(budget), withCallerBudget(share))
+	const other = "ses_edge_share_other"
+	client := rig.openAs(t, relaySocketOtherPerson, other)
+	client.sub(1, bus.DeliverSubject(other))
+	client.ping()
+	<-client.pongs
+
+	sent := []int{4, 4, 4, 3}
+	sockets := make([]*relaySocket, len(sent))
+	for i := range sent {
+		session := "ses_edge_share_" + strconv.Itoa(i)
+		held, _ := rig.open(t, session)
+		held.sub(1, bus.DeliverSubject(session))
+		held.ping()
+		<-held.pongs
+		sockets[i] = rig.openSocket(t, session)
+		sockets[i].writeMu.Lock()
+		t.Cleanup(sync.OnceFunc(sockets[i].writeMu.Unlock))
+	}
+	for i, n := range sent {
+		flood(t, rig.owner.url, sockets[i].session, n)
+	}
+	// Each socket has either taken every frame sent to it or closed.
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		for i, socket := range sockets {
+			if frames, _ := socket.held(); !socket.ended.Load() && frames != sent[i] {
+				return false
+			}
+		}
+		return true
+	}) {
+		t.Fatal("the person's sockets neither took the frames sent to them nor closed within 10 s")
+	}
+	t.Logf("the person's sockets hold %d bytes of their %d share; the replica holds %d of its %d", sockets[0].caller.buffered.Load(), share, rig.sockets.buffered.Load(), budget)
+
+	flood(t, rig.owner.url, other, 1)
+	if frame := client.next(5 * time.Second); frame.Op != "msg" {
+		t.Fatalf("the other person's socket was sent %s, want its msg", frame.raw)
+	}
+}

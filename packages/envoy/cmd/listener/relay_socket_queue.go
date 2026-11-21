@@ -2,13 +2,15 @@ package main
 
 // relay_socket_queue.go is what a relay socket holds for its client: the frames its subscription
 // delivered and it has not yet written, in a queue of its own that one writer (pump) drains in
-// order, counted against the socket's own limits and the replica's budget
-// (relaySocketPendingMsgs, relaySocketPendingBytes, relaySocketReplicaPendingBytes).
+// order, counted against the socket's own limits, its caller's share and the replica's budget
+// (relaySocketPendingMsgs, relaySocketPendingBytes, relaySocketCallerPendingBytes,
+// relaySocketReplicaPendingBytes).
 
 import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/nats-io/nats.go"
 )
@@ -23,8 +25,9 @@ type queuedFrame struct {
 }
 
 // enqueue holds msg for the client, unless it would take the socket past what one socket holds
-// (pendingMsgs, pendingBytes) or the replica past what all of its sockets hold together (budget):
-// either closes the socket 1013 slow_consumer instead, and its client opens it again after 5 s.
+// (pendingMsgs, pendingBytes), its caller past what all of its sockets hold together
+// (callerBudget), or the replica past what all of its sockets hold together (budget): each closes
+// the socket 1013 slow_consumer instead, and its client opens it again after 5 s.
 func (socket *relaySocket) enqueue(sid int64, msg *nats.Msg) {
 	bytes := msg.Size()
 	sockets := socket.sockets
@@ -38,7 +41,13 @@ func (socket *relaySocket) enqueue(sid int64, msg *nats.Msg) {
 		socket.endSlowConsumer("it holds the most a socket holds for its client")
 		return
 	}
-	if !sockets.reserve(bytes) {
+	if !reserveBytes(&socket.caller.buffered, bytes, sockets.callerBudget) {
+		socket.queueMu.Unlock()
+		socket.endSlowConsumer("its caller's sockets hold the most one caller's sockets hold together")
+		return
+	}
+	if !reserveBytes(&sockets.buffered, bytes, sockets.budget) {
+		socket.caller.buffered.Add(-int64(bytes))
 		socket.queueMu.Unlock()
 		socket.endSlowConsumer("the replica's sockets hold the most they hold together")
 		return
@@ -53,15 +62,15 @@ func (socket *relaySocket) enqueue(sid int64, msg *nats.Msg) {
 	}
 }
 
-// reserve counts bytes more as held by the replica's sockets, unless that would take the count past
-// budget, and reports whether it did: the count never passes the budget, even for a moment.
-func (s *relaySockets) reserve(bytes int) bool {
+// reserveBytes counts bytes more on count, unless that would take it past bound, and reports
+// whether it did: the count never passes its bound, even for a moment.
+func reserveBytes(count *atomic.Int64, bytes int, bound int64) bool {
 	for {
-		held := s.buffered.Load()
-		if held+int64(bytes) > s.budget {
+		held := count.Load()
+		if held+int64(bytes) > bound {
 			return false
 		}
-		if s.buffered.CompareAndSwap(held, held+int64(bytes)) {
+		if count.CompareAndSwap(held, held+int64(bytes)) {
 			return true
 		}
 	}
@@ -111,14 +120,17 @@ func (socket *relaySocket) pump() {
 	}
 }
 
-// settle gives back frames the socket no longer holds, and their bytes, to the socket's count and
-// the replica's: the frame the pump has written, or tried to, and the frames drop forgot. It is the
-// one place either count goes down, as enqueue, through reserve, is the one place each goes up.
+// settle gives back frames the socket no longer holds, and their bytes, to the socket's count, its
+// caller's and the replica's: the frame the pump has written, or tried to, and the frames drop
+// forgot. It is the one place a held frame leaves any of the counts, as enqueue, through
+// reserveBytes, is the one place each takes it (and gives the caller's back at once when the
+// replica's budget refuses the frame).
 func (socket *relaySocket) settle(frames, bytes int) {
 	socket.queueMu.Lock()
 	socket.heldMsgs -= frames
 	socket.heldBytes -= bytes
 	socket.queueMu.Unlock()
+	socket.caller.buffered.Add(-int64(bytes))
 	socket.sockets.buffered.Add(-int64(bytes))
 }
 
