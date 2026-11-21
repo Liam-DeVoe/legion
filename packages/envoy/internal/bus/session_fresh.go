@@ -94,9 +94,7 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 				(*observe)(op, outcome)
 			}
 		},
-		Metadata: func(sessionID string) map[string]string {
-			return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
-		},
+		Metadata: sessionConsumerMetadata,
 		// Every setting a session consumer's create gives that no correction reaches, which the
 		// server's own answer shows (ConsumerAdoptable): a pull consumer at the server's default
 		// max waiting, explicit acks, instant replay, whole messages and no heartbeat among them. Its
@@ -107,6 +105,13 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		},
 	})
 	return fresh
+}
+
+// sessionConsumerMetadata is the metadata every fresh-mode consumer of sessionID carries, which its
+// create writes (freshCreate) and the owner check requires (consumernames.Config.Metadata): both
+// read it here, so a key added to one is in the other.
+func sessionConsumerMetadata(sessionID string) map[string]string {
+	return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
 }
 
 // SelectionStore is the session family's selection bucket (consumernames.SessionBucket) through c's
@@ -269,7 +274,7 @@ func (s *SessionConsumers) freshCreate(sessionID string, filters []string, resul
 			Durable:       name,
 			DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
 			OptStartSeq:   startSeq,
-			Metadata:      map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID},
+			Metadata:      sessionConsumerMetadata(sessionID),
 		}
 		s.applySettings(&config, filters)
 		s.pendingMu.Lock()

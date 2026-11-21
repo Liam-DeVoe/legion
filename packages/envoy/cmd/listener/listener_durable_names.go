@@ -76,7 +76,7 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			return info.Config.Metadata[bus.StreamIDMetadataKey], nil
 		},
 		CheckKey: consumernames.CheckDurableKey,
-		Metadata: func(string) map[string]string { return map[string]string{consumernames.LogicalMetadataKey: durable} },
+		Metadata: func(string) map[string]string { return durableMetadata(durable) },
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 		// Every setting the durable's create gives that no correction reaches, which the server's
 		// own answer shows (bus.Client.ConsumerAdoptable): a push consumer delivering to a reply
@@ -93,6 +93,13 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			return err
 		},
 	})
+}
+
+// durableMetadata is the metadata every fresh-mode consumer of the listener's durable named durable
+// carries, which its create writes (ensureFreshDurable) and the owner check requires
+// (consumernames.Config.Metadata): both read it here, so a key added to one is in the other.
+func durableMetadata(durable string) map[string]string {
+	return map[string]string{consumernames.LogicalMetadataKey: durable}
 }
 
 // boundedContext is ctx with durableNamesTimeout when it carries no deadline.
@@ -150,7 +157,7 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	sel, created, err := names.Ensure(ctx, key, consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
 			config := listenerDurableConfig(name, subjects)
-			config.Metadata = map[string]string{consumernames.LogicalMetadataKey: durable}
+			config.Metadata = durableMetadata(durable)
 			switch start.Native {
 			case consumernames.NativeAll:
 				config.DeliverPolicy = nats.DeliverAllPolicy
