@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -350,6 +354,134 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 	if len(edits) != 1 || !edits[0].quiet || edits[0].notify || !edits[0].actor.SameAs(alice) {
 		t.Fatalf("the reopen's ask.edited events = %+v, want one quiet move in the name of %+v that notifies nobody", edits, alice)
 	}
+}
+
+// TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsText with the order its
+// two settlements of the undo can run in under load forced. alice's undo arms the room's own
+// settlement; the resumption the test then runs (ResumeOwedSettlementsForTest) picks the spec's
+// pending row while that settlement has queued its version, past its last check of the room's
+// generation and before its write phase deletes the row, and arms a settlement of its own behind
+// it. The first commits, keeping alice as the closed issue's edit source
+// (doc_closed_edit_sources); the second then finds no pending row, settles nothing owed and credits
+// SettlementActor. It must leave alice kept: the reopen moves the request in the name of the editor
+// kept, and a second settlement that deleted her made that move the settlement's, not alice's.
+// The room's observer arms that settlement as the room takes the undo, before the room's
+// persistence appends it, which writes the pending row; a settlement that takes the document's
+// lock first stores the undo itself and deletes the row it writes, which the resumption then never
+// sees. So the first settlement is held as it starts (BeforeSettleStartForTest) until the store
+// holds the undo, then held in its version's queue (AfterSettleVersionWriteForTest) while the
+// resumption picks the row, and the second is held at its owner lock (AfterSettleLockForTest)
+// while the row reads what the first left kept; the reopen takes that lock after the second, so
+// it reads what the second left.
+func TestAReopenNamesThePersonWhenTheResumptionSettlesTheClosedUndoAgainBehindTheRoom(t *testing.T) {
+	handler, database, documentService := newClosedSettlementHandler(t)
+	// Set before anything settles, since a settlement reads its hooks unlocked. Each holds one
+	// settlement of the spec, once armed; spec is written before any is armed.
+	var spec string
+	var holdStart, holdVersion, holdLock atomic.Bool
+	firstStarted, versionQueued, secondLocked := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseStart, releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseStartOnce, releaseFirstOnce, releaseSecondOnce sync.Once
+	letFirstStart := func() { releaseStartOnce.Do(func() { close(releaseStart) }) }
+	letFirstGo := func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }
+	letSecondGo := func() { releaseSecondOnce.Do(func() { close(releaseSecond) }) }
+	t.Cleanup(letFirstStart)
+	t.Cleanup(letFirstGo)
+	t.Cleanup(letSecondGo)
+	documentService.BeforeSettleStartForTest(func(room string) {
+		if holdStart.Load() && room == spec && holdStart.CompareAndSwap(true, false) {
+			close(firstStarted)
+			<-releaseStart
+		}
+	})
+	documentService.AfterSettleVersionWriteForTest(func(room string) error {
+		if holdVersion.Load() && room == spec && holdVersion.CompareAndSwap(true, false) {
+			close(versionQueued)
+			<-releaseFirst
+		}
+		return nil
+	})
+	documentService.AfterSettleLockForTest(func(room string) {
+		if holdLock.Load() && room == spec && holdLock.CompareAndSwap(true, false) {
+			close(secondLocked)
+			<-releaseSecond
+		}
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "A requested text written back while closed", "Context\n")
+	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
+	spec = f.spec
+	awaitSettled(t, database, f.spec)
+	request := requestApproval(t, handler, f.spec)
+	named := request.Approval.Version
+
+	f.peer = connectBrowserPeer(t, documentService, f.spec)
+	closeIssueThroughPatch(t, handler, database, issue.Key)
+	awaitSettled(t, database, f.spec)
+	if edited := settleClosedEdit(t, f, replaceFirstParagraph("Context", "Context, edited in the margin")); edited != named+1 {
+		t.Fatalf("the closed issue's settlement of the edit left the spec at version %d, want %d", edited, named+1)
+	}
+
+	// The undo, which the room's own settlement versions: held as it starts until the store holds
+	// the undo and its pending row, and then once its version is queued.
+	holdStart.Store(true)
+	holdVersion.Store(true)
+	stored := storedUpdateCount(t, database, f.spec)
+	f.peer.edit(t, replaceFirstParagraph("Context, edited in the margin", "Context"))
+	f.peer.barrier(t)
+	testwait.Receive(t, "the room's settlement of the undo to start", firstStarted)
+	awaitStoredUpdates(t, database, f.spec, stored+1)
+	letFirstStart()
+	testwait.Receive(t, "the room's settlement of the undo to queue its version", versionQueued)
+	if err := documentService.ResumeOwedSettlementsForTest(context.Background(), 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlements: %v", err)
+	}
+	var picked bool
+	if err := database.Pool.QueryRow(context.Background(),
+		`select tried_at is not null from doc_settlements_pending where artifact_id = $1`, f.spec).Scan(&picked); err != nil || !picked {
+		t.Fatalf("the resumption picked the spec's pending row = %t (%v), want it picked while the room's settlement holds its version unwritten", picked, err)
+	}
+	holdLock.Store(true)
+	letFirstGo()
+	awaitSettled(t, database, f.spec)
+	testwait.Receive(t, "the resumption's settlement of the spec to take the owner lock the first released", secondLocked)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if kept := keptClosedEditSource(t, database, f.spec); kept == nil || !kept.SameAs(alice) {
+		t.Fatalf("the room's settlement of the undo kept %+v as the spec's closed edit source, want alice: this row is for the settlement after it", kept)
+	}
+	letSecondGo()
+
+	seq := latestIssueSeq(t, database, issue.Key)
+	reopenAndSettle(t, f, issue.Key)
+	if restored := readCarriedAsk(t, handler, request.ID); restored.Approval.Version != named+2 {
+		t.Fatalf("restored request at version %d, want %d, the undo's", restored.Approval.Version, named+2)
+	}
+	var edits []loggedEvent
+	for _, event := range issueEventsAfter(t, database, issue.Key, seq) {
+		if event.kind == "ask.edited" {
+			edits = append(edits, event)
+		}
+	}
+	if len(edits) != 1 || !edits[0].quiet || edits[0].notify || !edits[0].actor.SameAs(alice) {
+		t.Fatalf("the reopen's ask.edited events = %+v, want one quiet move in the name of %+v that notifies nobody", edits, alice)
+	}
+}
+
+// keptClosedEditSource is the editor doc_closed_edit_sources keeps for document, nil for none.
+func keptClosedEditSource(t *testing.T, database *store.Store, document string) *model.Actor {
+	t.Helper()
+	var raw []byte
+	err := database.Pool.QueryRow(context.Background(), `select last_actor from doc_closed_edit_sources where artifact_id = $1`, document).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the closed edit source of %s: %v", document, err)
+	}
+	var kept model.Actor
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatalf("decode the closed edit source of %s: %v", document, err)
+	}
+	return &kept
 }
 
 // Only a settlement's version keeps an approval request waiting on the person when it stores byte
