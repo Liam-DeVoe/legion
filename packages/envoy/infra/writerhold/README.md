@@ -71,7 +71,9 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
 
 1. The preflight: the render from ConfigMap `envoy-nats-config` and StatefulSet `envoy-nats`, the
    minter report, each server's `/varz`, `/routez`, `/leafz` and `/gatewayz`, and each protected
-   stream.
+   stream. While the row is still `prepare`, the probe runs once and must be admitted, so its
+   refusal in the hold cannot come from its own credential; a probe the hub refuses here stops
+   `hold set`, naming the probe's error, before its intent and its move of the row.
 2. The row moves to `held`; the probe is refused.
 3. The writer census: complete listings, literal destinations, push consumers, sources and message
    schedules.

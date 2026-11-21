@@ -425,12 +425,13 @@ func onExpectedDisks(ctx context.Context, op *Operator, d holdrecord.Done) error
 
 // set is `hold set`: with --workflow, a hold with no prepare step, it first prepares one
 // (startHold) and runs the preflight at once; with --hold, it sets the prepared hold. Its steps,
-// each a reading of the hub itself (§3a): the preflight under the prepare grant, its intent with
-// the row still prepare, the row moved to held, then, under the held grant, the probe's refusal,
-// the writer census, the restart of every declared server with its proof, the meta barrier and
-// the census inside it, and the report; then its done entry. A refusal after its intent writes a
-// stop entry, so `hold set`'s rerun, `hold abort` in hub-restore, or `hold release` with nothing
-// changed is admitted. A rerun that finds the row held under its hold id runs the held steps again.
+// each a reading of the hub itself (§3a): the preflight under the prepare grant, with the probe's
+// first run, which must be admitted, its intent with the row still prepare, the row moved to held,
+// then, under the held grant, the probe's refusal, the writer census, the restart of every declared
+// server with its proof, the meta barrier and the census inside it, and the report; then its done
+// entry. A refusal after its intent writes a stop entry, so `hold set`'s rerun, `hold abort` in
+// hub-restore, or `hold release` with nothing changed is admitted. A rerun that finds the row held
+// under its hold id runs the held steps again.
 func set(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
 	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
 		return err
@@ -501,6 +502,11 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		return nil, stop(unknownf(StepPreflight, err, "connect to the hub as the operator"))
 	}
 	defer func() { nc.Close() }()
+	if row.Phase == natsgrant.OperatorPhasePrepare {
+		if err := probeAdmitted(ctx, op); err != nil {
+			return nil, stop(err)
+		}
+	}
 	render, err := Precondition(ctx, op.Hub)
 	if err != nil {
 		return nil, stop(err)
@@ -583,6 +589,17 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		return nil, err
 	}
 	return reading, nil
+}
+
+// probeAdmitted is the probe's first run, outside the hold, with the row still prepare: it connects
+// to the hub and must be admitted, so the probe's refusal in the hold (step 2 and each restarted
+// server's proof) cannot come from its own credential, an expired token or a probe entry the auth
+// service does not list (plan §3a step 2). Any error refuses the hold, naming it.
+func probeAdmitted(ctx context.Context, op *Operator) error {
+	if err := op.Probe(ctx, strings.Join(op.URLs, ",")); err != nil {
+		return refusef(StepProbe, "the hold's probe was not admitted outside the hold, so its refusal in the hold would not show the hold's: %v", err)
+	}
+	return nil
 }
 
 // censusReadings bounds how many times the writer census is read while its answer is not whole,

@@ -3332,7 +3332,9 @@ writes the hold takes `--signing-key-secret`; `set` and `prove` take `--nats` (r
 `--statefulset` (`envoy-nats`) and `--configmap` (`envoy-nats-config`), read with the in-cluster
 configuration or KUBECONFIG's. `hold set` runs §3a's steps: the preflight (the render, the minter
 report against `envoy-operator/envoy-operator-accepted-minters`, each server's monitoring reads,
-each protected stream), the row moved to held, the probe refused, the writer census, the restart of
+each protected stream, and the probe's first run, which must be admitted while the row is still
+prepare, so its refusal in the hold cannot come from its own credential), the row moved to held,
+the probe refused, the writer census, the restart of
 every declared server by eviction with its proof, the next eviction only once each present
 protected stream's group is led with every copy current, the meta barrier and the report that only
 the operator and the auth service remain. Every held command that fails after its intent writes a
