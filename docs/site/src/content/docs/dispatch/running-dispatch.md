@@ -1119,15 +1119,19 @@ is theirs, listing their own machine logins alone: there they approve, at their 
 login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
 ends for them no other credential. The API refuses them, and every token they make, every read of
 the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
-but for those calls at their browser, and except that they revoke their own credential grants and
-end their own sign-ins, as a full member does: the secrets broker decides whose each one is. The
-secrets broker holds their agents' tokens to one project, which
-their agents name in `AGENT_SECRETS_PROJECTS`. Taking such a person off a project's list ends
-their tokens for it within 325 seconds, since the broker checks every trade against Dispatch, and
-Dispatch then revokes their machine logins at the broker, after the removal commits and again until
-the broker confirms; the log line `the secrets broker revoked the machine logins of a restricted
-member taken off an access list` records each, and the person approves a new machine login for a
-project that still lists them.
+except that they revoke their own credential grants and end their own sign-ins, as a full member
+does: the secrets broker decides whose each one is. The machine-login calls are theirs at their
+browser alone: through a token of theirs each one, the list `GET /api/v1/machine-logins` included,
+is `403 OAUTH_SCOPE_REQUIRED` where the token lacks the call's scopes, as their agent's token does,
+and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
+project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
+their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
+for it within 325 seconds, since the broker checks every trade against Dispatch. A removal that
+leaves them on no project's list also has Dispatch revoke their machine logins at the broker, after
+the removal commits and again until the broker confirms; the log line `the secrets broker revoked
+the machine logins of a restricted member taken off an access list` records each. A removal that
+leaves them on another project's list ends no login: their logins keep serving the projects that
+still list them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project

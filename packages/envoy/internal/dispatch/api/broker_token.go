@@ -449,14 +449,18 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// restricted member's machine login trades for one too: a person's own credential made that
 	// one, and it is held to that person's account (brokerPersonAdmitted, personCredential), but it
 	// is the outside person's agent held to the one project they work on, which acts in that
-	// project and settles nothing of the person's own, so it holds no scope either. A token that
+	// project and settles nothing of the person's own, so it holds no scope either. A restricted
+	// member's token the broker scoped to their person gets none for the same reason: a broker whose
+	// project check is off, an older broker during a rollout, or a token minted before the broker
+	// held restricted members to one project can still answer one, and brokerPersonAdmitted has read
+	// the member's kind above, so the scope does not rest on the broker's check alone. A token that
 	// names a service and no person gets none either, whatever scope the broker answered: there
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person. A read-only token is
 	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
 	// never as a scope a route could require.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson {
+	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson && !admission.Restricted {
 		scopes = model.Scopes
 	}
 	actor := model.Actor{

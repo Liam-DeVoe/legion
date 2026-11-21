@@ -41,15 +41,15 @@ import (
 )
 
 // restrictedOwnLoginRoutes are the rows of the deployment a restricted member reaches, and at a
-// browser alone (withinProjectScope for the writes, withinReadScope for the read): the lookup of a
-// machine login by the code its machine shows and that login's approve and deny, and the list of
-// their machine logins and the revoke of one. Each handler then holds the member to a machine login
-// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). Through a
-// token a restricted member is refused every one of them: 403 OAUTH_SCOPE_REQUIRED where the token
-// lacks the row's scopes (gateRouteScopes, which runs first), as their agent's named token holds
-// none, and 403 RESTRICTED_MEMBER otherwise (refuseDeploymentWrite for the writes,
-// restrictedOwnLoginRefusal for the read), so no agent of theirs decides, lists or ends any
-// credential, their own machine's included.
+// browser alone (restrictedOwnLoginAtBrowser, which both gates read: withinProjectScope for the
+// writes, withinReadScope for the read): the lookup of a machine login by the code its machine
+// shows and that login's approve and deny, and the list of their machine logins and the revoke of
+// one. Each handler then holds the member to a machine login of their own (ownMachineLogin for a
+// pending one, ownMachineLogins for an issued one). Through a token a restricted member is refused
+// every one of them: 403 OAUTH_SCOPE_REQUIRED where the token lacks the row's scopes
+// (gateRouteScopes, which runs first), as their agent's named token holds none, and 403
+// RESTRICTED_MEMBER otherwise (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or
+// ends any credential, their own machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,
@@ -58,12 +58,24 @@ var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/machine-logins/{id}/revoke":         true,
 }
 
-// restrictedOwnLoginRefusal answers a restricted member's read of a row of restrictedOwnLoginRoutes
-// through a token rather than their browser: 403 RESTRICTED_MEMBER, naming the row. A write of one is
-// refused by withinProjectScope instead (refuseDeploymentWrite).
-func restrictedOwnLoginRefusal(w http.ResponseWriter, method, pattern string) {
+// restrictedOwnLoginAtBrowser is the one rule of a restricted member's call of a row of
+// restrictedOwnLoginRoutes, which both gates read. governed reports whether it decides the call:
+// the row is one of them and viewer is a restricted member's. allowed reports whether the call
+// reaches the handler: the member is at their browser (atBrowser) and the request holds their
+// writes to no list (writesHeldTo). A governed call that is not allowed is refused
+// restrictedOwnLoginRefusal, by either gate; an ungoverned one meets the gate's own rule.
+func restrictedOwnLoginAtBrowser(route apiRoute, viewer *model.Viewer, r *http.Request) (governed, allowed bool) {
+	if !restrictedOwnLoginRoutes[route.Method+" "+route.Pattern] || viewer == nil || !viewer.Restricted {
+		return false, false
+	}
+	return true, atBrowser(r) && len(writesHeldTo(viewer, resolvedCredential(r.Context()))) == 0
+}
+
+// restrictedOwnLoginRefusal answers a restricted member's call of a row of restrictedOwnLoginRoutes
+// other than at their browser: 403 RESTRICTED_MEMBER, naming the row.
+func restrictedOwnLoginRefusal(w http.ResponseWriter, route apiRoute) {
 	writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
-		"a restricted member reaches %s %s at their browser alone, for a machine login of their own, and never through a token", method, pattern))
+		"a restricted member reaches %s %s at their browser alone, for a machine login of their own, and never through a token", route.Method, route.Pattern))
 }
 
 // restrictedCaller reports whether the caller is a restricted member, read from the reader the

@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// A removal that takes a restricted member off an access list owes the secrets broker the
-// revocation of the member's machine logins (recordMachineLoginRevocation, migration
+// A removal that takes a restricted member off their last access list owes the secrets broker the
+// revocation of the member's machine logins (removePerson, recordMachineLoginRevocation, migration
 // 20261120150130), and the broker revocation loop pays it after the commit (revokeOwedMachineLogins),
 // beside the revocations of replaced accounts and on the same wake. Nothing the 325-second bound on
 // a removal rests on waits for it: every trade of a restricted member's machine login names one

@@ -165,19 +165,19 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // member makes them as a full member does, and only a credential that lists projects, or whose
 // writes are held to a list, is refused them; the broker decides whose each grant or sign-in is, for
 // every caller alike. The rows that decide, list or end a machine login (restrictedOwnLoginRoutes)
-// are a restricted member's at a browser alone, whose handlers hold that member to a login of
-// their own: never their personal token and never a broker token, so no agent of theirs decides or
-// ends a credential. Every other row reaches its handler, whose loaders answer an object the
-// viewer does not see as missing (the file comment), but for a broker token scoped to one project
-// while no project is private, whose write to an object outside its project is refused here as it
-// was before (writeOutsideTheBrokerProject).
+// are a restricted member's at a browser alone (restrictedOwnLoginAtBrowser, the rule the read
+// gate reads too), whose handlers hold that member to a login of their own: never their personal
+// token and never a broker token, so no agent of theirs decides or ends a credential; any other
+// call of theirs there is refused restrictedOwnLoginRefusal. Every other row reaches its handler,
+// whose loaders answer an object the viewer does not see as missing (the file comment), but for a
+// broker token scoped to one project while no project is private, whose write to an object outside
+// its project is refused here as it was before (writeOutsideTheBrokerProject).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if route.Scope == scopeNoWrite {
 		return handler
 	}
 	deployment := route.Scope == scopeDeployment
 	theirOwn := personsOwnAtTheBroker[route.Method+" "+route.Pattern]
-	ownLogin := restrictedOwnLoginRoutes[route.Method+" "+route.Pattern]
 	resolve, addressed := s.projectResolverFor(route.Pattern)
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
@@ -186,10 +186,14 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			return
 		}
 		if deployment {
+			governed, allowed := restrictedOwnLoginAtBrowser(route, reader.Viewer, r)
+			if governed && !allowed {
+				restrictedOwnLoginRefusal(w, route)
+				return
+			}
 			held := writesHeldTo(reader.Viewer, resolvedCredential(r.Context()))
 			ownWithNoList := theirOwn && len(reader.Viewer.Lists) == 0 && len(held) == 0
-			ownLoginAtBrowser := ownLogin && reader.Viewer.Restricted && len(held) == 0 && atBrowser(r)
-			if (!reader.Viewer.Open || len(held) > 0) && !ownWithNoList && !ownLoginAtBrowser {
+			if (!reader.Viewer.Open || len(held) > 0) && !ownWithNoList && !allowed {
 				refuseDeploymentWrite(w, route, reader.Viewer.Restricted && !theirOwn, held)
 				return
 			}
