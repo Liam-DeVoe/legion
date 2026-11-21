@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -220,6 +221,11 @@ type Deps struct {
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
 	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
+	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
+	// serves from the moment it enters the route's handler chain, as the access-log line times
+	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
+	// none.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -325,6 +331,9 @@ type DepsInput struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry; see Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads for the keyword fill's pause; see
+	// Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -422,6 +431,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,
+		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
@@ -956,9 +966,10 @@ const defaultReadDeadline = 20 * time.Second
 // replaced (read_only_token_test.go, which walks the whole table so) build the same chain.
 // limiter is what every row but a test hook and a stream is admitted by, and deadline what bounds
 // every read but a download (Deps.Admission, Deps.ReadDeadline, register). Its layers, outermost
-// first: the access log, the compression of its answer (compressAnswers), the transaction
-// tracking, the drain a write's early answer waits behind, the broker token's decision
-// (decideBrokerToken), admission, a read's deadline and pinned connection, the Vary every answer
+// first: the access log, the answers reads' timing on that route alone (timedAnswersReads), the
+// compression of its answer (compressAnswers), the transaction tracking, the drain a write's early
+// answer waits behind, the broker token's decision (decideBrokerToken), admission, a read's
+// deadline and pinned connection, the Vary every answer
 // carries (varyOnDisplayTrees), the read-only gate (refuseReadOnlyToken), the row's OAuth scopes,
 // the parameter refusal every route has, the id prefixes a path carries short, the changed-login
 // check, the signed-in person a write needs, a write's project and session scope, an upload's
@@ -1082,12 +1093,20 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held, admission's refusal - and the
-	// caller the first of them resolved. Compression sits just inside it, so every one of those
-	// answers is compressed for a caller that takes gzip and the line counts the bytes that went
-	// on the wire. The two websockets register mounts beside the table carry no compressed
-	// answer: the upgrade is not a body, and the frames after it are the socket's
-	// (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(trackTransactions(handler)))
+	// caller the first of them resolved. Compression sits just inside it, with nothing between
+	// them but the answers read's timing below, so every one of those answers is compressed for
+	// a caller that takes gzip and the line counts the bytes that went on the wire. The two
+	// websockets register mounts beside the table carry no compressed answer: the upgrade is not
+	// a body, and the frames after it are the socket's (compressAnswers).
+	served := compressAnswers(trackTransactions(handler))
+	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
+		// Just inside the access-log line, so the time of an answers read the keyword fill
+		// pauses on is the time the line records for it, every layer of the chain included.
+		// Admission's wait for room is one of those layers, so a server that queues its
+		// answers reads pauses the fill for that wait too.
+		served = timedAnswersReads(s.deps.AnswersLatency, served)
+	}
+	return accesslog.HandlerFunc(route.Pattern, served)
 }
 
 // admitted runs handler once limiter admits the request at weight, with the ticket on the

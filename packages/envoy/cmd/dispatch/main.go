@@ -53,9 +53,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -585,6 +587,10 @@ func main() {
 		fatal("dispatch: build the answerer", "error", err)
 	}
 
+	// The answers reads this process serves, each timed from the moment it enters the route's
+	// handler chain, as its access-log line times it: the API records them, and the keyword fill
+	// (textversions.Run, below) pauses on them, so the two share this one Latency.
+	answersLatency := sessionanswers.NewLatency(time.Now)
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
 		WebDistDir:     webDistDir,
@@ -607,6 +613,7 @@ func main() {
 		Lifetime:       ctx,
 		Admission:      limiter,
 		Heartbeats:     heartbeats,
+		AnswersLatency: answersLatency,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -709,6 +716,9 @@ func main() {
 	// one process publishes at a time and the other takes over within seconds of a holder that
 	// stops, dies or loses NATS.
 	//
+	// The keyword fill writes search_text_versions under a hold of its own as well
+	// (textversions.Run): one process fills at a time, and the others stand by for its hold.
+	//
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
 	//     embedding queue (embedqueue, `for update skip locked`), the task progress
@@ -788,6 +798,12 @@ func main() {
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
 	if err != nil {
 		fatal("dispatch delivery: reserve the lease pool for the intakes", "error", err)
+	}
+	// The keyword fill's two callers - its own goroutine's hold statements, batches and reads, and
+	// its hold's renewal (textversions.ReserveLeases).
+	textVersionsLeases, err := textversions.ReserveLeases(leaseCallers)
+	if err != nil {
+		fatal("dispatch: reserve the lease pool for the keyword fill", "error", err)
 	}
 	// Every caller of the lease pool has reserved its connection now, so the count is this
 	// process's real one: a caller short of a connection would wait for one behind the longest
@@ -899,6 +915,12 @@ func main() {
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
+	// The keyword fill's own wakes (textversions.Run): a commit that wrote an event wakes its
+	// holder's next pass, and a hold's release its standby's next try for the hold. A Wake is a
+	// channel of its own with one buffered signal, which one reader takes, so the fill registers
+	// its own on api.EventsChannel rather than reading the suggestion sweep's eventsWake.
+	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
+	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: backgroundStore, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
@@ -1102,7 +1124,7 @@ func main() {
 	// place for its TTL names the stopped process's deliver subject, which a process of the build
 	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
 	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
-	// (exitAfterIntakes, stopIntakesOnExit until shutdown runs, and the stop during the registry's
+	// (fatalAfterIntakes, stopIntakesOnExit until shutdown runs, and the stop during the registry's
 	// admission wait), since each intake can hold its durable before this process serves anything;
 	// shutdown runs it within its one deadline. With no NATS client there is nothing to wait for.
 	waitIntakes := func() {}
@@ -1150,14 +1172,50 @@ func main() {
 	announcer := startup.New(startup.Deps{Pool: background, Publisher: announcements})
 
 	routesHandler, apiBackground := routes.New(appCtx)
-	// fatalAfterIntakes ends a process that started its intakes and will not serve: it logs why at
-	// ERROR, stops the intakes, releasing their holds, and exits 1 once the reason is written. The
-	// deferred stop (stopIntakesOnExit) does not run on an exit, so every exit here goes through
-	// this rather than fatal.
+	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
+	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
+	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
+	// serves and fills, its passes woken by every commit that wrote an event (its own wake on
+	// api.EventsChannel, above), and every other process stands by for the hold, woken by a
+	// hold's release and a 10 s retry. A lease taken per pass (duty.RunWoken) would move the fill
+	// between processes from pass to pass, and the pause each batch asks first reads the answers
+	// reads of the process that writes (answersLatency). Its goroutine starts here, once all it
+	// runs with exists, but the fill takes nothing and writes nothing until serving closes, after
+	// the server listens and the registry of live server processes admits this process
+	// (joinRegistry, below). So it never runs inside a migration, and never in a process that the
+	// registry refuses or is still waiting to admit: its pause reads the answers reads this process
+	// serves, and a process the registry has not admitted serves none. Every way out from here
+	// waits for the fill (waitFill) only once ctx is cancelled, or exits without waiting for it:
+	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
+	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
+	// through the pool, before the pool closes.
+	serving := make(chan struct{})
+	fillStopped := make(chan struct{})
+	go func() {
+		defer close(fillStopped)
+		if err := textversions.Run(ctx, textversions.Config{
+			Leases:   textVersionsLeases,
+			Horizon:  apiBackground.EventHorizon(),
+			Latency:  answersLatency,
+			Serving:  serving,
+			Events:   textVersionsEventsWake,
+			Released: textVersionsReleasedWake,
+		}); err != nil {
+			slog.Error("dispatch: start the keyword fill", "error", err)
+		}
+	}()
+	// waitFill waits for the keyword fill to stop; only a cancelled ctx stops it.
+	waitFill := func() { <-fillStopped }
+	// fatalAfterIntakes ends a process that started its intakes and its keyword fill and will not
+	// serve: it logs why at ERROR, cancels ctx, waits for both to stop, which releases the
+	// intakes' holds, and exits 1 once the reason is written. The deferred stop
+	// (stopIntakesOnExit) does not run on an exit, so every exit here goes through this rather
+	// than fatal.
 	fatalAfterIntakes := func(msg string, args ...any) {
 		slog.Error(msg, args...)
 		cancel()
 		waitIntakes()
+		waitFill()
 		exit(1)
 	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
@@ -1246,6 +1304,7 @@ func main() {
 		// a process that has served nothing: a clean stop, not a failed start.
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			waitIntakes()
+			waitFill()
 			slog.Info("dispatch: stopped while waiting for admission to the registry of live server processes")
 			return
 		}
@@ -1256,6 +1315,8 @@ func main() {
 	// set before serveUntilStopped, which returns only at the stop: after that call every pass
 	// would read an empty id and write no row.
 	ciInstance.set(registration.ID)
+	// The registry admitted this process, so it serves: the keyword fill starts (above).
+	close(serving)
 	serveErr := serveUntilStopped(ctx, cancel, server, listener, registration.Lost())
 	// The shutdown's one deadline starts here, at the signal: every stage of shutdown spends what is
 	// left of it, and so does any stop main runs after it.
@@ -1263,10 +1324,12 @@ func main() {
 	defer stopped()
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
-	// fetching then would write into a closing pool.
+	// fetching then would write into a closing pool. The keyword fill is waited for here too, so
+	// its hold is released before the pool closes.
 	waitBackground := func() {
 		apiBackground.Wait()
 		appCtx.Architecture().Close()
+		waitFill()
 	}
 	shutdownRan = true
 	shutdown(stopping, server, documentService, database.Pool, waitBackground, waitIntakes,

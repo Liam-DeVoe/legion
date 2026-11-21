@@ -58,10 +58,10 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Says:   "the connections one server opens for the work it runs once across the servers"},
 		{File: site, Pattern: `That is\s+` + number + `\s+connections for one server at its ceiling`,
 			Number: ConnectionsPerProcess, Says: "the connections one server opens at its ceiling"},
-		{File: readme, Pattern: `callers of the two intakes' holds, ` + number,
+		{File: readme, Pattern: `callers of the keyword fill's hold, ` + number,
 			Number: leaseCallerConnections,
 			Says:   "the lease pool's callers, one per leased name and per hold caller"},
-		{File: readme, Pattern: `callers of the two intakes' holds, \d+, and two spare, ` + number,
+		{File: readme, Pattern: `callers of the keyword fill's hold, \d+, and two spare, ` + number,
 			Number: LeasePoolSize,
 			Says:   "the lease pool's connections, its callers' and the two spare"},
 		{File: readme, Pattern: `refuses to serve unless the reservations are exactly those ` + number + ` callers`,
@@ -85,7 +85,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Number: ConnectionsPerProcess, Says: "the connections one process opens"},
 		{File: storeArch, Pattern: `leases ` + number + ` \(two spare`,
 			Number: LeasePoolSize, Says: "the lease pool's connections, its callers' and the two spare"},
-		{File: storeArch, Pattern: `per caller of a delivery intake's hold, ` + number,
+		{File: storeArch, Pattern: `per caller of the keyword fill's hold, ` + number,
 			Number: leaseCallerConnections,
 			Says:   "the lease pool's callers, one per leased loop and per hold caller"},
 
@@ -167,7 +167,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 }
 
 // sumTerms is one entry per term of the README's connection sum, "opens at most 48 + 6 + 4 + 4 +
-// 24 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres", generated from the pools
+// 26 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 115 connections to Postgres", generated from the pools
 // themselves: the
 // terms in the order the sum writes them, each entry anchored by the terms before it, which are
 // written from the constants too. Nothing of the sum is a literal here, so the day a pool moves

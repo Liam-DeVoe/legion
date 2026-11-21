@@ -156,11 +156,11 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // median. The ceiling is picked here rather than derived from the task's CPU allotment or read
 // out of the DSN another repository's URL builder writes.
 //
-// It is 48 of one connection budget of 113 (ConnectionsPerProcess) that every pool of a process
+// It is 48 of one connection budget of 115 (ConnectionsPerProcess) that every pool of a process
 // shares, partitioned rather than grown: requests 48, background 6 (Background), live 4 (Live),
 // settlements 4 (Settlements), rooms 4, the rooms' appends 8 (RoomAppends), health 1, the five
 // listener connections (the listener pool's one dial is one of them redialling), leases
-// LeasePoolSize (24), outbox 2, compaction 2 (Compaction), the display tree fill 2 (TextTrees),
+// LeasePoolSize (26), outbox 2, compaction 2 (Compaction), the display tree fill 2 (TextTrees),
 // the event horizon 2 (Horizon) and the
 // server process registry's own 1 (registryPoolSize). The partition
 // itself added nothing: it is the 87 the process opened before, the request pool having given up
@@ -168,12 +168,13 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // horizon's 2, the background loops' shared wake listener, the outbox's second connection, the
 // outbox's own listener, the compaction's 2, the display tree fill's 2, the five lease names
 // added since (the CI reconcile pass's, the settlement resumption's, the embeddings project_key
-// fill's, the display tree fill's and the Legion sampler's) and the four callers of the delivery
-// intakes' holds (duty.Hold, leaseCallerConnections) are the
+// fill's, the display tree fill's and the Legion sampler's), the four callers of the delivery
+// intakes' holds (duty.Hold, leaseCallerConnections) and the keyword fill's two, its own
+// goroutine's and its hold's renewal's (textversions.ReserveLeases), are the
 // only connections added since, and the
 // horizon's came with the pool itself. The rooms' appends are the one pool added over the budget
 // rather than out of it: the 8 they take are the connections a room's browser updates no longer
-// take one request connection at a time, which is why the budget is 113 and not 105. A write
+// take one request connection at a time, which is why the budget is 115 and not 107. A write
 // takes a connection per statement one after another, and a read pins one for its whole length
 // (PinConnection); an issue read, which once took six statements, two more when the issue had
 // documents, two more when it had open asks, and one per artifact, now takes two batches. So
@@ -187,13 +188,16 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // decisions made before admission, the websockets' heartbeat checks and the document sockets'
 // admission reads, hold at most that many between them.
 //
-// The Legion sampler's lease (legion.RunSampler, leaseCallerConnections) is the last connection
-// added, and one connection is what it costs the instance: a serving process opens at most 113
-// rather than the 112 it would without it, and the default tier's 500 connections less
-// PostgreSQL's 3 reserved slots still admit four app pods holding connections at once (452 of 497)
-// and still refuse five (565), exactly as they do at 112 (448 and 560), so it moves no replica
-// boundary. It takes no share of the partition: its pass reads and writes on the background pool,
-// whose 6 it shares with every other loop, and only its lease is a connection of its own.
+// The Legion sampler's lease (legion.RunSampler) and the keyword fill's two callers
+// (textversions.ReserveLeases), both counted in leaseCallerConnections, are the last connections
+// added, and that is what they cost the instance: a serving process opens at most 115, where it
+// opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
+// slots still admit four app pods holding connections at once (460 of 497) and still refuse five
+// (575), exactly as they did at 112 (448 and 560), so neither moves a replica boundary. Neither
+// takes a share of the partition: the sampler's pass reads and writes on the background pool,
+// whose 6 it shares with every other loop, and only its lease is a connection of its own; the
+// keyword fill takes its hold, renews it and writes its batches on its two connections of the
+// lease pool and on no other pool.
 //
 // The database bounds the budget from above. Dispatch's database is the gcp:Dispatch component's
 // Cloud SQL Postgres instance, whose default max_connections follows its tier's memory
@@ -438,9 +442,9 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 }
 
 // leaseCallerConnections is how many callers of the lease pool can be using one of its
-// connections at the same moment: the callers the once-overall leases (duty.Exclusive) and the
-// delivery intakes' holds (duty.Hold) are taken by. It is a caller and not a lease or a hold that
-// needs one.
+// connections at the same moment: the callers the once-overall leases (duty.Exclusive), the
+// delivery intakes' holds and the keyword fill's hold (duty.Hold) are taken by, one of which runs
+// the keyword fill's batches too. It is a caller and not a lease or a hold that needs one.
 //
 // Exclusive takes its connection before it learns whether the lease is held, so a pass that skips
 // because the other process holds the lease holds a connection for that round trip too. These
@@ -469,7 +473,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // the hold's renewal goroutine (duty.Hold's renew, every 5 s, each bounded by the renew interval),
 // and the intake's own goroutine (duty.HoldToken, duty.TryHold, SetToken, Release, one at a time),
 // whose SetToken runs inside the take-over and so needs a connection beside the one its lease is
-// held on. That is four more callers, twenty-two in all.
+// held on. That is four more callers.
+//
+// The keyword fill (textversions.Run) holds a hold of its own, search-text-versions-fill, for as
+// long as its process fills the keyword table. Its own goroutine takes and releases the hold and
+// runs the fill's batches and reads on this pool, one statement or one batch's transaction at a
+// time, and the hold's renewal goroutine renews it beside them, so a renewal never waits behind a
+// batch: that is two more callers (textversions.ReserveLeases), twenty-four in all.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -482,7 +492,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const leaseCallerConnections = 22
+const leaseCallerConnections = 24
 
 // leaseSpareConnections is the lease pool's connections beyond its callers', for what holds one
 // without being a reserved caller's statement: pgxpool's own health check and lifetime expiry
@@ -494,9 +504,10 @@ const leaseCallerConnections = 22
 // on the hold's next one.
 const leaseSpareConnections = 2
 
-// LeasePoolSize bounds the pool the once-overall leases and the delivery intakes' holds are taken
-// on: a connection for each caller that can be using one at the same moment
-// (leaseCallerConnections), and two spare (leaseSpareConnections). They cannot come from the
+// LeasePoolSize bounds the pool the once-overall leases, the delivery intakes' holds and the
+// keyword fill's hold are taken on, and the keyword fill's batches run on: a connection for each
+// caller that can be using one at the same moment (leaseCallerConnections), and two spare
+// (leaseSpareConnections). They cannot come from the
 // request pool: a lease is held for the whole pass, which is minutes for the compaction sweep and
 // hours for the first display tree fill of a display parser version, and the request pool's
 // connections are what every request reads through. The compaction sweep and the display tree
@@ -510,8 +521,9 @@ const LeasePoolSize = leaseCallerConnections + leaseSpareConnections
 // the length of the pass and dies with it; a connection of the shared pool held that long would
 // be one fewer for every request, and a pass that then read through the shared pool - which is
 // what a pass does - would be a caller holding two of its connections (ErrNestedAcquire). The
-// delivery intakes take and renew their holds here too (duty.Hold), so a renewal never waits
-// behind a request for a shared connection. Its acquires are bounded at leaseAcquireBound, and a
+// delivery intakes and the keyword fill take and renew their holds here too (duty.Hold), so a
+// renewal never waits behind a request for a shared connection, and the keyword fill writes its
+// batches here beside its hold. Its acquires are bounded at leaseAcquireBound, and a
 // caller that waits that bound out is refused with ErrPoolBusy (RawPool).
 //
 // The pool itself is not handed out: a caller reaches a connection only through the reservation
@@ -567,6 +579,23 @@ func (c *LeaseCallers) For(name string) (*RawPool, error) {
 	return c.pool, nil
 }
 
+// ForAll reserves a connection of the lease pool for each caller of names, in order (For), and
+// returns the pool they take them from: a group of callers that work together, such as a hold's
+// holder and its renewal goroutine, reserves them here at once. The error of a name For refuses
+// names that caller, and the names before it stay reserved. No name at all is refused too, since
+// a caller reaches the pool only through a reservation.
+func (c *LeaseCallers) ForAll(names ...string) (*RawPool, error) {
+	if len(names) == 0 {
+		return nil, errors.New("reserve the lease pool: no caller named")
+	}
+	for _, name := range names {
+		if _, err := c.For(name); err != nil {
+			return nil, fmt.Errorf("reserve the lease pool for %s: %w", name, err)
+		}
+	}
+	return c.pool, nil
+}
+
 // Reserved is the names that have reserved a connection, in the order they took it.
 func (c *LeaseCallers) Reserved() []string {
 	c.mu.Lock()
@@ -619,7 +648,7 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres, the
-// budget of 113 SharedPoolSize describes: every pool's size, the registry's own pool
+// budget of 115 SharedPoolSize describes: every pool's size, the registry's own pool
 // (processes.Register) and the event horizon's (Horizon) among them, and one connection per
 // listener it may hold at once, which the listener pool dials and hands off rather than holds (its
 // one dial in flight is one of those listeners redialling, so it is not counted twice).

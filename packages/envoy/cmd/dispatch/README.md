@@ -25,7 +25,7 @@ Each item below names a variable, then its purpose.
 
   Postgres connection string.
   Dispatch applies embedded migrations before serving.
-  Every pool's size is fixed in code, at most 113 connections a process in all (`store.ConnectionsPerProcess`) (the request pool's 48 is `store.SharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
+  Every pool's size is fixed in code, at most 115 connections a process in all (`store.ConnectionsPerProcess`) (the request pool's 48 is `store.SharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
   Each connection names its pool in `application_name`:
   `dispatch-requests`, `dispatch-background`, `dispatch-live`, `dispatch-settlements`, `dispatch-rooms`, `dispatch-room-appends`, `dispatch-health`, `dispatch-listen`, `dispatch-leases`, `dispatch-outbox`, `dispatch-compaction`, `dispatch-text-trees`, `dispatch-horizon` or `dispatch-registry`, so `select application_name, count(*) from pg_stat_activity group by 1` shows what each pool holds.
   A connection string that names an `application_name` of its own keeps it, before a slash and the pool's name (`<name>/dispatch-requests`), so the connections of one deployment, or of one build beside another, stay apart on one database and each still names its pool.
@@ -396,6 +396,7 @@ This is what each pool's work does with such a refusal, at the 10 seconds above 
 - listen: the listening connections wait for no lock, since `LISTEN` takes none that `lock_timeout` bounds, and the room sync's `NOTIFY` sender, whose commit is the one statement there that waits for a lock (Postgres's notification queue lock), gives up one batch's sends at 2 seconds first (`docs.roomSyncSendTimeout`).
 
 - leases: a lease is taken with `pg_try_advisory_lock`, which never waits, every lease statement is bounded at 5 seconds (`duty.LeaseCall`), and a delivery intake's take of its hold and each renewal of it at the hold's 5-second renewal interval, so those bounds end those waits first; an intake's record of its token that the refusal ends is logged, and the intake stops delivering and takes its durable over again on its next attempt.
+  The keyword fill's take, renewal and release of its hold are bounded at the same 5-second interval, and each of its batches sets a `lock_timeout` of 5 seconds for its own transaction (The keyword fill, under Background loops, below), so those bounds end those waits first too; a batch that a refusal ends rolls back, and the fill tries its pass again 1 second later, doubling to a minute.
 
 - horizon: an observation reads only, and one that fails is logged while the live readers wait for the next; the write of the proven horizon is bounded at 2 seconds, and a failed one is logged and leaves the stored horizon as it was.
 
@@ -598,6 +599,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each repository the pass covers — divided into nine tenths of its own deadline.
   That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
   The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
+  The passes after a pass that its own deadline ended before it reached a head — read one whole or gave one up — read at the floor until one reaches a head.
+  In a process's first cycle such a pass learned no page of any head it listed, so the arithmetic would set the passes after it at the ceiling, and under a short deadline a pass at the ceiling can reach no head either, so no cycle would ever close; later, where the `Reconciler` holds pages from earlier passes, the floor is only the faster of the two answers, never a slower one.
+  Every other way a pass ends with no head reached leaves that floor as it was: a rate limit, even one GitHub answers as the deadline falls; its caller's cancellation or deadline; an order with no head in it.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
   The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the ones `repo_projects` maps and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
@@ -1209,9 +1213,9 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Eighteen names are leased in all: the fourteen leased loops of the two items above — the twelve timer loops and the two woken ones — the CI reconcile among them, the Legion sampler (`legion.RunSampler`, lease `legion-state`, its statements on the background pool), one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, 22, and two spare, 24 (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pools.go` lists the names and says what the spare two are for; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly those 22 callers).
+  Eighteen names are leased in all: the fourteen leased loops of the two items above — the twelve timer loops and the two woken ones — the CI reconcile among them, the Legion sampler (`legion.RunSampler`, lease `legion-state`, its statements on the background pool), one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers, for each of the four callers of the two intakes' holds and for each of the two callers of the keyword fill's hold, 24, and two spare, 26 (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pools.go` lists the names and says what the spare two are for; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly those 24 callers).
 
-- The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
+- The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, the outbox publishes under its hold (above), and the keyword fill writes under a hold of its own (Background loops, below);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
 
@@ -1395,7 +1399,7 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a serving process opens at most 48 + 6 + 4 + 4 + 24 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`, which adds those fourteen constants):
+Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a serving process opens at most 48 + 6 + 4 + 4 + 26 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 115 connections to Postgres (`store.ConnectionsPerProcess`, which adds those fourteen constants):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
@@ -1403,7 +1407,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a s
 | Background (`backgroundPoolSize`) | 6 | The background loops - the delivery sweep's resume (at most three of the six at once), the Legion sampler's reads and records, and the GitHub rate limits the loops' own GitHub client reads among them - and the work a request leaves running behind its answer - the comment mention sender's own claim statements and a read's store of the display trees it built among them - so a request never queues behind one of their statements; `application_name=dispatch-background`. |
 | Live (`livePoolSize`) | 4 | The live-update readers: the event stream relay, the delivery hub's intake, recompute and seed, and an events subscription's replay; `application_name=dispatch-live`. |
 | Settlements (`settlementsPoolSize`) | 4 | The document settlements, the store of the display tree of each version they write among them, so a burst of them neither waits for the requests' connections nor takes them; `application_name=dispatch-settlements`. |
-| Leases (`store.LeasePoolSize`) | 24 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them: one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`, 22), and two spare. |
+| Leases (`store.LeasePoolSize`) | 26 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), the delivery intakes' holds and the keyword fill's hold (`duty.Hold`) with the fill's batches, the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them: one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`, 24), and two spare. |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates, and a close's write of its room's latest edit source to the document's pending-settlement row; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads, and the room sync's catch-up confirming under a document's lock that a room's stored history was replaced, one at a time; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1414,7 +1418,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a s
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 230, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1754,6 +1758,61 @@ The give-back clears the lease only where the row still holds the one that settl
 Only a settlement whose process dies, or whose lease, commit or give-back went unanswered, leaves its lease to run out, and the first pass after that arms the document again.
 The lease and its give-back are each a statement of their own on the settlements pool, outside any transaction, so neither holds a lock across the document's work.
 The release before the lease neither reads nor writes the column, so while one of its processes takes the resumption's turn (`duty.SettlementResumptionLease`), its pass arms a leased document as it always did, which supersedes only a settlement running in that same process.
+
+**The keyword fill** (`textversions.Run`) is a held duty, not a loop woken per pass, and it has none of the three shapes above.
+It writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log (Search, below).
+One process at a time holds its `duty.Hold`, named `search-text-versions-fill`, and fills the table for as long as it serves.
+A lease taken per pass would move the fill from one process to another at each pass, and the pause below reads only the answers reads of the process that writes.
+The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
+So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
+A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
+
+- The hold has the values of the delivery intakes' holds.
+  It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.
+  Each other process stands by.
+  A standby tries for the hold at once, each time a hold is released (`dispatch_duty_holds`), and every 10 s.
+  So it takes a released hold at once, and the hold of a holder that died within 25 s.
+  When the process stops, the batch in flight commits or rolls back, and the holder releases its hold before the pool closes.
+
+- The holder runs a pass when it takes the hold, and then each time a commit writes an event (`dispatch_events`).
+  These two wakes are the fill's own, on the shared listener (below).
+  A pass reads the event log's safe horizon once (`events.Horizon`) and writes the rows of the events above the cursor up to that horizon, in id order.
+  While the horizon stands below an id that a read of the horizon saw, the holder reads it again after 1 s, then 2 s, 4 s and 8 s, until the horizon passes that id.
+  A transaction that writes no event ends with no notification, so nothing else wakes the fill for the events that wait behind it.
+  A fill that is caught up holds no timer and sends no statement except the renewal of its hold.
+
+- Before each batch the fill asks `sessionanswers.Latency`, which times the answers reads (`GET /api/v1/agents/{session_id}/answers`) that this process serves.
+  The route times each read from the moment it enters the route's handler chain, as the access-log line times it.
+  The fill pauses while a read that took longer than 800 ms ended within the last 10 s, and while a read has run longer than 800 ms and has not ended.
+  It asks again each second, and it continues when neither condition has held for 10 s.
+  A batch that runs while a read becomes slow commits, and the pause holds back the next batch.
+
+- The cursor row is the one row of `search_text_versions_fill`: every event at or below its `event_id` has its rows.
+  The fill creates the row when it finds none.
+  A new holder, in this process or in another, continues from the cursor, so no event gets its rows twice and no event is missed.
+  Each batch checks the log against the cursor (`events.EventLogWasReset`).
+  When the log was reset, the batch deletes the rows of both tables and writes the cursor row again at event 0 with no reach, in one transaction, and the fill starts again from the first event.
+  An event whose payload the rules cannot read stops the fill at that event.
+  The fill then tries the pass again after 1 s, doubling to a minute, and logs the error each time.
+
+- A batch reads at most 500 events and at most 2 MB of the text its vectors are made from.
+  Each event of a type the rules read counts its payload, and a post whose event cut its body counts the body its present row holds too: the read of the events bounds those.
+  An event that starts a version counts what that version's vector reads besides, measured while the rules decide:
+  an issue's row counts the markdown of the primary document version it names (version 1 for `issue.created`, the version it carries forward for `issue.updated` and `issue.closed`, the named version for `artifact.version`), and a post whose event cut its body counts the whole body the rules give it, where that is longer than its row's.
+  The rules end the batch before the first event that takes it past 2 MB.
+  The title that an `artifact.version`'s row carries forward is not counted, at most 3,000 bytes a row.
+  An event that counts more than 2 MB is a batch alone.
+  A batch is one transaction.
+  It locks the cursor row, checks that `duty_holds` still names this holder live, writes the rows, moves the cursor, stores the reach, and commits.
+  A holder that lost its hold writes nothing.
+  `lock_timeout` is 5 s, and `statement_timeout` is 10 s plus 1 s for each MB the batch counts.
+  `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
+  After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
+
+- The fill logs when it takes, loses or releases its hold, when it pauses and continues, when it finds a reset log, and when it keeps a cut body.
+  While it catches up, it logs a progress line at most every 30 s.
+  When it is caught up, a pass logs at most once a minute the reach, the lag of the reach behind `now()`, and how many events the cursor is behind the newest event.
+  It takes two connections of the lease pool: `search text versions fill`, for its hold statements, batches and reads, and `search text versions fill hold renewal`.
 
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
@@ -2794,6 +2853,21 @@ The previous release neither reads nor writes them, so the two roll side by side
 An event that release records keeps the values this release wrote last, or null, and every event written since - by either release - moves its owner's `last_seq` past them, so a copy this release sends waits until this release records the event again: while the previous release holds the publisher hold, copies on an owner with an unpublished earlier event wait longer, and pass none of its events.
 This release also writes both again for every unpublished event a batch reads not due, when either changed.
 
+Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
+Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+`search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
+`search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
+`search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
+Neither table has a foreign key: a key locks the table it names, and a version is history that a later change to its item must not follow or refuse.
+It is a new-table migration: it holds only `create table` and `create index` on the two new tables, the release before it neither reads nor writes them, and its census answers `0`.
+No migration writes a row of either table.
+At production's counts the table and its indexes take about 2 GB (1.9 GB measured on real text, 2,134 MB on the keyed copy) and grow by 30 to 40 MB a day, which is above the census's 1 GiB limit.
+So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
+A change to its shape is a new table that the fill writes again.
+The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
+A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
+
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.
@@ -3553,6 +3627,18 @@ about 700 KB of `w000001 w000002 …`, or 475 KB of UUIDs.
 a text with no whitespace before the cut is found by none of its own.
 An issue's key is always indexed whole.
 Meaning search, where an embedder is configured (below), ranks by the embedding of a window of neighbouring blocks, not by the text's search vector, so it can still return such a text for a query whose words the vector does not hold, and it names the block of the window that ranks highest for the query (`block_id` on the hit).
+
+**A search at a past time reads the keyword table.**
+`search_text_versions` (migration `20261120021308`, Database migrations above) holds one row for each version of the text that keyword search reads.
+For an issue it is the title, with the version of the primary document that the issue held.
+For a comment or an issue message it is the body, and for an ask it is the question, a space and `ask_search_suffix` of its options and answer.
+A version starts at the event that changed that text, and an event that changes no searchable text starts no version.
+The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
+The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above).
+`store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
+A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
+`TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).
+In this build the relation's `deleted_at` is null, and no route searches at a past time yet.
 
 Meaning search embeds with Cohere Embed v4 at the place `DISPATCH_EMBEDDER` names:
 AWS Bedrock (`bedrock`, the default, on the AWS SDK's own region and credentials) or Azure AI Foundry (`azure`, the `DISPATCH_AZURE_*` settings, with the deployment's API key or a keyless sign-in that exchanges a federated token with Microsoft Entra).
