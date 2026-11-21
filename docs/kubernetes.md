@@ -3422,6 +3422,7 @@ A stale caller's registration is refused 409 with `pi-legion speaks daemon API c
 this process onto the current plugin` (or, when it registered no contract at all, `pi-legion registered no daemon API contract; this daemon requires <want>: …`).
 Its other calls get the same sentence — a claim route answers `{"error": …}`, a credential or workflow route `{"code":"STALE_PLUGIN_CONTRACT","error": …}` — logged `api: refused a call from a process on another plugin contract`;
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
+A registration refused while a stop is held over its claim and the copy of its last turn's end is still being taken, which the daemon answers with no relaunch (above), gets the same 409 and opening with another remedy: `the daemon relaunches nothing: this process's exit on this refusal meets the stop held over this claim, which suspends it, and the claim's next launch is onto the current plugin`.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
 A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold and the daemon's store would keep as U+FFFD, makes the body undecodable too:
@@ -6644,6 +6645,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for the reading that decides the end, the daemon's own end or one from outside the pod (below), whether the first event of the end made that reading or a later event read the end again (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
 `sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
 A reading of neither kind decides nothing and writes no line, though the daemon keeps it and reads the end again at the pod's next event.
+An end read while the daemon watches no claim of the pod, as a boot reads each end that came while no daemon ran before its reconciliation adopts the pod's claims, writes that line once the reconciliation has adopted them (`tellPodEnds`), and only once.
 The line is written before any claim is decided on its reading and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
 Two readings say something outside the pod ended it:
 
@@ -6857,7 +6859,7 @@ A pod the runtime cannot read decides nothing, so the round waits for a read tha
 One round is told once, however many sweeps find it open.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
 An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
-A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.
+A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk, past the daemon's last copy of the workspace, which the next pod restores ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 Where that disk is a kept volume that is still there, the message says that this work is still on the volume, and the issue's next pod mounts it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 Three readings say the pod went:
 the runtime answering that the pod the claims record is not there; the claims recording another pod in its place; and, while no claim of the issue records a pod at all, the runtime answering that the issue's Sandbox holds another pod or none.

@@ -326,12 +326,13 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // replaced, and the resume raises a launch of its own (wake.pluginMark, relaunchMarked, revive).
 //
 // Every hold a launch's turn finds here is over a process that still runs: the suspend of a claim
-// in a turn (holdSuspension) and the suspend of a launch that did start a process
-// (holdSuspendUntilReady), which are the only two the machine keeps, and letGo drops a hold with
-// the process it is held for. A suspend of a parked claim that records no process is held no
-// more — it is decided where it arrives, since there is no process to protect and the wake's turn
-// is tens of minutes away over a wave (holdSuspendUntilReady) — and that suspension takes the wake
-// with it, so no turn of such a claim is reached at all.
+// in a turn (holdSuspension), the suspend of a launch that did start a process
+// (holdSuspendUntilReady), and the suspend of an idle or ready claim while the copy its last turn's
+// end started is still being taken (suspend, heldForTurnCopy), which are the only three the machine
+// keeps, and letGo drops a hold with the process it is held for. A suspend of a parked claim that
+// records no process is held no more — it is decided where it arrives, since there is no process
+// to protect and the wake's turn is tens of minutes away over a wave (holdSuspendUntilReady) — and
+// that suspension takes the wake with it, so no turn of such a claim is reached at all.
 //
 // A stop held while the copy its turn's end started is still being taken (stopHeldOverTurnCopy)
 // is not ended here: ending it now would stop the process the copy asks and cut that copy off. The

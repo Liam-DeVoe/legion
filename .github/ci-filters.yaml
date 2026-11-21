@@ -1729,7 +1729,7 @@ text_checks:
   - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
   - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
   - 'packages/daemon/internal/store/migrations/*.up.sql'
-  # why: .github/ci-notes/ci.md#text_checks-the-ten-copies-of-shipped-texts-that-readextract-reads
+  # why: .github/ci-notes/ci.md#text_checks-the-eleven-copies-of-shipped-texts-that-readextract-reads
   - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
   - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
   - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'

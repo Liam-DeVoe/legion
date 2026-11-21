@@ -2959,7 +2959,7 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 	const (
 		waits = "supervise: no claim of this issue records a pod; its update round waits for one to run again"
 		ended = "supervise: no claim of this issue records a pod, and the issue's Sandbox no longer holds the pod its update round was opened over"
-		lost  = "supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed"
+		lost  = "supervise: the pod of an open update round is gone; what the roles that had not answered did not push comes back in the next pod only up to the daemon's last copy of the workspace, and the rest is lost"
 	)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	for name, now := range map[string]string{

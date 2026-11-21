@@ -56,6 +56,7 @@ to: would be relaunched for ever.
 The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for the reading that decides the end, the daemon's own end or one from outside the pod (below), whether the first event of the end made that reading or a later event read the end again (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
 `sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
 A reading of neither kind decides nothing and writes no line, though the daemon keeps it and reads the end again at the pod's next event.
+An end read while the daemon watches no claim of the pod, as a boot reads each end that came while no daemon ran before its reconciliation adopts the pod's claims, writes that line once the reconciliation has adopted them (`tellPodEnds`), and only once.
 The line is written before any claim is decided on its reading and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
 Two readings say something outside the pod ended it:
 

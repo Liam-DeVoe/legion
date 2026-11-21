@@ -636,15 +636,17 @@ credential_argument_test.go's credentialTextFiles lists every file git tracks or
 track, but docs/plans and docs/superpowers, which are dated history, and its
 TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
-## text_checks: The ten copies of shipped texts that readExtract reads
+## text_checks: The eleven copies of shipped texts that readExtract reads
 
-The ten copies of shipped texts that readExtract (waiting_line_texts_test.go)
+The eleven copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
 backs' (way_back_doc_test.go:130), the troubleshooting page's refusal table's
-(troubleshooting_refusals_doc_test.go:41) and the three of docs/kubernetes.md's regions
-(workspace_copy_doc_test.go:92), each committed beside the package whose own check
-reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
-not match.
+(troubleshooting_refusals_doc_test.go:41), the three of docs/kubernetes.md's regions
+(workspace_copy_doc_test.go:92) and the design-approved wake's phrase
+(design_approved_wake_test.go:26), each committed beside the package whose own check
+reads it. The ten below are listed under this section; the wake's copy stands in the
+list above, beside the prompt its check holds it to. They are .txt files, which the
+module's `'packages/daemon/**/*.go'` in the `text_checks` filter does not match.
 
 ## dispatch_memory: `go test -tags memory ./cmd/dispatch`. memory_profile_test.go
 

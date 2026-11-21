@@ -1290,7 +1290,9 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) 
 // otherwise (probe.go). A repository cache's Sandbox (labelled legion.dev/cache) is no claim's
 // either: the claim path passes over it, and sweepCaches keeps, repairs or retires it after the
 // claim path. known's located claims join the watch, unless it already holds a newer incarnation
-// of the claim, and are evaluated at once. Nothing here lists Secrets: each goes with its Sandbox.
+// of the claim, and are evaluated at once; the end of a pod read while no claim of it was watched,
+// as every end that came while no daemon ran is read at a boot, writes its line once its claims
+// are adopted (tellPodEnds). Nothing here lists Secrets: each goes with its Sandbox.
 // Each Sandbox whose pod runs an image other than the runtime's (imageDrift), or as a
 // ServiceAccount other than the configured one (accountDrift), is warned of, named with both
 // images or both accounts, at the boot reconciliation and at every sweep until the pod is
@@ -1324,6 +1326,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		}
 		r.adopt(*k.Locator)
 	}
+	r.tellPodEnds()
 	for _, obj := range r.sandboxes.GetStore().List() {
 		u := obj.(*unstructured.Unstructured)
 		if u.GetLabels()[labelProbe] != "" || u.GetLabels()[labelCache] != "" || u.GetDeletionTimestamp() != nil {

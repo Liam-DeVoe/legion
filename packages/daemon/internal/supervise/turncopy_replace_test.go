@@ -10,6 +10,8 @@ package supervise
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -197,7 +199,8 @@ func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 // relaunched or charged. That keeps no process for the copy: the plugin stops its agent on the
 // refusal, so the process's death follows, and it meets the held stop, which suspends the claim
 // charged nothing, as the stop's own end would. The refusal is the 409 of any stale registration,
-// in words that promise no relaunch (claim.StalePluginContractUnderStop).
+// in words that promise no relaunch and say the process's exit meets the stop
+// (claim.StalePluginContractUnderStop), which the plugin logs as it stops.
 //
 // The control is the relaunch made whatever the stop is held over: the registration then charges a
 // launch failure and relaunches the claim, and the test fails there.
@@ -212,9 +215,12 @@ func TestAStaleRegistrationUnderAHeldStopOverTheTurnsCopyIsNeitherRelaunchedNorC
 	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 		CapabilityHash: []byte("capability"), PluginContract: stale})
 
+	want := fmt.Sprintf("pi-legion speaks daemon API contract %d; this daemon requires %d: the daemon relaunches nothing: "+
+		"this process's exit on this refusal meets the stop held over this claim, which suspends it, and the claim's next launch is onto the current plugin",
+		stale, refreshContract)
 	var refusal claim.Refusal
-	if !errors.As(err, &refusal) || refusal != claim.StalePluginContractUnderStop(stale, refreshContract) {
-		t.Fatalf("the registration on another plugin contract was answered %v, want the refusal that names the held stop", err)
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Message != want {
+		t.Fatalf("the registration on another plugin contract was answered %v, want a 409 saying %q", err, want)
 	}
 	waitsOnItsProcess(t, h, loc)
 	if got := h.claim().Budgets.LaunchFailures; got != charged {

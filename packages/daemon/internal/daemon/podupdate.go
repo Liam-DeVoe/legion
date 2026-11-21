@@ -2112,7 +2112,8 @@ func (s *supervision) forgetLaunchRounds(byIssue map[string][]supervise.Claim) {
 //
 // The record is in memory alone. A daemon that restarts between the launch and the sweep reads the
 // same end as a pod gone (podWentWithoutItsRound), whose message names the same members as having
-// lost what they had not pushed.
+// lost what they had not pushed past the daemon's last copy of the workspace, which the next pod
+// restores.
 func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string, group []supervise.Claim, round string, ended roundEnd) {
 	told := s.noticeGroup(group)
 	s.roundReplaced(ctx, issue, round, strings.TrimPrefix(round, supervise.PodRoundPrefix), roundReasons(told, round), ended,
@@ -2410,7 +2411,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 		s.log.Warn("supervise: the pod of an open update round is gone; its disk is a kept volume, so what the roles that had not answered did not push is still on it",
 			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
 	} else {
-		s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
+		s.log.Warn("supervise: the pod of an open update round is gone; what the roles that had not answered did not push comes back in the next pod only up to the daemon's last copy of the workspace, and the rest is lost",
 			"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
 	}
 	s.tellIssueOfRound(ctx, issue, round, podWentMessage(round, reasons, lost, kept),
@@ -2431,7 +2432,8 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 //     (endRoundALaunchReplaced), not as a pod that went without its round. That end reads group
 //     itself, unmasked (noticeGroup).
 //   - Otherwise the pod went without the round, and a member of the round that had not answered
-//     lost what it had not pushed, or, on a kept volume, left it there: the issue is told so
+//     lost what it had not pushed past the daemon's last copy of the workspace, which the next
+//     pod restores, or, on a kept volume, left it there: the issue is told so
 //     (podWentWithoutItsRound).
 //   - Otherwise every member of the round pushed its work before the pod went, nothing is left to
 //     tell the issue, and the round ends with the line over alone (endPodUpdates).
@@ -3312,8 +3314,9 @@ func withoutRound(group []supervise.Claim, round string) []supervise.Claim {
 //
 // A member that answered pushed its work before the pod went and lost nothing, whether it
 // answered in the round's own pod or had already answered when it left: leaving records no
-// answer and withdraws none. One that never answered lost whatever it had not pushed. No turn
-// and no answer of the process that replaced it changes either reading.
+// answer and withdraws none. One that never answered lost whatever it had not pushed past the
+// daemon's last copy of the workspace, which the next pod restores. No turn and no answer of the
+// process that replaced it changes either reading.
 //
 // A member with no session is named too. The round is posted only to claims with a session
 // (openPodUpdate, sessionClaims), so such a member forgot its session after the post, as a launch

@@ -321,7 +321,9 @@ type intendedEnd struct {
 // and goneAt, the moment the daemon heard the pod leave that store: the informer's delete of it
 // (capturePodEnd), or the first prune that found the store holding no pod of its uid under that
 // name (prunePodEnds). goneAt is zero while the store holds the pod, and the reading's
-// podEndRecordLife is counted from it (expired).
+// podEndRecordLife is counted from it (expired). told is whether the pod's line was written for
+// this reading (logPodEnd): a reading made while the runtime watched no claim of the pod writes
+// none, and the reconciliation that then adopts the pod's claims writes it (tellPodEnds).
 type podEnd struct {
 	reading runtime.PodEndReading
 	cause   string
@@ -329,6 +331,7 @@ type podEnd struct {
 	death   runtime.DeathCause
 	name    string
 	goneAt  time.Time
+	told    bool
 }
 
 // expired is whether the reading has outlived podEndRecordLife at now: its pod left the informer's
@@ -502,8 +505,8 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 		r.podEnds[uid] = held
 		return
 	}
+	end.told = r.logPodEnd(uid, end)
 	r.podEnds[uid] = end
-	r.logPodEnd(pod, end)
 }
 
 // readPodEnd is the reading of pod's end by the one rule every event of the pod is read by, from
@@ -601,28 +604,30 @@ func podEnding(pod *corev1.Pod, gone bool) bool {
 // kill has none, so the line tells no such eviction from that kill.
 const podEndLine = "sandbox runtime: read what ended a watched pod"
 
-// logPodEnd writes that line for end, the reading just made of pod's end, where that reading
-// decides the end: at warning level for an end from outside the pod, which cost every role in it
-// its turn through nothing of its own, and at info level for one the daemon itself made, which is
-// the daemon reporting its own act. A reading of neither kind writes nothing: it decides nothing,
-// a later event of the pod reads the end again, and the reading that then decides it, where one
-// does, is the one the line names. Such an end is charged as it always was, and each claim's own
-// supervise line says what that claim got.
+// logPodEnd writes that line for end, the reading made of the end of the pod uid, where that
+// reading decides the end, and answers whether it wrote it: at warning level for an end from
+// outside the pod, which cost every role in it its turn through nothing of its own, and at info
+// level for one the daemon itself made, which is the daemon reporting its own act. A reading of
+// neither kind writes nothing: it decides nothing, a later event of the pod reads the end again,
+// and the reading that then decides it, where one does, is the one the line names. Such an end is
+// charged as it always was, and each claim's own supervise line says what that claim got.
 //
-// A pod the runtime watches no claim of gets no line. The line is the record of the watched roles
-// an end ended, and a pod no claim of this runtime runs in ends none: the pods informer carries
-// the image probe's pod and each repository cache's pod beside the issue and controller pods, and
-// every one of those ends — a probe pod ends at every boot — would otherwise write, at warning
-// level, a line for an end from outside the pod that names ended=[]. The reading itself is kept
-// whether or not the line is written: a claim of the pod may be watched by the time the end is
-// evaluated. Called with r.mu held.
-func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
+// A pod the runtime watches no claim of gets no line when its end is read. The line is the record
+// of the watched roles an end ended, and a pod no claim of this runtime runs in ends none: the pods
+// informer carries the image probe's pod and each repository cache's pod beside the issue and
+// controller pods, and every one of those ends — a probe pod ends at every boot — would otherwise
+// write, at warning level, a line for an end from outside the pod that names ended=[]. The reading
+// itself is kept whether or not the line is written: a claim of the pod may be watched by the time
+// the end is evaluated, as at a boot, where the informers read every pod before the reconciliation
+// adopts the claims, and that reconciliation writes the line then (tellPodEnds). Called with r.mu
+// held.
+func (r *Runtime) logPodEnd(uid string, end podEnd) bool {
 	if end.reading == "" {
-		return
+		return false
 	}
 	ended := make([]string, 0, len(r.watch))
 	for token, loc := range r.watch {
-		if loc.Sandbox == nil || loc.Sandbox.PodUID != string(pod.UID) {
+		if loc.Sandbox == nil || loc.Sandbox.PodUID != uid {
 			continue
 		}
 		if role, ok := token.Role(); ok {
@@ -630,15 +635,38 @@ func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
 		}
 	}
 	if len(ended) == 0 {
-		return
+		return false
 	}
 	slices.Sort(ended)
 	write := r.log.Info
 	if end.reading == runtime.PodEndNotOurs {
 		write = r.log.Warn
 	}
-	write(podEndLine, "pod", pod.Name, "uid", string(pod.UID), "reading", string(end.reading),
+	write(podEndLine, "pod", end.name, "uid", uid, "reading", string(end.reading),
 		"cause", end.cause, "reason", end.reason, "ended", ended)
+	return true
+}
+
+// tellPodEnds writes the line of each pod end read while the runtime watched no claim of its pod,
+// once a claim of that pod is watched (logPodEnd): the reconciliation calls it once it has adopted
+// the claims it was handed (ReconcileOrphans). At a boot the informers sync before that
+// reconciliation, so the end of a pod that ended while no daemon ran is read, with nothing
+// watched, before the claims of the pod are adopted; without this its line, the one record of
+// which roles that end ended, would be written at no point. A reading that has expired is told to
+// no one, as podEndOf answers it to no one. Each line is written once: the record notes it (told).
+func (r *Runtime) tellPodEnds() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	for uid, end := range r.podEnds {
+		if end.told || end.expired(now) {
+			continue
+		}
+		if r.logPodEnd(uid, end) {
+			end.told = true
+			r.podEnds[uid] = end
+		}
+	}
 }
 
 // podEndOf is what the daemon read about the end of the pod uid, and whether it read anything at

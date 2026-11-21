@@ -33,13 +33,18 @@ func stopsOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies) {
 
 // turnEndedUnderAHold brings h's claim into a turn of a task a provider will refuse, has hold hold
 // a stop over that turn, and ends the turn. copies is the claim's CopyTurnEnd where it is not nil,
-// and the helper then fails unless the turn's end started one copy. It answers the delivery the
-// prompt's result names.
-func turnEndedUnderAHold(t *testing.T, h *harness, copies *turnEndCopies, hold func()) string {
+// and the helper then fails unless the turn's end started one copy. beforeTurn, where one is
+// given, runs between the task's delivery and the turn and answers the turn's start, which is
+// otherwise one naming no delivery. It answers the delivery the prompt's result names.
+func turnEndedUnderAHold(t *testing.T, h *harness, copies *turnEndCopies, hold func(), beforeTurn ...func() StreamTurnStart) string {
 	t.Helper()
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-	h.must(StreamTurnStart{Claim: h.token})
+	start := StreamTurnStart{Claim: h.token}
+	for _, step := range beforeTurn {
+		start = step()
+	}
+	h.must(start)
 	task := h.pending().ID
 	hold()
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})

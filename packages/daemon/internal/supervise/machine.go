@@ -2449,10 +2449,13 @@ func (m *Machine) report(c Claim, state ClaimState) {
 // one order: the report follows the write, and a write the store did not take reports nothing
 // and owes the report instead, for whatever claim write lands next to make (oweDurableState,
 // settleOwedWrite). Every decision that reports a durable transition goes through here — the
-// turn that starts, the turn that ends, the claim that is ready, the claim that failed — because
-// the order is the point and the owing works only on the error of the write it belongs to: a
-// fifth caller that wrote the three steps out itself and left the owing off would lose its
-// report in silence, which is the fault the mark exists to end.
+// turn that starts (beginTurn), the turn a busy answer records (recordBusyTurn), the turn that
+// ends (turnEnded) and the compaction that ends (compactEnded), each of those two also where it
+// gives the claim back holding a stop that waits for the turn's copy (heldStopWaitsAtEnd), the
+// claim that is ready (finishReady) and the claim that failed (fail) — because the order is the
+// point and the owing works only on the error of the write it belongs to: another caller that
+// wrote the three steps out itself and left the owing off would lose its report in silence, which
+// is the fault the mark exists to end.
 //
 // write is the decision's own claim write: persist for most of them, and confirm for a turn
 // start that confirms the delivery whose turn it is.

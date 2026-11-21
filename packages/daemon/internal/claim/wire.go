@@ -368,7 +368,7 @@ func StalePluginContract(got, want int) Refusal {
 // StalePluginContract's, and the plugin stops on this 409 as on that one; only the remedy says
 // what happens instead of a relaunch.
 func StalePluginContractUnderStop(got, want int) Refusal {
-	return staleContract(got, want, "a stop held over this claim ends this process, and the claim's next launch is onto the current plugin")
+	return staleContract(got, want, "the daemon relaunches nothing: this process's exit on this refusal meets the stop held over this claim, which suspends it, and the claim's next launch is onto the current plugin")
 }
 
 // StaleControllerContract refuses a call from the operator's controller recorded at another
