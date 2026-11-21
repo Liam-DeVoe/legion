@@ -307,7 +307,7 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     chunk is built; and beside that build, the stored members of families of the repositories
 //     rewritten on those days (readMembers), none where it builds none;
 //   - then, in one transaction: those rows upserted where a value moved (upsertDays, which cuts
-//     them into statements of at most figureStatementBytes of parameters); once, over every day
+//     them into statements of at most statementBytes of parameters); once, over every day
 //     written, those evals' stored rows of the repositories rewritten that the days no longer hold
 //     made zero rows (zeroStaleDays' rule, zeroStaleSettingsDays); the members of families of
 //     those repositories whose day, repository or shipping run moved, or that are new, upserted,

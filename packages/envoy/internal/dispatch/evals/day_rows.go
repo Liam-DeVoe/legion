@@ -370,22 +370,22 @@ func insertMissingDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy st
 // and meets a row already stored as conflict says. It takes them in the byte order of their keys
 // (project, eval, deploy repository, series, repository, day), named as `collate "C"` as every
 // statement that inserts or locks day rows names it (compareDayKeys), whatever the database's
-// collation: in one statement where their parameters fit in figureStatementBytes, and otherwise in
-// a statement for each run of them in that order that fits (dayRowStatements), all in tx, so the
+// collation: in one statement where their parameters fit in statementBytes, and otherwise in a
+// statement for each run of them in that order that fits (dayRowStatements), all in tx, so the
 // statements together insert and lock the rows in the order one statement does. Every statement
 // of a transaction widens the one eval_days change it logs of an eval (migration
-// 20261117100014), so several statements log what one would. once says that conflict updates the
-// stored row, which one statement refuses to do twice (ON CONFLICT DO UPDATE cannot affect a row
-// a second time): two rows of one key are then refused before any statement is sent, where cut
-// into two statements the second would rewrite the first. A conflict that does nothing keeps the
-// first row of a key and skips the rest, in one statement or in several alike.
-func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string, once bool, conflict string) error {
-	statements, err := dayRowStatements(rows, builtBy, once)
+// 20261117100014), so several statements log what one would. updates says that conflict updates
+// the stored row, and so an upsert writes a row once: two rows of one key are then refused before
+// any statement is sent, as one statement refuses them (ON CONFLICT DO UPDATE cannot affect a row
+// a second time), where cut into two statements the second would rewrite the first. A conflict
+// that does nothing keeps the first row of a key and skips the rest, in one statement or in
+// several alike.
+func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string, updates bool, conflict string) error {
+	statements, err := dayRowStatements(rows, builtBy, updates)
 	if err != nil {
 		return err
 	}
-	for args := range statements {
-		if _, err := tx.Exec(ctx, `
+	sql := `
 		insert into eval_days (project_key, eval_id, writer, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
 			last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by)
 		select project_key, eval_id, $18, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples::double precision[],
@@ -397,7 +397,9 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string,
 				last_value, last_at, last_recorded_at, last_reading, counts, via_repository)
 		order by given.project_key collate "C", given.eval_id collate "C", given.deploy_repo collate "C", given.series collate "C",
 			given.repo collate "C", given.day
-		`+conflict, args...); err != nil {
+		` + conflict
+	for args := range statements {
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return fmt.Errorf("write the day rows of %s: %w", rows[0].ProjectKey, err)
 		}
 	}
@@ -410,14 +412,15 @@ const dayRowArrays = 19
 
 // dayRowStatements is the arguments of each statement writeDayRows sends of rows, recording
 // builtBy: rows in the byte order of their keys (compareDayRows), cut into runs whose parameters
-// take at most figureStatementBytes as figureChunks cuts them, the statement's own parameters
+// take at most statementBytes as statementChunks cuts them, the statement's own parameters
 // estimated by paramBytes and each row's by dayRowBytes, each statement's arrays one run. A row
-// adds at least 157 bytes, so the bound cuts a statement long before figureChunk rows; a row
+// adds at least 157 bytes, so the bound cuts a statement long before statementRows rows; a row
 // larger than the bound alone is sent whole, in a statement of its own. It encodes and checks
 // every row before it answers, so a row whose counts do not encode as JSON is refused before any
-// statement is sent, and so, where once, are two rows of one key: those of one key on one UTC day
-// are next to each other in that order, since a row between them by instant falls on that day.
-func dayRowStatements(rows []DayRow, builtBy string, once bool) (iter.Seq[[]any], error) {
+// statement is sent, and so, where updates (the statement's conflict updates the stored row, and
+// so an upsert writes a row once), are two rows of one key: those of one key on one UTC day are
+// next to each other in that order, since a row between them by instant falls on that day.
+func dayRowStatements(rows []DayRow, builtBy string, updates bool) (iter.Seq[[]any], error) {
 	count := len(rows)
 	// Their indexes are sorted rather than the rows, so the caller's rows keep their order.
 	order := make([]int, count)
@@ -436,7 +439,7 @@ func dayRowStatements(rows []DayRow, builtBy string, once bool) (iter.Seq[[]any]
 		row := &rows[index]
 		projects[i], evals[i], deployRepos[i], series[i], repos[i] = row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo
 		days[i], listed[i] = measures.Midnight(row.Day), row.Listed
-		if once && i > 0 && projects[i] == projects[i-1] && evals[i] == evals[i-1] && deployRepos[i] == deployRepos[i-1] &&
+		if updates && i > 0 && projects[i] == projects[i-1] && evals[i] == evals[i-1] && deployRepos[i] == deployRepos[i-1] &&
 			series[i] == series[i-1] && repos[i] == repos[i-1] && days[i].Equal(days[i-1]) {
 			return nil, fmt.Errorf("write the day rows of %s: two rows of eval %s, writer %s, deploy repository %q, series %q and repository %q on %s, and an upsert writes a row once",
 				row.ProjectKey, row.EvalID, writerComputation, row.DeployRepo, row.Series, row.Repo, days[i].Format(time.DateOnly))
@@ -454,7 +457,7 @@ func dayRowStatements(rows []DayRow, builtBy string, once bool) (iter.Seq[[]any]
 	}
 	return func(yield func([]any) bool) {
 		from := 0
-		for run := range figureChunks(sizes, paramBytes(dayRowArrays, builtBy, writerComputation), func(size *int) int { return *size }) {
+		for run := range statementChunks(sizes, paramBytes(dayRowArrays, builtBy, writerComputation), func(size *int) int { return *size }) {
 			to := from + len(run)
 			if !yield([]any{projects[from:to], evals[from:to], series[from:to], repos[from:to], days[from:to], listed[from:to], ns[from:to],
 				sums[from:to], nums[from:to], dens[from:to], maxes[from:to], samples[from:to], lastValues[from:to], lastAts[from:to],

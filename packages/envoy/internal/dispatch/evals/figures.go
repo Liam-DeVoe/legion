@@ -743,13 +743,25 @@ func (p *figurePlan) fold(index int) {
 	target.figures, target.stamp, target.held = target.group.dayFigure(target.day)
 }
 
+// rangeChunkLeast is the fewest ranges a chunk of a write's ranges holds before the end of a
+// (repository, length) prefix of their keys closes it (rangeChunks); statementRows still closes a
+// chunk, and statementBytes still cuts the statements its upsert sends (rangeUpserts). A write of
+// a few ranges, a reading's or the refresher's day, so folds them in one chunk and upserts them in
+// one statement, rather than in a statement a prefix of a few rows each, each its own round trip in
+// the write's transaction with no fold of a later chunk to overlap. A production rule's rewrite,
+// about 1,200-1,700 ranges a prefix, still closes one chunk a prefix, so its upserts overlap its
+// folds as phase I measures them (dispatch://INFRA-2916).
+const rangeChunkLeast = 1024
+
 // rangeChunks is where each chunk of ranges, in the byte order of their keys, ends that a write
-// folds and then upserts while it folds the chunks after it (figurePlan.foldAndWrite): one
-// (repository, length) prefix of the keys each, or limit ranges of it where it holds more.
-func rangeChunks(ranges []rangeTarget, limit int) []int {
+// folds and then upserts while it folds the chunks after it (figurePlan.foldAndWrite): each chunk
+// closed at the end of a (repository, length) prefix of the keys once it holds at least least
+// ranges, or at limit ranges.
+func rangeChunks(ranges []rangeTarget, least, limit int) []int {
 	var ends []int
 	for from, index := 0, 1; index <= len(ranges); index++ {
-		if index == len(ranges) || index-from == limit || ranges[index].repo != ranges[from].repo || ranges[index].days != ranges[from].days {
+		if index == len(ranges) || index-from == limit ||
+			index-from >= least && (ranges[index].repo != ranges[index-1].repo || ranges[index].days != ranges[index-1].days) {
 			ends = append(ends, index)
 			from = index
 		}
@@ -765,9 +777,9 @@ func rangeChunks(ranges []rangeTarget, limit int) []int {
 // upserts take the rows writeFigures would take, in its order, cut at other boundaries. The first
 // error of a statement ends the folds, and is answered.
 func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureScope, workers int) error {
-	ends := rangeChunks(p.ranges, figureChunk)
+	ends := rangeChunks(p.ranges, rangeChunkLeast, statementRows)
 	writes := figureWrites{goneRanges: p.goneRanges, goneDays: p.goneDays}
-	held := make([]rangeFigureRow, 0, min(len(p.ranges), figureChunk))
+	held := make([]rangeFigureRow, 0, min(len(p.ranges), statementRows))
 	from := 0
 	if err := foldInChunks(len(p.ranges)+len(p.days), workers, p.fold, ends, func(chunk int) error {
 		held = held[:0]
@@ -928,30 +940,28 @@ func entriesByID(entries []Entry) map[string]Entry {
 	return byID
 }
 
-// figureChunk is the most rows one statement of the stored figures sends (figureChunks): its
-// arrays are its parameters, and a whole build's batch of a large project holds tens of thousands
-// of rows.
-const figureChunk = 5000
+// statementRows is the most rows one statement of a write sends (statementChunks): its arrays are
+// its parameters, and a whole build's batch of a large project holds tens of thousands of rows.
+const statementRows = 5000
 
-// figureStatementBytes is the most bytes of parameters one statement of the stored figures sends,
-// and one of the day rows (writeDayRows), as figureChunks bounds them. On the farm
-// (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24 passes over TCP stalled about 200 ms on a
-// statement whose Bind and Execute messages held 0.8-1.0 MB, in the pod's loopback TCP (gVisor),
-// while Postgres sat in ClientRead reading it; none of 24 passes over the unix socket did.
-const figureStatementBytes = 256 << 10
+// statementBytes is the most bytes of parameters one statement of a write sends, as
+// statementChunks bounds them. On the farm (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24
+// passes over TCP stalled about 200 ms on a statement whose Bind and Execute messages held 0.8-1.0
+// MB, in the pod's loopback TCP (gVisor), while Postgres sat in ClientRead reading it; none of 24
+// passes over the unix socket did.
+const statementBytes = 256 << 10
 
-// figureChunks is rows cut into the chunks one statement each sends, in their order: each chunk
-// closed before the row that would make it hold more than figureChunk rows, or parameters of more
-// than figureStatementBytes, base being the most bytes the statement's parameters take with no row
-// (paramBytes) and size the most a row adds (upsertBytes, deleteBytes, and dayRowBytes for the
-// day rows' statements, dayRowStatements, whose rows the bound cuts long before figureChunk). A
-// row larger than that alone is a chunk of its own, which its statement sends whole.
-func figureChunks[R any](rows []R, base int, size func(*R) int) iter.Seq[[]R] {
+// statementChunks is rows cut into the chunks one statement each sends, in their order: each chunk
+// closed before the row that would make it hold more than statementRows rows, or parameters of
+// more than statementBytes, base being the most bytes the statement's parameters take with no row
+// (paramBytes) and size the most a row adds (upsertBytes, deleteBytes, dayRowBytes). A row larger
+// than that alone is a chunk of its own, which its statement sends whole.
+func statementChunks[R any](rows []R, base int, size func(*R) int) iter.Seq[[]R] {
 	return func(yield func([]R) bool) {
 		from, bytes := 0, base
 		for index := range rows {
 			n := size(&rows[index])
-			if index > from && (index-from == figureChunk || bytes+n > figureStatementBytes) {
+			if index > from && (index-from == statementRows || bytes+n > statementBytes) {
 				if !yield(rows[from:index]) {
 					return
 				}
@@ -1001,10 +1011,10 @@ func (k *dayFigureKey) deleteBytes() int {
 }
 
 // rangeUpserts is the arguments of each statement upsertRangeFigures sends of rows, each of a chunk
-// of them (figureChunks).
+// of them (statementChunks).
 func rangeUpserts(scope figureScope, rows []rangeFigureRow) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range figureChunks(rows, paramBytes(8, scope.project, scope.build), (*rangeFigureRow).upsertBytes) {
+		for chunk := range statementChunks(rows, paramBytes(8, scope.project, scope.build), (*rangeFigureRow).upsertBytes) {
 			repos, ns, ends, evalIDs := make([]string, len(chunk)), make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk))
 			deployRepos, keys, figures, oldest := make([]string, len(chunk)), make([]int64, len(chunk)), make([][]byte, len(chunk)), make([]time.Time, len(chunk))
 			for index, row := range chunk {
@@ -1019,10 +1029,10 @@ func rangeUpserts(scope figureScope, rows []rangeFigureRow) iter.Seq[[]any] {
 }
 
 // rangeDeletes is the arguments of each statement writeAfterRanges sends of gone, the keys of
-// range rows of project, each of a chunk of them (figureChunks).
+// range rows of project, each of a chunk of them (statementChunks).
 func rangeDeletes(project string, gone []rangeFigureKey) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range figureChunks(gone, paramBytes(5, project), (*rangeFigureKey).deleteBytes) {
+		for chunk := range statementChunks(gone, paramBytes(5, project), (*rangeFigureKey).deleteBytes) {
 			repos, ns, ends, evalIDs := make([]string, len(chunk)), make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk))
 			deployRepos := make([]string, len(chunk))
 			for index, row := range chunk {
@@ -1036,10 +1046,10 @@ func rangeDeletes(project string, gone []rangeFigureKey) iter.Seq[[]any] {
 }
 
 // dayUpserts is the arguments of each statement writeAfterRanges sends of rows, each of a chunk of
-// them (figureChunks).
+// them (statementChunks).
 func dayUpserts(scope figureScope, rows []dayFigureRow) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range figureChunks(rows, paramBytes(7, scope.project, scope.build), (*dayFigureRow).upsertBytes) {
+		for chunk := range statementChunks(rows, paramBytes(7, scope.project, scope.build), (*dayFigureRow).upsertBytes) {
 			repos, days, evalIDs, deployRepos := make([]string, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 			keys, figures, stamps := make([]int64, len(chunk)), make([][]byte, len(chunk)), make([]int64, len(chunk))
 			for index, row := range chunk {
@@ -1054,10 +1064,10 @@ func dayUpserts(scope figureScope, rows []dayFigureRow) iter.Seq[[]any] {
 }
 
 // dayDeletes is the arguments of each statement writeAfterRanges sends of gone, the keys of day
-// rows of project, each of a chunk of them (figureChunks).
+// rows of project, each of a chunk of them (statementChunks).
 func dayDeletes(project string, gone []dayFigureKey) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range figureChunks(gone, paramBytes(4, project), (*dayFigureKey).deleteBytes) {
+		for chunk := range statementChunks(gone, paramBytes(4, project), (*dayFigureKey).deleteBytes) {
 			repos, days, evalIDs, deployRepos := make([]string, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 			for index, row := range chunk {
 				repos[index], days[index], evalIDs[index], deployRepos[index] = row.repo, row.day, row.eval, row.deployRepo

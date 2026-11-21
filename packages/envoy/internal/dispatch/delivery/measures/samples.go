@@ -63,8 +63,19 @@ func (s SortedSamples) adjacent(k int) (float64, float64) {
 // Max is the largest sample of s, which holds at least one.
 func (s SortedSamples) Max() float64 { return s.At(s.n - 1) }
 
-// Quantile is p's quantile of s, which holds at least one sample, by Quantile's rule.
-func (s SortedSamples) Quantile(p float64) float64 { return quantileAt(s.n, s.At, s.adjacent, p) }
+// Quantile is p's quantile of s, which holds at least one sample, by Quantile's rule: linear
+// between the two nearest ranks, each product converted to float64 before the sum it feeds, for
+// the reason Quantile gives. It reads the two ranks together (adjacent), which across the lists is
+// one selection where two reads of At would be two.
+func (s SortedSamples) Quantile(p float64) float64 {
+	i := float64(float64(s.n-1) * p)
+	lo := int(math.Floor(i))
+	if lo+1 >= s.n {
+		return s.At(s.n - 1)
+	}
+	low, high := s.adjacent(lo)
+	return low + float64((high-low)*(i-float64(lo)))
+}
 
 // MergedSamples is every sample of series among parts in ascending order: the one list a quantile
 // reads. Where each part of series among parts holds samples that already ascend and hold no -0
@@ -118,21 +129,6 @@ func SortableSamples(samples []float64) bool {
 		}
 	}
 	return true
-}
-
-// quantileAt is p's quantile of n ascending values, n at least 1, linear between the two nearest
-// ranks, each product converted to float64 before the sum it feeds, for the reason Quantile gives:
-// at(k) is the value at rank k, and adjacent(k) the values at ranks k and k+1, which a selection
-// across lists answers from one search (SortedSamples' adjacent) where two reads of at search
-// twice.
-func quantileAt(n int, at func(int) float64, adjacent func(int) (float64, float64), p float64) float64 {
-	i := float64(float64(n-1) * p)
-	lo := int(math.Floor(i))
-	if lo+1 >= n {
-		return at(n - 1)
-	}
-	low, high := adjacent(lo)
-	return low + float64((high-low)*(i-float64(lo)))
 }
 
 // kth is the k-th and the (k+1)-th smallest values (from 0) of the union of lists, each sorted

@@ -21,8 +21,8 @@ import (
 )
 
 // The checks of the day rows' write (writeDayRows): it sends its rows in statements whose
-// parameters take at most figureStatementBytes as pgx encodes them, in the byte order of the rows'
-// keys across its statements, and the statements together store and log what one would.
+// parameters take at most statementBytes as pgx encodes them, in the byte order of the rows' keys
+// across its statements, and the statements together store and log what one would.
 
 // dayRowStatementOIDs is the type of each parameter of writeDayRows' statement, as the server
 // describes it (TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder holds it to the
@@ -32,66 +32,6 @@ var dayRowStatementOIDs = []uint32{
 	pgtype.Int4ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.TextArrayOID,
 	pgtype.Float8ArrayOID, pgtype.TimestamptzArrayOID, pgtype.TextArrayOID, pgtype.Int4ArrayOID, pgtype.TextOID, pgtype.TextOID,
 	pgtype.TimestamptzArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID,
-}
-
-// dayArgsEncoded is the bytes args, the arguments of one of writeDayRows' statements, take as pgx
-// sends them as the types oids: each encoded as its parameter's type, in the format pgx sends that
-// type in, with 4 bytes of length before it.
-func dayArgsEncoded(t *testing.T, oids []uint32, args []any) int {
-	t.Helper()
-	if len(oids) != len(args) {
-		t.Fatalf("a statement of day rows of %d arguments, where its parameters are %d", len(args), len(oids))
-	}
-	types, total := pgtype.NewMap(), 0
-	for index, arg := range args {
-		encoded, err := types.Encode(oids[index], types.FormatCodeForOID(oids[index]), arg, nil)
-		if err != nil {
-			t.Fatalf("encode argument %d of a statement of day rows: %v", index+1, err)
-		}
-		total += 4 + len(encoded)
-	}
-	return total
-}
-
-// dayArgsEstimate is the most bytes args, the arguments of one of writeDayRows' statements, take
-// as pgx encodes them, estimated from the arguments as dayRowStatements estimates a statement's: 4
-// bytes of length before each argument, a string's bytes, and an array's header and, for each
-// element, 4 bytes of length and its bytes, a string's length (none for a null one), 1 for a bool
-// and at most 8 for a number, a date or a time, null or not.
-func dayArgsEstimate(t *testing.T, args []any) int {
-	t.Helper()
-	bytes := 4 * len(args)
-	for _, arg := range args {
-		switch value := arg.(type) {
-		case string:
-			bytes += len(value)
-		case []string:
-			bytes += arrayHeaderBytes
-			for _, one := range value {
-				bytes += 4 + len(one)
-			}
-		case []*string:
-			bytes += arrayHeaderBytes + 4*len(value)
-			for _, one := range value {
-				if one != nil {
-					bytes += len(*one)
-				}
-			}
-		case []bool:
-			bytes += arrayHeaderBytes + (4+1)*len(value)
-		case []int32:
-			bytes += arrayHeaderBytes + (4+8)*len(value)
-		case []*float64:
-			bytes += arrayHeaderBytes + (4+8)*len(value)
-		case []time.Time:
-			bytes += arrayHeaderBytes + (4+8)*len(value)
-		case []*time.Time:
-			bytes += arrayHeaderBytes + (4+8)*len(value)
-		default:
-			t.Fatalf("an argument of %T, which the estimate does not know", arg)
-		}
-	}
-	return bytes
 }
 
 // dayKeyLine is a day row's key as one string whose bytes order the keys as their fields' bytes
@@ -140,11 +80,11 @@ func shuffledDays(rows []DayRow) []DayRow {
 // dates, whose binary encodings are as long as any, and long strings, sample lists and counts,
 // which the estimate counts byte for byte), and short rows, of which a statement holds more than a
 // thousand, given out of order, are cut into statements (dayRowStatements) whose parameters, as
-// pgx encodes them, take no more than the estimate (dayArgsEstimate, dayRowBytes') and no more than
-// figureStatementBytes, holding every row once and in the byte order of their keys: each statement
-// but the last as many rows as that estimate lets under the bound, and no fewer. The rows given
-// keep their order. A row larger than the bound alone is sent in a statement of its own, between
-// the statements of the rows around it.
+// pgx encodes them, take no more than the estimate (paramEstimate, dayRowBytes') and no more than
+// statementBytes, holding every row once and in the byte order of their keys: each statement but
+// the last as many rows as that estimate lets under the bound, and no fewer. The rows given keep
+// their order. A row larger than the bound alone is sent in a statement of its own, between the
+// statements of the rows around it.
 func TestAStatementOfDayRowsHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
 	long := func(index, size int) string { return fmt.Sprintf("%06d", index) + strings.Repeat("é", size/2) }
 	far := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
@@ -195,19 +135,19 @@ func TestAStatementOfDayRowsHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
 		order := sortedDayKeys(given)
 		// Every row of the shape estimates alike, so the rows the bound lets into one statement are
 		// what is left of it past a statement's own parameters, over a row's.
-		estimateOf := func(n int) int { return dayArgsEstimate(t, statementsOf(given[:n])[0]) }
+		estimateOf := func(n int) int { return paramEstimate(t, statementsOf(given[:n])[0]) }
 		row := estimateOf(2) - estimateOf(1)
-		fits := min((figureStatementBytes-(estimateOf(1)-row))/row, figureChunk)
+		fits := min((statementBytes-(estimateOf(1)-row))/row, statementRows)
 		var held []string
 		var sizes []int
 		largest := 0
 		for _, args := range statementsOf(given) {
-			encoded, estimated := dayArgsEncoded(t, dayRowStatementOIDs, args), dayArgsEstimate(t, args)
+			encoded, estimated := encodedBytes(t, dayRowStatementOIDs, args), paramEstimate(t, args)
 			if encoded > estimated {
 				t.Errorf("%s: a statement of %d rows encodes to %d bytes of parameters, past its estimate of %d", shape.name, dayRowsIn(args), encoded, estimated)
 			}
-			if estimated > figureStatementBytes {
-				t.Errorf("%s: a statement of %d rows takes an estimated %d bytes of parameters, past %d", shape.name, dayRowsIn(args), estimated, figureStatementBytes)
+			if estimated > statementBytes {
+				t.Errorf("%s: a statement of %d rows takes an estimated %d bytes of parameters, past %d", shape.name, dayRowsIn(args), estimated, statementBytes)
 			}
 			held, sizes, largest = append(held, dayKeysIn(args)...), append(sizes, dayRowsIn(args)), max(largest, encoded)
 		}
@@ -227,7 +167,7 @@ func TestAStatementOfDayRowsHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
 			t.Errorf("%s: %d rows went in %d statement, and the check needs them cut", shape.name, shape.count, len(sizes))
 		}
 		t.Logf("%s: %d rows in %d statements of %d rows, the largest %d bytes of parameters as pgx encodes them, of %d",
-			shape.name, shape.count, len(sizes), fits, largest, figureStatementBytes)
+			shape.name, shape.count, len(sizes), fits, largest, statementBytes)
 	}
 
 	huge := most(1)
@@ -332,7 +272,7 @@ func (c dayChange) String() string {
 // TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder: a write of 1,440 day rows of three
 // evals, two deploy repositories, two series and three repositories over 40 days, most with a
 // sample list of 40 values, given out of order (upsertDays, its statements recorded on a traced
-// pool), sends at least three statements, none whose parameters pass figureStatementBytes as
+// pool), sends at least three statements, none whose parameters pass statementBytes as
 // dayRowStatements estimates them, nor that estimate as pgx encodes them as the types the server
 // describes; they take the rows in the byte order of their keys across the statements, each once,
 // store every row as it was given, and log one eval_days change per eval spanning the days written,
@@ -418,10 +358,10 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 		var sizes []int
 		largest := 0
 		for index, statement := range sent {
-			encoded, estimated := dayArgsEncoded(t, oids, statement.Args), dayArgsEstimate(t, statement.Args)
-			if estimated > figureStatementBytes || encoded > estimated {
+			encoded, estimated := encodedBytes(t, oids, statement.Args), paramEstimate(t, statement.Args)
+			if estimated > statementBytes || encoded > estimated {
 				t.Errorf("%s: statement %d of %d rows takes %d bytes of parameters as pgx encodes them and an estimated %d, where the bound is %d",
-					what, index, dayRowsIn(statement.Args), encoded, estimated, figureStatementBytes)
+					what, index, dayRowsIn(statement.Args), encoded, estimated, statementBytes)
 			}
 			held, sizes, largest = append(held, dayKeysIn(statement.Args)...), append(sizes, dayRowsIn(statement.Args)), max(largest, encoded)
 		}
@@ -460,20 +400,13 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 			t.Errorf("%s: the write logged the eval_days changes %v, want one of each eval spanning the days written, %v", what, changes, want)
 		}
 		t.Logf("%s: %d rows in %d statements of %v rows, the largest %d bytes of parameters as pgx encodes them, of %d; %d changes logged",
-			what, len(rows), len(sent), sizes, largest, figureStatementBytes, len(changes))
+			what, len(rows), len(sent), sizes, largest, statementBytes, len(changes))
 	}
 	// stored checks that the stored day rows are exactly want, each as it was given, built by
 	// testBuild.
 	stored := func(what string, want []DayRow) {
 		t.Helper()
-		read, err := r.database.Pool.Query(ctx, `select `+dayColumns+` from eval_days where project_key = $1`, r.project)
-		if err != nil {
-			t.Fatalf("%s: read the stored day rows: %v", what, err)
-		}
-		rows, err := pgx.CollectRows(read, func(row pgx.CollectableRow) (DayRow, error) { return scanDay(row) })
-		if err != nil {
-			t.Fatalf("%s: read the stored day rows: %v", what, err)
-		}
+		rows := r.stored(t, r.project)
 		byKey := map[string]DayRow{}
 		for _, row := range rows {
 			row.UpdatedAt = time.Time{}

@@ -242,9 +242,9 @@ type Status struct {
 // that subtraction or sum into one instruction that rounds once, an arm64 build does, and the
 // last bit that moves can move a figure rounded to one decimal (a Pipeline day's p90 of 453 s,
 // 7.55 minutes, read 7.6 on arm64 and 7.5 on amd64), so the quantile would differ by machine.
-// The arithmetic is quantileAt's, which SortedSamples' Quantile reads its ranks through too.
+// The arithmetic is SortedSamples' Quantile's.
 func Quantile(sorted []float64, p float64) float64 {
-	return quantileAt(len(sorted), func(k int) float64 { return sorted[k] }, func(k int) (float64, float64) { return sorted[k], sorted[k+1] }, p)
+	return SortedSamples{merged: sorted, n: len(sorted)}.Quantile(p)
 }
 
 // minutesBetween is b - a in minutes, one division of whole nanoseconds, so a duration the

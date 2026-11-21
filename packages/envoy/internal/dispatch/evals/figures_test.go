@@ -768,16 +768,16 @@ func foldMovedDays(ctx context.Context, q delivery.Querier, scope figureScope, e
 	return writes, nil
 }
 
-// The four statements that write the stored figures, as figureStatementKind names them.
+// The four kinds of statement that write the stored figures, as figureStatementKind names them.
 const (
-	rangeUpsertStatement = "insert into eval_range_figures"
-	rangeDeleteStatement = "delete from eval_range_figures"
-	dayUpsertStatement   = "insert into eval_day_figures"
-	dayDeleteStatement   = "delete from eval_day_figures"
+	rangeUpsertKind = "insert into eval_range_figures"
+	rangeDeleteKind = "delete from eval_range_figures"
+	dayUpsertKind   = "insert into eval_day_figures"
+	dayDeleteKind   = "delete from eval_day_figures"
 )
 
 // figureStatementKinds is the four, in the order a write sends them (writeFigures).
-var figureStatementKinds = []string{rangeUpsertStatement, rangeDeleteStatement, dayUpsertStatement, dayDeleteStatement}
+var figureStatementKinds = []string{rangeUpsertKind, rangeDeleteKind, dayUpsertKind, dayDeleteKind}
 
 // figureStatementKind is which of figureStatementKinds sql is, "" for none.
 func figureStatementKind(sql string) string {
@@ -792,37 +792,39 @@ func figureStatementKind(sql string) string {
 // statementOIDs is the type of each parameter of each of figureStatementKinds, as its casts name
 // it: what pgx encodes each argument as.
 var statementOIDs = map[string][]uint32{
-	rangeUpsertStatement: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.Int4ArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID,
+	rangeUpsertKind: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.Int4ArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID,
 		pgtype.Int8ArrayOID, pgtype.ByteaArrayOID, pgtype.TimestamptzArrayOID, pgtype.TextOID, pgtype.TextArrayOID},
-	rangeDeleteStatement: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.Int4ArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID},
-	dayUpsertStatement: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.Int8ArrayOID,
+	rangeDeleteKind: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.Int4ArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID},
+	dayUpsertKind: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.Int8ArrayOID,
 		pgtype.ByteaArrayOID, pgtype.Int8ArrayOID, pgtype.TextOID, pgtype.TextArrayOID},
-	dayDeleteStatement: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID},
+	dayDeleteKind: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID},
 }
 
-// encodedBytes is the bytes args, a statement's of kind, take as pgx sends them: each encoded as
-// its parameter's type, in the format pgx sends that type in, with 4 bytes of length before it.
-func encodedBytes(t *testing.T, kind string, args []any) int {
+// encodedBytes is the bytes args, the arguments of a statement, take as pgx sends them as the
+// types oids: each encoded as its parameter's type, in the format pgx sends that type in, with 4
+// bytes of length before it.
+func encodedBytes(t *testing.T, oids []uint32, args []any) int {
 	t.Helper()
-	types, oids := pgtype.NewMap(), statementOIDs[kind]
 	if len(oids) != len(args) {
-		t.Fatalf("a statement %q of %d arguments, where its casts name %d", kind, len(args), len(oids))
+		t.Fatalf("a statement of %d arguments, where its parameters are the %d types %v", len(args), len(oids), oids)
 	}
-	total := 0
+	types, total := pgtype.NewMap(), 0
 	for index, arg := range args {
 		encoded, err := types.Encode(oids[index], types.FormatCodeForOID(oids[index]), arg, nil)
 		if err != nil {
-			t.Fatalf("encode argument %d of %q: %v", index+1, kind, err)
+			t.Fatalf("encode argument %d of a statement of the types %v: %v", index+1, oids, err)
 		}
 		total += 4 + len(encoded)
 	}
 	return total
 }
 
-// paramEstimate is the most bytes args take as pgx encodes them, estimated from the arguments as
-// figureChunks estimates a statement's: 4 bytes of length before each argument, a string's bytes,
-// and an array's header and, for each element, 4 bytes of length and its bytes, a string's or a
-// byte slice's length and at most 8 for a number or a date.
+// paramEstimate is the most bytes args, the arguments of a statement, take as pgx encodes them,
+// estimated from the arguments as statementChunks' callers estimate a statement's (paramBytes,
+// and upsertBytes, deleteBytes or dayRowBytes): 4 bytes of length before each argument, a
+// string's bytes, and an array's header and, for each element, 4 bytes of length and its bytes, a
+// string's or a byte slice's length (none for a null string), 1 for a bool and at most 8 for a
+// number, a date or a time, null or not.
 func paramEstimate(t *testing.T, args []any) int {
 	t.Helper()
 	bytes := 4 * len(args)
@@ -835,16 +837,29 @@ func paramEstimate(t *testing.T, args []any) int {
 			for _, one := range value {
 				bytes += 4 + len(one)
 			}
+		case []*string:
+			bytes += arrayHeaderBytes + 4*len(value)
+			for _, one := range value {
+				if one != nil {
+					bytes += len(*one)
+				}
+			}
 		case [][]byte:
 			bytes += arrayHeaderBytes
 			for _, one := range value {
 				bytes += 4 + len(one)
 			}
+		case []bool:
+			bytes += arrayHeaderBytes + (4+1)*len(value)
 		case []int32:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []int64:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
+		case []*float64:
+			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []time.Time:
+			bytes += arrayHeaderBytes + (4+8)*len(value)
+		case []*time.Time:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		default:
 			t.Fatalf("an argument of %T, which the estimate does not know", arg)
@@ -912,7 +927,7 @@ func writesOf(statements []figureStatement) figureWrites {
 	for _, statement := range statements {
 		args := statement.args
 		switch statement.kind {
-		case rangeUpsertStatement:
+		case rangeUpsertKind:
 			repos, ns, ends, evalIDs, keys := args[1].([]string), args[2].([]int32), args[3].([]time.Time), args[4].([]string), args[5].([]int64)
 			figures, oldest, deployRepos := args[6].([][]byte), args[7].([]time.Time), args[9].([]string)
 			for index := range repos {
@@ -921,12 +936,12 @@ func writesOf(statements []figureStatement) figureWrites {
 					key:            keys[index], figures: figures[index], oldest: oldest[index],
 				})
 			}
-		case rangeDeleteStatement:
+		case rangeDeleteKind:
 			repos, ns, ends, evalIDs, deployRepos := args[1].([]string), args[2].([]int32), args[3].([]time.Time), args[4].([]string), args[5].([]string)
 			for index := range repos {
 				w.goneRanges = append(w.goneRanges, rangeFigureKey{repo: repos[index], days: int(ns[index]), end: ends[index], eval: evalIDs[index], deployRepo: deployRepos[index]})
 			}
-		case dayUpsertStatement:
+		case dayUpsertKind:
 			repos, days, evalIDs, keys := args[1].([]string), args[2].([]time.Time), args[3].([]string), args[4].([]int64)
 			figures, stamps, deployRepos := args[5].([][]byte), args[6].([]int64), args[8].([]string)
 			for index := range repos {
@@ -935,7 +950,7 @@ func writesOf(statements []figureStatement) figureWrites {
 					key:          keys[index], figures: figures[index], stamp: stamps[index],
 				})
 			}
-		case dayDeleteStatement:
+		case dayDeleteKind:
 			repos, days, evalIDs, deployRepos := args[1].([]string), args[2].([]time.Time), args[3].([]string), args[4].([]string)
 			for index := range repos {
 				w.goneDays = append(w.goneDays, dayFigureKey{repo: repos[index], day: days[index], eval: evalIDs[index], deployRepo: deployRepos[index]})
@@ -945,10 +960,13 @@ func writesOf(statements []figureStatement) figureWrites {
 	return w
 }
 
-// TestTheRangesAreFoldedInChunksOfOneRepositoryAndLength: the chunks a write folds and sends of
-// its ranges, in the byte order of their keys, are each one (repository, length) prefix of the
-// keys, cut again at the limit where a prefix holds more (rangeChunks).
-func TestTheRangesAreFoldedInChunksOfOneRepositoryAndLength(t *testing.T) {
+// TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast: the chunks a write folds and
+// sends of its ranges, in the byte order of their keys, close at the end of a (repository, length)
+// prefix of the keys only once they hold at least the least ranges, and at the limit wherever it
+// falls (rangeChunks): at a least of one, a chunk each prefix, cut again at the limit; at a larger
+// least, chunks of several prefixes, which pass the end of a prefix inside them by; and at
+// rangeChunkLeast, a write of a few ranges is one chunk.
+func TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast(t *testing.T) {
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	var ranges []rangeTarget
 	for _, prefix := range []struct {
@@ -961,14 +979,20 @@ func TestTheRangesAreFoldedInChunksOfOneRepositoryAndLength(t *testing.T) {
 		}
 	}
 	for _, check := range []struct {
-		limit int
-		want  []int
-	}{{2, []int{2, 3, 5, 7, 8, 9, 11}}, {figureChunk, []int{3, 8, 9, 11}}} {
-		if got := rangeChunks(ranges, check.limit); !slices.Equal(got, check.want) {
-			t.Errorf("the chunks of %d ranges at a limit of %d end at %v, want %v", len(ranges), check.limit, got, check.want)
+		least, limit int
+		want         []int
+	}{
+		{1, 2, []int{2, 3, 5, 7, 8, 9, 11}},
+		{1, statementRows, []int{3, 8, 9, 11}},
+		{4, statementRows, []int{8, 11}},
+		{3, 4, []int{3, 7, 11}},
+		{rangeChunkLeast, statementRows, []int{11}},
+	} {
+		if got := rangeChunks(ranges, check.least, check.limit); !slices.Equal(got, check.want) {
+			t.Errorf("the chunks of %d ranges at a least of %d and a limit of %d end at %v, want %v", len(ranges), check.least, check.limit, got, check.want)
 		}
 	}
-	if got := rangeChunks(nil, figureChunk); len(got) != 0 {
+	if got := rangeChunks(nil, rangeChunkLeast, statementRows); len(got) != 0 {
 		t.Errorf("no range is cut into the chunks %v", got)
 	}
 }
@@ -1080,9 +1104,9 @@ func TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded(t *tes
 // encodings are as long as any, and long strings and figures, which the estimate counts byte for
 // byte), and short rows, of which a statement holds thousands, are cut into statements of each of
 // the four kinds (rangeUpserts, rangeDeletes, dayUpserts, dayDeletes) whose parameters, as pgx
-// encodes them, take no more than the estimate (paramEstimate, figureChunks') and no more than
-// figureStatementBytes, holding every row once and in its order: each statement but the last as
-// many rows as that estimate lets under the bound, or figureChunk, and no fewer. A row larger than
+// encodes them, take no more than the estimate (paramEstimate, statementChunks') and no more than
+// statementBytes, holding every row once and in its order: each statement but the last as many
+// rows as that estimate lets under the bound, or statementRows, and no fewer. A row larger than
 // the bound alone is sent in a statement of its own, between the statements of the rows around it.
 func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
 	long := func(index, size int) string { return fmt.Sprintf("%06d", index) + strings.Repeat("é", size/2) }
@@ -1115,10 +1139,10 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 			// statements is the statements of the first n rows of the kind.
 			statements func(n int) iter.Seq[[]any]
 		}{
-			{rangeUpsertStatement, func(n int) iter.Seq[[]any] { return rangeUpserts(scope, ranges[:n]) }},
-			{rangeDeleteStatement, func(n int) iter.Seq[[]any] { return rangeDeletes(scope.project, goneRanges[:n]) }},
-			{dayUpsertStatement, func(n int) iter.Seq[[]any] { return dayUpserts(scope, days[:n]) }},
-			{dayDeleteStatement, func(n int) iter.Seq[[]any] { return dayDeletes(scope.project, goneDays[:n]) }},
+			{rangeUpsertKind, func(n int) iter.Seq[[]any] { return rangeUpserts(scope, ranges[:n]) }},
+			{rangeDeleteKind, func(n int) iter.Seq[[]any] { return rangeDeletes(scope.project, goneRanges[:n]) }},
+			{dayUpsertKind, func(n int) iter.Seq[[]any] { return dayUpserts(scope, days[:n]) }},
+			{dayDeleteKind, func(n int) iter.Seq[[]any] { return dayDeletes(scope.project, goneDays[:n]) }},
 		} {
 			// Every row of the shape estimates alike, so the rows the bound lets into one statement
 			// are what is left of it past a statement's own parameters, over a row's.
@@ -1129,17 +1153,17 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 				return 0
 			}
 			row := estimateOf(2) - estimateOf(1)
-			fits := min((figureStatementBytes-(estimateOf(1)-row))/row, figureChunk)
+			fits := min((statementBytes-(estimateOf(1)-row))/row, statementRows)
 			var held []string
 			var sizes []int
 			largest := 0
 			for args := range kind.statements(shape.count) {
-				encoded, estimated := encodedBytes(t, kind.name, args), paramEstimate(t, args)
+				encoded, estimated := encodedBytes(t, statementOIDs[kind.name], args), paramEstimate(t, args)
 				if encoded > estimated {
 					t.Errorf("%s, %q: a statement of %d rows encodes to %d bytes of parameters, past its estimate of %d", shape.name, kind.name, rowsIn(args), encoded, estimated)
 				}
-				if estimated > figureStatementBytes {
-					t.Errorf("%s, %q: a statement of %d rows takes an estimated %d bytes of parameters, past %d", shape.name, kind.name, rowsIn(args), estimated, figureStatementBytes)
+				if estimated > statementBytes {
+					t.Errorf("%s, %q: a statement of %d rows takes an estimated %d bytes of parameters, past %d", shape.name, kind.name, rowsIn(args), estimated, statementBytes)
 				}
 				held, sizes, largest = append(held, args[1].([]string)...), append(sizes, rowsIn(args)), max(largest, encoded)
 			}
@@ -1148,7 +1172,7 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 			}
 			for index, size := range sizes {
 				if size != fits && (index < len(sizes)-1 || size > fits) {
-					t.Errorf("%s, %q: the statements hold %v rows, want %d in each but the last, as many as the estimate lets under the bound or figureChunk",
+					t.Errorf("%s, %q: the statements hold %v rows, want %d in each but the last, as many as the estimate lets under the bound or statementRows",
 						shape.name, kind.name, sizes, fits)
 					break
 				}
@@ -1157,12 +1181,12 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 				t.Errorf("%s, %q: %d rows went in %d statement, and the check needs them cut", shape.name, kind.name, shape.count, len(sizes))
 			}
 			t.Logf("%s, %q: %d rows in %d statements of %d rows, the largest %d bytes of parameters as pgx encodes them, of %d",
-				shape.name, kind.name, shape.count, len(sizes), fits, largest, figureStatementBytes)
+				shape.name, kind.name, shape.count, len(sizes), fits, largest, statementBytes)
 		}
 	}
 
 	huge := ranges[1]
-	huge.figures = figures(figureStatementBytes + 1)
+	huge.figures = figures(statementBytes + 1)
 	var sizes []int
 	var alone []byte
 	for args := range rangeUpserts(scope, []rangeFigureRow{ranges[0], huge, ranges[2], ranges[3]}) {
@@ -1177,8 +1201,8 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 }
 
 // TestARowPastTheStatementBoundIsWrittenAlone: a range row whose figures alone are past
-// figureStatementBytes is written by a statement of its own, between those of the rows around it,
-// and stored bit for bit, as they are (writeFigures).
+// statementBytes is written by a statement of its own, between those of the rows around it, and
+// stored bit for bit, as they are (writeFigures).
 func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -1189,7 +1213,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 	for index := range rows {
 		figures := make([]byte, 1000)
 		if index == 1 {
-			figures = make([]byte, figureStatementBytes+1)
+			figures = make([]byte, statementBytes+1)
 		}
 		for k := range figures {
 			figures[k] = byte(index + k)
@@ -1234,10 +1258,11 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 // evals and of both cuts, the deploy repository's rows and the rows no deploy repository moves,
 // while it writes them. Its range upserts take the rows the whole fold on one worker with no write
 // answers (foldMovedDays), each once, in the byte order of their keys, each statement within one
-// (repository, length) prefix of them; its gone ranges, day rows and gone days are that fold's too,
-// in their order, after every range; no statement holds more than figureStatementBytes of
-// parameters as figureChunks estimates them, nor more than that estimate as pgx encodes them; and
-// the stored figures it leaves are the fold of the rows that stand, bit for bit.
+// chunk of the ranges it reads (readFigurePlan), as rangeChunks cuts them at rangeChunkLeast; its
+// gone ranges, day rows and gone days are that fold's too, in their order, after every range; no
+// statement holds more than statementBytes of parameters as statementChunks estimates them, nor
+// more than that estimate as pgx encodes them; and the stored figures it leaves are the fold of
+// the rows that stand, bit for bit.
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
@@ -1274,6 +1299,21 @@ func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *t
 		t.Fatalf("fold the figures of %s on one worker: %v", project, err)
 	}
 	whole.sortByKey()
+	plan, err := readFigurePlan(ctx, r.database.Pool, scope, byID, moved)
+	if err != nil {
+		t.Fatalf("read the ranges of %s: %v", project, err)
+	}
+	// chunkOf is the chunk of the refold's ranges (rangeChunks) each range falls in, by its key.
+	ends := rangeChunks(plan.ranges, rangeChunkLeast, statementRows)
+	chunkOf, prefixes := map[rangeFigureKey]int{}, map[rangeFigureKey]bool{}
+	from := 0
+	for chunk, end := range ends {
+		for _, target := range plan.ranges[from:end] {
+			chunkOf[target.rangeFigureKey] = chunk
+			prefixes[rangeFigureKey{repo: target.repo, days: target.days}] = true
+		}
+		from = end
+	}
 
 	statements := &figureStatements{}
 	tx, err := storetest.Traced(t, r.database.Pool, statements, nil).Begin(ctx)
@@ -1296,20 +1336,21 @@ func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *t
 		if kinds == len(figureStatementKinds) {
 			t.Fatalf("statement %d, %q, came after a later kind of statement", index, statement.kind)
 		}
-		encoded, estimated := encodedBytes(t, statement.kind, statement.args), paramEstimate(t, statement.args)
-		if estimated > figureStatementBytes || encoded > estimated {
+		encoded, estimated := encodedBytes(t, statementOIDs[statement.kind], statement.args), paramEstimate(t, statement.args)
+		if estimated > statementBytes || encoded > estimated {
 			t.Errorf("statement %d, %q of %d rows, takes %d bytes of parameters as pgx encodes them and an estimated %d, where the bound is %d",
-				index, statement.kind, rowsIn(statement.args), encoded, estimated, figureStatementBytes)
+				index, statement.kind, rowsIn(statement.args), encoded, estimated, statementBytes)
 		}
 		largest = max(largest, encoded)
-		if statement.kind != rangeUpsertStatement {
+		if statement.kind != rangeUpsertKind {
 			continue
 		}
 		upserts++
-		repos, ns := statement.args[1].([]string), statement.args[2].([]int32)
-		for row := range repos {
-			if repos[row] != repos[0] || ns[row] != ns[0] {
-				t.Errorf("range upsert %d holds rows of %q's %d days and of %q's %d", index, repos[0], ns[0], repos[row], ns[row])
+		rows := writesOf(sent[index : index+1]).ranges
+		first := chunkOf[rows[0].rangeFigureKey]
+		for _, row := range rows {
+			if chunk, read := chunkOf[row.rangeFigureKey]; !read || chunk != first {
+				t.Errorf("range upsert %d holds rows of chunk %d of the ranges and %+v, of chunk %d (a range read: %t)", index, first, row.rangeFigureKey, chunk, read)
 				break
 			}
 		}
@@ -1344,18 +1385,22 @@ func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *t
 			len(evals), slices.Sorted(maps.Keys(deployRepos)), upserts, len(written.goneRanges), len(written.goneDays), "", deliveries.DeployRepo)
 	}
 	expectTruth(t, "a refold of every stale figure", r.storedFigures(t), r.truthFigures(t))
-	t.Logf("the refold sent %d statements, %d of them range upserts of %d rows of %d evals, the largest holding %d bytes of parameters as pgx encodes them",
-		len(sent), upserts, len(written.ranges), len(evals), largest)
+	t.Logf("the refold sent %d statements, %d of them range upserts of %d rows of %d evals, of %d ranges in %d chunks over %d (repository, length) prefixes, the largest holding %d bytes of parameters as pgx encodes them",
+		len(sent), upserts, len(written.ranges), len(evals), len(plan.ranges), len(ends), len(prefixes), largest)
 }
 
 // TestAFailureInALaterChunkRollsTheWholeWriteBack: over a settled history of a logged eval whose
-// readings fold into its project's own rows and into acme/web's, a reading's write folds the ranges
-// its day moved in its own transaction while it writes them, chunk by chunk
-// (figurePlan.foldAndWrite), and the upsert of a later chunk fails: a trigger of the test refuses
-// every range row of 85 days, the last length of the project's own rows, once the upserts of the
-// shorter lengths have written theirs. The write answers that error, sends nothing after it, and
-// stores nothing: no reading, no day row, no change row, and none of the stored figures the
-// chunks before the failure wrote.
+// readings fold into its project's own rows and into acme/web's, a write of a reading of acme/web
+// on each of the 180 days before today folds the ranges those days moved (of each length and
+// repository, those ending on each of the 182 days from the first of them through the last end
+// day folded) in its own transaction while it writes them, chunk by chunk
+// (figurePlan.foldAndWrite): the first chunk closes once it holds rangeChunkLeast ranges, at the
+// end of one of the project's own lengths before its last, and the upsert of a later chunk fails:
+// a trigger of the test refuses every range row of 85 days, the last length of the project's own
+// rows, once the upserts of the first chunk, one of them holding ranges of several shorter
+// lengths, have written theirs. The write answers that error, sends nothing after it, and stores
+// nothing: no reading, no day row, no change row, and none of the stored figures the chunks before
+// the failure wrote.
 func TestAFailureInALaterChunkRollsTheWholeWriteBack(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedLoggedQuantile(t)
@@ -1376,24 +1421,31 @@ func TestAFailureInALaterChunkRollsTheWholeWriteBack(t *testing.T) {
 	}
 	before := r.figureState(t)
 	readings, changes := stored()
-	_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: "review-latency", Caller: alice, BuiltBy: r.build,
-		Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "review", "row_key": "refused", "value": 33,
-			"measured_at": refresherToday.AddDate(0, 0, -2).Add(3 * time.Hour), "attributes": map[string]any{"repo": "acme/web"}})}})
+	var rows []json.RawMessage
+	for back := 1; back <= 180; back++ {
+		rows = append(rows, row(t, map[string]any{"series": "minutes", "row_kind": "review", "row_key": fmt.Sprintf("refused-%d", back), "value": 33,
+			"measured_at": refresherToday.AddDate(0, 0, -back).Add(3 * time.Hour), "attributes": map[string]any{"repo": "acme/web"}}))
+	}
+	_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: "review-latency", Caller: alice, BuiltBy: r.build, Rows: rows})
 	if err == nil || !strings.Contains(err.Error(), "is refused") || !strings.Contains(err.Error(), "write the stored range figures") {
 		t.Fatalf("a write whose later range upsert is refused answers %v, want the refusal", err)
 	}
 	sent := statements.take()
 	failing := slices.IndexFunc(sent, func(statement figureStatement) bool { return statement.err != nil })
-	wrote := 0
+	wrote, mixed := 0, false
 	for index, statement := range sent[:max(failing, 0)] {
-		if statement.kind != rangeUpsertStatement || slices.Contains(statement.args[2].([]int32), 85) {
+		if statement.kind != rangeUpsertKind || slices.Contains(statement.args[2].([]int32), 85) {
 			t.Errorf("statement %d before the refused one is %q of the lengths %v", index, statement.kind, statement.args[2])
+		}
+		if statement.kind == rangeUpsertKind {
+			lengths := statement.args[2].([]int32)
+			mixed = mixed || slices.ContainsFunc(lengths, func(n int32) bool { return n != lengths[0] })
 		}
 		wrote += int(statement.rows)
 	}
-	if failing < 1 || failing != len(sent)-1 || sent[failing].kind != rangeUpsertStatement || wrote == 0 {
-		t.Fatalf("the write sent %d statements, the refused one at %d, and the earlier ones wrote %d rows; want range upserts that wrote rows, then the refused one, last",
-			len(sent), failing, wrote)
+	if failing < 1 || failing != len(sent)-1 || sent[failing].kind != rangeUpsertKind || wrote == 0 || !mixed {
+		t.Fatalf("the write sent %d statements, the refused one at %d, and the earlier ones wrote %d rows, one of them ranges of several lengths: %t; want range upserts that wrote rows, one of several lengths, then the refused one, last",
+			len(sent), failing, wrote, mixed)
 	}
 	after := r.figureState(t)
 	if written := writtenFigures(before.figures, after.figures); len(written) != 0 {
@@ -1408,6 +1460,41 @@ func TestAFailureInALaterChunkRollsTheWholeWriteBack(t *testing.T) {
 	t.Logf("the write's %d range upserts before the refused one wrote %d rows, none of which stands", failing, wrote)
 }
 
+// TestAWriteOfAFewRangesOfEveryLengthSendsOneRangeUpsert: over a settled history of a logged eval
+// whose readings fold into its project's own rows and into acme/web's, a reading's write folds the
+// ranges its day moved, a few of each length of FigureLengths in each of the two repositories, far
+// fewer than rangeChunkLeast, as one chunk, and upserts them in one statement
+// (figurePlan.foldAndWrite), not in one a (repository, length) prefix.
+func TestAWriteOfAFewRangesOfEveryLengthSendsOneRangeUpsert(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedLoggedQuantile(t)
+	r.settle(t)
+	statements := &figureStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	if _, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: "review-latency", Caller: alice, BuiltBy: r.build,
+		Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "review", "row_key": "few", "value": 33,
+			"measured_at": refresherToday.AddDate(0, 0, -2).Add(3 * time.Hour), "attributes": map[string]any{"repo": "acme/web"}})}}); err != nil {
+		t.Fatalf("write a reading of review-latency: %v", err)
+	}
+	upserts, ranges := 0, 0
+	lengths, repos := map[int32]bool{}, map[string]bool{}
+	for _, statement := range statements.take() {
+		if statement.kind != rangeUpsertKind {
+			continue
+		}
+		upserts++
+		ranges += rowsIn(statement.args)
+		for index, repo := range statement.args[1].([]string) {
+			repos[repo], lengths[statement.args[2].([]int32)[index]] = true, true
+		}
+	}
+	if upserts != 1 || len(lengths) != len(FigureLengths) || !repos[""] || !repos["acme/web"] {
+		t.Errorf("a reading's write upserted %d ranges of the lengths %v and the repositories %q in %d statements, want ranges of all %d lengths and of both repositories in one",
+			ranges, slices.Sorted(maps.Keys(lengths)), slices.Sorted(maps.Keys(repos)), upserts, len(FigureLengths))
+	}
+	t.Logf("a reading's write upserted %d ranges of %d lengths and %d repositories in %d statements", ranges, len(lengths), len(repos), upserts)
+}
+
 // figureFoldTimingEnv names the variable that runs TestTheFoldOfOneCutOfSixEvalsIsTimed: set to 1,
 // it times the fold; unset, as in CI, the test is skipped.
 const figureFoldTimingEnv = "EVALS_FIGURE_FOLD_TIMING"
@@ -1417,7 +1504,8 @@ const figureFoldTimingEnv = "EVALS_FIGURE_FOLD_TIMING"
 // 2026-11-01, each lead time and the production deploy holding 10 to 60 samples a day, the deploys
 // counted and the runs shared, as each eval's group of rows (newFigureGroup); the key of each
 // group; every day, which the rewrite moves; and the end day the ranges are folded through.
-func timedFoldInput() ([]*figureGroup, []figureGroupKey, []time.Time, time.Time) {
+func timedFoldInput(t *testing.T) ([]*figureGroup, []figureGroupKey, []time.Time, time.Time) {
+	t.Helper()
 	const project, deployRepo, span = "BENCH", "acme/deploy", 200
 	last := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	random := rand.New(rand.NewPCG(2916, 8))
@@ -1435,10 +1523,10 @@ func timedFoldInput() ([]*figureGroup, []figureGroupKey, []time.Time, time.Time)
 	var groups []*figureGroup
 	var keys []figureGroupKey
 	for _, slug := range []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugMergeToProduction, SlugFirstCommitToProduction, SlugOpenToProduction, SlugProductionDeploy} {
-		index := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
-		definition := catalogue[index].definition
+		catalogued := entryOf(t, slug)
+		definition := catalogued.definition
 		definition.EvalID, definition.ProjectKey = EvalID(project, slug), project
-		entry := Entry{Definition: definition, Series: catalogue[index].series}
+		entry := Entry{Definition: definition, Series: catalogued.series}
 		rows := make([]WindowRow, 0, span)
 		for _, day := range days {
 			var part measures.DayPart
@@ -1477,7 +1565,7 @@ func foldTimedCut(t *testing.T, groups []*figureGroup, keys []figureGroupKey, da
 	}
 	plan.sortByKey()
 	folds := len(plan.ranges) + len(plan.days)
-	if err := foldInChunks(folds, workers, plan.fold, rangeChunks(plan.ranges, figureChunk), func(int) error { return nil }); err != nil {
+	if err := foldInChunks(folds, workers, plan.fold, rangeChunks(plan.ranges, rangeChunkLeast, statementRows), func(int) error { return nil }); err != nil {
 		t.Fatalf("fold the timed cut: %v", err)
 	}
 	return folds
@@ -1492,7 +1580,7 @@ func TestTheFoldOfOneCutOfSixEvalsIsTimed(t *testing.T) {
 	if os.Getenv(figureFoldTimingEnv) != "1" {
 		t.Skipf("set %s=1 to time the fold of one cut of six evals over 200 days", figureFoldTimingEnv)
 	}
-	groups, keys, days, through := timedFoldInput()
+	groups, keys, days, through := timedFoldInput(t)
 	workers := min(runtime.GOMAXPROCS(0), figureFoldWorkers)
 	folds := foldTimedCut(t, groups, keys, days, through, workers)
 	var walls, cpus []time.Duration
@@ -1508,11 +1596,6 @@ func TestTheFoldOfOneCutOfSixEvalsIsTimed(t *testing.T) {
 		runtime.ReadMemStats(&after)
 		walls, cpus = append(walls, wall), append(cpus, used)
 		allocated, collections = append(allocated, after.TotalAlloc-before.TotalAlloc), append(collections, after.NumGC-before.NumGC)
-	}
-	median := func(times []time.Duration) time.Duration {
-		sorted := slices.Clone(times)
-		slices.Sort(sorted)
-		return sorted[len(sorted)/2]
 	}
 	t.Logf("a fold of %d ranges and days of %d evals on %d workers (GOMAXPROCS %d): wall median %v, min %v; CPU median %v, min %v; allocated %v bytes, %v collections; walls %v, CPU %v",
 		folds, len(groups), workers, runtime.GOMAXPROCS(0), median(walls), slices.Min(walls), median(cpus), slices.Min(cpus), allocated, collections, walls, cpus)

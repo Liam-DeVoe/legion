@@ -90,6 +90,16 @@ func (n planNode) asNode() Node {
 	return found
 }
 
+// matchConditions is the conditions n matches rows by: a hash join's Hash Cond, a merge join's
+// Merge Cond, and an index scan's Index Cond where it carries one.
+func (n planNode) matchConditions() []string {
+	conditions := []string{n.HashCond, n.MergeCond}
+	if n.IndexCond != nil {
+		conditions = append(conditions, *n.IndexCond)
+	}
+	return conditions
+}
+
 // OnePlan is the one "Plan" node of raw, an `EXPLAIN (FORMAT JSON)` answer, which is what every
 // check below is given. A statement explains to a top-level array of one plan, so an answer
 // holding any other number is the explain the caller did not ask for, and the whole answer is
@@ -382,11 +392,7 @@ func RequireJoinedOn(t testing.TB, plan json.RawMessage, subject, key string) {
 	t.Helper()
 	names := regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(key) + `(\W|$)`)
 	for _, node := range planNodes(t, plan) {
-		conditions := []string{node.HashCond, node.MergeCond}
-		if node.IndexCond != nil {
-			conditions = append(conditions, *node.IndexCond)
-		}
-		if slices.ContainsFunc(conditions, names.MatchString) {
+		if slices.ContainsFunc(node.matchConditions(), names.MatchString) {
 			return
 		}
 	}
@@ -419,11 +425,7 @@ func RequireJoinedOnAll(t testing.TB, plan json.RawMessage, subject, subplan str
 		if i != top && childOn(nodes, i, top) < 0 {
 			continue
 		}
-		conditions := []string{node.HashCond, node.MergeCond}
-		if node.IndexCond != nil {
-			conditions = append(conditions, *node.IndexCond)
-		}
-		for _, condition := range conditions {
+		for _, condition := range node.matchConditions() {
 			condition = stringLiteral.ReplaceAllString(condition, "''")
 			if !slices.ContainsFunc(names, func(name *regexp.Regexp) bool { return !name.MatchString(condition) }) {
 				return
