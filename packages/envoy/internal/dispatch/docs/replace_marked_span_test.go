@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,16 +24,17 @@ import (
 // title, and one whose title holds a quote and a backslash, which the with writes back so the
 // stored markdown reads it as the renderer writes it and the parser reads it; and a find that is
 // one link alone, spelled with its own URL, and a titled one with its URL and title, each of
-// which the with writes again. A bare URL and a bare www link are their own markup, so a find
-// that covers one whole across its edge spells it, where it was refused with that same find as
-// the markup to spell. A find that spells the span's markup over part of the text it covers (`a
-// **b** c` over `**a b c**`) spells it over that part alone, so the span keeps its mark, where
-// the with was written without the bold. A find that runs past a span's edge without spelling
-// its markup, or spells a link with another URL or title, is refused
-// (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as written,
-// whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a backtick inside
-// a bold, an italic and a code span, the review's two finds (`2*3*4` in italic, `2**3**4` in
-// bold), and `snake_case_name`, whose underscores no reading takes for markup.
+// whose with writes a link to another URL, which is the one the document then holds. A bare URL
+// and a bare www link are their own markup, so a find that covers one whole across its edge
+// spells it, where it was refused with that same find as the markup to spell. A find that spells
+// the span's markup over part of the text it covers (`a **b** c` over `**a b c**`) spells it over
+// that part alone, so the span keeps its mark, where the with was written without the bold. A
+// find that runs past a span's edge without spelling its markup, or spells a link with another
+// URL or title, is refused (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched
+// the text as written, whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_`
+// and a backtick inside a bold, an italic and a code span, the review's two finds (`2*3*4` in
+// italic, `2**3**4` in bold), and `snake_case_name`, whose underscores no reading takes for
+// markup.
 // Each row writes one replace and reads it back three ways: the markdown the version stored, the
 // document a caller reads, and the text of the paragraph the replace wrote in.
 func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
@@ -153,16 +155,16 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 			name:     "a find that is one link alone, spelled with its own URL, leaves the link to the with",
 			markdown: "I wrote [this](https://a.example/1) today.\n",
 			find:     "[this](https://a.example/1)",
-			with:     "[that](https://a.example/1)",
-			want:     "I wrote [that](https://a.example/1) today.\n",
+			with:     "[that](https://c.example/3)",
+			want:     "I wrote [that](https://c.example/3) today.\n",
 			text:     "I wrote that today.",
 		},
 		{
 			name:     "a find that is one link alone, spelled with its own URL and title, leaves the link to the with",
 			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
 			find:     "[this](https://a.example/1 \"Spec\")",
-			with:     "[that](https://a.example/1 \"Spec\")",
-			want:     "I wrote [that](https://a.example/1 \"Spec\") today.\n",
+			with:     "[that](https://c.example/3)",
+			want:     "I wrote [that](https://c.example/3) today.\n",
 			text:     "I wrote that today.",
 		},
 		{
@@ -324,11 +326,15 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // a find that spells a link's markup with another URL, and one that spells it with the link's URL
 // and not its title, as finds copied from an older read after another writer changed the URL or
 // gave the link a title: each was written, and the URL or the title the document held went with
-// no word. The last two are a find that is that one link alone, spelled with another URL and with
+// no word. The next two are a find that is that one link alone, spelled with another URL and with
 // another title: it lay inside the link, so it was written there under the URL and title the
-// document held, where the same spelling in a longer find was refused. Each refusal gives the
-// link's markup as the document holds it. The longer find's refusal says it covers text outside
-// the link; the find that is the link alone covers none, so its refusal says it spells the link
+// document held, where the same spelling in a longer find was refused. The last five are that
+// spelling in shapes that were taken: a bare link spelled as a link to another URL, alone and in
+// a longer find, which the bare link's own exemption let in; a find over a link's whole text that
+// spells only part of it as another link, taken alone where the same spelling in a longer find,
+// the row after it, was refused; and a find inside a link that spells its text as another link,
+// taken there. Each refusal gives the link's markup as the document holds it. A longer find's
+// refusal says it covers text outside the link; a find that covers none says it spells the link
 // with another URL or title, and nothing of text outside it.
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 	for _, test := range []struct {
@@ -452,6 +458,59 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			says:     "another URL or title",
 			unsaid:   "text outside it",
 		},
+		{
+			name:     "a find that is a bare link alone, spelled as a link to another URL",
+			markdown: "Read https://a.example/1 today.\n",
+			find:     "[https://a.example/1](https://b.example/2)",
+			with:     "that",
+			kind:     "link",
+			span:     "https://a.example/1",
+			markup:   "https://a.example/1",
+			says:     "another URL or title",
+			unsaid:   "text outside it",
+		},
+		{
+			name:     "a find that spells a bare link as a link to another URL in a longer find",
+			markdown: "Read https://a.example/1 today.\n",
+			find:     "Read [https://a.example/1](https://b.example/2) today",
+			with:     "Read that today",
+			kind:     "link",
+			span:     "https://a.example/1",
+			markup:   "https://a.example/1",
+			says:     "text outside it",
+		},
+		{
+			name:     "a find over a link's whole text alone that spells part of it as another link",
+			markdown: "I wrote [one two](https://a.example/1) today.\n",
+			find:     "[one](https://b.example/2) two",
+			with:     "that",
+			kind:     "link",
+			span:     "one two",
+			markup:   "[one two](https://a.example/1)",
+			says:     "another URL or title",
+			unsaid:   "text outside it",
+		},
+		{
+			name:     "a longer find that spells part of a link's text as another link",
+			markdown: "I wrote [one two](https://a.example/1) today.\n",
+			find:     "wrote [one](https://b.example/2) two today",
+			with:     "wrote that today",
+			kind:     "link",
+			span:     "one two",
+			markup:   "[one two](https://a.example/1)",
+			says:     "text outside it",
+		},
+		{
+			name:     "a find inside a link that spells its text as another link",
+			markdown: "I wrote [one two](https://a.example/1) today.\n",
+			find:     "[one](https://b.example/2)",
+			with:     "that",
+			kind:     "link",
+			span:     "one two",
+			markup:   "[one two](https://a.example/1)",
+			says:     "another URL or title",
+			unsaid:   "text outside it",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
@@ -480,6 +539,126 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 					test.find, test.markdown, stored, before, read)
 			}
 		})
+	}
+}
+
+// Every quote of a document edit spells a link as a replace's find does
+// (TestReplaceAcrossAMarkedSpansEdgeIsRefused): a delete's find, an insert's anchor and a move's
+// anchor that spell a link with another URL or another title, as a quote copied from an older read
+// after another writer changed the link, are refused with ErrFindCrossesSpan, and the document is
+// left as it was, where the delete removed that link and the insert and the move landed beside it
+// with no word of the change. Each op has the quote that is the link alone, whose refusal says it
+// spells the link with another URL or title, and the link inside a longer quote, whose refusal
+// says the quote crosses the link's edge; each refusal names the field the quote was written in
+// and the link's markup as the document holds it, and none says what a replace's with does. The
+// same two quotes spelled with the link's own URL and title are taken.
+func TestAQuoteThatSpellsALinkWithAnotherURLOrTitleIsRefused(t *testing.T) {
+	const (
+		markdown = "Moved.\n\nI wrote [this](https://a.example/1 \"Spec\") today.\n"
+		markup   = `[this](https://a.example/1 "Spec")`
+	)
+	ops := []struct {
+		op, field string
+		// edit is the operation quoting quote, and moved the id of the block `Moved.`.
+		edit func(quote, moved string) model.EditOp
+		// alone and longer are the document each takes the quote that is the link alone to, and
+		// the longer one, spelled with the link's own URL and title.
+		alone, longer string
+	}{
+		{
+			op: "delete", field: "find",
+			edit:   func(quote, _ string) model.EditOp { return model.EditOp{Op: "delete", Find: quote} },
+			alone:  "Moved.\n\nI wrote  today.\n",
+			longer: "Moved.\n\nI .\n",
+		},
+		{
+			op: "insert", field: "after",
+			edit: func(quote, _ string) model.EditOp {
+				return model.EditOp{Op: "insert", After: quote, Markdown: "Inserted."}
+			},
+			alone:  markdown + "\nInserted.\n",
+			longer: markdown + "\nInserted.\n",
+		},
+		{
+			op: "move", field: "after",
+			edit: func(quote, moved string) model.EditOp {
+				return model.EditOp{Op: "move", Block: moved, After: quote}
+			},
+			alone:  "I wrote [this](https://a.example/1 \"Spec\") today.\n\nMoved.\n",
+			longer: "I wrote [this](https://a.example/1 \"Spec\") today.\n\nMoved.\n",
+		},
+	}
+	spellings := []struct {
+		name, quote string
+		// alone says the quote is the link alone, and refused says it spells the link otherwise
+		// than the document holds it.
+		alone, refused bool
+	}{
+		{name: "the link alone, spelled with another URL", quote: `[this](https://b.example/2 "Spec")`, alone: true, refused: true},
+		{name: "the link alone, spelled with another title", quote: `[this](https://a.example/1 "Draft")`, alone: true, refused: true},
+		{name: "a longer quote spelling the link with another URL", quote: `wrote [this](https://b.example/2 "Spec") today`, refused: true},
+		{name: "a longer quote spelling the link with another title", quote: `wrote [this](https://a.example/1 "Draft") today`, refused: true},
+		{name: "the link alone, spelled as it is", quote: markup, alone: true},
+		{name: "a longer quote spelling the link as it is", quote: "wrote " + markup + " today"},
+	}
+	for _, op := range ops {
+		for _, spelling := range spellings {
+			t.Run(op.op+" of "+spelling.name, func(t *testing.T) {
+				service, artifactID := newTestService(t)
+				seedServiceText(t, service, artifactID, markdown)
+				before, _ := latestVersionOf(t, service.store, artifactID)
+				moved := blockIDOfText(t, liveTree(t, service, artifactID), "Moved.")
+				edit := op.edit(spelling.quote, moved)
+				_, err := joinedApplyOps(service, artifactID, []model.EditOp{edit},
+					model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil)
+				if !spelling.refused {
+					want := op.longer
+					if spelling.alone {
+						want = op.alone
+					}
+					if err != nil {
+						t.Fatalf("%s %q in %q: %v, want it taken", op.op, spelling.quote, markdown, err)
+					}
+					waitForDocumentVersion(t, service.store, artifactID, 2)
+					stored, _ := latestVersionOf(t, service.store, artifactID)
+					read, err := service.Text(context.Background(), artifactID)
+					if err != nil {
+						t.Fatalf("read the document: %v", err)
+					}
+					if stored != want || read != want {
+						t.Fatalf("%s %q in %q:\n stored markdown %q\n read markdown   %q\nwant %q",
+							op.op, spelling.quote, markdown, stored, read, want)
+					}
+					return
+				}
+				read, readErr := service.Text(context.Background(), artifactID)
+				if readErr != nil {
+					t.Fatalf("read the document: %v", readErr)
+				}
+				var crossed *ErrFindCrossesSpan
+				if !errors.As(err, &crossed) || crossed.Kind() != "link" || crossed.Span.Text != "this" ||
+					crossed.Span.Markdown != markup || crossed.Alone != spelling.alone {
+					t.Fatalf("%s %q in %q = %v, want it refused naming the link %q in %s; the document reads %q",
+						op.op, spelling.quote, markdown, err, markup, op.field, read)
+				}
+				says, unsaid := `crosses the edge of the link "this": it covers text inside the link and text outside it`, ""
+				if spelling.alone {
+					says, unsaid = `spells the link "this" with another URL or title`, "text outside it"
+				}
+				message := err.Error()
+				if !strings.Contains(message, op.field+" "+strconv.Quote(spelling.quote)+" "+says) ||
+					(unsaid != "" && strings.Contains(message, unsaid)) || strings.Contains(message, "with decides") {
+					t.Fatalf("refusal = %q, want it to say %s %q %s, and nothing of %q or of with", message, op.field, spelling.quote, says, unsaid)
+				}
+				// A refused edit stores no version: the latest is the one before the seed, or the
+				// seed's own if a settlement has stored it since.
+				stored, _ := latestVersionOf(t, service.store, artifactID)
+				if (stored != before && stored != markdown) || read != markdown {
+					t.Fatalf("after the refused %s %q:\n stored markdown %q, was %q\n read markdown   %q\nwant both unchanged",
+						op.op, spelling.quote, stored, before, read)
+				}
+			})
+		}
 	}
 }
 

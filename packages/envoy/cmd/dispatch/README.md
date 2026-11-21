@@ -5304,8 +5304,9 @@ Each item below names an operation and its required fields, then its behavior.
   Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's markup over all of the span's text it covers (`**Sami bold**`) lets `with` decide that span's formatting; one that spells it over part of that text (`a **b** c` over `**a b c**`) keeps the span.
   A `find` matched as the text is written spells no markup: `2*3*4` inside `*a 2\*3\*4 b*` is the span's own text, so the replacement stays in the italic.
   A `find` that crosses a span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written: narrow it to the span's inside, or spell the whole span's markup in it (`wrote [this](https://example.com/Sami)`), which then replaces the markup too.
-  A link is spelled only with the URL and title it has, so `wrote [this](https://wrong.example/9)` over that link is refused naming it, and so is `[this](https://wrong.example/9)`, a `find` that is that link alone, which was written inside the link under the URL the document held.
-  A bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it spells it (`docs at https://example.com/x`).
+  A link is spelled only with the URL and title it has, so `wrote [this](https://wrong.example/9)` over that link is refused naming it, and so is `[this](https://wrong.example/9)`, a `find` that is that link alone or lies inside it.
+  So is a `find` that spells only part of a link's text as another link (`[one](https://wrong.example/9) two` over `[one two](https://example.com/Sami)`).
+  A bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it spells it (`docs at https://example.com/x`), and one that spells it as a link to another URL (`[https://example.com/x](https://wrong.example/9)`) is refused as any other link's is.
   No `find` spells strikethrough's markup: replace the text outside a struck span in an operation of its own.
   A `with` that parses to blocks keeps none of the spans the match lies inside.
   Each span is weighed alone: `wrote [this](https://a.example/1) and that`, where `that` is a second link, spells the first link and crosses the second's edge, so it is refused naming `that`.
@@ -5314,6 +5315,7 @@ Each item below names an operation and its required fields, then its behavior.
 
   Delete one plain-text target; a `find` that is a block's whole text removes the block, and `block` removes the block with that id and everything it holds.
   A `find` that opens with a list marker and matches no text as written selects an item of that kind of list whose text starts with the rest, and the delete removes that whole item, the items nested in it included, where it removed only the text the `find` matched and left the rest of the item standing.
+  A `find` that spells a link with another URL or title than the link has is `400 FIND_CROSSES_SPAN` with nothing deleted, as a `replace`'s is.
 
 - `insert` (`markdown`, exactly one of `after` or `before`)
 
@@ -5323,6 +5325,7 @@ Each item below names an operation and its required fields, then its behavior.
   `"start"` and `"end"` select document edges.
   Pipe-table row fragments at a table-cell target are the exception: they extend that table before or after the containing row.
   Use `replace` for inline continuation.
+  A quote anchor that spells a link with another URL or title than the link has is `400 FIND_CROSSES_SPAN` with nothing written, as a `find` is, and so is a `move`'s.
 
 The operations of one request apply in order, each reading the document as the operations before it left it, and none removes or changes a block it does not name.
 A delete of a block removes all it holds but the blocks an earlier `insert` or `move` of the request wrote into it: list content an `insert` joined to a list it was anchored on, a paragraph it wrote into a typed block, or a list item a `move` put in a list, stays where the deleted block stood, a list keeping it as a list of its own, where the delete took it with the block; a block an earlier `replace` wrote there goes with it.
@@ -5445,7 +5448,8 @@ Each item below names a status and code, then its meaning.
 
   A `replace`'s `find` covers text inside a bold, italic, strikethrough, link or code span and text outside it, which would write the replacement outside the span, dropping a link with its URL or cutting the span to end on a space; nothing is written.
   The message names the span's text and kind and the markup that spells it: narrow `find` to the span's inside, or write the whole span with its markup in `find`, which then replaces the markup too (a find never spells strikethrough, so a struck span's edge takes one replace inside it and one outside).
-  A `find` that spells a link with another URL or title than the link has is refused the same way, and one that is that link alone (`[this](https://wrong.example/9)`) covers no text outside it, so its message says instead that it spells the link with another URL or title; each message names the link's own markup, its URL and title, to write in `find`.
+  Any quote of a document edit that spells a link with another URL or title than the link has - a `replace`'s or a `delete`'s `find`, an `insert`'s or a `move`'s quote anchor - is refused the same way, nothing in the batch written, and so is one that spells only part of the link's text as another link, or a bare link as a link to another URL.
+  The message of a quote that covers text outside the link says it crosses the link's edge, and that of one that covers none (`[this](https://wrong.example/9)`) says it spells the link with another URL or title; each names the field the quote was written in, and the link's own markup, its URL and title, to write there.
   Each span the `find` covers is weighed alone: one that spells a span's markup crosses the edge of every other span it covers whose markup it does not spell, as `wrote [this](https://a.example/1) and that` does where `that` is a second link.
 
 - `400 REPLACE_FIELDS`

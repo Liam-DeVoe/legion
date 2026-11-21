@@ -868,33 +868,27 @@ func (t flattenedText) spelling(match quoteMatch) Spelling {
 }
 
 // spells reports whether s writes mark's markup over every unit of its match at a position from
-// from to to, and over one at least: the quote spells that markup over that stretch of the match,
-// not over another stretch of it. A link is spelled only with its own URL and its own title: a
-// find that writes the link's text under another URL, or with another title or none, copied from
-// an older read after another writer changed the link, spells another link (spellsAnotherLink),
-// and what the document holds would go with no word. A mark the markdown matcher does not read
-// (markTypeMarkup), strikethrough or an anchor, is never spelled.
+// from to to, and over one at least, and writes none of them under another link: the quote spells
+// that markup over that stretch of the match, not over another stretch of it. A link is spelled
+// only with its own URL and its own title: a find that writes the link's text under another URL,
+// or with another title or none, copied from an older read after another writer changed the link,
+// spells another link, and what the document holds would go with no word. A mark the markdown
+// matcher does not read (markTypeMarkup), strikethrough or an anchor, is never spelled.
 func (s Spelling) spells(mark Mark, from, to int) bool {
 	markup, own := s.writes(mark, from, to)
 	return markup && own
 }
 
-// spellsAnotherLink reports whether s writes the markup of mark, a link, over every unit of its
-// match at a position from from to to, and over one at least, and under a URL or a title other
-// than the link's own over one of them: the quote spells another link there. A mark that is no
-// link is never spelled as another.
-func (s Spelling) spellsAnotherLink(mark Mark, from, to int) bool {
-	markup, own := s.writes(mark, from, to)
-	return markup && !own
-}
-
 // writes reports whether s writes mark's markup over every unit of its match at a position from
-// from to to, and over one at least (markup), and whether it writes each of those units under
-// mark's own URL and title (own), as it does every unit for a mark that is no link.
+// from to to, and over one at least (markup), and whether it writes none of those units under a
+// link with another URL or title than mark, a link, has (own). One unit written as another link
+// is enough, though the quote writes the rest bare: `[one](https://b.example/2) two` over
+// `[one two](https://a.example/1)` spells another link. A mark that is no link, or one the matcher
+// does not read, is never written as another.
 func (s Spelling) writes(mark Mark, from, to int) (markup, own bool) {
 	kind := markTypeMarkup(mark.Type)
 	if kind == 0 {
-		return false, false
+		return false, true
 	}
 	link := kind == inlineMarkupLink
 	var target linkTarget
@@ -902,19 +896,21 @@ func (s Spelling) writes(mark Mark, from, to int) (markup, own bool) {
 		target = markLinkTarget(mark)
 	}
 	own = true
+	written, bare := false, false
 	for _, unit := range s.units {
 		if unit.pos < from || unit.pos >= to {
 			continue
 		}
 		if unit.markup&kind == 0 {
-			return false, false
+			bare = true
+			continue
 		}
 		if link && unit.link != target {
 			own = false
 		}
-		markup = true
+		written = true
 	}
-	return markup, own
+	return written && !bare, own
 }
 
 // quoteCascade is the matcher cascade a plain quote runs through, in its order: exact text first,

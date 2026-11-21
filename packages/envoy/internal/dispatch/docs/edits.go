@@ -258,21 +258,28 @@ func oneCellAdvice(field string, cells []string) string {
 
 func (e *ErrQuoteSpansBlocks) Unwrap() error { return pmdoc.ErrTargetSpansBlocks }
 
-// ErrFindCrossesSpan names a replace whose find crosses the edge of a marked span - bold, italic,
-// strikethrough, a link, code: it covers text inside the span and text outside it, or spells a
-// link with another URL or title, even a find that is that link alone
-// (pmdoc.TextblockAt.CrossedSpan). Text written over such a find lands outside the span, so a link
-// it covered went with its URL and no warning, and a span it cut to end on a space was written
-// with character references. The fix is to narrow the find to the span's inside, or to spell the
-// span's whole markup in it - a link's with the URL and title it has, and a bare link's as its own
-// text - which then replaces the markup too, so with decides that formatting.
+// ErrFindCrossesSpan names a document edit's quote that crosses a marked span - bold, italic,
+// strikethrough, a link, code (pmdoc.TextblockAt.CrossedSpan). Any quote of an edit - a replace's
+// or a delete's find, an insert's or a move's anchor - crosses a link it spells with another URL
+// or title, even one that is that link alone: such a quote was read before another writer changed
+// the link, and the edit would act on it with no word of the change. A replace's find also crosses
+// the edge of every span it covers text inside and text outside of: its with written over both
+// lands outside the span, so a link it covered would go with its URL, and a span it cut to end on
+// a space would be written with character references. The fix is to narrow the quote to the
+// span's inside, or to spell the span's whole markup in it - a link's with the URL and title it
+// has, and a bare link's as its own text - which in a replace's find then replaces the markup too,
+// so with decides that formatting.
 type ErrFindCrossesSpan struct {
 	opIndex
-	Find string
-	Span pmdoc.Span
-	// Alone says the find is the link's whole text alone, spelled with another URL or title than
-	// the link has: it covers no text outside the link, so the refusal says what it spells wrong.
+	// Field is the operation field the quote was written in, "find", "after" or "before", and
+	// Quote the quote.
+	Field, Quote string
+	Span         pmdoc.Span
+	// Alone says the quote covers no text outside the link it spells with another URL or title
+	// than the link has, so the refusal says what it spells wrong.
 	Alone bool
+	// Writes says the quote is a replace's find, whose with is written over its match.
+	Writes bool
 }
 
 // Kind is what the span the find crosses is, as the refusal names it: "link", "bold", "italic",
@@ -296,24 +303,36 @@ func (e *ErrFindCrossesSpan) Error() string {
 	if e.Span.Markdown != "" {
 		spelled = fmt.Sprintf(" (%q)", e.Span.Markdown)
 	}
+	// Only a replace's find replaces the markup it spells; a delete's find and an anchor name
+	// text alone.
+	replaces := ""
+	if e.Writes {
+		replaces = ", which then replaces the markup too, so with decides that formatting"
+	}
 	if e.Alone {
 		return fmt.Sprintf(
-			"%sfind %q spells the link %q with another URL or title than the one it has; write the link as it is in find%s, which then replaces the markup too, so with decides that formatting",
-			e.prefix(), e.Find, e.Span.Text, spelled,
+			"%s%s %q spells the link %q with another URL or title than the one it has; write the link as it is in %s%s%s",
+			e.prefix(), e.Field, e.Quote, e.Span.Text, e.Field, spelled, replaces,
 		)
 	}
 	noun := e.Kind() + " span"
 	if e.Kind() == "link" {
 		noun = "link"
 	}
+	// A quote that writes nothing over its match crosses a span only by spelling a link with
+	// another URL or title.
+	reason := fmt.Sprintf("text written over both would not keep the %s whole", noun)
+	if !e.Writes {
+		reason = "it spells the link with another URL or title than the one it has"
+	}
 	refusal := fmt.Sprintf(
-		"%sfind %q crosses the edge of the %s %q: it covers text inside the %s and text outside it, and text written over both would not keep the %s whole; narrow find to the text inside the %s",
-		e.prefix(), e.Find, noun, e.Span.Text, noun, noun, noun,
+		"%s%s %q crosses the edge of the %s %q: it covers text inside the %s and text outside it, and %s; narrow %s to the text inside the %s",
+		e.prefix(), e.Field, e.Quote, noun, e.Span.Text, noun, reason, e.Field, noun,
 	)
 	if e.Span.Mark.Type == "strike_through" {
 		return refusal + ", and replace the text outside it in an operation of its own, since a find cannot spell strikethrough's markup"
 	}
-	return fmt.Sprintf("%s, or write the whole %s with its markup in find%s, which then replaces the markup too, so with decides that formatting", refusal, noun, spelled)
+	return fmt.Sprintf("%s, or write the whole %s with its markup in %s%s%s", refusal, noun, e.Field, spelled, replaces)
 }
 
 // ErrInsertDoesNotFit names an insert whose markdown the block it lands in cannot hold where the
@@ -767,7 +786,7 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, taken []string, err error) {
 	switch op.Op {
 	case "replace":
-		r, _, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+		r, _, byMarker, err := findEditQuote(tree, op.Op, "find", op.Find, op.Occurrence)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -918,7 +937,7 @@ func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) (required, tak
 		}
 		required = append(required, blockID)
 	} else if anchor != "start" && anchor != "end" && !strings.HasPrefix(anchor, "heading:") {
-		anchored, err := quotePreconditionBlock(tree, field, anchor, op.Occurrence)
+		anchored, err := quotePreconditionBlock(tree, op.Op, field, anchor, op.Occurrence)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -932,10 +951,10 @@ func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) (required, tak
 	return required, taken, nil
 }
 
-// quotePreconditionBlock is the block holding the text quote matched, written in field: an
-// insert's or a move's anchor.
-func quotePreconditionBlock(tree *batchTree, field, quote string, occurrence *int) ([]string, error) {
-	range_, _, _, err := findEditQuote(tree, field, quote, occurrence)
+// quotePreconditionBlock is the block holding the text quote matched, written in field of an
+// operation of kind op: an insert's or a move's anchor.
+func quotePreconditionBlock(tree *batchTree, op, field, quote string, occurrence *int) ([]string, error) {
+	range_, _, _, err := findEditQuote(tree, op, field, quote, occurrence)
 	if err != nil {
 		return nil, err
 	}
@@ -1883,12 +1902,9 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if err != nil {
 			return nil, err
 		}
-		target, plainText, err := insertTarget(tree, op, anchorField(after), anchor, op.Occurrence)
+		target, err := insertTarget(tree, op, anchorField(after), anchor, op.Occurrence)
 		if err != nil {
 			return nil, err
-		}
-		if plainText && pmdoc.TargetSpansBlocks(tree.node, target) {
-			return nil, quoteSpansBlocks(tree, anchorField(after), anchor, target)
 		}
 		valid, err := tree.validated("InsertTableRows")
 		if err != nil {
@@ -2005,14 +2021,9 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, err
 		}
 		field := anchorField(after)
-		target, plainText, err := insertTarget(tree, op, field, anchor, op.Occurrence)
+		target, err := insertTarget(tree, op, field, anchor, op.Occurrence)
 		if err != nil {
 			return nil, err
-		}
-		// A quote anchor stays inside one textblock, as an insert's does: one reaching across two
-		// table cells otherwise lies inside the table and would move the block beside it.
-		if plainText && pmdoc.TargetSpansBlocks(tree.node, target) {
-			return nil, quoteSpansBlocks(tree, field, anchor, target)
 		}
 		// The document edges are empty ranges; MoveBlock lands on the edge they name.
 		switch anchor {
@@ -2124,7 +2135,7 @@ func resolveDelete(tree *batchTree, op model.EditOp) (deleteTarget, error) {
 	if op.Find == "" {
 		return deleteTarget{}, invalidOp("find or block")
 	}
-	r, _, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+	r, _, byMarker, err := findEditQuote(tree, op.Op, "find", op.Find, op.Occurrence)
 	if err != nil {
 		return deleteTarget{}, err
 	}
@@ -2358,18 +2369,29 @@ func invalidMarkdownOp(field string, err error) error {
 	return err
 }
 
-// findEditQuote resolves the quote field names, so a miss reports the field the caller wrote. It
-// resolves through the batch's one quote finder over that tree (batchTree.finder). spelled is the
-// markup the quote spells over its match, so a replace reads its find as markup only where the
-// finder did (pmdoc.Spelling), and byMarker reports that the quote's leading list marker selected
-// the item it matched (resolveEditQuote).
-func findEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, spelled pmdoc.Spelling, byMarker bool, err error) {
+// findEditQuote resolves the quote field names, written in an operation of kind op, so a miss
+// reports the field the caller wrote. It resolves through the batch's one quote finder over that
+// tree (batchTree.finder). spelled is the markup the quote spells over its match, so a replace
+// reads its find as markup only where the finder did (pmdoc.Spelling), and byMarker reports that
+// the quote's leading list marker selected the item it matched (resolveEditQuote).
+//
+// Every quote of a document edit resolves here - a replace's or a delete's find, an insert's or a
+// move's anchor, for the write and for the block guard - so each decides how it spells a link in
+// one place: a quote that spells a link with another URL or title is refused, the find of a
+// replace, whose with is written over its match, for crossing any span's edge besides
+// (pmdoc.TextblockAt.CrossedSpan). A replace's find is refused before its with is read.
+func findEditQuote(tree *batchTree, op, field, quote string, occurrence *int) (r pmdoc.Range, spelled pmdoc.Spelling, byMarker bool, err error) {
 	r, spelled, byMarker, err = resolveEditQuote(tree, field, quote, occurrence)
 	if err != nil {
 		return pmdoc.Range{}, pmdoc.Spelling{}, false, err
 	}
 	if pmdoc.TargetSpansBlocks(tree.node, r) {
 		return pmdoc.Range{}, pmdoc.Spelling{}, false, quoteSpansBlocks(tree, field, quote, r)
+	}
+	at, _ := pmdoc.ContainingTextblock(tree.node, r.From)
+	writes := op == "replace"
+	if span, alone, crossed := at.CrossedSpan(r, spelled, writes); crossed {
+		return pmdoc.Range{}, pmdoc.Spelling{}, false, &ErrFindCrossesSpan{Field: field, Quote: quote, Span: span, Alone: alone, Writes: writes}
 	}
 	return r, spelled, byMarker, nil
 }
@@ -2605,50 +2627,51 @@ func tableCellAt(doc *pmdoc.Node, position int) (*pmdoc.Node, bool) {
 	return at.Node, true
 }
 
-func insertTarget(tree *batchTree, op model.EditOp, field, anchor string, occurrence *int) (pmdoc.Range, bool, error) {
+// insertTarget is the range anchor, an insert's or a move's written in field of op, names. A quote
+// anchor resolves as every quote of an edit does (findEditQuote), so it stays inside one
+// textblock - one reaching across two table cells otherwise lies inside the table, and would land
+// the insert or the moved block beside it - and spells a link only as the link is.
+func insertTarget(tree *batchTree, op model.EditOp, field, anchor string, occurrence *int) (pmdoc.Range, error) {
 	switch anchor {
 	case "start":
-		return pmdoc.Range{}, false, nil
+		return pmdoc.Range{}, nil
 	case "end":
 		position := pmdoc.Size(tree.node)
-		return pmdoc.Range{From: position, To: position}, false, nil
+		return pmdoc.Range{From: position, To: position}, nil
 	}
 	if title, ok := strings.CutPrefix(anchor, "heading:"); ok {
 		if title == "" {
-			return pmdoc.Range{}, false, invalidOp("heading")
+			return pmdoc.Range{}, invalidOp("heading")
 		}
 		valid, err := tree.validated("FindHeading")
 		if err != nil {
-			return pmdoc.Range{}, false, err
+			return pmdoc.Range{}, err
 		}
 		r, err := valid.FindHeading(title, occurrence)
 		var ambiguous *pmdoc.ErrTargetAmbiguous
 		if errors.As(err, &ambiguous) {
-			return pmdoc.Range{}, false, &ErrAnchorAmbiguous{
+			return pmdoc.Range{}, &ErrAnchorAmbiguous{
 				Kind: "heading anchor", Target: title, Candidates: ambiguous.Candidates,
 			}
 		}
-		return r, false, err
+		return r, err
 	}
 	if blockID, ok := strings.CutPrefix(anchor, "block:"); ok {
 		if blockID == "" {
-			return pmdoc.Range{}, false, invalidOp("block")
+			return pmdoc.Range{}, invalidOp("block")
 		}
 		valid, err := tree.validated("BlockRange")
 		if err != nil {
-			return pmdoc.Range{}, false, err
+			return pmdoc.Range{}, err
 		}
 		r, err := valid.BlockRange(blockID)
 		if err != nil {
-			return pmdoc.Range{}, false, blockNotFound(tree, op, field, blockID, err)
+			return pmdoc.Range{}, blockNotFound(tree, op, field, blockID, err)
 		}
-		return r, false, nil
+		return r, nil
 	}
-	r, _, _, err := resolveEditQuote(tree, field, anchor, occurrence)
-	if err != nil {
-		return pmdoc.Range{}, true, err
-	}
-	return r, true, nil
+	r, _, _, err := findEditQuote(tree, op.Op, field, anchor, occurrence)
+	return r, err
 }
 
 // refuseUnreadableReplacement refuses a replace that makes the document-level block it lands in
@@ -2760,18 +2783,17 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	// A replace that names no with, or carries a member replace does not take, is refused by
 	// the edit route before the batch reaches here (api.replaceFieldsRefusal), since only the
 	// request body says which members a replace named.
-	r, spelled, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+	//
+	// A find that crosses a marked span's edge is refused here, before its with is read
+	// (findEditQuote): the text written over it would land outside the span, so a link it covered
+	// would go with its URL, and a span it cut to end on a space would be written with character
+	// references (`**Sami said&#32;**loud`). A find that spells the whole span's markup replaces it
+	// instead.
+	r, spelled, byMarker, err := findEditQuote(tree, op.Op, "find", op.Find, op.Occurrence)
 	if err != nil {
 		return nil, err
 	}
 	at, _ := pmdoc.ContainingTextblock(tree.node, r.From)
-	// A find that crosses a marked span's edge is refused before its with is read: the text
-	// written over it would land outside the span, so a link it covered would go with its URL,
-	// and a span it cut to end on a space would be written with character references
-	// (`**Sami said&#32;**loud`). A find that spells the whole span's markup replaces it instead.
-	if span, alone, crossed := at.CrossedSpan(r, spelled); crossed {
-		return nil, &ErrFindCrossesSpan{Find: op.Find, Span: span, Alone: alone}
-	}
 	code := at.Node.Type == "code_block"
 	var with *pmdoc.Node
 	// blocks says `with` names blocks of its own, which are written over the match by the

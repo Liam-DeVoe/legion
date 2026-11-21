@@ -95,7 +95,7 @@ func (s *Service) SetAskBlockText(
 		// step no caller can take yet, and a refusal must name only the step that applies now.
 		// That step is the question, which this route writes into the block whatever the content
 		// rule says, as an insert anchored on one of its paragraphs writes it beside that
-		// paragraph (refuseEmptyQuestionEdit holds both). Every
+		// paragraph where the block keeps that rule (refuseEmptyQuestionEdit holds both). Every
 		// other block is weighed on its content rule instead: for one that reads as a decision
 		// the rule is decided once, before the edit is built, and askBlockChildren then yields
 		// the question's paragraphs and at most one list, which keeps it. A block that breaks
@@ -624,15 +624,23 @@ func normalizeAskOptions(options []model.AskOption) []model.AskOption {
 // A document edit that deletes writes no words, and a decision left asking nothing is refused
 // every document edit that changes it (validateEditedAskBlocks), so no delete repairs such a
 // block. An insert anchored on one of its paragraphs writes a question into it, beside that
-// paragraph (pmdoc.ValidDocument.BlockBoundary), which is the other repair.
+// paragraph (pmdoc.ValidDocument.BlockBoundary), which is the other repair - where the decision
+// keeps its content rule.
 //
 // An ask asking nothing has no text in the paragraphs the write replaces, so replacing them
 // loses no word. It can still lose what is no word - an image, a link whose text is empty - so a
 // paragraph that writes more than the text in it is refused before the write, and the refusal
-// quotes it and names the two places the question can be written beside it without losing it: a
-// document edit inserting the question after that paragraph's block, the path an agent has, and
-// the document editor, where a person writes it. The block and the paragraph are quoted as data
-// (quotedAskChild), never written into the reason raw.
+// quotes it and names where the question can be written without losing it. A decision that keeps
+// its content rule (pmdoc.ContentBreak) takes it from a document edit inserting the question
+// after that paragraph's block, the path an agent has, and from the document editor, where a
+// person writes it. A decision that breaks its rule takes it from the editor alone: the question
+// leaves a paragraph after its options, or a second bullet list, where it stands, and a document
+// edit that leaves a decision it changes breaking its rule is refused (validateEditedAskBlocks).
+// The condition is the rule, not the paragraph's place: an insert beside a paragraph before the
+// options of a decision holding an empty paragraph or a second bullet list after them is refused
+// just the same, and every paragraph of a decision keeping the rule stands before its options.
+// The block and the paragraph are quoted as data (quotedAskChild), never written into the reason
+// raw.
 func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 	for _, child := range block.node.Children {
 		if child.Type == "bullet_list" || writesNothingButItsText(child) {
@@ -641,6 +649,14 @@ func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 		quoted, err := quotedAskChild(child)
 		if err != nil {
 			return err
+		}
+		if rule, broken := pmdoc.ContentBreak(block.node, block.node.Children); broken != "" {
+			return &ErrAskBlockUnrepresentable{Field: "block", Reason: fmt.Sprintf(
+				"ask block %q has an empty question, and writing a question into it would delete what one of its "+
+					"paragraphs holds, which is no text: %s; the decision also holds %s, which its content rule, %s, "+
+					"does not allow, and a document edit that leaves it so is refused, so no insert of the question "+
+					"applies - write the question in the document editor, which keeps what the paragraph holds",
+				block.id, quoted, broken, rule)}
 		}
 		// A paragraph the document has yet to stamp an id into has no block an insert names.
 		insert := "after that paragraph's block once the document has settled its block ids (a few seconds)"

@@ -1152,6 +1152,70 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 			t.Fatalf("the decision after the insert = %q, want the image, then the question, then its options", markdown)
 		}
 	})
+
+	// That insert mends the decision only where the decision keeps its content rule: elsewhere the
+	// question leaves a paragraph after its options, or a second bullet list, where it stands, and
+	// a document edit that leaves a decision it changes so is refused. The first layout is the
+	// review's: an empty question, the options, then an image, where the insert after the image
+	// lands after the options. In the second an image stands before the options, where the insert
+	// lands, and a second bullet list after them. Each refusal names the document editor alone, as
+	// its whole text says, and the insert it named before is refused.
+	for _, test := range []struct {
+		name string
+		// layout lays out the decision, which holds its question and then its options.
+		layout func(t *testing.T, ask *pmdoc.Node)
+		// photo is the index of the image's paragraph among the decision's blocks, and broken what
+		// of them breaks its content rule.
+		photo  int
+		broken string
+	}{
+		{
+			name: "an image after the options of an empty question",
+			layout: func(t *testing.T, ask *pmdoc.Node) {
+				ask.Children[0].Children = nil
+				ask.Children = append(ask.Children, parsedBlock(t, "![a photo](/photo.png)\n"))
+			},
+			photo:  2,
+			broken: "a paragraph after its options",
+		},
+		{
+			name: "an image before the options and a second bullet list after them",
+			layout: func(t *testing.T, ask *pmdoc.Node) {
+				ask.Children[0] = parsedBlock(t, "![a photo](/photo.png)\n")
+				ask.Children = append(ask.Children, parsedBlock(t, "- Defer: Wait a week\n"))
+			},
+			photo:  0,
+			broken: "a second bullet list",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, artifactID := seedIndexedShipAsk(t, "ask-lists")
+			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+				test.layout(t, firstAsk(tree))
+				return tree
+			})
+			settleCurrentGeneration(t, service, artifactID)
+			before := liveTree(t, service, artifactID)
+			photo, _ := firstAsk(before).Children[test.photo].Attrs[pmdoc.BlockIDAttr].(string)
+			err := sendAskOptions(service, artifactID, AskBlockEdit{Question: new("Should we ship?")})
+			want := `block: ask block "ask-lists" has an empty question, and writing a question into it would delete ` +
+				`what one of its paragraphs holds, which is no text: block ` + strconv.Quote(photo) +
+				` (paragraph) reads "![a photo](/photo.png)"; the decision also holds ` + test.broken +
+				`, which its content rule, paragraph+ bullet_list?, does not allow, and a document edit that leaves ` +
+				`it so is refused, so no insert of the question applies - write the question in the document ` +
+				`editor, which keeps what the paragraph holds`
+			if err == nil || err.Error() != want {
+				t.Fatalf("refusal =\n%v\nwant\n%s", err, want)
+			}
+			assertAskEditWroteNothing(t, service, artifactID, before, err)
+
+			if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{
+				Op: "insert", After: "block:" + photo, Markdown: "Should we ship?",
+			}}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err == nil || !strings.Contains(err.Error(), test.broken) {
+				t.Fatalf("the insert after the image = %v, want it refused for %s", err, test.broken)
+			}
+		})
+	}
 }
 
 // The refusals of a decision whose question a person emptied and which holds a second bullet
