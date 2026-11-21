@@ -981,8 +981,11 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		RepositoryCache:       liveRepositoryCache(),
 		CacheRepositories:     r.cacheRepositories,
 	}
+	// New requires the broker with its exchange audience, as the configuration's loader does under
+	// runtime: kubernetes: the Envoy listener takes no shared bearer, so a role reaches it only by
+	// trading its pod's exchange identity. A run that names no broker URL gets New's refusal.
 	if r.env.agentSecretsURL != "" {
-		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
+		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
 	}
 	return opts
 }
