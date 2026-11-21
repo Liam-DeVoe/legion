@@ -6,7 +6,6 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
-	"github.com/sjawhar/legion/daemon/internal/testreason"
 )
 
 // TestAnOpenedReadsEventIDNamesNoCommitThatIsNotOne: the opened a read of GitHub applies goes under
@@ -24,7 +23,7 @@ func TestAnOpenedReadsEventIDNamesNoCommitThatIsNotOne(t *testing.T) {
 		return id
 	}
 	echo := read("token " + token + " refused; " + oauth2calltest.Words)
-	testreason.RequireNone(t, "intake.answer-words/opened-read-echo", echo)
+	oauth2calltest.RequireNone(t, "intake.answer-words/opened-read-echo", echo)
 	for at := 0; at+8 <= len(token); at++ {
 		if strings.Contains(echo, token[at:at+8]) {
 			t.Fatalf("the opened's event id %q names the token the read carried", echo)
@@ -35,7 +34,7 @@ func TestAnOpenedReadsEventIDNamesNoCommitThatIsNotOne(t *testing.T) {
 	}
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	control := read(commit)
-	testreason.RequireNone(t, "intake.answer-words/opened-read-control", control)
+	oauth2calltest.RequireNone(t, "intake.answer-words/opened-read-control", control)
 	if !strings.Contains(control, ":"+commit+":") {
 		t.Errorf("the opened's event id is %q, want it to name %s", control, commit)
 	}

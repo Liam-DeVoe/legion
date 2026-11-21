@@ -8,18 +8,17 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/testreason"
 )
 
 // echoed is a member of GitHub's answer, or of whatever answers in GitHub's place, that echoes the
 // installation token the read carried and quotes a URL carrying made-up credentials.
 var echoed = "token " + installationToken + " refused; " + oauth2calltest.Words
 
-// requireNoEcho is testreason.RequireNone of text under capture, and fails t where text holds a run
-// of eight characters of the installation token.
+// requireNoEcho is oauth2calltest.RequireNone of text under capture, and fails t where text holds
+// a run of eight characters of the installation token.
 func requireNoEcho(t *testing.T, capture, text string) {
 	t.Helper()
-	testreason.RequireNone(t, capture, text)
+	oauth2calltest.RequireNone(t, capture, text)
 	for at := 0; at+8 <= len(installationToken); at++ {
 		if strings.Contains(text, installationToken[at:at+8]) {
 			t.Errorf("%s: the output prints the installation token: %q", capture, text)

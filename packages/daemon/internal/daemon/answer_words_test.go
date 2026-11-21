@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testreason"
 )
 
 // The rows of this file hold the daemon's lines that name a member of GitHub's answer the daemon
@@ -50,11 +49,11 @@ const (
 	notALogin     = "(a login GitHub does not allow)"
 )
 
-// requireNoEcho is testreason.RequireNone of text under capture, and fails t where text holds a run
-// of eight characters of the token the read carried.
+// requireNoEcho is oauth2calltest.RequireNone of text under capture, and fails t where text holds
+// a run of eight characters of the token the read carried.
 func requireNoEcho(t *testing.T, capture, text string) {
 	t.Helper()
-	testreason.RequireNone(t, capture, text)
+	oauth2calltest.RequireNone(t, capture, text)
 	for at := 0; at+8 <= len(echoedToken); at++ {
 		if strings.Contains(text, echoedToken[at:at+8]) {
 			t.Errorf("%s: the output prints the token the read carried: %q", capture, text)
