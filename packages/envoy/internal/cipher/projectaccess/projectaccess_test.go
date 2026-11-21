@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
@@ -21,7 +22,7 @@ import (
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV": {Visibility: "private", Owner: "carol@example.com", Listed: []string{"bob@example.com"}, Repositories: []string{"example/priv", "example/priv-old"}},
+		"PRIV": {Visibility: "private", Owner: "carol@example.com", Listed: []string{"bob@example.com"}},
 		"PUB":  {Visibility: "public", Owner: "carol@example.com"},
 	}, map[string]string{"bob@example.com": projectaccess.MemberRestricted, "carol@example.com": projectaccess.MemberFull})
 }
@@ -45,9 +46,9 @@ func TestAccessReadsTheK3Answer(t *testing.T) {
 	got.AskedAt = time.Time{}
 	want := projectaccess.Answer{
 		Project: "PRIV", Visibility: "private", Owner: "carol@example.com", Person: "carol@example.com",
-		MemberKind: projectaccess.MemberFull, Visible: true, Repositories: []string{"example/priv", "example/priv-old"},
-		// The stand-in answers as a Dispatch with dispatch://INFRA-3862's #t-a-31 does: the key is
-		// always there, empty for a project naming no channel.
+		MemberKind: projectaccess.MemberFull, Visible: true,
+		// The stand-in answers as a Dispatch whose projects' owners can name Slack channels does:
+		// the key is always there, empty for a project naming no channel.
 		SlackChannels: []string{}, SlackChannelsPresent: true,
 	}
 	if !reflect.DeepEqual(got, want) || !got.Private() {
@@ -173,7 +174,7 @@ func TestAccessSendsTheAccountToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"person":"carol@example.com","member_kind":"full"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true,"repositories":[]}`))
+		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true}`))
 	}))
 	t.Cleanup(recorder.Close)
 	client := projectaccess.New(recorder.URL+"/", projectaccesstest.StaticAccount("the-broker-account-token-not-a-secret"), nil)
@@ -289,7 +290,7 @@ func TestListAllowedRefusesAnEmptyListOnlyForARestrictedMember(t *testing.T) {
 		t.Fatalf("ListAllowed(bob, none) while Dispatch is down = %v, want ErrUnchecked: an outage mints as today, and the caller logs it", err)
 	}
 	stranger := projectaccess.New(standIn(t).URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
-	if err := projectaccess.ListAllowed(t.Context(), stranger, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
+	if err := projectaccess.ListAllowed(t.Context(), stranger, "bob@example.com", nil); !errors.Is(err, dispatchread.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrUnchecked) {
 		t.Fatalf("ListAllowed(bob, none) with a bearer Dispatch refuses = %v, want ErrBrokerRefused and not ErrUnchecked", err)
 	}
 	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", []string{"PRIV"}); err != nil {
@@ -368,6 +369,41 @@ func TestAccessRefusesAVisibilityItDoesNotKnow(t *testing.T) {
 				t.Fatalf("Dispatch was asked %d times for three questions; want 3: an answer the broker cannot read is never kept", calls)
 			}
 		})
+	}
+}
+
+// TestAccessRefusesAnAnswerThatHoldsAKeyTwice: a project answer carrying "visibility" twice, as
+// "private" and then "public", in the same case or another, has two readings, and encoding/json
+// would keep the last and read a private project as public. Access answers an error that is no
+// refusal of the broker and no "project not found", beside no answer, and keeps nothing, so the
+// next question asks Dispatch again.
+func TestAccessRefusesAnAnswerThatHoldsAKeyTwice(t *testing.T) {
+	for _, body := range []string{
+		`{"project":"PRIV","visibility":"private","owner":"carol@example.com","member_kind":"none","visible":false,"slack_channels":[],"visibility":"public"}`,
+		`{"project":"PRIV","visibility":"private","owner":"carol@example.com","member_kind":"none","visible":false,"slack_channels":[],"VISIBILITY":"public"}`,
+	} {
+		var mu sync.Mutex
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(server.Close)
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		for call := 1; call <= 2; call++ {
+			answer, err := client.Access(t.Context(), "PRIV", "")
+			if err == nil || errors.Is(err, dispatchread.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrProjectNotFound) || answer.Visibility != "" {
+				t.Errorf("Access call %d of %s = %+v, %v; want no answer and an error that is neither ErrBrokerRefused nor ErrProjectNotFound", call, body, answer, err)
+			}
+		}
+		mu.Lock()
+		if calls != 2 {
+			t.Errorf("Dispatch was asked %d times for two questions of %s; want 2: an answer with two readings is never kept", calls, body)
+		}
+		mu.Unlock()
 	}
 }
 
@@ -612,10 +648,10 @@ func TestARefusalOfTheBrokersOwnTokenIsErrBrokerRefused(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") {
+		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") {
 			t.Errorf("Access answered %d = %v, want ErrBrokerRefused naming the code", status, err)
 		}
-		if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+		if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 			t.Errorf("MemberKind answered %d = %v, want ErrBrokerRefused", status, err)
 		}
 	}
@@ -629,10 +665,10 @@ func TestARefusalIsErrBrokerRefusedWhateverItsBody(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		for _, body := range projectaccesstest.RefusalBodies {
 			client := projectaccess.New(projectaccesstest.NewRefusing(t, status, body), projectaccesstest.StaticAccount("token"), nil)
-			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 				t.Errorf("Access answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
 			}
-			if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+			if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, dispatchread.ErrBrokerRefused) {
 				t.Errorf("MemberKind answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
 			}
 		}
