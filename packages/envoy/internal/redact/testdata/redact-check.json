@@ -5806,6 +5806,27 @@
       "production": "loadtest refsFetch: a references answer's ETag recorded in the TSV only in Dispatch's shape (shownETag), its SHA-256 otherwise"
     },
     {
+      "id": "loadtest-answer-members-proxy-stats",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAProxysStatsThatDoNotDecodeNameNoneOfTheirWords",
+      "production": "loadtest getJSON: an answer that does not decode is named as such, never by the decoder's error (readWindow's proxy and rooms notes)"
+    },
+    {
+      "id": "loadtest-answer-members-heap-parse",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAHeapProfileItCannotReadNamesNoneOfItsWords/parse",
+      "production": "loadtest heapLive: a heap profile that does not parse is named as such, never by the parser's error"
+    },
+    {
+      "id": "loadtest-answer-members-heap-sample-types",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAHeapProfileItCannotReadNamesNoneOfItsWords/sample-types",
+      "production": "loadtest heapLive: a heap profile without inuse_space or inuse_objects is refused naming none of its sample types"
+    },
+    {
       "id": "cireconcile-answer-words-errors",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cireconcile",
@@ -8493,6 +8514,21 @@
       "site": "loadtest refs-fetch: a references answer's ETag header written raw to the TSV it records",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-refs-etag"
+    },
+    {
+      "site": "loadtest getJSON: the decoder's error of the proxy's wire counts, which quoted a time, noted raw in the rooms' summary",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-proxy-stats"
+    },
+    {
+      "site": "loadtest heapLive: pprof's parser error, which quotes a line of a legacy text profile, printed raw",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-heap-parse"
+    },
+    {
+      "site": "loadtest heapLive: the profile's own sample type names printed raw by valueIndex's refusal",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-heap-sample-types"
     },
     {
       "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",

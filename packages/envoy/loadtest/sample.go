@@ -650,7 +650,9 @@ func goroutineCounts(pprof string) (total, poolWait int, err error) {
 // the runtime has already scaled from its sampled records to estimates of the whole heap. It never
 // reads ?debug=1: that text formats every heap record, grew past 500 MB, and its reads took 29% of
 // Dispatch's CPU in the r16 replay. An error when the read fails, the profile does not parse, or it
-// has no inuse_space or inuse_objects.
+// has no inuse_space or inuse_objects. The profile is the profiler's words, or the words of
+// whatever answers in its place: the parser's error can quote a line of it (a legacy text
+// profile's attribute) and its sample types are its own names, so an error names neither.
 func heapLive(ctx context.Context, pprof string) (bytes, objects float64, err error) {
 	url := pprof + "/debug/pprof/heap"
 	body, err := getOK(ctx, &http.Client{Timeout: heapReadTimeout}, url)
@@ -658,17 +660,18 @@ func heapLive(ctx context.Context, pprof string) (bytes, objects float64, err er
 		return 0, 0, err
 	}
 	defer body.Close()
-	p, err := profile.Parse(body)
+	data, err := io.ReadAll(body)
 	if err != nil {
 		return 0, 0, fmt.Errorf("GET %s: %w", redactURL(url), err)
 	}
-	bi, err := valueIndex(p, "inuse_space")
+	p, err := profile.ParseData(data)
 	if err != nil {
-		return 0, 0, fmt.Errorf("GET %s: %w", redactURL(url), err)
+		return 0, 0, fmt.Errorf("GET %s: the answer is not a heap profile (the parser's error, which can quote it, is not printed)", redactURL(url))
 	}
-	oi, err := valueIndex(p, "inuse_objects")
-	if err != nil {
-		return 0, 0, fmt.Errorf("GET %s: %w", redactURL(url), err)
+	bi, bErr := valueIndex(p, "inuse_space")
+	oi, oErr := valueIndex(p, "inuse_objects")
+	if bErr != nil || oErr != nil {
+		return 0, 0, fmt.Errorf("GET %s: the profile has no inuse_space or no inuse_objects sample type", redactURL(url))
 	}
 	var b, o int64
 	for _, s := range p.Sample {
