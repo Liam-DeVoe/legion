@@ -5,7 +5,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
-import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchServiceError } from "../dispatch-http";
 
 // `dispatch spec-form` and the form refusal `dispatch request-approval` prints, against a stub
 // Dispatch that answers `GET /api/v1/artifacts/{id}/spec-form` and the approval request route as
@@ -338,7 +338,6 @@ beforeEach(() => {
   approval = { kind: "recorded" };
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(
