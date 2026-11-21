@@ -215,13 +215,19 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 	if record := selectionRecord(t, store, session); record.Current != "" || record.Start != first+1 {
 		t.Fatalf("record after the delete %+v, want no current and start %d", record, first+1)
 	}
+	// The delete's resume record took the stream's next sequence, so the message stored after it
+	// is past the record's start, and the next create starts at that start, first+1, and delivers it.
 	second := publishStored(t, owner, agent, "two")
 	back, err := consumers.Ensure(ctx, session, filters, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !back.Created || back.Name == created.Name || back.Name == restarted.Name || back.StartSeq != second {
-		t.Fatalf("Ensure after the delete = %+v, want a third fresh name at %d", back, second)
+	if !back.Created || back.Name == created.Name || back.Name == restarted.Name || back.StartSeq != first+1 {
+		t.Fatalf("Ensure after the delete = %+v, want a third fresh name at the record's start %d", back, first+1)
+	}
+	pull = pullSessionNamed(t, consumers, back.Name)
+	if msg := next(t, pull); msg.StreamSeq != second {
+		t.Fatalf("the consumer after the delete first delivered %d, want %d", msg.StreamSeq, second)
 	}
 }
 
@@ -417,5 +423,52 @@ func TestTheFreshModeRefusesALongSessionIDAsTheFixedNameWasRefused(t *testing.T)
 	_, err = fixed.Ensure(ctx, long, []string{contracts.LegacyAgentSubject(long)}, 0)
 	if err == nil || !strings.Contains(err.Error(), "consumer name is too long, maximum allowed is 255") {
 		t.Fatalf("the fixed mode's 254-byte id: %v, want the server's 10102 answer", err)
+	}
+}
+
+// A fixed-mode start refuses a selection bucket the cutover converted, naming the setting, and
+// starts over every store the cutover did not convert: no bucket, a bucket with no sentinel, no
+// marker, or a rollback's marker. The rows that start are the controls: the check refuses only on
+// a converted store.
+func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		state   *consumernames.StoreState
+		bucket  bool
+		refused bool
+	}{
+		{name: "converted", bucket: true, state: &consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}, refused: true},
+		{name: "no bucket"},
+		{name: "no sentinel", bucket: true},
+		{name: "not converted", bucket: true, state: &consumernames.StoreState{Boundary: 1}},
+		{name: "rolled back", bucket: true, state: &consumernames.StoreState{Cutover: consumernames.CutoverRolledBack, Boundary: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, consumers := sessionConsumersOnStream(t)
+			conn := testnats.Connect(t, testnats.URL(t))
+			t.Cleanup(conn.Close)
+			ctx := context.Background()
+			if tc.bucket {
+				js, _ := jetstream.New(conn)
+				if _, err := js.CreateKeyValue(ctx, consumernames.SessionBucketConfig(1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.state != nil {
+				if _, err := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: conn}).WriteSentinel(ctx, *tc.state, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := consumers.RefuseConvertedStore(ctx)
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+					t.Fatalf("RefuseConvertedStore over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RefuseConvertedStore over a store the cutover did not convert = %v; want the start to go on", err)
+			}
+		})
 	}
 }

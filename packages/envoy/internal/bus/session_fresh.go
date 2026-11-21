@@ -104,6 +104,33 @@ func (c *Client) ConsumerNames() consumernames.Mode {
 	return consumernames.ModeFixed
 }
 
+// RefuseConvertedStore is, in the fixed mode, the start's refusal of a selection bucket the
+// cutover converted: a bucket whose sentinel says the cutover is done holds the sessions' fresh
+// names, and today's fixed names must not run over it, so the listener refuses to start, naming
+// ENVOY_CONSUMER_NAMES. A bucket that does not exist, a sentinel that is missing, and a marker
+// that is not done (none, or rolled back) are no conversion, and the fixed mode runs. A read the
+// connection's user may not make is no conversion either: it is logged by the caller, and a hub
+// whose grant predates the bucket holds no bucket the cutover made for it. Any other failed read
+// refuses, so a start that cannot tell runs no fixed name over a converted store. In the fresh mode
+// it answers nil: that mode refuses every call until the marker says done.
+func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
+	if s.fresh != nil {
+		return nil
+	}
+	state, err := consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{s.client}).State(ctx)
+	switch {
+	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
+		return nil
+	case errors.Is(err, ErrPublishDenied):
+		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
+	case err != nil:
+		return fmt.Errorf("bus: read the session consumers' selection bucket %s before running fixed names: %w", consumernames.SessionBucket, err)
+	case state.Cutover == consumernames.CutoverDone:
+		return fmt.Errorf("bus: %s=%s, but the selection bucket %s says the cutover converted every session consumer to a fresh name: set %s=%s", consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
+	}
+	return nil
+}
+
 // Fresh reports whether s runs in the fresh mode.
 func (s *SessionConsumers) Fresh() bool { return s.fresh != nil }
 

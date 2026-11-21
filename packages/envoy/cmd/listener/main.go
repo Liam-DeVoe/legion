@@ -666,6 +666,9 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		}
 		response["num_pending"] = consumerInfo.NumPending
 		response["num_ack_pending"] = consumerInfo.NumAckPending
+		// The process's consumer naming mode (ENVOY_CONSUMER_NAMES), so a reader sees which names
+		// this listener runs without reading its environment.
+		response["consumer_names"] = string(d.client.ConsumerNames())
 		// Last, so that no fault above is reported as this one: every check before it that can
 		// answer 503 has passed. The answer keeps the fields above it, so a reader of the counters
 		// loses none while the view fills or while its repair is late. A view that cannot answer
@@ -1591,6 +1594,25 @@ func main() {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
+	}
+	// The mode is the process's, read once from ENVOY_CONSUMER_NAMES (config.Load), and every
+	// start names it. A fixed-mode start over a selection bucket the cutover converted refuses:
+	// today's names must not run over a store whose sessions hold fresh ones.
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(client.ConsumerNames())))
+	if !delivery.consumers.Fresh() {
+		checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
+		err := delivery.consumers.RefuseConvertedStore(checkCtx)
+		cancel()
+		switch {
+		case consumerGrantRefused(err):
+			logger.Warn("the NATS user may not read the session consumers' selection bucket; the fixed mode runs, as on a hub that holds no converted bucket",
+				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
+		case err != nil:
+			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
+			delivery.close()
+			client.Conn.Close()
+			os.Exit(1)
+		}
 	}
 	if delivery.consumers.Fresh() {
 		// The fresh mode's selection steps, counted by step and outcome (consumernames.Operation,
