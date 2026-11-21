@@ -18,11 +18,7 @@
 // is written on it, so it cannot merge.
 package verdict
 
-import (
-	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/record"
-)
+import "time"
 
 // CheckName is the name of the required check the daemon writes, as a check run and, over a commit
 // status of the same name another writer of the one App left, as a commit status.
@@ -180,16 +176,22 @@ func ciReviewerAt(in Inputs) string {
 	return kept.State
 }
 
-// later is whether review replaces kept as its author's last: GitHub submitted it after kept
-// (record.ReviewOrder), or neither is ordered before the other and the daemon recorded it after.
+// later is whether review replaces kept as its author's last: GitHub submitted it after kept, or
+// neither is ordered before the other and the daemon recorded it after.
 func later(review, kept Review) bool {
-	return !order(kept).After(order(review))
+	return !after(kept, review)
 }
 
-// order is where review falls among the pull request's reviews: when GitHub says it was
-// submitted, then GitHub's id of it.
-func order(review Review) record.ReviewOrder {
-	return record.ReviewOrder{SubmittedAt: review.SubmittedAt, ID: review.GitHubID}
+// after is whether GitHub submitted a after b, by record.ReviewOrder.After's rule: the submission
+// times decide where both reviews carry one and they differ, and GitHub's ids otherwise. The rule
+// is written out here because this package imports no record: the store reads its words and
+// conclusions, and record's own tests read the store. TestReviewsAreOrderedAsTheRecordOrdersThem
+// holds the two rules alike.
+func after(a, b Review) bool {
+	if !a.SubmittedAt.IsZero() && !b.SubmittedAt.IsZero() && !a.SubmittedAt.Equal(b.SubmittedAt) {
+		return a.SubmittedAt.After(b.SubmittedAt)
+	}
+	return a.GitHubID > b.GitHubID
 }
 
 // isCIReviewer is whether author is the entry's ci_reviewer. A Legion head has none: the CI

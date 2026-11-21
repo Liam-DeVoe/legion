@@ -3,6 +3,8 @@ package verdict
 import (
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The heads of these cases: H the head decided, H1 the commit of a tester's pass that a reviewer's
@@ -125,5 +127,28 @@ func TestDecideIsR4sTable(t *testing.T) {
 				t.Errorf("Decide(%+v) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// Decide takes each author's last review by the order the record orders reviews by
+// (record.ReviewOrder.After): this package writes that rule out, since it imports no record, and
+// each pair here, in both directions, is ordered by the two alike. The pairs are record's own:
+// a draft submitted late, two reviews of one moment, a review with no time, and one review.
+func TestReviewsAreOrderedAsTheRecordOrdersThem(t *testing.T) {
+	early := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	late := early.Add(time.Minute)
+	for _, pair := range [][2]Review{
+		{{SubmittedAt: late, GitHubID: 1}, {SubmittedAt: early, GitHubID: 2}},
+		{{SubmittedAt: early, GitHubID: 2}, {SubmittedAt: early, GitHubID: 1}},
+		{{GitHubID: 2}, {SubmittedAt: late, GitHubID: 1}},
+		{{SubmittedAt: early, GitHubID: 1}, {SubmittedAt: early, GitHubID: 1}},
+	} {
+		for _, ab := range [][2]Review{pair, {pair[1], pair[0]}} {
+			a, b := ab[0], ab[1]
+			want := record.ReviewOrder{SubmittedAt: a.SubmittedAt, ID: a.GitHubID}.After(record.ReviewOrder{SubmittedAt: b.SubmittedAt, ID: b.GitHubID})
+			if got := after(a, b); got != want {
+				t.Errorf("after(%+v, %+v) = %v, want %v as record.ReviewOrder.After answers", a, b, got, want)
+			}
+		}
 	}
 }
