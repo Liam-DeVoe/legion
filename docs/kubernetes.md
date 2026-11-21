@@ -21,7 +21,7 @@ Every Legion agent process under `runtime: kubernetes` — architect, planner, i
 It carries:
 
 - the pinned OMP fork build the daemon's default `omp_invocation` names
-  — resolved at build time with the same `mise x github:cybermonklabs/oh-my-pi@<version>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
+  — the linux-x64 archive of the release the single pin source `.omp-pin` names, fetched at build time from that release's download address and checked against the Dockerfile's `ARG OMP_SHA256` (a bump of `.omp-pin` moves that digest in the same commit), and laid out as a tmux host's `mise x github:cybermonklabs/oh-my-pi@<version>` lays it out;
   installed at `/opt/omp/bin/omp` (`LEGION_OMP_PATH`);
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
@@ -139,8 +139,8 @@ It carries:
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
-- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
-  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
+- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` (the build itself resolves no pin with it):
+  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve the Oh My Pi pin with `mise where` and `mise x`.
   The image seeds no mise store, so the rig's first run in a fresh pod downloads the pin from GitHub into the role's own `MISE_DATA_DIR`, and mise reads `MISE_GITHUB_TOKEN` when it is set;
 
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
