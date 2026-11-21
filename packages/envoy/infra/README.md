@@ -4007,13 +4007,28 @@ that names no project, nothing on the kept role lane `notifications.envoy.kept.>
 exception lane. A message on a role lane of its own project that
 names a role of another project is the shared listeners' role lane to refuse, which it does once
 the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
-`ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), so it can change no stream's
-subjects, limits or republish. On the hub's image a republish to a `$JS.API.…` subject reaches
-that subject's subscribers and the JetStream API takes no action on it; the edge cannot set one
-anyway. An edge listener reads the stream and its start ends, naming the stream, on a server that has
-none, and it finds each bucket: one the server lacks, or holds at fewer copies than
-`ENVOY_NATS_REPLICAS`, ends the start naming the refused create or raise. It subscribes its own
-machine's inbox prefix
+`ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
+bucket, so it can change no stream's subjects, limits or republish, and delete no stream:
+
+- A republish to a `$JS.API.…` subject is a JetStream API request in the stream's account, with
+  the stored value as its body. On the hub's image an empty value republished to a stream delete
+  deletes the stream, and a non-empty one is refused as that request's body. That is why the edge
+  holds no stream update.
+- The stream itself answers a direct get, on whatever reply subject the request names and with the
+  stored value as its body, so a direct get aimed at `$JS.API.…` is such a request too: on the
+  hub's image a value written as a stream update changes that stream, and an empty one aimed at a
+  stream delete deletes it. So an edge listener reads its buckets with stream message gets
+  (`$JS.API.STREAM.MSG.GET.KV_<bucket>`). Their answer is the API's own, and aimed at the API it
+  takes no action there, nor does a stream info answer or a stored publish's acknowledgement.
+
+An edge listener reads the stream and its start ends, naming the stream, on a server that has
+none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
+start, naming the refused create or raise, when the server lacks one or holds it at fewer copies
+than `ENVOY_NATS_REPLICAS`. The Legion agent bucket's open logs one ERROR and is retried in the
+background, and so is the known-session bucket's, which raises no bucket it finds with fewer
+copies. Every listener on this build that is not an edge listener creates the DPoP-proof bucket
+`envoy_dpop_proofs` at its start, whether or not it takes broker tokens, so a full listener on
+this build starts before an edge listener does. It subscribes its own machine's inbox prefix
 `_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
 other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
 machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine
@@ -4034,7 +4049,14 @@ hands no kept lane over, so a publish to a role no session holds is answered 404
 exception, and the shared listeners' sweeps, every five minutes, hand the kept lane of a role held
 at the edge to its holder. A claim at the edge that takes a role from another session writes no
 takeover record and runs no takeover pass, and its session relay copies no role message to a kept
-lane: a frame of a role another session holds goes to the edge session as every frame does. A
+lane: a frame of a role another session holds goes to the edge session as every frame does. Two
+limits of edge mode follow from that, against the role takeover's promise that a session taking a
+role receives what the previous holder had not read. When a claim lands at the edge, the role's
+new holder does not receive the role messages its previous holder had not read: they stay on the
+previous holder's own subject, which that session receives if it comes back and nothing else
+reads. And a role message forwarded to an edge session that has since lost the role still reaches
+that session, while a takeover pass a shared listener runs for the new holder copies it to the new
+holder too, so both sessions receive it (read from the code, not run). A
 delivery exception whose lane the list does not hold, such as the
 report of a refused GitHub or Dispatch event a session follows, is not published: the message is
 acknowledged undelivered to that session and counted on
@@ -4058,14 +4080,18 @@ What the lists do not hold back:
   exception lanes, any reply inbox, and the agent stream subjects. A deliver subject the stream
   carries is refused as a cycle: the agent subjects, Dispatch, GitHub, Slack, Legion, Ghostwispr,
   WhatsApp and team topics, the exception lanes of the agent subjects and of team topics, the
-  kept lane and the resume lane.
+  kept lane, the resume lane and the takeover lane.
 - A push consumer's delivery takes no JetStream API action: the API's import sees the stream
   subject, not `$JS.API.`, so a delivery to `$JS.API.STREAM.DELETE`, `PURGE` or `UPDATE` of a
   stream, or to the delete of a bucket's stream, leaves the stream as it was. A stream whose
   subjects take the deliver subject - another stream of the account, a key-value bucket's stream
   among them - stores the delivery under its stream subject, as a message of that stream and
-  never as a key, and counts it toward that stream's limits. That is the one write this route
-  has, and it needs some other client to subscribe the deliver subject.
+  never as a key, and counts it toward that stream's limits. Both need some other client to
+  subscribe the deliver subject. A consumer created with an idle heartbeat also sends heartbeats,
+  empty status messages that carry no stored subject, to its deliver subject while a client
+  subscribes it; on the hub's image such a heartbeat aimed at a stream delete deletes the stream
+  (`TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`). No Envoy client
+  subscribes a `$JS.API.` subject, and the edge's own grant subscribes none.
 - nats-server 2.15.1 admits a subscription to `notifications.envoy.deliver.>` under the allow
   entry `notifications.envoy.deliver.*`, and delivers it a subject two tokens past the prefix. No
   Envoy program publishes such a subject: a relay subject names its session by one token.
@@ -4074,9 +4100,10 @@ What the lists do not hold back:
 - Its key-value calls write every record of the seven listener buckets: interests, roles,
   sessions, known sessions, Legion agents, CI state and DPoP proofs. They include a consumer on
   each bucket's stream, which does not carry the notification subjects, so such a consumer can
-  deliver a bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept and resume
-  subjects wherever a client subscribes them: the cycle refusal above holds only for the
-  notification stream's own consumers.
+  deliver a bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept, resume and
+  takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
+  notification stream's own consumers. No row creates such a consumer: this one is read from the
+  server's rule above.
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth
@@ -4091,18 +4118,24 @@ project, the Legion wake topic, a Slack topic and a GitHub exception lane, and t
 exactly the second group. `TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts`
 there has one edge machine answer another machine's frame on that machine's receipt subject, and
 be refused a subscription to that machine's receipts.
-`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the consumer reach above: a push
-consumer of the edge's delivers on another project's role subject, a consumer of the edge's reads
-another project's stored Dispatch event, a deliver subject the stream carries is refused as a
-cycle, the edge updates and deletes another listener's durable, and a subscription under
-`deliver.>` is delivered a two-token subject.
+`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the notification stream's consumer
+reach above: a push consumer of the edge's delivers on another project's role subject, a consumer
+of the edge's reads another project's stored Dispatch event, a deliver subject the stream carries
+is refused as a cycle, the edge updates and deletes another listener's durable, and a subscription
+under `deliver.>` is delivered a two-token subject.
 `TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI` pins the JetStream API and capture
 outcomes on scratch streams and buckets of the edge's account, and the stream subject a delivery
-is received under. `cmd/listener/edge_live_test.go`
-runs the listener under the set: it starts, relays a send and is reached by a role message through
-a shared listener, with no refusal, and its start ends, naming the prefix, under the set without
-it. Its relay frames are answered by an observer whose grant publishes the edge's inbox prefix,
-reach no rendered set holds.
+is received under, and `TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt`
+the heartbeat's. `TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI` has the server refuse
+the edge's update of a bucket's stream, and its control has an administrator's republish of an
+empty value delete a stream. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has a
+listener's direct gets aimed at the API change one stream and delete another, the edge's refused,
+and its stream message get, stream info and key write aimed the same way take no action.
+`cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
+reached by a role message through a shared listener, takes a role another session holds and is
+relayed a role message of a role another session holds, with no refusal, and its start ends,
+naming the prefix, under the set without it. Its relay frames are answered by an observer whose
+grant publishes the edge's inbox prefix, reach no rendered set holds.
 
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get
