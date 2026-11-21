@@ -309,6 +309,54 @@ LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
 CI runs both in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
 both a PostgreSQL and a Go.
 
+## The listener's relay socket
+
+A session whose settings say `ENVOY_INBOUND=listener` takes its inbound messages through the
+listener's relay socket rather than NATS, so an agent on a machine outside the deployment's network
+reaches Envoy over HTTPS alone. `connectListenerRelay(options, signal)`
+(`@legion/envoy-client/listener-relay`) opens it and answers a `ListenerRelay` once the first socket
+is open: a connection of the shape a session plugin holds over NATS (`InboundConnection`:
+`subscribe`, `publish`, `flush`, `isClosed`, `drain`, `close`, `status` and `closed`), so the
+plugin's consumer delivery runs on either. Each open is `GET <listener>/v1/sessions/<session>/relay`,
+a WebSocket of subprotocol `envoy-relay.v1`, with a fresh proof of the session's broker token
+(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). With the setting, a NATS
+server named or not, a listener at a plain http address of another machine turns Envoy off as a
+whole, its tools included, since the token would cross the network unencrypted (a conflict with a
+NATS server is named first); this machine's own
+listener may be plain http, and a session not set to `listener` (a pod inside its cluster, say)
+keeps a plain http listener. The frames are JSON: the
+session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay receipt on a frame's
+reply, which is all the socket takes; the listener sends `msg`, whose `headers` map each name, case
+kept, to the list of its values in order (`RelaySocketHeaders.get` and `values`), and `err`. A
+frame past 2 MiB, larger than any the listener sends, is dropped unread. A
+`sub` the listener refuses (`subject_not_granted`, or `subscription_limit` past the one
+subscription a socket holds) ends that subscription with an error naming its subject and code, as
+a nats.js subscription a server refused does, and is logged once; a frame it cannot
+read it answers `bad_frame` and closes the socket 1008, which the client logs naming the ops of the
+frames it sent since the listener last answered a ping, since the answer names none.
+The listener reads a socket's frames one at a time and answers no `sub` it grants, so `flush` sends
+a WebSocket ping and resolves at its pong, after every `sub` before it is held; a flush whose
+socket closes or is replaced first rejects. The socket carries
+neither the connection probe nor the agent stream, so a host opens no live view over it, and the
+start notice says so. The listener closes an open socket by why: 4401 (the token lapsed) and 1012
+(it is stopping) open again at once however often they come, the first with a fresh trade; 4403
+(the token was revoked or no longer names what the socket was opened with) after 1 s doubling to a
+minute, with a fresh trade; 1013 (the broker or NATS cannot be asked) after 5 s doubling to a
+minute; 1001 and 1006 at once, then after 1 s doubling while they repeat; any other close, 1008
+included, after 1 s doubling (`relayReopenDelay`). An upgrade the listener refuses names its status
+in Bun's `error` event: 401 and 403 wait as 4403 does and trade a fresh token, 503 after a 1013
+goes on with the 1013's waits, and any other status, an upgrade not answered within 20 s, a
+listener that cannot be reached and a failed trade are tried again after 1 s doubling to a minute.
+Each cause doubles its own waits, and a socket open a minute starts them all afresh. Every other
+open presents the token in hand, with a fresh proof. A trade that failed is told to the session
+once per outage (`inboundUnavailable`). The socket never ends an outage: the report is the
+host's, shared with its registrations, so only a registration the listener accepted ends it, and
+one follows every open. A repeated
+failure is logged once until its words change. Each reopen takes every live subscription again and
+reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
+acknowledged. `follow()` opens the socket again for the session the name reads now, which a host
+runs when it moves to another session.
+
 ## HTTP transport
 
 `createEnvoyClient` sends and receives the listener's `/v1` JSON contracts. Send and publish
@@ -421,7 +469,17 @@ has nothing to retry either way.
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
 list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
 `sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
-sent faster than the listener lets one session send: the message was not stored.
+sent faster than the listener lets one session send: the message was not stored. A listener in
+edge mode refuses a whole registration that names a topic of no project of the session's token,
+403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
+registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
+(`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
+which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs one line naming
+them, and registers the rest at once, whichever path registered. The resend names only the topics
+the session still follows (`followed` is read again before it), so one unsubscribed while the
+registration waited is not put back, and the relay forgets only the refused topics
+(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Its 503
+`repositories_unknown` and 403 `token_not_admitted` drop nothing.
 
 ## envoy.json
 
@@ -567,16 +625,28 @@ one of the two set. A `notice` says why nothing is wrong: `<file> sets envoy.ena
 Envoy is off`, `<file> names no Envoy listener or NATS server, and neither ENVOY_URL nor
 ENVOY_NATS_URL is set: Envoy is off`, or the missing-file text. An `error` names what could not be
 read or used. `ENVOY_URL`, `ENVOY_NATS_URL` (comma-separated), `ENVOY_TOKEN_FILE` then
-`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`, and `NATS_AUTH` each override their own
-field of the section; with no `envoy` section, `ENVOY_URL` or `ENVOY_NATS_URL` alone names an Envoy,
-which is how a Legion pane gets the one its daemon names. An empty `ENVOY_*` or `NATS_AUTH` variable
-counts as unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is refused, naming it. `inbound`
-is how the session takes inbound messages: `{ natsUrls, natsCredential }`, never with an empty
-`natsUrls`, or `{ off }`, `off` saying why: `Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)`
-when nothing names one, a credential's refusal (below), or `this session opens no NATS connection`
-for a caller that opens none (`{ nats: false }`: the `dispatch` command, `claude-envoy`'s
-`envoy-send`, pi-legion's extension). The credential is resolved only when there are NATS servers
-to use it on, so that caller resolves none. A seed is the credential wherever one is set. Otherwise
+`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`, `NATS_AUTH` and `ENVOY_INBOUND` each
+override their own field of the section; with no `envoy` section, `ENVOY_URL` or `ENVOY_NATS_URL`
+alone names an Envoy, which is how a Legion pane gets the one its daemon names. An empty `ENVOY_*`
+or `NATS_AUTH` variable counts as unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is
+refused, naming it. `inbound` is how the session takes inbound messages: `{ natsUrls,
+natsCredential }`, never with an empty `natsUrls`; `{ relaySetting, relayCredential }`, the
+listener's relay socket (below); or `{ off }`, `off` saying why: `Envoy has no NATS server
+(envoy.natsUrls, ENVOY_NATS_URL)` when nothing names one, a credential's refusal (below), or
+`this session opens no NATS connection` for a caller that opens none (`{ nats: false }`: the
+`dispatch` command, `claude-envoy`'s `envoy-send`, pi-legion's extension). `ENVOY_INBOUND`, else
+`envoy.inbound`, chooses between the first two: `nats`, or nothing set, is NATS, resolved as
+before; `listener` is the relay socket at `<ENVOY_URL>/v1/sessions/<session>/relay`, presenting the
+session's broker credential (`relayCredential`, `brokerCredential`), which is the only credential
+the socket admits. `listener` is refused, turning off inbound messages alone, beside a NATS server
+(`ENVOY_INBOUND is listener, and ENVOY_NATS_URL names NATS servers: set one of the two`, or the
+file's `envoy.natsUrls`), with a bearer for the listener, on a machine with no broker route, and for a
+caller that names no session (`noSessionNamed`); a listener at a plain http address of another
+machine turns Envoy off as a whole (`localhost`, 127.0.0.0/8 and `::1` may stay plain http); any
+other value is refused as `ENVOY_INBOUND
+is neither nats nor listener`, never echoing it. The NATS credential is resolved only when there
+are NATS servers to use it on, so a caller that opens no NATS connection resolves none.
+A seed is the credential wherever one is set. Otherwise
 `NATS_AUTH`, else `envoy.natsAuth`, names it: `broker` is the session's broker token, and `none`, or
 nothing set, is no credential, whatever broker route the machine has, since that route says nothing
 about whether the hub runs an auth service. `broker` on a machine with no broker route
