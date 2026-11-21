@@ -228,14 +228,12 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 //     address's recorded `sub`, the cookie's own while the generation stands;
 //   - a personal token: refused once revoked, or once its account no longer holds the address
 //     (tokenAccountReplaced: people records another account, or the token records none and was
-//     made before people recorded the address's); its account is the one its mint recorded;
-//   - a broker token: refused once its account no longer holds the address (brokerAccountReplaced:
-//     people records another account, or the token records none and its credential was made
-//     before people recorded the address's, or within brokerCredentialMargin after), as its
-//     admission is, however long its client held the body back. Its account is the one its own
-//     credential records at the broker (BrokerAdmittedSubject).
+//     made before people recorded the address's); its account is the one its mint recorded.
 //
-// A credential that records no account, made after the recording, is bound to the address's
+// A broker-issued token never decides: none holds the approve scope these routes require
+// (brokerPersonScopes), so it is refused before it gets here.
+//
+// A personal token that records no account, made after the recording, is bound to the address's
 // account (credentialSubjectSQL). The read runs in a transaction of its own after the address's
 // advisory lock, taken shared (store.AddressLockSharedSQL), the lock every sign-in that records the
 // address's account takes first: a sign-in in flight makes the decision wait and then read what it
@@ -243,18 +241,14 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // relayed while the sign-in is uncommitted, on an address no row holds too, however long the
 // sign-in takes; a decision read before the sign-in takes the lock is relayed within the broker's
 // request deadline, which brokerCredentialMargin covers. A caller who lost the address is refused
-// as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token,
-// and for a broker token the refusal its admission would name (brokerReplacedRefusal:
-// BROKER_TOKEN_RECORDS_NO_ACCOUNT, BROKER_TOKEN_NOT_ACTIVE or BROKER_ACCOUNT_NOT_SIGNED_IN), read
-// in the same statement; a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+// as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token;
+// a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
 //
 // The same statement reads whether Dispatch holds the caller, as each credential's own check does,
 // and a held caller is then 401 MEMBERSHIP_HELD, so a person held between the request's start and
 // its relay approves and denies nothing: for a personal token, Standing's steps on its owner's
 // people row, asking Standing for a confirmation older than an hour (personalTokenHeld) once the
-// transaction has ended, since Standing reads through the pool itself; for a broker token, the
-// hold Dispatch records for its person, where a Google rule signs people in (brokerPersonAdmitted's,
-// recordedHoldSQL), since there is no introspection answer to read here; for a cookie, the session
+// transaction has ended, since Standing reads through the pool itself; for a cookie, the session
 // generation a hold advances. Under IAP identity (Standing.ChecksDirectory) a person deciding at
 // their browser presents only the assertion IAP signs for the request, which no hold ends, so their
 // standing is read from Standing once the transaction has ended (browserDeciderHeld). A revocation
@@ -265,8 +259,7 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	if actor.Act != nil && actor.Act.TokenID != "" {
 		tokenID = &actor.Act.TokenID
 	}
-	broker := s.mintBrokerCaller(r, actor)
-	var cookieGone, tokenGone, brokerReplaced, brokerNamed, brokerHeld bool
+	var cookieGone, tokenGone bool
 	var owner *string
 	var hold ownerHold
 	unread := func(err error) (string, int64, error) {
@@ -284,12 +277,9 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	if err := tx.QueryRow(r.Context(), `
 		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
-				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$7::boolean")+`)),
-			`+brokerAccountReplaced("$5::text", "$6::text", "$9::boolean", "$8::timestamptz", "$7::boolean")+`,
-			`+brokerAccountNamed("$5::text", "$6::text")+`,
-			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$6::text", "$7::boolean", "$8::timestamptz")+`, ''),
+				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$5::boolean")+`)),
+			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$5::boolean")+`, ''),
 			coalesce((select generation from user_sessions where login = $1::text), 0),
-			`+recordedHoldSQL("$5::text")+`,
 			owner.login, coalesce(owner.recorded, false), coalesce(owner.stored, false), owner.age
 		from (select 1) as one
 		left join (
@@ -298,8 +288,8 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 			left join people on people.email = canonical_login(agent_tokens.owner)
 			where agent_tokens.id = $4::uuid
 		) as owner (login, recorded, stored, age) on true
-	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, s.deps.SignInIssuer != "", broker.created, broker.foreign).
-		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &subject, &generation, &brokerHeld,
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, s.deps.SignInIssuer != "").
+		Scan(&cookieGone, &tokenGone, &subject, &generation,
 			&owner, &hold.recorded, &hold.stored, &hold.age); err != nil {
 		return unread(err)
 	}
@@ -313,10 +303,6 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 		return "", 0, identity.ErrNoIdentity
 	case tokenGone:
 		return "", 0, errTokenRevoked()
-	case brokerReplaced:
-		return "", 0, brokerReplacedRefusal(broker.subject == "", brokerNamed)
-	case brokerHeld && s.deps.Standing != nil:
-		return "", 0, s.recordedHoldRefusal()
 	}
 	if owner != nil {
 		if err := s.personalTokenHeld(r.Context(), *owner, hold); err != nil {

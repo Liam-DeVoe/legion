@@ -119,7 +119,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", input.Project).Scan(new(string)); err != nil {
+	// The target project as the writer reads it: one it does not see is a project no row holds.
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1 and "+
+		access.ProjectClause("key", "$2"), input.Project, refs.VisibilityArg(who)).Scan(new(string)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -141,14 +143,29 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	moved := previous != nil && previous.Project != input.Project
+	// A mapping of a project the writer does not see is one the write cannot move: it is answered
+	// exactly as a project no row holds, as the target above is (projectSeenBy).
+	if moved {
+		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !seen {
+			s.writeHandlerError(w, pgx.ErrNoRows)
+			return
+		}
+	}
 	isDefault := previous != nil && !moved && previous.Default
 	if input.Default != nil {
 		isDefault = *input.Default
 	}
 	// A project's default is the repository each of its issues that names none resolves to, so a
 	// mapping this write leaves as a default is held to the rule an issue's own repository is
-	// (refuseRepoHidden), under the mapping's locks and before anything is written.
-	if isDefault {
+	// (refuseRepoHidden), under the mapping's locks and before anything is written, and so is a
+	// write that moves or clears the default its project held: that takes the repository from the
+	// project's issues, which can show it to a reader the proxy hid it from.
+	if isDefault || (previous != nil && previous.Default && (moved || !isDefault)) {
 		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -250,6 +267,10 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	spelled := deletedRepoProjectSpelling(r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -262,6 +283,18 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A mapping of a project the writer does not see is one no row holds (projectSeenBy): it is
+	// answered as a path that names no stored mapping, and nothing is removed.
+	if previous != nil {
+		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !seen {
+			previous = nil
+		}
+	}
 	if previous == nil {
 		if err := checkRepoProjectPath(spelled); err != nil {
 			s.writeHandlerError(w, err)
@@ -269,6 +302,16 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	// A project's default is the repository each of its issues that names none resolves to, and
+	// removing it gives that repository to no issue of the project, which can show it to a reader
+	// the proxy hid it from: the removal is held to the rule an issue's own repository is
+	// (refuseRepoHidden), as a write that leaves a default is.
+	if previous.Default {
+		if err := refuseRepoHidden(r.Context(), tx, who, &previous.Repo); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if _, err := tx.Exec(r.Context(), `delete from repo_projects where repo = $1`, previous.Repo); err != nil {
 		s.writeHandlerError(w, err)
@@ -413,6 +456,21 @@ func repoProjectEvent(mapping model.RepoProject, actor model.Actor, deleted bool
 	return projectOwner(mapping.Project).event(
 		"settings.repo_project.updated", actor, map[string]any{"mapping": mapping, "deleted": deleted},
 	)
+}
+
+// projectSeenBy reports whether who sees project key (access.ProjectClause). A mapping write reads
+// it of the project a mapping is in before it moves or removes that mapping, so a mapping of a
+// project the writer does not see is one the write cannot reach. A reader that sees every object,
+// as every open viewer of a deployment with no private project does, sees every project and reads
+// no statement for it (R9).
+func projectSeenBy(ctx context.Context, q queryer, who model.Actor, key string) (bool, error) {
+	if seesEveryObject(who) {
+		return true, nil
+	}
+	var seen bool
+	err := q.QueryRow(ctx, "select exists (select 1 from projects where key = $1 and "+
+		access.ProjectClause("key", "$2")+")", key, refs.VisibilityArg(who)).Scan(&seen)
+	return seen, err
 }
 
 // repoProject is the project repo maps to, as who reads the mapping: "" for a repository no

@@ -29,7 +29,7 @@ var iapAudienceRule = regexp.MustCompile(`^/projects/[0-9]+/global/backendServic
 func dispatchIAPAudience(value pulumi.StringInput, dispatch string) pulumi.StringOutput {
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal("iapAudience"))
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience", "%w", core.SeedRefusal("iapAudience")))
 		}
 		if !iapAudienceRule.MatchString(v) {
 			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience",
@@ -52,7 +52,7 @@ func dispatchDirectorySetting(value pulumi.StringInput, dispatch, input string) 
 				"%s is blank: Dispatch reads it as unset and refuses to boot behind the IAP door without it", input))
 		}
 		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%w", core.SeedRefusal(input)))
 		}
 		return v, nil
 	}).(pulumi.StringOutput)
