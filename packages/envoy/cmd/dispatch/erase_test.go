@@ -23,17 +23,36 @@ import (
 // has read the commit, short enough for a run.
 const eraseTestWindow = 4 * time.Second
 
+// confirmTries is how many listings confirmErase confirms, in all, before it gives up on a
+// listing that keeps moving.
+const confirmTries = 3
+
 // confirmErase is what an operator runs: the erase of kind:id without --confirm, which reads its
-// listing and removes nothing, then with the digest that run printed.
+// listing and removes nothing, then with the digest that run printed. These tests run it against a
+// live server whose ticks write rows that derive from the node - a comment's windows among them -
+// so a tick between the two runs moves the listing, and the confirmed run refuses it (Mismatch),
+// as it refuses an operator's. The operator then reads the listing again and confirms that digest,
+// and so does confirmErase, confirmTries times in all; when the last confirmed run still reads
+// another listing it answers an error naming both digests. Any other refusal it answers as the
+// erase does, the refused Erasure with no error.
 func confirmErase(ctx context.Context, databaseURL, kind, id string, window time.Duration) (*grapherase.Erasure, error) {
-	listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
-	if err != nil {
-		return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+	for try := 1; ; try++ {
+		listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
+		if err != nil {
+			return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+		}
+		if listing.Applied {
+			return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
+		}
+		erasure, err := grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
+		if err != nil || !erasure.Mismatch() {
+			return erasure, err
+		}
+		if try == confirmTries {
+			return erasure, fmt.Errorf("erase --node %s:%s refused each of %d listings it was given: the last confirmed run was given %s and read a listing of digest %s",
+				kind, id, confirmTries, erasure.Confirmed, erasure.Digest)
+		}
 	}
-	if listing.Applied {
-		return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
-	}
-	return grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
 }
 
 // blockHolding is the node address of the block of document whose text, at the latest version
@@ -82,6 +101,13 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if text := eraseDocumentText(t, server, notes); strings.Contains(text, secret) {
 		t.Fatalf("the edit left the secret in the live text of the notes: %q", text)
 	}
+	// The uploads owe the notes a settlement (doc_settlements_pending), and the issue's creation
+	// owes the spec one, each run after the settle delay. Run after an erase, it would write a
+	// version of its own from the live text the erase left - for the spec a version holding the
+	// marker, with its event - so each erase is read against the settled document, which nothing
+	// writes to again.
+	waitForSettlementOwed(t, database, notes, false)
+	waitForSettlementOwed(t, database, spec, false)
 
 	// The controls: each store holds the secret before the erase, read by the very statement
 	// that must read none of it afterwards.
@@ -98,6 +124,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if err != nil || !erased.Applied {
 		t.Fatalf("erase %s: applied %t, %v", notesBlock, erased != nil && erased.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, notes, false)
 	if held := updatesHolding(t, database, notes, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the notes still hold the secret's bytes", held)
 	}
@@ -158,6 +187,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if !erasure.Applied {
 		t.Fatalf("the erase of %s removed nothing", specBlock)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, spec, false)
 	var report bytes.Buffer
 	erasure.Write(&report)
 	t.Logf("the erase reported:\n%s", report.String())
@@ -269,11 +301,19 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	if held := updatesHolding(t, database, document, secret); held == 0 {
 		t.Fatalf("no stored update of %s holds the secret, so the history check proves nothing", document)
 	}
+	// The upload owes the document a settlement (doc_settlements_pending), which runs after the
+	// settle delay. Run after the erase, it would write a version of its own from the live text the
+	// erase left - a version holding the marker, with its event - so the erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 
 	erasure, err := confirmErase(ctx, databaseURL, "block", block, time.Millisecond)
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	if held := updatesHolding(t, database, document, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of %s still hold the secret past the excerpt", held, document)
 	}

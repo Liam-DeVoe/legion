@@ -11,6 +11,7 @@ package grapherase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -71,12 +72,14 @@ func ParseNode(value string) (kind, id string, err error) {
 // the rows it leaves in a read-only transaction of its own, which takes no lock (searchLeft), then
 // takes its locks in the store's lock order (lockInStoreOrder), reads the rest of the listing again
 // under them, and erases only when that listing has the digest it was given (Erasure.Mismatch);
-// otherwise it answers both digests and removes nothing. It refuses, removing nothing, while
-// another node's row states something about this one (Blockers), or while its document's live
-// text holds the erased bytes where its markdown spells them otherwise (Unredacted), since the
-// seed would keep them. A tuple another writer commits into the node after that listing was read
-// ends the run as an error with nothing removed (graphstore.EraseNode), since the run deletes the
-// tuples it listed and no others.
+// otherwise it answers both digests and removes nothing. A row written between that search and
+// the locks is not on the listing the digest covers; the search the run makes again after its
+// commit names it (Erasure.LeftAfterCommit). It refuses, removing nothing, while another node's
+// row states something about this one (Blockers), or while its document's live text holds the
+// erased bytes where its markdown spells them otherwise (Unredacted), since the seed would keep
+// them. A tuple another writer commits into the node after that listing was read ends the run as
+// an error with nothing removed (graphstore.EraseNode), since the run deletes the tuples it listed
+// and no others.
 //
 // It refuses a type node, a supertag or an attribute, before it opens a connection: a type is
 // data the block schema seeds (migration 20261109051232, pmdoc/schemanodes), and no route and no
@@ -93,15 +96,18 @@ func ParseNode(value string) (kind, id string, err error) {
 // text. Nobody addresses that row and no read of the graph answers it.
 //
 // Once it has committed it counts again, outside its locks, the term statistics of every project
-// it took erased words out of (recountTermStats), then waits treeStoreBound and deletes the
-// display trees it deleted once more (sweepTrees). treeStoreBound is how long after the commit a
-// read that began before it can still store the display tree of a text the erase removed: a read
-// stores the trees it read on a goroutine of its own, detached from the request and bounded by
-// api.StoreTreesTimeout, which is what cmd/dispatch passes; a test passes a shorter one. An error
-// there comes back beside the Erasure, which is then Applied: the erase stands, and what the
-// sweep could not do is the error's to say. A count that fails is no failure of the erase and
-// comes back as no error: the Erasure names it (NotRecounted), with the refresh pass that counts
-// the project again.
+// it took erased words out of (recountTermStats), then searches again, outside its locks, for the
+// rows it leaves, and reports each the search before its locks did not list
+// (searchLeftAfterCommit), then waits treeStoreBound and deletes the display trees it deleted once
+// more (sweepTrees). treeStoreBound is how long after the commit a read that began before it can
+// still store the display tree of a text the erase removed: a read stores the trees it read on a
+// goroutine of its own, detached from the request and bounded by api.StoreTreesTimeout, which is
+// what cmd/dispatch passes; a test passes a shorter one. An error of that search or of the sweep
+// comes back beside the Erasure, which is then Applied, the two joined where both fail
+// (errors.Join): the erase stands, the sweep runs whether or not the search ended, and what either
+// could not do is the error's to say. A count that fails is no failure of the erase and comes back
+// as no error: the Erasure names it (NotRecounted), with the refresh pass that counts the project
+// again.
 func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
 	if kind == schemanodes.KindSupertag || kind == schemanodes.KindAttribute {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a type node is data the block schema seeds, and no command deletes it", kind, id)
@@ -166,10 +172,9 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 	}
 	erasure.Applied = true
 	erasure.recountTermStats(ctx, conn)
-	if err := erasure.sweepTrees(ctx, conn, treeStoreBound); err != nil {
-		return erasure, err
-	}
-	return erasure, nil
+	searched := erasure.searchLeftAfterCommit(ctx, conn, read)
+	swept := erasure.sweepTrees(ctx, conn, treeStoreBound)
+	return erasure, errors.Join(searched, swept)
 }
 
 // apply removes and rewrites every row the listing named as deriving from the node, in the one

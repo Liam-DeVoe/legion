@@ -1,6 +1,7 @@
 package grapherase
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -552,19 +553,98 @@ func TestAConfirmedEraseSearchesTheRowsItLeavesBeforeItTakesAnOwnerLock(t *testi
 	requireTheCommentErased(t, database, answer.erasure, seeded.comment)
 }
 
+// TestTheEraseListsARowWrittenBetweenItsSearchAndItsLocks holds a confirmed erase to naming in its
+// report a row that holds the erased bytes, derives from another node and was written between the
+// erase's search for the rows it leaves and its locks. The search runs before the locks
+// (searchLeft), so such a row is not on the listing the digest covers; the search the run makes
+// again once it has committed (searchLeftAfterCommit) is what names it (Erasure.LeftAfterCommit).
+//
+// The run erases the comment seedAgreeingStore writes on a document of issue CORE-1, whose owner
+// lock is the first lock the run takes. Once the run without --confirm has printed its digest, a
+// transaction holds that owner lock, and the confirmed run is started: the test reads that it
+// waits at the statement that takes the lock, which it reaches only once its search has ended.
+// While it waits there, the holder writes a comment on CORE-1 whose body quotes the erased
+// comment's text, with its comment.created event, as createACommentUnderItsOwnerLock writes one
+// (writeACommentOnCore), and commits. That comment is another node's, so the listing the run reads
+// under its locks has the digest it was given, and the run erases the erased comment. Its listing
+// names no row of the new comment; the rows its search after the commit found name the new
+// comment's row, and the report prints that row under their section.
+func TestTheEraseListsARowWrittenBetweenItsSearchAndItsLocks(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	var erasedText string
+	if err := database.Pool.QueryRow(ctx, `select body from comments where id = $1::uuid`, seeded.comment).Scan(&erasedText); err != nil {
+		t.Fatalf("read the body of comment %s, the text the erase takes: %v", seeded.comment, err)
+	}
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	core := lockstep.HoldOwner(t, database, &lockstep.Hold{Name: "issue CORE-1's owner lock", Step: lockstep.StepOwner, Statement: ownerLockStatement},
+		store.IssueOwner("CORE-1"))
+
+	pid, answered := startConfirmedErase(t, database, commentNodeKind, seeded.comment, listing)
+	if early, done := storetest.WaitForQueuedBehind(t, core.Tx, pid, answered, lockstep.Wait); done {
+		t.Fatalf("the confirmed erase answered (err %v) without waiting on issue CORE-1's owner lock, which another transaction held", early.err)
+	}
+	waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid))
+	t.Logf("the confirmed erase waits behind issue CORE-1's owner lock at %q", waited)
+	if !strings.HasPrefix(waited, ownerLockStatement) {
+		t.Fatalf("the confirmed erase waits behind issue CORE-1's owner lock at %q, which is not the statement that takes it (it starts %q)",
+			waited, ownerLockStatement)
+	}
+
+	written, err := writeACommentOnCore(t, core.Tx, "Bob said it again: "+erasedText)
+	if err != nil {
+		t.Fatalf("write a comment on issue CORE-1 under its owner lock while the confirmed erase waited for that lock: %v", err)
+	}
+	if err := core.Tx.Commit(ctx); err != nil {
+		t.Fatalf("commit comment %s on issue CORE-1: %v", written, err)
+	}
+
+	var answer eraseAnswer
+	select {
+	case answer = <-answered:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the confirmed erase did not answer within %s of the commit of comment %s, which let go of issue CORE-1's owner lock", lockstep.Wait, written)
+	}
+	if answer.err != nil {
+		t.Fatalf("the confirmed erase failed once issue CORE-1's owner lock was let go: %v", answer.err)
+	}
+	erasure := answer.erasure
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	var report bytes.Buffer
+	erasure.Write(&report)
+	t.Logf("the erase reported:\n%s", report.String())
+
+	for _, line := range erasure.Listing {
+		if strings.Contains(line, written) {
+			t.Errorf("the listing of the erase of comment %s, which its digest covers, names comment %s, which committed after the erase's search: %q\n%s",
+				seeded.comment, written, line, report.String())
+		}
+	}
+	found := slices.IndexFunc(erasure.LeftAfterCommit, func(line string) bool {
+		return strings.HasPrefix(line, "leave public.comments ") && strings.Contains(line, "[comment:"+written+"]")
+	})
+	if found < 0 {
+		t.Fatalf("the report of the erase of comment %s lists no row for comment %s, which committed between the erase's search and its locks holding the erased text:\n%s",
+			seeded.comment, written, report.String())
+	}
+	lines := strings.Split(report.String(), "\n")
+	head := slices.Index(lines, fmt.Sprintf("  %s: %d", leftAfterCommitHead, len(erasure.LeftAfterCommit)))
+	sweep := slices.IndexFunc(lines, func(line string) bool { return strings.HasPrefix(line, "  text_trees swept after the commit: ") })
+	if head < 0 || sweep < head || !slices.Contains(lines[head+1:sweep], "    "+erasure.LeftAfterCommit[found]) {
+		t.Errorf("the report of the erase of comment %s prints the row of comment %s (%q) under no %q section of %d row(s) before its sweep line:\n%s",
+			seeded.comment, written, erasure.LeftAfterCommit[found], leftAfterCommitHead, len(erasure.LeftAfterCommit), report.String())
+	}
+}
+
 // createACommentUnderItsOwnerLock writes a comment by alice on issue CORE-1 in the order the API's
 // createComment takes its locks: its transaction takes the issue's owner lock first
 // (store.LockOwner, which lockCommentOwner's read is guarded by), then writes the comment's row and
-// its comment.created event, and commits. It waits on a lock no longer than its lock_timeout, and
-// answers the error that ended it, or nil once it committed.
+// its comment.created event (writeACommentOnCore), and commits. It waits on a lock no longer than
+// its lock_timeout, and answers the error that ended it, or nil once it committed.
 func createACommentUnderItsOwnerLock(t *testing.T, database *store.Store, body string) error {
 	t.Helper()
 	ctx := context.Background()
-	author := model.Actor{Kind: "user", ID: "alice"}
-	stored, err := json.Marshal(author)
-	if err != nil {
-		t.Fatalf("encode the author %+v: %v", author, err)
-	}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the comment create: %v", err)
@@ -576,19 +656,35 @@ func createACommentUnderItsOwnerLock(t *testing.T, database *store.Store, body s
 	if err := store.LockOwner(ctx, tx, store.IssueOwner("CORE-1")); err != nil {
 		return fmt.Errorf("take issue CORE-1's owner lock: %w", err)
 	}
-	comment := model.Comment{IssueKey: new("CORE-1"), Author: author, Body: body}
-	if err := tx.QueryRow(ctx, `
-		insert into comments (issue_key, author, body) values ($1, $2, $3)
-		returning id::text, created_at
-	`, comment.IssueKey, stored, comment.Body).Scan(&comment.ID, &comment.CreatedAt); err != nil {
-		return fmt.Errorf("write the comment: %w", err)
+	if _, err := writeACommentOnCore(t, tx, body); err != nil {
+		return err
 	}
-	comment.Mentions, comment.Deliveries = []model.Mention{}, []model.CommentDelivery{}
-	appendEventBy(t, tx, "CORE-1", "comment.created", author, model.CommentEventPayload{Comment: comment})
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the comment: %w", err)
 	}
 	return nil
+}
+
+// writeACommentOnCore writes, in tx, which holds issue CORE-1's owner lock, a comment by alice on
+// that issue as the API's createComment stores it: the comment's row, then its comment.created
+// event. It answers the comment's id, or the error that ended the write of its row.
+func writeACommentOnCore(t *testing.T, tx pgx.Tx, body string) (string, error) {
+	t.Helper()
+	author := model.Actor{Kind: "user", ID: "alice"}
+	stored, err := json.Marshal(author)
+	if err != nil {
+		t.Fatalf("encode the author %+v: %v", author, err)
+	}
+	comment := model.Comment{IssueKey: new("CORE-1"), Author: author, Body: body}
+	if err := tx.QueryRow(context.Background(), `
+		insert into comments (issue_key, author, body) values ($1, $2, $3)
+		returning id::text, created_at
+	`, comment.IssueKey, stored, comment.Body).Scan(&comment.ID, &comment.CreatedAt); err != nil {
+		return "", fmt.Errorf("write the comment: %w", err)
+	}
+	comment.Mentions, comment.Deliveries = []model.Mention{}, []model.CommentDelivery{}
+	appendEventBy(t, tx, "CORE-1", "comment.created", author, model.CommentEventPayload{Comment: comment})
+	return comment.ID, nil
 }
 
 // quotingDocument is the one document of an issue of a project of its own, which quotes the
