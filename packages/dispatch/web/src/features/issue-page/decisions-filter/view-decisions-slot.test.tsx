@@ -27,8 +27,10 @@ import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
 import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
+import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { presetPath } from "../issue-address";
 import { TWO_THREADS, waitInAct } from "../outline-fixtures";
+import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { EMPTY_STATE_LINES, type Preset } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
@@ -450,6 +452,65 @@ test("who is reading, read with no options, is asked again after the app's stale
   };
   expect(await requestsOf(), "a surface that gives no options").toBe(1);
   expect(await requestsOf(EVENT_FRESH), "a surface that gives the tree's freshness").toBe(0);
+});
+
+/** A thread's read mark as a surface that gives the hook no freshness draws it: the hook alone,
+ *  with no element to watch. */
+function MarkGivingNoFreshness({ mark }: { mark: ThreadMark }): ReactNode {
+  useMarkThreadRead({
+    enabled: true,
+    newestShownAt: mark.at,
+    owner: { issue: mark.issueKey },
+    threadId: mark.threadId,
+  });
+  return null;
+}
+
+// A thread's read mark reads the reader's unread set on the issue as well as who is reading
+// (`useMarkThreadRead`), and the stage draws it again at each press of a view. The feed's rules
+// refresh that set whenever an event changes it (`api/event-refresh.ts`), so the mark reads it as
+// the tree's own reads are kept fresh, and asks it no second time past the app's `staleTime`. A
+// surface that gives the hook no freshness reads it as before, and asks it again.
+test("a thread's read mark drawn after the app's staleTime asks the unread set no second time, where a surface that gives no freshness asks it again", async () => {
+  // Answers that never come, so no read updates what is drawn after the row has counted the
+  // requests. Who is reading is the stub `stubReads` set, which `spyOn` hands back.
+  spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
+  const replies = spyOn(api, "listMyReplies").mockReturnValue(
+    Promise.withResolvers<never>().promise
+  );
+  const mark: ThreadMark = { at: "2026-11-05T01:04:00Z", issueKey: KEY, threadId: "head-b" };
+  /** How many times the unread set is asked for as `node` is drawn, under the app's
+   *  `staleTime` with that set and who is reading each answered 31 s ago. */
+  const requestsOf = async (node: ReactNode): Promise<number> => {
+    replies.mockClear();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    const answered = { updatedAt: Date.now() - 31_000 };
+    client.setQueryData(
+      whoAmIQuery().queryKey,
+      { event_head: "0", kind: "user", login: READER },
+      answered
+    );
+    client.setQueryData(
+      myRepliesOwnerQuery({ issue: KEY }).queryKey,
+      { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 },
+      answered
+    );
+    const view = render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+    await waitInAct(0);
+    view.unmount();
+    return replies.mock.calls.length;
+  };
+  try {
+    expect(await requestsOf(<ThreadReadMark mark={mark} />), "the thread's read mark").toBe(0);
+    expect(
+      await requestsOf(<MarkGivingNoFreshness mark={mark} />),
+      "a surface that gives no freshness"
+    ).toBe(1);
+  } finally {
+    replies.mockRestore();
+  }
 });
 
 /** The plan and the Verification document of the issue the Verification cases draw, beside its
