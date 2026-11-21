@@ -229,7 +229,12 @@ setInterval(() => undefined, 1_000);`,
   return holder;
 }
 
-describe.concurrent("hold and release, against an edge stand-in", () => {
+// One row after another, not at once: the edge stand-in answers from this process, and each
+// bounded child that ends holds this process's event loop while it reads the process table
+// (`stopTree`), about 1 s a child on a box of 19,739 processes on 2026-11-21. Nine rows at once
+// stacked those reads until the stand-in answered a hold's trade too late and `held` came after
+// the short bound; one row at a time, no other row's children end while a hold waits on it.
+describe("hold and release, against an edge stand-in", () => {
   test(
     "hold registers the kept session and holds its socket until release ends it, unregistered",
     async () => {
@@ -277,7 +282,7 @@ describe.concurrent("hold and release, against an edge stand-in", () => {
       const { state, session } = await keptState(edge);
       try {
         // The hold is another process on the real clock, and 60 s is the least it takes, so this
-        // row spends that minute; the rows run at once, so the file costs it once.
+        // row spends that minute.
         const started = performance.now();
         const ran = await hold(edge, state, { OUTSIDE_EDGE_HOLD_SECONDS: "60" });
         expect(performance.now() - started).toBeGreaterThanOrEqual(60_000);
