@@ -7052,3 +7052,163 @@ test("clear brush window pressed with the Window select scrolled out of sight sc
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): 38 Inbox rows seeded, and at two widths one thread and then two dismissed deep in
+// the list.
+// INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p5-h2 and -p5-b2 at
+// da0804df and a1c78223): the Inbox lists 38 asks and comment threads. The reader scrolls a thread
+// row to the middle of the list, marks it (and the thread after it) with Space, and presses the
+// selection bar's Dismiss with Enter. At da0804df the focus goes to the checkbox of the row after
+// the dismissed ones while they are still drawn. As they leave, the list scrolls by their height,
+// so that row stays where it stood rather than taking the marked row's place. At 1440 px the
+// list's scrollTop drops by 81 to 82 px for one thread and by 162 to 163 px for two. At 390 px
+// window.scrollY drops by 470 to 472 px and by 941 to 995 px, and the focused row is left below
+// the window. This happened in Chromium, Firefox and WebKit, in 2 of 2 runs each. At a1c78223
+// the focus goes to the list's first row, and the list scrolls to its top. The architect's ruling
+// of 2026-11-21 06:0xZ (open-items.md, "The selection bar's return"): after a bulk action takes
+// away the row marked last, the focus goes to the row that now stands at that row's place when it
+// is in sight, else to the nearest row in sight before it, else to the list's own stop. It never
+// scrolls and never goes to the body. A focused control taken away, for which Firefox and WebKit
+// fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
+// focus row (e2e/playwright.config.ts).
+test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls nothing @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const seedQuestion = async (title: string) => {
+    const issue = await createIssue({ project: "CORE", title });
+    await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
+  };
+  // Written oldest first and listed newest first, so the six threads stand between the late asks
+  // above them and the early asks below them: rows 20 to 25 of 38.
+  for (let index = 0; index < 12; index++) await seedQuestion(`Early ask ${index}`);
+  for (let index = 0; index < 6; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
+    await seedCommentThread(issue.key, `Thread ${index}: when does it run?`, "At 03:00.");
+  }
+  for (let index = 0; index < 20; index++) await seedQuestion(`Late ask ${index}`);
+  const list = page.getByTestId("inbox-list");
+  const rows = page.locator("[data-inbox-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  const inboxRowOf = (id: string) => page.locator(`[data-inbox-row="${id}"]`);
+  /** Where the window and the list's box stand, and what holds the focus: its name, the row it
+   *  is in, its top, and whether its box is inside the window and inside the list's box. */
+  const landing = () =>
+    page.evaluate(() => {
+      const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      const scrollTop = Math.round(frame?.scrollTop ?? 0);
+      const scrollY = Math.round(window.scrollY);
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { inSight: false, name: "the body", row: null, scrollTop, scrollY, top: null };
+      }
+      const own = focused.getBoundingClientRect();
+      const clip = frame?.getBoundingClientRect();
+      const top = Math.max(0, clip?.top ?? 0);
+      const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
+      const label =
+        focused instanceof HTMLInputElement || focused instanceof HTMLSelectElement
+          ? focused.labels?.[0]?.textContent?.trim()
+          : undefined;
+      return {
+        inSight:
+          own.top >= top - 1 &&
+          own.bottom <= bottom + 1 &&
+          own.left >= -1 &&
+          own.right <= window.innerWidth + 1,
+        name:
+          focused.getAttribute("aria-label") ||
+          label ||
+          focused.textContent?.trim().slice(0, 40) ||
+          focused.tagName.toLowerCase(),
+        row: focused.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? null,
+        scrollTop,
+        scrollY,
+        top: Math.round(own.top),
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    // One thread, then two: each case takes threads the cases before it left in the list.
+    for (const count of [1, 2]) {
+      const where = `Inbox at ${size.width}x${size.height}, ${count} thread${count === 1 ? "" : "s"} dismissed`;
+      await page.goto("/?group=none");
+      await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(30);
+      const order = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
+      );
+      // The first run of `count` threads at least twelve rows down, with a row after it.
+      let first = -1;
+      for (let index = 12; first === -1 && index + count < order.length; index++) {
+        if (order.slice(index, index + count).every((id) => id.startsWith("reply:"))) first = index;
+      }
+      expect(first, `${where}: no ${count} threads twelve rows down`).toBeGreaterThanOrEqual(12);
+      const marked = order.slice(first, first + count);
+      const after = order[first + count] as string;
+      const afterName = await inboxRowOf(after)
+        .getByRole("checkbox")
+        .first()
+        .getAttribute("aria-label");
+      // The first marked row to the middle of what shows it: the list's own box beside the
+      // reading column, else the window.
+      await inboxRowOf(marked[0] as string).evaluate((node) => {
+        const by = node.getBoundingClientRect().top;
+        for (let box = node.parentElement; box !== null; box = box.parentElement) {
+          const { overflowY } = getComputedStyle(box);
+          if (
+            (overflowY === "auto" || overflowY === "scroll") &&
+            box.scrollHeight > box.clientHeight
+          ) {
+            const view = box.getBoundingClientRect();
+            box.scrollTop += by - (view.top + view.height * 0.4);
+            return;
+          }
+        }
+        window.scrollBy(0, by - window.innerHeight * 0.4);
+      });
+      await settledScrollTop(list);
+      await settledScrollTop(page);
+      // The thread listed first is marked last: the row whose place the focus is to take.
+      for (const id of [...marked].reverse()) {
+        const box = inboxRowOf(id).getByRole("checkbox").first();
+        await box.focus();
+        await page.keyboard.press("Space");
+        await expect(box).toBeChecked();
+      }
+      await expect(bar).toContainText(`${count} selected`);
+      await bar.getByRole("button", { exact: true, name: "Dismiss selected threads" }).focus();
+      await nextFrames(page);
+      const before = await landing();
+      await page.keyboard.press("Enter");
+      for (const id of marked) await expect(inboxRowOf(id)).toHaveCount(0);
+      await expect(bar).toHaveCount(0);
+      // The bar's hand-off and the list's hold of its rows run with the commits that took the
+      // rows away, so both are done by now.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: every hand-off of the press has run, and nothing else moves.
+      const now = await landing();
+      const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY}, list scrollTop ${before.scrollTop} -> ${now.scrollTop}`;
+      if (now.row === null || marked.includes(now.row)) {
+        wrong.push(`${where}: the focus is on ${now.name}, in no listed row (${numbers})`);
+      } else if (!now.inSight) {
+        wrong.push(
+          `${where}: the focus is on ${now.name}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
+        );
+      } else if (now.row !== after) {
+        wrong.push(
+          `${where}: the focus is on ${now.name}, not on "${afterName}", the row now at the marked row's place (${numbers})`
+        );
+      }
+      if (now.scrollY !== before.scrollY || now.scrollTop !== before.scrollTop) {
+        wrong.push(`${where}: the press scrolled, with the focus on ${now.name}: ${numbers}`);
+      }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
