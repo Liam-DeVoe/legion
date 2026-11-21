@@ -46,10 +46,12 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// The last is the constant rather than its number, because this change's own entry is the last
-// one: a renumber of this change moves waitContract and this list with it, and moving one of the
-// two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, waitContract}
+// 193 is the constant rather than its number, because the entry that added the shaped answers
+// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
+// one of the two alone would describe a shape at a contract no entry declares. The last is
+// waitContract rather than its number for the same reason: it is this change's own entry, and a
+// renumber of it moves waitContract and this list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, waitContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -197,11 +199,11 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 194: the wait a phase worker declared, as the daemon recorded it
-	// (`api.WaitResponse`). The route arrives with the answer, so no contract below 194 records
+	// version.go's 204: the wait a phase worker declared, as the daemon recorded it
+	// (`api.WaitResponse`). The route arrives with the answer, so no contract below 204 records
 	// either.
 	{ID: AnswerWait, Routes: []string{"POST /legion/v1/claims/wait"}, Since: waitContract},
-	// version.go's 194: whether a report of news ended the wait it names (`api.WaitNewsResponse`),
+	// version.go's 204: whether a report of news ended the wait it names (`api.WaitNewsResponse`),
 	// arrived with its route as the wait's answer did.
 	{ID: AnswerWaitNews, Routes: []string{"POST /legion/v1/claims/wait-news"}, Since: waitContract},
 }
@@ -310,7 +312,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	// `step` of a merger's hold, the gated step whose row of the closed design gate holds it
 	// (api.HoldView.Step, record.DesignStep). It arrived with `hold` at waitContract and is served
 	// down below that contract with the whole key (shaping.go's withoutWaitAndHold), so no body
-	// below 194 carries a value of it. The architect's view and each worker's carry the one key,
+	// below 204 carries a value of it. The architect's view and each worker's carry the one key,
 	// as every claim view does, though the gate holds a merger alone.
 	{Answer: AnswerState, KeyPath: "issues.*.architect.hold.step", Values: holdSteps},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.hold.step", Values: holdSteps},

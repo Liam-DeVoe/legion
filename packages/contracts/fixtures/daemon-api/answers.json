@@ -163,7 +163,7 @@
     "routes": [
       "POST /legion/v1/claims/wait"
     ],
-    "since": 194,
+    "since": 204,
     "noBody": false
   },
   {
@@ -171,7 +171,7 @@
     "routes": [
       "POST /legion/v1/claims/wait-news"
     ],
-    "since": 194,
+    "since": 204,
     "noBody": false
   }
 ]
