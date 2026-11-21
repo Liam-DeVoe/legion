@@ -327,6 +327,10 @@ type roomCatchUps struct {
 	// pending holds each room whose catch-up is queued on the lane and has not started: a request
 	// for it meanwhile adds nothing.
 	pending map[string]bool
+	// notified holds each room whose queued catch-up another process's notification asked for,
+	// kept only where the test hooks are on, which count such a catch-up as it reads
+	// (RoomCounters.NotifiedCatchUps).
+	notified map[string]bool
 	// loading holds, for each room whose instance scheduled a catch-up while still loading, that
 	// instance and how long to wait for ygo to publish it.
 	loading map[string]loadingRoom
@@ -347,6 +351,7 @@ func newRoomCatchUps(service *Service) *roomCatchUps {
 		service:  service,
 		now:      service.now,
 		pending:  map[string]bool{},
+		notified: map[string]bool{},
 		loading:  map[string]loadingRoom{},
 		deferred: map[string]time.Time{},
 		attempts: map[string]int{},
@@ -371,15 +376,23 @@ func (c *roomCatchUps) schedule(room string, live *crdt.Doc) {
 	}
 	c.loading[room] = loadingRoom{instance: weak.Make(live), until: c.now().Add(catchUpLoadingTimeout)}
 	c.mu.Unlock()
-	c.request(room)
+	c.request(room, false)
 }
 
 // request queues one catch-up of room on the lane, unless one is queued already. Before room sync
 // is registered there is no lane, and nothing is queued: the sweep after its first LISTEN catches
-// up every room this process has loaded.
-func (c *roomCatchUps) request(room string) {
+// up every room this process has loaded. notified is whether another process's notification asks
+// for it (headNotified, changed); a queued catch-up takes that on from each request it absorbs.
+func (c *roomCatchUps) request(room string, notified bool) {
 	c.mu.Lock()
-	if c.pending[room] || c.lane == nil {
+	if c.lane == nil {
+		c.mu.Unlock()
+		return
+	}
+	if notified && c.service.hooks != nil {
+		c.notified[room] = true
+	}
+	if c.pending[room] {
 		c.mu.Unlock()
 		return
 	}
@@ -389,8 +402,10 @@ func (c *roomCatchUps) request(room string) {
 	lane.push(func(ctx context.Context) {
 		c.mu.Lock()
 		delete(c.pending, room)
+		asked := c.notified[room]
+		delete(c.notified, room)
 		c.mu.Unlock()
-		c.catchUp(ctx, room)
+		c.catchUpFor(ctx, room, asked)
 	})
 }
 
@@ -413,7 +428,7 @@ func (c *roomCatchUps) headNotified(_ context.Context, payload string) {
 			return
 		}
 	}
-	c.request(head.R)
+	c.request(head.R, true)
 }
 
 // changed is documentChangedChannel's handler: the bare artifact id. It is the twin of the
@@ -428,7 +443,7 @@ func (c *roomCatchUps) changed(_ context.Context, room string) {
 	if own {
 		return
 	}
-	c.request(room)
+	c.request(room, true)
 }
 
 func (c *roomCatchUps) noteDecided(room string) {
@@ -461,6 +476,12 @@ func (c *roomCatchUps) woke(ctx context.Context) {
 // catch-up that reached no verdict is tried again later (armRetry). A room with no instance
 // resident has nothing to catch up, but one still loading is looked for again shortly.
 func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
+	c.catchUpFor(ctx, room, false)
+}
+
+// catchUpFor is catchUp, notified being whether another process's notification asked for it,
+// which the test hooks count as its read starts (RoomCounters.NotifiedCatchUps).
+func (c *roomCatchUps) catchUpFor(ctx context.Context, room string, notified bool) {
 	service := c.service
 	live := service.srv.GetDoc(room)
 	if !c.takeLoading(room, live) {
@@ -469,6 +490,9 @@ func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 	if live == nil {
 		c.settled(room)
 		return
+	}
+	if notified {
+		service.hooks.countNotifiedCatchUp(room)
 	}
 	outcome, err := service.catchUpRoom(ctx, service.store.Pool, room, live)
 	switch {
@@ -523,7 +547,7 @@ func (c *roomCatchUps) closeReplaced(ctx context.Context, room string, live *crd
 	}
 	if !replaced {
 		c.settled(room)
-		c.request(room)
+		c.request(room, false)
 		return
 	}
 	closed, err := service.closeRoomBehindHead(ctx, room, live)

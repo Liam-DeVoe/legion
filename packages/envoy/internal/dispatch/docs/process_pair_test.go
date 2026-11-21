@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -42,7 +43,14 @@ type processPair struct {
 // over the pair start.
 func newProcessPair(t *testing.T) processPair {
 	t.Helper()
-	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	return newProcessPairOn(t, nil)
+}
+
+// newProcessPairOn is newProcessPair with task A on taskAClock (Deps.Clock), the real clock when
+// nil: a test that moves task A's settlement timer moves that clock.
+func newProcessPairOn(t *testing.T, taskAClock clock.Clock) processPair {
+	t.Helper()
+	pair := newSeededProcessPairOn(t, "First.\n\nSecond.\n", taskAClock)
 	settleCurrentGeneration(t, pair.taskA, pair.artifactID)
 	return pair
 }
@@ -73,9 +81,15 @@ func answerWait(t *testing.T) func() time.Duration {
 // an answer holds and what a write does with it.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
+	return newSeededProcessPairOn(t, markdown, nil)
+}
+
+// newSeededProcessPairOn is newSeededProcessPair with task A on taskAClock, the real clock when nil.
+func newSeededProcessPairOn(t *testing.T, markdown string, taskAClock clock.Clock) processPair {
+	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	taskA, serverA := newTestServiceInstance(t, database)
+	taskA, serverA := newTestServiceInstanceOn(t, database, taskAClock)
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
 	taskA.roomQueries.wait, taskB.roomQueries.wait = answerWait(t), answerWait(t)
 	serverB := newTestServer(t, taskB)

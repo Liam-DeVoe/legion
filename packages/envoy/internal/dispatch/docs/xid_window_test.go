@@ -124,6 +124,14 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 			_, err := parseInput(spec)
 			return err
 		}},
+		// ParseInline reads with a parser context of its own, not through readContext, so it
+		// reaches the Enter of pmdoc.readInline alone, as an inline replacement's text
+		// (inlineReplacement) and the renderer's read-backs (parseInlineWithDefinitions,
+		// altReadsBack) do.
+		{"an inline parse", docwork.Parse, "pmdoc.readInline(", func() error {
+			_, err := pmdoc.ParseInline("**x**", nil)
+			return err
+		}},
 		{"a render", docwork.Render, "pmdoc.renderDocument(", func() error {
 			_, err := pmdoc.Render(tree)
 			return err

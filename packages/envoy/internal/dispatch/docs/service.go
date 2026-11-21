@@ -451,8 +451,8 @@ type Service struct {
 	roomGenerations atomic.Uint64
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
-	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers     map[uint64]*time.Timer
+	// can run before the clock's AfterFunc returns the Timer to its caller.
+	timers     map[uint64]clock.Timer
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -911,7 +911,7 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
-		timers:            make(map[uint64]*time.Timer),
+		timers:            make(map[uint64]clock.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		clock:             serviceClock,
 		excerptClock:      deps.Clock,
@@ -1471,9 +1471,11 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// and its rooms reachable that long, an hour under a test's settle delay, which the package's
 	// leak check reports (service_leak_test.go). While the timer is armed both resolve: the
 	// service's owner holds the service, and the service keeps an armed room's state
-	// (unusedLocked).
+	// (unusedLocked). The timer runs on the service's clock (Deps.Clock), the real clock in
+	// production, so a test whose service runs on a fake fires the settlement by moving the fake
+	// past delay, and reads the deadline it was armed for (Armed).
 	owner, record := weak.Make(s), weak.Make(state)
-	timer := time.AfterFunc(delay, func() {
+	timer := s.clock.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
 			return
@@ -1504,7 +1506,7 @@ func (s *Service) registerSettleTimer(timerID uint64) {
 	s.timerMu.Unlock()
 }
 
-func (s *Service) attachSettleTimer(timerID uint64, timer *time.Timer) {
+func (s *Service) attachSettleTimer(timerID uint64, timer clock.Timer) {
 	s.timerMu.Lock()
 	if _, found := s.timers[timerID]; found {
 		s.timers[timerID] = timer
@@ -1519,7 +1521,7 @@ func (s *Service) unregisterSettleTimer(timerID uint64) {
 }
 
 // stopSettleTimer stops an armed settlement timer and releases the settleWG count it held.
-func (s *Service) stopSettleTimer(timer *time.Timer) bool {
+func (s *Service) stopSettleTimer(timer clock.Timer) bool {
 	if !s.takeSettleTimer(timer) {
 		return false
 	}
@@ -1542,7 +1544,7 @@ func (s *Service) takeOverSettlementLocked(state *roomState) bool {
 // takeSettleTimer stops an armed settlement timer and hands its caller the settleWG count the timer
 // held, for a settlement the caller runs in the timer's place, so Shutdown joins it as it would the
 // timer's own. The caller releases the count once that settlement has returned.
-func (s *Service) takeSettleTimer(timer *time.Timer) bool {
+func (s *Service) takeSettleTimer(timer clock.Timer) bool {
 	if timer == nil {
 		return false
 	}
@@ -1563,7 +1565,7 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 
 func (s *Service) stopAllSettleTimers() {
 	s.timerMu.Lock()
-	timers := make([]*time.Timer, 0, len(s.timers))
+	timers := make([]clock.Timer, 0, len(s.timers))
 	for _, timer := range s.timers {
 		if timer != nil {
 			timers = append(timers, timer)
@@ -1579,7 +1581,7 @@ func (s *Service) stopAllSettleTimers() {
 // with its callback not yet returned (the callback leaves the register as it returns), and not
 // stopped. A state that never armed one has none: the register's nil entries are other rooms'
 // timers between their registration and attachSettleTimer.
-func (s *Service) isSettleTimerArmed(timer *time.Timer) bool {
+func (s *Service) isSettleTimerArmed(timer clock.Timer) bool {
 	if timer == nil {
 		return false
 	}

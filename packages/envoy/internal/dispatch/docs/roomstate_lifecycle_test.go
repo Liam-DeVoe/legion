@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 				service.settleWG.Add(1)
 				timerID := service.nextSettleTimer.Add(1)
 				service.registerSettleTimer(timerID)
-				timer := time.NewTimer(time.Hour)
+				timer := service.clock.NewTimer(time.Hour)
 				service.attachSettleTimer(timerID, timer)
 				state.settle = timer
 			},
@@ -144,6 +145,10 @@ func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
 	load := service.srv.OnLoadDocument
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	// A failure below still lets the held load go: registered after newTestService's shutdown, this
+	// cleanup runs first, so the load never stays parked in the hook while the shutdown waits.
+	letLoad := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letLoad)
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if err := load(ctx, room, doc); err != nil {
 			return err
@@ -164,7 +169,7 @@ func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
 		t.Fatal("the state of a room still loading was released")
 	}
 	service.unlockState(artifactID, state)
-	close(release)
+	letLoad()
 	if err := testwait.Receive(t, "srv.Apply to return once its load was released", done); err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 		t.Fatalf("finish loading the room: %v", err)
 	}

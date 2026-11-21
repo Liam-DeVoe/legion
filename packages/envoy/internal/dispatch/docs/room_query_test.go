@@ -37,17 +37,40 @@ import (
 // queries are asked over: the lost-edit document, both processes' room sync running, and task B's
 // room resident, while task A holds none. Both processes run on the returned fake clock, set before
 // their room sync starts, so an asker's wait and a flush's timeout run out only where the test
-// moves it.
+// moves it. Their settlement timers run on that clock too (scheduleSettleAfterLocked), each armed
+// querySettleDelay off, past any wait a query arms: queryArms reads the clock without them.
 func newQueryProcesses(t *testing.T) (processPair, *clocktest.Fake) {
 	t.Helper()
 	pair := newSeededProcessPair(t, lostEditDocument)
 	clock := clocktest.New(time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC))
 	pair.taskA.clock, pair.taskB.clock = clock, clock
+	pair.taskA.settle, pair.taskB.settle = querySettleDelay, querySettleDelay
 	pair.runRoomSync(t)
 	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task B's room: %v", err)
 	}
 	return pair, clock
+}
+
+// querySettleDelay is the settle delay of newQueryProcesses's services: the longest duration there
+// is, so a settlement timer stands centuries off on the clock, and no row moves the clock to it.
+// A query's own waits end by the test binary's deadline at the latest (answerWait).
+const querySettleDelay = time.Duration(1<<63 - 1)
+
+// queryArms is what the room queries hold armed on clock, newQueryProcesses's: every deadline on
+// it but the settlement timers, which stand past half of querySettleDelay from its present.
+func queryArms(clock *clocktest.Fake) []time.Time {
+	horizon := clock.Now().Add(querySettleDelay / 2)
+	return slices.DeleteFunc(clock.Armed(), func(at time.Time) bool { return at.After(horizon) })
+}
+
+// awaitQueryArms is clocktest.Fake.AwaitArmed for the room queries' arms alone (queryArms).
+func awaitQueryArms(t *testing.T, clock *clocktest.Fake, what string, n int) []time.Time {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("%s (at least %d of the room queries' timers armed on the fake clock)", what, n), func() ([]time.Time, bool) {
+		armed := queryArms(clock)
+		return armed, len(armed) >= n
+	})
 }
 
 // roomQueryResult is what one roomQueries.ask returned.
@@ -142,7 +165,7 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 	// stored returns (awaitStored), so the test waits until task B's flush is inside that wait, a
 	// state it reads from the goroutines rather than one instant after the arms: a flush that
 	// answers without waiting for the append is never seen there, and its answer ends the wait.
-	clock.AwaitArmed(t, "task A's wait for the answers and task B's flush timeout", 2)
+	awaitQueryArms(t, clock, "task A's wait for the answers and task B's flush timeout", 2)
 	testwait.Eventually(t, "task B's flush to wait for its held append to be stored (awaitStored)", func() bool {
 		select {
 		case early := <-result:
@@ -351,7 +374,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 			defer pair.taskB.unlockState(pair.artifactID, state)
 			return state.appendWaiters, state.appendWaiters == 0
 		})
-		armed := clock.AwaitArmed(t, kind+": task A's wait for the silent member", 1)
+		armed := awaitQueryArms(t, clock, kind+": task A's wait for the silent member", 1)
 		want := asked.Add(roomQueryWait)
 		for _, deadline := range armed {
 			if !deadline.Equal(want) {
@@ -419,7 +442,7 @@ func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
 			return outcome{result: &result}, true
 		default:
 		}
-		armed := clock.Armed()
+		armed := queryArms(clock)
 		return outcome{deadline: armed}, len(armed) > 0
 	})
 	if ended.result == nil {
@@ -492,7 +515,7 @@ func TestALiveWriteForksOnlyOnceTheOtherProcessHasStoredItsRoom(t *testing.T) {
 	}()
 	// The write's flush is under way before the append goes: task A waits for the answer and task
 	// B's flush for its append.
-	clock.AwaitArmed(t, "the write's wait for task B's flush and task B's flush timeout", 2)
+	awaitQueryArms(t, clock, "the write's wait for task B's flush and task B's flush timeout", 2)
 	pair.gateB.release()
 	err := testwait.Receive(t, "the agent's write through task A to end", written)
 	var gone *ErrQuoteNotFound
@@ -523,13 +546,13 @@ func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(
 			// goroutine out before it ends. Off the test goroutine, a give-up of its wait fails
 			// the test with t.Error, and the gate opens all the same, so the write is never left
 			// parked behind it.
-			armed := len(clock.Armed())
+			armed := len(queryArms(clock))
 			released := make(chan struct{})
 			t.Cleanup(func() { testwait.Receive(t, "the release of task B's append to return", released) })
 			go func() {
 				defer close(released)
-				if err := testwait.InHelper("afterLiveCommit's release", fmt.Sprintf("the publish's wait for task B's flush (at least %d timers armed on the fake clock)", armed+1), func() bool {
-					return len(clock.Armed()) > armed
+				if err := testwait.InHelper("afterLiveCommit's release", fmt.Sprintf("the publish's wait for task B's flush (at least %d of the room queries' timers armed on the fake clock)", armed+1), func() bool {
+					return len(queryArms(clock)) > armed
 				}); err != nil {
 					t.Error(err)
 				}

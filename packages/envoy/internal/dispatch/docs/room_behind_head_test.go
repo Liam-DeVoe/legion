@@ -19,6 +19,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -203,8 +204,13 @@ func TestASettlementFromARoomBehindTheHeadCatchesItUpAndTheNextSettlesBoth(t *te
 // and no load of the document follows to arm its settlement again: the timer that ran it was its
 // only arming. It stops short (errRoomReplaced), its rollback lets the close finish, and its retry
 // loads the room at the head and settles both processes' text.
+//
+// Task A's settlements run on its clock, a fake the test moves: the arm and the retry are each
+// armed a settle delay on, at the deadline the row reads, and each runs when the test moves the
+// fake there, the move returning once the settlement has.
 func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
-	pair := newProcessPair(t)
+	settleClock := clocktest.New(time.Now())
+	pair := newProcessPairOn(t, settleClock)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
 	pair.leaveTaskABehind(t, 2, bob, "Bob's paragraph.\n")
 	versions := latestVersionNumber(t, pair.taskA, pair.artifactID)
@@ -228,14 +234,27 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
 	// reads it. The delay is written once, before the settlement it arms.
 	pair.taskA.settle = 20 * time.Millisecond
+	armed := settleClock.Now().Add(pair.taskA.settle)
 	pair.taskA.scheduleSettle(pair.artifactID)
+	if pending := settleClock.Armed(); !slices.Contains(pending, armed) {
+		t.Fatalf("task A's clock holds %v armed, want its settlement a settle delay (%v) from the arm, at %v", pending, pair.taskA.settle, armed)
+	}
+	settleClock.Set(armed)
+	if !closed.Load() {
+		t.Fatal("no settlement reached its catch-up holding the document's lock")
+	}
+	// The settlement stopped short once the close took its room, and armed its retry a settle
+	// delay on.
+	retry := armed.Add(pair.taskA.settle)
+	testwait.Until(t, fmt.Sprintf("the retry of the settlement that stopped short, armed on task A's clock at %v", retry), func() ([]time.Time, bool) {
+		pending := settleClock.Armed()
+		return pending, slices.Contains(pending, retry)
+	})
+	settleClock.Set(retry)
 	waitFor(t, "the document whose room closed under its settlement's catch-up to settle", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})
-	if !closed.Load() {
-		t.Fatal("no settlement reached its catch-up holding the document's lock")
-	}
 	if now := latestVersionNumber(t, pair.taskA, pair.artifactID); now != versions+1 {
 		t.Fatalf("latest version = %d after the retried settlement, want %d", now, versions+1)
 	}

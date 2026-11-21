@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -65,6 +64,16 @@ import (
 // check's against a stored title, went with the title cap
 // (TestIssueTitlesAreCappedOnCreateAndRetitle). Every one of these texts is indexed through the
 // search_text the search triggers are read for.
+//
+// Replacing a document of many short blocks with as many others, every block changing type, also
+// took work that grew with the square of its blocks (LEGION-465): pmdoc wrote each new block at its
+// own index, and ygo walks the fragment to each index it is given. A quote of n headings replaced
+// with a quote of n rules took 34 ms of server CPU at 682 blocks and 10.5 s at 21,844 before the
+// fix and 27 ms and 1.5 s after it. That replacement is held in pmdoc, at 2,730 and 21,845 blocks,
+// where Go's coverage counters count ygo's walks wherever pmdoc makes them
+// (TestUpdateIsLinearInTheBlockCount, "replacing a quote of headings with a quote of rules"), and
+// not here: the count pmdoc keeps of itself (UpdateWork) is taken where the fix put its walks, so a
+// revert to inserts made one index at a time walks ygo past it.
 //
 // Settlement is held off. A document's settlement runs on a goroutine of its own after the save,
 // beside the counts a rung reads, and the test server's shutdown, which would otherwise spend its
@@ -133,39 +142,6 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 			comment := decodeBody[model.Comment](t, response)
 			requireShortSearchRuns(t, database, "a comment of "+sizeText(size)+" of `"+shape+"`", `select body from comments where id = $1`, comment.ID)
 			return indexingBuffers(t, database, `update comments set body = body where id = $1`, comment.ID)
-		})
-	})
-	// Replacing a document of many short blocks with as many others, every block changing type,
-	// takes work linear in its blocks (LEGION-465): pmdoc wrote each new block at its own index,
-	// walking the document to it, so the replacement grew with the square of its blocks. A quote of
-	// n headings replaced with a quote of n rules took 34 ms of server CPU at 682 blocks and 10.5 s
-	// at 21,844, the most one write's element limit allows of it, before the fix, and 27 ms and
-	// 1.5 s after it, on one machine at a load of 309 to 343. Replaced blocks that stand apart, kept
-	// blocks between them, still cost a walk each in ygo (pmdoc's TestUpdateIsLinearInTheBlockCount).
-	// Each rung counts the fragment items the replacement's writes reach (pmdoc.UpdateWork): ygo's
-	// walk to each index Update gives it and the items it deletes or inserts there, which is where
-	// the square was. The count is the process's, and no test in this package calls t.Parallel.
-	t.Run("replacing many blocks", func(t *testing.T) {
-		const from, to = "> #\n", "> ***\n"
-		growsLinearly(t, "replacing a quote of headings with a quote of rules", "fragment items", []int{682 * len(to), 5_461 * len(to), 21_844 * len(to)}, func(size int) uint64 {
-			blocks := size / len(to)
-			upload := func(name string, body []byte) {
-				owner := "/api/v1/issues/" + issue.Key + "/artifacts"
-				fields := map[string]string{"name": name}
-				if base := uploadBaseNamed(t, handler, owner, name); base != nil {
-					fields["precondition"] = encodeUploadBase(t, base)
-				}
-				response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
-				if response.Code != http.StatusCreated {
-					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
-				}
-			}
-			documents++
-			name := fmt.Sprintf("many-blocks-%d.md", documents)
-			upload(name, []byte(strings.Repeat(from, blocks)))
-			before := pmdoc.UpdateWork()
-			upload(name, []byte(strings.Repeat(to, blocks)))
-			return pmdoc.UpdateWork() - before
 		})
 	})
 }

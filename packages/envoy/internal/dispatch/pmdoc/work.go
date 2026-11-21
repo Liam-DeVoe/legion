@@ -27,8 +27,9 @@ func RenderWork() uint64 { return renderWork.Load() }
 // reached since it started: for each fragment operation Update makes, the items ygo walks over to
 // the index it is given and the items it deletes or inserts there, each inserted child counted as
 // the loop that builds it visits it (insertPChildren), and the items each list of a
-// fragment's children holds. ygo walks a fragment from its start to each index it is given, so a
-// write that inserted a fragment's children one index at a time, or walked the fragment again for
-// each replaced child, reached a number of items that grew with the square of the children
-// (linear_test.go).
+// fragment's children holds. Each count is taken at the operation Update makes as it is written
+// now, so a write that went back to inserting a fragment's children one index at a time would walk
+// ygo past the one count of the index it takes: what holds ygo's walks is the coverage counters
+// (TestUpdateIsLinearInTheBlockCount), and UpdateWork is read beside them, as the stage of a shape
+// whose walks they cannot tell apart from the items Update itself reaches (linear_test.go).
 func UpdateWork() uint64 { return updateWork.Load() }

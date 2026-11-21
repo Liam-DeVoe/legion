@@ -64,6 +64,12 @@ type RoomCounters struct {
 	// room's eviction, a room live at shutdown. ygo's retirement of an idle room is not the
 	// service's close and is not counted.
 	RoomCloses int64 `json:"room_closes"`
+	// NotifiedCatchUps counts the catch-ups of the document's room this process read for
+	// (catchUpRoom) because another process's notification asked for one (roomCatchUps.headNotified,
+	// changed); notifications that coalesce into one queued catch-up count once. The sweep after a
+	// LISTEN, a retry (woke), a room instance's start (schedule) and a catch-up asked again after a
+	// replaced history the locked read did not confirm (closeReplaced) are not counted.
+	NotifiedCatchUps int64 `json:"notified_catch_ups"`
 	// SettlementResumptions holds the time of each settlement-resumption pass of this process that
 	// armed the document's owed settlement (resumeOwedSettlements), on the service's clock, oldest
 	// first.
@@ -253,6 +259,17 @@ func (h *testHooks) countRoomClose(artifactID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.countersLocked(artifactID).RoomCloses++
+}
+
+// countNotifiedCatchUp counts a catch-up of a room of artifactID that another process's
+// notification asked for, as its read starts.
+func (h *testHooks) countNotifiedCatchUp(artifactID string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.countersLocked(artifactID).NotifiedCatchUps++
 }
 
 // countSettlementResumption records that a settlement-resumption pass armed the owed settlement

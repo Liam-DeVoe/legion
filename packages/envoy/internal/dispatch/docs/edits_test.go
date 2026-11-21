@@ -416,6 +416,10 @@ func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	// A failure below still lets the held apply go: registered after newTestService's shutdown, this
+	// cleanup runs first, so the apply never stays parked in the hook while the shutdown waits.
+	letApply := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letApply)
 	service.srv.OnInject = func(ctx context.Context, info ygws.InjectInfo) error {
 		select {
 		case <-entered:
@@ -433,7 +437,7 @@ func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 	}()
 	testwait.Receive(t, "joinedApplyOps to reach the inject hook", entered)
 	editLiveTree(t, service, artifactID, replaceRun("base", "base browser"))
-	close(release)
+	letApply()
 	if err := testwait.Receive(t, "joinedApplyOps to return once it was released", result); err != nil {
 		t.Fatalf("apply operation: %v", err)
 	}

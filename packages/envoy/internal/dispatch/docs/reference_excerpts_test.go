@@ -280,14 +280,17 @@ func awaitExcerptPassesEnded(t *testing.T, database *store.Store, logs *storetes
 // One document the reconciliation cannot read for any other reason than the two it records as no
 // block is deferred; the other nineteen of its batch still get their excerpts, and the batch
 // reports no error, so the document that sorts first never holds the rest back. The next batch
-// leaves it alone until its retry is due rather than reading it again.
+// leaves it alone until its retry is due rather than reading it again. The service runs on a fake
+// the test never moves, so the retry - retryBase after the first batch on that clock, which
+// refs.DeferExcerpts stamps from and DriftedExcerpts judges at (excerptMoment) - cannot fall due
+// between the two batches, however long the machine takes between them.
 func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	documents := owedDocuments(t, database, referenceExcerptBatch)
 	first := documents[0]
 	persistence := newUnreadableDocumentStore(database, first)
-	service := newExcerptService(t, database, persistence)
+	service := newExcerptServiceOn(t, database, persistence, clocktest.New(time.Now()))
 
 	reconciled, full, err := service.ReconcileReferenceExcerpts(ctx)
 	if err != nil {
@@ -316,7 +319,8 @@ func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *test
 
 // A document the reconciliation reads but cannot record - here a trigger refuses its refs rows'
 // update - is deferred and stays owed; the others of its batch are recorded, the batch reports no
-// error, and the next batch does not try it again before its retry is due.
+// error, and the next batch does not try it again before its retry is due: the service's clock is
+// a fake the test never moves, as in TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch.
 func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -334,7 +338,7 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 		when (old.from_id = '%s') execute function refuse_excerpt_record()`, refused)); err != nil {
 		t.Fatalf("create the refusing trigger: %v", err)
 	}
-	service := newExcerptService(t, database, nil)
+	service := newExcerptServiceOn(t, database, nil, clocktest.New(time.Now()))
 
 	reconciled, _, err := service.ReconcileReferenceExcerpts(ctx)
 	if err != nil {

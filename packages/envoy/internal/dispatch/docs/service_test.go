@@ -5329,10 +5329,11 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 }
 
 // Shutdown returns at its caller's deadline while a settlement waits on a lock, rather than wait
-// for it. The service runs on the caller's clock, a fake the test moves past the caller's deadline
-// and never as far as Shutdown's own drain budget (ShutdownDrainBudget, on the service's clock), so
-// the caller's deadline is the one end Shutdown can meet: a Shutdown that waited out its drain
-// instead never returns, and the wait for it fails.
+// for it. The service runs on the caller's clock, a fake the test moves past the settle delay,
+// which runs the settlement, then past the caller's deadline, and never as far as Shutdown's own
+// drain budget (ShutdownDrainBudget, on the service's clock), so the caller's deadline is the one
+// end Shutdown can meet: a Shutdown that waited out its drain instead never returns, and the wait
+// for it fails.
 func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -5352,6 +5353,23 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	// The edit arms the settlement a settle delay on the fake. The move past it runs the
+	// settlement and returns only once the settlement has, which waits on the lock the test holds
+	// until it returns, so the move is made on a goroutine of its own, joined once the lock is let
+	// go: registered after the service's shutdown, the join runs first.
+	settleAt := callerClock.Now().Add(service.settle)
+	testwait.Until(t, fmt.Sprintf("the edit's settlement armed on the service's clock at %v", settleAt), func() ([]time.Time, bool) {
+		armed := callerClock.Armed()
+		return armed, slices.Contains(armed, settleAt)
+	})
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		callerClock.Set(settleAt)
+	}()
+	t.Cleanup(func() {
+		testwait.Receive(t, "the move that ran the settlement to return once the settlement has", settled)
+	})
 	waitForDatabaseLock(t, service.store)
 	// The caller's deadline is a context on the fake, which the test moves past it once Shutdown
 	// has scanned the room whose settlement waits on the lock.
