@@ -2345,6 +2345,24 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
 		}
 	})
+	t.Run("a password holding an @ and a tail that is not ASCII", func(t *testing.T) {
+		// The client dials the tail's ASCII form (`xn--…`, its ASCII letters kept, lower-cased),
+		// which the resolver's error names: the error is not printed. The password is made up.
+		const tail = "sswmadeuptail0123\u00f6rd.invalid"
+		t.Chdir(t.TempDir())
+		bearer := filepath.Join(t.TempDir(), "operator-token")
+		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		userinfo := "legion:p" + "@"
+		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
+		if lower := strings.ToLower(errb.String()); code != 1 || !strings.Contains(errb.String(), "(the request failed; its error is not printed") ||
+			strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the error not printed, and no part of the password", code, errb.String())
+		}
+	})
 	// A daemon that answers its claims with a body that does not decode (a proxy's page, a daemon of
 	// another release): `legion claims retry --failed` and `legion claims suspend` read the list as
 	// `legion claims list` does, and name it through redact.URL, holding no part of a made-up

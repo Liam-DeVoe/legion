@@ -97,18 +97,15 @@ func NewProber(opts ProberOptions) *Prober {
 }
 
 // errorShown is err, a lookup that got no answer, as a log line prints it: *url.Error's own quote
-// of the lookup left out, and, when envoy_url carried userinfo, its host as the mark of a URL with
-// credentials, since a dial or a resolver's error names the host (`lookup ssword: no such host`).
+// of the lookup left out, and, when envoy_url carried userinfo, through redact.HostShown, since a
+// dial or a resolver's error names the host (`lookup ssword: no such host`), and a host that is
+// not ASCII is dialed by an ASCII form no replacement finds.
 func (p *Prober) errorShown(err error) string {
 	var transport *url.Error
 	if errors.As(err, &transport) {
 		err = transport.Err
 	}
-	text := err.Error()
-	if p.host != "" {
-		text = strings.ReplaceAll(text, p.host, redact.URLWithCredentials)
-	}
-	return text
+	return redact.HostShown(p.host, err.Error())
 }
 
 // The listener's live-holder answer is listenerwire.RoleHolder (roleGetHandler,

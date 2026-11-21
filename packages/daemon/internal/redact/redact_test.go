@@ -235,6 +235,20 @@ var urlCredentialsCases = []struct {
 	},
 }
 
+// HostShown writes a URL's host as the mark in an error that names it, and prints no error for a
+// host that is not ASCII, whose ASCII form (`xn--…`) the error names instead. The hosts are made up.
+func TestHostShownPrintsNoHostOfAURLWithCredentials(t *testing.T) {
+	if got := HostShown("madeuptail0123.invalid", "dial tcp: lookup madeuptail0123.invalid: no such host"); got != "dial tcp: lookup "+URLWithCredentials+": no such host" {
+		t.Errorf("an ASCII host = %q, want it written as the mark", got)
+	}
+	if got := HostShown("madeuptail0123\u00f6.invalid", "dial tcp: lookup xn--madeuptail0123-8ib.invalid: no such host"); got != NotASCIIHostError {
+		t.Errorf("a host that is not ASCII = %q, want %q", got, NotASCIIHostError)
+	}
+	if got := HostShown("", "dial tcp: connect: connection refused"); got != "dial tcp: connect: connection refused" {
+		t.Errorf("no host = %q, want the text as it is", got)
+	}
+}
+
 func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -54,6 +54,27 @@ const URLNotPrinted = "(a URL that is not printed)"
 // (natsurl.UserinfoPastHost).
 const URLWithCredentials = "[a URL with credentials]"
 
+// NotASCIIHostError stands for the error of a request to a URL with credentials whose host is not
+// ASCII (HostShown).
+const NotASCIIHostError = "(the request failed; its error is not printed: it names the host of an address that holds a credential, and that host is not ASCII)"
+
+// HostShown is text, the error of a request to host, the host of a URL that holds a user name or a
+// password, as a line prints it. A dial's or a resolver's error names the host (`lookup <host>: no
+// such host`), and a password holding an unencoded "@" leaves its tail where the host goes, so the
+// host is written as URLWithCredentials. A host that is not ASCII is dialed by its ASCII form
+// (`xn--…`, its ASCII letters kept, lower-cased), which no replacement of the host as written
+// finds, so such an error is NotASCIIHostError alone. A host of "" (no credential, or none parsed)
+// leaves text as it is.
+func HostShown(host, text string) string {
+	switch {
+	case host == "":
+		return text
+	case strings.IndexFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) >= 0:
+		return NotASCIIHostError
+	}
+	return strings.ReplaceAll(text, host, URLWithCredentials)
+}
+
 // URL is raw, one value known to be a URL (a setting's, an environment variable's), as a line
 // prints it: read by url.Parse, with its query and fragment removed, and its authority, when it
 // holds an "@", as URLWithCredentials. The rule on text, URLCredentials, finds a URL's end at a

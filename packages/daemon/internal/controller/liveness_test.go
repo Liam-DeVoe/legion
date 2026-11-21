@@ -249,6 +249,16 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 	if strings.Contains(tailLog.String(), "madeUpEnvoyTail") || !strings.Contains(tailLog.String(), "unreachable") {
 		t.Errorf("a password holding an @: the log %q names the password's tail, or not the unreachable listener", tailLog.String())
 	}
+	// A tail that is not ASCII is dialed by its ASCII form (`xn--…`, its ASCII letters kept and
+	// lower-cased), which the resolver's error names: the error is not printed.
+	var asciiLog bytes.Buffer
+	asciiURL := "http://legion:p" + "@sswmadeuptail0123\u00f6rd.invalid"
+	if got := newTestProber(asciiURL, "envoy-bearer", &asciiLog).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("a password holding an @ and a tail that is not ASCII: Probe = %s, want unknown", got)
+	}
+	if lower := strings.ToLower(asciiLog.String()); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
+		t.Errorf("a password holding an @ and a tail that is not ASCII: the log %q names the password's tail", asciiLog.String())
+	}
 	var log bytes.Buffer
 	newTestProber(withUser(served, quotedUserinfo), "", &log).Probe(context.Background(), "ses_ctl")
 	if user, password, ok := (&http.Request{Header: http.Header{"Authorization": {l.bearer}}}).BasicAuth(); !ok || user+":"+password != quotedUserinfo {

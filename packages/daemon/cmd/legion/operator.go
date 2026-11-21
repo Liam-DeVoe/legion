@@ -230,16 +230,17 @@ func daemonRequestError(route string, err error) error {
 	return &requestError{redact.URL(route) + ": " + hostShown(route, redact.URLCredentials(err.Error())), err}
 }
 
-// hostShown is text, an error of a request of route, with route's host written as the mark of a
-// URL with credentials when route carries userinfo: a password holding an unencoded "@" leaves
-// its tail where the host goes, and a dial's or a resolver's error names the host (`lookup <the
-// password's tail>: no such host`), as the controller's liveness probe's errorShown reads it.
+// hostShown is text, an error of a request of route, through redact.HostShown when route carries
+// userinfo: the host written as the mark of a URL with credentials, since a password holding an
+// unencoded "@" leaves its tail where the host goes and a dial's or a resolver's error names the
+// host (`lookup <the password's tail>: no such host`); and, for a host that is not ASCII, which the
+// client dials by its ASCII form, the error not printed.
 func hostShown(route, text string) string {
 	u, err := neturl.Parse(route)
-	if err != nil || u.User == nil || u.Hostname() == "" {
+	if err != nil || u.User == nil {
 		return text
 	}
-	return strings.ReplaceAll(text, u.Hostname(), redact.URLWithCredentials)
+	return redact.HostShown(u.Hostname(), text)
 }
 
 // requestError is daemonRequestError's error: its text, and the error it stands for.
