@@ -606,10 +606,10 @@ func routes() []apiRoute {
 		// every decision of the auth service that starts after the answer reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
-		// deleted: held with a hold id, or released, which only while the log is empty or its
-		// latest entry is released (400 bad_transition otherwise, so no restore frees the clients
-		// mid-hold), at one above the highest gen nats_hold_log holds (1 for an empty log), signed
-		// over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
+		// deleted: held with a hold id, or released, unless the log's latest entry is held (400
+		// bad_transition then, so no restore frees the clients mid-hold; after a prepare entry it
+		// frees nobody), at one above the highest gen nats_hold_log holds (1 for an empty log),
+		// signed over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
 		// afresh, since the operator's commands cannot read the log; a row that is there is 409
 		// row_exists.
 		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},

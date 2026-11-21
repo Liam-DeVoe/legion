@@ -341,8 +341,7 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 type holdRestoreBody struct {
 	// The gen to restore at: one above every gen nats_hold_log holds, 1 for an empty log.
 	Gen int64 `json:"gen"`
-	// held inside a hold, or released, which only while the log is empty or its latest entry is
-	// released.
+	// held inside a hold, or released, unless the log's latest entry is held.
 	Phase string `json:"phase"`
 	// The hold's id, which a held row names.
 	HoldID string `json:"hold_id"`

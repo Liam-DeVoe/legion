@@ -234,10 +234,12 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // the first as a RestoreGenError. Before it restores a `held` row it reads the hold's journal, and
 // refuses a hold that has ended, a done `hold release` or `hold abort` (ErrAlreadyDone): no command
 // is admitted after the end, so a held row restored for it would keep every client out with no
-// command left to release it. A `released` row, the one a completed hold left or the first row's
-// shape with no hold id, is sent once, at gen alone, the gen a RestoreGenError named: the route
-// stores it only while the log's latest entry is released, and refuses it 400 `bad_transition`
-// after a held or prepare entry, so a released row never lands mid-hold.
+// command left to release it. A `released` row, the one a completed hold left, the first row's
+// shape with no hold id, or a row lost while the hold was `prepare` (restored with that hold's id,
+// as `hold abort` from `prepare` leaves it), is sent once, at gen alone, the gen a RestoreGenError
+// named: the route stores it unless the log's latest entry is held, and refuses it 400
+// `bad_transition` after a held entry, so a released row never lands mid-hold. After a prepare
+// entry it frees nobody, since a prepare row refuses no client.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
@@ -267,7 +269,7 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 // first row's at a gen it did not name. That holds only as long as nats_hold_log keeps its
 // entries: the log is the broker database's, and a database writer who empties it lets Bootstrap
 // write gen 1 again. The operator restores a lost row with RestoreRow: held with its hold id
-// mid-hold, and released, at the RestoreGenError's gen, once the log's latest entry is released.
+// mid-hold, and released, at the RestoreGenError's gen, unless the log's latest entry is held.
 func (c *Client) Bootstrap(ctx context.Context) error {
 	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
 	return err
