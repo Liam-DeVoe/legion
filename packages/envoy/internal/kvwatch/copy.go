@@ -23,8 +23,12 @@ type Copy[V any] struct {
 	revisions map[string]uint64
 	marks     marks
 	readEpoch uint64
-	// readSeq is the stream's last sequence the latest read began at (Read.LastSeq).
-	readSeq uint64
+	// taken holds, for each key a write site took after a read of the stream had begun and before
+	// that read's BeginRead, the watcher's stream-read count at the take (Watcher.StreamReads);
+	// begun is the latest Read.StreamRead a BeginRead has seen. A take with no read in that gap
+	// records nothing, so taken holds only the keys of the gaps not yet begun.
+	taken map[string]uint64
+	begun uint64
 }
 
 // Rows is how one copy turns a record into its entry, and what the cache that keeps it records
@@ -92,40 +96,36 @@ func (c *Copy[V]) Remove(key string) {
 // as the one the fence belongs to, and, for a recreated bucket whose revisions number from 1
 // again, no fence. Every entry stays.
 //
-// The read's marks start with every key the copy took at a revision past the stream's last
-// sequence as the watch read it before it created the read's watcher (Read.LastSeq): a
-// write-through, read-through or delete, or a record the replaced watcher delivered, that the
-// bucket stored after that read of the stream and that reached the copy before this call. Its
-// record is the bucket's. One the watcher's snapshot holds, the scan delivers anyway; one stored
-// after the snapshot, the watcher delivers only after its scan's end. Without its mark, the sweep
-// that completes the read would remove a row the bucket holds, until that update arrived, or until
-// the next read when the connection ended first.
+// The read's marks start with every key a write site took (Put, Apply, Evict) once the read's
+// stream read had begun (Read.StreamRead), at a revision past the last sequence that stream read
+// found (Read.LastSeq): a write-through, read-through or delete whose record the bucket stored
+// after that read of the stream, and which reached the copy before this call. One the watcher's
+// snapshot holds, the scan delivers anyway; one stored after the snapshot, the watcher delivers
+// only after its scan's end. Without its mark, the sweep that completes the read would remove a
+// row the bucket holds, until that update arrived, or until the next read when the connection
+// ended first.
 //
-// Two reads mark none of them. A recreated bucket's first read has no fence left to mark from, so
-// a write through the old bucket's handle that lands in the new bucket in that gap is still
-// removed until its record arrives. And a read that begins at a last sequence below the one the
-// read before it began at reads a sequence space that moved back under the same stream (a
-// JetStream restore keeps the stream's creation time, so the watch sees no recreated bucket): the
-// revisions the copy took before are no evidence of what the restored bucket holds. Two watches
-// that overlap, each reading the stream before the other installs, can also give the later install
-// the lower last sequence; that read marks nothing, and a write in its gap is removed until its
-// record arrives.
+// The marks go by when the copy took a key, not by its revision alone: a key taken before the
+// stream read at a revision past its last sequence is one the bucket's sequence space no longer
+// reaches - a JetStream restore keeps the stream's creation time, so the watch sees no recreated
+// bucket - and the read removes it if it does not find it, as it removes any key it does not
+// find. Three gaps are still removed until their record arrives: a recreated bucket's first read,
+// which clears the fence first; a record the replaced watcher delivered in the gap (Delivered
+// takes no stream-read count); and, of two watches that overlap, a take between their two stream
+// reads when the earlier one installs last.
 func (c *Copy[V]) BeginRead(read Read) {
 	c.marks.begin()
 	c.readEpoch = read.Epoch
-	movedBack := read.LastSeq < c.readSeq
-	c.readSeq = read.LastSeq
 	if read.Recreated {
 		clear(c.revisions)
 	}
-	if movedBack {
-		return
-	}
-	for key, revision := range c.revisions {
-		if revision > read.LastSeq {
+	for key, at := range c.taken {
+		if at >= read.StreamRead && c.revisions[key] > read.LastSeq {
 			c.marks.mark(key)
 		}
 	}
+	c.begun = max(c.begun, read.StreamRead)
+	maps.DeleteFunc(c.taken, func(_ string, at uint64) bool { return at <= c.begun })
 }
 
 // Delivered takes one record the current read delivered (Cache.Apply). Its key is marked before
@@ -194,12 +194,19 @@ func (c *Copy[V]) FenceFor(epoch uint64, key string) uint64 {
 }
 
 // current reports whether a result through a handle of epoch may reach the copy, and marks key
-// for the read under way when it may.
+// for the read under way when it may. A take after a stream read that no read has begun on yet
+// is recorded for that read (BeginRead).
 func (c *Copy[V]) current(w *Watcher, epoch uint64, key string) bool {
 	if w.Epoch() != epoch {
 		return false
 	}
 	c.marks.mark(key)
+	if at := w.StreamReads(); at > c.begun {
+		if c.taken == nil {
+			c.taken = map[string]uint64{}
+		}
+		c.taken[key] = at
+	}
 	return true
 }
 

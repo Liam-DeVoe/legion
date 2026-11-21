@@ -110,33 +110,41 @@ func TestAKeyWrittenThroughBetweenAReadsCreateAndItsBeginSurvivesTheRead(t *test
 	}
 }
 
-// A read that begins at a stream's last sequence below the one the read before it began at marks
-// none of the keys the copy took past it. The bucket's sequence space moved back under the same
-// stream: a JetStream restore keeps the stream's creation time, so the watch reads no recreated
-// bucket. A revision the copy took before the restore says nothing about the restored bucket, and
-// marking it would keep a key the restored bucket does not hold through every read until the
-// stream's sequence passed it. A read that begins further on keeps such a key.
-func TestAReadWhoseStreamMovedBackMarksNothingPastIt(t *testing.T) {
+// A key the copy took before a read's stream read, at a revision past the last sequence that
+// stream read found, is no evidence for the read: the bucket's sequence space no longer reaches
+// that revision - a JetStream restore keeps the stream's creation time, so the watch sees no
+// recreated bucket - and the read removes the key when it does not find it, as it removes any key
+// it does not find. The same key taken once the read's stream read had begun is the read's
+// evidence of it, and it stays. A copy that marked by revision alone keeps the first through every
+// read until one begins past its revision, which for a cache that reads only at a start or a
+// rewatch can be never.
+func TestAKeyTakenBeforeAReadsStreamReadIsNoEvidenceForIt(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
 	for _, tc := range []struct {
-		name    string
-		lastSeq uint64
-		kept    bool
+		name       string
+		takenAfter bool
 	}{
-		{name: "the stream moved on to below the key's revision", lastSeq: 35, kept: true},
-		{name: "the stream moved back below the read before", lastSeq: 25, kept: false},
+		{name: "taken before the read's stream read", takenAfter: false},
+		{name: "taken after the read's stream read", takenAfter: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			w := kvwatch.New("test cache", kv, newSeen())
 			copied := kvwatch.NewCopy(kvwatch.Rows[bool]{Decode: func(kvwatch.Entry) (bool, bool, error) { return true, true, nil }})
-			copied.BeginRead(kvwatch.Read{LastSeq: 30})
+			kvwatch.SetStreamReads(w, 1)
+			copied.BeginRead(kvwatch.Read{LastSeq: 30, StreamRead: 1})
 			copied.CompleteRead()
-			// Taken while the copy follows its bucket, at a revision past that read's start.
-			if err := copied.Delivered(kvwatch.Entry{Key: "taken-after", Op: kvwatch.OpPut, Revision: 40}); err != nil {
-				t.Fatalf("deliver taken-after: %v", err)
+			if tc.takenAfter {
+				kvwatch.SetStreamReads(w, 2)
 			}
-			copied.BeginRead(kvwatch.Read{LastSeq: tc.lastSeq})
+			if outcome := copied.Put(w, w.Epoch(), "taken", true, 40); outcome != kvwatch.Applied {
+				t.Fatalf("the write into the copy came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
+			}
+			kvwatch.SetStreamReads(w, 2)
+			copied.BeginRead(kvwatch.Read{LastSeq: 35, StreamRead: 2})
 			copied.CompleteRead()
-			if _, kept := copied.Get("taken-after"); kept != tc.kept {
-				t.Fatalf("a read beginning at %d after one at 30: the key at revision 40 kept %v, want %v", tc.lastSeq, kept, tc.kept)
+			if _, kept := copied.Get("taken"); kept != tc.takenAfter {
+				t.Fatalf("the key taken at revision 40 %s, before a read at 35: kept %v, want %v", tc.name, kept, tc.takenAfter)
 			}
 		})
 	}
