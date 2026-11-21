@@ -226,41 +226,24 @@ export async function readLast(
   }
 }
 
-async function main(): Promise<void> {
-  const [command, url, stream, argument, extra] = process.argv.slice(2);
-  // current takes one operand, the session id, in the place where the other commands take a stream.
-  if (!command || !url || !stream || (command !== "current" && !argument)) {
-    refuse(
-      "usage: last|consumers|delete|session-bucket <nats-url> <stream> <subject-filter|name-prefix|name|seconds> [seconds], or current <nats-url> <session-id>"
-    );
-  }
+const usage =
+  "usage: last|consumers|delete|session-bucket <nats-url> <stream> <subject-filter|name-prefix|name|seconds> [seconds], or current <nats-url> <session-id>";
 
-  // Production NATS: the operator's nkey user, when the server requires one, as a command run from
-  // the operator's shell resolves it (operator-nats-seed.ts).
-  let seed: NatsSeed | undefined;
-  try {
-    seed = operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
-  } catch (error) {
-    refuse(messageFor(error));
-  }
-  // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
-  // given, a credential in it included (a malformed URL's `input`): the line names the server by
-  // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
-  let nc: NatsConnection;
-  try {
-    nc = await connect({
-      servers: url,
-      timeout: 10_000,
-      name: "legion-e2e-nats-stream",
-      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  // current takes the session id alone, where every other command takes a stream and an argument,
+  // so its operands are read on their own and no name holds two kinds of value.
+  if (argv[0] === "current") {
+    const [, url, sessionId] = argv;
+    if (!url || !sessionId) refuse(usage);
+    await withConnection(url, async (nc) => {
+      process.stdout.write(`${await readCurrent(nc, sessionId)}\n`);
     });
-  } catch (error) {
-    process.stderr.write(
-      `nats-stream: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
-    );
-    process.exit(1);
+    return;
   }
-  try {
+  const [command, url, stream, argument, extra] = argv;
+  if (!command || !url || !stream || !argument) refuse(usage);
+  await withConnection(url, async (nc) => {
     if (command === "last") {
       const seconds = Number(extra ?? "10");
       if (!Number.isFinite(seconds) || seconds <= 0)
@@ -302,11 +285,45 @@ async function main(): Promise<void> {
         refuse(`seconds must be a positive number, not ${argument}`);
       const state = await createSessionBucket(nc, stream, seconds);
       process.stdout.write(`${JSON.stringify(state)}\n`);
-    } else if (command === "current") {
-      process.stdout.write(`${await readCurrent(nc, stream)}\n`);
     } else {
       refuse(`unknown command ${command}`);
     }
+  });
+}
+
+// withConnection connects to url as the operator's nkey user when the server requires one, runs
+// run on the connection and closes it.
+async function withConnection(
+  url: string,
+  run: (nc: NatsConnection) => Promise<void>
+): Promise<void> {
+  // Production NATS: the operator's nkey user, when the server requires one, as a command run from
+  // the operator's shell resolves it (operator-nats-seed.ts).
+  let seed: NatsSeed | undefined;
+  try {
+    seed = operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
+  } catch (error) {
+    refuse(messageFor(error));
+  }
+  // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
+  // given, a credential in it included (a malformed URL's `input`): the line names the server by
+  // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
+  let nc: NatsConnection;
+  try {
+    nc = await connect({
+      servers: url,
+      timeout: 10_000,
+      name: "legion-e2e-nats-stream",
+      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `nats-stream: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
+    );
+    process.exit(1);
+  }
+  try {
+    await run(nc);
   } finally {
     await nc.close();
   }
