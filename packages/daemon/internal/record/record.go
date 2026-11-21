@@ -183,23 +183,33 @@ type Issue struct {
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
 	// orphan's admission), and Dispatch's own correction of it from then on
-	// (Store.CorrectIssueRepository, the only writer that changes them). No ordinary record of the
-	// issue moves them: a carried child, a re-admission, a hand-over and an observation prepared
-	// before a correction all keep what the record holds (Store.PutIssue names none of the three in
-	// its update). Every repository-dependent action reads them. Repo is spelled as the issue's
+	// (Store.CorrectIssueRepository, the one writer that moves an issue onto another repository).
+	// No ordinary record of the issue moves them: a carried child, a re-admission, a hand-over and
+	// an observation prepared before a correction all keep what the record holds (Store.PutIssue
+	// names none of the three in its update). This release has one more writer, beside that one:
+	// its rename pass writes a configured rename's new name, in GitHub's spelling, over its old one
+	// on Repo and GitHubRepo once GitHub shows the transfer, while no pod of the issue is live,
+	// under tmux while no workspace directory of it is under the old name (RenameIssueRepository),
+	// and dispatch://INFRA-3532's own change removes that pass. It is no correction: a pair's two
+	// names are one repository (ghrepo.Renames.Same), so the issue stays where it is, and its
+	// statement matches the old name it replaces, never a copy read earlier, so it writes no stale
+	// repository back. Every repository-dependent action reads them. Repo is spelled as the issue's
 	// workspace and shared clone are, which can be a clone's spelling that differs from GitHub's in
 	// case.
 	Repo          string
 	DefaultBranch string
-	// GitHubRepo is GitHub's own spelling of Repo, taken with it and moved only by a correction of
-	// the pair: what Envoy's event subjects carry, which NATS matches case-sensitively, so GitHub
-	// intake hears the issue's repository by it, read from the record at boot. Under a configured
-	// repository rename (`repository_renames`) whose two names are Repo and the name GitHub holds
-	// the repository under, it is the pair's spelling of Repo's own side instead, which GitHub
-	// publishes nothing under after the transfer: the record's two repository columns must name one
-	// repository. Intake still hears the issue, because the daemon subscribes to both names of a
-	// pair (heardRepositories), and every GitHub call the daemon makes for the record addresses the
-	// repository GitHub serves it under now (ghrepo.Renames.Serving) rather than this field.
+	// GitHubRepo is GitHub's own spelling of Repo, taken with it and changed only with it: by a
+	// correction of the pair, or by this release's rename pass (RenameIssueRepository). It is what
+	// Envoy's event subjects carry, which NATS matches case-sensitively, so GitHub intake hears the
+	// issue's repository by it, read from the record at boot. Under a configured repository rename
+	// (`repository_renames`) whose two names are Repo and the name GitHub holds the repository
+	// under, it is the pair's spelling of Repo's own side instead, which GitHub publishes nothing
+	// under after the transfer: the record's two repository columns must name one repository, and
+	// a record keeps the name it was recorded under until the rename pass writes the pair's new
+	// name, in GitHub's spelling, on both. Intake still hears the issue, because the daemon
+	// subscribes to both names of a pair (heardRepositories), and every GitHub call the daemon
+	// makes for the record addresses the repository GitHub serves it under now
+	// (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
 	// RepoCorrection is the newest correction of the issue's repository, nil for a record no
 	// correction has reached, which is every record written before the correction existed. Only
@@ -733,7 +743,7 @@ type PhaseRow struct {
 	//
 	// The resume writes the text it rendered here all the same, though this release never sends
 	// it for an entry that holds a wait: its one reader is a rollback to the release before
-	// contract 205. The rollback block in docs/kubernetes.md (contract 205) marks each entry that
+	// contract 208. The rollback block in docs/kubernetes.md (contract 208) marks each entry that
 	// holds a wait (phases.entry_verbatim), and that release sends a marked entry's task as this
 	// field holds it, as it did before this release. So the write is no dead code: it goes only
 	// when that rollback block goes.
@@ -1839,8 +1849,10 @@ type Store interface {
 	// PutIssue writes issue, refusing one without its repository, default branch or GitHub's
 	// spelling of the repository, and one whose GitHub spelling names another repository. It never
 	// moves those three on a recorded issue, whatever the copy it is given holds: an observation
-	// prepared before a correction writes no old repository back, and CorrectIssueRepository is
-	// what changes them.
+	// prepared before a correction writes no old repository back. CorrectIssueRepository is what
+	// moves an issue onto another repository, and this release's rename pass writes a configured
+	// rename's new name on a recorded issue through RenameIssueRepository beside it, which
+	// dispatch://INFRA-3532's own change removes.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
@@ -1883,6 +1895,12 @@ type Store interface {
 	// FillIssueRepository and NameIssueRepository fill in what an older record never carried, and
 	// each refuses a record that carries it, while this one corrects a record that has a
 	// repository, because the repository is Dispatch's fact and the daemon's record follows it.
+	// This release's rename pass writes beside it (RenameIssueRepository), and is a third act: it
+	// writes a configured pair's new name over its old one, which name one repository, so it
+	// keeps no repository the issue left and clears no waiting change, and its statement matches
+	// the old name rather than a copy read earlier. The two cannot undo each other: an issue
+	// Dispatch still resolves to the pair's old name after the pass is on the same repository,
+	// which the correction reads as no change (workflow's sameRepository).
 	CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error)
 	// NoteIssueRepositoryChange records change, the repository Dispatch names for the issue that
 	// the daemon has not applied and why it has not, as Issue.RepoChange; it writes that and

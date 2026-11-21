@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -22,11 +23,12 @@ import (
 )
 
 // The repository an issue's record is corrected onto is Dispatch's own fact, and these tests read
-// what the daemon's two passes over a recorded issue's resolution do with it: the live Dispatch
-// event (the engine's dispatchIssue) and the boot listing (admission's reconcile).
-// Each runs over a real PostgreSQL, as every test of this package does, and reads the record and
-// the Dispatch messages the pass queued, never the statement that writes the record, which has its
-// own test (record's TestCorrectIssueRepository...).
+// what the daemon's passes over a recorded issue's resolution do with it: the live Dispatch event
+// (the engine's dispatchIssue), the boot listing (admission's reconcile), which reads GitHub for
+// no repository and so applies no change, and the follow after the boot (followListing), which
+// applies the changes the boot's listing left. Each runs over a real PostgreSQL, as every test of
+// this package does, and reads the record and the Dispatch messages the pass queued, never the
+// statement that writes the record, which has its own test (record's TestCorrectIssueRepository...).
 
 // correctionKey is the recorded issue every test here moves between repositories, and
 // correctionProject the Dispatch project it belongs to.
@@ -41,34 +43,32 @@ const (
 // with is one the test can read back.
 var correctionMoment = time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 
-// correctionRepositories is a project's repositories as the daemon holds them in memory
-// (workflow.Repositories): each served repository's default branch and GitHub's own spelling of
-// it, by the name Dispatch resolves an issue to, and each repository the mapping leaves out with
-// why (a Resolution carrying LeftOut). A name the map does not hold is one no preparation has read
-// GitHub for, which the daemon answers as unread (repositories.lookup), as testRepositories does:
-// since INFRA-2543 no mapping entry refuses a repository, GitHub's answer for it does. A test adds
-// a served entry where what it reads is the pass that finds the repository served at last.
-type correctionRepositories map[string]workflow.Resolution
+// correctionReadsOf is what the daemon's preparation of a fact moving a recorded issue onto each
+// repository reads of GitHub (prepareRecorded, correctionReads), by the name Dispatch resolves the
+// issue to: GitHub's name and default branch where both role Apps are installed on it, or the
+// refusal GitHub's answer made where one is not. A repository it does not name is one whose reads
+// GitHub did not answer, which carries neither, as does every fact no preparation read GitHub for:
+// the boot's listing and a hand-over.
+type correctionReadsOf map[string]correctionRead
 
-func (r correctionRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
-	if resolution, ok := r[resolved]; ok {
-		return resolution, nil
-	}
-	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true, Unmapped: true}, nil
-}
-
-// correctionRig is one test's daemon: the records, the repositories it serves, and the two
-// handlers a Dispatch fact runs through, over a database of its own. Its issue is the running
+// correctionRig is one test's daemon: the records, what its preparations read of GitHub, and the
+// two handlers a Dispatch fact runs through, over a database of its own. Its issue is the running
 // root of a live tree, recorded on acme/widgets, which is what makes a moved phase or generation
 // visible: nothing in a correction may start, stop or re-run anything.
 type correctionRig struct {
 	t          *testing.T
 	pool       *store.Pool
-	repos      correctionRepositories
+	reads      correctionReadsOf
 	records    record.Store
 	engine     *workflow.Engine
 	admission  *admit.Admission
 	generation uint64
+}
+
+// served is the read a preparation makes of repo where both role Apps are installed on it and
+// GitHub names it at branch.
+func served(repo, branch string) correctionRead {
+	return correctionRead{read: &ghbranch.Repository{Name: ghrepo.MustParse(repo), DefaultBranch: branch}}
 }
 
 func newCorrectionRig(t *testing.T) *correctionRig {
@@ -76,18 +76,29 @@ func newCorrectionRig(t *testing.T) *correctionRig {
 	r := &correctionRig{
 		t:    t,
 		pool: isolatedOutboxPool(t),
-		repos: correctionRepositories{
-			"acme/widgets": {Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
-			"acme/tools":   {Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools"},
+		reads: correctionReadsOf{
+			"acme/widgets": served("acme/widgets", "main"),
+			"acme/tools":   served("acme/tools", "release/v7.1"),
 		},
 		records:    record.NewStore(),
 		generation: correctionGeneration,
 	}
-	r.engine = workflow.New(r.records, workflow.Config{Project: correctionProject, Repositories: r.repos, Steps: config.DesignGateOff.Steps(),
+	r.engine = workflow.New(r.records, workflow.Config{Project: correctionProject, Repositories: testRepositories, Steps: config.DesignGateOff.Steps(),
 		Clock: func() time.Time { return correctionMoment }}, quietLogger())
 	r.admission = admit.New(r.records, r.engine, 1, correctionProject, quietLogger())
 	recordCorrectionRoot(t, r.pool, r.records, correctionKey, "root", 0)
 	return r
+}
+
+// prepared is fact as the daemon's preparation leaves it (prepareRecorded): carrying what GitHub
+// answered for the repository it resolves to, as reads holds it.
+func (r *correctionRig) prepared(fact intake.DispatchIssue) intake.DispatchIssue {
+	answer := r.reads[fact.ResolvedRepo]
+	fact.RepositoryRead, fact.RepositoryRefusal = answer.read, answer.refusal
+	if answer.refusal != "" {
+		fact.RepositoryRefusalKind = intake.RefusedByGitHub
+	}
+	return fact
 }
 
 // recordCorrectionRoot records key, titled title, as the issue a test moves: the running root of a
@@ -116,35 +127,59 @@ func recordCorrectionRoot(t *testing.T, pool *store.Pool, records record.Store, 
 }
 
 // event applies one live Dispatch event of the issue, at the running status its record holds,
-// through the pair of handlers the daemon applies a Dispatch fact through, the workflow then
-// admission.
+// prepared as the Dispatch consumer prepares it, through the pair of handlers the daemon applies a
+// Dispatch fact through, the workflow then admission.
 func (r *correctionRig) event(seq int64, resolved string) {
 	r.t.Helper()
 	r.move(seq, "in_progress", resolved)
 }
 
 // move applies one live Dispatch event of the issue at status, the way a person's own move of it
-// reaches the daemon: the workflow handler then admission's, in one fact.
+// reaches the daemon: prepared, then the workflow handler then admission's, in one fact.
 func (r *correctionRig) move(seq int64, status, resolved string) {
 	r.t.Helper()
-	applyFact(r.t, r.pool, "dispatch", fmt.Sprintf("repository-%d", seq), intake.DispatchIssue{Key: correctionKey, Seq: seq, Type: "issue.updated",
-		Status: status, Title: "root", Rank: "A", HandedOver: true, ResolvedRepo: resolved}, r.engine, r.admission)
+	applyFact(r.t, r.pool, "dispatch", fmt.Sprintf("repository-%d", seq), r.prepared(intake.DispatchIssue{Key: correctionKey, Seq: seq, Type: "issue.updated",
+		Status: status, Title: "root", Rank: "A", HandedOver: true, ResolvedRepo: resolved}), r.engine, r.admission)
 }
 
-// listing runs admission's boot and recovery pass over a Dispatch listing that shows the issue at
-// seq on resolved, at the running status its record holds.
+// listing runs admission's boot pass over a Dispatch listing that shows the issue at seq on
+// resolved, at the running status its record holds.
 func (r *correctionRig) listing(seq int64, resolved string) {
 	r.t.Helper()
 	r.listingAt(seq, "in_progress", resolved)
 }
 
 // listingAt runs that pass over a listing that shows the issue at seq, at status, on resolved,
-// with the consumer already caught up, so nothing is held back for it.
+// with the consumer already caught up, so nothing is held back for it. The boot's listing reads
+// GitHub for no repository (prepareRecorded), so its facts carry no read.
 func (r *correctionRig) listingAt(seq int64, status, resolved string) {
 	r.t.Helper()
 	reconcileAdmission(r.t, r.pool, r.admission, []dispatch.IssueSummary{
 		{Key: correctionKey, Title: "root", Status: status, Rank: "A", HandedOver: true, LastSeq: seq, ResolvedRepo: resolved},
 	}, 0, intake.DispatchConsumerPosition{Idle: true})
+}
+
+// follow applies what the follow after a boot writes for the issue over a listing that shows it
+// at seq on resolved (followListing): its single-issue correction, under the fact lock, from the
+// read its preparation made of GitHub.
+func (r *correctionRig) follow(seq int64, resolved string) {
+	r.t.Helper()
+	fact := r.prepared(intake.ListedIssue(dispatch.IssueSummary{Key: correctionKey, Title: "root", Status: "in_progress", Rank: "A",
+		HandedOver: true, LastSeq: seq, ResolvedRepo: resolved}))
+	scoped, committed := intake.WithCommitHooks(context.Background())
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(scoped, tx); err != nil {
+			return err
+		}
+		stored, err := r.records.Issue(scoped, tx, correctionKey)
+		if err != nil {
+			return err
+		}
+		return r.engine.ApplyRepositoryChange(scoped, tx, *stored, fact)
+	}); err != nil {
+		r.t.Fatalf("the follow onto %s: %v", resolved, err)
+	}
+	committed()
 }
 
 // issue is the record as it stands.
@@ -224,6 +259,18 @@ func (r *correctionRig) corrected(issue record.Issue, repo, branch, github, befo
 	}
 }
 
+// uncorrected fails unless the record is still on acme/widgets at main with no correction, and
+// answers it.
+func (r *correctionRig) uncorrected() record.Issue {
+	r.t.Helper()
+	issue := r.issue()
+	if issue.Repo != "acme/widgets" || issue.DefaultBranch != "main" || issue.RepoCorrection != nil {
+		r.t.Fatalf("the record is on %s at %s, corrected %+v; want it still on acme/widgets at main, corrected in nothing",
+			issue.Repo, issue.DefaultBranch, issue.RepoCorrection)
+	}
+	return issue
+}
+
 // correctRecord moves key's record onto repo at branch, stamped at, as the workflow's own pass
 // does when Dispatch names another repository for the issue
 // (workflow.(*Engine).ApplyRepositoryChange), and fails t unless the record moved.
@@ -244,10 +291,10 @@ func correctRecord(t *testing.T, pool *store.Pool, records record.Store, key, re
 	}
 }
 
-// A live Dispatch event that resolves a recorded issue to another repository the project serves
-// corrects the record onto it there and then: the record names that repository, its default
-// branch and GitHub's spelling of it, keeps the one the issue left with the moment it moved, and
-// the issue's generation and phase do not move.
+// A live Dispatch event that resolves a recorded issue to another repository both role Apps are
+// installed on corrects the record onto it there and then: the record names that repository, its
+// default branch and GitHub's spelling of it, keeps the one the issue left with the moment it
+// moved, and the issue's generation and phase do not move.
 func TestRepositoryCorrectionFollowsALiveDispatchEvent(t *testing.T) {
 	r := newCorrectionRig(t)
 	r.event(2, "acme/tools")
@@ -261,17 +308,19 @@ func TestRepositoryCorrectionFollowsALiveDispatchEvent(t *testing.T) {
 	}
 }
 
-// The boot and recovery listing corrects the record the same way: a daemon that was down while
-// the repository changed in Dispatch reads the change from the listing alone, with no event of it
-// ever delivered.
+// A daemon that was down while the repository changed in Dispatch reads the change from its boot
+// alone, with no event of it ever delivered. The boot's listing reads GitHub for no repository, so
+// its pass applies nothing to the record and says nothing; the follow after the boot, whose
+// preparation of the issue reads GitHub, corrects it.
 func TestRepositoryCorrectionFollowsTheBootListing(t *testing.T) {
 	r := newCorrectionRig(t)
 	r.listing(3, "acme/tools")
-	issue := r.issue()
-	r.corrected(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
-	if issue.LastDispatchSeq != 3 {
-		t.Fatalf("the record is at sequence %d, want the listing's 3", issue.LastDispatchSeq)
+	if issue := r.uncorrected(); issue.LastDispatchSeq != 3 || issue.RepoChange != nil {
+		t.Fatalf("after the boot's listing the record is at sequence %d, waiting on %+v; want the listing's 3 and nothing waiting",
+			issue.LastDispatchSeq, issue.RepoChange)
 	}
+	r.follow(3, "acme/tools")
+	r.corrected(r.issue(), "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
 	if messages := r.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch", messages)
 	}
@@ -280,9 +329,9 @@ func TestRepositoryCorrectionFollowsTheBootListing(t *testing.T) {
 // An issue out of the workflow whose repository changed in Dispatch meanwhile is re-admitted onto
 // the repository Dispatch resolves it to now. The re-admission is the daemon's own
 // (admission's readmit: a new generation, admitted, waiting for its slot), and the repository
-// reaches the record through the same two passes: the move's live event (the engine's
-// dispatchIssue) and the boot and recovery listing (admission's reconcile), each of which follows
-// Dispatch's resolution before admission re-admits in the same fact. dispatch://INFRA-2865
+// reaches the record through the move's live event (the engine's dispatchIssue), which follows
+// Dispatch's resolution before admission re-admits in the same fact, or, where the boot's listing
+// is the first read of the move, through the follow after that boot. dispatch://INFRA-2865
 // measured the absence: a park and a re-admission gave a new generation on the old repository,
 // because nothing re-resolved the repository, and the new run cloned the repository the issue had
 // left.
@@ -292,7 +341,10 @@ func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
 		readmit func(*correctionRig)
 	}{
 		{"a live Dispatch event", func(r *correctionRig) { r.move(3, "todo", "acme/tools") }},
-		{"the boot listing", func(r *correctionRig) { r.listingAt(3, "todo", "acme/tools") }},
+		{"the boot listing and the follow after it", func(r *correctionRig) {
+			r.listingAt(3, "todo", "acme/tools")
+			r.follow(3, "acme/tools")
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newCorrectionRig(t)
@@ -322,54 +374,48 @@ func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
 				t.Fatalf("the record is at sequence %d, want the re-admission's 3", issue.LastDispatchSeq)
 			}
 			if messages := r.messages(); len(messages) != 0 {
-				t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
+				t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository both Apps are installed on", messages)
 			}
 		})
 	}
 }
 
-// gadgetsLeftOut is acme/gadgets as the daemon holds it while the mapping leaves it out for its
-// review App, which is not installed on it.
-var gadgetsLeftOut = workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}
+// gadgetsRefused is what a preparation reads of acme/gadgets while its review App is not
+// installed on it: GitHub's refusal.
+var gadgetsRefused = correctionRead{refusal: "the review App is not installed on acme/gadgets", kind: intake.RefusedByGitHub}
 
-// A repository Legion serves no installation of is not written onto the record: the record keeps
+// gadgetsNote is what an issue whose change onto acme/gadgets waits for its review App is told.
+const gadgetsNote = "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on acme/gadgets."
+
+// A repository a role App is not installed on is not written onto the record: the record keeps
 // the repository it has, the issue is told once however many passes read the same resolution, and
-// the change waits on the record with the reason it waits. The refusal here is the mapping's own
-// (a mapped repository its review App is not installed on); one no mapping names is refused for
-// the same reason by the preparation's reads instead, which repository_correction_unmapped_test.go
-// reads.
-func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t *testing.T) {
+// the change waits on the record with the reason it waits. The boot's listing, which reads GitHub
+// for nothing, writes nothing over it.
+func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionCannotWork(t *testing.T) {
 	r := newCorrectionRig(t)
-	r.repos["acme/gadgets"] = gadgetsLeftOut
+	r.reads["acme/gadgets"] = gadgetsRefused
 	r.event(2, "acme/gadgets")
 	r.event(3, "acme/gadgets")
 	r.listing(4, "acme/gadgets")
-	issue := r.issue()
-	if issue.Repo != "acme/widgets" || issue.DefaultBranch != "main" || issue.RepoCorrection != nil {
-		t.Fatalf("the record is on %s at %s, corrected %+v; want it still on acme/widgets at main, corrected in nothing",
-			issue.Repo, issue.DefaultBranch, issue.RepoCorrection)
-	}
+	issue := r.uncorrected()
 	if c := issue.RepoChange; c == nil || *c != (record.RepositoryChange{Pending: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}) {
 		t.Fatalf("the waiting change = %+v, want acme/gadgets and why it waits", c)
 	}
-	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
-	if messages := r.messages(); len(messages) != 1 || messages[0] != want {
-		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, want)
+	if messages := r.messages(); len(messages) != 1 || messages[0] != gadgetsNote {
+		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, gadgetsNote)
 	}
 }
 
-// A resolution GitHub has not answered for — here a repository no preparation has read GitHub
-// for, which is what the daemon answers for one no mapping names until a preparation reads it —
-// writes nothing and says nothing: no correction, no waiting change and no note. The daemon reads
-// GitHub for it at the issue's next preparation (prepareRecorded).
+// A resolution GitHub has not answered for writes nothing and says nothing: no correction, no
+// waiting change and no note. The daemon reads GitHub for it at the issue's next preparation
+// (prepareRecorded).
 func TestRepositoryCorrectionWritesNothingForARepositoryGitHubHasNotAnsweredFor(t *testing.T) {
 	r := newCorrectionRig(t)
 	r.event(2, "stranger/tools")
 	r.listing(3, "stranger/tools")
-	issue := r.issue()
-	if issue.Repo != "acme/widgets" || issue.RepoCorrection != nil || issue.RepoChange != nil {
-		t.Fatalf("the record is on %s, corrected %+v, waiting on %+v; want it on acme/widgets with nothing written",
-			issue.Repo, issue.RepoCorrection, issue.RepoChange)
+	r.follow(3, "stranger/tools")
+	if issue := r.uncorrected(); issue.RepoChange != nil {
+		t.Fatalf("the record waits on %+v, want nothing written", issue.RepoChange)
 	}
 	if messages := r.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing", messages)
@@ -379,25 +425,39 @@ func TestRepositoryCorrectionWritesNothingForARepositoryGitHubHasNotAnsweredFor(
 	}
 }
 
-// The waiting change is applied by the first pass that finds the repository served, and the pair
-// the record was carrying is cleared with it. Nothing in Dispatch changes for that pass: the
-// recovery listing shows the issue at the sequence the record already holds, and the mapping is
-// what moved.
-func TestRepositoryCorrectionAppliesTheWaitingChangeOnceTheRepositoryIsServed(t *testing.T) {
-	r := newCorrectionRig(t)
-	r.repos["acme/gadgets"] = gadgetsLeftOut
-	r.event(2, "acme/gadgets")
-	if change := r.issue().RepoChange; change == nil || change.Pending != "acme/gadgets" {
-		t.Fatalf("the waiting change = %+v, want acme/gadgets before the repository is served", change)
-	}
-	r.repos["acme/gadgets"] = workflow.Resolution{Repo: "acme/gadgets", DefaultBranch: "trunk", GitHubRepo: "acme/gadgets"}
-	r.listing(2, "acme/gadgets")
-	r.corrected(r.issue(), "acme/gadgets", "trunk", "acme/gadgets", "acme/widgets")
-	if notes := r.repoNotes(); notes != 1 {
-		t.Fatalf("the issue holds %d repository notes, want the one the refusal wrote: the correction says nothing of its own", notes)
-	}
-	if messages := r.messages(); len(messages) != 1 {
-		t.Fatalf("the issue was told %q, want only what it was told while the change waited", messages)
+// The waiting change is applied by the first pass whose preparation finds both role Apps
+// installed on the repository, and the pair the record was carrying is cleared with it. Since
+// dispatch://INFRA-4401 no read of a repository mapping reads the repository again in between, so
+// that pass is the issue's next event or the follow after the next boot: each holds here. Nothing
+// is said of the correction itself.
+func TestRepositoryCorrectionAppliesTheWaitingChangeAtTheNextEventOrTheNextBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply func(*correctionRig)
+	}{
+		{"the issue's next event", func(r *correctionRig) { r.event(3, "acme/gadgets") }},
+		{"the follow after the next boot", func(r *correctionRig) {
+			r.listing(3, "acme/gadgets")
+			r.follow(3, "acme/gadgets")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCorrectionRig(t)
+			r.reads["acme/gadgets"] = gadgetsRefused
+			r.event(2, "acme/gadgets")
+			if change := r.issue().RepoChange; change == nil || change.Pending != "acme/gadgets" {
+				t.Fatalf("the waiting change = %+v, want acme/gadgets before the App is installed", change)
+			}
+			r.reads["acme/gadgets"] = served("acme/gadgets", "trunk")
+			tc.apply(r)
+			r.corrected(r.issue(), "acme/gadgets", "trunk", "acme/gadgets", "acme/widgets")
+			if notes := r.repoNotes(); notes != 1 {
+				t.Fatalf("the issue holds %d repository notes, want the one the refusal wrote: the correction says nothing of its own", notes)
+			}
+			if messages := r.messages(); len(messages) != 1 {
+				t.Fatalf("the issue was told %q, want only what it was told while the change waited", messages)
+			}
+		})
 	}
 }
 
@@ -408,12 +468,8 @@ func TestRepositoryCorrectionWritesNothingWhenDispatchNamesTheRecordedRepository
 	r := newCorrectionRig(t)
 	r.event(2, "acme/widgets")
 	r.listing(3, "acme/widgets")
-	issue := r.issue()
-	if issue.Repo != "acme/widgets" || issue.RepoCorrection != nil {
-		t.Fatalf("the record is on %s, corrected %+v; want it on acme/widgets with no correction written",
-			issue.Repo, issue.RepoCorrection)
-	}
-	if issue.RepoChange != nil {
+	r.follow(3, "acme/widgets")
+	if issue := r.uncorrected(); issue.RepoChange != nil {
 		t.Fatalf("the waiting change = %+v, want none: nothing changed", issue.RepoChange)
 	}
 	if messages := r.messages(); len(messages) != 0 {
@@ -424,18 +480,18 @@ func TestRepositoryCorrectionWritesNothingWhenDispatchNamesTheRecordedRepository
 	}
 }
 
-// A correction onto a served repository whose default branch no admission has read is applied,
-// and the record names that repository's real default branch: the preparation of a recorded
-// issue's event reads it (prepareRecorded), so the resolution the engine makes inside the fact's
-// own transaction, which performs no I/O, answers rather than failing the fact — and a fact that
-// fails there is delivered again for ever. This rig is the runtime's own mapping and default
-// branches over a GitHub stand-in, rather than the resolutions the tests above hold in memory.
+// A correction onto a repository whose default branch no admission has read is applied, and the
+// record names that repository's real default branch: the preparation of a recorded issue's event
+// reads both role Apps' installations and GitHub's name and default branch of it
+// (prepareRecorded), so the resolution the engine makes inside the fact's own transaction, which
+// performs no I/O, answers from that read. This rig is the runtime's own preparation over a GitHub
+// stand-in, rather than the reads the tests above hold in memory.
 func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *testing.T) {
 	ctx := context.Background()
 	r, w, branches := newRuntimeCorrectionRig(t)
 
 	// The daemon has read the default branch of the repository the issue is recorded on, as the
-	// admission that recorded it did, and of no other: acme/tools is served and unread.
+	// admission that recorded it did, and of no other.
 	if _, err := branches.Named(ctx, ghrepo.MustParse("acme/widgets")); err != nil {
 		t.Fatalf("read the default branch of the recorded repository: %v", err)
 	}
@@ -453,49 +509,51 @@ func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *te
 	issue := r.issue()
 	r.corrected(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
 	if messages := r.messages(); len(messages) != 0 {
-		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
+		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository both Apps are installed on", messages)
 	}
 }
 
-// The boot listing makes that read for a recorded issue of any status, not only for a
-// listed todo: admission's reconcile has the engine follow Dispatch's resolution for every issue it
-// holds a record of (admit's applySummary), so a listing that moves a running root onto a served
-// repository whose default branch nobody read would otherwise fail that whole pass, every pass,
-// and the root would stay on the repository it left. The issue here is the running root of a live
-// tree, in in_progress, and the listing shows it at the sequence its record already holds, so
-// nothing of it is held back for the Dispatch consumer: Dispatch's resolution is the only thing
-// that moved.
-func TestRepositoryCorrectionReadsTheDefaultBranchForARecordedIssueTheListingShowsOutOfTodo(t *testing.T) {
+// The boot's listing reads GitHub for no repository, for a recorded issue of any status: a listing
+// that moves a running root, in in_progress and at the sequence its record already holds, so that
+// nothing of it is held back for the Dispatch consumer, applies nothing and asks for the follow
+// after the boot instead (requestFollow). That follow, over Dispatch's listing, reads the
+// repository and corrects the record, with Dispatch's resolution the only thing that moved.
+func TestRepositoryCorrectionReadsTheDefaultBranchForARecordedIssueTheBootsListingShowsOutOfTodo(t *testing.T) {
 	ctx := context.Background()
 	r, w, branches := newRuntimeCorrectionRig(t)
 	w.consumers = correctionConsumers(t, r.pool)
 	w.engine, w.admission = r.engine, r.admission
 
-	// The daemon has read the default branch of the repository the issue is recorded on, and of no
-	// other: acme/tools is served and unread.
 	if _, err := branches.Named(ctx, ghrepo.MustParse("acme/widgets")); err != nil {
 		t.Fatalf("read the default branch of the recorded repository: %v", err)
 	}
-	if _, read := branches.Kept("acme/tools"); read {
-		t.Fatal("the default branch of acme/tools was read before the listing, which is the read this test proves the listing makes")
-	}
 	listing := []dispatch.IssueSummary{{Key: correctionKey, Title: "root", Status: "in_progress", Rank: "A",
 		HandedOver: true, LastSeq: 1, ResolvedRepo: "acme/tools"}}
-	if err := w.reconcileListing(ctx, listing, nil, false); err != nil {
-		t.Fatalf("the listing that moves %s to acme/tools: %v", correctionKey, err)
+	w.dispatch.(*repositoryDispatch).listed = listing
+	follows := w.followRequested.Load()
+	if err := w.reconcileListing(ctx, listing, nil, true); err != nil {
+		t.Fatalf("the boot's listing that moves %s to acme/tools: %v", correctionKey, err)
 	}
-
-	issue := r.issue()
-	r.corrected(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
+	r.uncorrected()
+	if _, read := branches.Kept("acme/tools"); read {
+		t.Fatal("the boot's listing read acme/tools, want no read of GitHub at the boot")
+	}
+	if asked := w.followRequested.Load(); asked == follows {
+		t.Fatal("the boot's listing asked for no follow, want one for the change it left")
+	}
+	if left, err := w.followListing(ctx, nil); err != nil || len(left) != 0 {
+		t.Fatalf("the follow after the boot = %v, %v; want it to read every issue", left, err)
+	}
+	r.corrected(r.issue(), "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
 	if messages := r.messages(); len(messages) != 0 {
-		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
+		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository both Apps are installed on", messages)
 	}
 }
 
 // newRuntimeCorrectionRig is a correctionRig whose engine resolves repositories through the
-// runtime's own mapping and default branches (w) rather than through resolutions held in memory:
-// acme/widgets, the project's default, and acme/tools are mapped, and a GitHub stand-in answers
-// their default branches, main and release/v7.1. branches is w's, and has read neither yet.
+// runtime's own preparation (w) rather than through reads held in memory: both role Apps are
+// installed on every repository, and a GitHub stand-in answers the default branches of acme/widgets
+// and acme/tools, main and release/v7.1. branches is w's, and has read neither yet.
 func newRuntimeCorrectionRig(t *testing.T) (*correctionRig, *workflowRuntime, *defaultBranches) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -503,10 +561,9 @@ func newRuntimeCorrectionRig(t *testing.T) (*correctionRig, *workflowRuntime, *d
 	recordCorrectionRoot(t, pool, records, correctionKey, "root", 0)
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/tools": "acme/tools@release/v7.1"})
 	repos := newRepositories(correctionProject, ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}, {Repo: ghrepo.MustParse("acme/tools")}}, nil)
 	branches := newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)
-	w := &workflowRuntime{pool: pool, records: records, repositories: repos, defaultBranches: branches,
-		dispatchProject: correctionProject, log: quietLogger()}
+	w := &workflowRuntime{pool: pool, records: records, repositories: repos, defaultBranches: branches, installs: &installations{},
+		dispatch: &repositoryDispatch{}, dispatchProject: correctionProject, log: quietLogger()}
 	engine := workflow.New(records, workflow.Config{Project: correctionProject, Repositories: w, Steps: config.DesignGateOff.Steps(),
 		Clock: func() time.Time { return correctionMoment }}, quietLogger())
 	admission := admit.New(records, engine, 1, correctionProject, quietLogger())

@@ -52,11 +52,15 @@ func seedHandOverFence(t *testing.T, pool *pgxpool.Pool, repo, branch string) {
 }
 
 // consumeHandOver applies the fact the outbox applies to complete the hand-over, carrying resolved
-// as the repository its Dispatch read answered with — "" for a read that answered none.
+// as the repository its Dispatch read answered with — "" for a read that answered none — and what
+// the outbox's preparation of it read of GitHub for that repository (the daemon's
+// prepareHandover), as testRepositories answers it.
 func consumeHandOver(t *testing.T, pool *pgxpool.Pool, admission *Admission, resolved string) {
 	t.Helper()
+	read := testRepositories.prepared(intake.DispatchIssue{ResolvedRepo: resolved})
 	if _, err := intake.ApplyFact(context.Background(), pool, "outbox", "handover:"+fencedChild+":1",
-		intake.Handover{Issue: fencedChild, Tree: fencedRoot, Generation: 1, ResolvedRepo: resolved},
+		intake.Handover{Issue: fencedChild, Tree: fencedRoot, Generation: 1, ResolvedRepo: resolved,
+			RepositoryRead: read.RepositoryRead, RepositoryRefusal: read.RepositoryRefusal, RepositoryRefusalKind: read.RepositoryRefusalKind},
 		admission.engine, admission); err != nil {
 		t.Fatalf("consume the hand-over: %v", err)
 	}
@@ -159,7 +163,7 @@ func TestRepositoryCorrectionOfAHandOverOntoAnUnservedRepositoryWaitsOnTheRecord
 	if c := got.RepoChange; c == nil || c.Pending != "acme/gadgets" || c.Reason != "the review App is not installed on acme/gadgets" {
 		t.Fatalf("the waiting change = %+v, want acme/gadgets and why it waits", c)
 	}
-	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
+	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on acme/gadgets."
 	if messages := handOverMessages(t, pool); len(messages) != 1 || messages[0] != want {
 		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, want)
 	}

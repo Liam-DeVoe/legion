@@ -417,21 +417,23 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
 
   // The daemon's own words for a change it cannot apply (noteRepositoryChangeWaits, in
   // packages/daemon/internal/workflow/repository.go), with this control's repositories put in,
-  // where no mapping names X and the implement App, the first role App the preparation reads, is
-  // not installed on it: its closing sentence names X and when Legion moves the issue.
+  // where the implement App, the first role App the preparation reads, is not installed on X:
+  // its closing sentence names X and when Legion moves the issue.
   const xTargetedNote =
     "Legion did not move this issue off acme/widgets: the implement App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on other/outside.";
-  // The same note where X is mapped and a GitHub App is not installed on it: the opening is the
-  // one the check matches, and the refusal and the closing sentence differ, the closing being the
-  // other one the check accepts.
-  const xLeftOutNote =
-    "Legion did not move this issue off acme/widgets: the review App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to.";
-  // Notes with neither closing sentence the daemon writes: one cut after its action, and one
-  // whose closing names a repository other than X.
+  // The same note where the review App is not installed on X: the refusal differs, and the
+  // opening and the closing sentence are the ones the check matches.
+  const xReviewNote =
+    "Legion did not move this issue off acme/widgets: the review App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on other/outside.";
+  // Notes with no closing sentence the daemon writes: one cut after its action, one whose closing
+  // names a repository other than X, and one with the closing a mapped X was told before
+  // dispatch://INFRA-4401 (#4493), which no daemon that reads no mapping writes.
   const xNoClosingNote =
     "Legion did not move this issue off acme/widgets: the implement App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name).";
   const xOtherRepositoryNote =
     "Legion did not move this issue off acme/widgets: the implement App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on zeta/tools.";
+  const xMappedClosingNote =
+    "Legion did not move this issue off acme/widgets: the review App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to.";
 
   // The repository and the message both already reflect the edit, but the
   // only post-baseline event is the daemon's own routine status write (also issue.updated) — this
@@ -512,8 +514,8 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
   };
 
   for (const [variant, note] of [
-    ["X not mapped, the implement App not installed on it", xTargetedNote],
-    ["X mapped, the review App not installed on it", xLeftOutNote],
+    ["the implement App not installed on X", xTargetedNote],
+    ["the review App not installed on X", xReviewNote],
   ] as const) {
     test(`an issue.updated after the baseline naming X, with the daemon's kept-repository message (${variant}): PASS`, async () => {
       const after = await repoEditAfterNote(note);
@@ -525,8 +527,9 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
   for (const [variant, note] of [
     ["no closing sentence", xNoClosingNote],
     ["a closing sentence naming another repository than X", xOtherRepositoryNote],
+    ["the closing a mapped X was told before #4493", xMappedClosingNote],
   ] as const) {
-    test(`an issue.updated after the baseline naming X, with a kept-repository message of neither ending (${variant}): FAIL`, async () => {
+    test(`an issue.updated after the baseline naming X, with a kept-repository message of another ending (${variant}): FAIL`, async () => {
       const after = await repoEditAfterNote(note);
       expect(after.status).not.toBe(0);
       expect(after.stderr).toContain("CHECK negative-repo-edit-ACME-2: FAIL");
@@ -536,7 +539,7 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
   // The operator spells X differently than Dispatch resolved and wrote it
   // (LEGION_E2E_REPO_X=Other/Outside here; Dispatch's own .repo and the daemon's note both read
   // "other/outside"). The comparisons above fold case, and so does the check of the X the note's
-  // closing sentence names where no mapping names X, which is Dispatch's spelling; the opening's
+  // closing sentence names, which is Dispatch's spelling; the opening's
   // kept repository is the baseline's own spelling, never the operator's literal
   // LEGION_E2E_REPO_X, or this would wrongly FAIL on a mere case difference.
   test("the operator's case for X differs from Dispatch's own resolved spelling: still PASS", async () => {
