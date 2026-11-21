@@ -447,6 +447,84 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhileARoundThisDaemonEndedIsStill
 	}
 }
 
+// The controller's request reads the rounds this daemon ended and its openings still in flight
+// without pruning either record: only the sweep's walk prunes them (readPodUpdateSweep,
+// beginPodUpdateSweep). The walk reads its claims before it takes the turn the request holds
+// (reconcileOrphans), so a request can take the turn in between, over claims read after the
+// walk's. Here a request comes in that window after the relaunching member's machine has taken the
+// end of a round this daemon ended, and the walk then decides from its older read, on which that
+// member's claim still records the round. The issue is told once that its pod went with that
+// member's work (review 6006134246 on cybermonklabs/legion#4065).
+//
+// The round's pod goes while the implementer, which had not answered, relaunches behind a held
+// Resume (holdRelaunch), as in TestARoundOverAGonePodThatLostWorkWritesOnce, and the tester, which
+// had answered, has come back in the pod in the gone pod's place. The sweep reads the claims
+// recording that pod, ends the round, writes one message, and keeps the round as ended
+// (podUpdateEnded) while the implementer's claim records it. The walk's claims are read then. The
+// implementer's relaunch comes up and its machine takes the end, the controller's request opens
+// the round over the pod in the gone pod's place, and the walk runs over its older read.
+//
+// The negative control is the request reading through the walk's pruning read
+// (beginPodUpdateSweep in postRequestedPodUpdate): the request drops the ended round, which no
+// claim it reads records, and the walk reads the round open over a pod its claims no longer
+// record, ends it again (endRoundWhosePodWent) and writes a second message on the issue.
+func TestPodUpdateTheControllerAsksForBetweenAWalksReadAndItsTurnWritesNoSecondLostWorkMessage(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.settleAll()
+
+	// The tester's relaunch is made whole before the implementer's is held: the fake runtime
+	// answers its Resumes in the order they were scripted, and a held Resume takes its answer only
+	// once it is let go.
+	rig.displacedInto(claim.RoleTester, podUpdateReplacementPod)
+	release := rig.holdRelaunch(claim.RoleImplementer, false, podUpdateReplacementPod)
+	rig.tick()
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the sweep that ended the round wrote on the issue %d times, want once for the pod that went: %q", len(messages), messages)
+	}
+	if !strings.Contains(messages[0], string(claim.RoleImplementer)) || strings.Contains(messages[0], string(claim.RoleTester)) {
+		t.Errorf("the message does not name the implementer alone, the one member that had not answered: %s", messages[0])
+	}
+	rig.awaitClaim(claim.RoleTester, "the end of the round to reach the tester",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+
+	// The walk's read of the claims, made before it takes the turn.
+	snapshot := rig.snapshot()
+	recorded := ""
+	for _, c := range snapshot {
+		if c.Token == rig.tokens[claim.RoleImplementer] {
+			recorded = c.UpdateRound
+		}
+	}
+	if recorded != podUpdateRound {
+		t.Fatalf("the implementer's claim records round %q in the walk's read, want %s: its machine is relaunching and has not taken the end", recorded, podUpdateRound)
+	}
+
+	// The implementer's relaunch comes up beside the tester and its machine takes the end. The
+	// controller's request then takes the turn ahead of the walk, over claims that record the
+	// ended round on no claim, and opens the round over the pod in the gone pod's place.
+	release()
+	rig.awaitPosted(claim.RoleImplementer)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
+		t.Fatalf("the implementer records round %q once its machine took what was posted to it, want none", c.UpdateRound)
+	}
+	next := supervise.PodRound(podUpdateReplacementPod)
+	route.answered(podUpdateIssue, api.PodUpdateResponse{Round: next, Reasons: requestedPodUpdateReasons, Opened: true})
+
+	// The walk takes the turn after the request, and decides from its own older read.
+	rig.s.reconcilePodUpdates(rig.ctx, snapshot)
+
+	if messages := rig.messages(); len(messages) != 1 {
+		t.Fatalf("the issue was written on %d times, want once for the pod that went: the walk after the request ended again the round this daemon had ended: %q", len(messages), messages)
+	}
+}
+
 // storedRound is the round each claim of issue records in the store, by role: what a daemon that
 // boots now restores.
 func (r *fleetRig) storedRound(issue string) map[claim.Role]string {

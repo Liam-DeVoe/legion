@@ -43,11 +43,11 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //   - no such claim: refused (api.PodUpdateNoClaim). An issue of another project is one, since
 //     this daemon runs no claim of it.
 //   - a round this daemon has ended whose end a claim of the issue has not taken yet
-//     (podUpdateEnded): the issue is read as that end leaves it, as the sweep reads it
-//     (podUpdateSweep.asEnded, reconcileIssuePodUpdate). Where no claim then records another
-//     round, refused, the pod is changing (api.PodUpdatePodChanging): what the claims record of
-//     the pod can still be the pod the ended round was opened over, and a round opened from it
-//     would be the ended round again.
+//     (podUpdateEnded, read without pruning: see below): the issue is read as that end leaves
+//     it, as the sweep reads it (podUpdateSweep.asEnded, reconcileIssuePodUpdate). Where no claim
+//     then records another round, refused, the pod is changing (api.PodUpdatePodChanging): what
+//     the claims record of the pod can still be the pod the ended round was opened over, and a
+//     round opened from it would be the ended round again.
 //   - a round open over the issue's pod: that round, opened nothing new. A round over the pod the
 //     claims record, a round whose claims record no pod at all (podlessRound carries it) and a
 //     round whose claims record two pods (a replacement in flight) are each the one this issue's
@@ -70,11 +70,22 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     so this answers a pause that began after that read, and a hold the resume left on a pod
 //     none of whose roles is live yet.
 //   - this daemon's own opening of the round still in flight, posted and not yet recorded by any
-//     claim: that opening, posted again with its own reasons, opened nothing new.
+//     claim (podUpdateOpened, read without pruning: see below): that opening, posted again with
+//     its own reasons, opened nothing new.
 //   - a limit of the project that holds the opening back, read as the sweep reads it, against a
-//     sweep read for this one request (beginPodUpdateSweep, podUpdateSweep.holds): refused,
+//     sweep read for this one request (readPodUpdateSweep, podUpdateSweep.holds): refused,
 //     naming the limit (api.PodUpdateLimited). The request is not kept: the controller asks again.
 //   - otherwise the round is opened, and answered with opened true.
+//
+// The ended rounds and the openings in flight are read as the sweep reads them, and only the
+// sweep's walk prunes either record (beginPodUpdateSweep); this request reads them and drops
+// nothing (readPodUpdateSweep). The walk reads its claims before it takes the turn this request
+// holds, so this request's claims can be newer than the claims that walk decides from. An entry
+// dropped on them would be gone from under that walk: a round whose end a relaunching member's
+// machine took in between is still on that member's claim in the walk's read, and the walk would
+// end it again and write a second lost-work message on the issue (podWentWithoutItsRound); an
+// opening a claim recorded in between is no round in the walk's read, and the walk would charge
+// the limits for it again.
 //
 // A round it posted, opened or in flight, is answered only once a claim of the issue records it
 // in the store (awaitPodRoundRecorded). The post is asynchronous and lives in memory alone
@@ -147,7 +158,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 			"this daemon supervises no claim of %s that has not retired, so it runs no pod of that issue", issue)
 	}
 	now := s.plan.clock.Now()
-	sweep := s.beginPodUpdateSweep(now, byIssue)
+	sweep := s.readPodUpdateSweep(now, byIssue)
 	if ended := sweep.ended[issue]; ended != "" {
 		group = sweep.asEnded(issue, group)
 		if openPodRound(group) == "" {

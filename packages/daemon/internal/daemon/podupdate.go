@@ -135,7 +135,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // the controller asks for (requestPodUpdate) is opened before that read or after that record,
 // and never between them on limits the walk has already spent. It waits for the turn as long as
 // a request holds it: a request holds it for its store reads of the claims and of the pause holds
-// on the issue's pod (podPauseHolds), its read of the limits (beginPodUpdateSweep), and its post,
+// on the issue's pod (podPauseHolds), its read of the limits (readPodUpdateSweep), and its post,
 // whose ask of a ready role first reads the asks still queued (askRound).
 func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Claim) []podReplacement {
 	issues, byIssue := podUpdateGroups(claims)
@@ -387,8 +387,9 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // A group whose claims record a pod the runtime cannot read decides nothing at that sweep: no
 // round opens over it and none ends (groupDrift, podUnread), and the next sweep reads it again.
 // Past the bound of a round open over it, that read holds the round, and the controller is told
-// of it once, or of each suspension that holds a claim of the round in its place, with its holder
-// (tellUnreadPod).
+// of it once; where a suspension that holds is over a claim of the round, the notice names each
+// such hold and its holder in its place, told to the controller or, for an architect's hold, to
+// the architect that owns the held claim (tellUnreadPod, tellUpdateStalled).
 //
 // A pod a launch replaced as its round's own replacement (roundPodEndsAtLaunch) is read gone by
 // the same readings, and the round it was the pod of ends at whichever comes first as the
@@ -468,10 +469,12 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	}
 	if reading != podRead {
 		// The unread pod decides nothing, and past the bound of a round open over it the
-		// controller is told of the round once, or of the holds over its claims in its place
-		// (tellUnreadPod). The snapshot says first whether the bound has come and whether the round
-		// was told (lateRoundUntold), so a round before its bound costs no read of the machines. A
-		// sweep the daemon cancelled read nothing of the pod, and tells nothing.
+		// controller is told of the round once; where holds are over its claims, each hold and its
+		// holder are told in its place, to the controller or, for an architect's hold, to the
+		// architect that owns the held claim (tellUnreadPod). The snapshot says first whether the
+		// bound has come and whether the round was told (lateRoundUntold), so a round before its
+		// bound costs no read of the machines. A sweep the daemon cancelled read nothing of the
+		// pod, and tells nothing.
 		if open != "" && ctx.Err() == nil && lateRoundUntold(group, open, clock) {
 			live := s.liveGroup(group)
 			s.tellUnreadPod(ctx, issue, live, open, pod, roundReasons(group, open), heldClaims(live, open, clock), clock)
@@ -3164,19 +3167,32 @@ func (s *supervision) keepEndedRound(issue, round string) {
 }
 
 // endedRounds is the rounds the sweep has ended that a claim of their issue still records, by
-// issue, read once before the walk (beginPodUpdateSweep). An entry goes at the first sweep where
-// no claim of its issue records its round: every member's machine has taken the end, and nothing
-// of the round is left to read as over. byIssue is the sweep's groups, so an issue with no live
-// claim records no round. What is answered is a copy, so the walk reads it without this mutex.
-func (s *supervision) endedRounds(byIssue map[string][]supervise.Claim) map[string]string {
+// issue (podUpdateEnded), read once before the walk (beginPodUpdateSweep) and once for the
+// controller's request (readPodUpdateSweep). byIssue is the reader's groups, so an issue with no
+// live claim records no round. What is answered is a copy, so its reader reads it without this
+// mutex.
+//
+// prune is whether an entry no claim of byIssue records goes from podUpdateEnded: every member's
+// machine has taken the end, and nothing of the round is left to read as over. Only the walk
+// prunes, and the entry goes at the first sweep whose claims record its round on no claim. For
+// the controller's request the same rounds are answered and none is dropped. The request's claims
+// are read inside the walk's turn, and can be newer than the claims the next walk read before it
+// took that turn (beginPodUpdateSweep): an entry dropped because a relaunching member's machine
+// took the end in between would be gone for that walk, whose older read still holds the round on
+// that member's claim, and the walk would end the round again and write a second lost-work
+// message on the issue (podWentWithoutItsRound).
+func (s *supervision) endedRounds(byIssue map[string][]supervise.Claim, prune bool) map[string]string {
 	s.podUpdateEndedMu.Lock()
 	defer s.podUpdateEndedMu.Unlock()
+	ended := make(map[string]string, len(s.podUpdateEnded))
 	for issue, round := range s.podUpdateEnded {
-		if !recordsRound(byIssue[issue], round) {
+		if recordsRound(byIssue[issue], round) {
+			ended[issue] = round
+		} else if prune {
 			delete(s.podUpdateEnded, issue)
 		}
 	}
-	return maps.Clone(s.podUpdateEnded)
+	return ended
 }
 
 // podReading is what one sweep could read of the pod the group's claims record, and the one

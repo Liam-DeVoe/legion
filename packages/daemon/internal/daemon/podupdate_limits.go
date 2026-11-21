@@ -13,7 +13,6 @@ package daemon
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -69,14 +68,19 @@ func (a *podUpdateAllowance) take() {
 // round.
 //
 // inFlight is this daemon's own openings whose claims record no round yet, by issue, as
-// podUpdateOpenings read them once before the walk. An issue whose round is one of them is that
-// opening posted again rather than a new one (reposts), and the walk reads it here rather than
-// taking the openings' own mutex at every issue.
+// podUpdateOpenings read them once before the walk, or once for the controller's request. An
+// issue whose round is one of them is that opening posted again rather than a new one (reposts),
+// and the walk reads it here rather than taking the openings' own mutex at every issue. Only the
+// walk's reading drops from this daemon's record an opening its claims no longer need; the
+// request's reads the same openings and drops nothing (beginPodUpdateSweep says why).
 //
 // ended is the rounds this daemon has ended that a claim of their issue still records, by issue,
-// as endedRounds read them once before the walk (podUpdateEnded). The walk decides such an issue
-// from its group as the end leaves it, and the slots are counted over that same group, so a round
-// the sweep has ended holds no slot while its end is on its way to a member's machine.
+// as endedRounds read them once before the walk, or once for the controller's request
+// (podUpdateEnded). The walk decides such an issue from its group as the end leaves it, and the
+// slots are counted over that same group, so a round the sweep has ended holds no slot while its
+// end is on its way to a member's machine. Only the walk's reading drops from this daemon's record
+// a round no claim records any more; the request's reads the same rounds and drops nothing
+// (beginPodUpdateSweep says why).
 type podUpdateSweep struct {
 	slots    podUpdateAllowance
 	budget   podUpdateAllowance
@@ -139,9 +143,9 @@ func (sweep *podUpdateSweep) charge(issue string) {
 // (recordPodUpdateSweep).
 //
 // An entry for this issue always names this round, when there is one: an entry whose pod no
-// claim records a process in is dropped before the walk (podUpdateOpenings), and the walk passes
-// over an issue whose claims run in two pods. So false here means no opening of this daemon's
-// own is in flight for the issue.
+// claim records a process in is left out of the sweep's openings (podUpdateOpenings), and the walk
+// passes over an issue whose claims run in two pods. So false here means no opening of this
+// daemon's own is in flight for the issue.
 func (sweep *podUpdateSweep) reposts(issue, round string) (podUpdateOpening, bool) {
 	opening := sweep.inFlight[issue]
 	if opening.round != round {
@@ -193,9 +197,40 @@ func (sweep podUpdateSweep) asEnded(issue string, group []supervise.Claim) []sup
 //
 // The sweep's own budget is the whole of the per-minute limit, spent at this one sweep rather
 // than paced inside it, and nothing at all within podUpdateOpeningGap of the last opening.
+//
+// This is the walk's reading, and the only one that prunes: the openings and the ended rounds its
+// claims no longer need go from this daemon's record of them (podUpdateOpenings, endedRounds).
+// The controller's request reads the same sweep and prunes nothing (readPodUpdateSweep). The walk
+// reads its claims before it takes the walk's turn — the sweep reads them (reconcileOrphans) and
+// runs the runtime's orphan reconcile and refreshStalePlugins first — and a request can take the
+// turn in that window with claims read later. Pruned on those newer claims, an entry would be gone
+// from under the walk that follows, which decides from its older read. A round this daemon ended
+// whose end a relaunching member's machine took in that window is still on that member's claim in
+// the walk's read, so the walk would end the round again and write a second lost-work message on
+// the issue (podWentWithoutItsRound); and an opening a claim recorded in that window is no round
+// in the walk's read, so the walk would read the issue as unopened and charge the limits again.
+// The sweeps read their claims one after another, each after the walk before it has ended, so
+// every later walk decides from claims no older than the ones this walk prunes on.
 func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]supervise.Claim) podUpdateSweep {
-	opened, inFlight := s.podUpdateOpenings(byIssue)
-	sweep := podUpdateSweep{inFlight: inFlight, ended: s.endedRounds(byIssue)}
+	return s.podUpdateSweepOf(now, byIssue, true)
+}
+
+// readPodUpdateSweep is the sweep beginPodUpdateSweep reads, read for the controller's request
+// (postRequestedPodUpdate) over the request's own claims, with nothing pruned: the request
+// decides from the same slots, budget, openings and ended rounds, and leaves this daemon's record
+// of its openings and of its ended rounds for the walk to prune (beginPodUpdateSweep says why).
+func (s *supervision) readPodUpdateSweep(now time.Time, byIssue map[string][]supervise.Claim) podUpdateSweep {
+	return s.podUpdateSweepOf(now, byIssue, false)
+}
+
+// podUpdateSweepOf is the sweep both readings answer (beginPodUpdateSweep, readPodUpdateSweep),
+// built by this one rule so the slots and the budget are counted the same for both. prune is
+// whether the reads of the openings and of the ended rounds drop from this daemon's record what
+// byIssue no longer needs (podUpdateOpenings, endedRounds); the sweep answered is the same either
+// way.
+func (s *supervision) podUpdateSweepOf(now time.Time, byIssue map[string][]supervise.Claim, prune bool) podUpdateSweep {
+	opened, inFlight := s.podUpdateOpenings(byIssue, prune)
+	sweep := podUpdateSweep{inFlight: inFlight, ended: s.endedRounds(byIssue, prune)}
 	if rounds := s.cfg.PodUpdateMaxOpenRounds; rounds != nil {
 		held := len(inFlight)
 		for issue, group := range byIssue {
@@ -220,8 +255,8 @@ func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]su
 // opened a moment earlier — one interval of openings at worst, which is what the limits are
 // written in.
 //
-// An opening is dropped from the record as soon as a claim of its issue records that round,
-// because the claims then count the slot themselves. It is dropped too when no claim of the
+// An opening is left out of what is answered as soon as a claim of its issue records that round,
+// because the claims then count the slot themselves. It is left out too when no claim of the
 // group records a process in that round's own pod (podProcess). That covers two cases. In the
 // first, no claim of the issue records a pod at all: the issue holds no slot then, however the
 // post went, and the next sweep reads its pod round from the claims as it reads every other. In
@@ -235,20 +270,31 @@ func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]su
 // pod", a sibling claim running in the pod that replaced the round's own would hold the entry —
 // and with it one of the project's slots — until the daemon restarts.
 //
+// prune is whether an opening left out by either rule is also dropped from the record. Only the
+// walk prunes (beginPodUpdateSweep); the controller's request answers the same openings and drops
+// none (readPodUpdateSweep). The request reads its claims inside the walk's turn, and they can
+// be newer than the claims the next walk read before it took that turn: an opening dropped
+// because a claim recorded its round in between would be gone for that walk, whose older read
+// records no round for the issue, and the walk would read the issue as unopened and charge the
+// limits for it again.
+//
 // The openings are answered rather than counted, because the sweep weighs them twice: once as
 // the slots they hold over the whole project, and once at the issue each was made for, whose
 // round they say is this daemon's own ask still in flight (beginPodUpdateSweep). What is
-// answered is a copy of the sweep's own, so the walk reads it without this mutex.
-func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (time.Time, map[string]podUpdateOpening) {
+// answered is a copy, so the walk reads it without this mutex.
+func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim, prune bool) (time.Time, map[string]podUpdateOpening) {
 	s.podUpdateMu.Lock()
 	defer s.podUpdateMu.Unlock()
+	inFlight := make(map[string]podUpdateOpening, len(s.podUpdateOpened))
 	for issue, opening := range s.podUpdateOpened {
 		group := byIssue[issue]
-		if _, inItsPod := podProcess(group, opening.round); recordsRound(group, opening.round) || !inItsPod {
+		if _, inItsPod := podProcess(group, opening.round); inItsPod && !recordsRound(group, opening.round) {
+			inFlight[issue] = opening
+		} else if prune {
 			delete(s.podUpdateOpened, issue)
 		}
 	}
-	return s.podUpdateOpenedAt, maps.Clone(s.podUpdateOpened)
+	return s.podUpdateOpenedAt, inFlight
 }
 
 // recordPodUpdateOpening charges one opening that reached a worker to this sweep and to this

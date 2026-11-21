@@ -796,12 +796,14 @@ func (c Claim) RuleMayResume() bool {
 // suspended.
 //
 // A suspension that holds (SuspendSource.Holds: the operator's, the controller's or an
-// architect's) is not passed over. A person's suspend route, the boot's session-conflict
-// suspension and fresh_session record the operator's, and the controller's and an architect's
-// suspend through their `legion` tool record theirs. Each holds the round until a resume lifts it
-// (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks (through
-// roundClock.passesOver) and PublishUpdateAsk both read this method, so the ask, the wait and the
-// publish state R1's rule once.
+// architect's) is not passed over. A person's suspend route and the boot's session-conflict
+// suspension record the operator's. A fresh session records its caller's: the operator's for the
+// operator's `legion claims retry --fresh-session` (api's retryClaim), and the controller's or an
+// architect's for the fresh_session of their `legion` tool (api's claimFreshSession). The
+// controller's and an architect's suspend through that tool record theirs. Each holds the round
+// until a resume lifts it (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks
+// (through roundClock.passesOver) and PublishUpdateAsk both read this method, so the ask, the
+// wait and the publish state R1's rule once.
 func (c Claim) PassedOverByRound() bool {
 	return c.RuleMayResume()
 }
