@@ -572,3 +572,44 @@ func TestTwoWritersRacingOnAThreeCopyBucketEndWithOneWriteAndOneConflict(t *test
 		}
 	}
 }
+
+// On a real nats-server, a consumer created at deliver policy new reports a delivered stream
+// sequence one before the first message it delivers, so the start NativeFirstCreate's publish saves
+// is the first message published after the create. The boundary is set to 1 and the stream holds
+// earlier messages, none of which the consumer delivers.
+func TestTheNativeOptionSavesTheStartTheServerReports(t *testing.T) {
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, Boundary: 1})
+	ctx := context.Background()
+	for i := range 3 {
+		if _, err := live.js.Publish(ctx, "names.native", fmt.Appendf(nil, "before %d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := live.names("p1")
+	names.cfg.NativeFirstCreate = true
+	sel, _, err := names.Ensure(ctx, "legion-go-p-github", CreateRequest{Create: live.family.create("legion-go-p-github"), First: nativeNew})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := live.js.Publish(ctx, "names.native", []byte("after"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Record.Start != ack.Sequence {
+		t.Fatalf("the saved start is %d, want %d, the first message published after the create", sel.Record.Start, ack.Sequence)
+	}
+	consumer, err := live.js.Consumer(ctx, testStream, sel.Record.Current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy := consumer.CachedInfo().Config.DeliverPolicy; policy != jetstream.DeliverNewPolicy {
+		t.Fatalf("the consumer was created at %v, want deliver policy new", policy)
+	}
+	msg, err := consumer.Next(jetstream.FetchMaxWait(10 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta, err := msg.Metadata(); err != nil || meta.Sequence.Stream != sel.Record.Start {
+		t.Fatalf("the consumer delivered %+v (%v) first, want stream sequence %d", meta, err, sel.Record.Start)
+	}
+}

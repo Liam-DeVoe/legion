@@ -85,6 +85,14 @@ type Config struct {
 	// whose keys are made by a rule of its own (DurableKey) passes that rule's check
 	// (CheckDurableKey).
 	CheckKey func(logical string) error
+	// NativeFirstCreate keeps a family's native first create (CreateRequest.First answering a
+	// Start with Native set) for a logical name with no record, whatever the cutover boundary: the
+	// daemon's durables keep today's deliver policy new. A saved start and replay_from still win.
+	// Such a first create may answer Seq 0, so its rule reads no stream; the publish then saves the
+	// start the created consumer reports (its delivered stream sequence plus one), and a candidate
+	// that never landed is created natively again. Off, the default and the session family's, a
+	// native first create starts by start sequence at the boundary when one is set.
+	NativeFirstCreate bool
 	// Reserved, when set, runs after each write that reserves a candidate (a create, a replace,
 	// and Step 0's or a retry's fresh candidate), before any server call or create of that
 	// operation, with the operation as written. An error ends the call with the operation open
@@ -370,7 +378,7 @@ func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, 
 	if create == nil {
 		return n.abandon(ctx, sel)
 	}
-	next, err := n.rereserve(ctx, sel, "")
+	next, err := n.rereserve(ctx, sel, retryNative(sel))
 	if err != nil {
 		return next, err
 	}
@@ -513,8 +521,9 @@ func (n *Names) safeStart(ctx context.Context, sel Selection) (uint64, error) {
 
 // Ensure returns logical's current consumer, and creates one when the record selects none: at the
 // saved start, or the caller's lower one; for a key with no record at replay_from while the store
-// is in replay mode, else at the family's first-create rule, no later than the cutover boundary.
-// created says this call created the current.
+// is in replay mode, else at the family's first-create rule, no later than the cutover boundary
+// unless the rule is native and Config.NativeFirstCreate keeps it. created says this call created
+// the current.
 func (n *Names) Ensure(ctx context.Context, logical string, req CreateRequest) (Selection, bool, error) {
 	for conflicts := 0; ; {
 		sel, err := n.Select(ctx, logical, req.Create)
@@ -550,6 +559,9 @@ func (n *Names) startFor(ctx context.Context, sel Selection, req CreateRequest) 
 	start, err := req.First(ctx)
 	if err != nil {
 		return Start{}, err
+	}
+	if n.cfg.NativeFirstCreate && start.Native != "" {
+		return start, nil
 	}
 	if b := sel.State.Boundary; b > 0 {
 		switch {
@@ -658,7 +670,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			return sel, stepError(sel.Logical, operation, op.Candidate, err)
 		}
 		retried = true
-		next, werr := n.rereserve(ctx, sel, "")
+		next, werr := n.rereserve(ctx, sel, retryNative(sel))
 		if werr != nil {
 			n.observeErr(operation, werr)
 			return next, werr
@@ -682,6 +694,17 @@ func (n *Names) rereserve(ctx context.Context, sel Selection, native Native) (Se
 	return next, n.reserved(ctx, next)
 }
 
+// retryNative is the native policy a fresh candidate retried in place of sel's open operation's
+// keeps: none, so the retry starts by start sequence at the saved start, unless no start is saved
+// (a native first create of Config.NativeFirstCreate whose candidate never reported one), where it
+// keeps the operation's native policy, as today's first create does.
+func retryNative(sel Selection) Native {
+	if sel.Record.Start == 0 {
+		return sel.Record.Op.Native
+	}
+	return ""
+}
+
 // answered reports whether err is the server's answer to a create rather than a create whose
 // outcome is unknown.
 func answered(err error) bool {
@@ -700,6 +723,11 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	record.Current = op.Candidate
 	if info != nil && info.Config.DeliverPolicy == jetstream.DeliverByStartSequencePolicy && info.Config.OptStartSeq > 0 {
 		record.Start = info.Config.OptStartSeq
+	} else if info != nil && op.Native != "" && record.Start == 0 {
+		// A native first create with no start saved: the consumer's own, the sequence after the
+		// last one it reports delivered, which for a consumer that delivered nothing yet is the
+		// first it will deliver.
+		record.Start = info.Delivered.Stream + 1
 	}
 	record.LastFloor = nil
 	old := ""
