@@ -130,29 +130,24 @@ function startUpstream(name: DispatchProcess) {
   return upstream;
 }
 
-/** A port nothing listens on at the moment it is asked for. */
-function freePort(): number {
-  const probe = Bun.serve({ fetch: () => new Response(), hostname: "127.0.0.1", port: 0 });
-  const port = Number(probe.url.port);
-  probe.stop(true);
-  return port;
-}
-
 const a = startUpstream("a");
 const b = startUpstream("b");
-const proxyPort = freePort();
-const origin = `http://127.0.0.1:${proxyPort}`;
-let proxy: Subprocess<"ignore", "pipe", "inherit">;
 /** A home for every child this file starts, so none of them reads the caller's. */
 const childHome = temporaryDirectory("round-robin-proxy-home");
 
-beforeAll(async () => {
-  proxy = Bun.spawn(["bun", proxyScript], {
+/** The proxy as the harness runs it, a `bun` process of its own, on a port it binds itself:
+ *  DISPATCH_E2E_PORT unset is port 0, so the kernel chooses, and the proxy's one line names the
+ *  origin it got. No port is chosen here and given back for the proxy to bind a moment later, a
+ *  gap in which any other process could take it. */
+async function startProxy(): Promise<{
+  readonly proxy: Subprocess<"ignore", "pipe", "inherit">;
+  readonly origin: string;
+}> {
+  const started = Bun.spawn(["bun", proxyScript], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: childHome,
       TMPDIR: tmpdir(),
-      DISPATCH_E2E_PORT: String(proxyPort),
       DISPATCH_E2E_PORT_A: String(a.server.port),
       DISPATCH_E2E_PORT_B: String(b.server.port),
       DISPATCH_E2E_PROCESSES: "2",
@@ -160,15 +155,27 @@ beforeAll(async () => {
     stderr: "inherit",
     stdout: "pipe",
   });
-  // The proxy logs one line once it listens.
-  const reader = proxy.stdout.getReader();
+  // The proxy logs one line once it listens: `round-robin proxy on <origin> for ...`.
+  const reader = started.stdout.getReader();
   let logged = "";
-  while (!logged.includes("round-robin proxy on")) {
+  let listening = /round-robin proxy on (http:\/\/127\.0\.0\.1:[1-9][0-9]*) /.exec(logged);
+  while (listening === null) {
     const { done, value } = await reader.read();
     if (done) throw new Error(`the proxy exited before it listened: ${logged}`);
     logged += new TextDecoder().decode(value);
+    listening = /round-robin proxy on (http:\/\/127\.0\.0\.1:[1-9][0-9]*) /.exec(logged);
   }
   reader.releaseLock();
+  return { proxy: started, origin: listening[1] as string };
+}
+
+let proxy: Subprocess<"ignore", "pipe", "inherit">;
+let origin = "";
+let proxyPort = 0;
+
+beforeAll(async () => {
+  ({ proxy, origin } = await startProxy());
+  proxyPort = Number(new URL(origin).port);
 });
 
 afterAll(async () => {
@@ -573,4 +580,90 @@ describe("DISPATCH_E2E_PROCESSES", () => {
     },
     rowLimit("short", "short")
   );
+});
+
+/** Runs `body` with the next server this process starts and then stops taken over at once by
+ *  another process, which binds the stopped server's port and answers "squatter" there: the race a
+ *  port chosen by starting and stopping a server, and bound by a child a moment later, is open to
+ *  on a box where other runs start servers. Returns what `body` returned and the ports taken over;
+ *  the squatters are stopped by their pids before it returns. */
+async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatted: number[] }> {
+  const serve = Bun.serve;
+  const squatted: number[] = [];
+  const squatters: number[] = [];
+  let armed = true;
+  Bun.serve = ((...args: Parameters<typeof Bun.serve>) => {
+    const server = serve(...args);
+    if (!armed) return server;
+    armed = false;
+    const port = Number(server.port);
+    const stop = server.stop.bind(server);
+    server.stop = (closeActiveConnections?: boolean) => {
+      const stopped = stop(closeActiveConnections);
+      // The squatter tries the port until it binds it, for at most 10 s, and this waits until it
+      // answers there, for at most 10 s.
+      const squatter = `const port = Number(process.argv[1]); for (let i = 0; i < 400; i++) { try { Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("squatter") }); break; } catch { await Bun.sleep(25); } }`;
+      const started = Bun.spawnSync([
+        "bash",
+        "-c",
+        `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; i=0; while [ "$i" -lt 200 ]; do [ "$(curl -q -s --max-time 1 "http://127.0.0.1:$2/")" = squatter ] && exit 0; sleep 0.05; i=$((i + 1)); done; exit 1`,
+        process.execPath,
+        squatter,
+        String(port),
+      ]);
+      squatters.push(Number(started.stdout.toString().trim().split("\n")[0]));
+      if (!started.success) throw new Error(`the squatter did not take port ${port}`);
+      squatted.push(port);
+      return stopped;
+    };
+    return server;
+  }) as typeof Bun.serve;
+  try {
+    return { result: await body(), squatted };
+  } finally {
+    Bun.serve = serve;
+    for (const pid of squatters) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  }
+}
+
+describe("the proxy's port", () => {
+  test("control: the squat takes a port a server of this process stopped, and answers there", async () => {
+    const { result, squatted } = await withSquat(async () => {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () => new Response("own"),
+      });
+      const port = Number(server.port);
+      server.stop(true);
+      return { port, answer: await (await Bun.fetch(`http://127.0.0.1:${port}/`)).text() };
+    });
+    expect({ squatted, answer: result.answer }).toEqual({
+      squatted: [result.port],
+      answer: "squatter",
+    });
+  });
+
+  test("a proxy started as this file starts it answers as itself under the squat: it binds its own port, so none is chosen here and given back", async () => {
+    const { result, squatted } = await withSquat(async () => {
+      let started: Awaited<ReturnType<typeof startProxy>>;
+      try {
+        started = await startProxy();
+      } catch (error) {
+        return { thrown: String(error) };
+      }
+      try {
+        const answer = await Bun.fetch(`${started.origin}/_proxy/requests`);
+        return { status: answer.status, body: await answer.text() };
+      } finally {
+        started.proxy.kill();
+        await started.proxy.exited;
+      }
+    });
+    expect({ ...result, squatted }).toEqual({ status: 200, body: "[]", squatted: [] });
+  });
 });
