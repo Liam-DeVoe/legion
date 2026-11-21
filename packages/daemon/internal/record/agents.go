@@ -15,7 +15,10 @@ const maxAgentName = 32
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
 // every generation (PlanStepsOf), read before the version's steps are written, since the write
 // deletes the steps of each task it gives. It names in four passes, in this order, so that a key
-// never changes its name and no new name can take a key's:
+// the version names never changes its name and no new name can take that key's. A key the version
+// no longer names frees its name: an agent of the version can take it, and with it that name's
+// claim and session, as a new task's agent with no key takes the name of a stopped task's agent
+// of its role.
 //
 //  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
 //     tree and no name on the issue.

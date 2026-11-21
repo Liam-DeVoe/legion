@@ -33,6 +33,7 @@ import (
 // no pull request or one that is not open, it holds no merge forward or one of another head, or the
 // row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
 // the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for
+// a head that already came. What follows - a claim that failed or retired, the design gate, the
 // wake and the publish - is deliverHeld's, as it is a merge-queue removal's. The message reaches the
 // claim it names (record.MergeForwardMessage.Claim), the worker of its role's step when the
 // workflow wrote it; a row the release before wrote names none and reaches the claim the record
