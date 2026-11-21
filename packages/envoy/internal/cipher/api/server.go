@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -59,12 +58,11 @@ type Deps struct {
 	Machine             *requests.Machine
 	MachineLogin        *machine.Service
 	Proof               *proof.Verifier
-	// ServiceKinds is BROKER_NATS_SERVICES as GET /v1/project-privacy reads it: the kind of service
-	// each account the setting lists is bound to (natscallout.ServiceKinds). That route answers an
-	// account bound to a listener alone, whose identity token AccountTokens or GoogleAccountTokens
-	// verifies. The zero value lists no account, so the route answers every caller whose token
-	// verifies 403 not_listener, as a broker that runs no NATS auth service does.
-	ServiceKinds ServiceKinds
+	// PrivacyReaders are the accounts GET /v1/project-privacy answers, whose identity token
+	// AccountTokens or GoogleAccountTokens verifies: natscallout.PrivacyReaders's choice from
+	// BROKER_NATS_SERVICES. The zero value holds none, so the route answers every caller whose
+	// token verifies 403 not_listener, as a broker that runs no NATS auth service does.
+	PrivacyReaders PrivacyReaders
 	// ProjectPrivacy is Dispatch's list of every private project, read afresh on each call
 	// (projectaccess.Client.PrivateProjectsFresh), which GET /v1/project-privacy answers a
 	// listener. Nil is a broker with no BROKER_PROJECT_ACCESS_URL, which answers that route 502
@@ -193,9 +191,8 @@ type server struct {
 	// listenerAuth route and every route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
-	// privacyReads holds one slot for each call of GET /v1/project-privacy asking Dispatch, at
-	// most maxProjectPrivacyReads (readProjectPrivacy).
-	privacyReads chan struct{}
+	// privacyReads are GET /v1/project-privacy's slots (readProjectPrivacy).
+	privacyReads *privacyReads
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -243,7 +240,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
-		privacyReads:    make(chan struct{}, maxProjectPrivacyReads),
+		privacyReads:    newPrivacyReads(),
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names
@@ -408,7 +405,7 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
 	case authListener:
-		return answer.CallerService, c.listener
+		return answer.CallerListener, c.listener.name
 	case authSignIn:
 		if c.signIn.Login == "" {
 			return answer.CallerUnauthenticated, ""
@@ -493,25 +490,26 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 
 // listenerCaller authenticates a listener's own identity token for authenticate, the credential
 // listenerAuth's routes take: platformAccount verifies it, with its refusals, as it does
-// accountCaller's, and the account it names is then looked up in BROKER_NATS_SERVICES
-// (Deps.ServiceKinds) rather than in BROKER_API_ACCOUNTS. An account the setting binds to a kind
-// listenerKinds does not hold, and one it does not list at all, is 403 not_listener: the
-// credential is sound, and it is not a listener's. It answers the caller as <kind>@<account>.
+// accountCaller's, and the account it names must then be one Deps.PrivacyReaders holds:
+// natscallout's choice from BROKER_NATS_SERVICES of the entries that read project privacy. Any
+// other account, listed under another kind or scope or not at all, is 403 not_listener: the
+// credential is sound, and it is not a reader's. It answers the caller with the reader's name and
+// account.
 func (s *server) listenerCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, google, ok := s.platformAccount(w, r)
 	if !ok {
 		return caller{}, false
 	}
-	kinds := s.deps.ServiceKinds.K8s
+	readers := s.deps.PrivacyReaders.K8s
 	if google {
-		kinds = s.deps.ServiceKinds.Google
+		readers = s.deps.PrivacyReaders.Google
 	}
-	kind := kinds[account]
-	if !slices.Contains(listenerKinds, kind) {
-		writeError(w, http.StatusForbidden, "not_listener", "BROKER_NATS_SERVICES binds this account to no listener, and only a listener reads which projects are private")
+	name, reads := readers[account]
+	if !reads {
+		writeError(w, http.StatusForbidden, "not_listener", "BROKER_NATS_SERVICES binds this account to no listener that reads which projects are private")
 		return caller{}, false
 	}
-	return caller{listener: kind + "@" + account}, true
+	return caller{listener: privacyReader{name: name, account: account}}, true
 }
 
 // platformAccount verifies a caller's own platform identity token, r's bearer, for accountCaller

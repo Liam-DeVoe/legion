@@ -751,15 +751,15 @@ type Config struct {
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
 	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
 	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
-	// start (natscallout.ParseServices); GET /v1/project-privacy answers an account it binds to a
-	// listener, and no other caller. BROKER_NATS_K8S_AUDIENCE is the audience a service's
-	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
-	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
-	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
-	// no audience is refused at start naming it. A session presents its broker access token and
-	// needs neither. All unset, the broker runs no auth service, and GET /v1/project-privacy
-	// answers every caller whose identity token verifies 403 not_listener; any set needs the URLs
-	// and the three seed files.
+	// start (natscallout.ParseServices); GET /v1/project-privacy answers a listener entry with the
+	// whole grant (*), the readers natscallout names, and no other caller. BROKER_NATS_K8S_AUDIENCE
+	// is the audience a service's projected Kubernetes token must carry, verified against
+	// BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's
+	// Google identity token must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry
+	// whose kind of token has no audience is refused at start naming it. A session presents its
+	// broker access token and needs neither. All unset, the broker runs no auth service, and GET
+	// /v1/project-privacy answers every caller whose identity token verifies 403 not_listener; any
+	// set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was

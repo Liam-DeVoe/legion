@@ -692,7 +692,7 @@ func main() {
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
-		ServiceKinds: natscallout.ServiceKinds(natsServices), ProjectPrivacy: projectPrivacy,
+		PrivacyReaders: natscallout.PrivacyReaders(natsServices), ProjectPrivacy: projectPrivacy,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

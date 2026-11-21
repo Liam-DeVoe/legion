@@ -3,7 +3,6 @@ package natscallout
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -25,12 +24,6 @@ const (
 	KindDaemon   Kind = "daemon"
 	KindMeasure  Kind = "measure"
 )
-
-// Kinds is every kind the auth service admits, the one list ParseServices reads: an entry of any
-// other kind is refused. A listener's kind, its name listener or ending in -listener, is also a
-// kind the broker's GET /v1/project-privacy answers, which api.ListenerKinds must hold
-// (TestEveryListenerKindReadsProjectPrivacy, in internal/cipher/api).
-var Kinds = []Kind{KindDispatch, KindListener, KindDaemon, KindMeasure}
 
 // ServiceEntry is one service the auth service admits by its platform identity.
 type ServiceEntry struct {
@@ -92,19 +85,39 @@ func ParseServices(raw string) ([]ServiceEntry, error) {
 	return services, nil
 }
 
-// ServiceKinds is services as the broker's HTTP routes read them (api.ServiceKinds): each entry's
-// kind, by its account, among the Kubernetes accounts or the Google ones as the entry's account is.
-// GET /v1/project-privacy answers an account it binds to a listener.
-func ServiceKinds(services []ServiceEntry) api.ServiceKinds {
-	kinds := api.ServiceKinds{K8s: map[string]string{}, Google: map[string]string{}}
+// ReadsProjectPrivacy reports whether a service of this kind reads, at the broker's GET
+// /v1/project-privacy, every private project and the Slack channel ids each one's owner named. It
+// is the one statement of which kinds do: the route answers what PrivacyReaders keeps, and nothing
+// else. A listener does, for its privacy decisions; Dispatch's own listener's kind joins it when
+// the auth service gains one. Every other kind does not, until someone decides it should here: a
+// kind is not a reader for being named like one, and an outside-facing or project-limited
+// listener reads no other project's privacy.
+func (k Kind) ReadsProjectPrivacy() bool {
+	switch k {
+	case KindListener:
+		return true
+	}
+	return false
+}
+
+// PrivacyReaders is services as GET /v1/project-privacy reads them (api.PrivacyReaders): each
+// entry whose kind reads project privacy and whose grant is whole (*), by its account, named as
+// the auth service names its user, <kind>/<machine id>. An entry held to its exchange projects (-)
+// is none, since the route answers every private project and such an entry's grant reaches only
+// its own.
+func PrivacyReaders(services []ServiceEntry) api.PrivacyReaders {
+	readers := api.PrivacyReaders{K8s: map[string]string{}, Google: map[string]string{}}
 	for _, entry := range services {
+		if !entry.AllProjects || !entry.Kind.ReadsProjectPrivacy() {
+			continue
+		}
 		if entry.Google {
-			kinds.Google[entry.Account] = string(entry.Kind)
+			readers.Google[entry.Account] = entry.name()
 		} else {
-			kinds.K8s[entry.Account] = string(entry.Kind)
+			readers.K8s[entry.Account] = entry.name()
 		}
 	}
-	return kinds
+	return readers
 }
 
 func parseService(text string) (ServiceEntry, error) {
@@ -120,9 +133,6 @@ func parseService(text string) (ServiceEntry, error) {
 		return ServiceEntry{}, form()
 	}
 	entry := ServiceEntry{Kind: Kind(parts[0])}
-	if !slices.Contains(Kinds, entry.Kind) {
-		return ServiceEntry{}, form()
-	}
 	machineID, scope := parts[1], parts[2]
 	switch entry.Kind {
 	case KindDispatch, KindListener:

@@ -117,9 +117,11 @@ const (
 	// CallerAccount is a caller BROKER_API_ACCOUNTS lists, by the name it gives the caller.
 	CallerAccount = "account"
 	// CallerService is a service logged in with its own ServiceAccount token, by the service and
-	// the account it presented, and a listener calling with its own identity token, by the kind
-	// BROKER_NATS_SERVICES binds its account to and the account.
+	// the account it presented.
 	CallerService = "service"
+	// CallerListener is a listener reading project privacy with its own identity token, by the
+	// name the NATS auth service gives its user, <kind>/<machine id>.
+	CallerListener = "listener"
 	// CallerSignIn is a person signed in to the broker's approval page, by their login.
 	CallerSignIn = "sign-in"
 	// CallerAirlock is a call through the airlock's proxy port, by the grant and the enrollment
