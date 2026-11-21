@@ -750,6 +750,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   An address's revocations are paid one at a time, in the order of the session generations their replacements left, which is the order the broker judges them by (`brokerRevocationPayOrder`: the generation first, then the recording's time, which alone would pay them out of order after the database clock stepped back), and never within 30 seconds of the last claim of one of them, since each also tells the broker to stop refusing the account that took the address, which may be one an earlier revocation named.
   A revocation a process with a broker recorded waits, on a process with none, for the first pass of one that has one.
 
+  - A passkey's account (its issuer the outside origin), which the owner's Reset replaces, is logged `msg="dispatch: the secrets broker revoked the credentials of a passkey account the project owner's Reset replaced"` instead (`api.revokedLog`).
+
 - A broker revocation's row also records `session_generation`, the address's `user_sessions.generation` as the recording's own statement reads it, after the sign-in's write of `people.sub` moved it: the generation the replacement left (`recordBrokerRevocationSQL`, at the insert and at the upsert alike).
   The database refuses, with SQLSTATE 23514, a recording naming any other generation, and any change of it outside a recording (migration `20261118152422`'s `guard_broker_revocation_columns()`).
   The revocation's call to the broker carries it, and the broker refuses an approve whose check read a lower generation (below).
