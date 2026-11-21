@@ -2103,22 +2103,24 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 // port, and the daemon adds the port itself (shimAddress, internal/daemon/daemon.go). So the loader
 // refuses, by its exact message, every value that is not an IP address or a DNS name: under
 // runtime: kubernetes, the one runtime that reads advertise_host, so no other refusal can stand in
-// for this one, rather than `legion config check` passing a file no pod boots on.
+// for this one, rather than `legion config check` passing a file no pod boots on. The refusal
+// quotes no value: a URL with a made-up user name and password pasted there is a row.
 func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 	const refused = "advertise_host must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself"
 	for _, tc := range []struct{ name, yaml, want string }{
-		{"a scheme", "http://legion-daemon.legion.svc", refused + " (http://legion-daemon.legion.svc)"},
-		{"a port", "legion-daemon.legion.svc:13371", refused + " (legion-daemon.legion.svc:13371)"},
-		{"brackets", `"[::1]"`, refused + " ([::1])"},
-		{"an underscore", "legion_daemon.legion.svc", refused + " (legion_daemon.legion.svc)"},
-		{"a path", "legion-daemon.legion.svc/x", refused + " (legion-daemon.legion.svc/x)"},
-		{"a trailing slash", "legion-daemon.legion.svc/", refused + " (legion-daemon.legion.svc/)"},
-		{"a user", "legion@legion-daemon.legion.svc", refused + " (legion@legion-daemon.legion.svc)"},
-		{"a query", `"legion-daemon.legion.svc?x"`, refused + " (legion-daemon.legion.svc?x)"},
-		{"a fragment", `"legion-daemon.legion.svc#x"`, refused + " (legion-daemon.legion.svc#x)"},
-		{"a space", `"legion daemon"`, refused + " (legion daemon)"},
-		{"a space inside a DNS name", `"legion daemon.legion.svc"`, refused + " (legion daemon.legion.svc)"},
-		{"a zoned IPv6 address", `"fe80::1%eth0"`, refused + " (fe80::1%eth0)"},
+		{"a scheme", "http://legion-daemon.legion.svc", refused},
+		{"a port", "legion-daemon.legion.svc:13371", refused},
+		{"brackets", `"[::1]"`, refused},
+		{"an underscore", "legion_daemon.legion.svc", refused},
+		{"a path", "legion-daemon.legion.svc/x", refused},
+		{"a trailing slash", "legion-daemon.legion.svc/", refused},
+		{"a user", "legion@legion-daemon.legion.svc", refused},
+		{"a query", `"legion-daemon.legion.svc?x"`, refused},
+		{"a fragment", `"legion-daemon.legion.svc#x"`, refused},
+		{"a space", `"legion daemon"`, refused},
+		{"a space inside a DNS name", `"legion daemon.legion.svc"`, refused},
+		{"a zoned IPv6 address", `"fe80::1%eth0"`, refused},
+		{"a URL with a made-up user name and password", `"http://madeUpHostUser0123:` + `madeUpHostPassword0123@legion-daemon.legion.svc"`, refused},
 		{"a dotted capital I", "nas.\u0130nternal.example", `advertise_host must be an IP address or an ASCII DNS name; got "nas.\u0130nternal.example"`},
 		{"a Kelvin sign", "\u212Aube.example", `advertise_host must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
 		{"blank", `""`, "advertise_host must not be empty"},

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -176,7 +177,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	// stop every agent's Dispatch writes. Both sides hold to
 	// packages/contracts/fixtures/dispatch-public-url.json.
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
-		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
+		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %s, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", dashboardShown(value))
 	}
 	volumes := legionVolumeNames(exchange)
 	for i, volume := range pod.Volumes {
@@ -288,6 +289,17 @@ func legionClaim(claim string) bool {
 		}
 	}
 	return strings.HasPrefix(claim, "legion-") && strings.HasSuffix(claim, "-"+issueVolume)
+}
+
+// dashboardShown is a refused DISPATCH_PUBLIC_URL as the refusal prints it: quoted whole when it can
+// hold no userinfo, query or fragment (none of "@", "?" or "#"), so a typo shows as written, and
+// otherwise through redact.URL, which reads it as a URL and prints none of the three, a password
+// holding a "'" included, which ends a URL for the rule on text.
+func dashboardShown(value string) string {
+	if !strings.ContainsAny(value, "@?#") {
+		return fmt.Sprintf("%+q", value)
+	}
+	return redact.URL(value)
 }
 
 // dashboardURL is whether value is a DISPATCH_PUBLIC_URL boot lets through: a rule narrower than

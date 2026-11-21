@@ -486,8 +486,9 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if block.TokenFile, err = requiredString(fields["token_file"], agentSecretsKey+".token_file", ""); err != nil {
 		return nil, err
 	}
+	// The path is not quoted: a token pasted where its path goes would print.
 	if !path.IsAbs(block.TokenFile) {
-		return nil, fmt.Errorf("%s.token_file must be an absolute path; got %q", agentSecretsKey, block.TokenFile)
+		return nil, fmt.Errorf("%s.token_file must be an absolute path", agentSecretsKey)
 	}
 	if audience, err := optionalString(fields["audience"], agentSecretsKey+".audience"); err != nil {
 		return nil, err
@@ -660,8 +661,9 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 	if err := refuseNonASCIIHost(key, *read); err != nil {
 		return nil, err
 	}
+	// The value is not quoted: a credential, or a URL with one, pasted here would print.
 	if host := *read; net.ParseIP(host) == nil && len(validation.IsDNS1123Subdomain(strings.ToLower(host))) != 0 {
-		return nil, fmt.Errorf("%s must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself (%s)", key, host)
+		return nil, fmt.Errorf("%s must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself", key)
 	}
 	return read, nil
 }
@@ -1575,8 +1577,9 @@ func readNFSSource(value *yaml.Node, key string) (*corev1.NFSVolumeSource, error
 	if err := refuseNonASCIIHost(key+".server", server); err != nil {
 		return nil, err
 	}
+	// The value is not quoted here, for the reason advertise_host's is not (readAdvertiseHost).
 	if net.ParseIP(server) == nil && (len(validation.IsDNS1123Subdomain(strings.ToLower(server))) != 0 || numericLastLabel(server)) {
-		return nil, fmt.Errorf("%s.server %q must be an IP address or a DNS name, with no scheme, port, path or brackets", key, server)
+		return nil, fmt.Errorf("%s.server must be an IP address or a DNS name, with no scheme, port, path or brackets", key)
 	}
 	if ip := net.ParseIP(server); ip != nil && ip.To4() != nil && strings.Contains(server, ":") {
 		return nil, fmt.Errorf("%s.server %q is an IPv4 address in IPv6 form, which the kubelet mounts unbracketed and mount.nfs cannot parse: write %s", key, server, ip.To4())
@@ -2068,6 +2071,12 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if database.WriterAudience, err = optionalString(fields["writer_audience"],
 		sessionDatabaseKey+".writer_audience"); err != nil {
 		return ompsessions.Database{}, err
+	}
+	// A connection name holds none of "@", "/", "?" or "://": a value that does is a DSN or a URL
+	// pasted here, which can carry a password, refused by the key alone before the shape check,
+	// whose refusal quotes the value.
+	if strings.ContainsAny(database.Instance, "@/?") || strings.Contains(database.Instance, "://") {
+		return ompsessions.Database{}, fmt.Errorf("%s.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project; it holds an \"@\", \"/\" or \"?\", as a DSN or a URL does", sessionDatabaseKey)
 	}
 	if !ompsessions.ValidInstance(database.Instance) {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)

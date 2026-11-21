@@ -1216,6 +1216,15 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: `runtime.kubernetes.session_database.instance " example-project:us-central1:example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
 		},
 		{
+			// A DSN pasted where the connection name goes, its made-up password among three ":",
+			// which ValidInstance would read as domain:project:region:instance: refused by the key
+			// alone, quoting none of it.
+			name: "session_database with a DSN where the instance goes",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: \"postgres://legion:" + "madeUpDsnPassword0123@db.internal.example:5432/sessions\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project; it holds an "@", "/" or "?", as a DSN or a URL does`,
+		},
+		{
 			name: "session_database impersonating the login form of a service account",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
@@ -1526,37 +1535,43 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "an NFS server given as a URL",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nfs://nas.internal.example', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "nfs://nas.internal.example" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+		},
+		{
+			// A made-up user name and password in the URL: the refusal quotes none of the value.
+			name: "an NFS server given as a URL with userinfo",
+			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nfs://madeUpNfsUser0123:" + "madeUpNfsPassword0123@nas.internal.example', path: /share}}]\n",
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server with a port",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nas.internal.example:2049', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "nas.internal.example:2049" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server with the export in it",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '10.0.0.2:/share', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "10.0.0.2:/share" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in brackets",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '[fd00::2]', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "[fd00::2]" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's octal form",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 010.0.0.2, path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "010.0.0.2" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's short form",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 1.2.3, path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "1.2.3" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's hexadecimal form",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 0x0a000002, path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "0x0a000002" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server on the node's loopback",
@@ -1571,7 +1586,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "an NFS server named localhost with the root's trailing dot",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: localhost., path: /share}}]\n",
-			want: "runtime.kubernetes.pod.volumes[0].nfs.server \"localhost.\" must be an IP address or a DNS name, with no scheme, port, path or brackets",
+			want: "runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets",
 		},
 		{
 			name: "an NFS server of no address",
@@ -1981,10 +1996,13 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 		// kubelet projects it.
 		"no token_file":       {"    agent_secrets:\n      url: https://s\n", "runtime.kubernetes.agent_secrets.token_file is required"},
 		"relative token_file": {"    agent_secrets:\n      url: https://s\n      token_file: token\n", "runtime.kubernetes.agent_secrets.token_file must be an absolute path"},
-		"expiry too long":     {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 7200\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
-		"expiry too short":    {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 60\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
-		"blank audience":      {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: \"\"\n", "runtime.kubernetes.agent_secrets.audience must not be empty"},
-		"unknown key":         {"    agent_secrets:\n      url: https://s\n" + tf + "      token: abc\n", "unknown key runtime.kubernetes.agent_secrets.token"},
+		// A made-up token pasted where its path goes: the refusal is the whole text, so it holds
+		// none of the token.
+		"a token where token_file's path goes": {"    agent_secrets:\n      url: https://s\n      token_file: madeUpAgentSecretsToken0123\n", "runtime.kubernetes.agent_secrets.token_file must be an absolute path"},
+		"expiry too long":                      {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 7200\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
+		"expiry too short":                     {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 60\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
+		"blank audience":                       {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: \"\"\n", "runtime.kubernetes.agent_secrets.audience must not be empty"},
+		"unknown key":                          {"    agent_secrets:\n      url: https://s\n" + tf + "      token: abc\n", "unknown key runtime.kubernetes.agent_secrets.token"},
 		// A launcher credential is never read off disk: the old key must fail loudly, never parse
 		// as a silently-ignored unknown.
 		"the removed launcher_token_file key": {"    agent_secrets:\n      url: https://s\n" + tf + "      launcher_token_file: x\n", "unknown key runtime.kubernetes.agent_secrets.launcher_token_file"},
@@ -1998,6 +2016,9 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "madeUpAgentSecrets") {
+				t.Fatalf("the refusal %q quotes the pasted token", err)
 			}
 		})
 	}
