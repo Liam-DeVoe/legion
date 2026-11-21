@@ -134,15 +134,14 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 
 // A head row holds every value an index of the write can hold, and refuses one past its bound
 // where the row is built, before any statement (checkHeadRow, headRefBound). The values an index
-// holds are the head commit (pull_request_heads_repo_head), the URL (pull_request_heads_url_lower)
-// and, for a merge, the base branch and the merge commit (branch_commits' primary key), so each
-// is taken at 1,024 bytes and refused at 1,025 with errNoRowHolds and no row written; the widest
-// entry, a repository of 140 bytes with a base branch and a merge commit of 1,024 each, is
-// written. The head branch is held by no index, so an honest one of 5,000 bytes is written. A
+// holds are the head commit (pull_request_heads_repo_head) and, for a merge, the base branch and
+// the merge commit (branch_commits' primary key), so each is taken at 1,024 bytes and refused at
+// 1,025 with errNoRowHolds and no row written; the widest entry, a repository of 140 bytes with a
+// base branch and a merge commit of 1,024 each, is written. The head branch and the URL are held
+// by no index, so an honest head branch of 5,000 bytes and a URL of 5,000 bytes are written. A
 // title is a text of free form: one with a NUL is written, with U+FFFD in place of the NUL. The
 // values are random letters and digits, which Postgres does not compress (randomName). At
-// ef5112db43 no value was bounded, so each value past its bound was written; at def907052c the
-// URL was bounded by nothing, so the URL of 1,025 bytes was written.
+// ef5112db43 no value was bounded, so each value past its bound was written.
 func TestAHeadRowTakesEveryValueAnIndexCanHoldAndRefusesOnePast(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	short := "4209420942094209420942094209420942094209"
@@ -163,12 +162,11 @@ func TestAHeadRowTakesEveryValueAnIndexCanHoldAndRefusesOnePast(t *testing.T) {
 		{name: "a_head_commit_at_the_bound", repo: "acme/widgets", head: at, base: "main", headRef: "topic", takes: true},
 		{name: "a_base_branch_and_a_merge_commit_at_the_bound_with_the_longest_repository", repo: longest, head: short, base: at, merge: at, headRef: "topic", merged: true, takes: true, seeded: true},
 		{name: "an_honest_head_branch_of_5000_bytes", repo: "acme/widgets", head: short, base: "main", headRef: randomName(5000), takes: true},
-		{name: "a_url_at_the_bound", repo: "acme/widgets", head: short, base: "main", headRef: "topic", url: urlOf(1024), takes: true},
+		{name: "a_url_of_5000_bytes", repo: "acme/widgets", head: short, base: "main", headRef: "topic", url: urlOf(5000), takes: true},
 		{name: "a_title_with_a_nul", repo: "acme/widgets", head: short, base: "main", headRef: "topic", title: "Change\x00 of the notes", takes: true},
 		{name: "a_head_commit_one_past_the_bound", repo: "acme/widgets", head: past, base: "main", headRef: "topic"},
 		{name: "a_base_branch_one_past_the_bound", repo: "acme/widgets", head: short, base: past, merge: short, headRef: "topic", merged: true},
 		{name: "a_merge_commit_one_past_the_bound", repo: "acme/widgets", head: short, base: "main", merge: past, headRef: "topic", merged: true},
-		{name: "a_url_one_past_the_bound", repo: "acme/widgets", head: short, base: "main", headRef: "topic", url: urlOf(1025)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			state := "open"

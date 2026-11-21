@@ -45,10 +45,11 @@
 --
 -- The indexes each serve one comparison of the statement that reads a pull request's issue:
 -- pull_request_heads_number and delivery_pull_requests_number the joins through the renaming
--- rule, which compare the number alone; pull_request_heads_url_lower the arm that a link of an
--- issue names; delivery_pull_requests_issue the arm of timeline rows by issue;
--- pull_request_texts_keys and pull_request_texts_reading the keys and the reading of the texts.
--- The existing lower() indexes stay, because the statement uses them.
+-- rule, which compare the number alone; delivery_pull_requests_issue the arm of timeline rows by
+-- issue; pull_request_texts_keys and pull_request_texts_reading the keys and the reading of the
+-- texts. The existing lower() indexes stay, because the statement uses them. No index holds a
+-- head row's URL: the statement takes a link by the link rule and matches it with the links of a
+-- pull request's repository and number, so it compares no stored URL.
 --
 -- No stored row can fail a statement here; only the guard can refuse the migration, over the
 -- database itself. Each column added is nullable with no default, so its statement writes the
@@ -56,12 +57,7 @@
 -- primary key (repo, number) its foreign key references exists. number is an integer, so an
 -- entry of either index on it holds 4 bytes. Each issue key of a timeline row is the key of an
 -- issue (0080's foreign key), which the primary key of issues already holds in a btree of the
--- same type. A URL is the one value an older row can hold beyond a btree entry (2,704 bytes):
--- each release before 20261116163242 stored the URL of an envelope with no check, and a failed
--- index build fails the whole migration. So the index on lower(url) is partial, over URLs of at
--- most 1,024 bytes: lower() makes a text at most 1.5 times as long in bytes, so each entry holds
--- at most 1,536 bytes. A row with a longer URL is no pull request of GitHub; no link matches it,
--- and the arm that reads this index carries the same condition, so the planner reads it.
+-- same type.
 --
 -- Locks: the guard and the functions lock no table. The alter table statements come before the
 -- index builds, so no statement takes ACCESS EXCLUSIVE on a table after a build took SHARE on it:
@@ -169,6 +165,5 @@ create index pull_request_texts_keys on pull_request_texts
   using gin (branch_keys, title_keys, commit_keys, cited_issues);
 create index pull_request_texts_reading on pull_request_texts (reading);
 create index pull_request_heads_number on pull_request_heads (number);
-create index pull_request_heads_url_lower on pull_request_heads (lower(url)) where octet_length(url) <= 1024;
 create index delivery_pull_requests_number on delivery_pull_requests (number);
 create index delivery_pull_requests_issue on delivery_pull_requests (issue_key) where issue_key is not null;

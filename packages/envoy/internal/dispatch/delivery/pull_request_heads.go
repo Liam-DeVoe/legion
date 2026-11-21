@@ -167,13 +167,14 @@ var errNoRowHolds = fmt.Errorf("%w: a value no row holds", ErrHeadNotStored)
 
 // headRefBound is the most bytes a value of a head row that an index holds may have, other than
 // the repository: the head commit (pull_request_heads_issue_head, pull_request_heads_repo_head),
-// the base branch and the merge commit, which a merge writes into branch_commits' primary key
-// (repo, branch, sha), and the URL, whose lower() pull_request_heads_url_lower holds. It is so
-// much that no commit GitHub names (40 or 64 hexadecimal digits) and no branch GitHub keeps comes
-// near it, and so little that the widest of those entries, with a repository of 140 bytes and a
-// branch and a commit of 1,024 each, stays under the btree's 2,704 bytes (SQLSTATE 54000 past
-// it). The lower() of a URL can be half as long again in bytes, and 1,536 bytes stays under that
-// limit too. No index holds the head branch or the title, so neither is bounded.
+// and the base branch and the merge commit, which a merge writes into branch_commits' primary key
+// (repo, branch, sha). It is so much that no commit GitHub names (40 or 64 hexadecimal digits) and
+// no branch GitHub keeps comes near it, and so little that the widest of those entries, with a
+// repository of 140 bytes and a branch and a commit of 1,024 each, stays under the btree's 2,704
+// bytes (SQLSTATE 54000 past it). No index holds the head branch, the title or the URL, so none of
+// them is bounded here: each is a text column, as long as the GitHub answer it came from, and
+// githubapp reads an answer of at most 1 MiB (responseLimit), the REST read of one pull request
+// and the GraphQL batch alike.
 const headRefBound = 1024
 
 // headValue is one value of identity of a head row and its texts, as checkHeadRow checks it:
@@ -210,7 +211,7 @@ func checkHeadRow(head PullRequestHead) (PullRequestHead, error) {
 	values := []headValue{
 		{"head commit", head.HeadSHA, true}, {"head branch", head.HeadRef, false},
 		{"base branch", head.BaseRef, true}, {"merge commit", head.MergeCommitSHA, true},
-		{"URL", head.URL, true},
+		{"URL", head.URL, false},
 	}
 	if head.Texts != nil {
 		values = append(values, headValue{"head repository", head.Texts.HeadRepo, false},

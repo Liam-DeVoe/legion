@@ -6,11 +6,11 @@
 -- counts no row: no stored row can fail another statement of the migration, whose header says
 -- why for each.
 --
--- The migration builds four indexes on tables that exist, pull_request_heads (number, and
--- lower(url) over URLs of at most 1,024 bytes) and delivery_pull_requests (number, and issue_key),
--- each reading its table under SHARE for its build, so the census holds both tables to its 1 GiB
--- limit. Its DO block is no catalog-only statement, so it also takes the table-size exemption and
--- the concurrent index exception from every later migration pending in the same deploy.
+-- The migration builds three indexes on tables that exist, pull_request_heads (number) and
+-- delivery_pull_requests (number, and issue_key), each reading its table under SHARE for its
+-- build, so the census holds both tables to its 1 GiB limit. Its DO block is no catalog-only
+-- statement, so it also takes the table-size exemption and the concurrent index exception from
+-- every later migration pending in the same deploy.
 select (case when d.encoding <> pg_catalog.pg_char_to_encoding('UTF8') then 1 else 0 end)
      + (case when pg_catalog.lower('ABCDEFGHIJKLMNOPQRSTUVWXYZ') <> 'abcdefghijklmnopqrstuvwxyz'
               or pg_catalog.upper('abcdefghijklmnopqrstuvwxyz') <> 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' then 1 else 0 end)
