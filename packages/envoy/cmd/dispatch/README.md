@@ -937,16 +937,28 @@ curl -sS --fail-with-body -X POST -H @"$header" -d "{\"approver\":\"$email\"}" "
 )
 ```
 
-Once the list names no login of the member's with `service` null, settle the revocation, which tells the broker nothing:
+Once the list names no login of the member's with `service` null, settle the revocation the database owes now, at the generation it reads, which tells the broker nothing.
+psql gets `DATABASE_URL` with its password taken out as its argument, and the password as `PGPASSWORD`, read from the terminal into the subshell's environment, as the deploy scripts give it: no process's arguments carry the password, since `/proc/<pid>/cmdline` is readable by every user of the machine, and no file holds it.
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<the address>' <<'SQL'
-update machine_login_revocations set done_at = now() where email = lower(btrim(:'email')) and done_at is null;
+(
+url='<DATABASE_URL with its password taken out>'
+email='<the address, as people.email holds it>'
+IFS= read -rsp 'Dispatch database password: ' PGPASSWORD && echo && export PGPASSWORD || exit 1
+psql "$url" -X -v ON_ERROR_STOP=1 -v email="$email" <<'SQL' || exit 1
+select generation, recorded_at from machine_login_revocations where email = lower(btrim(:'email')) and done_at is null;
 SQL
+IFS= read -rp 'the generation it printed: ' generation || exit 1
+psql "$url" -X -v ON_ERROR_STOP=1 -v email="$email" -v generation="$generation" <<'SQL'
+update machine_login_revocations set done_at = now() where email = lower(btrim(:'email')) and generation = :'generation' and done_at is null returning email, generation, recorded_at, done_at;
+SQL
+)
 ```
 
-It prints `UPDATE 1` for the revocation it settled and `UPDATE 0` when none of the address is owed; the member approves a new machine login from then on.
-A removal recorded after the statement owes it again, and the loop pays that one as any other.
+The select prints the generation still owed, none when nothing of the address is owed.
+The update settles that generation alone, and prints the row it settled and `UPDATE 1`, the settlement's one trace, which goes with the incident's record; the member approves a new machine login from then on.
+It prints `UPDATE 0` and no row when that generation is settled already, or when a removal recorded the revocation again since, under the next generation: then list the member's logins at the broker again, revoke what it names, and settle the generation the select prints next.
+A removal recorded after the update owes it again, and the loop pays that one as any other.
 
 ## Local Postgres
 
