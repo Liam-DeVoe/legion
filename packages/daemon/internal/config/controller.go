@@ -217,14 +217,30 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 // presents the listener (brokerCredential, packages/envoy-client).
 var ControllerIdentityVariables = []string{"AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY"}
 
+// machineTokenFileVariable names the projected service-account token file that the identity kinds
+// in tokenFileIdentities read (MachineTokenFileVar, packages/envoy/internal/cipherclient).
+const machineTokenFileVariable = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
+
+// tokenFileIdentities are the AGENT_SECRETS_MACHINE_IDENTITY kinds that read
+// machineTokenFileVariable: kubernetes presents the token it names, and pool federates it through a
+// workload identity pool (machineIdentity, packages/cipher-client; MachineIdentity in Go). The
+// third kind, metadata, asks the metadata server and reads no file.
+var tokenFileIdentities = []string{"kubernetes", "pool"}
+
 // CheckListener refuses envoy_url when the controller's session, whose environment is env, would
 // present the listener no credential and the listener is off loopback. The listener takes no
 // shared bearer, so the session presents the broker token it trades with this machine's identity
-// where env names both ControllerIdentityVariables, and otherwise nothing, which only a listener
-// bound to loopback serves, as the daemon under runtime: tmux is held to (checkLoopbackListener).
-// The host is judged as written, and the refusal names it alone, never the URL.
+// where env names both ControllerIdentityVariables and every variable that identity's kind needs,
+// and otherwise nothing, which only a listener bound to loopback serves, as the daemon under
+// runtime: tmux is held to (checkLoopbackListener). A kind in tokenFileIdentities with no
+// machineTokenFileVariable is refused in the client's own words ("<variable> is required by
+// AGENT_SECRETS_MACHINE_IDENTITY=<kind>"). The host is judged as written, and the refusal names
+// it alone, never the URL.
 func (c ControllerConfig) CheckListener(env map[string]string) error {
-	if !slices.ContainsFunc(ControllerIdentityVariables, func(name string) bool { return env[name] == "" }) {
+	noIdentity := slices.ContainsFunc(ControllerIdentityVariables, func(name string) bool { return env[name] == "" })
+	kind := strings.TrimSpace(env["AGENT_SECRETS_MACHINE_IDENTITY"])
+	noTokenFile := !noIdentity && slices.Contains(tokenFileIdentities, kind) && strings.TrimSpace(env[machineTokenFileVariable]) == ""
+	if !noIdentity && !noTokenFile {
 		return nil
 	}
 	parsed, err := endpointURL(c.EnvoyURL, "envoy_url")
@@ -237,6 +253,10 @@ func (c ControllerConfig) CheckListener(env map[string]string) error {
 	}
 	if isLoopbackHost(host) {
 		return nil
+	}
+	if noTokenFile {
+		return fmt.Errorf("%s is required by AGENT_SECRETS_MACHINE_IDENTITY=%s, which reads the projected service-account token that file names: without it the controller's session trades nothing and presents the Envoy listener %s no credential, and a listener off loopback answers a caller that presents none 401; set %s, or name a loopback listener",
+			machineTokenFileVariable, kind, host, machineTokenFileVariable)
 	}
 	return fmt.Errorf("envoy_url names %s, which is not a loopback host, and the environment names no secrets broker and machine identity (%s): the controller's session would present the Envoy listener no credential, which takes no shared bearer, and a listener off loopback answers a caller that presents none 401; name a loopback listener, or start the controller where %s are set",
 		host, strings.Join(ControllerIdentityVariables, ", "), strings.Join(ControllerIdentityVariables, " and "))

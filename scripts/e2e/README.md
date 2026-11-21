@@ -2259,7 +2259,7 @@ Each role's endpoint check (`assert_claim_endpoints` and the address-moved check
 `prerequisites` refuses each of these, and each token file that is not an absolute path to a non-empty file only its owner can read, naming the variable and never its value or what the file holds.
 The run's own reads of that listener (the interests sampler, the controller-role lookup) present the devbox's own broker token, which the operator's `AGENT_SECRETS_*` environment trades, through [`lib/listener-get.ts`](#liblistener-getts);
 `prerequisites` reads an unheld role with it, requires 404, and refuses a devbox with no broker route, naming what it lacks.
-The controller the run starts on the devbox trades the same environment for the broker token its session presents the listener, since `controller.yaml` names no Envoy bearer and `legion controller start` refuses an `envoy_url` off loopback without `AGENT_SECRETS_URL` and `AGENT_SECRETS_MACHINE_IDENTITY`.
+The controller the run starts on the devbox trades the same environment for the broker token its session presents the listener, since `controller.yaml` names no Envoy bearer and `legion controller start` refuses an `envoy_url` off loopback without `AGENT_SECRETS_URL` and `AGENT_SECRETS_MACHINE_IDENTITY`, and without `AGENT_SECRETS_MACHINE_TOKEN_FILE` where that identity is `kubernetes` or `pool`.
 The Dispatch bearer lands in a 0600 file under the run's scratch directory.
 `prerequisites` refuses the token file when the variable is unset, or names something that is not a readable regular file, whose group or others have any permission bit (read through a symlink, from the file it names), or that holds only whitespace;
 each refusal names the variable and the path, never what the file holds.

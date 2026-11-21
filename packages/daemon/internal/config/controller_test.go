@@ -31,12 +31,27 @@ nats_urls: [nats://a:4222]
 // Envoy listener the broker token it trades with this machine's identity where its environment
 // names a secrets broker and an identity, and otherwise nothing, which only a loopback listener
 // serves. So an envoy_url off loopback is refused when either variable is unset, naming the host
-// alone; with both set, or with a loopback listener, it is taken.
+// alone; with both set, or with a loopback listener, it is taken. An identity whose kind reads the
+// projected service-account token file (kubernetes and pool, machineIdentity in
+// packages/cipher-client) is refused there too while AGENT_SECRETS_MACHINE_TOKEN_FILE is unset,
+// naming the variable and the kind as the client's own refusal does; metadata reads no such file.
 func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
 	const refusal = "envoy_url names envoy.test, which is not a loopback host, and the environment names no secrets broker and machine identity" +
 		" (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY): the controller's session would present the Envoy listener no credential, which takes no shared bearer," +
 		" and a listener off loopback answers a caller that presents none 401; name a loopback listener, or start the controller where AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY are set"
+	tokenFile := func(kind string) string {
+		return "AGENT_SECRETS_MACHINE_TOKEN_FILE is required by AGENT_SECRETS_MACHINE_IDENTITY=" + kind +
+			", which reads the projected service-account token that file names: without it the controller's session trades nothing and presents the Envoy listener envoy.test no credential," +
+			" and a listener off loopback answers a caller that presents none 401; set AGENT_SECRETS_MACHINE_TOKEN_FILE, or name a loopback listener"
+	}
 	identity := map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid", "AGENT_SECRETS_MACHINE_IDENTITY": "metadata"}
+	withKind := func(kind, tokenFile string) map[string]string {
+		env := map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid", "AGENT_SECRETS_MACHINE_IDENTITY": kind}
+		if tokenFile != "" {
+			env["AGENT_SECRETS_MACHINE_TOKEN_FILE"] = tokenFile
+		}
+		return env
+	}
 	for _, tc := range []struct {
 		name, url string
 		env       map[string]string
@@ -45,7 +60,12 @@ func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
 		{"off loopback, no identity", "http://envoy.test:9020", nil, refusal},
 		{"off loopback, a broker and no identity", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid"}, refusal},
 		{"off loopback, an identity and no broker", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata"}, refusal},
+		{"off loopback, a kubernetes identity and no token file", "http://envoy.test:9020", withKind("kubernetes", ""), tokenFile("kubernetes")},
+		{"off loopback, a pool identity and no token file", "http://envoy.test:9020", withKind("pool", ""), tokenFile("pool")},
 		{"control: off loopback with a broker and an identity", "http://envoy.test:9020", identity, ""},
+		{"control: off loopback, a kubernetes identity and its token file", "http://envoy.test:9020", withKind("kubernetes", "/var/run/secrets/exchange/token"), ""},
+		{"control: off loopback, a pool identity and its token file", "http://envoy.test:9020", withKind("pool", "/var/run/secrets/pool/token"), ""},
+		{"control: a loopback listener with a kubernetes identity and no token file", "http://127.0.0.1:9020", withKind("kubernetes", ""), ""},
 		{"control: a loopback listener with no identity", "http://127.0.0.1:9020", nil, ""},
 		{"control: localhost with no identity", "http://localhost:9020", nil, ""},
 	} {
