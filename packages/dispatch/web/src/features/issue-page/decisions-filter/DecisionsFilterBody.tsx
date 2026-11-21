@@ -22,6 +22,7 @@ import {
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
 import { useSetFocusedNode } from "../focused-node";
+import { FoldMark } from "../fold-mark";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { bringOnScreen } from "../identity-block";
 import { documentOfNode } from "../issue-artifacts";
@@ -37,6 +38,7 @@ import {
   DECISIONS_WORDS,
   isReader,
   PRESET_NAMES,
+  STATE_LINES,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import type { DrawnRow } from "../tree-fold";
@@ -718,7 +720,7 @@ export function DecisionsFilterBody({
               type="button"
               {...pageChrome}
             >
-              <span aria-hidden="true">{footShown ? "▾" : "▸"}</span>{" "}
+              <FoldMark open={footShown} />{" "}
               <span data-decisions-count="" {...authorText}>
                 {parts.agents.length}
               </span>{" "}
@@ -786,9 +788,10 @@ function neighbourOf(
 type DecisionsRead = "decisions" | "asks";
 
 /** What the body says of each read refused before it first answered, in the page's words: the
- *  decisions for the decisions read, and the questions for the asks. */
+ *  decisions for the decisions read, and the questions for the asks, in the outline's own words
+ *  for that read (`STATE_LINES.asks_unreadable`). */
 const UNREADABLE_LINES: Readonly<Record<DecisionsRead, string>> = {
-  asks: ANSWER_LINES.questions_unreadable,
+  asks: STATE_LINES.asks_unreadable,
   decisions: ANSWER_LINES.decisions_unreadable,
 };
 

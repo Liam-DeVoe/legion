@@ -665,9 +665,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Verification view says when its Verification document's blocks could not be
-   *  read, so it cannot say which statement each check serves. */
-  checks_unreadable: "Could not load the checks.",
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
@@ -678,16 +675,10 @@ export const ANSWER_LINES = freeze({
   /** What the outline says when the issue's tree could not be read before it first answered,
    *  so it holds no row to draw. */
   outline_unreadable: "Could not load the outline.",
-  /** What the Decisions view says over its list when the asks could not be read, so it cannot
-   *  say which questions there are; of the decisions read it says `decisions_unreadable`. */
-  questions_unreadable: "Could not load the questions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
-  /** What the Plan view says when the plan's blocks could not be read, so it holds no task to
-   *  draw. */
-  plan_unreadable: "Could not load the plan.",
   /** What the Spec view says over its columns when the issue's questions and their answers could
    *  not be read, so it draws no decision a person made. */
   answers_unreadable: "Could not load the answers.",

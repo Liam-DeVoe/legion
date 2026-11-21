@@ -22,6 +22,7 @@ import {
 } from "../../theme/classes";
 import { isContentsEntry } from "./contents-entries";
 import { useFocusedNode } from "./focused-node";
+import { FoldMark } from "./fold-mark";
 import {
   drawnLine,
   firstLineOf,
@@ -416,7 +417,7 @@ export function ContentsList({
                   tabIndex={-1}
                   type="button"
                 >
-                  <span aria-hidden="true">{folded.has(node.id) ? "▸" : "▾"}</span>
+                  <FoldMark open={!folded.has(node.id)} />
                 </button>
               ) : (
                 <span aria-hidden="true" className="h-8 w-3 shrink-0" />

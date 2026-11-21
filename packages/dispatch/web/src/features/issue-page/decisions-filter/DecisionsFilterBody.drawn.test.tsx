@@ -34,6 +34,7 @@ import {
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   PRESET_NAMES,
+  STATE_LINES,
 } from "../page-words";
 import { presetView } from "../presets";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
@@ -394,14 +395,19 @@ test("the four parts are drawn under their headings, in order, and no sentence e
       part: "yours",
       rows: [D("kept"), "a-answered", "a-declined"],
     },
-    // Folded at the foot: its heading says how many it holds, and none is drawn.
+    // Folded at the foot: its heading says how many it holds, and none is drawn. Its fold mark
+    // is a shape and no text (`fold-mark.tsx`), read below.
     {
       count: "2",
-      heading: `▸ 2 ${DECISIONS_WORDS.agents_many}`,
+      heading: `2 ${DECISIONS_WORDS.agents_many}`,
       part: "agents",
       rows: [],
     },
   ]);
+  const footMark = () =>
+    view.container.querySelector('[data-decisions-part="agents"] button [data-fold-mark]');
+  expect(footMark()).toHaveAttribute("data-fold-mark", "folded");
+  expect(footMark()).toHaveAttribute("aria-hidden", "true");
 
   // The headings are the whole of what the page says of the parts: outside the rows, the body
   // writes nothing else of its own, and no paragraph stands over or between them.
@@ -411,7 +417,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
     DECISIONS_WORDS.parts.open_questions,
     DECISIONS_WORDS.parts.review,
     DECISIONS_WORDS.parts.yours,
-    `▸ ${DECISIONS_WORDS.agents_many}`,
+    DECISIONS_WORDS.agents_many,
   ]);
   expect(outside.querySelectorAll("p").length).toBe(0);
 
@@ -477,7 +483,8 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
   expect(foot.getAttribute("aria-expanded")).toBe("true");
-  expect(words(foot)).toBe(`▾ 2 ${DECISIONS_WORDS.agents_many}`);
+  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
+  expect(footMark()).toHaveAttribute("data-fold-mark", "open");
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
   expect(tree.getAttribute("aria-owns")).toBe(footRows?.id ?? "no group");
   expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
@@ -499,9 +506,9 @@ test("the four parts are drawn under their headings, in order, and no sentence e
 // R22: the foot's words agree with its count.
 test("the foot's heading agrees with how many decisions it holds", () => {
   const view = renderBody({ children: [decisionNode("minor")], made: [decision("minor")] });
-  expect(words(view.container.querySelector('[data-decisions-part="agents"] button'))).toBe(
-    `▸ 1 ${DECISIONS_WORDS.agents_one}`
-  );
+  const foot = view.container.querySelector('[data-decisions-part="agents"] button');
+  expect(words(foot)).toBe(`1 ${DECISIONS_WORDS.agents_one}`);
+  expect(foot?.querySelector("[data-fold-mark]")).toHaveAttribute("data-fold-mark", "folded");
 });
 
 // R2: a part that holds nothing is not drawn, and an issue that holds no ask and no decision
@@ -604,7 +611,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() =>
       expect(failedLine(failed, "asks")).toEqual({
         retry: "Retry",
-        says: ANSWER_LINES.questions_unreadable,
+        says: STATE_LINES.asks_unreadable,
       })
     );
     expect(failedLine(failed, "decisions")).toBeNull();
