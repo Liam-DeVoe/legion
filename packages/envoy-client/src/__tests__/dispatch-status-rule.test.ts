@@ -401,6 +401,19 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(requests).toEqual([]);
   });
 
+  // The same holds when the call names no owner: with no --issue and no LEGION_ISSUE, a document
+  // named rows.jsonl breaks the owner part of dispatch artifact's rule and its Markdown-name part.
+  // Supplying the owner alone still leaves the name, so the first refusal names both.
+  test("dispatch artifact with no owner and a name that is not Markdown names both problems before anything is sent", async () => {
+    const { code, stdout } = await run(["artifact", "--name", "rows.jsonl", "--content", "c"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
+    expect(stdout).not.toContain("Exactly one of issue and project is required");
+    expect(requests).toEqual([]);
+  });
+
   test("issue-update --unlink-children sends the status change and no PATCH", async () => {
     // The fixture's call passed include_parent too: this one is answered its unlink alone.
     statusChange = entriesOf(changed, ["ACME-3", "ACME-2"]);

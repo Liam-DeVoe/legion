@@ -824,37 +824,46 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// last_seq it read under that lock. The ids exist only once the write phase's batch has run,
 	// so the statement derives them in its own SQL, after the step's last event insert. They hold
 	// what document work appended there through the ledger's event sink too, which appended does
-	// not. A step of a keyed call writes the call's recovery point with the same statement:
-	// it adds to the point the key holds, which is the call's point so far, since only the
-	// attempt that holds the key writes it, the step's entry, those ids and, for the named issue's
-	// own close, the ids of the asks it withdrew. The statement is scoped to the request's own
-	// claim, so a step whose key another attempt took over rolls back (errRequestKeyTakenOver). A
-	// step that holds no lock of the named issue adds no ids, and an unkeyed step writes no point.
+	// not. A step of a keyed call writes the call's recovery point with the same statement, run
+	// right after the batch rather than on it (docs.Ledger.AfterWrites): it adds to the head the
+	// key holds, which is the call's point so far, since only the attempt that holds the key
+	// writes it, those ids and, for the named issue's own close, the ids of the asks it withdrew,
+	// and it adds the step's entry as a row of request_key_steps, with the issue as this write
+	// answers it - its last_seq the one its own events reached and a close's closed_at the
+	// restamp below - which are known only once the batch's callbacks have read them. The
+	// statement is scoped to the request's own claim, so a step whose key another attempt took
+	// over rolls back (errRequestKeyTakenOver). A step that holds no lock of the named issue adds
+	// no ids, and an unkeyed step writes no point.
 	var namedEvents []int64
 	if step != nil {
 		switch {
 		case keyed:
-			entry, err := json.Marshal(statusChangeEntry{Key: key, Status: after.Status, Parent: after.Parent, PreviousLastSeq: before.LastSeq})
-			if err != nil {
-				return issueWriteResult{}, err
-			}
 			var closedAsks []string
 			if closing && key == step.named {
 				closedAsks = askIDs(withdrawn)
 			}
-			if err := ledger.Queue(func(b *store.WriteBatch) error {
+			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
+				answered := after
+				answered.LastSeq = appendedIssueLastSeq(key, appended)
+				entry, err := json.Marshal(answeredStatusChangeEntry(answered, before.LastSeq))
+				if err != nil {
+					return err
+				}
 				b.Queue("write the recovery point of a status change", `
 					with named as (
 						select coalesce(array_agg(id order by id), '{}') as ids from events
 						where $4 and issue_key = $5 and seq > $6
+					), head as (
+						update request_keys set recovery = jsonb_build_object(
+							'events', coalesce(recovery -> 'events', '[]') || to_jsonb(named.ids),
+							'withdrawn', coalesce(recovery -> 'withdrawn', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
+						from named
+						where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
+						returning named.ids
+					), step as (
+						insert into request_key_steps (login, idempotency_key, entry) select $1, $2, $7::jsonb from head
 					)
-					update request_keys set recovery = jsonb_build_object(
-						'changed', coalesce(recovery -> 'changed', '[]') || jsonb_build_array($7::jsonb),
-						'events', coalesce(recovery -> 'events', '[]') || to_jsonb(named.ids),
-						'withdrawn', coalesce(recovery -> 'withdrawn', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
-					from named
-					where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
-					returning named.ids
+					select ids from head
 				`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, entry, closedAsks,
 				).QueryRow(func(row pgx.Row) error {
 					err := row.Scan(&namedEvents)
@@ -879,10 +888,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 	if closing {
-		// The close's last statement before its commit stamps closed_at again, at the moment it
-		// runs (clock_timestamp()), over the start of the transaction (now()) the update above
-		// wrote. It is queued last, so the write phase runs it after the asks' withdrawal, their
-		// document writes and every event queued above. The document append gate takes a
+		// The close's last statement on its write phase's batch stamps closed_at again, at the
+		// moment it runs (clock_timestamp()), over the start of the transaction (now()) the update
+		// above wrote. It is queued last, so the write phase runs it after the asks' withdrawal,
+		// their document writes and every event queued above. The document append gate takes a
 		// browser's update the room observed no later than closeMargin after closed_at as one
 		// made while the issue was open (docs.closeMargin), and the asks' withdrawal holds each
 		// document it writes locked until this commit, a flush to every process and the waits on
@@ -891,7 +900,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// transaction ran. The second write of closed_at fires migration 20261101181500's trigger
 		// again, whose notification Postgres folds into the first (same channel, same payload,
 		// one transaction). The events appended above carry the first stamp; the response carries
-		// this one, the stored value, which the statement's own callback reads as the batch runs.
+		// this one, the stored value, which the statement's own callback reads as the batch runs,
+		// and so does a keyed step's entry, which its point stores once the batch has run.
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			b.Queue("", `
 				update issues set closed_at = clock_timestamp() where key = $1 and closed_at is not null returning closed_at
@@ -932,7 +942,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 // wrote back to it. It is read from the events rather than counted, because a count of what the
 // route queued misses what the asks' document writes queued beside them - the anchor refreshes of
 // a document a close or a reopen rewrote - which the same owner row numbers too (INFRA-636).
-// appended holds the events as the write phase left them, so this runs after Commit.
+// appended holds the events as the write phase left them, so this runs once its batch has run:
+// after Commit, or in a step that follows the batch (docs.Ledger.AfterWrites).
 func appendedIssueLastSeq(key string, appended []*model.Event) int {
 	last := 0
 	for _, event := range appended {
