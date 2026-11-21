@@ -125,15 +125,19 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	}
 
-	// A 429 while the token in hand is live is no reason to stop writing with it.
+	// A 429 while the token in hand is live is no reason to stop writing with it: Token trades,
+	// is refused, and answers the token in hand.
 	pastRenewal(client, time.Now().Add(30*time.Second))
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is busy = %v, %v; want the token in hand, which is still live", held, err)
 	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Fatalf("the broker saw %d trades by Token's renewal, want 2: the first, and the renewal it refused 429", trades)
+	}
 
 	// And the renewal loop waits the bucket out rather than ending: every wait fires at once,
-	// so the three refusals and the trade that follows them run at the test's speed.
+	// so the two refusals left and the trade that follows them run at the test's speed.
 	client.after = func(time.Duration) <-chan time.Time {
 		fired := make(chan time.Time, 1)
 		fired <- time.Now()
@@ -154,8 +158,8 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 		t.Fatalf("the loop handed its caller %d tokens; want the one after the 429s", landed.Load())
 	}
 	if trades := len(broker.Requests()); trades != refusals+2 {
-		t.Fatalf("the broker saw %d trades, want %d: Token's first, the loop's %d refused, and the one that landed",
-			trades, refusals+2, refusals)
+		t.Fatalf("the broker saw %d trades, want %d: Token's first and its refused renewal, the loop's %d refused, and the one that landed",
+			trades, refusals+2, refusals-1)
 	}
 }
 
