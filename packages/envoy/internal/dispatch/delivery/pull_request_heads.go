@@ -378,19 +378,21 @@ const headWriteRollback = 2 * time.Second
 // read besides its key, (repo, number), in the order headLaidRules writes them.
 const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked_at`
 
-// headLaidRules is upsertHeadRow's rule for each of headLaidColumns, as the select list of one
-// row: stored is the row a write lands on and excluded the row it writes, as `on conflict … do
-// update` names them, and complete is the SQL that says whether the write read every attribution
-// source (PullRequestHead.AttributionComplete). The commit, the base branch and the state are the
-// write's; the issue is the write's only where it read every source; and a time the write carries
-// none of keeps the row's. upsertHeadRow's `do update set` runs it, and so does a read-only
-// caller's read as it lays each answer of its request on the stored row (answeredHeadsRelation),
-// so the two lay one answer one way.
-func headLaidRules(complete string) string {
-	return `excluded.head_sha, excluded.base_ref, excluded.state,
-		case when ` + complete + ` then excluded.issue_key else stored.issue_key end,
-		coalesce(excluded.event_at, stored.event_at),
-		coalesce(excluded.checked_at, stored.checked_at)`
+// headLaidRules is upsertHeadRow's rule for each of headLaidColumns, one expression a column, in
+// their order: stored is the row a write lands on and excluded the row it writes, as `on conflict
+// … do update` names them, and complete is the SQL that says whether the write read every
+// attribution source (PullRequestHead.AttributionComplete). The commit, the base branch and the
+// state are the write's; the issue is the write's only where it read every source; and a time the
+// write carries none of keeps the row's. upsertHeadRow's `do update set` runs them, and so does a
+// read-only caller's read as it lays each answer of its request on the stored row
+// (answeredHeadsRelation), so the two lay one answer one way.
+func headLaidRules(complete string) []string {
+	return []string{
+		"excluded.head_sha", "excluded.base_ref", "excluded.state",
+		"case when " + complete + " then excluded.issue_key else stored.issue_key end",
+		"coalesce(excluded.event_at, stored.event_at)",
+		"coalesce(excluded.checked_at, stored.checked_at)",
+	}
 }
 
 // headWriteApplies is upsertHeadRow's event-time guard, over stored and excluded as headLaidRules
@@ -408,7 +410,7 @@ var upsertHeadQuery = `
 	)
 	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
 	on conflict (repo, number) do update set
-		(` + headLaidColumns + `) = (` + headLaidRules("$13::boolean") + `),
+		(` + headLaidColumns + `) = (` + strings.Join(headLaidRules("$13::boolean"), ", ") + `),
 		head_ref = excluded.head_ref,
 		attribution_source = case when $13::boolean
 			then excluded.attribution_source else stored.attribution_source end,
@@ -513,15 +515,15 @@ type headsStatement struct {
 // `with recursive`, then linkedPullRequestTerms where linked (statement reads linked_pulls), then
 // the relation pull_request_heads (storedHeadsRelation, or answeredHeadsRelation), then statement.
 // args is how many parameters statement takes, and the answers' parameters are numbered after
-// them.
-func newHeadsStatement(statement string, linked bool, args int) headsStatement {
+// them. keeps is answeredHeadsRelation's: "" for a read that lays every answer of its request.
+func newHeadsStatement(statement string, linked bool, args int, keeps string) headsStatement {
 	with := "with recursive "
 	if linked {
 		with += linkedPullRequestTerms + ",\n\t"
 	}
 	return headsStatement{
 		writer:   with + storedHeadsRelation + "\n" + statement,
-		answered: with + answeredHeadsRelation(args+1) + "\n" + statement,
+		answered: with + answeredHeadsRelation(args+1, keeps) + "\n" + statement,
 	}
 }
 
@@ -544,79 +546,147 @@ const storedHeadsRelation = `pull_request_heads (repo, number, ` + headLaidColum
 
 // answeredHeadsRelation is the relation a read-only caller's read of the results path reads its
 // heads from: the stored rows with each answer of its request laid on (HeadAnswers), the arrays of
-// HeadAnswers.args its parameters, numbered from first. Its terms:
+// HeadAnswers.args its parameters, numbered from first. keeps is "" where the read lays every
+// answer, and else the SQL, over one answer named `answer` (its repo, number, head_sha and
+// renamed_from), that names the answers of the pull requests the read lays (headStoredAtAnswers):
+// a pull request one of whose answers it names is laid with all of its answers, and the answers of
+// every other pull request are left out, as though the request had not read them. Its terms:
 //
+//   - answers is the arrays, one row: every other term reads them from it, so the statement names
+//     each parameter once, and a plan made for the parameters' values holds one copy of each.
 //   - answered_heads is the answers, one row an answer, numbered in the order the request read
-//     them (place), and each numbered among its pull request's answers in that order (step, of
-//     steps), over the answers alone.
-//   - laid_heads lays each pull request's answers on its stored row in turn, by upsertHeadRow's
+//     them (place, the answer's place in the arrays), each numbered among its pull request's
+//     answers in that order (step), with the place of its pull request's next answer (next_place,
+//     0 for the last), over the answers alone. It reads only the arrays that name the pull request
+//     and the name the read was asked under, so its rows stay narrow.
+//   - kept_pulls, where keeps is given, is the pull requests the read lays, listed once.
+//   - answer_places is next_place by place, one array made once, so each step of laid_heads
+//     reaches its pull request's next answer by its place in the arrays and never scans
+//     answered_heads again: a step that joined answered_heads would scan it once a step, and the
+//     laying's time would grow with the square of the answers of one pull request.
+//   - laid_heads lays each kept pull request's answers on its stored row in turn, by upsertHeadRow's
 //     own rules: the row stored for the pull request under the canonical name its answers carry,
 //     read once by its key, and then, with no row stored, the answer as the insert writes it, and
 //     with a row, headLaidRules where the event-time guard holds (headWriteApplies) and the row as
-//     it stands where it does not. So two answers of one request for one pull request give what
-//     the upsert gives when it stores both in turn.
+//     it stands where it does not, each column in one expression, so a step is one row made from
+//     the row before it. So two answers of one request for one pull request give what the upsert
+//     gives when it stores both in turn. Each row names the place of the answer it lays next
+//     (next_place, 0 after the last). The rules carry each text column over and never read it, so
+//     a row holds in each text column the place of the answer whose value it is, or 0 for the
+//     stored row's (carried along beside it, as stored_head_sha and the like), and a step reads
+//     from the arrays only the columns the rules read: an element of an array whose elements have
+//     one size is found at once by its place, while one of a text array is found only by walking
+//     every element before it, so a step that read a text array would again make a long laying's
+//     time grow with the square of its answers.
 //   - pull_request_heads is two arms of a `union all`, the stored rows and each pull request's last
-//     laid row, less the stored rows an answer lands on or drops. An answer of a read asked under a
-//     name its repository was renamed away from drops the row kept under that name, as the store
-//     does (upsertHeadUnderCanonicalName). The arms carry no predicate of their own, since
-//     PostgreSQL keeps a `union all` arm that has one as a subquery that a join cannot drive by an
-//     index (a linked read then scanned the whole table, 95 ms on 60,000 rows): with none, the
-//     stored arm takes the statement's predicates, its joins' among them, to the table's indexes.
-//     The rows an answer replaces are left out by a filter over both arms, which the laid arm
-//     passes, `not in` the answers' keys, a list PostgreSQL hashes once and which holds no null.
-func answeredHeadsRelation(first int) string {
-	parameters := make([]string, len(answerColumnTypes))
+//     laid row, its text columns read at their places, less the stored rows an answer lands on or
+//     drops. An answer of a read asked under a name its repository was renamed away from drops the
+//     row kept under that name, as the store does (upsertHeadUnderCanonicalName). The arms carry no
+//     predicate of their own, since PostgreSQL keeps a `union all` arm that has one as a subquery
+//     that a join cannot drive by an index (a linked read then scanned the whole table, 95 ms on
+//     60,000 rows): with none, the stored arm takes the statement's predicates, its joins' among
+//     them, to the table's indexes. The rows an answer replaces are left out by a filter over both
+//     arms, which the laid arm passes, `not in` the keys of the kept pull requests, each once, and
+//     the names their reads were asked under: a list PostgreSQL hashes once and which holds no null.
+func answeredHeadsRelation(first int, keeps string) string {
+	names := strings.Split(answerColumnNames, ", ")
+	parameters := make([]string, len(names))
+	arrayOf := make(map[string]string, len(names))
+	kindOf := make(map[string]string, len(names))
 	for index, kind := range answerColumnTypes {
-		parameters[index] = fmt.Sprintf("$%d::%s[]", first+index, kind)
+		parameters[index] = fmt.Sprintf("$%d::%s[] as %s", first+index, kind, names[index])
+		arrayOf[names[index]] = "(select answers." + names[index] + " from answers)"
+		kindOf[names[index]] = kind
 	}
-	return `answered_heads as (
-		select answer.*,
-			row_number() over (partition by answer.repo, answer.number order by answer.place) as step,
-			count(*) over (partition by answer.repo, answer.number) as steps
-		from unnest(` + strings.Join(parameters, ", ") + `)
-			with ordinality as answer (` + answerColumnNames + `, place)
+	// Each of headLaidColumns as laid_heads' first row of a pull request holds it (started), as
+	// the answer a step lays gives it (excluded), as the step lays it (laying), and as the last
+	// laid row gives it to the read (laid): a text column by place, beside the stored row's value
+	// (stored, carried), and every other by value.
+	columns := strings.Split(headLaidColumns, ", ")
+	rules := headLaidRules("excluded.complete")
+	started := make([]string, len(columns))
+	excluded := make([]string, len(columns), len(columns)+1)
+	laying := make([]string, len(columns))
+	laid := make([]string, len(columns))
+	var storedNames, stored, carried []string
+	for index, column := range columns {
+		laying[index] = fmt.Sprintf("case when not stored.found then excluded.%s when %s then %s else stored.%s end",
+			column, headWriteApplies, rules[index], column)
+		if kindOf[column] == "text" {
+			started[index] = "0::bigint"
+			excluded[index] = "stored.next_place as " + column
+			laid[index] = fmt.Sprintf("case laid.%s when 0 then laid.stored_%s else %s[laid.%s] end",
+				column, column, arrayOf[column], column)
+			storedNames = append(storedNames, "stored_"+column)
+			stored = append(stored, "stored."+column)
+			carried = append(carried, "stored.stored_"+column)
+			continue
+		}
+		started[index] = "stored." + column
+		excluded[index] = fmt.Sprintf("%s[stored.next_place] as %s", arrayOf[column], column)
+		laid[index] = "laid." + column
+	}
+	excluded = append(excluded, fmt.Sprintf("%s[stored.next_place] as complete", arrayOf["complete"]))
+	// unnest is the answers as rows, with only the columns names lists, and their places.
+	unnest := func(names ...string) string {
+		arrays := make([]string, len(names))
+		for index, column := range names {
+			arrays[index] = arrayOf[column]
+		}
+		return `unnest(` + strings.Join(arrays, ", ") + `) with ordinality as answer (` +
+			strings.Join(names, ", ") + `, place)`
+	}
+	// kept is whether an answer's pull request is one the read lays, and keptPulls, where keeps
+	// names some, the term that lists them, once for the statement.
+	kept, keptPulls := "true", ""
+	if keeps != "" {
+		kept = "(answer.repo, answer.number) in (select pull.repo, pull.number from kept_pulls pull)"
+		keptPulls = `kept_pulls as materialized (
+		select distinct answer.repo, answer.number from ` + unnest("repo", "number", "head_sha", "renamed_from") + `
+		where ` + keeps + `
 	),
-	laid_heads (repo, number, step, last_step, found, ` + headLaidColumns + `) as (
-		select answer.repo, answer.number, 0::bigint, false, stored.repo is not null, ` + headColumnsOf("stored") + `
+	`
+	}
+	return `answers as materialized (
+		select ` + strings.Join(parameters, ", ") + `
+	),
+	answered_heads as (
+		select answer.*,
+			row_number() over pull as step,
+			lead(answer.place, 1, 0::bigint) over pull as next_place
+		from ` + unnest("repo", "number", "renamed_from") + `
+		window pull as (partition by answer.repo, answer.number order by answer.place)
+	),
+	` + keptPulls + `answer_places as materialized (
+		select array_agg(answer.next_place order by answer.place) as next_places from answered_heads answer
+	),
+	laid_heads (repo, number, next_place, found, ` + headLaidColumns + `, ` + strings.Join(storedNames, ", ") + `) as (
+		select answer.repo, answer.number, answer.place, stored.repo is not null, ` + strings.Join(started, ", ") + `,
+			` + strings.Join(stored, ", ") + `
 		from answered_heads answer
 		left join public.pull_request_heads stored on stored.repo = answer.repo and stored.number = answer.number
-		where answer.step = 1
+		where answer.step = 1 and ` + kept + `
 		union all
-		select stored.repo, stored.number, excluded.step, excluded.step = excluded.steps, true, laid.*
+		select stored.repo, stored.number, (select places.next_places from answer_places places)[stored.next_place],
+			true, ` + strings.Join(laying, ",\n\t\t\t") + `,
+			` + strings.Join(carried, ", ") + `
 		from laid_heads stored
-		join answered_heads excluded on excluded.repo = stored.repo and excluded.number = stored.number
-			and excluded.step = stored.step + 1
-		cross join lateral (
-			select ` + headColumnsOf("excluded") + `
-			where not stored.found
-			union all
-			select ` + headLaidRules("excluded.complete") + `
-			where stored.found and ` + headWriteApplies + `
-			union all
-			select ` + headColumnsOf("stored") + `
-			where stored.found and not ` + headWriteApplies + `
-		) laid
+		cross join lateral (select ` + strings.Join(excluded, ", ") + `) excluded
+		where stored.next_place <> 0
 	),
 	pull_request_heads (repo, number, ` + headLaidColumns + `) as not materialized (
 		select repo, number, ` + headLaidColumns + ` from (
 			select repo, number, ` + headLaidColumns + `, false as laid from public.pull_request_heads
 			union all
-			select repo, number, ` + headLaidColumns + `, true from laid_heads where last_step
+			select laid.repo, laid.number, ` + strings.Join(laid, ", ") + `, true from laid_heads laid
+			where laid.next_place = 0
 		) heads
 		where heads.laid or (heads.repo, heads.number) not in (
-			select answer.repo, answer.number from answered_heads answer
+			select answer.repo, answer.number from answered_heads answer where answer.step = 1 and ` + kept + `
 			union all
-			select answer.renamed_from, answer.number from answered_heads answer where answer.renamed_from is not null)
+			select answer.renamed_from, answer.number from answered_heads answer
+			where answer.renamed_from is not null and ` + kept + `)
 	)`
-}
-
-// headColumnsOf is headLaidColumns, each named on the relation alias stands for.
-func headColumnsOf(alias string) string {
-	columns := strings.Split(headLaidColumns, ", ")
-	for index, column := range columns {
-		columns[index] = alias + "." + column
-	}
-	return strings.Join(columns, ", ")
 }
 
 // HeadAnswers is the pull request heads one read-only results read's read-throughs learned from
@@ -630,6 +700,15 @@ func headColumnsOf(alias string) string {
 type HeadAnswers struct {
 	columns answerColumns
 	merges  []PullRequestHead
+	// last is the place in columns of the last answer held for each pull request (Add).
+	last map[pullRequestKey]int
+}
+
+// pullRequestKey is one pull request as pull_request_heads keys its row: the repository, as
+// written, and the number.
+type pullRequestKey struct {
+	repo   string
+	number int
 }
 
 // answerColumns is the answers column by column, in the order the request read them, as
@@ -656,9 +735,38 @@ var answerColumnTypes = [...]string{
 // read before it: each head GitHub named, in the order it named them, as the row StoreCommitPulls
 // would write. A read that failed part-way is passed the part it attributed, which a writer's read
 // stores all the same (ReadThroughCommitPulls).
+//
+// A head equal in every column but checked_at to the last answer held for its pull request
+// (answerColumns.equalsButCheckedAt) replaces that answer rather than following it: the answer
+// held takes the head's checked_at, where the head carries one. A writer's upserts of the two
+// leave the row as one upsert of the answer so replaced does: the event-time guard lets the second
+// through on the event time it let the first through on, every other column it writes is the
+// same, and checked_at is the second's where it carries one (headLaidRules). So a run of equal
+// answers, which every result commit behind one pull request's head makes, is laid on as one, and
+// the cost of laying a request's answers grows with its distinct answers alone (plan D33). The
+// merge of each head is kept all the same, as a writer's store of it writes its branch answer.
 func (a *HeadAnswers) Add(pulls CommitPulls) {
 	c := &a.columns
 	for _, head := range pulls.Heads {
+		if head.seedsBranch() {
+			a.merges = append(a.merges, head)
+		}
+		var renamedFrom *string
+		if !strings.EqualFold(pulls.storedUnder, head.Repo) {
+			under := pulls.storedUnder
+			renamedFrom = &under
+		}
+		pull := pullRequestKey{repo: head.Repo, number: head.Number}
+		if last, held := a.last[pull]; held && c.equalsButCheckedAt(last, head, renamedFrom) {
+			if head.CheckedAt != nil {
+				c.checkedAt[last] = head.CheckedAt
+			}
+			continue
+		}
+		if a.last == nil {
+			a.last = map[pullRequestKey]int{}
+		}
+		a.last[pull] = len(c.repo)
 		c.repo = append(c.repo, head.Repo)
 		c.number = append(c.number, int32(head.Number))
 		c.headSHA = append(c.headSHA, head.HeadSHA)
@@ -668,16 +776,34 @@ func (a *HeadAnswers) Add(pulls CommitPulls) {
 		c.complete = append(c.complete, head.AttributionComplete)
 		c.eventAt = append(c.eventAt, head.EventAt)
 		c.checkedAt = append(c.checkedAt, head.CheckedAt)
-		var renamedFrom *string
-		if !strings.EqualFold(pulls.storedUnder, head.Repo) {
-			under := pulls.storedUnder
-			renamedFrom = &under
-		}
 		c.renamedFrom = append(c.renamedFrom, renamedFrom)
-		if head.seedsBranch() {
-			a.merges = append(a.merges, head)
-		}
 	}
+}
+
+// equalsButCheckedAt is whether the answer at place of c equals head, of a read asked under
+// renamedFrom, in every column answeredHeadsRelation reads but checked_at: the commit, the base
+// branch, the state, the issue, whether the attribution was complete, the event time and
+// renamed_from. The pull request itself, repo and number, is the caller's to match.
+func (c *answerColumns) equalsButCheckedAt(place int, head PullRequestHead, renamedFrom *string) bool {
+	return c.headSHA[place] == head.HeadSHA && c.baseRef[place] == head.BaseRef && c.state[place] == head.State &&
+		sameText(c.issueKey[place], head.IssueKey) && c.complete[place] == head.AttributionComplete &&
+		sameMoment(c.eventAt[place], head.EventAt) && sameText(c.renamedFrom[place], renamedFrom)
+}
+
+// sameText is whether two nullable text columns hold one value, null equal to null.
+func sameText(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+// sameMoment is whether two nullable times are one moment, null equal to null.
+func sameMoment(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }
 
 // empty is whether a holds no answer.
@@ -717,7 +843,7 @@ var headsAttributedQuery = `
 	order by greatest(checked_at, event_at) desc nulls last, number desc`
 
 // headsAttributedRead is headsAttributedQuery whole, for both callers.
-var headsAttributedRead = newHeadsStatement(headsAttributedQuery, true, 1)
+var headsAttributedRead = newHeadsStatement(headsAttributedQuery, true, 1, "")
 
 // HeadsAttributedTo is every open or merged pull request that is issueKey's — attributed to it,
 // or linked from it in a repository it does not resolve to (linkedPullRequestTerms) — newest
@@ -797,7 +923,7 @@ var newestPullRequestHeadQuery = `
 	limit 1`
 
 // newestPullRequestHeadRead is newestPullRequestHeadQuery whole, for both callers.
-var newestPullRequestHeadRead = newHeadsStatement(newestPullRequestHeadQuery, false, 1)
+var newestPullRequestHeadRead = newHeadsStatement(newestPullRequestHeadQuery, false, 1, "")
 
 // HeadStoredAt reports whether sha is the head of an open or merged pull request stored for
 // repoFull, whatever issue it is attributed to: whether Dispatch holds a pull request at that
@@ -825,7 +951,9 @@ var newestPullRequestHeadRead = newHeadsStatement(newestPullRequestHeadQuery, fa
 //
 // answers is the caller's request's, as HeadsAttributedTo takes them: a head an earlier
 // read-through of a read-only caller's request learned holds that read off GitHub, as the row a
-// writer's read-through stored holds the writer's off.
+// writer's read-through stored holds the writer's off. Of them it lays only the answers of the
+// pull requests that can change its answer (headStoredAtAnswers), so a learn that reads many
+// commits through lays each commit's few pull requests and not every head learned before it.
 func HeadStoredAt(ctx context.Context, q refs.Queryer, repoFull, sha string, answers HeadAnswers) (bool, error) {
 	query, args := headStoredAtRead.query(answers, repoFull, sha)
 	var found bool
@@ -843,7 +971,23 @@ var headStoredAtQuery = `
 	)`
 
 // headStoredAtRead is headStoredAtQuery whole, for both callers.
-var headStoredAtRead = newHeadsStatement(headStoredAtQuery, false, 2)
+var headStoredAtRead = newHeadsStatement(headStoredAtQuery, false, 2, headStoredAtAnswers)
+
+// headStoredAtAnswers is the answers HeadStoredAt lays (answeredHeadsRelation's keeps), over one
+// answer named `answer`, $1 the repository and $2 the commit: those of each pull request of the
+// repository that an answer names at the commit, or whose row stored under the canonical name its
+// answer carries, or under the name its read was asked under (renamed_from), heads the commit.
+// Only these can change the answer: an answer can move a stored row's head off the commit, close
+// it, or drop the row kept under the name its read was asked under, and a pull request none of
+// whose rows or answers heads the commit lays no row that heads it. The stored rows at the commit
+// are one lookup on pull_request_heads_repo_head, which PostgreSQL hashes once for the statement.
+const headStoredAtAnswers = `lower(answer.repo) = lower($1) and answer.head_sha = $2
+	or (answer.repo, answer.number) in (` + headsStoredAtCommit + `)
+	or (answer.renamed_from, answer.number) in (` + headsStoredAtCommit + `)`
+
+// headsStoredAtCommit is the key of each row stored for repository $1, compared without case, whose
+// head is commit $2.
+const headsStoredAtCommit = `select repo, number from public.pull_request_heads where lower(repo) = lower($1) and head_sha = $2`
 
 // BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
 // into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
@@ -900,7 +1044,7 @@ var baseBranchMergedForQuery = `
 	limit 1`
 
 // baseBranchMergedForRead is baseBranchMergedForQuery whole, for both callers.
-var baseBranchMergedForRead = newHeadsStatement(baseBranchMergedForQuery, false, 1)
+var baseBranchMergedForRead = newHeadsStatement(baseBranchMergedForQuery, false, 1, "")
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again, and PullRequestHeadBatch how many it reads in one pass.

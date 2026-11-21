@@ -1951,25 +1951,25 @@ func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
 	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
 	asked := time.Now()
 
-	branches.markUnseen(pair, asked)
-	if !branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter/2)) {
+	branches.markUnseen(nil, pair, asked)
+	if !branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter/2)) {
 		t.Fatal("a pair held half the span ago reads unheld, want held")
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair held past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {
 		t.Fatalf("entries after reading a hold nothing stands for = %d, want none", got)
 	}
 
-	branches.markSeen(pair, asked)
-	if branches.unseenHeld(pair, asked.Add(time.Minute)) {
+	branches.markSeen(nil, pair, asked)
+	if branches.unseenHeld(nil, pair, asked.Add(time.Minute)) {
 		t.Fatal("a pair GitHub answered reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 1 {
 		t.Fatalf("entries after reading a pair answered a minute ago = %d, want the answer kept", got)
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair answered past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {
