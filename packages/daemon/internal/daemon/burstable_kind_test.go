@@ -80,9 +80,9 @@ var burstableLiveCases = []struct {
 // share_volumes_kind_test.go). A case that boots nothing and probes nothing names
 // burstableLiveNoNATS, a host nothing answers on, since nothing it drives dials NATS; a case whose
 // script runs `legion probe-boot` names a server that answers, because the probe opens the task
-// bucket on it before it probes the image (probeTaskBucket). Its project maps no repository in the
-// file, which the loader refuses; the repository the proof launches on is the runtime's mapping
-// (burstableLiveRuntime). The other hosts no stub dials are documentation placeholders.
+// bucket on it before it probes the image (probeTaskBucket). Its project names no repository in
+// the file, which the loader refuses; the repository the proof launches on is the runtime's cache
+// set (burstableLiveRuntime). The other hosts no stub dials are documentation placeholders.
 func writeBurstableLiveConfig(t *testing.T, dir, project, streamHost, image, kubeconfig, kubeContext, natsURL, extra string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -131,7 +131,7 @@ runtime:
 // sandboxOptions over the loaded configuration on the cluster client rc and the worker stream
 // listener, with the proof's stand-ins: the store answers as the daemon's does for an issue's
 // first launch, the provisioning token is one a public repository never needs, every role's gh
-// files hold a placeholder token, the agent is a sleep stub, and the mapping names
+// files hold a placeholder token, the agent is a sleep stub, and the cache set names
 // burstableLiveRepository alone, so the repository cache an issue pod's launch makes is that
 // repository's. It returns the issue pod's reservation as sandboxOptions translated it.
 func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Config, listener *stream.Listener, log *slog.Logger) (*sandbox.Runtime, corev1.ResourceRequirements, error) {
@@ -166,7 +166,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	// serves none of its own: every pod it makes projects what it was launched with, and no pod
 	// has drifted from a directory the daemon serves (sandbox's movedGhDirs).
 	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
-	opts.Mapped = func() []ghrepo.Repository { return []ghrepo.Repository{burstableLiveRepository} }
+	opts.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{burstableLiveRepository} }
 	opts.Agent = burstableLiveStub
 	rt, err := sandbox.New(ctx, rc, opts)
 	if err != nil {

@@ -561,27 +561,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 203
+        "since": 207
       },
       {
         "value": "implementer",
-        "since": 203
+        "since": 207
       },
       {
         "value": "merger",
-        "since": 203
+        "since": 207
       },
       {
         "value": "planner",
-        "since": 203
+        "since": 207
       },
       {
         "value": "reviewer",
-        "since": 203
+        "since": 207
       },
       {
         "value": "tester",
-        "since": 203
+        "since": 207
       }
     ]
   },
@@ -662,6 +662,32 @@
       {
         "value": "starting",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "repositories.live.*.cache.state",
+    "values": [
+      {
+        "value": "cloning",
+        "since": 202
+      },
+      {
+        "value": "failing",
+        "since": 202
+      },
+      {
+        "value": "ready",
+        "since": 202
+      },
+      {
+        "value": "refused",
+        "since": 202
+      },
+      {
+        "value": "starting",
+        "since": 202
       }
     ]
   },
@@ -759,7 +785,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -797,7 +823,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -835,7 +861,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -873,7 +899,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -1651,7 +1677,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -1689,7 +1715,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -1727,7 +1753,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -1765,7 +1791,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 203
+        "since": 207
       },
       {
         "value": "never_registered",

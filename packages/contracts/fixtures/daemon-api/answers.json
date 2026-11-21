@@ -164,7 +164,7 @@
     "routes": [
       "POST /legion/v1/claims/task"
     ],
-    "since": 203,
+    "since": 207,
     "noBody": false
   },
   {
@@ -172,7 +172,7 @@
     "routes": [
       "POST /legion/v1/claims/take"
     ],
-    "since": 203,
+    "since": 207,
     "noBody": false
   }
 ]

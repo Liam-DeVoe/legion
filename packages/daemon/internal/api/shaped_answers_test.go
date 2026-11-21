@@ -494,17 +494,17 @@ func valueStripCases() map[string]valueStripCase {
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
 		},
-		// A pod recording 178 and 203 is served LEGION-214's `never_reconnected` as
+		// A pod recording 178 and 207 is served LEGION-214's `never_reconnected` as
 		// `never_registered`, in its architect's `failure.cause` and its implementer's
 		// `pendingCause`: the word arrived at supervise.TaskTakeContract, and the pod's 178
 		// process parses both with an enum of the seven causes before it. The failure record
 		// stays, with the sentence and the moment every contract from 75 reads.
 		//
-		// The pod's 203 claim is in no pod's reckoning (podContracts counts none from
+		// The pod's 207 claim is in no pod's reckoning (podContracts counts none from
 		// shapedAnswersContract up, since every such build states its contract in the header), so
-		// the mixed pod reads as one at 178 and a pod at 203 alone is served this daemon's own
+		// the mixed pod reads as one at 178 and a pod at 207 alone is served this daemon's own
 		// body. That is also why the case names no value that arrived with the field: the field
-		// arrived at recordFieldsContract, and a pod recording a contract below it beside 203
+		// arrived at recordFieldsContract, and a pod recording a contract below it beside 207
 		// reads as a pod below it alone, which the band of that contract serves no cause at all.
 		droppedFailureCause: {
 			state: narrowingState, low: pauseContract, high: supervise.TaskTakeContract,
