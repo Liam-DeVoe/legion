@@ -29,12 +29,13 @@
 # was while the string under it is redacted; each erase is recorded in one `graph_erasures` row,
 # which holds what was removed - the block's own version and review by name - who ran it and
 # when, and holds no erased text; every node left carries a supertag the store declares, and the
-# store holds the supertag nodes it held before the erases, so the erases wrote no node of their
-# own; `envoy-dispatch census --store` reads zero differences over rows it read; the command's
-# path over HTTP answers 404 to the deployment's agent bearer and to a person's cookie alike,
-# because no route serves it; and a comment whose whole body is `Yes`, erased beside another
-# issue's spec version and another person's comment that each hold `Yes`, lists both of those
-# rows as rows it leaves and leaves them and their issue's events byte for byte what they were.
+# store holds the supertag nodes it held before the erases, read after E4's erases (E7) and after
+# E10's (E10), so the erases wrote no node of their own; `envoy-dispatch census --store` reads
+# zero differences over rows it read; the command's path over HTTP answers 404 to the deployment's
+# agent bearer and to a person's cookie alike, because no route serves it; and a comment whose
+# whole body is `Yes`, erased beside another issue's spec version and another person's comment
+# that each hold `Yes`, lists both of those rows as rows it leaves and leaves them and their
+# issue's events byte for byte what they were.
 #
 # Every read that wants zero after the erases - the nodes' tuples, the version, the four stores of
 # the erased nodes - runs before them as well and finds the rows that held the secret, and the
@@ -586,8 +587,8 @@ pass E2 "envoy-dispatch backfill-graph-store ran, so every row the census reads 
 # derives from its node and what it leaves.
 #
 # The store's supertag nodes as they stand before anything erases, which E7 reads again with the
-# same statement: an erase writes no node of its own and removes no type, so the list it reads
-# then is this one.
+# same statement after E4's erases and E10 after its own: an erase writes no node of its own and
+# removes no type, so the list each reads then is this one.
 readonly supertags_sql="select coalesce(string_agg(id, ',' order by id), '') from graph_nodes where kind = 'supertag'"
 query E3 "read the store's supertag nodes" "$supertags_sql"
 [[ -n "$answer" ]] || fail E3 "read the store's supertag nodes" "the store holds no supertag node"
@@ -954,8 +955,9 @@ jq -e '(.removed.versions | length) == 0 and (.removed.reviews | length) == 0' "
 pass E6 "the block's graph_erasures row holds $document_ref version $version and review $review, and the comment's ends none"
 
 # E7: the erases wrote no node of their own. Every node left carries a supertag the store
-# declares, and the store's supertag nodes are the ones E3 read before the erases: the list is
-# the store's own, so a type a later change adds needs no line here.
+# declares, and the store's supertag nodes, read here after E4's erases, are the ones E3 read
+# before them; E10 reads them again after its own erase. The list is the store's own, so a type
+# a later change adds needs no line here.
 want_rows E7 "every node carries a supertag the store declares" 0 \
   "select count(*) from graph_nodes n where not exists (select 1 from graph_nodes s where s.kind = 'supertag' and s.id = n.supertag)"
 query E7 "read the store's supertag nodes" "$supertags_sql"
@@ -998,7 +1000,8 @@ pass E9 "the erase is reached by the command and the database credential alone: 
 # those bytes are. A comment whose whole body is `Yes` is erased beside another issue's spec
 # version and another person's comment that each hold `Yes`: the erase lists each of those two
 # rows as a row it leaves, and afterwards both rows and the events of their issue are byte for
-# byte what they were.
+# byte what they were, and the store's supertag nodes are still the ones E3 read before the first
+# erase.
 send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
   '{project: $p, title: "Store erasure check, a spec that says Yes", spec: "Yes, this spec says so too.", actor: {kind: "session", id: $s}}')"
 want_status 201 E10 "create an issue whose spec holds Yes"
@@ -1060,5 +1063,12 @@ query E10 "read the rows that hold Yes for other nodes, whole, after the erase" 
   fail E10 "$yes_spec_ref version 1, comment:$yes_person_comment and the events of $yes_key are as they were" \
     "they read $answer after the erase, $yes_others_before before it"
 pass E10 "$yes_spec_ref version 1, $login's comment:$yes_person_comment and every event of $yes_key are byte for byte what they were"
+# The store's supertag nodes once more, read with the statement E3 and E7 read them with: this
+# erase, like E4's, wrote and removed no supertag node.
+query E10 "read the store's supertag nodes" "$supertags_sql"
+[[ "$answer" == "$supertags_before" ]] ||
+  fail E10 "the erases wrote and removed no supertag node" \
+    "the store held $supertags_before before the erases and holds $answer now"
+pass E10 "the store holds the ${#supertags[@]} supertags it held before the erases, after E10's erase too"
 
 printf 'graph-erase.sh: every check passed\n'

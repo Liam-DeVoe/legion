@@ -573,6 +573,9 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
+  A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
+  Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
+  An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
   Logout ends Dispatch's session only, not the issuer's.
 
 - A person is their email, so an address passed from one account to another is one person.
@@ -3423,7 +3426,13 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
 
 - **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
 
-- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved are counted again in full as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved, in two steps.
+  Inside the transaction, under the locks, the erase takes out of each project's statistics every lexeme an item it deleted or rewrote no longer holds (`api.ForgetErasedTermsTx`): `search_term_stats` holds lexemes, and one of the erased text that stood there after the commit would be the erased words, still stored.
+  It reads them from the old vectors `search_term_queue` carries for those items: the rows its own writes queued, the row it queues itself for each `document_search` row it deletes (`20261101182522`'s trigger fires on an insert or an update of that table alone), and the rows queued before the erase for the same items and for the documents it deleted versions of, the oldest of which carries the vector the counts hold.
+  It deletes all of those queue rows, since any of them can carry the erased words, and clears the project's `search_term_totals.snapshot`, so the project's next refresh pass counts it in full.
+  Each of those statements reads the queue, the erased items and the rows it deletes by their keys, and one totals row; none reads another item of the project, so no writer of the node's issue or document waits on a count of the whole project.
+  After the commit, outside the locks, the erase counts each such project again in full, each in a transaction of its own, as a refresh pass counts one (`api.RefreshSearchTermStats`), which gives back the counts of the lexemes it took out that other items still hold; it prints the projects on a `term statistics counted again after the commit:` line.
+  A count that fails there is no failure of the erase, and the command exits 0: the statistics hold none of the erased words and lack only those counts, which the related-item check probes live until the project's next refresh pass, a full one, writes them again; the command prints the project, the error and that fallback.
 
 - **The embedding store** (`embeddings`, with `embedding_window_states`): the node's own rows and window state go, and for a block the windows of its document whose `covers` name it or whose snapshot holds its text, its document's whole-text row and, where the document is a spec, the issue's row; each such issue's row is written again by the statement migration `0140`'s trigger runs, and the document is marked owed its windows (`document_block_versions.windows_owed_at`) where a version with markdown is left.
 
@@ -3452,7 +3461,7 @@ It takes no owner row of a row it leaves, since it writes none of them.
 It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
 Which owners those are is read before they are locked, so it is read again under them, and a write that meanwhile moved the node under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row; after three tries it removes nothing and exits 2, naming each such owner.
 
-What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it counted again and the listing's digest, with who ran it (the database role, the account and the host) and when.
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it took the erased words out of and counts again after the commit, and the listing's digest, with who ran it (the database role, the account and the host) and when.
 That row holds no erased text and none of the rows the run left, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
 Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
 A node the store does not hold is exit 2, naming it.

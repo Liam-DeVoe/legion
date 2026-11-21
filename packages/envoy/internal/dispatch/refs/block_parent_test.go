@@ -993,7 +993,10 @@ func TestAPassTheFenceRefusesCommitsNothing(t *testing.T) {
 		t.Fatalf("store revision %d: %v", newer, err)
 	}
 
-	err = store.RunWrite(ctx, tx, indexing.Queue)
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	})
 	if err != nil {
 		for _, says := range []string{"the revision fence refused", document.artifact, fmt.Sprintf("version %d", own)} {
 			if !strings.Contains(err.Error(), says) {
