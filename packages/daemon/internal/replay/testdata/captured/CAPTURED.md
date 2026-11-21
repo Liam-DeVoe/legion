@@ -4,7 +4,8 @@ Real daemon log lines, Dispatch events and one GitHub commits page, read once an
 They live in `packages/daemon/internal/replay/testdata/captured/`, and every path below is relative to it: `log/<slug>.json` holds the daemon's lines, `events/<type-slug>.json` Dispatch's events and `github/commits.json` GitHub's page.
 The daemon's lines sit under `log/` rather than `logs/` because the repository's `.gitignore` ignores every directory named `logs`.
 `TestTheTraceReadsEveryCapturedShape` (`packages/daemon/internal/replay/trace_test.go`) reads every file here with the trace's readers (`ParseLogLine`, `ParseDispatchEvent` and `ParseMerges` in `trace.go`) and holds each to the fields read by hand from the file, so a file added here needs its row in that test.
-Every issue key is `ACME-<n>` under one map across all files; the map is kept outside the repository.
+Every issue key is `ACME-<n>` under one map across all files but the eleven log files of the log table's last eleven rows, which were neutralized in a run of their own, so their keys and uuids are under a map of their own: a key or a uuid of theirs and the same one in another file may name two different things.
+Both maps are kept outside the repository.
 
 Placeholders in the commands below:
 
@@ -13,7 +14,7 @@ Placeholders in the commands below:
 - `<daemon pod>`: the pod name of one daemon process.
 - `<KEY>`: the source issue key; the file names the neutral key it became.
 - `$DISPATCH_URL`, and the Dispatch token sent on stdin as the `Authorization: Bearer` header (`-H @-`).
-- `<window>`: the one window assembled from the raw samples: its `log.jsonl` holds each captured log entry's `jsonPayload`, and its `events/<KEY>.jsonl` the captured events of each issue.
+- `<window>`: a window assembled from the raw samples: its `log.jsonl` holds each captured log entry's `jsonPayload`, and its `events/<KEY>.jsonl` the captured events of each issue.
 - `<neutral window>`: the directory the neutral window is written to.
 - `<map file>`: the file the map of every name replaced is written to, outside the repository.
 - `<organization>`: the organization's name, which no neutral file may hold.
@@ -22,7 +23,7 @@ Shape: each log file is a one-entry array of `{timestamp, jsonPayload}`, each ev
 
 ## Neutralizing
 
-The log lines and the events were neutralized by `legion replay neutralize`, run once over one window assembled from the raw samples:
+The log lines and the events were neutralized by `legion replay neutralize`, in one run over one window assembled from the raw samples, and the log files of the log table's last eleven rows in a second run over a window assembled from their samples alone:
 
 ```sh
 go -C packages/daemon run ./cmd/legion replay neutralize --in <window> --out <neutral window> --map <map file> --project ACME --deny <organization>
@@ -40,6 +41,8 @@ Command, one read at a time, 3 s apart:
 gcloud logging read '<daemon filter> AND <clause>' --limit=1 --format=json --freshness=30d --project=<project> \
   | jq '[.[] | {timestamp, jsonPayload}]'
 ```
+
+A clause that holds `'` is written `'\''` inside the command's single quotes.
 
 | File | `<clause>` | Entry time | Captured | Neutralizing changed |
 |---|---|---|---|---|
@@ -80,6 +83,17 @@ gcloud logging read '<daemon filter> AND <clause>' --limit=1 --format=json --fre
 | `log/design-gate-registered.json` | `jsonPayload.msg="workflow: design gate registered"` | 2026-11-21T07:59:33.665670117Z | 2026-11-21T08:06:11Z | `artifact`, `issue` (the same as `log/design-gate-closed.json`'s, whose issue and artifact it is) |
 | `log/supervise-claim-failed.json` | `jsonPayload.msg="supervise: claim failed"` | 2026-11-18T10:37:34.716843703Z | 2026-11-21T08:06:11Z | `claim`, `why` (the claim token, which `why` holds too) |
 | `log/supervise-turn-ended-outcome.json` | `jsonPayload.msg="supervise: a turn ended" AND jsonPayload.sequence:*` | 2026-11-21T08:06:02.659823412Z | 2026-11-21T08:06:11Z | `claim` (the same issue as `log/supervise-launched.json`'s, another role) |
+| `log/design-gate-registered-before-steps.json` | `jsonPayload.msg="workflow: design gate registered" AND NOT jsonPayload.changes_requested:* AND NOT jsonPayload.gated_steps:* AND NOT jsonPayload.step:*` | 2026-10-27T13:52:13.728403114Z | 2026-11-21 | `artifact`, `issue` |
+| `log/design-gate-registered-one-step.json` | `jsonPayload.msg="workflow: design gate registered" AND NOT jsonPayload.gated_steps:* AND NOT jsonPayload.step:*` | 2026-11-10T12:03:11.418251594Z | 2026-11-21 | `artifact`, `issue` |
+| `log/supervise-claim-failed-no-cause.json` | `jsonPayload.msg="supervise: claim failed" AND NOT jsonPayload.cause:*` | 2026-11-16T18:01:58.038525264Z | 2026-11-21 | `claim` |
+| `log/supervise-process-died.json` | `jsonPayload.msg="supervise: process died"` | 2026-11-21T06:18:17.149997849Z | 2026-11-21 | `claim`, `detail`, `incarnation` |
+| `log/supervise-displaced-uncharged.json` | `jsonPayload.msg="supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged"` | 2026-11-19T18:00:14.315034373Z | 2026-11-21 | `claim`, `detail`, `incarnation`, `process` |
+| `log/supervise-relaunch-ended-work.json` | `jsonPayload.msg="supervise: the relaunch ended work the agent had running"` | 2026-11-21T06:01:02.075758625Z | 2026-11-21 | `claim` |
+| `log/daemon-stopping.json` | `jsonPayload.msg="legion daemon stopping"` | 2026-11-21T01:54:46.607199038Z | 2026-11-21 | `deciding[]`, `project` |
+| `log/daemon-stopped.json` | `jsonPayload.msg="legion daemon stopped"` | 2026-11-21T01:54:47.065080858Z | 2026-11-21 | `project` |
+| `log/admission-reconcile-holding.json` | `jsonPayload.msg="admission reconcile: holding roots for the Dispatch consumer to reach a stream position"` | 2026-11-21T01:58:06.102610914Z | 2026-11-21 | nothing |
+| `log/admission-consumer-caught-up.json` | `jsonPayload.msg="admission: the Dispatch consumer has caught up; releasing held roots"` | 2026-11-21T02:04:04.400616413Z | 2026-11-21 | nothing |
+| `log/root-joined-live-tree.json` | `jsonPayload.msg="workflow: a queued root joined a live tree"` | 2026-11-17T09:11:21.164402764Z | 2026-11-21 | `issue`, `tree` |
 
 Two extra files hold the first lines of the deployed release's last daemon process, which writes neither of the lines today's daemon starts a process with, the leak check line and `daemon: opening the store; …` (see "Kinds with no line in 30 days"):
 
@@ -93,7 +107,7 @@ gcloud logging read '<daemon filter> AND resource.labels.pod_name="<daemon pod>"
 | `log/daemon-first-line-stale-plugin.json` | `daemon: stale-plugin relaunches install` (entry 1) | 2026-11-21T01:54:55.884632109Z | 2026-11-21T05:12:03Z | nothing |
 | `log/daemon-boot-stage-prompts.json` | `legion workflow boot stage`, stage `prompts` (entry 3) | 2026-11-21T01:54:55.884757308Z | 2026-11-21T05:12:03Z | nothing |
 
-Kept as captured: the `reason` and `why` texts of the log lines. Each is the daemon's own literal or format string, not a person's text: `the operator retried this phase's worker` (workflow/engine.go:1873), `spec version %d is awaiting a person's review` (workflow/awaiting_reconcile.go:344), `the issue's pod has been idle for the release period` (daemon/idle.go:469), `the issue stands in %s, not merging` (workflow/pullrequest.go:661), and the error chain of `supervise: claim failed`, every link of which the daemon writes (`launch failures ran out: %v` supervise/machine.go:2864, `start through its authenticated launcher` runtime/sandbox/relaunch.go:446, `the shared public leak check could not be installed: ` leakguard/cause.go:15, `the served check could not be run: %w` leakguard/install.go:446) above the operating system's `waitid: no child processes`; only the claim token inside it changed. Also kept: commit SHAs of `cybermonklabs/legion`, artifact versions, seqs, slot counts and the cap, generations, the daemon's listen addresses (`[::]:<port>`), and plugin versions.
+Kept as captured: the `reason` and `why` texts of the log lines. Each is the daemon's own literal or format string, not a person's text: `the operator retried this phase's worker` (workflow/engine.go:1873), `spec version %d is awaiting a person's review` (workflow/awaiting_reconcile.go:344), `the issue's pod has been idle for the release period` (daemon/idle.go:469), `the issue stands in %s, not merging` (workflow/pullrequest.go:661), `deaths with work outstanding ran out` (supervise/machine.go:3413), and the error chain of `supervise: claim failed`, every link of which the daemon writes (`launch failures ran out: %v` supervise/machine.go:2864, `start through its authenticated launcher` runtime/sandbox/relaunch.go:446, `the shared public leak check could not be installed: ` leakguard/cause.go:15, `the served check could not be run: %w` leakguard/install.go:446) above the operating system's `waitid: no child processes`; only the claim token inside it changed. Also kept: commit SHAs of `cybermonklabs/legion`, artifact versions, seqs, slot counts and the cap, generations, the daemon's listen addresses (`[::]:<port>`), and plugin versions.
 
 ## Dispatch events
 
@@ -135,6 +149,12 @@ Read with `--freshness=30d` on 2026-11-21; each read returned an empty array, so
 
 The deployed release predates both lines: its last process (boot at 2026-11-21T01:54:55Z, `legion daemon started` at 2026-11-21T02:01:27Z) begins with `daemon: stale-plugin relaunches install`, then `daemon: the image probe's attempt outlives slow_command_timeout_seconds`, then `legion workflow boot stage` with stage `prompts`, `agent-secrets: logged in …`, and stages `store`, `config`, `dispatch`. The first two of those lines that a trace can use as a process start are the two extra files above.
 
+Three more kinds the trace reads had no line either: read with `--freshness=30d` on 2026-11-21 over the daemon's own lines (the log table's command), each returned an empty array:
+
+- `pause: the project is paused` (clause `jsonPayload.msg="pause: the project is paused"`).
+- `pause: the project is resumed` (clause `jsonPayload.msg="pause: the project is resumed"`).
+- `workflow: a closed tree's member joined a live tree` (clause `jsonPayload.msg="workflow: a closed tree's member joined a live tree"`).
+
 ## Notes for the trace
 
 - `log/phase-changed-ready-window-two.json` moves `merging` → `awaiting_merge`: window two's release had a phase `awaiting_merge`, which today's phase list does not hold.
@@ -142,5 +162,6 @@ The deployed release predates both lines: its last process (boot at 2026-11-21T0
 - `admission: slot taken` and `admission: slot released` carry `slots` and `cap` as numbers; `admission waits for what this issue waits on` carries `blockers` as an array of keys.
 - `supervise:` lines name the claim token only (`claim`), never `issue`; the issue and role come from the token.
 - `supervise: a turn ended` has two forms: `log/supervise-turn-ended.json` carries `claim` and `generation` (with `delivery` when the turn was a task's), while `log/supervise-turn-ended-outcome.json`, the turn-outcome line (supervise/turnoutcome.go:119), carries `generation`, `sequence`, `refused`, `refusedRun` and `limit`.
-- `supervise: claim failed` is logged at `ERROR` with `cause`, `why` and the four budgets `launchFailures`, `deaths`, `promptFailures`, `promptRetires`.
+- `supervise: claim failed` is logged at `ERROR` with `cause`, `why` and the four budgets `launchFailures`, `deaths`, `promptFailures`, `promptRetires`; `log/supervise-claim-failed-no-cause.json`, of an older release, carries no `cause`.
+- `workflow: design gate registered` has three shapes: `log/design-gate-registered.json` carries `changes_requested`, `step` and `gated_steps`, `log/design-gate-registered-one-step.json` carries `changes_requested` and neither of the other two, and `log/design-gate-registered-before-steps.json` none of the three; the two older ones carry `policy`.
 - `handoff.recorded` carries `payload.phase`, `payload.version` and `payload.handoff_id` only.

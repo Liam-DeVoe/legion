@@ -24,7 +24,9 @@ import (
 )
 
 // The span every collect of these tests reads: from 2026-11-20 to 09:00 the next day, its inputs
-// reaching four days before, so every captured line (the oldest from 2026-11-16T22:23Z) is in it.
+// reaching four days before, so every captured line from 2026-11-16 on (the oldest of them from
+// 2026-11-16T18:01Z) is in it; the samples of the two older gate registration shapes, from
+// 2026-10-27 and 2026-11-10, are before it.
 var (
 	collectFrom   = time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
 	collectTo     = time.Date(2026, time.November, 21, 9, 0, 0, 0, time.UTC)
@@ -369,9 +371,10 @@ func collectCaptured(t *testing.T) collectRun {
 }
 
 // A collect of the captured samples writes a window whose every file reads back through
-// ReadWindow as written: the log holds each captured line once, as Cloud Logging kept it, with the
-// kubectl capture's own two lines, in time order, and no line before the span, at its end, of a
-// kind the trace does not read, or that is no daemon line; window.json holds the project, the
+// ReadWindow as written: the log holds each captured line written in the collect's reach once, as
+// Cloud Logging kept it, with the kubectl capture's own two lines, in time order, and no line
+// before the reach (two captured lines among them), at the span's end, of a kind the trace does
+// not read, or that is no daemon line; window.json holds the project, the
 // span, the reach, the cap of each change (the earlier line's 150, then the daemon's start line's
 // 157), the kinds the log holds, the settings, the part and the collector; the events are each
 // captured issue's that a line names, up to the span's end, the blocker's and parent's those
@@ -388,18 +391,28 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 		at   time.Time
 		line json.RawMessage
 	}
+	reach := collectFrom.Add(-collectBefore)
 	var want []timed
-	add := func(line []byte) {
+	// add holds line among the lines the log keeps where it was written in the collect's reach,
+	// [reach, collectTo), and says whether it was.
+	add := func(line []byte) bool {
 		var head struct {
 			Time time.Time `json:"time"`
 		}
 		if err := json.Unmarshal(line, &head); err != nil {
 			t.Fatal(err)
 		}
+		if head.Time.Before(reach) || !head.Time.Before(collectTo) {
+			return false
+		}
 		want = append(want, timed{at: head.Time, line: compactJSON(t, line)})
+		return true
 	}
+	inReach := 0
 	for _, entry := range run.captured {
-		add(entry.JSONPayload)
+		if add(entry.JSONPayload) {
+			inReach++
+		}
 	}
 	add([]byte(collectSlotTaken))
 	add([]byte(collectWaitsOn))
@@ -423,9 +436,9 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 	if got, wantKinds := read.Lines, slices.Sorted(maps.Keys(kinds)); !slices.Equal(got, wantKinds) {
 		t.Errorf("window.json's lines are %q, want %q", got, wantKinds)
 	}
-	if c := run.collected; c.Kept != len(want) || c.Duplicates != len(run.captured) || c.NotLines != 2 || c.Read != 2*len(run.captured)+6 {
+	if c := run.collected; c.Kept != len(want) || c.Duplicates != inReach || c.NotLines != 2 || c.Read != 2*len(run.captured)+6 {
 		t.Errorf("the collect read %d lines, kept %d, left %d out as read twice and %d as no daemon line; want %d, %d, %d and 2",
-			c.Read, c.Kept, c.Duplicates, c.NotLines, 2*len(run.captured)+6, len(want), len(run.captured))
+			c.Read, c.Kept, c.Duplicates, c.NotLines, 2*len(run.captured)+6, len(want), inReach)
 	}
 
 	wantCaps := []CapAt{{At: time.Date(2026, time.November, 19, 0, 0, 0, 5e8, time.UTC), Cap: 150},
@@ -461,7 +474,7 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 		}
 	}
 	missing := map[string]bool{"ACME-24": true, "ACME-15": true, "ACME-52": true, "ACME-53": true, "ACME-60": true, "ACME-42": true, "ACME-41": true}
-	for _, n := range []int{2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 22, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57} {
+	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 22, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57} {
 		if key := fmt.Sprintf("ACME-%d", n); key != "ACME-32" && key != "ACME-29" {
 			missing[key] = true
 		}

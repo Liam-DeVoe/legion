@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -50,6 +51,9 @@ type capturedEntry struct {
 // event read without its type's part) or misreads, for a captured file this test holds no reading
 // of, and for a reading of a file that is not there. Window two's ready line moves an issue into
 // awaiting_merge, a phase today's workflow lacks, and is read as written, for the trace to fold.
+// A line of an older shape holds, for each member it lacks, the value ParseLogLine gives it: the
+// spec as the step, no changes request and no gated steps for the older gate registrations, and
+// the unrecorded cause for the failed claim with no cause.
 func TestTheTraceReadsEveryCapturedShape(t *testing.T) {
 	lines, events, merges := capturedLineReadings(t), capturedEventReadings(t), capturedMergeReadings(t)
 	var read []string
@@ -166,6 +170,10 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 			Issue: "ACME-40", Phase: phase.Planning},
 		"admission-waits-for-children.json": WaitsForChildren{LineHead: head("admission: an issue waits for the Dispatch children under it", "2026-11-21T00:52:05.903683936Z"),
 			Issue: "ACME-56", Tree: "ACME-56", Generation: 1, Children: 5},
+		"admission-reconcile-holding.json": ReconcileHolding{LineHead: head("admission reconcile: holding roots for the Dispatch consumer to reach a stream position", "2026-11-21T01:58:06.102382984Z"),
+			Count: 2174, Target: 7496674, AckFloor: 7496142},
+		"admission-consumer-caught-up.json": ConsumerCaughtUp{LineHead: head("admission: the Dispatch consumer has caught up; releasing held roots", "2026-11-21T02:04:04.400314433Z"),
+			Count: 2174, AckFloor: 7496814, Idle: false, Admitted: 2},
 		"root-waits-on-person.json": WaitsOnPerson{LineHead: head("workflow: root waits on a person and keeps its admission slot", "2026-11-21T02:22:11.47949729Z"),
 			Issue: "ACME-13", Tree: "ACME-13", Reason: "spec version 20 is awaiting a person's review", SinceSeq: 111},
 		"design-gate-opened.json": GateOpened{LineHead: head("workflow: design gate opened", "2026-11-21T03:40:14.32409794Z"),
@@ -175,6 +183,12 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 		"design-gate-registered.json": GateRegistered{LineHead: head("workflow: design gate registered", "2026-11-21T07:59:33.665464267Z"),
 			Issue: "ACME-4", Artifact: "00000000-0000-4000-8000-000000000001", Step: record.DesignStepSpec, Version: 78, Open: false,
 			ChangesRequested: false, GatedSteps: []record.DesignStep{record.DesignStepSpec}},
+		"design-gate-registered-one-step.json": GateRegistered{LineHead: head("workflow: design gate registered", "2026-11-10T12:03:11.417914384Z"),
+			Issue: "ACME-5", Artifact: "00000000-0000-4000-8000-000000000002", Step: record.DesignStepSpec, Version: 7, Open: false,
+			ChangesRequested: false, GatedSteps: nil},
+		"design-gate-registered-before-steps.json": GateRegistered{LineHead: head("workflow: design gate registered", "2026-10-27T13:52:13.728012177Z"),
+			Issue: "ACME-2", Artifact: "00000000-0000-4000-8000-000000000001", Step: record.DesignStepSpec, Version: 23, Open: false,
+			ChangesRequested: false, GatedSteps: nil},
 		"held-phase-released.json": HoldReleased{LineHead: head("workflow: a held phase is released", "2026-11-20T00:10:01.999737953Z"),
 			Issue: "ACME-16", Phase: phase.Merging, Reason: "the operator retried this phase's worker"},
 		"issue-left-workflow.json": LeftWorkflow{LineHead: head("workflow: issue left the workflow", "2026-11-21T04:17:17.416684718Z"),
@@ -183,6 +197,8 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 			Tree: "ACME-18", Generation: 1, Until: capturedTime(t, "2026-11-23T20:38:12.260483847Z")},
 		"linger-closed-tree.json": LingerClosed{LineHead: head("workflow: linger closed the tree", "2026-11-21T04:11:33.472588175Z"),
 			Tree: "ACME-5", Generation: 1, Issues: 1},
+		"root-joined-live-tree.json": RootJoined{LineHead: head("workflow: a queued root joined a live tree", "2026-11-17T09:11:21.164178694Z"),
+			Issue: "ACME-6", Tree: "ACME-8", Generation: 2},
 		"supervise-turn-started.json": TurnStarted{LineHead: head("supervise: a turn started", "2026-11-21T05:09:23.248994112Z"),
 			Claim: claimOf("legion-acme-acme-6-architect", "ACME-6", claim.RoleArchitect), Generation: 192, Delivery: "outbox:424751"},
 		"supervise-turn-ended.json": TurnEnded{LineHead: head("supervise: a turn ended", "2026-11-21T05:09:40.803838475Z"),
@@ -196,11 +212,24 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 		"supervise-claim-failed.json": ClaimFailed{LineHead: head("supervise: claim failed", "2026-11-18T10:37:34.716550893Z"),
 			Claim: claimOf("legion-acme-acme-41-implementer", "ACME-41", claim.RoleImplementer), Cause: "launch_refused",
 			Why: "launch failures ran out: launch legion-acme-acme-41-implementer: start through its authenticated launcher: the shared public leak check could not be installed: the served check could not be run: waitid: no child processes"},
+		"supervise-claim-failed-no-cause.json": ClaimFailed{LineHead: head("supervise: claim failed", "2026-11-16T18:01:58.038220213Z"),
+			Claim: claimOf("legion-acme-acme-10-tester", "ACME-10", claim.RoleTester), Cause: string(supervise.CauseUnrecorded),
+			Why: "deaths with work outstanding ran out"},
+		"supervise-process-died.json": ProcessEnded{LineHead: head("supervise: process died", "2026-11-21T06:18:17.149745489Z"),
+			Claim: claimOf("legion-acme-acme-1-architect", "ACME-1", claim.RoleArchitect), By: TurnEndDied},
+		"supervise-displaced-uncharged.json": ProcessEnded{LineHead: head("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged", "2026-11-19T18:00:14.314641023Z"),
+			Claim: claimOf("legion-acme-acme-7-architect", "ACME-7", claim.RoleArchitect), By: TurnEndDisplaced},
+		"supervise-relaunch-ended-work.json": ProcessEnded{LineHead: head("supervise: the relaunch ended work the agent had running", "2026-11-21T06:01:02.075455815Z"),
+			Claim: claimOf("legion-acme-acme-4-merger", "ACME-4", claim.RoleMerger), By: TurnEndLetGo},
 		"daemon-first-line-stale-plugin.json": ProcessStart{LineHead: head("daemon: stale-plugin relaunches install", "2026-11-21T01:54:55.881009799Z")},
 		"daemon-boot-stage-prompts.json": BootStage{LineHead: head("legion workflow boot stage", "2026-11-21T01:54:55.884463509Z"),
 			Stage: "prompts"},
 		"daemon-started.json": DaemonStarted{LineHead: head("legion daemon started", "2026-11-21T02:01:27.894781099Z"),
 			Project: "ACME", AdmissionCap: 157},
+		"daemon-stopping.json": ProcessStop{LineHead: head("legion daemon stopping", "2026-11-21T01:54:46.606831688Z"),
+			Project: "ACME"},
+		"daemon-stopped.json": ProcessStop{LineHead: head("legion daemon stopped", "2026-11-21T01:54:47.064170219Z"),
+			Project: "ACME"},
 		"merge-queue-left-nothing-read.json": QueueLeftNothingRead{LineHead: head("workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read", "2026-11-21T04:45:24.375465813Z"),
 			Issue: "ACME-49", PullRequest: 5367, HeadSHA: "aa593efa160f8338f94e0b8dfc358aeabefd2e3c", Why: "the issue stands in done, not merging"},
 		"merge-queue-left-read-once.json": QueueLeftReadOnce{LineHead: head("workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once", "2026-11-21T03:19:56.094165169Z"),
