@@ -2,7 +2,6 @@ package buckets
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,22 +11,12 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // connzPage bounds one read of a server's connection list.
 const connzPage = 1024
-
-// connz is the part of a server's /connz the break-glass create reads.
-type connz struct {
-	ServerID    string `json:"server_id"`
-	Total       int    `json:"total"`
-	Connections []struct {
-		CID            uint64 `json:"cid"`
-		Name           string `json:"name"`
-		AuthorizedUser string `json:"authorized_user"`
-	} `json:"connections"`
-}
 
 // breakGlassCreate is `create --break-glass`, for one machine with no auth service, broker or hold.
 // It connects as the user the environment names (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) and reads
@@ -116,22 +105,9 @@ func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options) 
 // whether the list is own server's, which must list own's connection. A list that cannot be read
 // whole is named too: a server that cannot show it is alone refuses.
 func otherClients(ctx context.Context, client *http.Client, url string, own *nats.Conn) (others []string, ownServer bool) {
-	base := strings.TrimSuffix(url, "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/connz?auth=1&limit=%d", base, connzPage), nil)
-	if err != nil {
-		return []string{fmt.Sprintf("%s: %v", url, err)}, false
-	}
-	resp, err := client.Do(req)
-	if err != nil {
+	var list writerhold.Connz
+	if err := writerhold.NewHTTPMonitor(url, client).Get(ctx, fmt.Sprintf("/connz?auth=1&limit=%d", connzPage), &list); err != nil {
 		return []string{fmt.Sprintf("%s: the connection list could not be read: %v", url, err)}, false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var list connz
-	if resp.StatusCode != http.StatusOK {
-		return []string{fmt.Sprintf("%s: the connection list answered %d", url, resp.StatusCode)}, false
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&list); err != nil {
-		return []string{fmt.Sprintf("%s: the connection list does not decode: %v", url, err)}, false
 	}
 	if list.Total > len(list.Connections) {
 		return []string{fmt.Sprintf("%s: the connection list holds %d connections, more than one page of %d", url, list.Total, connzPage)}, false

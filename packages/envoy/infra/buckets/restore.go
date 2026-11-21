@@ -338,18 +338,14 @@ func startRestore(ctx context.Context, nc *nats.Conn, stdout io.Writer, stream, 
 		if started || time.Now().After(deadline) {
 			return streamState{}, err
 		}
-		var apiErr *nats.APIError
-		switch {
-		case errors.As(err, &apiErr) && apiErr.ErrorCode == errRestoreNameInUse,
-			strings.Contains(err.Error(), fmt.Sprint(errRestoreNameInUse)):
+		retry, deleteFirst := startRefused(err)
+		if !retry {
+			return streamState{}, err
+		}
+		if deleteFirst {
 			if err := deleteNow(nc, stream); err != nil {
 				return streamState{}, err
 			}
-		case errors.As(err, &apiErr) && apiErr.ErrorCode == errCreatingStore,
-			strings.Contains(err.Error(), fmt.Sprint(errCreatingStore)),
-			errors.Is(err, nats.ErrNoResponders), strings.Contains(err.Error(), "no responders"):
-		default:
-			return streamState{}, err
 		}
 		fmt.Fprintf(stdout, "restore of %s: its start was refused (%v); it starts again\n", stream, err)
 		select {
@@ -358,6 +354,20 @@ func startRestore(ctx context.Context, nc *nats.Conn, stdout io.Writer, stream, 
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// startRefused sorts the error of a restore the server has not accepted: retry for 10130 (and
+// deleteFirst, since the name is the cut restore's leftover), 10049 and "no responders", read
+// through jsm.go's typed error (api.ApiError) and nats.ErrNoResponders, never through the error's
+// text, which any message holding those digits would match.
+func startRefused(err error) (retry, deleteFirst bool) {
+	switch {
+	case jsm.IsNatsError(err, errRestoreNameInUse):
+		return true, true
+	case jsm.IsNatsError(err, errCreatingStore), errors.Is(err, nats.ErrNoResponders):
+		return true, false
+	}
+	return false, false
 }
 
 // restoreRun is one restore of stream through jsm.go, on a connection of its own made with nc's
