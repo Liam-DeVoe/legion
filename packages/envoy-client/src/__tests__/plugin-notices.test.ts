@@ -13,6 +13,7 @@ import {
   failureNoticeText,
   MESSAGE_NOT_SHOWN_NOTICE,
 } from "../delivery-ledger";
+import { refusedTopicsNoticeText, TOPICS_REFUSED_NOTICE } from "../relay-registration";
 
 /** A frame given up on, with every fact of its notice its own. */
 function failure(facts: Omit<FailureNotice, "envelope">): FailureNotice {
@@ -95,6 +96,18 @@ test("every plugin notice states its fields", () => {
               readWith: "envoy_inbox",
             })
           ),
+        ],
+      ],
+    },
+    {
+      declared: TOPICS_REFUSED_NOTICE,
+      variants: [
+        [
+          refusedTopicsNoticeText(
+            ["notifications.github.acme.priv", "notifications.github.acme.priv.>"],
+            "repository_not_in_project"
+          ),
+          refusedTopicsNoticeText(["notifications.slack.alerts"], "topic_not_in_project"),
         ],
       ],
     },

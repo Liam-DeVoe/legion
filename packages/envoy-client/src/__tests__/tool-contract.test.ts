@@ -11,6 +11,7 @@ import {
   INBOUND_UNAVAILABLE_NOTICE,
 } from "../consumer-delivery";
 import { MESSAGE_NOT_SHOWN_NOTICE } from "../delivery-ledger";
+import { TOPICS_REFUSED_NOTICE } from "../relay-registration";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
@@ -224,6 +225,11 @@ describe("envoyToolSpecs", () => {
         "read live sources until a registration is accepted; what the stream stored arrives then",
       ],
       ["envoy_inbox", INBOUND_RESTORED_NOTICE.kind, "rely on Envoy messages again"],
+      [
+        "envoy_inbox",
+        TOPICS_REFUSED_NOTICE.kind,
+        "read the live source of each topic it names that you wait on; this session no longer follows those, and every other topic it follows is still delivered",
+      ],
       ["envoy_inbox", "unread messages (envoy_inbox)", "read each card above the notice"],
       [
         "envoy_inbox",
