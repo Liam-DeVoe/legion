@@ -6021,6 +6021,13 @@
       "production": "daemon cipher refusal: the broker's code decided as it came (oauth2call.CodedRefusal, APIError's said)"
     },
     {
+      "id": "appauth-broker-phrases-survive-the-cli-rule",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestEachBrokerPhraseTheDaemonDecidesOnSurvivesTheCLIsRule",
+      "production": "appauth mintFromCommand: each broker phrase it decides on in agent-secrets' stderr (brokerNoInstallation, brokerNarrowingRefused) survives the rule the CLI printed it through, which a credential sharing a run of the phrase would cut"
+    },
+    {
       "id": "cipher-unknown-field-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
@@ -8121,6 +8128,11 @@
       "site": "agent-secrets --github-token: the accounts of a release of other than one installation, printed as the broker wrote them",
       "source": "the class search of round 5's deep review",
       "guard": "agentsecrets-github-token-accounts"
+    },
+    {
+      "site": "appauth mintFromCommand decides on agent-secrets' stderr, which the CLI printed through the rule",
+      "source": "the decision-class search of round 6 (refusal code slice)",
+      "guard": "appauth-broker-phrases-survive-the-cli-rule"
     }
   ]
 }

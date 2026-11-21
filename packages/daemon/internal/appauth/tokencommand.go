@@ -376,6 +376,15 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 // brokerNoInstallation is the secrets broker's refusal of a release for an account the App has no
 // installation on (packages/envoy/internal/cipher/secrets/githubapp.go, GitHubApp.Mint), which
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
+//
+// It and brokerNarrowingRefused are read in text the CLI already printed through the rule, with
+// the release request's credentials redacted, which is right where the text left the CLI's
+// process; the daemon holds no answer of the broker's to decide on as it came. Deciding on the
+// printed phrase is sound because each is fixed, public words of the broker's own, and the only
+// credential the rule redacts there is the request's own Proof, a base64url JWS the session's
+// helper signs for that request: it holds a run of eight characters of a phrase only by chance,
+// and a refusal whose phrase the rule cut reads as a plain failure, never as another verdict
+// (TestEachBrokerPhraseTheDaemonDecidesOnSurvivesTheCLIsRule).
 const brokerNoInstallation = "has no installation on"
 
 // brokerNarrowingRefused is the secrets broker's refusal of a narrowing GitHub answered 422
