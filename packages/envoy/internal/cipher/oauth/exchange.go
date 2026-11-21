@@ -113,10 +113,10 @@ const (
 // is an issuer the broker was not told about, whose token type is then not registered at all — so
 // a caller presenting it is refused by the library before any handler of the broker's runs.
 type IssuerConfig struct {
-	// Name is a cluster issuer's name in BROKER_K8S_OIDC_ISSUER, by which an account entry names
-	// the issuers its pods' tokens come from (exchange.AccountEntry.Issuers), and a read entry
-	// the first issuer, the one it takes alone (exchange.ReadEntry.Issuers): empty for the one
-	// issuer of a list written as a bare URL, and for GitHub's and Google's issuers.
+	// Name is a cluster issuer's name in BROKER_K8S_OIDC_ISSUER, by which an account entry and a
+	// read entry name the issuers their pods' tokens come from (exchange.AccountEntry.Issuers,
+	// exchange.ReadEntry.Issuers): empty for the one issuer of a list written as a bare URL, and
+	// for GitHub's and Google's issuers.
 	Name string
 	// Issuer is the `iss` the subject token must carry, which the library compares exactly for
 	// GitHub and Google and the exchange chooses a cluster's keys by (kubernetesKeyFunc).
@@ -718,7 +718,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	switch subjectTokenType {
 	case oauthwire.SubjectTokenTypeKubernetes:
 		// The token's own issuer, whose keys kubernetesKeyFunc checked its signature against;
-		// the account's entry must name it, and a read entry takes the first issuer alone.
+		// the entry of the account, an account entry or a read entry, must name it.
 		issuer, taken := p.exchange.kubernetesIssuer(subjectToken)
 		if !taken {
 			err = errIssuerNotTaken

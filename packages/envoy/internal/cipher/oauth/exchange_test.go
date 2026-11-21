@@ -1370,8 +1370,8 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 
 // TestTheExchangeChecksEachPodTokenByTheClusterItNames: given three more cluster issuers beside the
 // fixture's, the exchange takes a token of the second for an account whose entry names it, checked
-// against that issuer's keys alone. A read entry takes the first issuer alone, so a token of the
-// fixture's issuer for its account is minted the token that only reads. It refuses 400
+// against that issuer's keys alone. The read entry here names the fixture's issuer alone, so a
+// token of that issuer for its account is minted the token that only reads. It refuses 400
 // invalid_request, with no access token, a token of an issuer it is not given, reading nothing of
 // that issuer, the read entry's account's included, a token naming the second issuer and signed
 // with another issuer's key under a key id the second publishes, a token of the second issuer for

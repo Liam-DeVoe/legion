@@ -7425,7 +7425,7 @@ Before the release, the other cluster and the daemon need these:
   Where the broker sets `BROKER_EXCHANGE_K8S_AUDIENCE` and the list names two or more issuers, the broker refuses to boot without that setting.
   Each `BROKER_EXCHANGE_ACCOUNTS` entry takes its account's token only from the issuers it names in a fifth `=`-separated field, after its session field, which is empty where the entry fixes no session: `<service account>=<project>=<person>==home,other`.
   An entry that names none takes the list's first issuer alone, so the entry of an account whose pods move names both clusters.
-  A `BROKER_EXCHANGE_READ_ACCOUNTS` entry names no issuer and takes the list's first issuer alone, so a read account's pods do not move.
+  A `BROKER_EXCHANGE_READ_ACCOUNTS` entry names its issuers the same way, in a fourth field after its session, `<service account>=<service>=<session>=home,other`, and one that names none takes the list's first issuer alone, so the read entry of an account whose pods move names both clusters too.
   The exchange reads its issuers in the background with the rest of the list, so it answers the tokens of a cluster whose issuer it cannot read `503 OIDC_ISSUER_UNAVAILABLE` and stops no boot.
 
 - **Every service that checks a pod's token accepts the other cluster's tokens.**
@@ -8967,7 +8967,7 @@ An issued token carries these claims and no others:
 
 The subject token's own kind decides those claims (`packages/envoy/internal/cipher/exchange/exchange.go`).
 A pod's token needs an entry for its service account, which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
-A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>`) gives a service and a fixed session in their place.
+A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>[=<issuer name>[,<issuer name>…]]`) gives a service and a fixed session in their place, for a token of an issuer the entry names (the first issuer alone where it names none).
 The token it mints holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
 That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
 No setting holds a read entry to some projects.

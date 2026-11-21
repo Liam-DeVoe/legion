@@ -2326,15 +2326,24 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 // session holding "=" written with no issuer field; and, naming the session it would read, an
 // entry with no issuer field, whether it names a project or none, whose session is only issuer
 // names of the list, which beside one bare URL stays a session.
-// BROKER_SERVICES takes no names. A BROKER_EXCHANGE_READ_ACCOUNTS entry names none and takes the
-// first issuer alone, even while the exchange takes a second, and it is refused, naming itself,
-// the entry and BROKER_EXCHANGE_K8S_ISSUER, while that setting leaves out the first issuer.
+// BROKER_SERVICES takes no names. A BROKER_EXCHANGE_READ_ACCOUNTS entry names its issuers the same
+// way, in a fourth field, after its session, so its session is everything between its second and
+// its last "=": one naming none takes the first issuer alone, even while the exchange takes a
+// second, and one naming the second alone loads while the exchange leaves out the first. It
+// refuses, naming itself and the entry, what BROKER_EXCHANGE_ACCOUNTS refuses of the issuer
+// field: a name the list does not hold and a name BROKER_EXCHANGE_K8S_ISSUER does not name, each
+// naming that setting, one name twice, an empty issuer field, an issuer field with no session
+// before it, any name while the list is one bare URL, a session holding "=" written with no issuer
+// field, saying where the issuer field goes, and an entry naming none while
+// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer, naming that setting.
 func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 	const (
 		dispatchSubject = "system:serviceaccount:example-ns:example-dispatch"
 		daemonSubject   = "system:serviceaccount:legion-system:legion-daemon"
 		workerSubject   = "system:serviceaccount:example-ns:example-worker"
 		readerEntry     = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session"
+		viewerSubject   = "system:serviceaccount:example-ns:example-viewer"
+		auditorSubject  = "system:serviceaccount:example-ns:example-auditor"
 		exchangeSetting = "BROKER_EXCHANGE_K8S_ISSUER"
 	)
 	// exchangeTaking is namedIssuersEnv with a token exchange that takes the issuers names names.
@@ -2457,14 +2466,33 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		}
 	})
 
-	t.Run("a read entry takes the first issuer alone while the exchange takes two", func(t *testing.T) {
+	t.Run("a read entry names its issuers after its session, and one naming none takes the first alone while the exchange takes two", func(t *testing.T) {
 		e := exchangeTaking("first,second")()
-		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = readerEntry
+		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = readerEntry + " " +
+			viewerSubject + "=example-viewer=example-viewer-session=second " +
+			auditorSubject + "=example-auditor=example-auditor:EXAMPLE=1=second,first"
 		cfg, err := Load(env(e))
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []exchange.ReadEntry{{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session", Issuers: []string{"first"}}}
+		want := []exchange.ReadEntry{
+			{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session", Issuers: []string{"first"}},
+			{Account: viewerSubject, Service: "example-viewer", Session: "example-viewer-session", Issuers: []string{"second"}},
+			{Account: auditorSubject, Service: "example-auditor", Session: "example-auditor:EXAMPLE=1", Issuers: []string{"second", "first"}},
+		}
+		if !reflect.DeepEqual(cfg.ExchangeReadAccounts, want) {
+			t.Errorf("ExchangeReadAccounts = %+v, want %+v", cfg.ExchangeReadAccounts, want)
+		}
+	})
+
+	t.Run("a read entry naming the second issuer alone loads while the exchange leaves out the first", func(t *testing.T) {
+		e := exchangeTaking("second")()
+		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = viewerSubject + "=example-viewer=example-viewer-session=second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.ReadEntry{{Account: viewerSubject, Service: "example-viewer", Session: "example-viewer-session", Issuers: []string{"second"}}}
 		if !reflect.DeepEqual(cfg.ExchangeReadAccounts, want) {
 			t.Errorf("ExchangeReadAccounts = %+v, want %+v", cfg.ExchangeReadAccounts, want)
 		}
@@ -2498,6 +2526,13 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		{"BROKER_EXCHANGE_ACCOUNTS: one issuer name as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=second", []string{`reads "second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
 		{"BROKER_EXCHANGE_ACCOUNTS: issuer names as the session of an entry naming no project", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "==ada@example.com=first,second", []string{`reads "first,second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
 		{"BROKER_EXCHANGE_READ_ACCOUNTS: an entry while the exchange leaves out the first issuer", exchangeTaking("second"), "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry, []string{`"first"`, exchangeSetting}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: an issuer the list does not hold", exchangeTaking("first,second"), "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry + "=third", []string{`"third"`, exchangeSetting}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: an issuer BROKER_EXCHANGE_K8S_ISSUER does not name", exchangeTaking("first"), "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry + "=second", []string{`"second"`, exchangeSetting}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: one issuer twice", exchangeTaking("first,second"), "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry + "=second,second", []string{`"second"`, "twice", exchangeSetting}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: an entry ending in = with no name", exchangeTaking("first,second"), "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry + "=", []string{"fourth"}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: an issuer field with no session before it", exchangeTaking("first,second"), "BROKER_EXCHANGE_READ_ACCOUNTS", viewerSubject + "=example-viewer==second", []string{"<session>"}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: an issuer name beside one bare URL", withExchange, "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry + "=first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: a session holding = with no issuer field", withExchange, "BROKER_EXCHANGE_READ_ACCOUNTS", viewerSubject + "=example-viewer=example-viewer=1", []string{"<service account>=<service>=<session>=<issuer name>"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := c.base()
@@ -2601,12 +2636,12 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 
 // TestLoadReadsTheExchangeReadAccounts pins BROKER_EXCHANGE_READ_ACCOUNTS: whitespace-separated
 // <account>=<service>=<session> entries in order, each taking the list's one issuer, none when
-// unset, a session that may itself carry "=", and refusals naming the setting and the entry for
-// one with fewer than three fields or a blank one, an account that is not a service account's
-// subject, a namespace's default account, a service that is not a service's name or is the shared
-// owner, and an account listed twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused
-// naming both settings, and the setting needs the cluster issuer and the exchange audience, whose
-// tokens its pods present.
+// unset, a session that may itself carry "=" when the issuer field follows it, and refusals naming
+// the setting and the entry for one with fewer than three fields or a blank one, an account that
+// is not a service account's subject, a namespace's default account, a service that is not a
+// service's name or is the shared owner, and an account listed twice. An account
+// BROKER_EXCHANGE_ACCOUNTS lists too is refused naming both settings, and the setting needs the
+// cluster issuer and the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2622,7 +2657,7 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	}
 	e := withExchange()
 	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session\n" +
-		" system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer=1 "
+		" system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer-session "
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -2630,7 +2665,21 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	// Each entry takes the list's one issuer, which, written as a bare URL, has the empty name.
 	want := []exchange.ReadEntry{
 		{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session", Issuers: []string{""}},
-		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1", Issuers: []string{""}},
+		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer-session", Issuers: []string{""}},
+	}
+	if !reflect.DeepEqual(cfg.ExchangeReadAccounts, want) {
+		t.Fatalf("ExchangeReadAccounts = %#v, want %#v", cfg.ExchangeReadAccounts, want)
+	}
+	// A session that holds "=" is fixed by an entry whose issuer field follows it, here naming the
+	// list's one issuer by its name.
+	e = withExchange()
+	e["BROKER_K8S_OIDC_ISSUER"] = "first=https://oidc.first.example"
+	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer=1=first"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	want = []exchange.ReadEntry{
+		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1", Issuers: []string{"first"}},
 	}
 	if !reflect.DeepEqual(cfg.ExchangeReadAccounts, want) {
 		t.Fatalf("ExchangeReadAccounts = %#v, want %#v", cfg.ExchangeReadAccounts, want)

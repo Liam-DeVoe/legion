@@ -16,7 +16,7 @@
 //     (system:serviceaccount:<namespace>:<name>) gives the person and the project, or no project
 //     for an entry that names none (<service account>==<person>), and names the issuers the
 //     token may come from, or a read entry keyed on it gives a service and the session its token
-//     reads as and takes the token of the first issuer alone, and the token must carry the pod it
+//     reads as and names the issuers the token may come from, and the token must carry the pod it
 //     is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
 //     repository, the workflow's path and the ref it ran on gives the project and the person;
@@ -458,11 +458,12 @@ type ReadEntry struct {
 	// for the account as AccountEntry.Session is.
 	Session string
 	// Issuers are the names, in BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens the account's
-	// pods exchange: the first issuer's alone, which config.Load fills in, since a read entry names
-	// none and an account entry naming none takes the first issuer alone too. The same account
-	// name in another cluster is another ServiceAccount, and a read token reads every project's
-	// architecture, so Pod refuses a token of any other issuer, and the account's pods stay on the
-	// first issuer's cluster. The one issuer of a list written as a bare URL has the empty name.
+	// pods exchange: the entry's own, or the first issuer's alone where it names none, which
+	// config.Load fills in, as it does an AccountEntry's. The same account name in another cluster
+	// is another ServiceAccount, and a read token reads every project's architecture, so Pod
+	// refuses a token of any other issuer, and the account's pods exchange only on the clusters of
+	// the issuers their entry names. The one issuer of a list written as a bare URL has the empty
+	// name.
 	Issuers []string
 }
 
@@ -558,10 +559,11 @@ type mapping struct{ person, project string }
 // a project without a person, says nothing clear about what they may write.
 //
 // reads are the read entries, which list Kubernetes service accounts as accounts does, each
-// taking the first issuer alone (ReadEntry.Issuers). An account both lists name is refused,
-// naming its read entry, for the reason an identity listed twice is: it would have two answers, a
-// token that writes as its person and one that only reads. A read entry's session is required as
-// well as usable, and is reserved for the account as an account entry's fixed one is.
+// naming the issuers its pods' tokens come from as an account entry does (ReadEntry.Issuers). An
+// account both lists name is refused, naming its read entry, for the reason an identity listed
+// twice is: it would have two answers, a token that writes as its person and one that only reads.
+// A read entry's session is required as well as usable, and is reserved for the account as an
+// account entry's fixed one is.
 //
 // signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names, which Person holds a
 // signing-in person's own token to. It is a field of the set rather than an argument of that
@@ -793,9 +795,9 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 // issuer, in BROKER_K8S_OIDC_ISSUER, signed. The token's own shape is read first — the account it
 // was minted for, and the pod it is bound to — and the entry for that account second, so an
 // operator reading the refusal learns which of the two to fix. The entry must name issuer: an
-// account entry names its Issuers, and a read entry the first issuer alone. The same account name
-// in another cluster is another ServiceAccount, so a token of an issuer the entry does not name
-// is refused (ErrIssuerNotNamed).
+// account entry and a read entry each name their Issuers. The same account name in another
+// cluster is another ServiceAccount, so a token of an issuer the entry does not name is refused
+// (ErrIssuerNotNamed).
 //
 // A token carrying no pod uid is refused however the account is listed: Kubernetes mints such a
 // token to anyone holding the account's credentials, and it proves only that the account exists,
@@ -876,7 +878,7 @@ func (l podListing) fixed() string {
 }
 
 // issuers are the names of the issuers whose tokens the listing's account exchanges: an account
-// entry's Issuers, or a read entry's, which is the first issuer alone.
+// entry's Issuers, or a read entry's.
 func (l podListing) issuers() []string {
 	if l.readOnly {
 		return l.read.Issuers

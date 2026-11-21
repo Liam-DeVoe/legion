@@ -1,8 +1,9 @@
 kind: Changed
 body: |-
-  The secrets broker trusts each Kubernetes cluster its configuration names. `BROKER_K8S_OIDC_ISSUER`
-  takes comma-separated `<name>=<issuer URL>` entries, one for each cluster, or one bare issuer URL
-  as before, and the broker checks each token against the issuer its `iss` claim names.
+  The secrets broker trusts each Kubernetes cluster its configuration names.
+  `BROKER_K8S_OIDC_ISSUER` takes comma-separated `<name>=<issuer URL>` entries, one for each
+  cluster, or one bare issuer URL as before, and the broker checks each token against the issuer
+  its `iss` claim names.
   The broker reads each issuer in the background, so it starts and serves while one of them cannot
   be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
   answers the same to a token whose key it cannot read: a key it does not hold from its last good
@@ -61,9 +62,14 @@ body: |-
   records that issuer (migration 0041). A pod enrolled before this release records none and counts
   as the first issuer's, and a pod enrolled with a token of another issuer, or of an issuer
   `BROKER_K8S_OIDC_ISSUER` no longer names, names no project.
-  A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names no issuer, so the exchange takes its
-  account's token from the first issuer of `BROKER_K8S_OIDC_ISSUER` alone, as it does for an
-  exchange entry that names none, and a token of any other issuer is `400 invalid_request`, so a
-  read account's pods stay on that first issuer's cluster. The broker refuses to start, naming
-  `BROKER_EXCHANGE_READ_ACCOUNTS`, the entry and `BROKER_EXCHANGE_K8S_ISSUER`, on a read entry
-  while `BROKER_EXCHANGE_K8S_ISSUER` leaves out that first issuer.
+  A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names its issuers the same way, in a fourth
+  `=`-separated field after its session, `<service account>=<service>=<session>=first,second`, and
+  the exchange mints its account's read-only token only for a token of those issuers. A read entry
+  that names none takes the first issuer of the list alone, so an existing entry keeps its meaning,
+  and a token of an issuer the entry does not name is `400 invalid_request`. The broker reads that
+  field after the entry's last `=`, so a read entry written as three fields whose session holds `=`
+  is read as four: beside one bare issuer URL the broker refuses to start on it, and the session is
+  kept by naming the issuers in `BROKER_K8S_OIDC_ISSUER` and writing `=<name>` after it, as for an
+  exchange entry. The broker refuses to start, naming `BROKER_EXCHANGE_READ_ACCOUNTS`, the entry
+  and `BROKER_EXCHANGE_K8S_ISSUER`, on a read entry that names an issuer that setting does not
+  name, names one twice, or names none while that setting leaves out the first issuer.

@@ -827,19 +827,27 @@ its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and 
 `403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of
 `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects. The Envoy listener answers it `401`. A read entry
-names no issuer, so the exchange takes its account's token from the first issuer of
-`BROKER_K8S_OIDC_ISSUER` alone, as it does for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none,
-and refuses a token of any other issuer with `400 invalid_request`, so a read account's pods stay
-on that first issuer's cluster. The broker refuses to start, naming
-`BROKER_EXCHANGE_READ_ACCOUNTS`, the entry and `BROKER_EXCHANGE_K8S_ISSUER`, for a read entry while
-`BROKER_EXCHANGE_K8S_ISSUER` leaves out that first issuer. Both settings need
+setting holds a read entry to some projects. The Envoy listener answers it `401`. A read entry may
+name its issuers as an entry of `BROKER_EXCHANGE_ACCOUNTS` does, in a fourth `=`-separated field
+after its session, as `<service account>=<service>=<session>=<issuer name>[,<issuer name>…]`, and
+the exchange mints its account's read-only token only for a token of those issuers. A read entry
+that names none takes the first issuer of `BROKER_K8S_OIDC_ISSUER` alone, so an entry written for
+one cluster keeps its meaning. The exchange refuses a token of an issuer the entry does not name
+with `400 invalid_request`, so a read account's pods exchange only on the clusters of the issuers
+its entry names. The broker reads the issuer field after the entry's last `=`, so an entry written
+as three fields whose session holds `=` is read as four, and a session that holds `=` is kept only
+by naming the issuers in `BROKER_K8S_OIDC_ISSUER` as `<name>=<issuer URL>` entries and writing
+`=<name>` after the session. The broker refuses to start, naming `BROKER_EXCHANGE_READ_ACCOUNTS`,
+the entry and `BROKER_EXCHANGE_K8S_ISSUER`, for a read entry that names an issuer that setting does
+not name, names one issuer twice, or names none while that setting leaves out the first issuer of
+`BROKER_K8S_OIDC_ISSUER`. It refuses to start as well, naming `BROKER_K8S_OIDC_ISSUER`, for a read
+entry that names any issuer while that list is one bare URL. Both settings need
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
-read entry without the audience. It also refuses an entry with a missing field, a namespace's
-`default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is
-`shared`, and an account that one setting lists twice or that both settings list. A broker of a
-build older than this setting does not read it, so it mints those accounts no token. The boot line
-`token exchange state=on` counts the read entries as `read_accounts`.
+read entry without the audience. It also refuses an entry with a missing field or an empty issuer
+field, a namespace's `default` account, a service that is not lowercase letters, digits and hyphens
+of at most 64 or is `shared`, and an account that one setting lists twice or that both settings
+list. A broker of a build older than this setting does not read it, so it mints those accounts no
+token. The boot line `token exchange state=on` counts the read entries as `read_accounts`.
 
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's

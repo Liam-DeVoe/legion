@@ -377,7 +377,7 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 // exchange to go through, and an entry that fixes one answers none, since every pod of that
 // account writes under the configuration's name and is registered for nothing. An entry that
 // names two issuers answers a token of either. A read entry always fixes one, and answers a token
-// of the first issuer, the one it takes, its service and session, the project scope that writes
+// of the first issuer, the one it names, its service and session, the project scope that writes
 // nothing, and no person and no project.
 func TestPodAnswersTheListedAccount(t *testing.T) {
 	set := listed(t)
@@ -416,7 +416,7 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 
 // TestPodRefusesWhatItCannotDecide: each refusal names what to fix. Every entry names the first
 // issuer, so a case that presents its token is refused for something other than its issuer. The
-// read entry takes the first issuer alone, so a token of the second or a third is refused it.
+// read entry names the first issuer alone, so a token of the second or a third is refused it.
 func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {

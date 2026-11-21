@@ -780,27 +780,37 @@ type Config struct {
 	// BROKER_EXCHANGE_READ_ACCOUNTS: the Kubernetes service accounts whose pods exchange their
 	// projected token for one that only reads, whitespace-separated
 	// <service account>=<service>=<session> entries, such as
-	// system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session. The
-	// token minted for a pod of the account holds only the OAuth scope read, the project scope
+	// system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session, or
+	// <service account>=<service>=<session>=<issuer name>[,<issuer name>…] entries, such as
+	// system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session=first,second.
+	// The token minted for a pod of the account holds only the OAuth scope read, the project scope
 	// none, the service and the session, and names no person and no project: Dispatch serves it
 	// on the routes its read list names and refuses it everywhere else, and every other service
 	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token reads the
 	// whole answer of GET /api/v1/projects/{key}/architecture for every project that has an
 	// architecture source: each source, each component, and every issue of the project, closed and
-	// iceboxed ones included. No setting holds a read entry to some projects.
-	// The session is everything after the second "=", so it alone may carry one. A namespace's
-	// default account is refused, as is a service that is not lowercase letters, digits and
-	// hyphens, at most 64, or is shared, an account listed twice, and an account
-	// BROKER_EXCHANGE_ACCOUNTS lists too. An entry names no issuer: the exchange takes the
-	// account's token from the first issuer of BROKER_K8S_OIDC_ISSUER alone, as it does for a
-	// BROKER_EXCHANGE_ACCOUNTS entry that names none, since the same account name in another
-	// cluster is another ServiceAccount, and a token of any other issuer is refused with 400
-	// invalid_request, so a read account's pods stay on that first issuer's cluster. The broker
+	// iceboxed ones included. No setting holds a read entry to some projects. An entry names its
+	// issuers, by their names in BROKER_K8S_OIDC_ISSUER, in a fourth "="-separated field, after
+	// its session. A session may hold "=", so the broker reads everything after an entry's second
+	// "=" as its session where that holds no "=", and otherwise as the session up to its last "="
+	// and the issuer field after it. So an entry written as three fields whose session holds "="
+	// is read as four, and a session that holds "=" is kept only where BROKER_K8S_OIDC_ISSUER
+	// names its issuers, with the issuer field written after it. The exchange mints the account's
+	// read-only token only for a token of an issuer its entry names, and an entry that names none
+	// takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, as a BROKER_EXCHANGE_ACCOUNTS entry
+	// that names none does, so an entry written for one cluster keeps its meaning. The same
+	// account name in another cluster is another ServiceAccount, so a token of an issuer its entry
+	// does not name is refused with 400 invalid_request. A namespace's default account is refused,
+	// as is a service that is not lowercase letters, digits and hyphens, at most 64, or is shared,
+	// an account listed twice, and an account BROKER_EXCHANGE_ACCOUNTS lists too. The broker
 	// refuses to boot, naming this setting, the entry and BROKER_EXCHANGE_K8S_ISSUER, for an entry
-	// while BROKER_EXCHANGE_K8S_ISSUER leaves out that first issuer. Needs BROKER_K8S_OIDC_ISSUER
-	// and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older
-	// than this setting does not read it, so it mints those accounts no token at all. Unset, no
-	// account exchanges for a read-only token.
+	// that names an issuer BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or
+	// names none while BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; and, naming
+	// this setting, the entry and BROKER_K8S_OIDC_ISSUER, for any issuer name while
+	// BROKER_K8S_OIDC_ISSUER is one bare URL. Needs BROKER_K8S_OIDC_ISSUER and
+	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
+	// this setting does not read it, so it mints those accounts no token at all. Unset, no account
+	// exchanges for a read-only token.
 	ExchangeReadAccounts []exchange.ReadEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]
@@ -1215,8 +1225,8 @@ func k8sIssuerForm(setting, text string) error {
 // ServiceAccount subject and a Google address hold no "=", so an entry's second "=" is where its
 // names begin. ok is false for an entry that ends in that "=" and names nothing after it.
 // BROKER_API_ACCOUNTS, BROKER_SERVICE_LOGINS and BROKER_NATS_SERVICES (parseNATSService) cut their
-// entries here. BROKER_EXCHANGE_ACCOUNTS reads its issuer field after its entry's last "=" instead
-// (exchangeAccountFields).
+// entries here. BROKER_EXCHANGE_ACCOUNTS and BROKER_EXCHANGE_READ_ACCOUNTS read their issuer field
+// after the entry's last "=" instead (exchangeIssuerFields).
 func CutIssuerNames(text string) (head string, names []string, ok bool) {
 	fields := strings.SplitN(text, "=", 3)
 	switch {
@@ -1308,29 +1318,46 @@ func exchangeIssuers(value, audience string, issuers []oidc.NamedIssuer) ([]oidc
 	return taken, nil
 }
 
-// exchangeIssuerField says where a BROKER_EXCHANGE_ACCOUNTS entry names its issuers, for the
-// refusals of an entry not of that setting's form and of the issuer names an entry gives.
-const exchangeIssuerField = `an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`
+// exchangeIssuerForm says where an entry of BROKER_EXCHANGE_ACCOUNTS or of
+// BROKER_EXCHANGE_READ_ACCOUNTS names its issuers, for the refusals of an entry not of its
+// setting's form and of the issuer names an entry gives: field is the field that holds them, and
+// sessionWithIssuers the form of an entry whose fixed session holds "=", which is written with the
+// issuer field after it.
+type exchangeIssuerForm struct{ field, sessionWithIssuers string }
+
+// accountIssuerForm is the exchangeIssuerForm of a BROKER_EXCHANGE_ACCOUNTS entry, and
+// readIssuerForm that of a BROKER_EXCHANGE_READ_ACCOUNTS entry.
+var (
+	accountIssuerForm = exchangeIssuerForm{
+		field:              `an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`,
+		sessionWithIssuers: "<service account>=<project>=<person>=<session>=<issuer name>",
+	}
+	readIssuerForm = exchangeIssuerForm{
+		field:              `an entry names its issuers in a fourth "="-separated field, after its session, which the broker reads after the entry's last "="`,
+		sessionWithIssuers: "<service account>=<service>=<session>=<issuer name>",
+	}
+)
 
 // exchangeAccountIssuers answers the names of the issuers whose tokens the exchange takes for the
-// BROKER_EXCHANGE_ACCOUNTS entry text, which names names: AccountIssuers' answer, so the first of
-// issuers alone where it names none, each of which must be one of exchangeTakes, the issuers
-// BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming setting and the entry: an entry naming none
-// whose first issuer exchangeTakes does not hold, naming BROKER_EXCHANGE_K8S_ISSUER; what
-// AccountIssuers refuses of the names an entry gives; and a name exchangeTakes does not hold. A
-// refusal of the names an entry gives also says which field holds them, the fifth, after the
-// session field, which the broker reads after the entry's last "=", because an entry whose fixed
-// session holds "=" and gives no issuer field reads the session's last part as issuer names; and,
-// where the issuers have names, it lists the issuers BROKER_EXCHANGE_K8S_ISSUER names. With no
-// exchange issuers it answers none, and Load refuses the entry for the audience it needs.
-func exchangeAccountIssuers(setting, text string, names []string, issuers, exchangeTakes []oidc.NamedIssuer) ([]string, error) {
+// entry text of setting, BROKER_EXCHANGE_ACCOUNTS or BROKER_EXCHANGE_READ_ACCOUNTS, which names
+// names: AccountIssuers' answer, so the first of issuers alone where it names none, each of which
+// must be one of exchangeTakes, the issuers BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming
+// setting and the entry: an entry naming none whose first issuer exchangeTakes does not hold,
+// naming BROKER_EXCHANGE_K8S_ISSUER; what AccountIssuers refuses of the names an entry gives; and
+// a name exchangeTakes does not hold. A refusal of the names an entry gives also says which field
+// holds them, form's, after the session, which the broker reads after the entry's last "=",
+// because an entry whose fixed session holds "=" and gives no issuer field reads the session's
+// last part as issuer names; and, where the issuers have names, it lists the issuers
+// BROKER_EXCHANGE_K8S_ISSUER names. With no exchange issuers it answers none, and Load refuses the
+// entry for the audience it needs.
+func exchangeAccountIssuers(setting, text string, form exchangeIssuerForm, names []string, issuers, exchangeTakes []oidc.NamedIssuer) ([]string, error) {
 	if len(exchangeTakes) == 0 {
 		return nil, nil
 	}
 	// namesRefused is err, a refusal of the names the entry gives, saying as well which field
 	// holds those names and, where the issuers have names, which of them the exchange takes.
 	namesRefused := func(err error) error {
-		err = fmt.Errorf(`%w; %s, so a fixed session that holds "=" is written with the issuer field after it, <service account>=<project>=<person>=<session>=<issuer name>`, err, exchangeIssuerField)
+		err = fmt.Errorf(`%w; %s, so a fixed session that holds "=" is written with the issuer field after it, %s`, err, form.field, form.sessionWithIssuers)
 		if exchangeTakes[0].Name == "" {
 			return err
 		}
@@ -1762,27 +1789,29 @@ func podAccountRefusal(setting, text, account string) error {
 	return nil
 }
 
-// exchangeAccountFields splits a BROKER_EXCHANGE_ACCOUNTS entry into its account, project, person
-// and session, and the issuer names of its fifth field, after its session field (empty for none),
-// nil where it gives none. A session may hold "=", so it reads everything after the entry's third
-// "=" as the session where that holds no "=", and otherwise as the session up to its last "=" and
-// the issuer field after it, <issuer name>[,<issuer name>…]; an entry of three fields fixes no
-// session. ok is false for an entry of fewer than three fields, and for one whose issuer field is
-// empty.
-func exchangeAccountFields(text string) (fields, names []string, ok bool) {
-	fields, ok = exchangeFields(text, 4)
+// exchangeIssuerFields splits an entry of BROKER_EXCHANGE_ACCOUNTS (want 4: its account, project,
+// person and session) or of BROKER_EXCHANGE_READ_ACCOUNTS (want 3: its account, service and
+// session) into its want fields, the last its session, and the issuer names of the field after
+// its session, nil where it gives none. A session may hold "=", so it reads everything after the
+// entry's (want-1)th "=" as the session where that holds no "=", and otherwise as the session up
+// to its last "=" and the issuer field after it, <issuer name>[,<issuer name>…]; an entry one
+// field short gives a blank session (exchangeFields). ok is false for an entry of fewer fields,
+// and for one whose issuer field is empty.
+func exchangeIssuerFields(text string, want int) (fields, names []string, ok bool) {
+	fields, ok = exchangeFields(text, want)
 	if !ok {
 		return nil, nil, false
 	}
-	last := strings.LastIndexByte(fields[3], '=')
+	session := fields[want-1]
+	last := strings.LastIndexByte(session, '=')
 	switch {
 	case last < 0:
 		return fields, nil, true
-	case last == len(fields[3])-1:
+	case last == len(session)-1:
 		return nil, nil, false
 	}
-	names = strings.Split(fields[3][last+1:], ",")
-	fields[3] = fields[3][:last]
+	names = strings.Split(session[last+1:], ",")
+	fields[want-1] = session[:last]
 	return fields, names, true
 }
 
@@ -1973,7 +2002,7 @@ func mappedAccountRefusal(cfg *Config) error {
 // parseExchangeAccounts reads setting's whitespace-separated entries, the identities
 // BROKER_EXCHANGE_ACCOUNTS lists, in order: <service account>=<project>=<person>[=<session>], or
 // <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] where the entry
-// names the issuers its pods' tokens come from (exchangeAccountFields). The project may be empty
+// names the issuers its pods' tokens come from (exchangeIssuerFields). The project may be empty
 // (<service account>==<person>), which is the shared public-session account's entry: its named
 // tokens act for the person and name no project. Each entry's issuers are
 // exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the
@@ -1988,9 +2017,9 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
-		fields, names, ok := exchangeAccountFields(text)
+		fields, names, ok := exchangeIssuerFields(text, 4)
 		if !ok || fields[0] == "" || fields[2] == "" {
-			return nil, fmt.Errorf(`%s must be <service account>=<project>=<person>[=<session>] or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries, the project empty for an entry naming none: %s, got %q`, setting, exchangeIssuerField, text)
+			return nil, fmt.Errorf(`%s must be <service account>=<project>=<person>[=<session>] or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries, the project empty for an entry naming none: %s, got %q`, setting, accountIssuerForm.field, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -2002,7 +2031,7 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 		if names == nil && sessionNamesIssuers(fields[3], issuers) {
 			return nil, fmt.Errorf(`%s gives the entry %q no issuer field, so the entry reads %q, which names issuers of BROKER_K8S_OIDC_ISSUER, as its session: write its issuers in a fifth field, after an empty session, <service account>=<project>=<person>==<issuer names>, or, for a session of that text, write the issuer field after it`, setting, text, fields[3])
 		}
-		taken, err := exchangeAccountIssuers(setting, text, names, issuers, exchangeTakes)
+		taken, err := exchangeAccountIssuers(setting, text, accountIssuerForm, names, issuers, exchangeTakes)
 		if err != nil {
 			return nil, err
 		}
@@ -2011,29 +2040,35 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 	return entries, nil
 }
 
-// parseExchangeReadAccounts reads setting's whitespace-separated
-// <service account>=<service>=<session> entries, the read entries BROKER_EXCHANGE_READ_ACCOUNTS
-// lists, in order. Every field is required and the session is everything after the second "=",
-// so it alone may carry one. It refuses, naming the setting and the entry: one with fewer than
-// three fields or a blank one; an account that is not system:serviceaccount:<namespace>:<name>,
-// or a namespace's default account (podAccountRefusal); a service that is not a service's name,
-// or is policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account
-// listed twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS
-// lists too is Load's to refuse, since it reads both settings. A read entry names no issuer, so
-// it takes the first of issuers, BROKER_K8S_OIDC_ISSUER, alone, as a BROKER_EXCHANGE_ACCOUNTS
-// entry naming none does; an entry is refused, naming the setting, the entry and
-// BROKER_EXCHANGE_K8S_ISSUER, while exchangeTakes, the issuers that setting names, leaves that
-// issuer out. With no exchange issuers an entry takes none, and Load refuses it for the audience
-// it needs. exchange.NewSet is the second gate, and the session name's own form is its to refuse.
+// parseExchangeReadAccounts reads setting's whitespace-separated entries, the read entries
+// BROKER_EXCHANGE_READ_ACCOUNTS lists, in order: <service account>=<service>=<session>, or
+// <service account>=<service>=<session>=<issuer name>[,<issuer name>…] where the entry names the
+// issuers its pods' tokens come from. Every field but the issuer field is required. It reads them
+// as parseExchangeAccounts reads its entries (exchangeIssuerFields): the session is everything
+// after the second "=" where that holds no "=", and otherwise the session up to its last "=" and
+// the issuer field after it, so a session that holds "=" is written with the issuer field after
+// it. Each entry's issuers are exchangeAccountIssuers' answer over issuers,
+// BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the issuers BROKER_EXCHANGE_K8S_ISSUER names, as a
+// BROKER_EXCHANGE_ACCOUNTS entry's are: the issuers it names, or the first of issuers alone where
+// it names none. It refuses, naming the setting and the entry: one with fewer than three fields,
+// a blank one or an empty issuer field; an account that is not
+// system:serviceaccount:<namespace>:<name>, or a namespace's default account
+// (podAccountRefusal); a service that is not a service's name, or is policy.OwnerShared, the rule
+// parseServiceAccounts holds a service to; an account listed twice, since one account reads as
+// one identity; and what exchangeAccountIssuers refuses. An account BROKER_EXCHANGE_ACCOUNTS
+// lists too is Load's to refuse, since it reads both settings. With no exchange issuers an entry
+// takes none, and Load refuses it for the audience it needs. exchange.NewSet is the second gate,
+// and the session name's own form is its to refuse.
 func parseExchangeReadAccounts(setting, value string, issuers, exchangeTakes []oidc.NamedIssuer) ([]exchange.ReadEntry, error) {
 	var entries []exchange.ReadEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
-		// An entry with no session comes back with a blank one (exchangeFields), which the blank
-		// check refuses as it refuses any other blank field: a read entry's session is required.
-		fields, ok := exchangeFields(text, 3)
+		// An entry with no session comes back with a blank one (exchangeIssuerFields), which the
+		// blank check refuses as it refuses any other blank field: a read entry's session is
+		// required.
+		fields, names, ok := exchangeIssuerFields(text, 3)
 		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<service>=<session> entries, every field required and the session everything after the second =, got %q", setting, text)
+			return nil, fmt.Errorf(`%s must be <service account>=<service>=<session> or <service account>=<service>=<session>=<issuer name>[,<issuer name>…] entries, every field but the issuer field required: %s, got %q`, setting, readIssuerForm.field, text)
 		}
 		account, service, session := fields[0], fields[1], fields[2]
 		if err := podAccountRefusal(setting, text, account); err != nil {
@@ -2046,13 +2081,9 @@ func parseExchangeReadAccounts(setting, value string, issuers, exchangeTakes []o
 			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account reads as one identity, so name it once", setting, account, text)
 		}
 		seen[account] = true
-		var taken []string
-		if len(exchangeTakes) > 0 {
-			first := issuers[0].Name
-			if issuerNamed(exchangeTakes, first) < 0 {
-				return nil, fmt.Errorf("%s gives the entry %q no issuer, since a read entry names none, so it takes the first issuer of BROKER_K8S_OIDC_ISSUER, %q, which BROKER_EXCHANGE_K8S_ISSUER does not name: name that issuer in BROKER_EXCHANGE_K8S_ISSUER, which names %s", setting, text, first, issuerNames(exchangeTakes))
-			}
-			taken = []string{first}
+		taken, err := exchangeAccountIssuers(setting, text, readIssuerForm, names, issuers, exchangeTakes)
+		if err != nil {
+			return nil, err
 		}
 		entries = append(entries, exchange.ReadEntry{Account: account, Service: service, Session: session, Issuers: taken})
 	}
