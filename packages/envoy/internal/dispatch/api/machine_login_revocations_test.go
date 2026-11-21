@@ -33,6 +33,49 @@ func removalAged(t *testing.T, database *store.Store, age time.Duration) {
 	}
 }
 
+// approveHeldAtBroker sends erin's browser approve of her own machine login, rec-erin, whose
+// lookup the broker answers as hers (erinsOwnLogin), and returns once the broker holds it
+// unanswered. The broker answers it when release is called, which the test's cleanup calls too,
+// and code then receives Dispatch's answer to the approve. The broker answers at once every other
+// approve of rec-erin that reaches it meanwhile.
+func approveHeldAtBroker(t *testing.T, rig *fakeBrokerRig, served http.Handler) (release func(), code <-chan int) {
+	t.Helper()
+	const approve = "POST /v1/credential-requests/rec-erin/approve"
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	reached, held := make(chan struct{}), make(chan struct{})
+	var arrivals atomic.Int32
+	rig.beforeAnswer[approve] = func() {
+		if arrivals.Add(1) == 1 {
+			close(reached)
+			<-held
+		}
+	}
+	release = sync.OnceFunc(func() { close(held) })
+	t.Cleanup(release)
+	answered := make(chan int, 1)
+	go func() {
+		answered <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
+	}()
+	select {
+	case <-reached:
+	case early := <-answered:
+		t.Fatalf("erin's approve answered %d before the broker held it; the broker was sent %v", early, rig.routes)
+	}
+	return release, answered
+}
+
+// advisoryLockWaiters is how many sessions of the test's database, its own aside, wait on an
+// advisory lock: a person's approval lock, a project's owner lock, or another.
+func advisoryLockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var n int
+	if err := database.Pool.QueryRow(t.Context(), `select count(*) from pg_stat_activity
+		where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
+		t.Fatalf("read how many sessions wait on an advisory lock: %v", err)
+	}
+	return n
+}
+
 // TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend: one owed revocation costs
 // the person's list and a revoke for each login they approved for their own machines, and the pass
 // asks before each of those calls whether its claim may still send one. Of erin's four logins and a
@@ -95,7 +138,7 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	ctx := t.Context()
 	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
@@ -137,44 +180,23 @@ func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const (
-		list    = "GET /v1/launcher-credentials"
-		approve = "POST /v1/credential-requests/rec-erin/approve"
-	)
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	const list = "GET /v1/launcher-credentials"
 	rig.bodyByRoute[list] = `{"credentials":[]}`
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	approved := make(chan int, 1)
-	go func() {
-		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
+	release, approved := approveHeldAtBroker(t, rig, served)
 	removed := make(chan int, 1)
 	go func() {
 		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
 	}()
-	waitingOnALock := func() bool {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read whether the removal waits on a lock: %v", err)
-		}
-		return n > 0
-	}
 	removedEarly := 0
 	var firstPass []string
 	passed := false
-	for giveUp := time.Now().Add(30 * time.Second); removedEarly == 0 && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
+	for giveUp := time.Now().Add(30 * time.Second); removedEarly == 0 && advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
 		select {
 		case removedEarly = <-removed:
 			// The removal did not wait: its first pass runs now, before the approval's login exists.
@@ -187,7 +209,7 @@ func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 		}
 	}
 	rig.bodyByRoute[list] = `{"credentials":[{"credential_id":"cred-in-flight","host":"erin-desktop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"` + time.Now().UTC().Format(time.RFC3339) + `","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
-	close(release)
+	release()
 	if code := <-approved; code != http.StatusOK {
 		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the removal", code)
 	}
@@ -229,7 +251,7 @@ func TestAClaimedMachineLoginRevocationPastItsSendWindowSendsNoRevoke(t *testing
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	ctx := t.Context()
 	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
@@ -278,33 +300,17 @@ func TestALoginTheBrokerCommitsAfterTheRelayTimedOutIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const (
-		list    = "GET /v1/launcher-credentials"
-		approve = "POST /v1/credential-requests/rec-erin/approve"
-	)
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	const list = "GET /v1/launcher-credentials"
 	rig.bodyByRoute[list] = `{"credentials":[]}`
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	commit := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(commit)
-
-	if approved := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin); approved.Code == http.StatusOK {
-		t.Fatalf("erin's approve answered 200 while the broker held it, want Dispatch's call to give up: %s", approved.Body.String())
-	}
-	select {
-	case <-reached:
-	default:
-		t.Fatalf("erin's approve never reached the broker; the broker was sent %v", rig.routes)
+	commit, approved := approveHeldAtBroker(t, rig, served)
+	if code := <-approved; code == http.StatusOK {
+		t.Fatalf("erin's approve answered 200 while the broker held it, want Dispatch's call to give up")
 	}
 	if removed := dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); removed.Code != http.StatusOK {
 		t.Fatalf("alice's removal of erin after the relay gave up answered %d %s, want 200", removed.Code, removed.Body.String())
@@ -341,7 +347,7 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	ctx := t.Context()
 	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
@@ -399,13 +405,10 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	ctx := t.Context()
-	const (
-		list    = "GET /v1/launcher-credentials"
-		approve = "POST /v1/credential-requests/rec-erin/approve"
-	)
+	const list = "GET /v1/launcher-credentials"
 	rig.bodyByRoute[list] = `{"credentials":[]}`
 	for _, write := range []struct{ method, does string }{
 		{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}, {http.MethodPut, "puts erin back on"},
@@ -430,19 +433,7 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 		}
 	}
 
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	commit := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(commit)
-	approved := make(chan int, 1)
-	go func() {
-		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
+	commit, approved := approveHeldAtBroker(t, rig, served)
 
 	block := runbookBlockAfter(t, brokerRestoredLead)
 	if len(block.statements) < 2 || block.statements[0] != "begin" || block.statements[len(block.statements)-1] != "commit" {
@@ -466,16 +457,8 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 			return tx.Commit(background)
 		}()
 	}()
-	waitingOnALock := func() bool {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read whether the block waits on a lock: %v", err)
-		}
-		return n > 0
-	}
 	finishedEarly, early := false, error(nil)
-	for giveUp := time.Now().Add(30 * time.Second); !finishedEarly && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
+	for giveUp := time.Now().Add(30 * time.Second); !finishedEarly && advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
 		select {
 		case early = <-restored:
 			// The block did not wait: a pass now finds no login of erin's.
@@ -523,35 +506,26 @@ func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, _, _ := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	const approve = "POST /v1/credential-requests/rec-erin/approve"
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
-	reached, release := make(chan struct{}), make(chan struct{})
-	var arrivals atomic.Int32
-	rig.beforeAnswer[approve] = func() {
-		if arrivals.Add(1) == 1 {
-			close(reached)
-			<-release
-		}
-	}
-	answer := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(answer)
-	first := make(chan int, 1)
-	go func() {
-		first <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
+	answer, first := approveHeldAtBroker(t, rig, served)
 
 	second := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
 	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), `"code":"MACHINE_LOGIN_APPROVAL_IN_FLIGHT"`) {
 		t.Errorf("erin's second approve while her first is at the broker = %d %s, want 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT", second.Code, second.Body.String())
 	}
-	if got := arrivals.Load(); got != 1 {
-		t.Errorf("the broker was sent %d approves of erin's, want the first alone", got)
+	sent := 0
+	for _, route := range rig.routes {
+		if route == approve {
+			sent++
+		}
+	}
+	if sent != 1 {
+		t.Errorf("the broker was sent %d approves of erin's, want the first alone", sent)
 	}
 	answer()
 	if code := <-first; code != http.StatusOK {
@@ -572,39 +546,17 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		signInOutside:   true,
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
-	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const approve = "POST /v1/credential-requests/rec-erin/approve"
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	answer := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(answer)
-	approved := make(chan int, 1)
-	go func() {
-		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
-	lockWaiters := func() int {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read how many writes wait on a lock: %v", err)
-		}
-		return n
-	}
+	answer, approved := approveHeldAtBroker(t, rig, served)
 	removed := make(chan int, 1)
 	go func() {
 		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
 	}()
-	for giveUp := time.Now().Add(30 * time.Second); lockWaiters() == 0; time.Sleep(20 * time.Millisecond) {
+	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(giveUp) {
 			t.Fatalf("alice's removal of erin did not wait on erin's approval within 30 s")
 		}
@@ -619,7 +571,7 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 		select {
 		case addedCode = <-added:
 		default:
-			if waiting := lockWaiters(); waiting > 1 {
+			if waiting := advisoryLockWaiters(t, database); waiting > 1 {
 				t.Errorf("alice's addition of carol to ACC waits on a lock behind erin's removal (%d writes waiting), want it answered while the removal waits on erin's approval", waiting)
 				answer()
 				addedCode = <-added
