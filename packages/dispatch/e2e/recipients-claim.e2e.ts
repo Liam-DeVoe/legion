@@ -279,12 +279,12 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
   };
   await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
     const response = await route.fetch();
-    const body = (await response.json()) as Record<string, unknown>;
+    const body = (await response.json()) as Result<"/api/v1/issues/{key}", "get">;
     await route.fulfill({ json: { ...body, ...unknownReach }, response });
   });
   await page.route(`**/api/v1/asks/${ask.id}`, async (route) => {
     const response = await route.fetch();
-    const body = (await response.json()) as Record<string, unknown>;
+    const body = (await response.json()) as Result<"/api/v1/asks/{id}", "get">;
     await route.fulfill({ json: { ...body, ...unknownReach }, response });
   });
   await page.route("**/api/v1/inbox*", async (route) => {

@@ -10,9 +10,13 @@
 //   DISPATCH_FAILED_ROOM_PROBE=1 bunx playwright test \
 //     --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts
 //
-// Comparing a tree against another is what it is for: run it on this head and on the base, and
-// read the two lines it prints for the queued writer.
+// Comparing a tree against another is what it is for: run it on this head and on another
+// checkout, and read the two lines it prints for the queued writer. It reads its route's URL and
+// answers from the generated contract (`routePath`, `Result` and `Refusal` in
+// web/src/api/paths.ts), as every row does, so the other checkout must hold them too: a tree from
+// before they came cannot load this file.
 
+import { type Refusal, type Result, routePath } from "../web/src/api/paths";
 import {
   baseUrl,
   createComment,
@@ -112,7 +116,8 @@ interface Attempt {
 
 async function anchoredComment(issueKey: string, body: string, quote: string): Promise<Attempt> {
   const started = Date.now();
-  const response = await fetch(`${baseUrl}/api/v1/issues/${issueKey}/comments`, {
+  const comments = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
+  const response = await fetch(new URL(comments, baseUrl), {
     body: JSON.stringify({ anchor: { artifact: "spec", quote }, body }),
     headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
     method: "POST",
@@ -121,7 +126,11 @@ async function anchoredComment(issueKey: string, body: string, quote: string): P
   const text = await response.text();
   let code = "";
   try {
-    code = (JSON.parse(text) as { code?: string }).code ?? "";
+    // The route's answer, the comment it wrote or its refusal: only a refusal names a code.
+    const answer = JSON.parse(text) as
+      | Result<"/api/v1/issues/{key}/comments", "post">
+      | Refusal<"/api/v1/issues/{key}/comments", "post">;
+    code = "code" in answer ? answer.code : "";
   } catch {
     code = text.slice(0, 40);
   }

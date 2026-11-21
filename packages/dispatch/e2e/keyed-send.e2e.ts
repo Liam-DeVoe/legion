@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import {
   agentRow,
   agentSessions,
@@ -443,7 +444,7 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
 
     const answer = await landed;
     expect(answer.status()).toBe(201);
-    const comment: { id: string } = await answer.json();
+    const comment = (await answer.json()) as Result<"/api/v1/issues/{key}/comments", "post">;
     // The page gave up on its first attempt and asked again under the same key.
     expect(posts.length).toBeGreaterThanOrEqual(2);
     expect(new Set(posts.map((post) => post.key)).size).toBe(1);
@@ -499,11 +500,10 @@ test("a comment whose @-mention's send is slow is answered before the send, with
     const answer = await answered;
     expect(answer.status()).toBe(201);
     expect(answer.headers()["idempotency-replayed"]).toBeUndefined();
-    const comment: { id: string; deliveries: { session_id?: string; state: string }[] } =
-      await answer.json();
+    const comment = (await answer.json()) as Result<"/api/v1/issues/{key}/comments", "post">;
     // The answer carries the attempt pending: the send is not part of the request.
     expect(
-      comment.deliveries
+      (comment.deliveries ?? [])
         .filter((delivery) => delivery.session_id === plannerSession.session_id)
         .map((delivery) => delivery.state)
     ).toEqual(["pending"]);

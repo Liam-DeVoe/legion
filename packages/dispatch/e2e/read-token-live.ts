@@ -36,7 +36,7 @@ import { DISPATCH_READ_ONLY_TOKEN, IDEMPOTENCY_KEY_HEADER } from "@legion/contra
 import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 
-import { routePath } from "../web/src/api/paths";
+import { type Refusal, routePath } from "../web/src/api/paths";
 import {
   baseUrl,
   createIssue,
@@ -93,6 +93,13 @@ interface Answer {
   readonly code: string;
 }
 
+/** The refusal of each route `main` sends (`architecture`, `comments` and `issuePath`), which
+ *  `present` reads the code of. */
+type SentRefusal =
+  | Refusal<"/api/v1/projects/{key}/architecture", "get">
+  | Refusal<"/api/v1/issues/{key}/comments", "post">
+  | Refusal<"/api/v1/issues/{key}", "get">;
+
 /** How long one request may take, its broker trade included: the credential waits on all of it
  *  but the request's 1 s reserve (`credentialDeadline`), and the request goes in that reserve. */
 const REQUEST_DEADLINE_MS = 30_000;
@@ -124,11 +131,13 @@ async function present(
   });
   const text = await response.text();
   let code = "";
-  try {
-    const parsed = JSON.parse(text) as { code?: unknown };
-    if (typeof parsed?.code === "string") code = parsed.code;
-  } catch {
-    // An answer that is not JSON carries no code.
+  // Only a refusal names a code: a 2xx answer is the route's result, which carries none.
+  if (!response.ok) {
+    try {
+      code = (JSON.parse(text) as SentRefusal).code;
+    } catch {
+      // A refusal that is not JSON carries no code.
+    }
   }
   return { code, status: response.status };
 }

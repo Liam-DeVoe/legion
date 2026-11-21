@@ -753,7 +753,10 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 async function focusedTab(
   browser: Browser,
   process: DispatchProcess
-): Promise<{ readonly page: Page; readonly builds: unknown }> {
+): Promise<{
+  readonly page: Page;
+  readonly builds: Result<"/api/v1/dashboard/builds", "get">;
+}> {
   const context = await browser.newContext();
   await context.addCookies([{ name: processPinCookie, url: baseUrl, value: process }]);
   await signIn(context, "alice");
@@ -766,7 +769,7 @@ async function focusedTab(
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   const response = await answered;
   expect(response.status()).toBe(200);
-  const builds: unknown = await response.json();
+  const builds = (await response.json()) as Result<"/api/v1/dashboard/builds", "get">;
   await response.finished();
   await page.evaluate(async () => {
     for (let frame = 0; frame < 3; frame++) {

@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import { publishAgentStreamFrame } from "./api";
 import {
   COST_RIG_IDS,
@@ -50,7 +51,11 @@ test.use({ launchOptions: { args: ["--enable-precise-memory-info"] } });
 
 /** One turn a session publishes to whoever is subscribed to it now, past the end of the replay
  *  it answers a new viewer with. */
-function publishedTurn(sessionID: string, seq: number, text: string): Promise<{ ok: boolean }> {
+function publishedTurn(
+  sessionID: string,
+  seq: number,
+  text: string
+): Promise<Result<"/api/v1/agents/{session_id}/stream/_test/publish", "post">> {
   return publishAgentStreamFrame(sessionID, {
     kind: "message",
     message: {
