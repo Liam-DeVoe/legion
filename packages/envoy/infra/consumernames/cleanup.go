@@ -86,8 +86,9 @@ type cleanupTarget struct {
 // consumer it deleted (deleted), how many records held a retired name (records) and how many
 // names it dropped from them (dropped). A refusal or an UNKNOWN after its intent writes its stop,
 // which records what every run of the command in this hold left (admission.stopped): nothing while
-// no run deleted a name or wrote a record, else this run's deletions and how each earlier run
-// ended.
+// no run deleted a name, wrote a record or put this hold's barrier key (cleanupSessionTargets puts
+// it, and nothing cleanup does deletes it), else this run's deletions, the key when this run put
+// it, and how each earlier run ended.
 func (r *run) cleanup(ctx context.Context) error {
 	if r.o.gone != "" {
 		return r.cleanupGone(ctx)
@@ -115,7 +116,7 @@ func (r *run) cleanup(ctx context.Context) error {
 	if err != nil {
 		return a.stopped(ctx, unknownf(err, "the hub"), true, nothing)
 	}
-	targets, err := r.cleanupSessionTargets(ctx, nc)
+	targets, err := r.cleanupSessionTargets(ctx, a, nc)
 	if err != nil {
 		return a.stopped(ctx, err, true, nothing)
 	}
@@ -163,7 +164,7 @@ func (r *run) cleanup(ctx context.Context) error {
 
 // cleanupGone is `consumer-names cleanup --gone <project> --hold <id> [--final]`, a command of the
 // hold's consumer-cleanup workflow (consumerCleanupAdmit, input daemon): it removes the consumers
-// of a Legion daemon whose store is gone, which the census leaves (RecordedFreshNames, GoneNames),
+// of a Legion daemon whose store is gone, which the census leaves (RecordedFreshNames's gone names),
 // and only then. Under its intent it lists the daemons' Deployments again (writerhold.
 // KubeDaemonDeployments, with the hold's own Kubernetes client) and reads the project's store by
 // the census's rule for the daemon stores (censusReadDaemonStores), at exactly the address the
@@ -242,9 +243,11 @@ func (r *run) cleanupGone(ctx context.Context) error {
 // cleanupSessionTargets are the selection bucket's records that hold a retired name, a session's
 // or a listener durable's, walked behind the hold's bucket barrier (behindBarrier), as every held
 // reader of the bucket reads it, each value by its key's kind (readSelectionValue). A missing
-// bucket holds none. A malformed value anywhere in the bucket is UNKNOWN, naming each such key, so
-// cleanup deletes nothing.
-func (r *run) cleanupSessionTargets(ctx context.Context, nc *nats.Conn) ([]cleanupTarget, error) {
+// bucket holds none, and gets no barrier. The barrier's key is a change a's stop counts
+// (admission.barrier), from right before its put, whose answer may be lost after it landed. A
+// malformed value anywhere in the bucket is UNKNOWN, naming each such key, so cleanup deletes
+// nothing.
+func (r *run) cleanupSessionTargets(ctx context.Context, a *admission, nc *nats.Conn) ([]cleanupTarget, error) {
 	if _, err := streamInfo(ctx, nc, selectionStreamName); err != nil {
 		if apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
 			return nil, nil
@@ -252,6 +255,7 @@ func (r *run) cleanupSessionTargets(ctx context.Context, nc *nats.Conn) ([]clean
 		return nil, unknownf(err, "the info of %s", selectionStreamName)
 	}
 	var keys []statusKey
+	a.barrier = true
 	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
 		var err error
 		keys, err = statusSelectionKeys(ctx, nc)

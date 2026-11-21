@@ -400,6 +400,11 @@ type admission struct {
 	r        *run
 	command  string
 	workflow holdrecord.Workflow
+	// barrier is set by a command whose own account of what it left is plain text (cleanup,
+	// replace) right before it puts this hold's barrier key (behindBarrier): from then on its stop
+	// counts the key as a change (left, barrierLeft), since none of those commands deletes the
+	// bucket.
+	barrier bool
 }
 
 // admit reads the row, which must be held under the run's hold id, runs the held re-read
@@ -474,15 +479,48 @@ func (a *admission) stopped(ctx context.Context, err error, unchanged bool, acco
 }
 
 // left is what a's stop records as left: what every run of a's command in this hold left
-// (journalLeft over the hold's journal), this run's (unchanged, account) among them. A journal
-// read that fails is never taken as unchanged.
+// (journalLeft over the hold's journal), this run's (unchanged, account) among them, and this
+// hold's barrier key when this run put it (barrier, barrierLeft), which then counts as a change
+// named after account. A journal read that fails is never taken as unchanged.
 func (a *admission) left(ctx context.Context, unchanged bool, account string) string {
+	if a.barrier && !leftRules.barrierNoChange {
+		unchanged, account = false, account+"; it put "+barrierLeft
+	}
 	d, _, err := a.r.records.Journal(ctx, a.r.o.holdID)
 	if err != nil {
 		return fmt.Sprintf("%s; what earlier runs of %s left is unknown: the hold's journal could not be read (%v)", account, a.command, err)
 	}
 	return journalLeft(d, a.command, unchanged, account)
 }
+
+// barrierLeft names, in a stop's account of what its run left, this hold's barrier key in the
+// selection bucket, hold.barrier.<hold id>, which every held reader of the bucket puts before it
+// reads (writerhold.ReadBucket, holdrecord.Barrier). The key is a change of the command whose run
+// put it, as long as it is there: only a delete of the whole bucket takes it away (create-bucket
+// --after-loss deletes a leftover bucket), and a key that another command of the hold put is no
+// change of this one.
+const barrierLeft = "this hold's barrier key in " + selectionStreamName
+
+// leftRuleSet is the rule a stop's record of what its command left follows. The zero value is the
+// hold's: a stop names every change that its command's runs made and did not undo, this hold's
+// barrier key among them while a run of the command put it and the bucket that holds it stands.
+// Each field is an earlier rule, which only a row's control sets, to show that the row fails under
+// it.
+type leftRuleSet struct {
+	// barrierNoChange: the barrier key, the hold's own, is no change of the command that put it
+	// (cleanup, replace and the restore commands before this rule).
+	barrierNoChange bool
+	// ownRunOnly: a create-bucket, replay or repair-sentinel stop records its own run alone, its
+	// command's earlier runs in the hold aside (internal/holdrecord's model names this control
+	// OwnRunOnly).
+	ownRunOnly bool
+	// barrierAfterDelete: the barrier key counts once the run put it, though the run deleted the
+	// bucket that held it after (create-bucket --after-loss before this rule).
+	barrierAfterDelete bool
+}
+
+// leftRules is the rule every stop of this package follows; a row's control alone changes it.
+var leftRules leftRuleSet
 
 // stopLeftKey is the key of a stop entry's outputs that holds what its command left, as
 // holdrecord's AppendStopLeft writes it (internal/holdrecord/journal.go, stopLeftKey, which

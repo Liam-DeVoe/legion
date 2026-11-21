@@ -140,11 +140,12 @@ func censusConsumers(t *testing.T, nc *nats.Conn) []string {
 
 // The streams census command (t-10's word, with this package's readers), given no reader of the
 // recorded consumers, exits 2 printing UNKNOWN, removes nothing, and writes its stop entry,
-// recording that it left everything unchanged. With this package's reader it runs complete, in a
-// held hold whose session family's cutover row is done, over a bucket holding three sessions'
-// records: it keeps each recorded session~<nuid> consumer, whose filter holds its session's agent
-// subject and a topic beside it, a retired one that cleanup has not yet deleted, the fresh
-// listener durable that the listener's durable.<escaped durable> record names, and the fresh
+// recording only this hold's barrier key, which it put before it reached the reader (a stop names
+// every change its command's runs made and did not undo). With this package's reader it runs
+// complete, in a held hold whose session family's cutover row is done, over a bucket holding three
+// sessions' records: it keeps each recorded session~<nuid> consumer, whose filter holds its
+// session's agent subject and a topic beside it, a retired one that cleanup has not yet deleted, the
+// fresh listener durable that the listener's durable.<escaped durable> record names, and the fresh
 // listener durable of a machine no --listener-machine-id names, which its record alone names (the
 // recorded fresh names keep a listener-<m>~<nuid> only through a declared listener-<m>, so
 // RecordedSessionConsumers' listener shapes keep this one). It removes a stray listener-<m>~<nuid>
@@ -213,7 +214,7 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	require.Contains(t, stderr, writerhold.ErrNoRecordReader.Error())
 	last := h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the census with no reader ends in its stop entry")
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	require.Equal(t, barrierLeft, last.Outputs["left"], "the stop records the barrier key the census put, and nothing more")
 	nc, _ = h.operator()
 	require.Contains(t, censusConsumers(t, nc), stray, "a census with no reader removed a consumer")
 
@@ -1130,12 +1131,12 @@ func censusCreateConfig(t *testing.T, nc *nats.Conn, config nats.ConsumerConfig)
 }
 
 // A census whose reader cannot read a declared family's store is UNKNOWN, exit 2, naming the
-// family, removes nothing, and writes its stop entry, recording that it left everything unchanged:
-// the census declares the session family and daemon/PROJ, and no --daemon-database names PROJ's
-// store, so the recorded fresh names (RecordedFreshNames) are refused before the census lists
-// anything, and the stray listener-hub~<nuid> stays. The word prints no report it did not make, so
-// its standard output holds no CLEAN. Control: with the store named, the same census runs complete
-// and removes the stray.
+// family, removes nothing, and writes its stop entry, recording only this hold's barrier key: the
+// census declares the session family and daemon/PROJ, and no --daemon-database names PROJ's store,
+// so the recorded fresh names (RecordedFreshNames), which the census reads behind its barrier, are
+// refused before it lists anything, and the stray listener-hub~<nuid> stays. Its standard output
+// holds no CLEAN. Control: with the store named, the same census runs complete and removes the
+// stray.
 func TestTheCensusIsUnknownWhenADeclaredFamilyIsUnread(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
@@ -1160,7 +1161,7 @@ func TestTheCensusIsUnknownWhenADeclaredFamilyIsUnread(t *testing.T) {
 	require.NotContains(t, stdout, "CLEAN", "an UNKNOWN census printed a report it did not make")
 	last := h.lastEntry(id, "")
 	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the UNKNOWN census ends in its stop entry")
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	require.Equal(t, barrierLeft, last.Outputs["left"], "the stop records the barrier key the census put, and nothing more")
 	nc, _ = h.operator()
 	require.Contains(t, censusConsumers(t, nc), stray, "an UNKNOWN census removed the stray")
 
@@ -1254,8 +1255,9 @@ func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
 // clean run prints `GONE daemon/GONE: database <db> on instance <instance> (the operator's file
 // states <instance>): <answer>` and names the store in its done entry, gone.daemon/GONE. Controls:
 // first, an unconfirmed 3D000 (the Deployment names another instance than the operator's file
-// states) leaves the census UNKNOWN, removing nothing; and the census that deletes a gone store's
-// consumers (streams' goneName taken out) fails this row.
+// states) leaves the census UNKNOWN, removing nothing, with a stop that records only this hold's
+// barrier key, which it put before it read the fresh names; and the census that deletes a gone
+// store's consumers (streams' goneName taken out) fails this row.
 func TestTheCensusLeavesAGoneDaemonsConsumers(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
@@ -1296,7 +1298,7 @@ func TestTheCensusLeavesAGoneDaemonsConsumers(t *testing.T) {
 	require.NotContains(t, stdout, "CHANGED")
 	require.NotContains(t, stdout, "LEFT")
 	require.NotContains(t, stdout, "GONE daemon/")
-	require.Equal(t, holdrecord.LeftUnchanged, h.lastEntry(id, "").Outputs["left"])
+	require.Equal(t, barrierLeft, h.lastEntry(id, "").Outputs["left"], "the stop records the barrier key the census put, and nothing more")
 	require.Subset(t, consumers(), []string{stray, declared, undeclared}, "an UNKNOWN census removed a consumer")
 
 	deployments := h.s.Kube.Client.AppsV1().Deployments(writerhold.DaemonNamespace)

@@ -768,3 +768,99 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		require.True(t, h.journal(id).Complete)
 	})
 }
+
+// leftWith sets the stop rule's earlier rules (leftRuleSet) for the rest of the test: a control's.
+func leftWith(t *testing.T, rules leftRuleSet) {
+	t.Helper()
+	previous := leftRules
+	leftRules = rules
+	t.Cleanup(func() { leftRules = previous })
+}
+
+// A create-bucket stop counts the barrier key an earlier run of create-bucket in the hold put: a
+// stop names every change its command's runs made and did not undo. Run 1 finds the bucket present
+// with another hold's sentinel: it puts this hold's barrier key before it reads, then stops, and
+// its stop names the key. Run 2, with --replicas 3, stops at the bucket's configuration before any
+// barrier, having changed nothing itself; its stop names run 1, whose key is still there, so it is
+// not unchanged. Control: under the earlier rule that a stop records its own run alone
+// (leftRuleSet.ownRunOnly), the same refusal records unchanged.
+func TestACreateBucketStopCountsTheBarrierKeyAnEarlierRunPut(t *testing.T) {
+	createBucketRequireStoppable(t, holdrecord.WorkflowCutover, createBucketCommand)
+	h := newStack(t)
+	createBucketNotifications(t, h, 0)
+	id := h.prepared(holdrecord.WorkflowCutover)
+	createBucketCohort(t, h.records(), id, 2)
+	h.held(id)
+	nc, _ := h.operator()
+	createBucketMakeBucket(t, nc, selection.StoreState{Boundary: 3, Hold: "another-hold"})
+
+	code, _, stderr := h.run("create-bucket", "--hold", id)
+	require.Equal(t, 2, code, stderr)
+	require.Contains(t, stderr, "exists and is not this hold's")
+	require.Contains(t, h.lastEntry(id, createBucketCommand).Outputs["left"], barrierLeft, "run 1's stop names the key it put")
+
+	refusedBeforeTheBarrier := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--replicas", "3")
+		require.Equal(t, 2, code, stderr)
+		require.Contains(t, stderr, "num_replicas 1, not 3")
+		require.Contains(t, stderr, "it left nothing outside the journal", "the hold point: this run changed nothing itself")
+		stop := h.lastEntry(id, createBucketCommand)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	leftWith(t, leftRuleSet{ownRunOnly: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refusedBeforeTheBarrier().Outputs["left"],
+		"control: a stop that records its own run alone records unchanged")
+
+	leftWith(t, leftRuleSet{})
+	left := refusedBeforeTheBarrier().Outputs["left"]
+	require.NotEqual(t, holdrecord.LeftUnchanged, left, "the stop recorded unchanged over run 1's barrier key")
+	require.Contains(t, left, "earlier runs of "+createBucketCommand+" in this hold: run 1 stopped, and its stop entry records what it left")
+}
+
+// A create-bucket --after-loss stop leaves out this hold's barrier key when the run deleted the
+// bucket that held it: a stop names every change its command's runs made and did not undo. The
+// hold finds the empty leftover of a cut restore (no key, no sentinel) beside a snapshot whose
+// session key holds the server's STREAM.INFO answer: the run puts the barrier, deletes the leftover
+// with the key in it, restores the snapshot, finds the malformed value and deletes the restored
+// bucket again. Its stop names the deletes and not the key, and the bucket is absent. Control:
+// under the earlier rule that the key counts once put (leftRuleSet.barrierAfterDelete), the same
+// run's stop names the key.
+func TestARecoveryStopLeavesOutTheBarrierKeyItsDeleteTook(t *testing.T) {
+	createBucketRequireStoppable(t, holdrecord.WorkflowSelectionRecovery, createBucketAfterLossCommand)
+	ctx := context.Background()
+	h := newStack(t)
+	createBucketNotifications(t, h, 3)
+	createBucketBackedBucket(t, h)
+	released, _ := h.operator()
+	createBucketStoreAnswer(t, released, released, createBucketStreamInfo, "ses_forged")
+	h.closeOperators()
+	dir := createBucketHeldSnapshot(t, h)
+	id := createBucketLoseBucket(t, h)
+
+	run := func() holdrecord.Operation {
+		t.Helper()
+		nc, js := h.operator()
+		_, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(1))
+		require.NoError(t, err, "the cut restore's empty leftover")
+		require.NoError(t, createBucketAwaitLeader(ctx, nc))
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+		require.Equal(t, 1, code, stderr)
+		require.Contains(t, stderr, "the leftover of a cut restore or load of "+selectionStreamName+" deleted", "the hold point: the run deleted the leftover")
+		require.Contains(t, stderr, "the bucket "+selectionStreamName+" restored from the backup and deleted again")
+		_, present, _, _ := createBucketState(h)
+		require.False(t, present, "the refused snapshot's restored bucket was left")
+		stop := h.lastEntry(id, createBucketAfterLossCommand)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	left := run().Outputs["left"]
+	require.Contains(t, left, "the leftover of a cut restore or load of "+selectionStreamName+" deleted")
+	require.NotContains(t, left, barrierLeft, "the stop named the barrier key that the run's own delete took")
+
+	leftWith(t, leftRuleSet{barrierAfterDelete: true})
+	require.Contains(t, run().Outputs["left"], barrierLeft, "control: under the earlier rule the stop names the deleted key")
+}

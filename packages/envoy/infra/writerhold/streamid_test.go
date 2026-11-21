@@ -252,10 +252,11 @@ func TestHoldTheCensusReconcilesTheDaemonStoresStreamID(t *testing.T) {
 // Deployments as the hold's own Kubernetes client lists them (KubeDaemonDeployments of namespace
 // legion), which holds the Deployment the row renders there. A store the writer leaves
 // unreconciled makes the census UNKNOWN (exit 2), naming the store and why, with no done entry and
-// a stop that records the run unchanged; a store changed before one whose write failed is what
-// that stop records the run left, so the hold is not released over it, and the census's rerun is
-// done. Controls: the first census, with no store gone, prints no GONE line
-// (TestHoldTheCensusReconcilesTheDaemonStoresStreamID), and each assertion here fails against a
+// a stop that records only this hold's barrier key, which the census put before it listed, as the
+// run's change (TestHoldACensusStopNamesTheBarrierKeyItPut); a store changed before one whose
+// write failed is what that stop records the run left too, so the hold is not released over it,
+// and the census's rerun is done. Controls: the first census, with no store gone, prints no GONE
+// line (TestHoldTheCensusReconcilesTheDaemonStoresStreamID), and each assertion here fails against a
 // writerhold that drops the GONE line, ignores an unreconciled store, or records the stop of a
 // partial write as unchanged.
 func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
@@ -301,7 +302,7 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	require.Zero(t, code)
 	h.awaitStreamLeaders()
 
-	// A store left unreconciled: UNKNOWN, no done entry, a stop recording the run unchanged.
+	// A store left unreconciled: UNKNOWN, no done entry, a stop recording only the barrier key.
 	stores.set(func(f *fakeStores) {
 		f.ids["A"] = "stream-0"
 		f.unreconciled = map[string]string{"A": `Deployment legion/legion-daemon-a reads database "other"`}
@@ -314,7 +315,8 @@ func TestHoldTheCensusReportsGoneAndUnreconciledStores(t *testing.T) {
 	require.NotContains(t, h.journalCommands(unknown), CommandStreamsCensus+" done")
 	last := h.journal(unknown).Ops[len(h.journal(unknown).Ops)-1]
 	require.Equal(t, CommandStreamsCensus+" stop", last.Command+" "+last.State)
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	require.Equal(t, "this hold's barrier key in "+kvStreamPrefix+streams.SessionConsumerRecordsBucket, last.Outputs["left"],
+		"the stop records a store as written, or leaves out the barrier key the census put")
 	require.Equal(t, "stream-0", stores.snapshot()["A"], "a store was written while one was unreconciled")
 
 	// A write that failed after another: the store changed before it is what the stop records.

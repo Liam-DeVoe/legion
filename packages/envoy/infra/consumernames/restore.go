@@ -195,7 +195,8 @@ func (r *run) restoreReach(ctx context.Context, left *restoreLeft) (*restoreRun,
 // the run's connection (writerhold.ReadBucket with a read of nothing: the put, and the bucket's
 // leader read before and after it), put once on each connection, before its first read on it, and
 // again after each reconnect, so every read is past the last write a server accepted before the
-// hold or before the latest restart; a bucket that does not exist is selection.ErrNoStore.
+// hold or before the latest restart; a bucket that does not exist is selection.ErrNoStore. The
+// barrier's key is a change this run left (restoreLeft.barrier).
 func (rr *restoreRun) store(ctx context.Context, family string) (familyStore, error) {
 	if family == familySession && !rr.barrier {
 		if err := rr.answered(ctx, func(ctx context.Context) error { _, err := streamInfo(ctx, rr.nc, selectionStreamName); return err }); err != nil {
@@ -204,6 +205,7 @@ func (rr *restoreRun) store(ctx context.Context, family string) (familyStore, er
 			}
 			return nil, unknownf(err, "the info of %s", selectionStreamName)
 		}
+		rr.left.barrier = true
 		if err := writerhold.ReadBucket(ctx, rr.nc, selection.SessionBucket, rr.r.o.holdID, func(context.Context) error { return nil }); err != nil {
 			return nil, hubUnknown(err, "the hub's restart")
 		}
@@ -1295,12 +1297,13 @@ func restoreServersRestarted(recorded map[string]string, after writerhold.Declar
 }
 
 // restoreStop writes a restore command's stop entry (admission.stop), its reason cause and what
-// this run left (restoreLeft), and answers the same text with cause wrapped, so an UNKNOWN cause
-// still exits 2. Every error after a restore command's intent comes here: restore --prepare,
-// --key and --finish are each Stoppable in rollback, so the stop ends the intent and the hold is
-// never left with only a rerun admissible. Where the workflow's table holds the command not
-// Stoppable, admission.stop writes nothing, and the intent stays pending. admission.stop answers a
-// plain error when its stop entry is written, and one wrapping the write's error when it is not. A
+// this run left (restoreLeft), its record of what every run of the command in this hold left
+// (admission.left), and answers the same text with cause wrapped, so an UNKNOWN cause still exits
+// 2. Every error after a restore command's intent comes here: restore --prepare, --key and
+// --finish are each Stoppable in rollback, so the stop ends the intent and the hold is never left
+// with only a rerun admissible. Where the workflow's table holds the command not Stoppable,
+// admission.stop writes nothing, and the intent stays pending. admission.stop answers a plain
+// error when its stop entry is written, and one wrapping the write's error when it is not. A
 // test's kill (restoreKill) writes nothing, as a killed process writes nothing.
 func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLeft) error {
 	var kill *restoreKill
@@ -1311,7 +1314,7 @@ func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLe
 	if restoreRules.noStopEntry {
 		return what
 	}
-	if err := errors.Unwrap(a.stop(ctx, what.Error(), left.journal(ctx, a))); err != nil {
+	if err := errors.Unwrap(a.stop(ctx, what.Error(), a.left(ctx, left.empty(), left.String()))); err != nil {
 		return errors.Join(what, fmt.Errorf("and its stop entry: %w", err))
 	}
 	return what
@@ -1320,13 +1323,19 @@ func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLe
 // restoreLeft is what one run of a restore command changed outside the journal, which its stop
 // entry names, so whoever reads a stopped hold knows what the run left before acting: each record
 // it wrote, by the phase it last wrote there, each consumer it deleted or found gone, each target
-// it created, and each broker cutover row and store marker it set rolled_back.
+// it created, each broker cutover row and store marker it set rolled_back, and this hold's
+// barrier key when it put it.
 type restoreLeft struct {
 	phases  map[string]string
 	order   []string
 	deleted []string
 	created []string
 	marked  []string
+	// barrier: this run put this hold's barrier key in the selection bucket (restoreRun.store,
+	// barrierLeft), set right before the put, whose answer may be lost after it landed. No restore
+	// command deletes the bucket, so the key stays a change the run left; restore --prepare puts
+	// it before it saves the restore set, so a run that saved no set may still have left it.
+	barrier bool
 }
 
 // wrote records that this run wrote name's record with its restore field at phase.
@@ -1365,42 +1374,23 @@ func (l *restoreLeft) String() string {
 		parts = append(parts, "rolled_back now: "+listNames(l.marked))
 	}
 	if len(parts) == 0 {
-		return "this run changed no selection record, consumer, cutover row or store marker"
+		none := "this run changed no selection record, consumer, cutover row or store marker"
+		if l.putBarrier() {
+			return none + "; it put " + barrierLeft
+		}
+		return none
+	}
+	if l.putBarrier() {
+		parts = append(parts, barrierLeft)
 	}
 	return "this run left " + strings.Join(parts, "; ") + "; each record's restore field holds its phase, and the command's rerun goes on from it"
 }
 
 // empty reports whether this run changed nothing outside the journal.
 func (l *restoreLeft) empty() bool {
-	return len(l.phases) == 0 && len(l.deleted) == 0 && len(l.created) == 0 && len(l.marked) == 0
+	return len(l.phases) == 0 && len(l.deleted) == 0 && len(l.created) == 0 && len(l.marked) == 0 && !l.putBarrier()
 }
 
-// journal is what a's stop entry records as left (holdrecord's AppendStopLeft): this run's
-// account together with every earlier run of a's command in this hold (restoreJournalLeft). It
-// reads the hold's journal, and for restore --prepare whether a run has saved the restore set. A
-// read that fails is never taken as unchanged.
-func (l *restoreLeft) journal(ctx context.Context, a *admission) string {
-	d, _, err := a.r.records.Journal(ctx, a.r.o.holdID)
-	if err != nil {
-		return fmt.Sprintf("%s; what earlier runs of %s left is unknown: the hold's journal could not be read (%v)", l, a.command, err)
-	}
-	setSaved := true
-	if a.command == restoreCommandPrepare {
-		if _, found, err := readRestoreSet(ctx, a.r.records, a.r.o.holdID); err == nil {
-			setSaved = found
-		}
-	}
-	return restoreJournalLeft(d, a.command, setSaved, l)
-}
-
-// restoreJournalLeft is what a stop of command records as left, from d, the hold's journal with
-// this run's intent as command's latest entry, and l, this run's account: holdrecord.LeftUnchanged
-// for restore --prepare while no run has saved the restore set (setSaved false), since each of its
-// changes outside the journal follows that save; otherwise what every run of command in this hold
-// left (journalLeft).
-func restoreJournalLeft(d holdrecord.Done, command string, setSaved bool, l *restoreLeft) string {
-	if command == restoreCommandPrepare && !setSaved {
-		return holdrecord.LeftUnchanged
-	}
-	return journalLeft(d, command, l.empty(), l.String())
-}
+// putBarrier reports whether this run's account counts this hold's barrier key: the run put it,
+// and the control's earlier rule that the key is no change (leftRuleSet.barrierNoChange) is not set.
+func (l *restoreLeft) putBarrier() bool { return l.barrier && !leftRules.barrierNoChange }

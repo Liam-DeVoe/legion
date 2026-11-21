@@ -218,15 +218,16 @@ func TestHoldTheStreamsWordsRunOnlyInTheirHolds(t *testing.T) {
 // intent and its done entry, which completes the record. The census runs with the stack's every
 // family converted (each cutover row done) and a stub reader of the recorded session consumers.
 // A census with no reader is UNKNOWN (exit 2) and, as every command can, writes a stop entry,
-// `unchanged`. The control is a census killed after its intent, with no stop: release is refused
-// while that intent is pending.
+// which names this hold's barrier key the census put before it reached the reader
+// (TestHoldACensusStopNamesTheBarrierKeyItPut). The control is a census killed after its intent,
+// with no stop: release is refused while that intent is pending.
 func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 
-	// No reader: UNKNOWN, and a stop entry that left nothing changed.
+	// No reader: UNKNOWN, and a stop entry that names the barrier key it put.
 	code, _, stderr := h.streamsRun(nil, "census", "--family", "session")
 	id := h.row().HoldID
 	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
@@ -240,7 +241,7 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	require.Contains(t, stderr, ErrNoRecordReader.Error())
 	last := h.journal(id).Ops[len(h.journal(id).Ops)-1]
 	require.Equal(t, CommandStreamsCensus+" stop", last.Command+" "+last.State)
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	require.Equal(t, "this hold's barrier key in "+kvStreamPrefix+streams.SessionConsumerRecordsBucket, last.Outputs["left"])
 
 	// The control: the census run again and killed after its intent, with no stop.
 	_, err = h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandStreamsCensus}, nil)
@@ -257,6 +258,46 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	code, _, _ = h.run(actionRelease, "--hold", id, "--reason", "the census is done")
 	require.Zero(t, code, "release after the census")
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+}
+
+// A census stop counts this hold's barrier key, which the census put in the session consumers'
+// bucket before it read their records (streams.Census's Barrier): a stop names every change that
+// its command's runs made and did not undo. With no reader of the recorded session consumers the
+// census is UNKNOWN after its barrier and removes nothing; its stop names the key, and hold
+// release is refused over it. Control: under the earlier rule that the key is no change
+// (censusBarrierNoChange), the same census records unchanged, and hold release is admitted over it.
+func TestHoldACensusStopNamesTheBarrierKeyItPut(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	ctx := context.Background()
+
+	// The first census sets its hold and stops at its convert check, before any barrier; the
+	// session family's cutover row is then written done under that hold.
+	code, _, _ := h.streamsRun(nil, "census", "--family", "session")
+	require.Equal(t, 1, code, "the census before the family is converted")
+	id := h.row().HoldID
+	require.Equal(t, holdrecord.LeftUnchanged, h.journal(id).Ops[len(h.journal(id).Ops)-1].Outputs["left"], "a stop before the barrier")
+	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
+	require.NoError(t, err)
+	release := holdrecord.Request{Command: holdrecord.CommandRelease}
+	unknown := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := h.streamsRun(nil, "census", "--hold", id, "--family", "session")
+		require.Equal(t, 2, code, "a census with no reader")
+		require.Contains(t, stderr, ErrNoRecordReader.Error(), "the hold point: the census reached its reader after its barrier")
+		last := h.journal(id).Ops[len(h.journal(id).Ops)-1]
+		require.Equal(t, CommandStreamsCensus+" stop", last.Command+" "+last.State)
+		return last
+	}
+
+	censusBarrierNoChange = true
+	t.Cleanup(func() { censusBarrierNoChange = false })
+	require.Equal(t, holdrecord.LeftUnchanged, unknown().Outputs["left"], "control: with the key no change the stop records unchanged")
+	require.NoError(t, holdrecord.Decide(h.journal(id), release), "control: hold release is admitted over the unchanged stop")
+
+	censusBarrierNoChange = false
+	require.Equal(t, "this hold's barrier key in "+kvStreamPrefix+streams.SessionConsumerRecordsBucket, unknown().Outputs["left"])
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over a stop that left the key")
 }
 
 // StreamsCommandOn runs the held words on a stack its caller names: `streams update` through it,
@@ -288,7 +329,8 @@ func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
 }
 
 // The census reads the recorded fresh consumer names (consumernames.RecordedFreshNames, passed
-// in) before it removes anything, and passes them to streams.Census as RecordedFreshNames. It gives
+// in) through streams.Census's RecordedFreshNames, after its checks and its barrier and before it
+// removes anything. It gives
 // the reader its --family values, --dispatch-database-file, each --daemon-database entry, and the
 // daemons' Deployments as the hold's own Kubernetes client lists them (KubeDaemonDeployments of
 // namespace legion), which hold the Deployment the row renders there. With no reader, or a reader
@@ -347,6 +389,63 @@ func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 	require.Equal(t, []string{"P=/run/daemon-db"}, gotDaemons)
 	require.Equal(t, []string{"legion-daemon-p P"}, gotDeployments, "the reader was not handed the hold's own Deployments")
 	require.Contains(t, h.journalCommands(id), CommandStreamsCensus+" done")
+}
+
+// The census reads the recorded fresh names only behind its bucket barrier: its reader of them
+// (consumernames.RecordedFreshNames, here a probe) is called once this hold's barrier key
+// hold.barrier.<hold id> is in the session consumers' bucket, so every record it reads is one the
+// bucket's leader has applied, and a listener durable a record names is never removed as an
+// unrecorded <base>~<nuid>. The probe reads the key's last message when it is called; each census
+// runs in a hold of its own, where no command put the key before it. Control: under the earlier
+// order (censusFreshNamesFirst), the reader is called before the census's checks and barrier, and
+// the probe finds no key.
+func TestHoldTheCensusReadsTheFreshNamesBehindTheBarrier(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	ctx := context.Background()
+	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
+	var seen []bool
+	probe := func(ctx context.Context, conn *nats.Conn, _ DaemonDeployments, _ []string, _ string, _ []string) (FreshNamesRead, error) {
+		id := h.row().HoldID
+		value, err := lastBySubject(ctx, conn, streams.SessionConsumerRecordsBucket, "hold.barrier."+id)
+		seen = append(seen, err == nil && value == id)
+		return FreshNamesRead{Names: map[string][]string{}}, nil
+	}
+	// census runs `streams census --family session` with no --hold, so it sets a hold of its own,
+	// and with no writer of the daemon stores: past its convert check it lists and stops UNKNOWN at
+	// its reconcile. abort ends its hold, so the next census sets another.
+	census := func(converted bool) string {
+		t.Helper()
+		code, _, stderr := h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: probe}, "census", "--family", "session")
+		if !converted {
+			require.Equal(t, 1, code, "the census before the family is converted: %s", stderr)
+		} else {
+			require.Equal(t, 2, code, "a census with no writer of the daemon stores: %s", stderr)
+			require.Contains(t, stderr, ErrNoStoreWriter.Error(), "the hold point: the census listed, then stopped at its reconcile")
+		}
+		return h.row().HoldID
+	}
+	abort := func(id string) {
+		t.Helper()
+		code, _, stderr := h.run(actionAbort, "--hold", id, "--reason", "the row's census stopped")
+		require.Zero(t, code, "hold abort after the census's stop: %s", stderr)
+	}
+
+	// The first census stops at its convert check, before its barrier, having read no fresh names;
+	// the session family's cutover row is then written done.
+	first := census(false)
+	require.Empty(t, seen, "the census read the fresh names before its convert check and its barrier")
+	_, err := h.s.Records.PutCutover(ctx, "session", "done", first)
+	require.NoError(t, err)
+	abort(first)
+
+	abort(census(true))
+	require.Equal(t, []bool{true}, seen, "the census read the fresh names before this hold's barrier key was in the bucket")
+
+	censusFreshNamesFirst = true
+	t.Cleanup(func() { censusFreshNamesFirst = false })
+	abort(census(true))
+	require.Equal(t, []bool{true, false}, seen, "control: in the earlier order the fresh names are read before the barrier")
 }
 
 // KubeDaemonDeployments lists the Deployments of namespace legion alone, each by its name with its

@@ -196,10 +196,12 @@ func replaceFirstDelivered(t *testing.T, nc *nats.Conn, deliver string) uint64 {
 // it; after the release the fresh name delivers from that sequence, and so replays none of the
 // messages the old name's listener acknowledged. Each run writes its intent and its done entry,
 // which names the name it replaced and the new current; a refused run writes its stop, recording
-// it changed nothing. A rerun after a crash at each step of the replace (after its reservation,
-// after its create, after its publish) ends in the same state. A floor past the stream's end starts
-// at the stream's first sequence. The last rerun, with --final, completes the hold's record, so
-// hold release follows. Control: a consumer created as the README's delete-and-let-the-
+// that it wrote and made nothing but this hold's barrier key
+// (TestAReplaceStopNamesTheBarrierKeyItPut). A rerun after a crash at each step of the replace
+// (after its reservation, after its create, after its publish) ends in the same state. A floor
+// past the stream's end starts at the stream's first sequence. The last rerun, with --final,
+// completes the hold's record, so hold release follows. Control: a consumer created as the
+// README's delete-and-let-the-
 // listener-recreate-it does (deliver policy all) hands over the stream's first message, which the
 // listener had acknowledged.
 func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
@@ -277,7 +279,8 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	require.Empty(t, replaceNamesOf(t, nc, durable("replace-none")))
 	stop := h.lastEntry(id, "")
 	require.Equal(t, "consumer-names replace stop", stop.Command+" "+stop.State, "the refused replace ends in its stop entry")
-	require.Equal(t, holdrecord.LeftUnchanged, stop.Outputs["left"], "the refused replace's stop records it changed nothing")
+	require.Equal(t, "this run wrote no record and made or deleted no consumer; it put "+barrierLeft, stop.Outputs["left"],
+		"the refused replace's stop records that it changed nothing but the barrier key")
 
 	code, stdout, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-main")
 	require.Equal(t, 0, code)
@@ -406,4 +409,37 @@ func TestReplaceAListenerDurableAtAFullCap(t *testing.T) {
 	require.Equal(t, 2, info.Config.MaxConsumers, "the cap is never changed")
 	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
 	require.True(t, slices.Contains(replaceNamesOf(t, nc, retiredDurable), kept))
+}
+
+// A replace stop counts this hold's barrier key, which the run put before it read the durable's
+// record: a stop names every change its command's runs made and did not undo. A listener whose
+// durable has no record makes replace refuse after its barrier ("selects no current"), creating and
+// writing nothing; its stop names the key, and hold release is refused over it. Control: under the
+// earlier rule that the key is no change (leftRuleSet.barrierNoChange), the same refusal records
+// unchanged, and hold release is admitted over it.
+func TestAReplaceStopNamesTheBarrierKeyItPut(t *testing.T) {
+	h := newStack(t)
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(t.Context(), nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	release := holdrecord.Request{Command: holdrecord.CommandRelease}
+	refused := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := h.run(actionReplace, "--hold", id, "--listener", "replace-none")
+		require.Equal(t, 1, code, stderr)
+		require.Contains(t, stderr, "selects no current", "the hold point: the refusal follows the read behind the barrier")
+		stop := h.lastEntry(id, replaceCommand)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+	require.NoError(t, holdrecord.Decide(h.journal(id), release), "control: hold release is admitted over the unchanged stop")
+
+	leftWith(t, leftRuleSet{})
+	require.Contains(t, refused().Outputs["left"], "this run wrote no record and made or deleted no consumer; it put "+barrierLeft)
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over a stop that left the key")
 }

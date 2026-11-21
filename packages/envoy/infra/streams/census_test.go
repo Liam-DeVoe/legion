@@ -21,8 +21,8 @@ import (
 // convert form, a session consumer the records name, and the barrier stream standing.
 type census struct {
 	*hub
-	barrierAt, recordsAt atomic.Int64
-	calls                atomic.Int64
+	barrierAt, recordsAt, freshAt atomic.Int64
+	calls                         atomic.Int64
 	// listenerFresh is the listener's durable in its fresh form, which the selection records name.
 	listenerFresh string
 }
@@ -54,9 +54,9 @@ func startCensus(t *testing.T, grant natsgrant.Permissions) *census {
 	return c
 }
 
-// input is the census's input on c: held, every family converted, the barrier and the records'
-// read each counted in the order they came, the listener machine ids hub and x, and the listener's
-// fresh durable recorded under the session family.
+// input is the census's input on c: held, every family converted, the barrier and the records' and
+// fresh names' reads each counted in the order they came, the listener machine ids hub and x, and
+// the listener's fresh durable recorded under the session family.
 func (c *census) input() streams.CensusInput {
 	return streams.CensusInput{
 		Phase:    phase(natsgrant.OperatorPhaseHeld),
@@ -70,8 +70,11 @@ func (c *census) input() streams.CensusInput {
 			}
 			return nil
 		},
-		Consumers:          streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: []string{"hub", "x"}}),
-		RecordedFreshNames: map[string][]string{"session": {c.listenerFresh}},
+		Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: []string{"hub", "x"}}),
+		RecordedFreshNames: func(context.Context) (map[string][]string, map[string]string, error) {
+			c.freshAt.Store(c.calls.Add(1))
+			return map[string][]string{"session": {c.listenerFresh}}, nil, nil
+		},
 		RecordedSessionConsumers: func(context.Context) ([]streams.ConsumerShape, error) {
 			c.recordsAt.Store(c.calls.Add(1))
 			return []streams.ConsumerShape{{
@@ -129,6 +132,7 @@ func TestStreamsCensusRemovesWhatIsNotDeclared(t *testing.T) {
 	requireConsumerFailure(t, report, bus.Stream, bus.ListenerDurable("x"), "filter subjects")
 	requireFailureNaming(t, report, interests, "republish")
 	require.Less(t, c.barrierAt.Load(), c.recordsAt.Load(), "the census read the records before its barrier")
+	require.Less(t, c.barrierAt.Load(), c.freshAt.Load(), "the census read the fresh names before its barrier")
 
 	_, err = c.js.StreamInfo("PLANT")
 	require.ErrorIs(t, err, natsgo.ErrStreamNotFound, "the census left PLANT")
@@ -234,6 +238,8 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 	}
 	bases := map[string]string{"session": bus.ListenerDurable("hub"), "dispatch": bus.DispatchDeliveryDurable, "daemon/PUB": daemon.Name}
 	in := c.input()
+	freshNames := map[string][]string{"session": {c.listenerFresh}}
+	in.RecordedFreshNames = func(context.Context) (map[string][]string, map[string]string, error) { return freshNames, nil, nil }
 	in.Consumers = streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: []string{"hub", "x"}, Daemons: []streams.ConsumerShape{daemon}})
 	unrecorded := map[string]string{}
 	var recorded []string
@@ -244,7 +250,7 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 		} else {
 			_, err := c.js.AddConsumer(bus.Stream, create[family](kept))
 			require.NoError(t, err)
-			in.RecordedFreshNames[family] = append(in.RecordedFreshNames[family], kept)
+			freshNames[family] = append(freshNames[family], kept)
 		}
 		_, err := c.js.AddConsumer(bus.Stream, create[family](orphan))
 		require.NoError(t, err)

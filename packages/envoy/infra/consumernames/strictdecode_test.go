@@ -175,10 +175,11 @@ func malformedSessions(t *testing.T, nc *nats.Conn, sessions ...string) map[stri
 // under a session's key or under the sentinel through a request's reply subject, and one session's
 // record copied under another's key), streams census is UNKNOWN, exit 2, naming the session
 // family's store and the key, and removes nothing: both sessions' consumers and a stray
-// listener-hub~<nuid> stay, and its stop entry records it unchanged. Control: today's decode takes
-// each value (malformedCase.lenient), and a census on it removes a session's consumer or runs
-// complete and removes the stray (shown by an overlay run of today's decode). The copied record
-// waits on the library's records carrying their own key.
+// listener-hub~<nuid> stay, and its stop entry records only this hold's barrier key, which it put
+// before it read the records. Control: today's decode takes each value (malformedCase.lenient), and
+// a census on it removes a session's consumer or runs complete and removes the stray (shown by an
+// overlay run of today's decode). The copied record waits on the library's records carrying their
+// own key.
 func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -205,7 +206,7 @@ func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 			require.NotContains(t, stdout, "CHANGED")
 			last := h.lastEntry(id, "")
 			require.Equal(t, censusCommandName+" stop", last.Command+" "+last.State)
-			require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+			require.Equal(t, barrierLeft, last.Outputs["left"], "the stop records the barrier key the census put, and nothing more")
 			nc, _ = h.operator()
 			left := censusConsumers(t, nc)
 			for _, name := range []string{consumers["ses_a"], consumers["ses_b"], stray} {
@@ -261,7 +262,8 @@ func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 
 // For each malformed value (malformedCases), cleanup in a consumer-cleanup hold is UNKNOWN, exit 2,
 // naming the key, and deletes nothing: ses_a's retired session~<nuid>, which the server holds,
-// stays on the stream and in ses_a's record, and its stop entry records the run unchanged.
+// stays on the stream and in ses_a's record, and its stop entry records only this hold's barrier
+// key, which it put before the walk (TestACleanupStopNamesTheBarrierKeyItPut).
 // Control: today's decode takes each value (malformedCase.lenient), and cleanup on it deletes that
 // retired name (shown by an overlay run of today's decode). The copied record waits on the
 // library's records carrying their own key.
@@ -294,7 +296,8 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 			require.NotContains(t, stdout, "deleted")
 			last := h.lastEntry(id, "")
 			require.Equal(t, "consumer-names cleanup stop", last.Command+" "+last.State, "the UNKNOWN cleanup ends in its stop entry")
-			require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+			require.Equal(t, "this run deleted no consumer and wrote no record; it put "+barrierLeft, last.Outputs["left"],
+				"the stop records a deletion or a record, or leaves out the barrier key")
 			nc, _ = h.operator()
 			require.Contains(t, censusConsumers(t, nc), retired, "the refused cleanup deleted ses_a's retired name")
 			record, _, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(ctx, "ses_a")
@@ -306,10 +309,12 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 }
 
 // For each malformed value (malformedCases), restore --prepare in a rollback hold is UNKNOWN, exit
-// 2, naming the key, and changes nothing: its stop entry records it unchanged, and session keyed's
-// record holds no restore. Control: today's decode takes each value (malformedCase.lenient), and
-// restore --prepare on it plans the rollback and writes keyed's restore (shown by an overlay run of
-// today's decode). The copied record waits on the library's records carrying their own key.
+// 2, naming the key, and changes nothing but this hold's barrier key, which it put before it
+// listed the bucket (TestARestorePrepareStopNamesTheBarrierKeyItPut): its stop entry records only
+// that key, and session keyed's record holds no restore. Control: today's decode takes each value
+// (malformedCase.lenient), and restore --prepare on it plans the rollback and writes keyed's
+// restore (shown by an overlay run of today's decode). The copied record waits on the library's
+// records carrying their own key.
 func TestRestorePrepareRefusesAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("other", "keyed") {
 		t.Run(c.name, func(t *testing.T) {
@@ -333,7 +338,7 @@ func TestRestorePrepareRefusesAMalformedSelectionValue(t *testing.T) {
 			require.Contains(t, stderr, c.key)
 			last := rig.lastEntry(rollback, restoreCommandPrepare)
 			require.Equal(t, "stop", last.State, "the refused restore --prepare ends in its stop entry")
-			require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+			require.Equal(t, restoreNoBarrier, last.Outputs["left"], "the stop records a record or a consumer, or leaves out the barrier key")
 			require.Nil(t, rig.record(familySession, "keyed").Restore, "the refused restore --prepare wrote keyed's restore")
 			malformedRefused(t, c.key, value)
 		})

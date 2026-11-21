@@ -804,11 +804,13 @@ func TestARestoreKeyRefusalAfterItsIntentWritesAStopSoFinishRuns(t *testing.T) {
 }
 
 // TestRestoreJournalLeftCountsEveryRunOfTheCommand: what a restore command's stop records as left
-// (holdrecord's AppendStopLeft) is unchanged only when no run of the command in this hold changed
-// anything outside the journal, earlier runs cut after their intent included; for restore
-// --prepare, also while no run has saved the restore set, before which it changes nothing. Its
-// control row is a rerun after a cut run that changed nothing in this run: recording unchanged
-// there would let hold release end a hold whose records the cut run changed.
+// (holdrecord's AppendStopLeft, through admission.left's journalLeft over the run's restoreLeft)
+// is unchanged only when no run of the command in this hold changed anything outside the journal,
+// earlier runs cut after their intent included, and this hold's barrier key a run put counts as a
+// change. A restore --prepare run cut before it saved the restore set counts too: it puts the
+// barrier key before the save. Its control row is a rerun after a cut run that changed nothing in
+// this run: recording unchanged there would let hold release end a hold whose records the cut run
+// changed.
 func TestRestoreJournalLeftCountsEveryRunOfTheCommand(t *testing.T) {
 	intent := func(command string) holdrecord.Operation {
 		return holdrecord.Operation{Command: command, State: "intent"}
@@ -832,34 +834,33 @@ func TestRestoreJournalLeftCountsEveryRunOfTheCommand(t *testing.T) {
 		name      string
 		command   string
 		d         holdrecord.Done
-		setSaved  bool
 		left      *restoreLeft
 		unchanged bool
 		names     []string
 	}{
-		{name: "control: a rerun after a run cut after its intent", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
+		{name: "control: a rerun after a run cut after its intent", command: restoreCommandKey, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey), intent(restoreCommandKey)), names: []string{"run 1 ended with no entry"}},
-		{name: "the first run, which changed nothing", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
+		{name: "the first run, which changed nothing", command: restoreCommandKey, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey)), unchanged: true},
-		{name: "the first run, which deleted a consumer", command: restoreCommandKey, setSaved: true, left: deleted,
+		{name: "the first run, which deleted a consumer", command: restoreCommandKey, left: deleted,
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey)), names: []string{"consumers deleted or found gone: session~A"}},
-		{name: "a rerun after a stop that left nothing changed", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
+		{name: "the first run, which put the barrier key", command: restoreCommandPrepare, left: &restoreLeft{barrier: true},
+			d: journal(intent(restoreCommandPrepare)), names: []string{restoreNoBarrier}},
+		{name: "a rerun after a stop that left nothing changed", command: restoreCommandKey, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey), stop(restoreCommandKey, holdrecord.LeftUnchanged), intent(restoreCommandKey)), unchanged: true},
-		{name: "a rerun after a done run", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
+		{name: "a rerun after a done run", command: restoreCommandKey, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandKey), done(restoreCommandKey), intent(restoreCommandKey)), names: []string{"run 1 is done"}},
-		{name: "a rerun after a stop that recorded nothing of what it left", command: restoreCommandFinish, setSaved: true, left: &restoreLeft{},
+		{name: "a rerun after a stop that recorded nothing of what it left", command: restoreCommandFinish, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandFinish), stop(restoreCommandFinish, ""), intent(restoreCommandFinish)), names: []string{"run 1 stopped, and its stop recorded nothing of what it left"}},
-		{name: "a rerun after a stop that left changes", command: restoreCommandFinish, setSaved: true, left: &restoreLeft{},
+		{name: "a rerun after a stop that left changes", command: restoreCommandFinish, left: &restoreLeft{},
 			d: journal(done(restoreCommandPrepare), intent(restoreCommandFinish), stop(restoreCommandFinish, "this run left targets created: s-a"), intent(restoreCommandFinish)), names: []string{"run 1 stopped, and its stop entry records what it left"}},
-		{name: "prepare after a cut run, with no restore set saved", command: restoreCommandPrepare, setSaved: false, left: &restoreLeft{},
-			d: journal(intent(restoreCommandPrepare), intent(restoreCommandPrepare)), unchanged: true},
-		{name: "prepare after a cut run, with the restore set saved", command: restoreCommandPrepare, setSaved: true, left: &restoreLeft{},
+		{name: "prepare after a cut run, which may have put the barrier key before any set was saved", command: restoreCommandPrepare, left: &restoreLeft{},
 			d: journal(intent(restoreCommandPrepare), intent(restoreCommandPrepare)), names: []string{"run 1 ended with no entry"}},
-		{name: "other commands' entries are not this command's runs", command: restoreCommandKey, setSaved: true, left: &restoreLeft{},
+		{name: "other commands' entries are not this command's runs", command: restoreCommandKey, left: &restoreLeft{},
 			d: journal(intent(restoreCommandPrepare), intent(restoreCommandPrepare), done(restoreCommandPrepare), intent(restoreCommandKey)), unchanged: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			got := restoreJournalLeft(row.d, row.command, row.setSaved, row.left)
+			got := journalLeft(row.d, row.command, row.left.empty(), row.left.String())
 			if row.unchanged {
 				require.Equal(t, holdrecord.LeftUnchanged, got)
 				return
@@ -871,4 +872,107 @@ func TestRestoreJournalLeftCountsEveryRunOfTheCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+// restoreNoBarrier is a restore run's own account when it changed nothing but put this hold's
+// barrier key (restoreLeft.String).
+const restoreNoBarrier = "this run changed no selection record, consumer, cutover row or store marker; it put " + barrierLeft
+
+// A restore --prepare stop counts this hold's barrier key, which the run put before it listed the
+// selection bucket's records, before it saved the restore set: a stop names every change its
+// command's runs made and did not undo, and the key comes before the save. A malformed value in the
+// bucket makes --prepare UNKNOWN after its barrier, saving no set and writing no record; its stop
+// names the key, and hold release is refused over it. Control: under the earlier rule that the key
+// is no change (leftRuleSet.barrierNoChange), the same refusal records unchanged, and hold release
+// is admitted over it.
+func TestARestorePrepareStopNamesTheBarrierKeyItPut(t *testing.T) {
+	restoreStoppableOrSkip(t, restoreCommandPrepare)
+	rig := newRestoreRig(t)
+	seqs := rig.publish("notifications.agent.keyed", 3)
+	rig.fixed(restoreFixedConfig(sessionFixedPrefix+"keyed", "notifications.agent.keyed"), 1)
+	rig.cutover(restoreConversion{fixed: sessionFixedPrefix + "keyed", start: seqs[1]})
+	rollback := rig.heldHold(holdrecord.WorkflowRollback)
+	_, js := rig.operator()
+	_, err := js.Publish(context.Background(), "$KV."+selection.SessionBucket+".ses_bad", []byte("no record"))
+	require.NoError(t, err)
+	release := holdrecord.Request{Command: holdrecord.CommandRelease}
+	refused := func() holdrecord.Operation {
+		t.Helper()
+		code, stdout, stderr := rig.restore(rollback, "--prepare")
+		require.Equal(t, 2, code, "restore --prepare on a malformed value: %s%s", stdout, stderr)
+		require.Contains(t, stderr, "ses_bad", "the hold point: the refusal follows the listing behind the barrier")
+		_, saved, err := readRestoreSet(context.Background(), rig.records(), rollback)
+		require.NoError(t, err)
+		require.False(t, saved, "the hold point: the refused run saved no restore set")
+		stop := rig.lastEntry(rollback, restoreCommandPrepare)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+	require.NoError(t, holdrecord.Decide(rig.journal(rollback), release), "control: hold release is admitted over the unchanged stop")
+
+	leftWith(t, leftRuleSet{})
+	require.Contains(t, refused().Outputs["left"], restoreNoBarrier)
+	require.ErrorIs(t, holdrecord.Decide(rig.journal(rollback), release), holdrecord.ErrOutOfOrder, "hold release over a stop that left the key")
+}
+
+// A restore --key stop counts this hold's barrier key, which the run put before it read the
+// name's record: a stop names every change its command's runs made and did not undo. --key for a
+// name that has its start already refuses after its barrier, writing nothing; its stop names the
+// key. Control: under the earlier rule that the key is no change (leftRuleSet.barrierNoChange), the
+// same refusal records unchanged.
+func TestARestoreKeyStopNamesTheBarrierKeyItPut(t *testing.T) {
+	restoreStoppableOrSkip(t, restoreCommandKey)
+	rig, rollback, start := restoreKeyStopRig(t)
+	wrong := formatSeq(start + 7)
+	refused := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := rig.restore(rollback, "--key", "keyed", "--from", wrong)
+		require.Equal(t, 1, code, stderr)
+		require.Contains(t, stderr, "not at --from "+wrong, "the hold point: the refusal follows the read behind the barrier")
+		stop := rig.lastEntry(rollback, restoreCommandKey)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+
+	leftWith(t, leftRuleSet{})
+	require.Contains(t, refused().Outputs["left"], restoreNoBarrier)
+}
+
+// A restore --finish stop counts this hold's barrier key, which the run put before it read each
+// record's start: a stop names every change its command's runs made and did not undo. Session
+// nostart, converted and its current deleted with no start saved, is left at no_start by --prepare,
+// so --finish refuses after its barrier, restarting and creating nothing; its stop names the key.
+// Control: under the earlier rule that the key is no change (leftRuleSet.barrierNoChange), the same
+// refusal records unchanged.
+func TestARestoreFinishStopNamesTheBarrierKeyItPut(t *testing.T) {
+	restoreStoppableOrSkip(t, restoreCommandFinish)
+	rig := newRestoreRig(t)
+	rig.fixed(restoreFixedConfig(sessionFixedPrefix+"nostart", "notifications.agent.nostart"), 0)
+	rig.cutover(restoreConversion{fixed: sessionFixedPrefix + "nostart", start: 1, deleteFresh: true,
+		edit: func(record *selection.Record, _ string) { record.Start = 0 }})
+	rollback := rig.heldHold(holdrecord.WorkflowRollback)
+	code, stdout, stderr := rig.restore(rollback, "--prepare")
+	require.Zero(t, code, stderr)
+	require.Contains(t, stdout, "session/nostart has no start", "the hold point: --prepare left nostart with no start")
+	refused := func() holdrecord.Operation {
+		t.Helper()
+		code, _, stderr := rig.restore(rollback, "--finish")
+		require.Equal(t, 1, code, stderr)
+		require.Contains(t, stderr, "these names have no settled start", "the hold point: the refusal follows the reads behind the barrier")
+		stop := rig.lastEntry(rollback, restoreCommandFinish)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+
+	leftWith(t, leftRuleSet{})
+	require.Contains(t, refused().Outputs["left"], restoreNoBarrier)
 }

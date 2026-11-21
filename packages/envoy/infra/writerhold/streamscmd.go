@@ -222,10 +222,11 @@ type FreshNames func(ctx context.Context, conn *nats.Conn, deployments DaemonDep
 // FreshNamesRead is what a FreshNames reader read, as the census takes it.
 type FreshNamesRead struct {
 	// Names are family to its sorted fresh names `<base>~<nuid>` (CensusInput's
-	// RecordedFreshNames).
+	// RecordedFreshNames, its fresh).
 	Names map[string][]string
 	// Gone are the consumer names of each daemon whose store is gone, each to why
-	// (CensusInput's GoneNames): the census keeps each of their consumers and names it.
+	// (CensusInput's RecordedFreshNames, its gone): the census keeps each of their consumers and
+	// names it.
 	Gone map[string]string
 }
 
@@ -393,7 +394,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]Change, map[string]string, error) {
 			r, err := streams.Update(ctx, nc, settings, held)
 			result, reported = r, madeReport(r, err)
-			return streamChanges(r), nil, leftBy(r, streamsRefusal(r, err))
+			return streamChanges(r), nil, leftBy(r, nil, streamsRefusal(r, err))
 		}
 	case "census":
 		c.Command = CommandStreamsCensus
@@ -405,17 +406,26 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if err != nil {
 				return nil, nil, err
 			}
-			// The fresh names are read before anything is removed: with no reader, or one that
-			// cannot read a store, the census is UNKNOWN and removes nothing. The daemons'
-			// Deployments, which both readers of the daemon stores check each store's address
-			// against, are listed with the hold's own Kubernetes client.
+			// With no reader of the fresh names the census is UNKNOWN and removes nothing. The reader
+			// runs inside streams.Census (RecordedFreshNames), after its checks and its barrier on the
+			// selection bucket, so every record it reads is one the bucket's leader has applied, and
+			// before anything is removed; one that cannot read a store makes the census UNKNOWN. The
+			// daemons' Deployments, which both readers of the daemon stores check each store's
+			// address against, are listed with the hold's own Kubernetes client.
 			if e.readers.FreshNames == nil {
 				return nil, nil, unknownf(StepPostcheck, ErrNoFreshNamesReader, "read the recorded fresh consumer names")
 			}
 			deployments := KubeDaemonDeployments(op.Hub.Client)
-			fresh, err := e.readers.FreshNames(ctx, nc, deployments, o.families, o.dispatchDatabaseFile, o.daemonDatabases)
-			if err != nil {
-				return nil, nil, unknownf(StepPostcheck, err, "read the recorded fresh consumer names")
+			freshNames := func(ctx context.Context) (map[string][]string, map[string]string, error) {
+				fresh, err := e.readers.FreshNames(ctx, nc, deployments, o.families, o.dispatchDatabaseFile, o.daemonDatabases)
+				return fresh.Names, fresh.Gone, err
+			}
+			if censusFreshNamesFirst {
+				names, gone, err := freshNames(ctx)
+				if err != nil {
+					return nil, nil, unknownf(StepPostcheck, err, "read the recorded fresh consumer names")
+				}
+				freshNames = func(context.Context) (map[string][]string, map[string]string, error) { return names, gone, nil }
 			}
 			barriers := map[string]uint64{}
 			r, err := streams.Census(ctx, nc, streams.CensusInput{
@@ -434,11 +444,12 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 					return states, nil
 				},
 				Barrier: func(ctx context.Context, bucket string) error {
-					if err := holdrecord.Barrier(ctx, js, bucket, holdID); err != nil {
-						return err
-					}
+					// Counted before the put: a put whose answer is lost may have landed, and the
+					// stop names each key the census may have left (leftBy). A put that fails
+					// stops the census before its postcheck, so the postcheck counts only puts
+					// that were acknowledged.
 					barriers[bucket]++
-					return nil
+					return holdrecord.Barrier(ctx, js, bucket, holdID)
 				},
 				Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: o.machineIDs, Daemons: shapes}),
 				RecordedSessionConsumers: func(ctx context.Context) ([]streams.ConsumerShape, error) {
@@ -447,8 +458,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 					}
 					return e.readers.Recorded(ctx, nc)
 				},
-				RecordedFreshNames: fresh.Names,
-				GoneNames:          fresh.Gone,
+				RecordedFreshNames: freshNames,
 			})
 			result, reported = r, madeReport(r, err)
 			changes := streamChanges(r)
@@ -465,10 +475,10 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				write(kvStreamPrefix+bucket, n)
 			}
 			if refused := streamsRefusal(r, err); refused != nil {
-				return changes, nil, leftBy(r, refused)
+				return changes, nil, leftBy(r, barriers, refused)
 			}
 			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, deployments, o.families, o.daemonDatabases, stdout)
-			return changes, outputs, leftBy(r, err)
+			return changes, outputs, leftBy(r, barriers, err)
 		}
 	}
 	_, err = RunHeld(ctx, records, op, c, e.now, stdout)
@@ -483,18 +493,39 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 	return result.ExitCode(), nil
 }
 
+// censusBarrierNoChange is the census stop's rule before it counted this hold's bucket barrier
+// key: the key, the hold's own, was no change of the census that put it. It is a var so the row's
+// control (TestHoldACensusStopNamesTheBarrierKeyItPut) runs the census under that rule.
+var censusBarrierNoChange bool
+
+// censusFreshNamesFirst is the census's earlier order: the recorded fresh names read before
+// streams.Census's checks and its bucket barrier, so a record the bucket's leader has not yet
+// applied could be missed. It is a var so the row's control
+// (TestHoldTheCensusReadsTheFreshNamesBehindTheBarrier) runs the census in that order.
+var censusFreshNamesFirst bool
+
 // leftBy is err, a streams run's failure after its intent, as the stop's record of what the run
 // left: a *Left naming each change the report made (a stream made or raised, a consumer or stream
-// removed) and each a *Left err carries (a daemon store's stream id rewritten before the census
-// stopped, reconcileStreamIDs) when there is any, else err itself, which RunHeld records as
-// holdrecord.LeftUnchanged. The bucket barrier's keys are the hold's own, and are no change.
-func leftBy(r streams.Report, err error) error {
+// removed), this hold's barrier key in each bucket of barriers, which the census put (a stop names
+// every change its command's runs made and did not undo, and nothing the census does deletes the
+// key), and each change a *Left err carries (a daemon store's stream id rewritten before the
+// census stopped, reconcileStreamIDs) when there is any, else err itself, which RunHeld records as
+// holdrecord.LeftUnchanged.
+func leftBy(r streams.Report, barriers map[string]uint64, err error) error {
 	if err == nil {
 		return nil
 	}
 	var changed []string
 	for _, f := range r.Changes {
 		changed = append(changed, f.String())
+	}
+	if !censusBarrierNoChange {
+		var keys []string
+		for bucket := range barriers {
+			keys = append(keys, "this hold's barrier key in "+kvStreamPrefix+bucket)
+		}
+		slices.Sort(keys)
+		changed = append(changed, keys...)
 	}
 	var inner *Left
 	if errors.As(err, &inner) {

@@ -327,6 +327,44 @@ func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
 	require.True(t, slices.Contains(consumers(), live))
 }
 
+// A cleanup stop counts this hold's barrier key, which the run put before it walked the selection
+// bucket (cleanupSessionTargets): a stop names every change its command's runs made and did not
+// undo. The bucket holds a malformed value, so cleanup is UNKNOWN after its barrier and deletes
+// nothing; its stop names the key, and hold release is refused over it. Control: under the earlier
+// rule that the key is no change (leftRuleSet.barrierNoChange), the same refusal records unchanged,
+// and hold release is admitted over it.
+func TestACleanupStopNamesTheBarrierKeyItPut(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	h.database(familyDispatch, dispatchMigrations...)
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	_, err = js.Publish(ctx, "$KV."+selection.SessionBucket+".ses_bad", []byte("no record"))
+	require.NoError(t, err)
+	release := holdrecord.Request{Command: holdrecord.CommandRelease}
+	refused := func() holdrecord.Operation {
+		t.Helper()
+		code, stdout, stderr := h.run(actionCleanup, "--hold", id, "--dispatch-database-file", "dispatch.url")
+		require.Equal(t, 2, code, "cleanup on a malformed value: %s%s", stdout, stderr)
+		require.Contains(t, stderr, "ses_bad", "the hold point: the refusal follows the walk behind the barrier")
+		stop := h.lastEntry(id, cleanupCommand)
+		require.Equal(t, "stop", stop.State)
+		return stop
+	}
+
+	leftWith(t, leftRuleSet{barrierNoChange: true})
+	require.Equal(t, holdrecord.LeftUnchanged, refused().Outputs["left"], "control: with the key no change the stop records unchanged")
+	require.NoError(t, holdrecord.Decide(h.journal(id), release), "control: hold release is admitted over the unchanged stop")
+
+	leftWith(t, leftRuleSet{})
+	left := refused().Outputs["left"]
+	require.Contains(t, left, "this run deleted no consumer and wrote no record; it put "+barrierLeft)
+	require.ErrorIs(t, holdrecord.Decide(h.journal(id), release), holdrecord.ErrOutOfOrder, "hold release over a stop that left the key")
+}
+
 // cleanupIntentOf is d's latest intent entry of command, its command, state and inputs alone.
 func cleanupIntentOf(d holdrecord.Done, command string) holdrecord.Operation {
 	for i := len(d.Ops) - 1; i >= 0; i-- {

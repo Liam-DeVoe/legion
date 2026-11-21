@@ -50,10 +50,11 @@ const (
 // its intent is its admission, after the held re-read, and its done entry names the durable, the
 // name it replaced and the new current with its start. A refusal or an UNKNOWN after its intent
 // writes its stop, which records what every run of the command in this hold left
-// (admission.stopped): nothing while no run wrote a record or made or deleted a consumer, the
-// bucket barrier's key, the hold's own, aside (as writerhold's census counts it). A Step 0 that
-// settled an open operation wrote the record, and a Replace that failed may have reserved, created
-// or published a name, so a stop after either records the record.
+// (admission.stopped): nothing while no run wrote a record, made or deleted a consumer, or put
+// this hold's barrier key, which a run puts before it reads the record (admission.barrier) and
+// nothing replace does deletes. A Step 0 that settled an open operation wrote the record, and a
+// Replace that failed may have reserved, created or published a name, so a stop after either
+// records the record.
 func (r *run) replaceListener(ctx context.Context) error {
 	if err := core.CheckMachineID("--listener", r.o.listener); err != nil {
 		return err
@@ -91,6 +92,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	var selected, read error
 	var before selection.Record
 	var revision uint64
+	a.barrier = true
 	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
 		before, revision, read = store.Read(ctx, m.Logical)
 		sel, selected = names.Select(ctx, m.Logical, nil)

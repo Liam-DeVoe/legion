@@ -118,20 +118,20 @@ type CensusInput struct {
 	// each in its family's shape, skipping the bucket's other system keys (a key holding a '.':
 	// its sentinel envoy.bucket and each hold's hold.barrier.<id>).
 	RecordedSessionConsumers func(ctx context.Context) ([]ConsumerShape, error)
-	// RecordedFreshNames are the fresh consumer names the selection records name, family to names:
-	// each name in its fresh form, <base>~<nuid>, as a convert or a create gives it, for the
-	// listeners' durables, Dispatch's two durables and each daemon's, current and retiring. Under a
-	// hold no creator runs, so a consumer in a fresh form no family's list names is a crashed
-	// create's orphan, and the census removes it, naming it. It is a plain set per family, which
-	// the writer hold fills from the consumer-names records; the census reads their union, since
-	// every family's fresh names begin with that family's own base names.
-	RecordedFreshNames map[string][]string
-	// GoneNames are the base names of the notification stream's consumers whose family's store is
-	// gone (its database no longer exists), each to why. A consumer of the stream named one of them,
-	// or in its fresh form <name>~<nuid>, is left as it is and named (Report.Left), whatever its
-	// configuration: the records that alone tell an orphan from a selected name are gone with the
-	// store, which is no evidence to delete anything, so the census removes none of them.
-	GoneNames map[string]string
+	// RecordedFreshNames reads, after the barrier on KV_envoy_session_consumers, the fresh consumer
+	// names the selection records name, family to names: each name in its fresh form,
+	// <base>~<nuid>, as a convert or a create gives it, for the listeners' durables, Dispatch's two
+	// durables and each daemon's, current and retiring. Under a hold no creator runs, so a consumer
+	// in a fresh form no family's list names is a crashed create's orphan, and the census removes
+	// it, naming it. It is a plain set per family, which the writer hold reads from the
+	// consumer-names records; the census reads their union, since every family's fresh names begin
+	// with that family's own base names. With them it reads the gone names: the base names of the
+	// notification stream's consumers whose family's store is gone (its database no longer
+	// exists), each to why. A consumer of the stream named one of them, or in its fresh form
+	// <name>~<nuid>, is left as it is and named (Report.Left), whatever its configuration: the
+	// records that alone tell an orphan from a selected name are gone with the store, which is no
+	// evidence to delete anything, so the census removes none of them.
+	RecordedFreshNames func(ctx context.Context) (fresh map[string][]string, gone map[string]string, err error)
 }
 
 // ErrNotConverted is a census asked for before every family's cutover row is done.
@@ -149,10 +149,10 @@ var ErrNotConverted = errors.New("the census runs only after convert")
 // STREAM.NAMES agrees; otherwise the census is UNKNOWN and changes nothing. A consumer in a shape's
 // fresh form, <base>~<nuid>, is kept only when in.RecordedFreshNames names it: under a hold no
 // creator runs, so an unrecorded one is a crashed create's orphan, removed and named. A consumer of
-// a family whose store is gone (in.GoneNames) is left as it is and named, neither a change nor a
-// failure. The census writes, so it runs only as the operator inside a hold (held; check is the
-// read-only word), only once every family is converted, and reads the recorded session consumers
-// only after its barrier on their bucket.
+// a family whose store is gone (the gone names in.RecordedFreshNames reads) is left as it is and
+// named, neither a change nor a failure. The census writes, so it runs only as the operator inside
+// a hold (held; check is the read-only word), only once every family is converted, and reads the
+// recorded session consumers and fresh names only after its barrier on their bucket.
 func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error) {
 	if err := requirePhase(ctx, "streams census", in.Phase, natsgrant.OperatorPhaseHeld); err != nil {
 		return Report{}, err
@@ -160,8 +160,8 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 	if err := requireConverted(ctx, in); err != nil {
 		return Report{}, err
 	}
-	if in.Barrier == nil || in.RecordedSessionConsumers == nil {
-		return Report{Unknown: []string{"no barrier or no reader of the recorded session consumers: their consumers cannot be told from planted ones"}}, nil
+	if in.Barrier == nil || in.RecordedSessionConsumers == nil || in.RecordedFreshNames == nil {
+		return Report{Unknown: []string{"no barrier or no reader of the recorded session consumers or fresh names: their consumers cannot be told from planted ones"}}, nil
 	}
 	if err := in.Barrier(ctx, SessionConsumerRecordsBucket); err != nil {
 		return Report{Unknown: []string{"the barrier on " + SessionConsumerRecordsBucket + ": " + err.Error()}}, nil
@@ -170,9 +170,13 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 	if err != nil {
 		return Report{Unknown: []string{"read the recorded session consumers: " + err.Error()}}, nil
 	}
+	freshNames, gone, err := in.RecordedFreshNames(ctx)
+	if err != nil {
+		return Report{Unknown: []string{"read the recorded fresh consumer names: " + err.Error()}}, nil
+	}
 	shapes := slices.Concat(in.Consumers, recorded)
 	fresh := map[string]bool{}
-	for _, names := range in.RecordedFreshNames {
+	for _, names := range freshNames {
 		for _, name := range names {
 			fresh[name] = true
 		}
@@ -230,7 +234,7 @@ func Census(ctx context.Context, conn *nats.Conn, in CensusInput) (Report, error
 			return report, nil
 		}
 		for _, consumer := range consumers {
-			if why, ok := goneName(in.GoneNames, name, consumer.Name); ok {
+			if why, ok := goneName(gone, name, consumer.Name); ok {
 				report.Left = append(report.Left, Finding{Stream: name, Consumer: consumer.Name, What: why})
 				continue
 			}
@@ -344,8 +348,9 @@ func shapeMismatch(shapes []ConsumerShape, fresh map[string]bool, stream string,
 	return "its name matches no declared consumer"
 }
 
-// goneName is why consumer, of stream, is a gone family's (CensusInput.GoneNames): named one of
-// gone's names, or in that name's fresh form, on the notification stream; and false for any other.
+// goneName is why consumer, of stream, is a gone family's (the gone names
+// CensusInput.RecordedFreshNames reads): named one of gone's names, or in that name's fresh form,
+// on the notification stream; and false for any other.
 func goneName(gone map[string]string, stream, consumer string) (string, bool) {
 	if stream != bus.Stream {
 		return "", false

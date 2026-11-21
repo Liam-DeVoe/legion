@@ -215,13 +215,14 @@ func ReadRecordedNames(ctx context.Context, conn *nats.Conn, deployments writerh
 
 // RecordedFreshNames is ReadRecordedNames in the form the census's input takes
 // (writerhold.FreshNamesRead): family to the fresh names the records hold, each list sorted, for
-// the listener durables, Dispatch's durables and each daemon's
-// (streams.CensusInput.RecordedFreshNames); and for each daemon whose store is gone, each of its
-// consumers' names (enrollLogicalNames) to why (streams.CensusInput.GoneNames), so the census
-// leaves those consumers as they are and names each: a database that does not exist is evidence to
-// skip its store, not to delete what its records would have kept. The session consumers' names
-// are left out: the census declares them by their records' shapes (RecordedSessionConsumers). A
-// read ReadRecordedNames refuses is refused, and the census is then UNKNOWN and removes nothing.
+// the listener durables, Dispatch's durables and each daemon's; and for each daemon whose store is
+// gone, each of its consumers' names (enrollLogicalNames) to why, so the census leaves those
+// consumers as they are and names each: a database that does not exist is evidence to skip its
+// store, not to delete what its records would have kept (streams.CensusInput.RecordedFreshNames,
+// which the census calls after its checks and its barrier on the selection bucket, so every record
+// read is one the bucket's leader has applied). The session consumers' names are left out: the
+// census declares them by their records' shapes (RecordedSessionConsumers). A read
+// ReadRecordedNames refuses is refused, and the census is then UNKNOWN and removes nothing.
 func RecordedFreshNames(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families []string, dispatchDatabaseFile string, daemonDatabases []string) (writerhold.FreshNamesRead, error) {
 	names, gone, err := ReadRecordedNames(ctx, conn, deployments, families, dispatchDatabaseFile, daemonDatabases)
 	if err != nil {

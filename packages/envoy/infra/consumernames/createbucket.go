@@ -192,13 +192,16 @@ func (r *run) createBucketCutoverHeld(ctx context.Context, boundary uint64, repl
 	return outputs, nil
 }
 
-// createBucketLeft is what a run of create-bucket, create-bucket --after-loss or replay has changed
-// outside the journal since its intent, which the stop of a refusal names (the hold's rule: a stop
-// records what its command left, so the way out of the hold knows what to undo or keep).
+// createBucketLeft is what a run of create-bucket, create-bucket --after-loss, replay or
+// repair-sentinel has changed outside the journal since its intent, which the stop of a refusal
+// names beside what every earlier run of its command in the hold left (createBucketStopped), so
+// the way out of the hold knows what to undo or keep.
 type createBucketLeft struct {
 	// selectionRecord: the hold's selection record, written.
 	selectionRecord bool
-	// barrier: this hold's barrier key put in the selection bucket (writerhold.ReadBucket).
+	// barrier: this hold's barrier key put in the selection bucket (writerhold.ReadBucket,
+	// barrierLeft), set right before the put, whose answer may be lost after it landed, and
+	// cleared when the run then deleted the bucket that held it (bucketDeleted).
 	barrier bool
 	// created and restored: the selection bucket created empty, or restored from a snapshot, by
 	// this run; deleted: a cut restore's leftover deleted; unloaded: a restored snapshot deleted
@@ -231,7 +234,7 @@ func (l *createBucketLeft) String() string {
 	add(l.restored, "the bucket "+selectionStreamName+" restored from the backup")
 	add(l.unloaded, "the bucket "+selectionStreamName+" restored from the backup and deleted again")
 	add(l.replayed > 0, fmt.Sprintf("%d of the walk's records put in %s", l.replayed, selectionStreamName))
-	add(l.barrier, "this hold's barrier key in "+selectionStreamName)
+	add(l.barrier, barrierLeft)
 	add(l.sentinel, "the sentinel of "+selectionStreamName+" written")
 	add(l.record != "", l.record)
 	add(l.unsure != "", l.unsure)
@@ -245,21 +248,34 @@ func (l *createBucketLeft) changed() bool {
 		l.sentinel || l.record != "" || l.unsure != ""
 }
 
-// journal is l as a stop entry records what its command left: holdrecord.LeftUnchanged when the
-// run changed nothing outside the journal, and otherwise each change it made (String).
-func (l *createBucketLeft) journal() string {
-	if !l.changed() {
-		return holdrecord.LeftUnchanged
+// bucketDeleted records that the run deleted the selection bucket, and with it this hold's barrier
+// key, which then is no change the run left (the control's earlier rule,
+// leftRuleSet.barrierAfterDelete, keeps counting it).
+func (l *createBucketLeft) bucketDeleted() {
+	if !leftRules.barrierAfterDelete {
+		l.barrier = false
 	}
-	return l.String()
 }
 
 // createBucketStopped ends a refusal after the command's intent with its stop (admission.stop,
 // which writes the stop entry where the workflow's table makes the command Stoppable), the reason
-// naming what the run left, and answers err with that named: an UNKNOWN stays UNKNOWN.
+// naming what this run left, and answers err with that named: an UNKNOWN stays UNKNOWN. The stop
+// records what every run of the command in this hold left (admission.left): holdrecord.LeftUnchanged
+// only when this run and each earlier one changed nothing, so a barrier key or a bucket an earlier
+// run left still counts. Under the control's earlier rule (leftRuleSet.ownRunOnly) it records this
+// run alone.
 func createBucketStopped(ctx context.Context, a *admission, err error, left *createBucketLeft) error {
 	reason := fmt.Sprintf("%v; it left %s", err, left)
-	if serr := a.stop(ctx, reason, left.journal()); errors.Unwrap(serr) != nil {
+	var recorded string
+	switch {
+	case !leftRules.ownRunOnly:
+		recorded = a.left(ctx, !left.changed(), left.String())
+	case left.changed():
+		recorded = left.String()
+	default:
+		recorded = holdrecord.LeftUnchanged
+	}
+	if serr := a.stop(ctx, reason, recorded); errors.Unwrap(serr) != nil {
 		return fmt.Errorf("%w; it left %s; and its stop entry: %w", err, left, errors.Unwrap(serr))
 	}
 	return fmt.Errorf("%w; it left %s", err, left)
@@ -746,6 +762,8 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 			if err := createBucketDeleteLeftover(ctx, nc); err != nil {
 				return "", made, err
 			}
+			// The barrier this loop put went with the leftover; the next pass puts it again.
+			left.bucketDeleted()
 			if made, err = r.createBucketMake(ctx, nc, js, in, backup, replicas, left); err != nil {
 				return "", made, err
 			}
