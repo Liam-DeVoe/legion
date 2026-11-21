@@ -107,15 +107,14 @@ const NOTHING = (): void => {};
  * question or decision to go to may mean only that they have not arrived
  * (`decisions-entries.ts`).
  *
- * A read that says which entries there are and was refused before it first answered - the
- * decisions, the asks - draws the page's one line for a failed read over the list
- * (`slots/failed-read-line.tsx`), with a Retry that asks that read alone again, in place of the
- * entries it would give. Where the list draws no row, the stage the view is drawn in
- * (`slots/stage.tsx`) gives a Retry the focus the tree holds or nothing holds, whether the read
- * is refused before `t d` or after, and keeps the focus in the list when a line leaves with it;
- * where rows are drawn the tab stop takes it, and Shift+Tab from a row goes up to the Retry. So
- * the foot's control takes no focus until those reads have both answered: until then a row or
- * a Retry may yet come to take it.
+ * A read that says which entries there are and stands refused - the decisions, the asks - draws
+ * the page's one line for a failed read over the list (`slots/failed-read-line.tsx`), with a
+ * Retry that asks that read alone again, in place of the entries it would give. Where the list
+ * draws no row, the stage the view is drawn in (`slots/stage.tsx`) gives a Retry the focus the
+ * tree holds or nothing holds, whether the read is refused before `t d` or after, and keeps the
+ * focus in the list when a line leaves with it; where rows are drawn the tab stop takes it, and
+ * Shift+Tab from a row goes up to the Retry. So the foot's control takes no focus until those
+ * reads have both answered: until then a row or a Retry may yet come to take it.
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -175,7 +174,7 @@ export function DecisionsFilterBody({
 }): ReactNode {
   const navigate = useNavigate();
   const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, view }
+    { addressed: reveal !== undefined, issue, reader, root, view }
   );
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
@@ -243,10 +242,10 @@ export function DecisionsFilterBody({
   // The rows as the outline's keys read them: the nth is the nth row drawn. Each sits at the
   // list's one level, under the root the keys are given, which is the view (`keyOrder`), so Left
   // on a row finds no row above it and says so, as on a top-level row of the outline.
-  const rows = useMemo<DrawnRow[]>(
-    () => drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail: [view.id] })),
-    [drawn, view.id]
-  );
+  const rows = useMemo<DrawnRow[]>(() => {
+    const trail = [view.id];
+    return drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail }));
+  }, [drawn, view.id]);
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
   // of Keep or a send of Change arms it, and only these let it go: a move to another row, the
@@ -380,17 +379,17 @@ export function DecisionsFilterBody({
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
-    const answered = writeUps?.get(reveal);
-    const to =
-      answered === undefined ? reveal : drawn.find((entry) => answered.has(entry.node.id))?.node.id;
-    if (to === undefined) return;
-    const entry = drawn.find((each) => each.node.id === to);
+    const restated = writeUps?.get(reveal);
+    const entry =
+      restated === undefined
+        ? drawn.find((each) => each.node.id === reveal)
+        : drawn.find((each) => restated.has(each.node.id));
     if (entry === undefined) {
-      if (partOf.get(to) === "agents") setFootShown(true);
+      if (restated === undefined && partOf.get(reveal) === "agents") setFootShown(true);
       return;
     }
     if (entry.kind === "decision" && writeUps === undefined) return;
-    const row = rowOf(body.current, to);
+    const row = rowOf(body.current, entry.node.id);
     if (row === null) return;
     taken.current = reveal;
     row.focus();
@@ -413,9 +412,9 @@ export function DecisionsFilterBody({
       onRevealDrawn(false);
       return;
     }
-    const answered = writeUps?.get(reveal);
-    if (answered !== undefined) {
-      onRevealDrawn(drawn.some((entry) => answered.has(entry.node.id)));
+    const restated = writeUps?.get(reveal);
+    if (restated !== undefined) {
+      onRevealDrawn(drawn.some((entry) => restated.has(entry.node.id)));
       return;
     }
     if (
@@ -738,14 +737,13 @@ export function DecisionsFilterBody({
       onMouseDown={press.onMouseDown}
       ref={body}
     >
-      {/* Each read that was refused before it first answered, as the page's one line for a
-          failed read draws it, the decisions before the questions. The lines stand over the
-          tree and never in it: a tree holds rows and groups of rows alone. They stand in place
-          of the entries the read would give: the tree is built from the same reads
-          (`useIssueTree.ts`), so a read that holds nothing gives the list no entry of its own,
-          and no part is drawn for it. Each line's alert is keyed by its read's count of
-          failures, so a run that ends with no new refusal, cancelled or paused offline, says
-          nothing again. */}
+      {/* Each read that stands refused, as the page's one line for a failed read draws it, the
+          decisions before the questions. The lines stand over the tree and never in it: a tree
+          holds rows and groups of rows alone. They stand in place of the entries the read would
+          give: the tree is built from the same reads (`useIssueTree.ts`), so a read that holds
+          nothing gives the list no entry of its own, and no part is drawn for it. Each line's
+          alert is keyed by its read's count of failures, so a run that ends with no new
+          refusal, cancelled or paused offline, says nothing again. */}
       {unreadable.map((read) => (
         <FailedReadLine
           failure={failures[read]}
@@ -933,9 +931,9 @@ function neighbourOf(
 /** The two reads the seam says may be refused, by the names it gives them. */
 type DecisionsRead = ReturnType<typeof useDecisionsEntries>["unreadable"][number];
 
-/** What the body says of each read refused before it first answered, in the page's words: the
- *  decisions for the decisions read, and the questions for the asks. A read the seam adds fails
- *  this until the body has a line for it. */
+/** What the body says of each read that stands refused, in the page's words: the decisions for
+ *  the decisions read, and the questions for the asks. A read the seam adds fails this until the
+ *  body has a line for it. */
 const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
   asks: STATE_LINES.asks_unreadable,
   decisions: STATE_LINES.issue_decisions_unreadable,

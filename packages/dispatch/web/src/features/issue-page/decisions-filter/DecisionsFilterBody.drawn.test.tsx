@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { nextFrame } from "../../../__tests__/frames";
 import { ApiError, api } from "../../../api/client";
 import type {
   Actor,
@@ -189,13 +190,6 @@ function PageChangeMain({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** Lets one animation frame pass. */
-async function nextFrame(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  requestAnimationFrame(() => resolve());
-  await act(() => promise);
-}
-
 interface Drawn extends RenderResult {
   readonly client: QueryClient;
   /** Draws the body again with other props, as the page does when its address moves. */
@@ -365,8 +359,8 @@ function words(element: Element | null | undefined): string | null {
   return element == null ? null : (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-/** What the body says of each read refused before it first answered, in the page's words, by
- *  which a reader tells the two reads' lines apart. */
+/** What the body says of each read that stands refused, in the page's words, by which a reader
+ *  tells the two reads' lines apart. */
 const REFUSED_READ_WORDS = {
   asks: STATE_LINES.asks_unreadable,
   decisions: STATE_LINES.issue_decisions_unreadable,
@@ -609,12 +603,19 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
 });
 
+/** An issue whose only decision is an agent's that no statement rests on: the list draws its
+ *  foot and no row. */
+const FOOT_ONLY = { children: [decisionNode("minor")], made: [decision("minor")] };
+
+/** The foot's control, or null where the list draws no foot. */
+function footControlOf(drawn: RenderResult): HTMLElement | null {
+  return drawn.container.querySelector<HTMLElement>('[data-decisions-part="agents"] button');
+}
+
 // R22: the foot's words agree with its count.
 test("the foot's heading agrees with how many decisions it holds", () => {
-  const view = renderBody({ children: [decisionNode("minor")], made: [decision("minor")] });
-  expect(words(view.container.querySelector('[data-decisions-part="agents"] button'))).toBe(
-    `1 ${DECISIONS_WORDS.agents_one}`
-  );
+  const view = renderBody(FOOT_ONLY);
+  expect(words(footControlOf(view))).toBe(`1 ${DECISIONS_WORDS.agents_one}`);
 });
 
 // R2: a part that holds nothing is not drawn, and an issue that holds no ask and no decision
@@ -754,14 +755,11 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // a question takes it from there to the question's row, as the foot hands it on. Where the
   // read's answer brings the question with it, drawn in the one render, the focus goes from the
   // busy Retry to the question's row, and the foot's control takes it at no point on the way.
-  const footOnly = { asks: null, children: [decisionNode("minor")], made: [decision("minor")] };
-  const footControl = (drawn: RenderResult) =>
-    drawn.container.querySelector('[data-decisions-part="agents"] button');
   const asksOut = Promise.withResolvers<never>();
   const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
   try {
-    const early = renderBody(footOnly, {}, { stage: true });
-    expect(footControl(early)).not.toBeNull();
+    const early = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
+    expect(footControlOf(early)).not.toBeNull();
     const tree = early.getByRole("tree", { name: CONTROL_LABELS.tree });
     await act(async () => chordFocus(tree));
     expect(document.activeElement).toBe(tree);
@@ -773,7 +771,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     early.unmount();
 
     asksRead.mockRejectedValue(new Error("refused"));
-    const opened = renderBody(footOnly, {}, { stage: true });
+    const opened = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
     await waitFor(() => expect(document.activeElement).toBe(retryOf(opened, "asks")));
     await retryRefusedAgain(opened, "asks", (run) => asksRead.mockReturnValue(run), user);
 
@@ -782,13 +780,13 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() =>
       expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
     );
-    await waitFor(() => expect(document.activeElement).toBe(footControl(opened)));
+    await waitFor(() => expect(document.activeElement).toBe(footControlOf(opened)));
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
     await waitFor(() => expect(focusedRow(opened)).toBe("q-open"));
     opened.unmount();
 
     asksRead.mockRejectedValue(new Error("refused"));
-    const answered = renderBody(footOnly, {}, { stage: true });
+    const answered = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
     await waitFor(() => expect(document.activeElement).toBe(retryOf(answered, "asks")));
     const answer = Promise.withResolvers<never[]>();
     asksRead.mockReturnValue(answer.promise);
@@ -820,7 +818,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
       tookFocus.map((target) =>
         target === rowOf(answered, "q-open")
           ? "the question's row"
-          : target === footControl(answered)
+          : target === footControlOf(answered)
             ? "the foot's control"
             : "another element"
       )
@@ -1596,9 +1594,7 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     await act(async () => rowOf(view, D("minor")).focus());
     await user.keyboard("z");
     expect(rowsOfPart(view, "agents")).toEqual([]);
-    expect(document.activeElement).toBe(
-      view.container.querySelector('[data-decisions-part="agents"] button')
-    );
+    expect(document.activeElement).toBe(footControlOf(view));
 
     // Let close on a row pinned open, pressed while another row has the focus, leaves the focus
     // where it is: the press moves none, so the body it closes takes none to the page.
@@ -1730,24 +1726,21 @@ test("a body drawn again does not act on a request the page already took", async
 // foot. The foot leaving the page with the focus on its control leaves that focus in the list.
 test("a list that holds only the foot gives the focus to the foot's control", async () => {
   const user = userEvent.setup();
-  const control = (drawn: RenderResult) =>
-    drawn.container.querySelector('[data-decisions-part="agents"] button');
-  const footOnly = { children: [decisionNode("minor")], made: [decision("minor")] };
   expect(document.activeElement).toBe(document.body);
-  const view = renderBody(footOnly);
-  await waitFor(() => expect(document.activeElement).toBe(control(view)));
+  const view = renderBody(FOOT_ONLY);
+  await waitFor(() => expect(document.activeElement).toBe(footControlOf(view)));
 
   (document.activeElement as HTMLElement).blur();
-  expect(document.activeElement).not.toBe(control(view));
+  expect(document.activeElement).not.toBe(footControlOf(view));
   await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
-  expect(document.activeElement).toBe(control(view));
+  expect(document.activeElement).toBe(footControlOf(view));
   view.unmount();
 
   // The tree is built read by read (`useIssueTree.ts`): a list that holds only the foot until
   // the asks read answers gives the focus to the foot's control, and once the question's row
   // is drawn the focus goes to it, where the stage would have put it.
-  const early = renderBody(footOnly);
-  await waitFor(() => expect(document.activeElement).toBe(control(early)));
+  const early = renderBody(FOOT_ONLY);
+  await waitFor(() => expect(document.activeElement).toBe(footControlOf(early)));
   early.again({ children: [openAsk("q-open"), decisionNode("minor")] });
   await waitFor(() => expect(focusedRow(early)).toBe("q-open"));
   early.unmount();
@@ -1760,15 +1753,15 @@ test("a list that holds only the foot gives the focus to the foot's control", as
   const tied = decisionsRead([decision("minor", { links: [shaped(specRef("s1"))] })]);
   for (const placed of ["the reader", "the body"] as const) {
     const left = renderBody(tieable);
-    await waitFor(() => expect(document.activeElement).toBe(control(left)));
+    await waitFor(() => expect(document.activeElement).toBe(footControlOf(left)));
     if (placed === "the reader") {
       await act(async () => (document.activeElement as HTMLElement).blur());
       await user.tab();
-      expect(document.activeElement).toBe(control(left));
+      expect(document.activeElement).toBe(footControlOf(left));
     }
     await act(async () => left.client.setQueryData(["decisions", KEY], tied));
     await waitFor(() => expect(rowsOfPart(left, "review")).toEqual([D("minor")]));
-    expect(control(left)).toBeNull();
+    expect(footControlOf(left)).toBeNull();
     await waitFor(() =>
       expect({ placed, row: focusedRow(left) }).toEqual({ placed, row: D("minor") })
     );
@@ -1777,21 +1770,12 @@ test("a list that holds only the foot gives the focus to the foot's control", as
 
   // A reader who presses the control keeps the focus on it, though the foot's rows it unfolds
   // are drawn.
-  const pressed = renderBody(footOnly);
-  await waitFor(() => expect(document.activeElement).toBe(control(pressed)));
-  await user.click(control(pressed) as HTMLElement);
+  const pressed = renderBody(FOOT_ONLY);
+  await waitFor(() => expect(document.activeElement).toBe(footControlOf(pressed)));
+  await user.click(footControlOf(pressed) as HTMLElement);
   expect(rowsOfPart(pressed, "agents")).toEqual([D("minor")]);
-  expect(document.activeElement).toBe(control(pressed));
+  expect(document.activeElement).toBe(footControlOf(pressed));
 });
-
-/** An issue whose only decision is an agent's that no statement rests on: the list draws its
- *  foot and no row. */
-const FOOT_ONLY = { children: [decisionNode("minor")], made: [decision("minor")] };
-
-/** The foot's control, or null where the list draws no foot. */
-function footControlOf(drawn: RenderResult): Element | null {
-  return drawn.container.querySelector('[data-decisions-part="agents"] button');
-}
 
 // The app focuses its main element at each page change but the first (`app.tsx`), so a page
 // opened on a list that holds only the foot by a link inside the app - from another issue, the
@@ -1831,7 +1815,7 @@ test("a list that holds only the foot, opened by a link inside the app with its 
     document.activeElement,
     "the app's main element did not take the focus after the body placed it"
   ).toBe(view.getByRole("main"));
-  await nextFrame();
+  await act(() => nextFrame());
   expect(
     document.activeElement,
     "the reads were cached, and the focus stayed on the app's main element"
@@ -2034,9 +2018,7 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
     ...whole,
     children: whole.children.filter((child) => child.id !== "q-open"),
   });
-  const control = noQuestion.container.querySelector<HTMLElement>(
-    '[data-decisions-part="agents"] button'
-  );
+  const control = footControlOf(noQuestion);
   await act(async () => control?.focus());
   await user.keyboard("q");
   expect(document.activeElement).toBe(control);

@@ -19,7 +19,6 @@ import {
   type DecisionsParts,
   decisionsParts,
   isReading,
-  placements,
 } from "./decisions-parts";
 
 /**
@@ -32,14 +31,12 @@ import {
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
  * (`issueAsksQuery`), and the decisions document's blocks under the tree's own key for them
  * (`artifactBlocksQuery`, for the document `roleDocument` names), so the view adds no request of
- * its own. Each takes the tree's freshness too (`EVENT_FRESH`): events refresh it, never its age.
- * Staleness is per observer and the stage mounts the view again on every press of Decisions, so
- * under the app's 30 s `staleTime` (`main.tsx`) a press more than 30 s after the page loaded
- * would otherwise read all four again. The blocks are why a Change stands under the decision
- * whose section holds its anchor (`decision-review.ts`): the quote alone cannot say which, since
- * two decisions can hold the same words. Until the blocks answer, a Change stands under the
- * first decision whose words hold its quote. A read that holds no decisions, or that has not
- * answered yet, gives no decision and no error: the view draws the questions alone.
+ * its own. Each takes the tree's freshness too (`EVENT_FRESH`), whose own doc gives the reason.
+ * The blocks are why a Change stands under the decision whose section holds its anchor
+ * (`decision-review.ts`): the quote alone cannot say which, since two decisions can hold the
+ * same words. Until the blocks answer, a Change stands under the first decision whose words hold
+ * its quote. A read that holds no decisions, or that has not answered yet, gives no decision and
+ * no error: the view draws the questions alone.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -114,19 +111,24 @@ interface DecisionsEntries {
   /** Each person's write-up of an answered question of this issue (`isReading`), by its node's
    *  id, with the node ids of the answered questions it restates. The list draws no row for a
    *  write-up, so an address naming one lands on the row of a question it answers. Undefined
-   *  while the asks read holds no answer and is not refused: until it answers, an answer it
-   *  brings may make any person's decision a write-up. */
+   *  while no address names a node (`addressed`), since only an address reads it, and while the
+   *  asks read holds no answer and is not refused: until it answers, an answer it brings may
+   *  make any person's decision a write-up. */
   readonly writeUps: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
 
-/** The Decisions view's parts and how the reads they come from stand, from the issue, the
- *  reader's login, the whole tree and the tree as the Decisions view leaves it (`presetView`). */
+/** The Decisions view's parts and how the reads they come from stand, from whether an address
+ *  names a node, the issue, the reader's login, the whole tree and the tree as the Decisions view
+ *  leaves it (`presetView`). */
 export function useDecisionsEntries({
+  addressed,
   issue,
   reader,
   root,
   view,
 }: {
+  /** Whether the page's address names a node: only an address reads the write-ups (`writeUps`). */
+  addressed: boolean;
   issue: IssueDetails;
   /** Who is reading, which tells their own decisions from other people's. */
   reader: string | undefined;
@@ -135,8 +137,6 @@ export function useDecisionsEntries({
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
 }): DecisionsEntries {
-  // Each read takes the tree's freshness (`EVENT_FRESH`): events refresh it, and a view mounted
-  // again reads nothing.
   const decisionsRead = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const decisions = decisionsRead.data;
   const asksRead = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
@@ -182,8 +182,6 @@ export function useDecisionsEntries({
     ],
     [asksFetching, decisionsFetching]
   );
-  // A run that ends with no new failure, cancelled or paused while the browser is offline,
-  // leaves a read's count as it was, so its line says nothing again.
   const decisionsFailures = decisionsRead.errorUpdateCount;
   const asksFailures = asksRead.errorUpdateCount;
   const failures = useMemo<Readonly<Record<DecisionsRead, number>>>(
@@ -240,25 +238,32 @@ export function useDecisionsEntries({
   // The write-ups, read as the model reads them (`decisionsParts`): an answered question is an
   // ask the tree holds with an answer on it, named by the ask's own id, which is how a decision
   // names the question it restates, and a decision's row is the one its node's address names.
+  // Only an address reads them, so none are worked out while no address names a node.
   const writeUps = useMemo(() => {
-    if (asks === undefined && !asksRefused) return undefined;
-    const placed = [...placements(root).values()].map((place) => place.node);
+    if (!addressed || (asks === undefined && !asksRefused)) return undefined;
+    // A node drawn under two parents is one node: its first placement in the reading order is
+    // the one the model reads (`placements`).
+    const seen = new Set<string>();
     const questions = new Map<string, string>();
-    for (const node of placed) {
+    const decided: TreeNode[] = [];
+    for (const node of nodesInOrder(root)) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
       const id = askIdOf(node);
       if (id !== undefined && node.answer !== undefined) questions.set(id, node.id);
+      if (node.type === "decision") decided.push(node);
     }
     const answered = new Set(questions.keys());
     const rows = new Map((decisions?.decisions ?? []).map((row) => [row.ref, row]));
     const found = new Map<string, ReadonlySet<string>>();
-    for (const node of placed) {
-      const row = node.type === "decision" ? rows.get(node.reference ?? "") : undefined;
+    for (const node of decided) {
+      const row = rows.get(node.reference ?? "");
       if (row === undefined || !isReading(row, answered)) continue;
       const restated = (row.asks ?? []).flatMap((ask) => questions.get(ask) ?? []);
       found.set(node.id, new Set(restated));
     }
     return found;
-  }, [asks, asksRefused, decisions, root]);
+  }, [addressed, asks, asksRefused, decisions, root]);
   return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 
