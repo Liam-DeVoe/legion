@@ -47,21 +47,16 @@ func readOf(js nats.JetStreamContext, stream string) infoRead {
 	return infoRead{info: info, err: err}
 }
 
-// awaitKept polls the stream until kept reports it holds what the keeper restores, at the latest
-// for busWait, and returns its info.
+// awaitKept waits until kept reports the stream holds what the keeper restores, and returns its
+// info. The wait ends on that fact alone: a keeper pass and the cluster's change of the stream take
+// what they take on a loaded machine, and the test binary's deadline is the one bound
+// (testwait.UntilPolling).
 func awaitKept(t *testing.T, js nats.JetStreamContext, stream, what string, kept func(*nats.StreamInfo) bool) *nats.StreamInfo {
 	t.Helper()
-	deadline := time.Now().Add(busWait)
-	for {
-		info, err := js.StreamInfo(stream)
-		if err == nil && kept(info) {
-			return info
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %s not kept within %s: %+v (%v)", stream, what, busWait, info, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	return testwait.UntilPolling(t, streamReadPoll, stream+": "+what+" kept", func() (infoRead, bool) {
+		read := readOf(js, stream)
+		return read, read.err == nil && kept(read.info)
+	}).info
 }
 
 // answeredRead reads stream until the server answers, and returns that answer, an error included:
@@ -161,22 +156,15 @@ func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nat
 	return info, err
 }
 
-// awaitRestoredLog waits, within busWait, until the keeper's restore lines name every one of wants.
-// The keeper logs a restore after the server applied it, so a test that reads the stream as kept
-// can get there before the line is written.
+// awaitRestoredLog waits until the keeper's restore lines name every one of wants. The keeper logs
+// a restore after the server applied it, so a test that reads the stream as kept can get there
+// before the line is written.
 func awaitRestoredLog(t *testing.T, logs *capturedLogs, wants ...string) {
 	t.Helper()
-	deadline := time.Now().Add(busWait)
-	for {
+	testwait.Until(t, fmt.Sprintf("the keeper's lines to restore %q", wants), func() (string, bool) {
 		logged := restoredLog(t, logs)
-		if !slices.ContainsFunc(wants, func(want string) bool { return !strings.Contains(logged, want) }) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the keeper's lines restored %q within %s, want %q among them", logged, busWait, wants)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return logged, !slices.ContainsFunc(wants, func(want string) bool { return !strings.Contains(logged, want) })
+	})
 }
 
 // restoredLog is every field the keeper's restore lines logged so far, joined.
@@ -624,13 +612,10 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if _, err := js.UpdateStream(&info.Config); err != nil {
 		t.Fatalf("update the stream: %v", err)
 	}
-	deadline := time.Now().Add(busWait)
-	for sent() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the watch did not see an update sent to the stream")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the watch to see the update sent to the stream", func() (int, bool) {
+		n := sent()
+		return n, n > 0
+	})
 }
 
 // Close and Drain end the keeper before they return, and a pass the stop interrupts logs nothing:
@@ -655,11 +640,14 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			entered := make(chan struct{})
 			client.mu.Lock()
 			conn := client.Conn
+			// The update is held until the stop has closed the connection: a gate the
+			// connection's own close opens. Removing the listener at the row's end closes the gate
+			// too, so a stop that never closed the connection leaves no keeper held.
+			closed := conn.StatusChanged(nats.CLOSED)
+			t.Cleanup(func() { conn.RemoveStatusListener(closed) })
 			client.js = &interleavedJetStream{JetStreamContext: client.js, beforeUpdate: func() {
 				close(entered)
-				for deadline := time.Now().Add(busWait); !conn.IsClosed() && time.Now().Before(deadline); {
-					time.Sleep(5 * time.Millisecond)
-				}
+				<-closed
 			}}
 			client.mu.Unlock()
 			lowered := info.Config
@@ -667,11 +655,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			if _, err := js.UpdateStream(&lowered); err != nil {
 				t.Fatalf("lower the stream to one copy: %v", err)
 			}
-			select {
-			case <-entered:
-			case <-time.After(busWait):
-				t.Fatalf("the keeper sent no update for the lowered stream within %s", busWait)
-			}
+			testwait.Receive(t, "the keeper's update of the lowered stream", entered)
 
 			stopped := make(chan struct{})
 			go func() {
@@ -740,16 +724,10 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	reconciled := func(info *nats.StreamInfo) bool {
 		return slices.Contains(info.Config.Subjects, replacing) && !slices.Contains(info.Config.Subjects, replaced)
 	}
-	for deadline := time.Now().Add(busWait); ; {
-		info, err := js.StreamInfo(Stream)
-		if err == nil && reconciled(info) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the first connection's reconcile did not replace %s with %s within %s: %+v (%v)", replaced, replacing, busWait, info, err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, streamReadPoll, fmt.Sprintf("the first connection's reconcile to replace %s with %s", replaced, replacing), func() (infoRead, bool) {
+		read := readOf(js, Stream)
+		return read, read.err == nil && reconciled(read.info)
+	})
 	// A hundred keeper passes begun after the reconcile was read: a pass that read the stream
 	// before the reconcile has ended by then, and the subject it put back would stay, since the
 	// keeper only adds subjects.

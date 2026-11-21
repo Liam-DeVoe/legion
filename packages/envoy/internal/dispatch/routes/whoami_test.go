@@ -562,8 +562,9 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 // wait -- and the head it answers is still the log's newest id. The transaction stands until the
 // row releases it after whoami's answer, so a whoami that waited on it would never answer.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
-	// No t.Parallel: this test bounds how long whoami takes (one second) while
-	// holdClusterTransactionID holds a transaction id on the whole Postgres instance.
+	// No t.Parallel: holdClusterTransactionID holds a transaction id on the whole Postgres instance
+	// until whoami has answered, which holds back the safe horizon of every test beside it that
+	// reads the event feed (docs/testing.md, "A test that calls t.Parallel()").
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")
@@ -584,8 +585,9 @@ func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 // what the earlier call answered. The write stays open to the end of the row, so a whoami that
 // waited on it would never answer.
 func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
-	// No t.Parallel: this test bounds how long whoami takes (500 ms) while a write of its own
-	// database is open, which every test running beside it would spend the pod's two cores on.
+	// No t.Parallel: the write appendOutOfOrder leaves open holds a transaction id to the end of the
+	// row, which holds back the safe horizon of every test beside it that reads the event feed
+	// (docs/testing.md, "A test that calls t.Parallel()").
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")
