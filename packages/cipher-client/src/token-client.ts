@@ -65,6 +65,7 @@ import {
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
   HEADER_DPOP_HOLDER,
+  SCOPE_READ,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
@@ -76,6 +77,10 @@ import {
  * token for an hour or less.
  */
 export const DEFAULT_RENEW_BEFORE_MS = 5 * 60_000;
+
+/** The broker writes `expires_in` in whole seconds, truncated, so a read token's computed expiry
+ *  can fall up to this much before that of the access token it was traded from. */
+export const EXPIRES_IN_STEP_MS = 1_000;
 
 /** One of the broker's access tokens as this client holds it. The five members here are the whole
  *  of what a client reads out of an answer, as `testdata/wire.json`'s `expect.token` names them. */
@@ -233,10 +238,10 @@ export interface BrokerTokenClientOptions {
   readonly asOf?: string | undefined;
   /**
    * The key the minted token is bound to, where it is not {@link key}: a read trade whose proof
-   * key holds a launcher credential, as a person's box key does, sends a second proof of the same
-   * request signed with this key ({@link HEADER_DPOP_HOLDER}), and the broker binds the token to
-   * it. {@link BrokerTokenClient.key} is then this key, so every proof presented beside the token
-   * is signed with it, and the box key signs the trade alone.
+   * key holds a launcher credential, as a person's box key and a device login's key do, sends a
+   * second proof of the same request signed with this key ({@link HEADER_DPOP_HOLDER}), and the
+   * broker binds the token to it. {@link BrokerTokenClient.key} is then this key, so every proof
+   * presented beside the token is signed with it, and {@link key} signs the trade alone.
    */
   readonly holderKey?: DpopKey | undefined;
   /** Overrides {@link DEFAULT_RENEW_BEFORE_MS}. Only a test shortens it. */
@@ -798,11 +803,22 @@ export class BrokerTokenClient {
    * One RFC 8693 exchange of this moment's subject token: through the source's own `spend`
    * where it has one, so a token another process can end stays good until the exchange settles
    * (a device login's), and otherwise of the token the source reads (`#exchange`).
+   *
+   * A read trade asks `spend` for a subject token with at least this client's renewal window
+   * left, and {@link EXPIRES_IN_STEP_MS} more: the broker ends a read token no later than its
+   * subject and writes its life in whole seconds, so one traded from a subject with less left
+   * would land inside its window and be traded again at the next call. The cost of that second:
+   * a refresh at this bound can end another process's read token of the same subject up to a
+   * second before that process renews it, which that process cures by dropping the token at
+   * Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE` and trading again (`brokerCredential`,
+   * `packages/envoy-client/src/broker-credential.ts`).
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const source = this.#subject;
     if (source.spend !== undefined) {
-      return await source.spend((subject) => this.#exchange(subject, signal), signal);
+      const leastLifeMs =
+        this.#scope === SCOPE_READ ? this.#renewBeforeMs + EXPIRES_IN_STEP_MS : undefined;
+      return await source.spend((subject) => this.#exchange(subject, signal), signal, leastLifeMs);
     }
     return await this.#exchange(await source.read(signal), signal);
   }

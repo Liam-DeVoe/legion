@@ -49,8 +49,8 @@ export const FORM_AS_OF = "as_of";
 
 /** The header of a read trade's second proof (`oauthwire.HeaderDPoPHolder`): a DPoP proof of the
  *  same request signed with a key made for the token's holder, which the broker binds the token
- *  to in place of the DPoP proof's key. A person's read trade sends it, since the box key it
- *  proves the sign-in with signs no read token. */
+ *  to in place of the DPoP proof's key. A person's read trade and a device login's send it, since
+ *  the key each proves its trade with, the box key or the login's key, signs no read token. */
 export const HEADER_DPOP_HOLDER = "DPoP-Holder";
 
 /** The `subject_token_type` a pod presents its projected Kubernetes service-account token under. */

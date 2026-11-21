@@ -31,11 +31,12 @@
 // spend one refresh token, and none may refresh while another is still trading the access token
 // that refresh would end. Each trade therefore runs under the login's lock
 // (`withDeviceLoginLock`, whose protocol `device-login-lock.ts` holds). Under it a process reads
-// the file, refreshes where the access token kept there has under a minute left or the broker
-// refused it (a revoke ends a login before its token lapses), keeps what the refresh answered,
-// and trades; a process whose lock is no longer its own refreshes and keeps nothing. The access
-// token is kept in the file for the same reason: every `dispatch` command is a process of its
-// own, and a refresh for each would rotate the login's refresh token at every command.
+// the file, refreshes where the access token kept there has under a minute left (a read trade
+// asks for more, `DeviceLoginIdentity.spend`) or the broker refused it (a revoke ends a login
+// before its token lapses), keeps what the refresh answered, and trades; a process whose lock is
+// no longer its own refreshes and keeps nothing. The access token is kept in the file for the
+// same reason: every `dispatch` command is a process of its own, and a refresh for each would
+// rotate the login's refresh token at every command.
 
 import { generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
@@ -541,7 +542,7 @@ export interface DeviceLoginIdentityOptions {
  * (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`): the access token the login holds, presented
  * under RFC 8693's `access_token` type with no actor, by a client that proves the login's own key
  * ({@link key}). Every trade spends it under the login's lock ({@link spend}), refreshing first
- * where the access token kept in the file has under a minute left.
+ * where the access token kept in the file has under a minute left, or less than the trade asks.
  */
 export class DeviceLoginIdentity implements TokenSource {
   readonly #path: string;
@@ -592,10 +593,19 @@ export class DeviceLoginIdentity implements TokenSource {
    * at another broker than this identity's, or a login of another key than the one this process
    * proves (a `dispatch login --device` since it started), each naming what cures it.
    *
-   * An access token with under a minute left is refreshed first ({@link refreshDeviceLogin}), and
-   * the login it answers is kept before `trade` runs. A kept access token the broker refuses as one
-   * it no longer honours (`BrokerRefusedError.subjectNotHonoured`) is refreshed at once and traded
-   * once more: a revoke ends a login before its token's expiry, and only the refresh tells that, as
+   * An access token with under a minute left, or under `leastLifeMs` where that is more, is
+   * refreshed first ({@link refreshDeviceLogin}), and the login it answers is kept before `trade`
+   * runs. A read trade passes its client's renewal window and one second more as `leastLifeMs`
+   * (`EXPIRES_IN_STEP_MS`): the broker ends a read token no later than the access token it was
+   * traded from and writes its life in whole seconds, so one traded from an access token with
+   * less left would start inside that window and be traded again at the next call. The cost of
+   * that second: a refresh at this bound can end another process's read token of that access
+   * token up to a second before that process renews it, which that process cures by dropping the
+   * token at Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE` and trading again.
+   *
+   * A kept access token the broker refuses as one it no longer honours
+   * (`BrokerRefusedError.subjectNotHonoured`) is refreshed at once and traded once more: a revoke
+   * ends a login before its token's expiry, and only the refresh tells that, as
    * `DeviceLoginEndedError`, which names {@link DEVICE_LOGIN_COMMAND}. A refresh is made only while
    * the lock is still this process's (`refreshDeviceLogin`'s `held`).
    *
@@ -608,7 +618,11 @@ export class DeviceLoginIdentity implements TokenSource {
    * `signal` ends the wait for the lock, as `LockHeldError`, which names the lock, since nothing
    * was sent. A refresh does not run on it: it waits on deadlines of its own.
    */
-  async spend<T>(trade: (subject: SubjectToken) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  async spend<T>(
+    trade: (subject: SubjectToken) => Promise<T>,
+    signal?: AbortSignal,
+    leastLifeMs?: number
+  ): Promise<T> {
     const { thumbprint } = await this.#loaded();
     return await withDeviceLoginLock(
       this.#path,
@@ -627,7 +641,8 @@ export class DeviceLoginIdentity implements TokenSource {
         const refresh = (): Promise<DeviceLogin> =>
           refreshDeviceLogin(this.#path, login, { describe: this.describe(), held });
         const expires = login.accessExpiresAt?.getTime() ?? 0;
-        let refreshed = login.accessToken === "" || expires - Date.now() < ACCESS_MARGIN_MS;
+        const least = Math.max(ACCESS_MARGIN_MS, leastLifeMs ?? 0);
+        let refreshed = login.accessToken === "" || expires - Date.now() < least;
         if (refreshed) login = await refresh();
         // At most two trades and one refresh: a refused token is refreshed once, unless it was
         // just refreshed. Each refusal is read the same way: after a lost lock it is retryable.

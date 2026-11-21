@@ -280,14 +280,6 @@ export interface ReadTrade {
  * removed by nothing. The machine's own launcher credential is `agent-secrets`' and the
  * helper's, which ask for it.
  *
- * Where `read` is given, the trade asks for the scope read ({@link SCOPE_READ}) and the cut `read`
- * names: the token keeps the identity the same trade would have had, and only reads. A person's
- * read trade still sends no `launcher_credential`, which the broker reads as declined for a read
- * trade, and it makes a key of its own for the client, which it sends as the holder key
- * (`holderKey`): the box key proves the sign-in and signs the trade alone, and the token is bound
- * to the holder key, which signs every proof presented beside it. The machine's own client already
- * proves a key this process made, which holds no launcher credential, and needs no holder key.
- *
  * A device login ({@link IDENTITY_DEVICE_LOGIN}) is none of those: it is a person's own
  * credential on their own machine, approved by them in Dispatch, so no sign-in is chosen beside
  * it and there is no actor. The login's access token is the subject (`device-login.ts`), the key
@@ -295,14 +287,21 @@ export interface ReadTrade {
  * {@link tradeSession}'s, else {@link deviceLoginSessionName}'s. It names the projects
  * {@link PROJECTS_VAR} lists, which the broker names only when Dispatch says the login's person
  * may see each one, and sends no launcher credential parameter: a trade of a machine login's
- * token mints no launcher credential. Where `read` is given, it asks for the scope read and the
- * cut too, and sends a holder key of its own (`holderKey`), as a person's read trade does: the
- * login's key signs the machine login's launcher proofs, and a key that signs launcher proofs is
- * bound to no read token. A machine with no login yet, or whose login file cannot be read, is
- * an error naming `dispatch login --device`. A process that turns the person trade off
+ * token mints no launcher credential. A machine with no login yet, or whose login file cannot be
+ * read, is an error naming `dispatch login --device`. A process that turns the person trade off
  * ({@link PERSON_TRADE_VAR} set to `off`) is refused one: the broker mints its trade as the
  * login's person, so a controller would act on Dispatch and Envoy in its operator's name, and
  * there is no machine identity to trade in its place.
+ *
+ * Where `read` is given, each of the three clients asks for the scope read ({@link SCOPE_READ})
+ * and the cut `read` names: the token keeps the identity the same trade would have had, and only
+ * reads. The person's client and the device login's prove a key that signs launcher proofs, the
+ * box key or the login's key, and the broker binds no read token to such a key, so each makes a
+ * key of its own for the client and sends it as the holder key (`holderKey`): the token is bound
+ * to that key, which signs every proof presented beside it, and the proof key signs the trade
+ * alone. Neither sends `launcher_credential`, which the broker reads as declined for a read
+ * trade. The machine's own client already proves a key this process made, which holds no
+ * launcher credential, and needs no holder key.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,
@@ -316,6 +315,10 @@ export async function brokerTokenClient(
   // into the variable.
   if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
   const narrowed = read === undefined ? {} : { scope: SCOPE_READ, asOf: read.asOf };
+  // A read trade of a client whose key signs launcher proofs, the person's or the device login's,
+  // with a holder key made for that client alone.
+  const heldApart = async () =>
+    read === undefined ? {} : { ...narrowed, holderKey: await newDpopKey() };
   if (machine instanceof DeviceLoginIdentity) {
     if (personTradeOff(env)) {
       throw new Error(
@@ -328,8 +331,7 @@ export async function brokerTokenClient(
       subject: machine,
       session: tradeSession(env, own) || deviceLoginSessionName(await machine.thumbprint()),
       projects: tradeProjects(env),
-      ...narrowed,
-      ...(read === undefined ? {} : { holderKey: await newDpopKey() }),
+      ...(await heldApart()),
     });
     return { client, signIn: undefined };
   }
@@ -358,8 +360,7 @@ export async function brokerTokenClient(
     actor: machine,
     session: own.trim() || signInSessionName(record),
     projects: tradeProjects(env),
-    ...narrowed,
-    ...(read === undefined ? {} : { holderKey: await newDpopKey() }),
+    ...(await heldApart()),
   });
   return { client, signIn: { person: record.person, thumbprint: record.thumbprint } };
 }

@@ -2,13 +2,15 @@
 //
 // What a deployment's variables name, and what a deployment that names half of one is told.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { calculateJwkThumbprint, type JWK } from "jose";
 import {
   type DeviceLoginBroker,
+  STAND_IN_CREDENTIAL,
   stubDeviceLoginBroker,
   writeDeviceLoginFile,
 } from "../../test/device-logins";
@@ -29,11 +31,17 @@ import {
   tradeSession,
 } from "../environment";
 import { PERSON_TRADE_VAR } from "../signins";
+import { DEFAULT_RENEW_BEFORE_MS } from "../token-client";
 import {
+  FORM_AS_OF,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
+  FORM_SCOPE,
+  GRANT_TYPE_REFRESH,
+  SCOPE_READ,
 } from "../wire";
+import { type StubAnswer, type StubTrade, stubBroker } from "./stub";
 
 const makeDirectory = temporaryDirectories("broker-environment");
 
@@ -55,6 +63,73 @@ function broker(): DeviceLoginBroker {
 /** A device login file's path in a directory of this test's own. */
 function loginPath(): string {
   return join(makeDirectory(), "legion", "device-login.json");
+}
+
+/** How long a login access token the timed stand-in below mints lives: the broker's default
+ *  `BROKER_ACCESS_TOKEN_SECONDS`. */
+const LOGIN_SECONDS = 900;
+
+/** One exchange the timed stand-in answered: when, of which subject, whether it asked for read,
+ *  and the life it answered. */
+interface TimedTrade {
+  readonly at: number;
+  readonly subject: string;
+  readonly read: boolean;
+  readonly seconds: number;
+}
+
+/**
+ * A secrets broker serving a device login's refresh grant and its exchange on the process's clock,
+ * which a row moves (`setSystemTime`), stopped after the test. A refresh answers a new login access
+ * token of {@link LOGIN_SECONDS}. A read trade's token lives no longer than the access token
+ * presented as its subject, as the broker's `clampNarrowed` bounds it, in whole seconds,
+ * truncated, as the broker writes `expires_in`; a plain trade's is not bound. `lapses` holds when
+ * each login access token lapses, and a row adds there the one its login file keeps.
+ */
+function timedLoginBroker(): {
+  readonly url: string;
+  readonly lapses: Map<string, number>;
+  readonly trades: TimedTrade[];
+  refreshes(): number;
+} {
+  const lapses = new Map<string, number>();
+  const trades: TimedTrade[] = [];
+  let refreshes = 0;
+  const answer = (request: StubTrade): StubAnswer => {
+    const now = Date.now();
+    if (request.form.get("grant_type") === GRANT_TYPE_REFRESH) {
+      refreshes += 1;
+      const access = fixtureSecret("login");
+      lapses.set(access, now + LOGIN_SECONDS * 1000);
+      return {
+        body: {
+          access_token: access,
+          token_type: "DPoP",
+          expires_in: LOGIN_SECONDS,
+          refresh_token: fixtureSecret("refresh"),
+          scope: "machine",
+          credential_id: STAND_IN_CREDENTIAL,
+          credential_expires_at: new Date(now + 30 * 86_400_000).toISOString(),
+        },
+      };
+    }
+    const subject = request.form.get("subject_token") ?? "";
+    const read = request.form.get(FORM_SCOPE) === SCOPE_READ;
+    const left = Math.floor(((lapses.get(subject) ?? now) - now) / 1000);
+    const seconds = read ? Math.min(LOGIN_SECONDS, left) : LOGIN_SECONDS;
+    trades.push({ at: now, subject, read, seconds });
+    return {
+      body: {
+        access_token: fixtureSecret("traded"),
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: seconds,
+      },
+    };
+  };
+  const stub = stubBroker(answer);
+  stops.push(stub.stop);
+  return { url: stub.url, lapses, trades, refreshes: () => refreshes };
 }
 
 test("a machine that names no identity trades nothing, and that is no error", async () => {
@@ -294,6 +369,119 @@ test("a caller acting as no session trades under the session variable, else the 
   expect(deviceLoginSessionName("abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFG")).toBe(
     "device-login-abcdefghijkl"
   );
+});
+
+test("a device login's read trade asks for read and its cut, proved with the login's key beside a holder key of its own", async () => {
+  // The login's key signs the machine login's launcher proofs, and the broker binds no read token
+  // to a key that signs them. The login's live access token is spent as it is, so only the trades
+  // reach this stand-in, which records the holder proof (`DPoP-Holder`).
+  const stub = stubBroker(() => ({
+    body: {
+      access_token: fixtureSecret("traded"),
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      token_type: "DPoP",
+      expires_in: 600,
+    },
+  }));
+  stops.push(stub.stop);
+  const path = loginPath();
+  const written = await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const env = {
+    [BROKER_URL_VAR]: stub.url,
+    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+    [DEVICE_LOGIN_FILE_VAR]: path,
+  };
+  const cut = "2026-11-19T08:30:00.123456Z";
+  const read = await brokerTokenClient(env, "ses-laptop-1", { asOf: cut });
+  const plain = await brokerTokenClient(env, "ses-laptop-1");
+  if (read === undefined || plain === undefined) {
+    throw new Error("the factory made no client for a device login");
+  }
+  await read.client.token();
+  await plain.client.token();
+  read.client.close();
+  plain.client.close();
+
+  expect(stub.trades).toHaveLength(2);
+  const [readTrade, plainTrade] = stub.trades;
+  expect(readTrade?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(readTrade?.form.get(FORM_AS_OF)).toBe(cut);
+  expect(readTrade?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
+  // Proved with the login's key, which the broker binds a trade of its token to, and bound to a
+  // holder key that is not it, which signs every proof a caller presents beside the token.
+  expect(await calculateJwkThumbprint(readTrade?.proofHeader.jwk as JWK)).toBe(written.thumbprint);
+  const holderJwk = readTrade?.holderHeader.jwk as JWK;
+  expect(await calculateJwkThumbprint(holderJwk)).not.toBe(written.thumbprint);
+  expect(read.client.key.publicJwk).toEqual(holderJwk);
+  // Asked for no read, the same login sends no holder proof.
+  expect(plainTrade?.holderHeader).toEqual({});
+});
+
+// The broker ends a device login's read token no later than the login access token it was traded
+// from, so a read token traded from an access token with less than the renewal window left lands
+// inside that window, and the next call trades again. Each row calls `token()` at every step of a
+// clock moved across three login cycles; the 10 s step reaches a renewal with exactly 300 s of the
+// login's access token left, which a bound of the window alone does not refresh.
+test.each([
+  ["7 s", 7_000],
+  ["10 s", 10_000],
+])("a device login's read client trades once per renewal, the clock moving %s a call", async (_step, step) => {
+  const stand = timedLoginBroker();
+  const start = Date.now();
+  setSystemTime(new Date(start));
+  try {
+    const path = loginPath();
+    const kept = fixtureSecret("access");
+    stand.lapses.set(kept, start + 200_000);
+    await writeDeviceLoginFile(path, stand.url, {
+      access_token: kept,
+      access_expires_at: new Date(start + 200_000).toISOString(),
+    });
+    const env = {
+      [BROKER_URL_VAR]: stand.url,
+      [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+      [DEVICE_LOGIN_FILE_VAR]: path,
+    };
+    // A plain trade still refreshes only under a minute: the kept token's 200 s are traded as
+    // they are.
+    const plain = await brokerTokenClient(env, "ses-laptop-1");
+    await plain?.client.token();
+    plain?.client.close();
+    expect(stand.refreshes()).toBe(0);
+
+    const read = await brokerTokenClient(env, "ses-laptop-1", {});
+    if (read === undefined) throw new Error("the factory made no client for a device login");
+    const span = 3 * LOGIN_SECONDS * 1000;
+    for (let now = start; now <= start + span; now += step) {
+      setSystemTime(new Date(now));
+      await read.client.token();
+    }
+    read.client.close();
+
+    // A read token traded from a fresh login token is renewed 600 s on, so 2,700 s hold five
+    // trades, each after a refresh: the kept token's 200 s, and the 300 s a login token has left
+    // at each renewal, are under the window and its second.
+    const reads = stand.trades.filter((trade) => trade.read);
+    expect(reads.length).toBe(5);
+    expect(stand.refreshes()).toBe(5);
+    // Every read token lands outside its renewal window, and the next read trade comes only once
+    // the clock has reached that window: one trade per renewal.
+    for (const [at, trade] of reads.entries()) {
+      const renews = trade.at + trade.seconds * 1000 - DEFAULT_RENEW_BEFORE_MS;
+      expect(renews, `read trade ${at} lands inside its renewal window`).toBeGreaterThan(trade.at);
+      const next = reads[at + 1];
+      if (next !== undefined) {
+        expect(next.at, `read trade ${at + 1} comes before ${at}'s renewal`).toBeGreaterThanOrEqual(
+          renews
+        );
+      }
+    }
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("a device login takes an http broker on this machine's loopback alone", async () => {

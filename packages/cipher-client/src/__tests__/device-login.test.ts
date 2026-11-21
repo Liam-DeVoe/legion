@@ -49,15 +49,7 @@ import {
   DeviceLoginEndedError,
   isFinalRefusal,
 } from "../token-errors";
-import {
-  FORM_AS_OF,
-  FORM_LAUNCHER_CREDENTIAL,
-  FORM_SCOPE,
-  POD_SESSION_NOT_REGISTERED,
-  SCOPE_READ,
-  TOKEN_PATH,
-} from "../wire";
-import { stubBroker } from "./stub";
+import { POD_SESSION_NOT_REGISTERED } from "../wire";
 
 const PERSON = "ada@example.com";
 const HOST = "adas-laptop.local";
@@ -443,78 +435,6 @@ test("the identity trades the login's access token with no actor, proved with th
   // The library binds a trade of a machine login's token to that token's key.
   expect(trade.proofThumbprint).toBe(written.thumbprint);
   expect(await calculateJwkThumbprint(made.client.key.publicJwk)).toBe(written.thumbprint);
-});
-
-test("a device login's read trade asks for read and its cut, proved with the login's key beside a holder proof of a key of its own", async () => {
-  // The login's key signs the machine login's launcher proofs, and the broker binds no read token
-  // to a key that signs them, so the read token is bound to a holder key the client makes. The
-  // stand-in records the holder proof (`DPoP-Holder`), which the device login's stand-in does not;
-  // the login's live access token is spent as it is, so nothing but the trades reaches it.
-  const stub = stubBroker(() => ({
-    body: {
-      access_token: fixtureSecret("traded"),
-      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-      token_type: "DPoP",
-      expires_in: 600,
-    },
-  }));
-  stops.push(stub.stop);
-  const path = loginPath();
-  const written = await writeDeviceLoginFile(path, stub.url, {
-    access_token: fixtureSecret("access"),
-    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
-  });
-  const env = {
-    [BROKER_URL_VAR]: stub.url,
-    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
-    [DEVICE_LOGIN_FILE_VAR]: path,
-  };
-  const cut = "2026-11-19T08:30:00.123456Z";
-  const read = await brokerTokenClient(env, "ses-laptop-1", { asOf: cut });
-  const plain = await brokerTokenClient(env, "ses-laptop-1");
-  if (read === undefined || plain === undefined) {
-    throw new Error("the factory made no client for a device login");
-  }
-  const token = await read.client.token();
-  await plain.client.token();
-  read.client.close();
-  plain.client.close();
-
-  expect(stub.trades).toHaveLength(2);
-  const [readTrade, plainTrade] = stub.trades;
-  expect(readTrade?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
-  expect(readTrade?.form.get(FORM_AS_OF)).toBe(cut);
-  expect(readTrade?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
-  // The trade is proved with the login's key, which the broker binds a trade of its token to.
-  expect(await calculateJwkThumbprint(readTrade?.proofHeader.jwk as JWK)).toBe(written.thumbprint);
-  // The holder proof is a DPoP proof of the same request, by another P-256 key.
-  expect(readTrade?.holderHeader).toMatchObject({ typ: "dpop+jwt", alg: "ES256" });
-  const holderJwk = readTrade?.holderHeader.jwk as JWK;
-  expect(holderJwk).toMatchObject({ kty: "EC", crv: "P-256" });
-  expect(Object.keys(holderJwk).sort()).toEqual(["crv", "kty", "x", "y"]);
-  expect(await calculateJwkThumbprint(holderJwk)).not.toBe(written.thumbprint);
-  expect(readTrade?.holderClaims).toMatchObject({ htm: "POST", htu: stub.url + TOKEN_PATH });
-  expect(readTrade?.proofClaims).toMatchObject({ htm: "POST", htu: stub.url + TOKEN_PATH });
-  expect(typeof readTrade?.holderClaims.jti).toBe("string");
-  expect(readTrade?.holderClaims.jti).not.toBe(readTrade?.proofClaims.jti);
-
-  // The key a caller signs Dispatch's proofs with is the holder key, never the login's.
-  expect(read.client.key.publicJwk).toEqual(holderJwk);
-  const proof = await read.client.key.proof({
-    method: "GET",
-    url: "http://dispatch.test/api/v1/whoami",
-    accessToken: token.accessToken,
-  });
-  const verified = await compactVerify(proof, EmbeddedJWK);
-  expect(verified.protectedHeader.jwk).toEqual(holderJwk);
-
-  // Asked for no read, the same login sends no scope, no cut and no holder proof, and its token is
-  // bound to the login's key.
-  expect(plainTrade?.form.has(FORM_SCOPE)).toBe(false);
-  expect(plainTrade?.form.has(FORM_AS_OF)).toBe(false);
-  expect(plainTrade?.holderHeader).toEqual({});
-  expect(await calculateJwkThumbprint(plainTrade?.proofHeader.jwk as JWK)).toBe(written.thumbprint);
-  expect(await calculateJwkThumbprint(plain.client.key.publicJwk)).toBe(written.thumbprint);
 });
 
 test("a login with no live access token is refreshed first, under its key, keeping the rotated refresh token", async () => {

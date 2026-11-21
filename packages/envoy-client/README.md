@@ -966,8 +966,7 @@ the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credentia
 its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
 directory lets them write to it, or when another user owns either. A trade presents that access
 token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
-no actor, and every proof is signed with the login's key, but for a read trade's: its token is bound
-to a holder key of its own, which signs every proof Dispatch sees. A login made at another broker
+no actor, and every proof of a trade is signed with the login's key. A login made at another broker
 than `AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
 the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists, and
 its session is the caller's own, else `AGENT_SECRETS_SESSION`, else `device-login-<thumbprint>`, the
