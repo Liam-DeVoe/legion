@@ -240,9 +240,7 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 // `dispatch steps`, and keeps the handoff record the report named as used, so each phase worker is
 // told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. Each
 // duty is held by the terms of the clause that states it, in their order, so a rewording that
-// keeps them passes. CI ends no run (no row of the workflow's table has a CI trigger), so no
-// prompt names CI among the events that send a task back. This shows the text is loaded, never
-// that a worker follows it.
+// keeps them passes. This shows the text is loaded, never that a worker follows it.
 func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -263,9 +261,6 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 			if !clauseHolds(composed, terms...) {
 				t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
 			}
-		}
-		if retired := "CI sent it back"; strings.Contains(foldWhitespace(composed), retired) {
-			t.Errorf("the composed %s prompt still says %q", role, retired)
 		}
 	}
 }

@@ -532,7 +532,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // its stopped task ends the stop: a task whose work ran starts again at its first step
 // (restartTask), and a task stopped before its first step went out waits for that step again
 // (waitForFirstStep). A todo on a root held for the issues beneath it leaves the hold, since the
-// last of them to leave starts the retro, keeps the observation, and logs why.
+// last of them to leave starts the retro, keeps the observation, and logs why. It queues the status
+// the record keeps, the last step's, over the todo, as the release of any other hold queues the
+// status of the phase it ends in: every later status write of the issue is keyed on the record's
+// status (Engine.status), the retro's that ends the hold among them (startHeldRetro), and finds the
+// board at it only once this row has put it back.
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
@@ -551,7 +555,10 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
 			"issue", issue.Key, "beneath", beneath)
-		return e.WriteIssue(ctx, tx, released)
+		if err := e.WriteIssue(ctx, tx, released); err != nil {
+			return err
+		}
+		return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(issue.Status, fact.Status, ""))
 	default:
 		if !w.Place.Started() {
 			return e.waitForFirstStep(ctx, tx, released, w, restartReason)
@@ -878,17 +885,22 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
 // completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
 // there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
-// while no role was named for that phase. A parent held for its children (record.HeldForChildren)
-// is the one hold read where it stands, at its retro (record.StandsAt): the pass of its last step
-// moved it there in place of the retro, as an approval moves an issue into accepting, so the
-// report of the run that pass ended is taken as it is there. A task with plan rows takes it the
-// same way, whatever step it stands at now; the test of the run itself is ranUnreported.
+// while no role was named for that phase. The two holds of an owner's plan are read where their
+// issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
+// as it is without the hold. A parent held for its children stands at its retro: the pass of its
+// last step moved it there in place of the retro, as an approval moves an issue into accepting, so
+// the report of the run that pass ended is taken as it is there. A task its owner stopped stands at
+// the step the stop ended: the report of a run that left that phase earlier - a review the review
+// event moved back to implementing before the stop - is taken as it is there, and the report of the
+// role that works the phase it stands at is none of a phase that role has left, so it is answered
+// as the run the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever
+// step it stands at now; the test of the run itself is ranUnreported.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	at := issue.Phase
-	if record.HeldForChildren(issue) {
+	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
 		at = record.StandsAt(issue)
 	}
-	if at == phase.Admitted || RoleFor(at) == "" || phase.LeftBy(role, at) == "" {
+	if works := RoleFor(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
 		return false, nil
 	}
 	return e.ranUnreported(ctx, tx, issue, role, token)
@@ -2409,8 +2421,7 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 // (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
 // retro, which starts once none of them is open beneath it (releaseHeldParents), and keeps the last step's
 // handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
-// and the hold. No role is told that its phase ended (phaseEnded): only a head that conflicts with
-// its base sends that, and its move goes back to implementing, never into the retro.
+// and the hold.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)

@@ -51,9 +51,10 @@ func retroHeldNotice(parent string, beneath []string) record.Notice {
 // recordObservation), the parent itself handed over as a root of its own with its hold and its
 // plan once its old root's linger closes (admit's readmit), and the promotion or the reopen of a
 // root, which makes a tree that ran nothing run again. So nothing can leave a parent held with
-// nothing open beneath it in a tree that runs, and the hold's refusal of a retry always names an
-// issue still open beneath it (RetryOfHeldParent). Each tree is read once, and a fact that wrote
-// no issue reads nothing.
+// nothing open beneath it in a tree that runs: such a parent stands in a tree that runs nothing,
+// whose root lingers or waits in the line, and the hold's refusal of a retry names that wait
+// (planHoldRefusal) where it names no issue still open beneath it. Each tree is read once, and a
+// fact that wrote no issue reads nothing.
 func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []string) error {
 	var trees []string
 	for _, key := range written {

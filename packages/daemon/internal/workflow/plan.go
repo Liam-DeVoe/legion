@@ -238,6 +238,13 @@ func planHold(issue record.Issue, stored bool) bool {
 // from and an escalation would overwrite the reason, so each is refused with what starts the work
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
 // for its children the last of them to leave (RetryOfHeldParent, naming each one still open).
+//
+// A parent held for its children with none of them open waits for its tree alone: the settle of
+// every fact releases such a parent in a tree that runs (releaseHeldParents), so its tree runs
+// nothing, and the answer says why (RetryOfHeldParentUntilTreeRuns). Either its root lingers after
+// its close, or its root is one a re-admission put in the line, a hand-over among them, since every
+// leave of a root arms its linger (beginLinger) and only a re-admission clears it: such a root
+// waits in the line for the promotion that opens its tree (record.TreeRuns, record.QueuedRoot).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
 	if issue.Phase != phase.Held || issue.Hold == nil {
 		return nil, nil
@@ -251,7 +258,14 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 		if err != nil {
 			return nil, err
 		}
-		return intake.RetryOfHeldParent(issue.Key, beneath), nil
+		if len(beneath) > 0 {
+			return intake.RetryOfHeldParent(issue.Key, beneath), nil
+		}
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return nil, err
+		}
+		return intake.RetryOfHeldParentUntilTreeRuns(issue.Key, issue.Tree, lingers), nil
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
 }
@@ -276,8 +290,10 @@ const (
 
 // pastReportOf is the run that role's completion of reported, a phase issue no longer stands in,
 // reports. A held issue stands where no role works, so no role has left its phase there
-// (leftItsPhase), but a parent held for its children, which stands at its retro; and a run of a
-// left phase is never also the run a stop ended, since a stop holds its issue for its task.
+// (leftItsPhase), but a hold of an owner's plan, which stands where its issue stands: a parent held
+// for its children at its retro, and a stopped task at the step the stop ended, whose own role's
+// report is the run the stop ended and is no left phase's, so a run of a left phase is never also
+// that run.
 func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
 	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
 	switch {

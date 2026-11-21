@@ -104,6 +104,48 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		}
 	})
 
+	// The owner stops the task at the step a review's request for changes sent it back to, before
+	// the reviewer's report of the run that request ended arrives. That run is one an event ended
+	// before the stop, so its report is taken as the row above takes it: recorded on the reviewer's
+	// row, moving nothing, the issue still held for its stopped task. The report of the step the
+	// stop ended, the implementer's, is still refused as late.
+	t.Run("a review that requested changes, then the owner's stop at the step it went back to", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+		reviewRequestsChanges(t, pool, engine, root.Key)
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		implementer := seedPhaseWorker(t, pool, root.Key, claim.RoleImplementer, "")
+		apply := applyFacts(t, pool, engine)
+		if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+		}
+		stopped := record.Hold{From: phase.Implementing, Reason: record.HoldTaskStopped}
+		if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped {
+			t.Fatalf("%s after the stop stands in %s with hold %+v, want held %+v", root.Key, held.Phase, held.Hold, stopped)
+		}
+
+		if result := apply("late", reportOf(claim.RoleReviewer, reviewer, "review-1")); result.Refusal != nil {
+			t.Fatalf("the reviewer's report of the run the changes request ended, after the stop = %+v, want it taken", result.Refusal)
+		}
+		if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped {
+			t.Fatalf("the taken report moved %s to %s with hold %+v, want it held %+v still", root.Key, held.Phase, held.Hold, stopped)
+		}
+		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.HandoffRecord != "review-1" || row.LastHandoff != "review-1" {
+			t.Fatalf("the reviewer's row = %+v, want the taken report recorded on it", row)
+		}
+
+		before := reportedOf(t, pool, engine, root.Key, claim.RoleImplementer, true)
+		assertLateReport(t, pool, engine, claim.RoleImplementer, apply("late-implementer", reportOf(claim.RoleImplementer, implementer, "implement-2")), "TASK_STOPPED",
+			"task a of LEGION-208 was stopped by its owner. Step 1 (implementer) has ended. This report moved nothing. dispatch steps --issue LEGION-208 shows how that run ended."+usedTail,
+			"implement-2", before)
+	})
+
 	t.Run("the owner's stop ended the tester's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
