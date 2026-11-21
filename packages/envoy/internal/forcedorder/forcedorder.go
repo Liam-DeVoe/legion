@@ -67,7 +67,10 @@ func Start(t *testing.T, topo Topology) *Servers {
 }
 
 // Hosts are the servers that store consumer on stream: the lone server, or the members its cluster
-// information names, its leader and its replicas, read on conn.
+// information names, its leader and its replicas, read on conn. A consumer created a moment ago can
+// answer its info before its replica group has formed, with no cluster information or no leader,
+// so Hosts reads it again until the group names a leader and every replica the topology stores,
+// for up to 30 s.
 func (s *Servers) Hosts(t *testing.T, conn *natsgo.Conn, stream, consumer string) []*testnats.Server {
 	t.Helper()
 	if s.Cluster == nil {
@@ -77,9 +80,28 @@ func (s *Servers) Hosts(t *testing.T, conn *natsgo.Conn, stream, consumer string
 	if err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		hosts, why := s.hostsOf(js, stream, consumer)
+		if why == "" {
+			return hosts
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's replica group did not form within 30 s: %s", consumer, why)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// hostsOf is one read of Hosts: the members consumer's cluster information names, or why it names
+// no leader, a member the cluster does not have, or fewer members than the topology stores.
+func (s *Servers) hostsOf(js natsgo.JetStreamContext, stream, consumer string) ([]*testnats.Server, string) {
 	info, err := js.ConsumerInfo(stream, consumer)
-	if err != nil || info.Cluster == nil {
-		t.Fatalf("read %s's cluster information: %+v, %v", consumer, info, err)
+	switch {
+	case err != nil:
+		return nil, err.Error()
+	case info.Cluster == nil || info.Cluster.Leader == "":
+		return nil, "its info names no leader yet"
 	}
 	names := []string{info.Cluster.Leader}
 	for _, peer := range info.Cluster.Replicas {
@@ -89,14 +111,14 @@ func (s *Servers) Hosts(t *testing.T, conn *natsgo.Conn, stream, consumer string
 	for _, name := range names {
 		i := s.Cluster.Member(name)
 		if i < 0 {
-			t.Fatalf("%s's host %q is no member of the cluster", consumer, name)
+			return nil, fmt.Sprintf("its host %q is no member of the cluster", name)
 		}
 		hosts = append(hosts, s.Servers[i])
 	}
 	if len(hosts) != s.Topology.Replicas {
-		t.Fatalf("%s is stored on %d members, want %d", consumer, len(hosts), s.Topology.Replicas)
+		return nil, fmt.Sprintf("it names %d members, want %d", len(hosts), s.Topology.Replicas)
 	}
-	return hosts
+	return hosts, ""
 }
 
 // StoredState is consumer's state on stream as srv's o.dat holds it, or nil while there is none or
