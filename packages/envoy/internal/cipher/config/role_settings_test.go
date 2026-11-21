@@ -115,6 +115,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_EXCHANGE_READ_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_WORKFLOWS":        givesNone("a GitHub workflow"),
 	"BROKER_EXCHANGE_RESULT_WORKFLOWS": givesNone("a GitHub workflow's results scope, not a Kubernetes account"),
+	"BROKER_PRIVATE_PROJECTS":          givesNone("project keys"),
 	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE":  givesNone("a file path"),
 
 	// loadNATSCallout's.
