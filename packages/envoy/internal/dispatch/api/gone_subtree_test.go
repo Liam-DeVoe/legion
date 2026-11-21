@@ -17,22 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// storedStateOf is the state the store holds for the node address names, failing where it holds
-// no row of it.
-func storedStateOf(t *testing.T, rig reasoningRig, address string) string {
-	t.Helper()
-	kind, id, ok := decodeNodeAddress(address)
-	if !ok {
-		t.Fatalf("decode the node address %s", address)
-	}
-	var state string
-	if err := rig.database.Pool.QueryRow(context.Background(), `select state from graph_nodes where kind = $1 and id = $2`,
-		refs.StoredKindOf(kind), id).Scan(&state); err != nil {
-		t.Fatalf("read the stored state of %s: %v", address, err)
-	}
-	return state
-}
-
 // A node taken to gone takes its whole part_of subtree with it, transitively and in one write,
 // whatever the kind of each node under it and whoever may see it (the architect's ruling of
 // 2026-11-20 on the spec's R5): a lens invoked on a lens and one invoked on a finding hang under
@@ -83,7 +67,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 		"the finding of bob's author-only lens on it": hidden.Findings[0].Address,
 	}
 	for name, address := range under {
-		if state := storedStateOf(t, rig, address); state != graphstore.StateGone {
+		if state := storedNodeOf(t, rig.database, address).State; state != graphstore.StateGone {
 			t.Errorf("after alice took the lens %s to gone, %s %s is %s, want gone with it", first.Address, name, address, state)
 		}
 	}
@@ -110,7 +94,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 		"the lens on the risk": onRisk.Address, "that lens's finding": onRisk.Findings[0].Address,
 		"the lens on the constraint": onConstraint.Address,
 	} {
-		if state := storedStateOf(t, rig, address); state != graphstore.StateGone {
+		if state := storedNodeOf(t, rig.database, address).State; state != graphstore.StateGone {
 			t.Errorf("after alice took its parent to gone, %s %s is %s, want gone with it", name, address, state)
 		}
 	}
@@ -149,7 +133,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 			t.Errorf("the agent's gone on its own %s %s answers %d %s, want 403 %s naming it: a person alone takes a %s to gone",
 				name, address, refused.Code, refused.Body.String(), codeStateNotPermitted, name)
 		}
-		if state := storedStateOf(t, rig, address); state != graphstore.StateLive {
+		if state := storedNodeOf(t, rig.database, address).State; state != graphstore.StateLive {
 			t.Errorf("after the agent's gone on its own %s %s, it is %s, want the live it held", name, address, state)
 		}
 		if overtaken := asAgent(statePath(rig.issue, address, "state"), map[string]any{"state": graphstore.StateOvertaken}); overtaken.Code != http.StatusOK {
@@ -476,7 +460,7 @@ func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 	if removed := dispatchReferences(t, rig.handler, rig.secondCheck, "alice"); removed.Code != http.StatusNotFound {
 		t.Fatalf("version 2 of the verification document drops k2, yet %s answers %d %s", rig.secondCheck, removed.Code, removed.Body.String())
 	}
-	if state := storedStateOf(t, rig, onBlock.Address); state != graphstore.StateLive {
+	if state := storedNodeOf(t, rig.database, onBlock.Address).State; state != graphstore.StateLive {
 		t.Errorf("the lens %s on the removed block is %s, want live", onBlock.Address, state)
 	}
 	pinned := rig.secondCheck + "@v1"
@@ -503,7 +487,7 @@ func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 		t.Fatalf("commit the retirement: %v", err)
 	}
 	for address, on := range map[string]string{onDocument.Address: document, onNotesBlock.Address: block} {
-		if state := storedStateOf(t, rig, address); state != graphstore.StateLive {
+		if state := storedNodeOf(t, rig.database, address).State; state != graphstore.StateLive {
 			t.Errorf("the lens %s on %s of the retired document is %s, want live", address, on, state)
 		}
 		if read := rig.lenses(address, "alice"); read.Lens == nil || read.Lens.On == nil || *read.Lens.On != on+"@v1" {
@@ -539,25 +523,24 @@ func requireNamedParent(t *testing.T, rig reasoningRig, address, want string, ve
 }
 
 // A finding asked for `project` under a lens its author keeps for themselves is refused 400
-// VISIBILITY_WIDER_THAN_PARENT naming the lens, and nothing is stored, as a risk or a lens asked for
-// `project` under or on such a node is (the ruling of 2026-11-20 07:15Z on the spec's R1): no
-// write is narrowed in silence. A finding asked for no visibility takes its lens's, `author`.
+// VISIBILITY_WIDER_THAN_PARENT naming the finding the write drew and then the lens as the node it
+// cannot stand under, and nothing is stored, as a risk or a lens asked for `project` under or on
+// such a node is (the ruling of 2026-11-20 07:15Z on the spec's R1): no write is narrowed in
+// silence. A finding asked for no visibility takes its lens's, `author`.
 func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	rig := newReasoningRig(t)
 	lens := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	nodes, tuples := rig.counts(refs.BlockNodeKind, graphstore.TuplePartOf)
-	asked := rig.post(nodePath(lens.Address, "findings"), map[string]any{
-		"text": "Every reader would see this.", "visibility": graphstore.VisibilityProject}, "alice")
-	if asked.Code != http.StatusBadRequest || !strings.Contains(asked.Body.String(), "VISIBILITY_WIDER_THAN_PARENT") ||
-		!strings.Contains(asked.Body.String(), lens.Address) {
-		t.Errorf("a finding asked for project under alice's author-only lens %s answers %d %s, want 400 VISIBILITY_WIDER_THAN_PARENT naming the lens",
-			lens.Address, asked.Code, asked.Body.String())
-	}
-	// The refusal names both nodes: the lens, and the finding the write drew under it, whose
-	// address is the lens's own with the finding's block id, `<lens address>#b-<id>`.
-	if !strings.Contains(asked.Body.String(), lens.Address+"#b-") {
-		t.Errorf("a finding asked for project under alice's author-only lens %s answers %d %s, which names no finding %s#b-<id> under it: want the refusal naming both nodes",
-			lens.Address, asked.Code, asked.Body.String(), lens.Address)
+	// The refusal names both nodes, as TestAChildIsNeverWiderThanItsParent holds a risk's and a
+	// lens's: the finding first, whose address is the lens's own with the finding's block id,
+	// `<lens address>#b-<id>`, and the lens where the words name the parent, followed by `, which`,
+	// so words that name the finding in that place name no lens.
+	asked := "a finding asked for project under alice's author-only lens " + lens.Address
+	answer := requireRefused(t, asked, rig.post(nodePath(lens.Address, "findings"), map[string]any{
+		"text": "Every reader would see this.", "visibility": graphstore.VisibilityProject}, "alice"),
+		http.StatusBadRequest, codeVisibilityWiderThanParent, "cannot stand under or on "+lens.Address+", which is reserved for its author")
+	if !strings.HasPrefix(answer.Error, lens.Address+"#b-") {
+		t.Errorf("%s is refused %q, want it to name the finding it drew, %s#b-<id>, first", asked, answer.Error, lens.Address)
 	}
 	if afterNodes, afterTuples := rig.counts(refs.BlockNodeKind, graphstore.TuplePartOf); afterNodes != nodes || afterTuples != tuples {
 		t.Errorf("the refused finding left %d block nodes and %d part_of tuples, want the %d and %d before it", afterNodes, afterTuples, nodes, tuples)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,8 +33,10 @@ import (
 // the test appends (QueueCaused, planPointerCheck). LM and LF then read live, answer their on in
 // GET /api/v1/lenses?on= naming C and record C's row; LX reads live on F and records no row.
 // Alice's removal of A leaves LM, LF and LX live, each answering its on in GET /api/v1/lenses?on=
-// naming the parent it was moved to; her removal of C takes LM and LF gone, each answering 404
-// NOT_FOUND by its own address, and leaves LX live on F.
+// naming the parent it was moved to; her removal of C takes LM and LF gone, each answering GET
+// /api/v1/lenses?on= and GET /api/v1/references?to= by its own address what the same read of a
+// lens nobody wrote answers, 404 NOT_FOUND byte for byte once the id is substituted, and leaves LX
+// live on F.
 func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 	rig := newReasoningRig(t)
 	a := emptyDocument(t, rig.handler, rig.issue, "Notes A.md")
@@ -50,7 +53,7 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 		lens      lensInvoked
 		on, wants string
 	}{{lm, aAddress, a.ID}, {lx, aAddress, a.ID}, {lf, f.Address, ""}} {
-		if got := recordedArtifactID(t, rig, invoked.lens); got != rowWords(invoked.wants) {
+		if got := recordedArtifactID(t, rig.database, invoked.lens); got != rowWords(invoked.wants) {
 			t.Errorf("the lens %s invoked on %s records the row %s, want %s", invoked.lens.Address, invoked.on, got, rowWords(invoked.wants))
 		}
 	}
@@ -67,7 +70,7 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 		{lf, f.Address, cAddress, graphstore.KindArtifact, c.RefKey, true, c.ID, cAddress},
 	} {
 		movePartOf(t, rig.database, rig.issue, graphstore.KindLens, moved.lens.ID, moved.toKind, moved.toID, moved.caused)
-		if got := recordedArtifactID(t, rig, moved.lens); got != rowWords(moved.wants) {
+		if got := recordedArtifactID(t, rig.database, moved.lens); got != rowWords(moved.wants) {
 			t.Errorf("the lens %s moved from %s onto %s records the row %s, want %s", moved.lens.Address, moved.from, moved.onto, got, rowWords(moved.wants))
 		}
 		state := storedNodeOf(t, rig.database, moved.lens.Address).State
@@ -83,8 +86,12 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 
 	// requireAfterRemoval fails, naming the lens, unless each of lenses on parent reads want after
 	// the removal of the document at removed: a lens that reads live answers GET /api/v1/lenses?on=
-	// its address 200 with its on naming parent, and one that reads gone answers 404 NOT_FOUND by its
-	// own address.
+	// its address 200 with its on naming parent, and one that reads gone answers alice's GET
+	// /api/v1/lenses?on= and GET /api/v1/references?to= of its address what the same read of a lens
+	// nobody wrote answers (requireReadsAsALensNobodyWrote).
+	asAlice := func(method, path string, body any) *httptest.ResponseRecorder {
+		return dispatchRequest(t, rig.handler, method, path, body, "alice")
+	}
 	requireAfterRemoval := func(removed, parent, want string, lenses ...lensInvoked) {
 		t.Helper()
 		for _, lens := range lenses {
@@ -101,14 +108,9 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 				}
 				continue
 			}
-			for route, response := range map[string]int{
-				"GET /api/v1/lenses?on=":     rig.lensesResponse(lens.Address, "alice").Code,
-				"GET /api/v1/references?to=": dispatchReferences(t, rig.handler, lens.Address, "alice").Code,
-			} {
-				if response != http.StatusNotFound {
-					t.Errorf("after the removal of %s, %s%s answers %d, want 404 as for a gone node", removed, route, lens.Address, response)
-				}
-			}
+			requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
+				return fmt.Sprintf("after the removal of %s, %s's %s answers %s, want 404 NOT_FOUND as for a lens nobody wrote", removed, login, read, status)
+			}, lensReader{"alice", asAlice, lens})
 		}
 	}
 	removedDocument(t, rig.handler, a.ID)
@@ -179,7 +181,7 @@ func TestALensOnABlockRecordsTheRowItsAddressNames(t *testing.T) {
 	blockNode, blockAddress := x.RefKey+"#"+block, refs.BlockRef(xAddress, block)
 	movePartOf(t, rig.database, rig.issue, refs.BlockNodeKind, blockNode, graphstore.KindArtifact, y.RefKey, false)
 	lk := rig.invoke(blockAddress, "trade-off", "alice", nil)
-	if got := recordedArtifactID(t, rig, lk); got != x.ID {
+	if got := recordedArtifactID(t, rig.database, lk); got != x.ID {
 		t.Errorf("the lens %s on %s records the row %s, want %s, the row of the document the block's address names, and not of %s, the node the block stands under",
 			lk.Address, blockAddress, got, x.ID, yAddress)
 	}
@@ -260,10 +262,10 @@ func TestALensWriteThatWaitsBehindARemovalIsRefused(t *testing.T) {
 // recordedArtifactID is the row lens records (graphstore.AttributeArtifactID) as the store states
 // it now, its newest artifact_id tuple, in rowWords' words; a lens's row that carries another value
 // than that tuple fails the test, since the row is the projection of the tuples.
-func recordedArtifactID(t *testing.T, rig reasoningRig, lens lensInvoked) string {
+func recordedArtifactID(t *testing.T, database *store.Store, lens lensInvoked) string {
 	t.Helper()
 	ctx := context.Background()
-	stated, held, err := graphstore.CurrentValue(ctx, rig.database.Pool, graphstore.KindLens, lens.ID, graphstore.AttributeArtifactID)
+	stated, held, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindLens, lens.ID, graphstore.AttributeArtifactID)
 	if err != nil {
 		t.Fatalf("read the artifact_id of the lens %s: %v", lens.Address, err)
 	}
@@ -271,7 +273,7 @@ func recordedArtifactID(t *testing.T, rig reasoningRig, lens lensInvoked) string
 		stated = ""
 	}
 	var carried *string
-	if err := rig.database.Pool.QueryRow(ctx, `select attributes->>$3 from graph_nodes where kind = $1 and id = $2`,
+	if err := database.Pool.QueryRow(ctx, `select attributes->>$3 from graph_nodes where kind = $1 and id = $2`,
 		graphstore.KindLens, lens.ID, graphstore.AttributeArtifactID).Scan(&carried); err != nil {
 		t.Fatalf("read the row of the lens %s: %v", lens.Address, err)
 	}
