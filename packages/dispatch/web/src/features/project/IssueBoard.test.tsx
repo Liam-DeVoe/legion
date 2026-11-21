@@ -1069,15 +1069,18 @@ test("a move the reader stopped says it may have been made, not that it failed",
 // status only after the rule's dry run; the route's answers are the real server's
 // (`status-change-fixtures.ts`).
 
+/** CORE-1 in Todo, a card with one open child. */
+const parentCard = issue({
+  key: "CORE-1",
+  progress: { children: { done: 0, total: 1 }, tasks: null },
+  rank: "a",
+  status: "todo",
+  title: "Parent",
+});
+
 /** CORE-1 with a child in work, then two cards with neither a parent nor a child. */
 const parentIssues: IssueSummary[] = [
-  issue({
-    key: "CORE-1",
-    progress: { children: { done: 0, total: 1 }, tasks: null },
-    rank: "a",
-    status: "todo",
-    title: "Parent",
-  }),
+  parentCard,
   issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
   issue({ key: "CORE-3", rank: "c", status: "in_progress", title: "Charlie" }),
 ];
@@ -1436,13 +1439,7 @@ for (const [board, lanes] of [
 
 /** CORE-1 with its open child CORE-2 in work under it, both in Todo. */
 const childIssues: IssueSummary[] = [
-  issue({
-    key: "CORE-1",
-    progress: { children: { done: 0, total: 1 }, tasks: null },
-    rank: "a",
-    status: "todo",
-    title: "Parent",
-  }),
+  parentCard,
   issue({ key: "CORE-2", parent: "CORE-1", rank: "b", status: "todo", title: "Child" }),
 ];
 

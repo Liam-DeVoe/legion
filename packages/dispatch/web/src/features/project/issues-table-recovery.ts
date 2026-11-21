@@ -32,6 +32,11 @@ export const tableEpicWrite = defineWriteKind<string>({
   },
 });
 
+/** The step each of `writes` was sent for, by its write key. */
+function stepsByWriteKey(writes: TableAction["writes"]): ReadonlyMap<string, string> {
+  return new Map(Object.entries(writes).map(([step, key]) => [key, step]));
+}
+
 export function useTableRecovery(project: string, report: (text: string) => void) {
   const writes = useWrites();
   const [action, setAction] = useState(() => readTableAction(project));
@@ -56,7 +61,7 @@ export function useTableRecovery(project: string, report: (text: string) => void
     const observeRows = () => {
       let record = current.current;
       if (!record) return;
-      const steps = new Map(Object.entries(record.writes).map(([step, key]) => [key, step]));
+      const steps = stepsByWriteKey(record.writes);
       for (const row of writes.rows()) {
         const step: string | undefined =
           steps.get(row.key) ??
@@ -154,12 +159,13 @@ export function useTableRecovery(project: string, report: (text: string) => void
       if (row) owned.current.set(row.id, { ...owned.current.get(row.id), issue });
     },
     /** Waits on each write of `record` still in flight, and sends a refused one again only where
-     *  `resend` lets its step go: what the kind's guard has let through (`ResumableAction.guard`
-     *  in `issues-table-actions.ts`). A step is a key of `record.writes`: an issue's key for its
-     *  parent or rank write, `create`, `intoWork` or `reason`. A refused write `resend` holds back
-     *  stays as it is in Pending changes. Throws the first refusal of a write it waited on or sent. */
+     *  `resend` lets its step go: what the kind's guard, where it has one, has let through
+     *  (`ResumableAction.guard` in `issues-table-actions.ts`). A step is a key of `record.writes`:
+     *  an issue's key for its parent or rank write, `create`, `intoWork` or `reason`. A refused
+     *  write `resend` holds back stays as it is in Pending changes. Throws the first refusal of a
+     *  write it waited on or sent. */
     settle: async (record: TableAction, resend: (step: string) => boolean) => {
-      const stepOf = new Map(Object.entries(record.writes).map(([step, key]) => [key, step]));
+      const stepOf = stepsByWriteKey(record.writes);
       const rows = writes.rows().filter((row) => stepOf.has(row.key));
       const outcome = (row: (typeof rows)[number]) => {
         const { promise, resolve, reject } = Promise.withResolvers<void>();

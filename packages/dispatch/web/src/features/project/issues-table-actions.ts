@@ -98,11 +98,24 @@ function targetMustMove(
 /** The steps of an interrupted action that Finish decides afresh rather than sending again: the
  *  move of its epic into work, which the guard makes or finds it need not (`intoWorkOnFinish`),
  *  and a merge's close of its source, which `closeMerge` sends only once no issue is left under
- *  the source. Every other step is a write Finish sends again once the guard lets it through. */
+ *  the source. Every other step is a write Finish sends again once the kind's guard, where it has
+ *  one, lets it through (`resendsStep`). */
 function afreshSteps(record: TableAction): readonly string[] {
   return record.kind === "merge" && record.source !== undefined
     ? ["intoWork", record.source]
     : ["intoWork"];
+}
+
+/** Whether Finish sends the refused write of a step of `record` again: every step but those it
+ *  decides afresh (`afreshSteps`). */
+function resendsStep(record: TableAction): (step: string) => boolean {
+  const afresh = afreshSteps(record);
+  return (step) => !afresh.includes(step);
+}
+
+/** Whether the listing `current` holds the merge's source `source` as done. */
+function sourceClosed(current: readonly IssueSummary[], source: string): boolean {
+  return current.find((issue) => issue.key === source)?.status === "done";
 }
 
 /** What an interrupted action of each kind says it left behind, how Finish guards it, and how it
@@ -124,11 +137,12 @@ interface ResumableAction {
    * - `finish`, before it sends any refused write of the action again (`recovery.settle`);
    * - merge's `resume`, before it moves the issues left under the source and closes the source;
    * - New epic's `resume`, before it adopts the issues.
-   * Start next's rank writes change no parent and no status, so its guard lets them through. No
-   * other path of this file finishes an action, and the table has no undo: the first runs
-   * (`moveTo`, `askMerge`, `newEpic`) ask before their own first write.
+   * Start next's rank writes change no parent and no status, so it has no guard (`null`): Finish
+   * reads no listing for it and sends its refused writes again unasked. No other path of this file
+   * finishes an action, and the table has no undo: the first runs (`moveTo`, `askMerge`,
+   * `newEpic`) ask before their own first write.
    */
-  guard: (record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>;
+  guard: ((record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>) | null;
   /** Finishes the action, and answers whether it did: false where the reader cancelled the
    *  question its guard asks, which wrote nothing, so the action stays to be finished. */
   resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>;
@@ -423,12 +437,25 @@ export function useIssueTableActions({
     answering.current = undefined;
     return yes;
   };
+  /** Whether a Finish of `record` goes on past its guard's question `question`, where there is
+   *  one (`askOnFinish`): false for a Cancel, for the table going away while it asks, or for the
+   *  action no longer in hand, with nothing written. Going on, it first drops the refused writes
+   *  of the steps Finish decides afresh (`afreshSteps`) from Pending changes. */
+  const goOnFinish = async (
+    record: TableAction,
+    question: Question | undefined
+  ): Promise<boolean> => {
+    if (question !== undefined && !(await askOnFinish(record.id, question))) return false;
+    if (!recovery.active(record.id)) return false;
+    recovery.discard(record.id, afreshSteps(record));
+    return true;
+  };
   /**
    * The guard's part for an epic that exists (`ResumableAction.guard`): whether a Finish of
    * `record` goes on to move `rows` under the epic `target`, which the listing holds as `epic`.
    * Where the listing shows the rule needs nothing, it goes on at once, with no dry run. Else it
    * sends the dry run of the epic's move into work, and where that finds a change, asks
-   * `askTarget`'s question (`askOnFinish`): a Cancel, or the table going away while it asks, is
+   * `askTarget`'s question (`goOnFinish`): a Cancel, or the table going away while it asks, is
    * false, with nothing written. Going on, it first drops the refused writes of the steps Finish
    * decides afresh (`afreshSteps`), then on a yes makes the epic's move into work
    * (`moveIntoWork`) as a step of the action. Called by merge's guard and New epic's.
@@ -447,10 +474,8 @@ export function useIssueTableActions({
       } catch (error) {
         throw new Error(checkFailed(target, error), { cause: error });
       }
-      if (question !== undefined && !(await askOnFinish(record.id, question))) return false;
     }
-    if (!recovery.active(record.id)) return false;
-    recovery.discard(record.id, afreshSteps(record));
+    if (!(await goOnFinish(record, question))) return false;
     if (question !== undefined) await moveIntoWork(target, record.id);
     return true;
   };
@@ -781,9 +806,7 @@ export function useIssueTableActions({
       const question = targetMustMove(undefined, adopting)
         ? newEpicQuestion(name, adopting)
         : undefined;
-      if (question !== undefined && !(await askOnFinish(record.id, question))) return false;
-      if (!recovery.active(record.id)) return false;
-      recovery.discard(record.id, afreshSteps(record));
+      if (!(await goOnFinish(record, question))) return false;
       // With no issue in work, the create goes again with the action's other refused writes.
       if (question === undefined) return true;
       await recovery.settle(record, (step) => step === "create");
@@ -810,17 +833,11 @@ export function useIssueTableActions({
   const mergeGuard = async (record: TableAction, current: readonly IssueSummary[]) => {
     const source = record.source ?? "";
     const into = record.target ?? "";
-    const left =
-      current.find((issue) => issue.key === source)?.status === "done"
-        ? []
-        : mergeMembers(current, source);
-    const afresh = afreshSteps(record);
-    const resent = recovery
-      .refused(record.id)
-      .filter((step) => step !== "reason" && !afresh.includes(step));
-    const moving = current.filter(
-      (issue) => issue.status !== "done" && (left.includes(issue.key) || resent.includes(issue.key))
-    );
+    const left = sourceClosed(current, source) ? [] : mergeMembers(current, source);
+    const resends = resendsStep(record);
+    const resent = recovery.refused(record.id).filter((step) => step !== "reason" && resends(step));
+    const wanted = new Set([...left, ...resent]);
+    const moving = current.filter((issue) => issue.status !== "done" && wanted.has(issue.key));
     const target = current.find((issue) => issue.key === into);
     if (targetMustMove(target, moving) && (target === undefined || target.status === "done"))
       throw new Error(
@@ -854,8 +871,9 @@ export function useIssueTableActions({
     startNext: {
       describe: (record) =>
         `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
-      // Its rank writes change no parent and no status, so it asks nothing.
-      guard: async () => true,
+      // Its rank writes change no parent and no status, so it has no guard: Finish sends them
+      // again unasked.
+      guard: null,
       resume: async (record, current) => {
         await runStartNext(
           record,
@@ -870,7 +888,7 @@ export function useIssueTableActions({
       guard: mergeGuard,
       resume: async (record, current) => {
         const source = record.source ?? "";
-        if (current.find((issue) => issue.key === source)?.status === "done") return true;
+        if (sourceClosed(current, source)) return true;
         if (!(await mergeGuard(record, current))) return false;
         const members = mergeMembers(current, source);
         await apply(
@@ -890,10 +908,10 @@ export function useIssueTableActions({
   };
   /**
    * Finishes the interrupted action. It waits on each write of the action still in flight and
-   * sends none again, then runs the kind's guard before the first write it sends: before the
-   * refused writes it sends again, where there are any, so that a Cancel writes nothing at all,
-   * and in `resume`, before resume's own writes, on the listing read after those sent again. A
-   * step the guard decides afresh (`afreshSteps`) is never sent again.
+   * sends none again, then runs the kind's guard, where it has one, before the first write it
+   * sends: before the refused writes it sends again, where there are any, so that a Cancel writes
+   * nothing at all, and in `resume`, before resume's own writes, on the listing read after those
+   * sent again. A step the guard decides afresh (`afreshSteps`) is never sent again.
    */
   const finish = () => {
     const interrupted = recovery.current.current;
@@ -906,12 +924,11 @@ export function useIssueTableActions({
       const record = held();
       if (!record) return undefined;
       const kind = kinds[record.kind];
-      const afresh = afreshSteps(record);
-      const resend = (step: string) => !afresh.includes(step);
+      const resend = resendsStep(record);
       // Where no refused write goes again, the first write Finish sends is resume's own, which
       // resume's guard stands before. A Cancel of the question a guard asks leaves the action to
-      // be finished, and writes nothing.
-      if (recovery.refused(record.id).some(resend)) {
+      // be finished, and writes nothing. A kind with no guard reads no listing here.
+      if (kind.guard !== null && recovery.refused(record.id).some(resend)) {
         const current = await listAll();
         if (!held() || !(await kind.guard(record, current))) return undefined;
       }

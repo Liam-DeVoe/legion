@@ -2316,6 +2316,17 @@ type EpicWrite = readonly [
   body: unknown,
 ];
 
+/** Answers each merge reason an action posts, and lists it in `sent`. */
+function answerMergeReasons(sent: EpicWrite[]) {
+  answerRoute<(key: string, body: unknown) => Promise<unknown>>(
+    "POST",
+    "/api/v1/issues/*/messages"
+  ).mockImplementation(async (key, body) => {
+    sent.push(["message", key, body]);
+    return {};
+  });
+}
+
 /**
  * Answers every write an epic action can make, and lists each in the order the page sent it: a
  * create (the epic CORE-10), each request of the status-change route (a dry run answers the epic
@@ -2338,13 +2349,7 @@ function answerEpicWrites(epics: readonly Issue[]): EpicWrite[] {
     sent.push(["PATCH", key, input]);
     return savedIssue(key);
   });
-  answerRoute<(key: string, body: unknown) => Promise<unknown>>(
-    "POST",
-    "/api/v1/issues/*/messages"
-  ).mockImplementation(async (key, body) => {
-    sent.push(["message", key, body]);
-    return {};
-  });
+  answerMergeReasons(sent);
   const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
     sent.push(["create", "CORE-10", input]);
     return held("CORE-10");
@@ -2729,10 +2734,7 @@ test("Finish of a merge whose target left work asks the merge's question, and on
   // The listing answers from `rows`, so the move of CORE-3 reaches the merge's next read of it.
   answerIssuePatches().mockImplementation(async (key, input) => {
     sent.push(["PATCH", key, input]);
-    const at = rows.findIndex((row) => row.key === key);
-    const row = rows[at];
-    if (row !== undefined && input.parent !== undefined)
-      rows[at] = { ...row, parent: input.parent };
+    if (input.parent !== undefined) rewrite(rows, key, { parent: input.parent });
     return savedIssue(key);
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
@@ -2821,7 +2823,8 @@ function rewrite(rows: IssueSummary[], key: string, fields: Partial<IssueSummary
  * the page sent it, as `answerEpicWrites` does.
  */
 function answerOnRows(rows: IssueSummary[], refusedOnce: readonly string[] = []): EpicWrite[] {
-  const sent = answerEpicWrites([]);
+  const sent: EpicWrite[] = [];
+  answerMergeReasons(sent);
   const refusing = new Set(refusedOnce);
   const refuse = (write: string) => {
     if (refusing.delete(write))
@@ -2847,13 +2850,14 @@ function answerOnRows(rows: IssueSummary[], refusedOnce: readonly string[] = [])
     });
     return savedIssue(key);
   });
-  spyOn(api, "createIssue").mockImplementation(async (input) => {
+  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
     sent.push(["create", "CORE-10", input]);
     refuse("create CORE-10");
     const title = input.title ?? "";
     rows.push(issue("CORE-10", { labels: ["epic"], status: "triage", title }));
     return epicIssue("CORE-10", title, "triage");
   });
+  restores.push(() => create.mockRestore());
   const messages = spyOn(api, "listIssueMessages").mockImplementation(
     async (key) =>
       sent.flatMap(([route, at, body]) =>
@@ -3059,7 +3063,7 @@ test("Finish of a start next whose rank write was refused sends it again, with n
     issue("CORE-2", { labels: ["legion"], rank: "b" }),
     issue("CORE-3", { labels: ["legion"], rank: "a" }),
   ];
-  const sent = answerEpicWrites([]);
+  const sent: EpicWrite[] = [];
   let refuse = true;
   answerIssuePatches().mockImplementation(async (key, input) => {
     sent.push(["PATCH", key, input]);
