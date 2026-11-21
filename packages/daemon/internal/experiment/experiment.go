@@ -108,10 +108,10 @@ func DrawAndRecord(ctx context.Context, tx pgx.Tx, records Records, key string,
 // GroupOf is the row of rows, one issue's assignments, that says how the issue is done: the one
 // whose Plan is not "", or the zero Assignment, the issue of no group, which runs as an issue with
 // no experiment runs. At most one such row exists for an issue: an experiment that sets plan draws
-// for each issue (config's readExperiment), once, when the daemon first records the issue, and a
-// project declares one such experiment at a time (config's checkExperiments). It is the one reader
-// of how an issue is done, so no reader asks the project's file, which may have changed since the
-// draw.
+// for each issue (config's checkExperimentPlans), once, when the daemon first records the issue,
+// and a project declares one such experiment at a time (config's checkExperiments). It is the one
+// reader of how an issue is done, so no reader asks the project's file, which may have changed
+// since the draw.
 func GroupOf(rows []record.Assignment) record.Assignment {
 	for _, row := range rows {
 		if row.Plan != "" {

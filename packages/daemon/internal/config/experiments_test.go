@@ -173,9 +173,10 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 // role that is not an issue role or names one twice, a variants list that is missing, no list or
 // empty, one variant where the mode draws, a weight that is not a whole number above zero, an
 // overlay or an instructions path no role could load, a mode on that names no on_variant, an
-// on_variant that is no variant of its experiment, and the three shapes of `experiments.memory`
-// the name memory forbids: beside the block, with other variants, and drawn for each issue. The
-// rules of `plan` are refused as well, each by a row of TestThePlanOfAVariantIsRefused.
+// on_variant that is no variant of its experiment, and the four shapes of `experiments.memory`
+// the name memory forbids: beside the block, naming `plan`, with other variants, and drawn for each
+// issue. The other rules of `plan` are refused as well, each by a row of
+// TestThePlanOfAVariantIsRefused.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
@@ -336,7 +337,7 @@ func TestThePlanOfAVariantIsRefused(t *testing.T) {
 		{name: "a word that is none of the three",
 			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}",
 			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
-			want:  `projects.DEMO.experiments.planning.variants.a.plan must be owner, default or owner-alone (got "alone")`},
+			want:  `projects.DEMO.experiments.planning.variants.a.plan must be owner or default (got "alone")`},
 		{name: "an arm that names no plan beside one that does",
 			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}",
 			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",

@@ -271,7 +271,7 @@ type overrides struct {
 	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
 	// test that compares a run's draws with a seed's hands in a source of that seed. The API's draw
 	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
-	// experiment that sets how an issue is done draws for each issue (config's readExperiment).
+	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
 	experimentSource func(uint64) (uint64, error)
 }
 

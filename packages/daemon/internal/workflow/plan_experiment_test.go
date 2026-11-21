@@ -323,10 +323,11 @@ func TestAPlanGivenAtGenerationZeroForARecordedIssueOfTheGroupDefaultIsNotTaken(
 	}
 }
 
-// An issue of no group runs as built (R20): an issue the daemon recorded before any experiment
-// set how an issue is done holds no row, and one whose rows name no plan — the `memory`
-// experiment's alone here — is of no group either. Each takes the plan its owner gives, a plan an
-// earlier owner gave is told as it always was (tellPassedOver), and its owner stops a task of it.
+// An issue of no group runs as it did before any experiment set how an issue is done: an issue
+// the daemon recorded before any experiment set how an issue is done holds no row, and one whose
+// rows name no plan — the `memory` experiment's alone here — is of no group either. Each takes the
+// plan its owner gives, a plan an earlier owner gave is told as it always was (tellPassedOver), and
+// its owner stops a task of it.
 func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

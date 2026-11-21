@@ -14,8 +14,8 @@
 -- It back-fills nothing. Every row written before it reads '', which is an issue of no group: it
 -- runs as an issue with no experiment runs, as it did when it was drawn. A carried or settled row
 -- (record.Store.CarryAssignments) names its columns and leaves this one out, so it reads '' too,
--- and only a tree row is carried, which no experiment that sets plan draws (config's readExperiment
--- holds such an experiment to unit issue).
+-- and only a tree row is carried, which no experiment that sets plan draws (config's
+-- checkExperimentPlans holds such an experiment to unit issue).
 --
 -- Rolling back onto a release before this migration takes `plan` out of `legion.yaml` first, with
 -- the daemon stopped and before the earlier image is pinned (docs/kubernetes.md, "Rolling back the

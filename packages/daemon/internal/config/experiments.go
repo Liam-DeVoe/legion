@@ -276,9 +276,9 @@ func (project Project) MemoryIsBlock() bool {
 }
 
 // SetsPlan is whether the experiment sets how its issues are done: true where any arm names
-// `plan`. The loader holds such an experiment to three rules (readExperiment, checkExperiments):
-// every arm of it names `plan`, it draws for each issue, and no other experiment of its project
-// sets `plan`, so an issue holds at most one draw that says how it is done.
+// `plan`. The loader holds such an experiment to three rules (checkExperimentPlans,
+// checkExperiments): every arm of it names `plan`, it draws for each issue, and no other experiment
+// of its project sets `plan`, so an issue holds at most one draw that says how it is done.
 func (experiment Experiment) SetsPlan() bool {
 	return slices.ContainsFunc(experiment.Variants, func(variant Variant) bool { return variant.Plan != "" })
 }
@@ -493,7 +493,7 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		switch variant.Plan = PlanGroup(plan); {
 		case plan == "":
 		case !slices.Contains(planGroups, variant.Plan):
-			return nil, fmt.Errorf("%s.plan must be owner, default or owner-alone (got %q)", field, plan)
+			return nil, fmt.Errorf("%s.plan must be owner or default (got %q)", field, plan)
 		case variant.Plan == PlanGroupOwnerAlone:
 			return nil, fmt.Errorf("%s.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.", field)
 		}
