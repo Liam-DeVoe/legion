@@ -52,7 +52,7 @@ function renderField(writing = dispatchWritingBox("conversation-composer", "comm
   const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
     // The issue has a person on it, whom the picker's People rows are read from.
     issueCollaborators({
-      people: [{ kind: "user", last_at: null, login: "alice@theorem.dev", reasons: ["assignee"] }],
+      people: [{ kind: "user", last_at: null, login: "alice@example.com", reasons: ["assignee"] }],
     })
   );
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
