@@ -138,7 +138,15 @@
 #   (ar) a kube-system ServiceAccount that may mint the operator's token is no finding, but
 #        legion/worker, which may create pods in kube-system, is one naming the chain (rv6); on
 #        another cluster, ci/runner, which may create pods in kube-system, becomes its namespace
-#        controller and is one too.
+#        controller and is one too;
+#   (as) on a GKE fleet member in another project, apps/deployer given alone impersonate groups,
+#        create clusterrolebindings, bind clusterroles, create or get nodes/proxy, or create pods in
+#        kube-system (where namespace-controller may create namespaces) exits 1 naming it;
+#   (at) grade-ci holding alone on that member's project each member permission (the container.*
+#        escalation permissions, nodes.proxy and the IAM writers) exits 1;
+#   (au) a holder of setIamPolicy on the folder above that member's project exits 1;
+#   (av) grade-ci holding roles/resourcemanager.projectIamAdmin, or a role with
+#        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -1102,8 +1110,11 @@ if row t; then
   iam "$grade_res" roles/container.admin "serviceAccount:$grade_ci"
   run
   want_status 1 "grade-ci holding roles/container.admin on a fleet member's project"
-  want_line "FINDING serviceAccount:$grade_ci: container.namespaces.create, container.serviceAccounts.create, container.pods.create on $grade_res through roles/container.admin, granted at $grade_res" \
+  # roles/container.admin holds each member permission of the container.* kind; the line names them
+  # in the check's order, from the three that make a guarded namespace, ServiceAccount or pod.
+  want_text "FINDING serviceAccount:$grade_ci: container.namespaces.create, container.serviceAccounts.create, container.pods.create," \
     "grade-ci holding roles/container.admin on a fleet member's project"
+  want_text " on $grade_res through roles/container.admin, granted at $grade_res" "grade-ci holding roles/container.admin on a fleet member's project"
   passed "(t) a Google service account holding roles/container.admin on a fleet member's project exits 1 naming it"
 fi
 
@@ -1491,14 +1502,17 @@ escalation_rights=(
   "escalate|rbac.authorization.k8s.io|roles|envoy-operator=escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "create|rbac.authorization.k8s.io|rolebindings|envoy-operator=create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
   "patch|rbac.authorization.k8s.io|rolebindings|envoy-operator=patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "create||nodes/proxy|=create nodes/proxy cluster-wide"
+  "get||nodes/proxy|=get nodes/proxy cluster-wide"
 )
 escalation_row() {
-  local right="${1#*=}" verb group resource namespace
+  local right="${1#*=}" verb group resource sub="" namespace
   IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
+  case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
   base_world
   add_cluster other-cluster us-east1
   add_sa other-cluster ci runner
-  subject_grant other-cluster "$(sa_subject ci runner)" "$verb" "$group" "$resource" "" "$namespace" ""
+  subject_grant other-cluster "$(sa_subject ci runner)" "$verb" "$group" "$resource" "$sub" "$namespace" ""
   run
   want_status 1 "ci/runner with $right on other-cluster"
   want_line "FINDING system:serviceaccount:ci:runner: $right on cluster $project/us-east1/other-cluster" "ci/runner with $right on other-cluster"
@@ -1614,6 +1628,93 @@ if row ar; then
   want_line "FINDING system:serviceaccount:ci:runner: create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster $project/us-east1/other-cluster" \
     "ci/runner may create pods in kube-system on another cluster"
   passed "(ar) on another cluster, who may create pods in kube-system becomes its namespace controller and is a finding"
+fi
+
+# --- (as) The escalation rights, nodes/proxy and the system namespaces on a GKE fleet member in
+# another project, each alone given to apps/deployer there. Each entry is the grant (verb, API group,
+# resource[/subresource], the binding's namespace or none for cluster-wide) and the right the run
+# must name. ---
+member_rights=(
+  "impersonate||groups|=impersonate groups cluster-wide"
+  "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "bind|rbac.authorization.k8s.io|clusterroles|=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
+  "create||nodes/proxy|=create nodes/proxy cluster-wide"
+  "get||nodes/proxy|=get nodes/proxy cluster-wide"
+  "create||pods|kube-system=create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+)
+member_right_row() {
+  local right="${1#*=}" verb group resource sub="" namespace
+  IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
+  case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+  base_world
+  grade_member
+  subject_grant grade-cluster "$(sa_subject apps deployer)" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  run
+  want_status 1 "apps/deployer with $right on the fleet member grade"
+  want_line "FINDING system:serviceaccount:apps:deployer: $right on cluster example-grade/us-east1/grade-cluster" \
+    "apps/deployer with $right on the fleet member grade"
+}
+if row as; then
+  each member_right_row "${member_rights[@]}"
+  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given alone to a ServiceAccount on a GKE fleet member in another project, exits 1 naming it"
+fi
+
+# --- (at) A fleet member's own project's IAM: each member permission held alone by grade-ci. ---
+member_iam_permissions=(container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
+  container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
+  container.roleBindings.create container.roleBindings.update container.nodes.proxy resourcemanager.projects.setIamPolicy
+  resourcemanager.folders.setIamPolicy resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy
+  secretmanager.secrets.setIamPolicy iam.roles.update)
+member_iam_row() {
+  base_world
+  grade_member
+  role "projects/$project/roles/only.$1" "$1"
+  iam "$grade_res" "projects/$project/roles/only.$1" "serviceAccount:$grade_ci"
+  run
+  want_status 1 "$1 held by grade-ci on the fleet member's project"
+  want_line "FINDING serviceAccount:$grade_ci: $1 on $grade_res through projects/$project/roles/only.$1, granted at $grade_res" \
+    "$1 held by grade-ci on the fleet member's project"
+}
+if row at; then
+  each member_iam_row "${member_iam_permissions[@]}"
+  passed "(at) each of the ${#member_iam_permissions[@]} member permissions, held alone by grade-ci on a fleet member's project, exits 1 naming it"
+fi
+
+# --- (av) The reviewer's two roles on a fleet member's project: roles/resourcemanager.projectIamAdmin,
+# and one holding both container.clusterRoleBindings.create and container.clusterRoles.bind. Each
+# entry is the role and the permissions the line names. ---
+member_role_row() {
+  local role_name="${1%%=*}" held="${1#*=}"
+  base_world
+  grade_member
+  [ "$role_name" != binder ] || {
+    role_name="projects/$project/roles/binder"
+    role "$role_name" container.clusterRoleBindings.create container.clusterRoles.bind
+  }
+  iam "$grade_res" "$role_name" "serviceAccount:$grade_ci"
+  run
+  want_status 1 "grade-ci holding $role_name on the fleet member's project"
+  want_line "FINDING serviceAccount:$grade_ci: $held on $grade_res through $role_name, granted at $grade_res" \
+    "grade-ci holding $role_name on the fleet member's project"
+}
+if row av; then
+  each member_role_row "roles/resourcemanager.projectIamAdmin=resourcemanager.projects.setIamPolicy" \
+    "binder=container.clusterRoles.bind, container.clusterRoleBindings.create"
+  passed "(av) grade-ci holding roles/resourcemanager.projectIamAdmin, or a role with container.clusterRoleBindings.create and container.clusterRoles.bind, on a fleet member's project exits 1"
+fi
+
+# --- (au) The ancestors of a fleet member's project. ---
+if row au; then
+  base_world
+  grade_member
+  mkdir -p "$world/ancestors"
+  jq -n '[{id: "example-grade", type: "project"}, {id: "200", type: "folder"}, {id: "100", type: "organization"}]' >"$world/ancestors/example-grade.json"
+  iam "//cloudresourcemanager.googleapis.com/folders/200" roles/resourcemanager.folderIamAdmin "serviceAccount:$grade_ci"
+  run
+  want_status 1 "grade-ci holding roles/resourcemanager.folderIamAdmin on the folder above a fleet member's project"
+  want_line "FINDING serviceAccount:$grade_ci: resourcemanager.folders.setIamPolicy on //cloudresourcemanager.googleapis.com/folders/200 through roles/resourcemanager.folderIamAdmin, granted at //cloudresourcemanager.googleapis.com/folders/200" \
+    "grade-ci holding roles/resourcemanager.folderIamAdmin on the folder above a fleet member's project"
+  passed "(au) a holder of setIamPolicy on the folder above a fleet member's project exits 1"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

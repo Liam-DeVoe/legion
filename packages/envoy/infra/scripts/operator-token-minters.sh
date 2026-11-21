@@ -137,17 +137,21 @@
 #                     other through `gcloud container fleet memberships get-credentials` (the
 #                     Connect gateway); the operator's cluster, and a cluster the project step read,
 #                     are not read twice. GKE authorizes IAM beside RBAC, so for each GKE member in
-#                     a project other than --project, Policy Analyzer's holders of
-#                     container.namespaces.create, container.serviceAccounts.create and
-#                     container.pods.create on that project are judged as the GKE IAM step judges
-#                     its own (--project's are in that step).
+#                     a project other than --project, Policy Analyzer's holders on that project of
+#                     each guard right's container.* permission (container.namespaces.create,
+#                     serviceAccounts.create and pods.create; clusters.impersonate, clusterRoles.bind
+#                     and escalate, clusterRoleBindings.create and update, roles.bind and escalate,
+#                     roleBindings.create and update, nodes.proxy) and of the IAM writers
+#                     (setIamPolicy, iam.roles.update) are judged as the GKE IAM step judges its own
+#                     (--project's are in that step).
 #   live: fleet       Policy Analyzer's holders of gkehub.memberships.create and update on the pool
 #     registration    project, each judged as in the GKE IAM step: a cluster registered to the
 #                     pool's fleet shares the pool's Workload Identity, so its ServiceAccount
 #                     envoy-operator/envoy-operator is the operator's member there.
-#   live: IAM on      For each folder and organization above --project and the pool project (`gcloud
-#     ancestors       projects get-ancestors`), Policy Analyzer's holders of its setIamPolicy, and of
-#                     the organization's iam.roles.update: each can grant itself any role below it.
+#   live: IAM on      For each folder and organization above --project, the pool project and each
+#     ancestors       fleet member's project (`gcloud projects get-ancestors`), Policy Analyzer's
+#                     holders of its setIamPolicy, and of the organization's iam.roles.update: each
+#                     can grant itself any role below it.
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
 #                     get on the Secret --db-secret (a SubjectAccessReview for each principal of the

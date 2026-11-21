@@ -88,6 +88,14 @@ GSA_PERMISSIONS=(
 IAM_WRITE_PERMISSIONS=(resourcemanager.projects.setIamPolicy resourcemanager.folders.setIamPolicy
   resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy secretmanager.secrets.setIamPolicy
   iam.roles.update)
+# What a fleet member's own project's IAM is asked: GKE authorizes IAM beside RBAC on that member, so
+# the container.* permission of each guard right (a guarded namespace, ServiceAccount or pod, and the
+# escalation rights by which a holder grants itself one) and the IAM writers there.
+MEMBER_PERMISSIONS=(container.namespaces.create container.serviceAccounts.create container.pods.create
+  container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
+  container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind
+  container.roles.escalate container.roleBindings.create container.roleBindings.update container.nodes.proxy
+  "${IAM_WRITE_PERMISSIONS[@]}")
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
 # Workload Identity, so its ServiceAccount envoy-operator/envoy-operator is the operator's member.
@@ -155,8 +163,9 @@ done <<<"$RIGHTS_TABLE" | jq -R -s -c '[split("\n")[] | select(length > 0) | spl
 # any ServiceAccount of it, and the ServiceAccount is the pair the pool binds, so either lets its
 # maker act as the pair's Google service account. Beside them, the escalation rights by which a
 # holder grants itself any of those: impersonate users, groups and serviceaccounts, escalate and
-# bind clusterroles, and create and patch clusterrolebindings, cluster-wide; bind and escalate roles
-# and create and patch rolebindings in each guarded namespace (guard-rights.jq).
+# bind clusterroles, and create and patch clusterrolebindings, cluster-wide, and create and get
+# nodes/proxy; bind and escalate roles and create and patch rolebindings in each guarded namespace
+# (guard-rights.jq).
 GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq")"
 GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
 GUARDED_TEXT="${GUARDED_TEXT%, }"

@@ -40,7 +40,13 @@ case "${words[*]}" in
       '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
     ;;
   "projects get-ancestors "*)
-    jq -n --arg p "${words[2]}" '[{id: $p, type: "project"}, {id: "100", type: "organization"}]'
+    # A project's own ancestors when the world holds them (ancestors/<project>.json), else the
+    # project under organization 100.
+    if [ -e "$world/ancestors/${words[2]}.json" ]; then
+      cat "$world/ancestors/${words[2]}.json"
+    else
+      jq -n --arg p "${words[2]}" '[{id: $p, type: "project"}, {id: "100", type: "organization"}]'
+    fi
     ;;
   "container clusters list")
     [ "${flag[project]:-}" = "$project" ] || { echo "fake gcloud: clusters list of project ${flag[project]:-none}" >&2; exit 2; }
