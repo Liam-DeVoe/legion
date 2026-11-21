@@ -635,7 +635,13 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		consumerInfo, err := durableInfo(ctx, d.client, d.consumer)
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
+			// Whether the durable the server holds is named as this process names it is unknown
+			// then, so consumer_names says so, and why, beside the configured mode.
+			writeDependencyHealthWith(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound), map[string]interface{}{
+				"consumer_names": "UNKNOWN",
+				"consumer_names_unknown": fmt.Sprintf("the durable consumer's read failed, so the %s naming mode this process runs is unconfirmed on the server: %v",
+					d.client.ConsumerNames(), err),
+			})
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
@@ -752,17 +758,26 @@ func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) 
 }
 
 func writeDependencyHealth(w http.ResponseWriter, dependency string, err error, terminal bool) {
+	writeDependencyHealthWith(w, dependency, err, terminal, nil)
+}
+
+// writeDependencyHealthWith is writeDependencyHealth with extra fields beside status and error.
+func writeDependencyHealthWith(w http.ResponseWriter, dependency string, err error, terminal bool, extra map[string]interface{}) {
 	statusCode := http.StatusOK
 	status := "degraded"
 	if terminal {
 		statusCode = http.StatusServiceUnavailable
 		status = "unhealthy"
 	}
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	body := map[string]interface{}{
 		"status": status,
 		"error":  dependencyUnavailable(dependency, err),
-	})
+	}
+	for key, value := range extra {
+		body[key] = value
+	}
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // dependencyUnavailable is the `error` field a /healthz answer gives for a dependency, so the

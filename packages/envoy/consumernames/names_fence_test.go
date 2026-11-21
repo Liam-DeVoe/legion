@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // testEpoch is when the rows of this file reserved an operation they write by hand.
@@ -161,4 +164,50 @@ func TestARecordTakesOnlyAConsumerWhoseMetadataNamesItsKey(t *testing.T) {
 func selectCall(ctx context.Context, names *Names, h *harness) error {
 	_, err := names.Select(ctx, "ses-1", h.server.create("ses-1"))
 	return err
+}
+
+// Step 0 adopts a candidate the server holds only when it is as the operation reserved it: a start
+// by sequence no later than the saved start (a clamp to an earlier sequence can only deliver
+// again), and what the family's own check requires (Config.Adopt). Any other is refused as
+// ErrUnexpectedConsumer naming it, left on the server and never published. The controls are a
+// candidate at the saved start and one clamped earlier, each adopted.
+func TestStep0AdoptsOnlyACandidateAsItsOperationReservedIt(t *testing.T) {
+	const key = "ses-1"
+	for _, tc := range []struct {
+		name    string
+		created Start
+		family  error
+		adopted bool
+	}{
+		{name: "a start past the saved start", created: Start{Seq: 20}},
+		{name: "a native deliver new for a create by sequence", created: Start{Native: NativeNew}},
+		{name: "a setting the family's check refuses", created: Start{Seq: 9}, family: errors.New("its ack policy is all")},
+		{name: "control: the saved start", created: Start{Seq: 9}, adopted: true},
+		{name: "control: a start clamped earlier", created: Start{Seq: 5}, adopted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness()
+			if _, err := h.server.create(key)(context.Background(), "session~N", tc.created); err != nil {
+				t.Fatal(err)
+			}
+			h.store.put(key, Record{Key: key, Start: 9, Op: &Op{Kind: OpCreate, Owner: "p1", Candidate: "session~N", ReservedAt: h.clock.Now()}})
+			names := h.names("p2")
+			names.cfg.Adopt = func(context.Context, string, *jetstream.ConsumerInfo) error { return tc.family }
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			sel, err := names.Select(ctx, key, h.server.create(key))
+			if tc.adopted {
+				if err != nil || sel.Record.Current != "session~N" {
+					t.Fatalf("Step 0 = %q, %v; want session~N adopted", sel.Record.Current, err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrUnexpectedConsumer) || !strings.Contains(err.Error(), "session~N") {
+				t.Fatalf("Step 0 = %v, want ErrUnexpectedConsumer naming session~N", err)
+			}
+			if record := h.store.record(t, key); record.Current != "" || record.Op == nil || !h.server.holds("session~N") {
+				t.Fatalf("the refused candidate was published or removed: record %+v, held %t", record, h.server.holds("session~N"))
+			}
+		})
+	}
 }

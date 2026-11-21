@@ -804,7 +804,8 @@ func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal 
 		return consumerLimitRefusal(sessionID)
 	}
 	switch {
-	case errors.Is(err, consumernames.ErrCutoverNotRun) || consumernames.IsSelectionStateLost(err) || errors.Is(err, consumernames.ErrNoSafeStart):
+	case errors.Is(err, consumernames.ErrCutoverNotRun) || consumernames.IsSelectionStateLost(err) || errors.Is(err, consumernames.ErrNoSafeStart),
+		errors.Is(err, consumernames.ErrUnexpectedConsumer):
 		// The fresh mode refuses a session whose selection state is lost or unproven rather than
 		// create its consumer from a guess: an ERROR, since an operator's recovery is what ends it
 		// (consumernames' README, "Recovery").
@@ -826,6 +827,12 @@ func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal 
 		// name the key and the bucket, so the session's transcript says what to repair.
 		refusal = "the key " + sessionID + " of the selection bucket " + consumernames.SessionBucket +
 			" holds no selection record of its own, so " + sessionID + " gets no consumer until an operator repairs that key"
+	case errors.Is(err, consumernames.ErrUnexpectedConsumer):
+		// An open operation's candidate that is not as this listener creates it, which only an
+		// operator's repair of the key ends: name the consumer, so the transcript says which.
+		refusal = "the session consumer of " + sessionID + " that the selection bucket " + consumernames.SessionBucket +
+			" names as its candidate is not as this listener creates it (" + err.Error() + "), so " + sessionID +
+			" gets no consumer until an operator repairs that key"
 	case errors.Is(err, bus.ErrMarkerUnread):
 		refusal = "the cutover marker " + consumernames.SentinelKey + " of the selection bucket " + consumernames.SessionBucket +
 			" has not been read on this listener's NATS connection since it connected, so " + sessionID + " gets no consumer until it is"

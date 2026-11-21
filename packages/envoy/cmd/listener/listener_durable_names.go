@@ -79,6 +79,20 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 		CheckKey: consumernames.CheckDurableKey,
 		Metadata: func(string) map[string]string { return map[string]string{consumernames.LogicalMetadataKey: durable} },
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
+		// What no update of the durable changes beside its start, which Names checks: it is a
+		// push consumer, and carries no idle heartbeat and no ack policy but explicit
+		// (listenerDurableRefusal). Its filters and other settings are corrected in place before
+		// the bind (ensureFreshDurable).
+		Adopt: func(ctx context.Context, _ string, adopted *jetstream.ConsumerInfo) error {
+			info, err := client.JS().ConsumerInfo(bus.Stream, adopted.Name, nats.Context(ctx))
+			if err != nil {
+				return err
+			}
+			if info.Config.DeliverSubject == "" {
+				return errors.New("it delivers to no subject, as no push consumer does")
+			}
+			return listenerDurableRefusal(info.Name, info.Config)
+		},
 	})
 }
 
@@ -125,13 +139,15 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
 // through its record, its policy corrected in place as today's is, or a fresh <durable>~<nuid> at the
 // record's start, and for a durable with no record at deliver policy all, today's first create. A
-// current the server no longer holds is created again at the start its record proves. It answers
-// the physical name to bind.
+// current the server no longer holds is created again at the start its record proves. A current
+// Names adopted rather than this call created (Step 0, a create whose outcome was unknown) is
+// corrected in place like any other before it is bound. It answers the physical name to bind.
 func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string, subjects []string) (string, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
 	names := durableNames(client, durable)
 	key := consumernames.DurableKey(durable)
+	var createdHere string
 	sel, created, err := names.Ensure(ctx, key, consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
 			// The deliver subject is a random inbox, as today's create gives it (startListenerSubscription).
@@ -153,6 +169,7 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 			var api *nats.APIError
 			switch {
 			case err == nil:
+				createdHere = name
 				return protocolInfo(info), nil
 			case errors.As(err, &api) && api.ErrorCode == nats.ErrorCode(jetstream.JSErrCodeMaximumConsumersLimit):
 				return nil, fmt.Errorf("%w: %w", consumernames.ErrConsumerLimit, err)
@@ -174,7 +191,7 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 		return "", err
 	}
 	current := sel.Record.Current
-	if created {
+	if created && current == createdHere {
 		return current, nil
 	}
 	info, err := client.JS().ConsumerInfo(bus.Stream, current, nats.Context(ctx))

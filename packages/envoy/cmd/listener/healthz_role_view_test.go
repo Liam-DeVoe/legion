@@ -68,6 +68,25 @@ func TestHealthzReportsTheConsumerNamingMode(t *testing.T) {
 	}
 }
 
+// A /healthz whose read of the durable fails cannot say how the process's consumers are named on
+// the server, so it reports consumer_names UNKNOWN and says why, beside the durable's own error.
+// The control is the same listener before the durable was removed, which reports its mode.
+func TestHealthzReportsTheConsumerNamesUnknownWhenTheDurableReadFails(t *testing.T) {
+	const consumer = "listener-healthz-names-unknown"
+	get, _, client := healthzRoleViewRig(t, consumer)
+	if code, body := get(); code != http.StatusOK || body["consumer_names"] != "fixed" {
+		t.Fatalf("control: /healthz = %d %v; want 200 with consumer_names fixed", code, body)
+	}
+	if err := client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {
+		t.Fatal(err)
+	}
+	code, body := get()
+	why, _ := body["consumer_names_unknown"].(string)
+	if code != http.StatusServiceUnavailable || body["consumer_names"] != "UNKNOWN" || !strings.Contains(why, "durable consumer") || !strings.Contains(why, "fixed") {
+		t.Fatalf("/healthz after the durable's read failed = %d %v; want 503 with consumer_names UNKNOWN naming the failed read and the configured mode", code, body)
+	}
+}
+
 // breakRoleClaimView leaves registry's role claim view where a listener start leaves it before
 // its first complete read of the role bucket: the watcher runs, the buckets answer, and the view
 // refuses every read (refuseRoleClaimView).

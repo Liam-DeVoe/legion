@@ -73,6 +73,13 @@ type Config struct {
 	// for logical. {LogicalMetadataKey: logical} when nil. The fixed name carries none and is
 	// logical's by its name.
 	Metadata func(logical string) map[string]string
+	// Adopt, when set, checks a candidate the server holds that this call did not see created
+	// (Step 0, or a create whose outcome was unknown) before it is published, beside the start
+	// the operation reserved (adoptable): the settings the family fixes at creation and no update
+	// can change, such as the ack policy. An error refuses the candidate, as
+	// ErrUnexpectedConsumer. The settings an update can change, the filters among them, are the
+	// caller's to correct in place before it delivers from the consumer.
+	Adopt func(ctx context.Context, logical string, info *jetstream.ConsumerInfo) error
 	// Floor is the family's ack floor of a consumer's info.
 	Floor func(*jetstream.ConsumerInfo) uint64
 	// StreamID reads the stream's identity, which a last floor must carry to count.
@@ -489,7 +496,7 @@ func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, 
 	}
 	info, err := n.info(ctx, sel.Logical, op.Candidate)
 	if err == nil {
-		return n.publish(ctx, sel, info, OperationRecover, OutcomeAdopted)
+		return n.adopt(ctx, sel, info, OperationRecover)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return sel, stepError(sel.Logical, OperationRecover, op.Candidate, err)
@@ -789,7 +796,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 		}
 		found, infoErr := n.info(ctx, sel.Logical, op.Candidate)
 		if infoErr == nil {
-			return n.publish(ctx, sel, found, operation, OutcomeAdopted)
+			return n.adopt(ctx, sel, found, operation)
 		}
 		if errors.Is(infoErr, ErrMalformedRecord) {
 			n.observe(operation, OutcomeRefused)
@@ -840,6 +847,46 @@ func retryNative(sel Selection) Native {
 func answered(err error) bool {
 	var api *jetstream.APIError
 	return errors.As(err, &api) || errors.Is(err, ErrConsumerLimit)
+}
+
+// adopt publishes sel's candidate, which the server holds as info and this call did not see
+// created (Step 0, or a create whose outcome was unknown), once it is as the operation reserved it
+// (adoptable); one that is not is refused, naming it, and the operation stays open.
+func (n *Names) adopt(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo, operation Operation) (Selection, error) {
+	if err := n.adoptable(ctx, sel, info); err != nil {
+		n.observe(operation, OutcomeRefused)
+		return sel, stepError(sel.Logical, operation, sel.Record.Op.Candidate, err)
+	}
+	return n.publish(ctx, sel, info, operation, OutcomeAdopted)
+}
+
+// adoptable refuses, as ErrUnexpectedConsumer, a candidate whose start is not the one sel's
+// operation reserved, which no update can change: the native policy of a native create, else a
+// start by sequence no later than the saved start (a create clamps a start past the stream's end to
+// an earlier one, which can only deliver again); and one the family's own check refuses
+// (Config.Adopt). Its owner is checked already (Owns), as every consumer a record names is.
+func (n *Names) adoptable(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo) error {
+	op, config := sel.Record.Op, info.Config
+	var why string
+	switch {
+	case op.Native == NativeAll && config.DeliverPolicy != jetstream.DeliverAllPolicy:
+		why = fmt.Sprintf("its deliver policy is %s, not the native first create's all", config.DeliverPolicy)
+	case op.Native == NativeNew && config.DeliverPolicy != jetstream.DeliverNewPolicy:
+		why = fmt.Sprintf("its deliver policy is %s, not the native first create's new", config.DeliverPolicy)
+	case op.Native == "" && config.DeliverPolicy != jetstream.DeliverByStartSequencePolicy:
+		why = fmt.Sprintf("its deliver policy is %s, not by start sequence", config.DeliverPolicy)
+	case op.Native == "" && (config.OptStartSeq == 0 || sel.Record.Start > 0 && config.OptStartSeq > sel.Record.Start):
+		why = fmt.Sprintf("it starts at %d, past the saved start %d", config.OptStartSeq, sel.Record.Start)
+	}
+	if why != "" {
+		return fmt.Errorf("%w: %s %s", ErrUnexpectedConsumer, info.Name, why)
+	}
+	if n.cfg.Adopt != nil {
+		if err := n.cfg.Adopt(ctx, sel.Logical, info); err != nil {
+			return fmt.Errorf("%w: %s: %w", ErrUnexpectedConsumer, info.Name, err)
+		}
+	}
+	return nil
 }
 
 // publish makes sel's candidate, created as info, the current, and retires and deletes a

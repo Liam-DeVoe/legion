@@ -97,6 +97,15 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		Metadata: func(sessionID string) map[string]string {
 			return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
 		},
+		// The ack policy is the one setting of a session consumer no update changes besides its
+		// start, which Names checks; the filters and every other setting are corrected in place by
+		// the call that adopted it (adopted) before it delivers.
+		Adopt: func(_ context.Context, _ string, info *jetstream.ConsumerInfo) error {
+			if info.Config.AckPolicy != jetstream.AckExplicitPolicy {
+				return fmt.Errorf("its ack policy is %s, not explicit", info.Config.AckPolicy)
+			}
+			return nil
+		},
 	})
 	return fresh
 }
@@ -336,18 +345,24 @@ func (s *SessionConsumers) freshFirst(sessionID string, startSeq uint64, lowered
 	}
 }
 
-// createdStart is what a call that published sel's current answers: the create's own result
-// when this call created it, else the current's info as Step 0 adopted it.
-func createdStart(sel consumernames.Selection, result SessionConsumerStart) SessionConsumerStart {
+// published is what a call that published sel's current answers: the create's own result when
+// this call created it; else the current as Names adopted it (Step 0, or a create whose outcome
+// was unknown), whose settings and filters are first corrected in place to this call's (update), so
+// nothing is delivered from it under a filter or a setting this call did not give it. Names
+// adopted it only with its owner, start and ack policy as the family creates them.
+func (s *SessionConsumers) published(ctx context.Context, sel consumernames.Selection, result SessionConsumerStart, filters []string) (SessionConsumerStart, error) {
 	if result.Name == sel.Record.Current {
-		return result
+		return result, nil
 	}
 	start := SessionConsumerStart{Created: true, Name: sel.Record.Current}
-	if sel.Info != nil {
-		start.StartSeq = sel.Info.Config.OptStartSeq
-		start.AckFloor = ackFloor(sel.Info)
+	if sel.Info == nil {
+		return start, nil
 	}
-	return start
+	start.StartSeq = sel.Info.Config.OptStartSeq
+	start.AckFloor = ackFloor(sel.Info)
+	changed, err := s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
+	start.Updated = changed
+	return start, err
 }
 
 // freshEnsure is Ensure in the fresh mode: the session's current consumer, its filters and
@@ -370,7 +385,7 @@ func (s *SessionConsumers) freshEnsure(ctx context.Context, sessionID string, su
 		return SessionConsumerStart{}, err
 	}
 	if created {
-		return createdStart(sel, result), nil
+		return s.published(ctx, sel, result, filters)
 	}
 	changed, err := s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
 	return SessionConsumerStart{Name: sel.Record.Current, StartSeq: sel.Info.Config.OptStartSeq, AckFloor: ackFloor(sel.Info), Updated: changed}, err
@@ -438,7 +453,7 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 			return SessionConsumerStart{}, fmt.Errorf("%w: session %s", ErrSessionConsumerNotFound, sessionID)
 		}
 		if sel.Created {
-			return createdStart(sel, result), nil
+			return s.published(ctx, sel, result, filters)
 		}
 		name, info := sel.Record.Current, sel.Info
 		if info.NumAckPending == 0 {
@@ -457,7 +472,7 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 		if err := s.freshAnswer(sessionID, err); err != nil {
 			return SessionConsumerStart{}, err
 		}
-		return createdStart(replaced, result), nil
+		return s.published(ctx, replaced, result, filters)
 	}
 }
 

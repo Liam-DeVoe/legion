@@ -266,6 +266,10 @@ var (
 	// ErrBusy is an operation another process holds in flight that this call could not settle
 	// before its context ended.
 	ErrBusy = errors.New("consumer names: another process's operation is in flight")
+	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
+	// creates it: a start or a setting no update can change differs from what the operation
+	// reserved (Names.adoptable). Such a candidate is refused, naming it, and never published.
+	ErrUnexpectedConsumer = errors.New("consumer names: the consumer is not as its family creates it")
 )
 
 // IsSelectionStateLost reports whether err refuses a call because selection state is lost: a
