@@ -4,15 +4,15 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
-// review_threads and reviewer_thread, taken from lib/workflow.sh by name and run against a
-// stubbed gh api graphql answer: reviewer_thread must pick the thread the Legion reviewer's
-// CHANGES_REQUESTED review opened, never a thread a COMMENT review's reviewer also left (the
-// round-no-review-decides checkpoint in stage4b-sandbox-tree.sh runs that COMMENT review first,
-// on the same proof pull request, before the requested round that actually opens a thread
-// answered by a correction), nor one another account opened. The review App's login is the one
-// read_app_logins would have read from GitHub; GraphQL names its bot by the bare slug.
+// review_threads, reviewer_thread and the thread checks, taken from lib/workflow.sh by name and run
+// against a stubbed gh api graphql answer. Every role acts as the one App, and GitHub takes no
+// review but a COMMENT from the pull request's author, which that App is: reviewer_thread must
+// pick the one thread the App's COMMENT review opened, never one another account opened, and the
+// checks can tell the App's comments from another account's but not one role's from another's. The
+// App's login is the one read_app_logins would have read from GitHub; GraphQL names its bot by the
+// bare slug.
 const fn = scriptFunctions(join(import.meta.dir, "workflow.sh"));
-const reviewApp = "example-review";
+const app = "example-implement";
 
 const dir = temporaryDirectory("reviewer-thread-test");
 const bin = join(dir, "bin");
@@ -60,18 +60,21 @@ function threadsFixture(
   return path;
 }
 
-function run(fixture: string, call: string) {
+function run(call: string, fixture = threadsFixture([])) {
   const result = Bun.spawnSync(
     [
       "bash",
       "-c",
       `set -Eeuo pipefail
 repo=sjawhar/legion-smoke pr_number=1
-implement_app_login='example-implement[bot]' review_app_login='${reviewApp}[bot]'
+app_login='${app}[bot]'
 ${fn("role_app")}
 ${fn("role_app_slug")}
 ${fn("review_threads")}
 ${fn("reviewer_thread")}
+${fn("thread_resolved_by")}
+${fn("thread_resolved_with_reply")}
+${fn("bot_thread_resolved")}
 ${call}
 `,
     ],
@@ -85,71 +88,88 @@ ${call}
 }
 
 describe("reviewer_thread", () => {
-  test("picks the CHANGES_REQUESTED review's thread, not a COMMENT review's leftover thread", () => {
+  test("picks the thread the App's COMMENT review opened, not another account's", () => {
     const fixture = threadsFixture([
-      { author: reviewApp, state: "SUBMITTED", reviewState: "COMMENTED" },
-      { author: reviewApp, state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
+      { author: "another-review", state: "SUBMITTED", reviewState: "COMMENTED" },
+      { author: app, state: "SUBMITTED", reviewState: "COMMENTED" },
     ]);
-    const { code, stdout, stderr } = run(fixture, "reviewer_thread");
+    const { code, stdout, stderr } = run("reviewer_thread", fixture);
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    expect(stdout).toContain("CHANGES_REQUESTED");
-    expect(stdout).not.toContain("COMMENTED");
+    expect(stdout).toStartWith(`T_${app}_COMMENTED_`);
   });
 
-  test("still fails naming the count when two threads are genuinely CHANGES_REQUESTED", () => {
+  test("fails naming the count when the App opened two threads", () => {
     const fixture = threadsFixture([
-      { author: reviewApp, state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
-      { author: reviewApp, state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
+      { author: app, state: "SUBMITTED", reviewState: "COMMENTED" },
+      { author: app, state: "SUBMITTED", reviewState: "COMMENTED" },
     ]);
-    const { code, stdout, stderr } = run(fixture, "reviewer_thread");
+    const { code, stdout, stderr } = run("reviewer_thread", fixture);
     expect(code).not.toBe(0);
-    expect(stdout + stderr).toContain("2 CHANGES_REQUESTED review threads, want exactly one");
-  });
-
-  test("picks the one thread when there is only ever a single CHANGES_REQUESTED review (the pre-merge case)", () => {
-    const fixture = threadsFixture([
-      { author: reviewApp, state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
-    ]);
-    const { code, stdout, stderr } = run(fixture, "reviewer_thread");
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
-    expect(stdout).toContain("CHANGES_REQUESTED");
-  });
-
-  test("still fails naming zero when the reviewer's only thread is a COMMENT review's", () => {
-    const fixture = threadsFixture([
-      { author: reviewApp, state: "SUBMITTED", reviewState: "COMMENTED" },
-    ]);
-    const { code, stdout, stderr } = run(fixture, "reviewer_thread");
-    expect(code).not.toBe(0);
-    expect(stdout + stderr).toContain("0 CHANGES_REQUESTED review threads, want exactly one");
-  });
-
-  test("a CHANGES_REQUESTED thread another account opened is never the review App's", () => {
-    const fixture = threadsFixture([
-      { author: "another-review", state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
-      { author: reviewApp, state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
-    ]);
-    const picked = run(fixture, "reviewer_thread");
-    expect(picked.code).toBe(0);
-    expect(picked.stdout).toStartWith(`T_${reviewApp}_CHANGES_REQUESTED_`);
-    const none = run(
-      threadsFixture([
-        { author: "another-review", state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
-      ]),
-      "reviewer_thread"
+    expect(stdout + stderr).toContain(
+      "the Legion reviewer opened 2 review threads, want exactly one"
     );
-    expect(none.code).not.toBe(0);
-    expect(none.stdout + none.stderr).toContain("0 CHANGES_REQUESTED review threads");
+  });
+
+  test("fails naming zero when only another account opened a thread, or the App's comment is in no submitted COMMENT review", () => {
+    for (const threads of [
+      [{ author: "another-review", state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" }],
+      [{ author: app, state: "PENDING", reviewState: "PENDING" }],
+      [],
+    ]) {
+      const { code, stdout, stderr } = run("reviewer_thread", threadsFixture(threads));
+      expect(code).not.toBe(0);
+      expect(stdout + stderr).toContain("the Legion reviewer opened 0 review threads");
+    }
   });
 
   test("fails saying so when read_app_logins has not run", () => {
-    const fixture = threadsFixture([
-      { author: reviewApp, state: "SUBMITTED", reviewState: "CHANGES_REQUESTED" },
-    ]);
-    const { code, stderr } = run(fixture, "review_app_login=\nreviewer_thread");
+    const fixture = threadsFixture([{ author: app, state: "SUBMITTED", reviewState: "COMMENTED" }]);
+    const { code, stderr } = run("app_login=\nreviewer_thread", fixture);
     expect(code).not.toBe(0);
-    expect(stderr).toContain("role_app: no App login for reviewer: read_app_logins has not run");
+    expect(stderr).toContain("role_app: no App login: read_app_logins has not run");
+  });
+});
+
+describe("the thread checks", () => {
+  /** A review_thread record: resolved or not, its comments by author, all submitted. */
+  const record = (isResolved: boolean, ...authors: string[]) => {
+    const path = join(dir, `record-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        id: "T_1",
+        isResolved,
+        comments: authors.map((author) => ({ author, body: "a reply", state: "SUBMITTED" })),
+      })
+    );
+    return path;
+  };
+
+  test("thread_resolved_by holds for a resolved thread whose newest comment is the App's, and no other", () => {
+    expect(run(`thread_resolved_by ${record(true, app, app)}`).code).toBe(0);
+    expect(run(`thread_resolved_by ${record(false, app, app)}`).code).not.toBe(0);
+    expect(run(`thread_resolved_by ${record(true, app, "sjawhar-agent")}`).code).not.toBe(0);
+  });
+
+  test("thread_resolved_with_reply holds for a resolved thread with a reply of the App's after its opening", () => {
+    expect(run(`thread_resolved_with_reply ${record(true, "sjawhar-agent", app)}`).code).toBe(0);
+    expect(run(`thread_resolved_with_reply ${record(false, "sjawhar-agent", app)}`).code).not.toBe(
+      0
+    );
+    expect(run(`thread_resolved_with_reply ${record(true, app, "sjawhar-agent")}`).code).not.toBe(
+      0
+    );
+  });
+
+  test("bot_thread_resolved counts the App's replies, so a second role's answer is one more than the first's", () => {
+    // bot_thread_replies prints the thread's isResolved, then each reply's author and first line.
+    const replies = (resolved: boolean, ...authors: string[]) =>
+      `bot_thread_replies() { printf '%s\\n' ${resolved} ${authors.map((a) => `'${a}\tanswered'`).join(" ")}; }\n`;
+    expect(run(`${replies(true, app)}bot_thread_resolved C_1`).code).toBe(0);
+    expect(run(`${replies(true, app)}bot_thread_resolved C_1 2`).code).not.toBe(0);
+    expect(run(`${replies(true, app, app)}bot_thread_resolved C_1 2`).code).toBe(0);
+    expect(run(`${replies(false, app, app)}bot_thread_resolved C_1`).code).not.toBe(0);
+    expect(run(`${replies(true, "sjawhar-agent")}bot_thread_resolved C_1`).code).not.toBe(0);
   });
 });

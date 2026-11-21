@@ -17,16 +17,16 @@
 # branch before any merge, and the scratch base is deleted at the end.
 #
 # Run it as `bash scripts/e2e/stage3-4b13b-acceptance.sh` from the operator's own Oh My Pi session,
-# with the Stage 3 proof's three required inputs, LEGION_E2E_MODEL_GATEWAY_URL, SMOKE_UPSTREAM_NATS
-# and LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private key on
-# stdout, which prerequisites runs once, here on the driver, in this session's own environment (so
-# it may read the operator's HOME and their own configuration) into $work/app-key/review/key.pem,
-# the 0600 file whose `cat` is that App's private_key_command and from whose key the daemon mints
-# and renews that App's tokens; cleanup removes that directory on every exit
-# (scripts/e2e/README.md; the two role Apps' ids, LEGION_E2E_IMPLEMENT_APP_ID and
-# LEGION_E2E_REVIEW_APP_ID, and the name of the implement App's secrets broker github-app secret,
-# LEGION_E2E_IMPLEMENT_APP_SECRET, default to this deployment's own, lib/github-apps.sh), and three
-# of its own, since it creates no Docker container:
+# with the Stage 3 proof's two required inputs, LEGION_E2E_MODEL_GATEWAY_URL and
+# SMOKE_UPSTREAM_NATS, its App inputs (scripts/e2e/README.md and lib/github-apps.sh: Legion's one
+# App, LEGION_E2E_IMPLEMENT_APP_ID and the name of its secrets broker github-app secret,
+# LEGION_E2E_IMPLEMENT_APP_SECRET, default to this deployment's own, and
+# LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND, shell text that prints the App's PEM private key on stdout,
+# puts the run in key mode: prerequisites runs it once, here on the driver, in this session's own
+# environment, into $work/app-key/implement/key.pem, the 0600 file whose `cat` is the App's
+# private_key_command, from whose key the daemon mints the App's tokens and the verdict token it
+# writes legion-verdict with, and which cleanup removes on every exit), and three of its own, since
+# it creates no Docker container:
 # ACCEPT_PG_CONTAINER and ACCEPT_PG_PORT name a running Postgres container (user postgres, password
 # ci) in which the daemon and Dispatch take their own databases, and ACCEPT_NATS_BIN a nats-server
 # binary it runs natively. Its GitHub writes are the Stage 3 proof human's, the devbox gh acting as
@@ -142,8 +142,8 @@ cleanup() {
   # left as the checks set it. The warning names the line alone: inside a trap BASH_COMMAND is the
   # command the trap interrupted, not the cleanup command that failed.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
-  # First, whatever the rest of the teardown does: the review App's private key, which
-  # prerequisites resolved the operator's key command into for the daemon to read. This run keeps
+  # First, whatever the rest of the teardown does: the App's private key, which prerequisites
+  # resolved the operator's key command into for the daemon to read in key mode. This run keeps
   # $work for review, so the key must not be in it when the run ends.
   rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
@@ -184,7 +184,7 @@ cleanup() {
     [ -z "${ok:-}" ] || { since=$first_soft_since failed=$first_soft_check; }
     [ -z "$failed" ] || bash "$unserved_reader" --notes "$evidence/model-gateway" "$since" "$failed" >&2 || true
   fi
-  # The review App's private key must be gone, whatever else the teardown did, and this run keeps
+  # The App's private key must be gone, whatever else the teardown did, and this run keeps
   # $work: the lib's own check of the directory the removal above was to take (lib/github-apps.sh,
   # app_key_left).
   app_key_left "$work/app-key" || exit 1
@@ -502,14 +502,6 @@ retarget_pr() {
   [ "$(gh -R "$repo" pr view "$n" --json baseRefName --jq .baseRefName)" = "$scratch_base" ] || fail "$repo#$n did not retarget to $scratch_base"
   note "$issue opened $repo#$n; its base read $base here, and is $scratch_base"
 }
-# reviewer_approved N prints each commit the review App (role_app reviewer) approved on pull
-# request N, and fails when it approved none.
-reviewer_approved() {
-  local approved app
-  app=$(role_app reviewer) || return 1
-  approved=$(gh api --paginate "repos/$repo/pulls/$1/reviews" --jq ".[] | select(.user.login == \"$app\" and .state == \"APPROVED\") | .commit_id") || return 1
-  [ -n "$approved" ] && printf '%s\n' "$approved"
-}
 
 # ---- the instructor: every routine phase worker is instructed the moment its assignment arrives -----
 # Phase workers act on the daemon's assignment alone when no instruction reaches them promptly (a
@@ -525,7 +517,7 @@ instruction_for() {
   case "$role:$phase" in
     implementer:implementing) printf '%s' "Acceptance implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on legion/$issue, and open its pull request with base branch $scratch_base (pass --base $scratch_base to gh pr create; this proof's pull requests never target main). Record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge." ;;
     tester:testing) printf '%s' "Acceptance test operation: inspect the implementer's actual one-file change and this issue's pull request, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass and a summary that begins 'TESTER-SUMMARY $issue:'." ;;
-    reviewer:reviewing) printf '%s' "Acceptance final review: use the bash tool to submit APPROVE on this issue's pull request (head legion/$issue) in $repo at its current head as $(role_app reviewer), then complete the reviewer handoff. This exact smoke instruction takes precedence over waiting for another review round." ;;
+    reviewer:reviewing) printf '%s' "Acceptance final review: review this issue's pull request (head legion/$issue) in $repo at its current head, post your findings as one COMMENT review, then complete the reviewer handoff with verdict approve on that head. This exact smoke instruction takes precedence over waiting for another review round." ;;
     implementer:retro) printf '%s' "Acceptance retro: write the required retro handoff for this issue's pull request and complete the phase. Do not change the approved implementation." ;;
     merger:merging) printf '%s' "Acceptance hold: this is a proof run. Do not read, verify or merge the pull request yet, and do not call handoff_complete. Reply with the single line 'holding' and wait for the next targeted instruction, which says exactly what to do." ;;
   esac
@@ -612,19 +604,20 @@ require_process_tree() {
 
 begin prerequisites
 for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
-# implement App's broker secret and the review App's key command behind them (the header), proved
-# against GitHub here, before the run writes anything (lib/github-apps.sh, which the lib sourced
-# from ACCEPT_ROOT must carry). The key command runs once, here, in this shell's own environment,
-# into $work/app-key, which the daemon reads the key from and cleanup removes.
+# Legion's App, this deployment's own id unless the App inputs name another's, with its broker
+# secret or its key command behind it (the header), proved against GitHub here, before the run
+# writes anything (lib/github-apps.sh, which the lib sourced from ACCEPT_ROOT must carry); in key
+# mode legion.yaml's verdict_repositories names the smoke repository. A key command runs once,
+# here, in this shell's own environment, into $work/app-key, which the daemon reads the key from
+# and cleanup removes.
 declare -F require_app_inputs >/dev/null ||
   fail "ACCEPT_ROOT's scripts/e2e/lib/workflow.sh ($root) predates lib/github-apps.sh: point ACCEPT_ROOT at a checkout that has it"
-# A lib older than --key-dir reads the flag as a role instead, and dies naming a role no operator
-# wrote, so the flag is gated on its own before it is passed.
-[[ "$(declare -f write_github_apps)" == *--key-dir* ]] ||
-  fail "ACCEPT_ROOT's scripts/e2e/lib/github-apps.sh ($root) predates write_github_apps --key-dir: point ACCEPT_ROOT at a checkout that has it"
-require_app_inputs implement review
-write_github_apps --key-dir "$work/app-key" implement review
+# A lib from before the one App asks GitHub for a review App this run gives none, and reads no
+# reviewer verdict from the daemon's record, so it is refused by name rather than mid-run.
+declare -F app_key_mode assert_legion_verdict reviewer_verdict_recorded reviewer_newest_verdict >/dev/null ||
+  fail "ACCEPT_ROOT's scripts/e2e/lib ($root) predates the one App and the reviewer's verdict: point ACCEPT_ROOT at a checkout that has them"
+require_app_inputs implement
+write_github_apps --key-dir "$work/app-key" --verdict-repository "$repo" implement
 read_app_logins
 [ -x "$nats_bin" ] || fail "no native nats-server at $nats_bin"
 # The suspension waits are bounded by lib/workflow.sh's turn budget, and the lib sourced is ACCEPT_ROOT's.
@@ -1051,24 +1044,26 @@ note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$p
 pass
 
 begin reviewers
-# A review ends when its reviewer completes it: the reviewer approves the head it has, then commits
-# and pushes its handoff, so the pull request's head moves past the approved commit before the issue
-# leaves reviewing, and the retro's handoff moves it again. Whether that approval still stands for
-# the head the round ends on is the daemon's judgement (classify.ApprovalStands), recorded on the
-# round as its decision; the proof checks the review App approved and the daemon ended the round on
-# that approval, which moves the issue to accepting, where no worker runs: the tree's architect
-# accepts with the legion tool's sign_off (→ retro), told here by the proof, since it acts on no
-# notice under the rig's instructions.
+# A round ends when its reviewer completes it with its verdict: the reviewer posts its findings as
+# a COMMENT review and sends approve on the head it reviewed through its handoff completion, which
+# the daemon records (lib/workflow.sh, reviewer_verdicts) and ends the round on, moving the issue
+# to accepting, where no worker runs: the tree's architect accepts with the legion tool's sign_off
+# (→ retro), told here by the proof, since it acts on no notice under the rig's instructions. In key
+# mode the daemon writes legion-verdict success on the head that verdict names.
 reviewed_through() {
-  reviewer_approved "${pr_of[$1]}" >/dev/null && phase_at_least "$1" accepting &&
-    daemon_state | jq -e --arg i "$1" '.issues[$i].pullRequest.reviewDecision == "approved"' >/dev/null
+  local state phase
+  reviewer_verdict_recorded "$1" 1 approve && state=$(daemon_state) || return 1
+  phase=$(jq -r --arg i "$1" 'if .issues[$i].pullRequest.reviewDecision == "approved" then .issues[$i].phase else "" end' <<<"$state")
+  [ -n "$phase" ] && [ "$(phase_rank "$phase")" -ge "$(phase_rank accepting)" ]
 }
-review_app=$(role_app reviewer)
 for issue in "$root1" "$root2" "$root3"; do
-  until_true 900 "$repo#${pr_of[$issue]} approved by $review_app, and $issue past reviewing on that approval" reviewed_through "$issue"
-  note "$issue: $review_app approved $({ reviewer_approved "${pr_of[$issue]}" || true; } | cut -c1-8 | tr '\n' ' '); the head is now $(gh api "repos/$repo/pulls/${pr_of[$issue]}" --jq .head.sha | cut -c1-8)"
+  until_true 900 "the daemon's record of $issue's reviewer verdict approve on $repo#${pr_of[$issue]}, and $issue past reviewing on it" reviewed_through "$issue"
+  approved_head=$(reviewer_newest_verdict "$issue" 1 | cut -d' ' -f2)
+  [ -n "$approved_head" ] || fail "the daemon's record of $issue's reviewer verdicts names no head after its verdict approve"
+  note "$issue: the reviewer's verdict approve on ${approved_head:0:8}; the head is now $(gh api "repos/$repo/pulls/${pr_of[$issue]}" --jq .head.sha | cut -c1-8)"
+  ! app_key_mode || assert_legion_verdict "$repo" "$approved_head" success
   if issue_phase "$issue" accepting >/dev/null; then
-    send_agent "$issue" architect "Acceptance sign-off: the reviewer approved pull request #${pr_of[$issue]} and $issue is in accepting; accept it with the legion tool's sign_off for $issue now, report the result verbatim, then wait."
+    send_agent "$issue" architect "Acceptance sign-off: the reviewer's verdict on pull request #${pr_of[$issue]} is approve and $issue is in accepting; accept it with the legion tool's sign_off for $issue now, report the result verbatim, then wait."
   fi
   wait_for_phase_at_least "$issue" retro 600
   note "$issue: the architect's sign_off at accepting moved it to retro"

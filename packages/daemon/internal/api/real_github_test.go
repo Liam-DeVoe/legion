@@ -87,15 +87,14 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 }
 
 // githubAppsLib is the live proofs' App lib, scripts/e2e/lib/github-apps.sh: the one place this
-// deployment's App pair, the checks on the three inputs that override it and on the review App's
-// key command, which it requires and no default stands behind, and the token command are written.
+// deployment's App, the checks on the inputs that override it, and the token command are written.
 var githubAppsLib = filepath.Join("..", "..", "..", "..", "scripts", "e2e", "lib", "github-apps.sh")
 
 // liveProofAppInputs is the two inputs githubAppsLib reads for the implement role, each
 // overriding one default: the App's numeric id and the name of the secrets broker's github-app
-// secret that mints its token. The lib reads the review role's inputs too, which the shell stage
-// proofs set; the proofs here act as the implement App alone and name none of them, so no run of
-// them needs the operator's review key command.
+// secret that mints its token. The lib also reads LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND, which puts
+// a shell stage proof in key mode; the proofs here act through the App's token command, so a run
+// whose environment sets it is refused naming it (liveProofImplementAppFrom).
 var liveProofAppInputs = []string{
 	"LEGION_E2E_IMPLEMENT_APP_ID", "LEGION_E2E_IMPLEMENT_APP_SECRET",
 }
@@ -126,9 +125,9 @@ func runGitHubAppsLib(lib string, environ []string, script string, args ...strin
 // liveProofImplementApp resolves the implement App by running githubAppsLib's own
 // require_app_inputs and app_token_command in an environment of environ, so the gated proofs here
 // take the lib's default, its input checks and its token command, and no second copy of any of
-// them exists to drift. It asks for the implement role alone: the review App has no default
-// credential, so naming that role would make every run of these proofs need the operator's key
-// command. A refusal returns the lib's message, which names the input and never its value.
+// them exists to drift. The proofs act through the App's token command, so the lib must read the
+// App in token mode, and a key command in environ is refused naming it. A refusal returns the
+// lib's message, which names the input and never its value.
 func liveProofImplementApp(environ []string) (implement liveProofApp, err error) {
 	return liveProofImplementAppFrom(githubAppsLib, environ)
 }
@@ -142,6 +141,7 @@ func liveProofImplementAppFrom(lib string, environ []string) (implement liveProo
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 source "$1"
 require_app_inputs implement
+! app_key_mode || fail "LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND is set: these proofs act through the App's token command, which key mode replaces; unset it"
 command=$(app_token_command "$implement_app_secret")
 printf '%s\0%s\0%s\0' "$implement_app_id" "$implement_app_secret" "$command"`
 	stdout, stderr, runErr := runGitHubAppsLib(lib, environ, script)
@@ -164,9 +164,8 @@ printf '%s\0%s\0%s\0' "$implement_app_id" "$implement_app_secret" "$command"`
 // stage proof does: it writes implement as legion.yaml's `github_apps` block to
 // work/github-apps.yaml and runs the lib's own check_github_apps on that file, so the implement
 // App's token command must release that App's own token (GraphQL viewer, then GET /apps/<slug>)
-// with the write permission its role needs, `contents`, which the review App does not hold. It
-// returns the lib's notes, and on a refusal the lib's reason, which names the App by role and id
-// and never a token.
+// with the write permission the roles' work needs, `contents`. It returns the lib's notes, and on a
+// refusal the lib's reason, which names the App by role and id and never a token.
 func proveLiveProofApps(environ []string, work string, implement config.GitHubApp) (notes string, err error) {
 	// A JSON string is a YAML double-quoted scalar, as the lib's own write_github_apps quotes it.
 	id, _ := json.Marshal(implement.AppID)
@@ -226,12 +225,13 @@ func realGitHubApp(t *testing.T) config.GitHubApp {
 // TestLiveProofAppsReadTheLib proves liveProofImplementApp, ungated: with no input set it answers exactly
 // the implement App the lib's default_implement_app_* assignments hold, each set input replaces
 // its value, and a malformed or empty input is refused naming the input and never its value.
-// What it asserts of the lib's defaults is the implement pair alone, and it asserts the implement
-// App's token command asks the broker for that App's secret with the owner, repositories and
-// read-only narrowing the daemon's environment names. The lib's review defaults are
-// scripts/e2e/lib/app-logins.test.ts's business.
+// What it asserts of the lib's defaults is the App's id and secret, and it asserts the App's token
+// command asks the broker for that App's secret with the owner, repositories and read-only
+// narrowing the daemon's environment names.
 func TestLiveProofAppsReadTheLib(t *testing.T) {
-	inputs := liveProofAppInputs
+	// The two key commands are kept out as well: either, exported by the operator, would put the lib
+	// in key mode, or hand a child a value that may be a key.
+	inputs := append(slices.Clone(liveProofAppInputs), "LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND", "LEGION_E2E_REVIEW_APP_KEY_COMMAND")
 	base := make([]string, 0, len(os.Environ()))
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
@@ -276,6 +276,12 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 	}
 	if got := []string{implement.id, implement.secret}; !slices.Equal(got, []string{"101", "EXAMPLE_IMPLEMENT_APP"}) {
 		t.Errorf("with every input set the App is %v, want the inputs", got)
+	}
+	// The proofs act through the App's token command, so a key command in the environment, which
+	// puts the lib in key mode, is refused naming it rather than read as an App with no secret.
+	if _, err := liveProofImplementApp(with("LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND=cat /nonexistent")); err == nil ||
+		!strings.Contains(err.Error(), "LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND is set: these proofs act through the App's token command") {
+		t.Errorf("with the key command set, liveProofImplementApp answered %v, want its refusal naming LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND", err)
 	}
 	// The token command is what the daemon runs, so it must ask the broker for the input's
 	// profile, or its read profile when the daemon's environment asks for read-only
@@ -376,7 +382,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		// GitHub agreed, or refuses as a GitHub that answered another id. The block must be the one
 		// the lib's own write_github_apps writes for the same Apps.
 		stub, work, want := t.TempDir(), t.TempDir(), t.TempDir()
-		bun := "#!/bin/sh\ncp \"$4\" \"$STUB_KEEP\"\n[ -z \"$STUB_REFUSE\" ] || { echo 'app-logins: the implement App answered another id' >&2; exit 1; }\necho '{\"implement\":\"implement[bot]\",\"review\":\"review[bot]\"}'\n"
+		bun := "#!/bin/sh\ncp \"$4\" \"$STUB_KEEP\"\n[ -z \"$STUB_REFUSE\" ] || { echo 'app-logins: the implement App answered another id' >&2; exit 1; }\necho '{\"implement\":\"implement[bot]\"}'\n"
 		if err := os.WriteFile(filepath.Join(stub, "bun"), []byte(bun), 0o700); err != nil {
 			t.Fatal(err)
 		}

@@ -66,9 +66,9 @@
 #     user, with every file legion.yaml names mounted at its own path and none of the caller's
 #     environment but what the runtime kubeconfig's auth plugin reads, passed by name. Neither
 #     agent-secrets (a broker that checks a process's ancestry finds none across the container's
-#     pid namespace) nor the operator's review key command can run there, so prerequisites mints
-#     the implement App's installation tokens on the devbox, through agent-secrets, and writes the
-#     review App's private key once from that command, into owner-only files of a directory on the
+#     pid namespace) nor the operator's key command can run there, so prerequisites mints the
+#     App's installation tokens on the devbox, through agent-secrets, or in key mode writes the
+#     App's private key once from that command, into owner-only files of a directory on the
 #     devbox user's tmpfs (XDG_RUNTIME_DIR, which must be the user's own, 0700 and a tmpfs), and a
 #     refresher mints the releases again every 15 minutes; the container mounts that directory
 #     read-only and its credential commands only read it; the run's cleanup stops the refresher and
@@ -146,34 +146,33 @@
 #   devbox's security group admits from the Legion nodes, and under bridge a free port on the
 #   devbox, which the bridge forwards. There is no default: a default would pick a port another
 #   lane holds, and the repository carries no deployment's own.
-# - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID
-#   (optional) name the two role Apps the run acts as: each App's numeric id, and the name of the
-#   secrets broker github-app secret `agent-secrets` releases the implement App's installation
-#   tokens from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets
-#   none.
-# - LEGION_E2E_REVIEW_APP_KEY_COMMAND (required, no default) is shell text that prints the review
-#   App's PEM private key on stdout. prerequisites runs it once, here on the driver, in the
-#   operator's own environment — so it may read their HOME and their own gcloud or kubectl
-#   configuration — and writes what it prints to a 0600 file of the run's own that cleanup
-#   removes on every exit. The daemon never runs it: that App's private_key_command is a `cat` of
-#   that file, and the daemon mints and renews that App's tokens from the key it reads there. The
-#   repository carries neither the key nor the command, and the run prints neither.
+# - LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_IMPLEMENT_APP_SECRET (optional) name Legion's one
+#   GitHub App, which every role acts as: its numeric id, and the name of the secrets broker
+#   github-app secret `agent-secrets` releases its installation tokens from (lib/github-apps.sh).
+#   Each defaults to this deployment's own, so a run here sets none.
+# - LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND (optional) is shell text that prints the App's PEM private
+#   key on stdout, in place of the broker's release (key mode). prerequisites runs it once, here on
+#   the driver, in the operator's own environment — so it may read their HOME and their own gcloud
+#   or kubectl configuration — and writes what it prints to a 0600 file of the run's own that
+#   cleanup removes on every exit. The daemon never runs it: the App's private_key_command is a
+#   `cat` of that file, and the daemon mints and renews the App's tokens from the key it reads
+#   there. The repository carries neither the key nor the command, and the run prints neither.
 # - CLAUDE_SANDBOX_E2E_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) holds the
 #   transcript of the run, the daemon's log, the legion.yaml and pod fixture the run wrote, the
 #   implementer's Claude Code transcript as the session table holds it, and the namespace snapshots.
 #
-# Legion's role Apps resolve as the tmux proof's do (lib/github-apps.sh), and in neither mode does
-# the daemon run the operator's key command: it runs here, once, in this shell's own environment,
-# and the review App's private_key_command is a `cat` of the 0600 file it wrote. Under
-# aws-private-ip the daemon runs the implement App's token_command itself,
-# `agent-secrets <secret> … -- …`, and that key file is $work/app-key/review/key.pem
-# (write_github_apps --key-dir), which cleanup removes. Under bridge the daemon's container can
-# run neither command, so prerequisites mints the implement App's releases into owner-only files
-# on the devbox user's tmpfs and writes the key beside them once (mint_app_tokens), a refresher
-# mints the releases again every 15 minutes (start_app_token_refresher), and each role's command
-# is `cat` of its own file — the release of the owner the daemon asks for, or the key
-# (write_github_apps --token-dir) — which the container mounts read-only, for the run's lifetime
-# alone. Either way prerequisites proves each App from its token against
+# Legion's App resolves as the tmux proof's does (lib/github-apps.sh), and in neither mode does the
+# daemon run the operator's key command: in key mode it runs here, once, in this shell's own
+# environment, and the App's private_key_command is a `cat` of the 0600 file it wrote. Under
+# aws-private-ip the daemon runs the App's token_command itself, `agent-secrets <secret> … -- …`,
+# or in key mode reads $work/app-key/implement/key.pem (write_github_apps --key-dir), which cleanup
+# removes. Under bridge the daemon's container can run neither command, so prerequisites mints the
+# App's releases into owner-only files on the devbox user's tmpfs, or in key mode writes the key
+# there once (mint_app_tokens), a refresher mints the releases again every 15 minutes
+# (start_app_token_refresher), and the App's command is `cat` of its own file — the release of the
+# owner the daemon asks for, or the key (write_github_apps --token-dir) — which the container
+# mounts read-only, for the run's lifetime alone. Either way prerequisites proves the App from its
+# token against
 # GitHub (GraphQL's viewer, then GET /apps/<slug>, lib/app-logins.ts) before the run writes
 # anything; legion.yaml's github_apps is the block proved. The proof human is the devbox's ordinary
 # gh acting as sjawhar-agent[bot] (require_proof_human), so run it from the operator's own Oh My Pi
@@ -264,8 +263,8 @@ daemon_log=$evidence/logs/daemon.log
 # mint_app_tokens).
 daemon_container="legion-e2eccs-daemon-$$"
 daemon_image=mirror.gcr.io/library/busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-# app_tokens_dir is the directory under XDG_RUNTIME_DIR that prerequisites mints the implement
-# App's token releases, and writes the review App's key, into under bridge (mint_app_tokens, then
+# app_tokens_dir is the directory under XDG_RUNTIME_DIR that prerequisites mints the App's token
+# releases, or in key mode writes the App's key, into under bridge (mint_app_tokens, then
 # the refresher for the releases), named legion-e2eccs-app-tokens.<the driver's pid>.<random> so a
 # later run's prerequisites can tell a dead run's from a live one's, and set before a file is
 # written, so cleanup removes whatever part of it a run left. Empty under aws-private-ip.
@@ -812,17 +811,16 @@ exec_credential_said='
 # `cat` win, then the auth plugin's directory. A probe then runs with the daemon's own arguments
 # (daemon_run_args) and must print the devbox user's uid and gid, an /etc/hosts line mapping host
 # to 127.0.0.1, the auth plugin resolved by name at the path the devbox resolves it to, and exit 0
-# for each App's one credential command of $work/github-apps.yaml — the implement App's
-# token_command, the review App's private_key_command — run with its stdout, the release or the
+# for the App's one credential command of $work/github-apps.yaml — its token_command, or in key
+# mode its private_key_command — run with its stdout, the release or the
 # key, sent to /dev/null, which is what shows the file each reads is mounted and readable there.
 # A second run of the same container then runs the auth plugin as client-go runs it —
 # the exec stanza's args and env, KUBERNETES_EXEC_INFO naming its apiVersion — and must read an
 # ExecCredential with a non-empty status.token from it, of which it prints the length alone.
 prove_daemon_container() {
-  local plugin= plugin_word plugin_exec plugin_api gac mount role key_command inside got_uid got_gid got_hosts got_plugin plugin_said
+  local plugin= plugin_word plugin_exec plugin_api gac mount key_command inside got_uid got_gid got_hosts got_plugin plugin_said
   local key_args=() key_said key_status plugin_args=() plugin_run=() plugin_status token_said plugin_err
   local key_lines=() key_found=() key_field
-  local -A key_commands=() key_fields=()
   mountable "$runtime_kubeconfig" ||
     fail "LEGION_E2E_RUNTIME_KUBECONFIG names $runtime_kubeconfig, which the daemon's container cannot mount at its own path: it must be an existing absolute path holding no ',' or ':'"
   # The user's exec stanza alone, never the whole user: a token user's token stays in the file.
@@ -868,25 +866,21 @@ prove_daemon_container() {
   done < <(compgen -e)
   daemon_path=/bin
   [ -z "$plugin" ] || [ "$(dirname "$plugin")" = /bin ] || daemon_path+=":$(dirname "$plugin")"
-  # Each App's credential command as the daemon will run it: the text of $work/github-apps.yaml,
-  # the block legion.yaml includes, which write_github_apps wrote as one JSON-quoted line a role —
-  # a token_command for the App whose installation tokens the secrets broker releases, a
-  # private_key_command for the App the daemon mints its own from. Exactly one a role is what the
-  # daemon admits, so a role carrying both fields, or neither, is refused here by name. The
+  # The App's credential command as the daemon will run it: the text of $work/github-apps.yaml,
+  # the block legion.yaml includes, which write_github_apps wrote as one JSON-quoted line — a
+  # token_command where the secrets broker releases the App's installation tokens, a
+  # private_key_command where the daemon mints its own from the App's key. Exactly one is what the
+  # daemon admits, so the App carrying both fields, or neither, is refused here by name. The
   # command's text may be named in a message; what it prints never is.
-  for role in implement review; do
-    mapfile -t key_lines < <(awk -v role="$role" '/^  [^ ]/ { in_role = ($0 == "  " role ":") } in_role && /^    (token_command|private_key_command): / { print substr($0, 5) }' \
-      "$work/github-apps.yaml")
-    key_found=("${key_lines[@]%%:*}")
-    [ "${#key_lines[@]}" = 1 ] ||
-      fail "$work/github-apps.yaml gives the $role App ${#key_lines[@]} of token_command and private_key_command (${key_found[*]:-neither}), want exactly one"
-    key_field=${key_found[0]}
-    key_command=$(jq -er . <<<"${key_lines[0]#*: }") ||
-      fail "$work/github-apps.yaml gives the $role App a $key_field this run cannot read as a JSON-quoted command"
-    key_args+=("$role" "$key_command")
-    key_commands[$role]=$key_command
-    key_fields[$role]=$key_field
-  done
+  mapfile -t key_lines < <(awk '/^  [^ ]/ { in_app = ($0 == "  implement:") } in_app && /^    (token_command|private_key_command): / { print substr($0, 5) }' \
+    "$work/github-apps.yaml")
+  key_found=("${key_lines[@]%%:*}")
+  [ "${#key_lines[@]}" = 1 ] ||
+    fail "$work/github-apps.yaml gives the App ${#key_lines[@]} of token_command and private_key_command (${key_found[*]:-neither}), want exactly one"
+  key_field=${key_found[0]}
+  key_command=$(jq -er . <<<"${key_lines[0]#*: }") ||
+    fail "$work/github-apps.yaml gives the App a $key_field this run cannot read as a JSON-quoted command"
+  key_args=(implement "$key_command")
   mkdir -p "$work/daemon-home"
   chmod 0700 "$work/daemon-home"
   daemon_run_args
@@ -928,15 +922,13 @@ prove_daemon_container() {
     fail "the daemon's container ran its probe as uid ${got_uid:-<none>} gid ${got_gid:-<none>}, want $(id -u) $(id -g), the devbox user's own"
   awk -v host="$host" '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) if ($i == host) found = 1 } END { exit !found }' <<<"$got_hosts" ||
     fail "the daemon's container's /etc/hosts names $host as '$got_hosts', want 127.0.0.1 (--add-host)"
-  # Each credential command's exit status and the head of its stderr; its stdout — a release, or
-  # the review App's key — went nowhere. The probe's environment names no owner, so a token
-  # command reads the release of every installation, as the daemon's first read does.
-  for role in implement review; do
-    key_said=$(sed -n "s/^key $role //p" <<<"$inside")
-    key_status=${key_said%% *}
-    [ "$key_status" = 0 ] ||
-      fail "inside the daemon's container the $role App's ${key_fields[$role]} (${key_commands[$role]}) exited ${key_status:-nothing}: ${key_said#* }"
-  done
+  # The credential command's exit status and the head of its stderr; its stdout — a release, or
+  # the App's key — went nowhere. The probe's environment names no owner, so a token command
+  # reads the release of every installation, as the daemon's first read does.
+  key_said=$(sed -n "s/^key implement //p" <<<"$inside")
+  key_status=${key_said%% *}
+  [ "$key_status" = 0 ] ||
+    fail "inside the daemon's container the App's $key_field ($key_command) exited ${key_status:-nothing}: ${key_said#* }"
   plugin_said="the runtime kubeconfig's user execs no auth plugin"
   if [ -n "$plugin" ]; then
     [ "$got_plugin" = "$plugin" ] ||
@@ -966,7 +958,7 @@ prove_daemon_container() {
     plugin_said="the auth plugin $plugin_word is $got_plugin, and run as client-go runs it, it answers an ExecCredential ($plugin_api) whose token is ${token_said#token } characters long"
   fi
   note "the daemon's container ($daemon_image, docker run --network host --add-host $host:127.0.0.1 --init): its probe ran as uid $got_uid gid $got_gid, the devbox user's; its /etc/hosts: $got_hosts"
-  note "inside it each App's credential command of github-apps.yaml exits 0 (implement's ${key_fields[implement]}, review's ${key_fields[review]}), its output unprinted; $plugin_said; its PATH is $daemon_path"
+  note "inside it the App's credential command of github-apps.yaml exits 0 (its $key_field), its output unprinted; $plugin_said; its PATH is $daemon_path"
   note "mounted at their own paths: $work read-write; read-only ${daemon_mounts[*]}"
   note "passed by name from the caller's environment: ${daemon_passed[*]:-nothing}"
 }
@@ -1041,7 +1033,7 @@ remove_run_branch() {
 require_app_tokens_home() {
   local home=${XDG_RUNTIME_DIR:-} owner mode fs
   [ -n "$home" ] ||
-    fail "XDG_RUNTIME_DIR is unset: under bridge the implement App's installation tokens are minted, and the review App's private key written, into owner-only files on the devbox user's own tmpfs, the one XDG_RUNTIME_DIR names (a login session's /run/user/<uid>)"
+    fail "XDG_RUNTIME_DIR is unset: under bridge the App's installation tokens are minted, or in key mode its private key written, into owner-only files on the devbox user's own tmpfs, the one XDG_RUNTIME_DIR names (a login session's /run/user/<uid>)"
   [ -d "$home" ] || fail "XDG_RUNTIME_DIR names $home, which is not a directory"
   owner=$(stat -c %u -- "$home") && mode=$(stat -c %a -- "$home") && fs=$(stat -f -c %T -- "$home") ||
     fail "stat cannot read XDG_RUNTIME_DIR ($home)"
@@ -1103,7 +1095,7 @@ cleanup() {
   # FAIL line, and the run's exit status stays the one the checks set.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
   rm -f "$work/claude-model-key" "$work/claude-key-header" "$work/auth-plugin.env" "$work/auth-plugin.stderr"
-  # The review App's private key under aws-private-ip, which prerequisites resolved the operator's
+  # The App's private key under aws-private-ip in key mode, which prerequisites resolved the operator's
   # key command into for the daemon to read: removed first, whatever the rest of the teardown
   # does, since $work is kept when a run fails. Under bridge the key is on the tmpfs instead, and
   # remove_app_tokens below takes it with the releases.
@@ -1145,7 +1137,7 @@ cleanup() {
     printf 'claude backend sandbox e2e: FAIL (check %s)\n' "$check" >&2
   fi
   printf "the run's evidence is %s\n" "$evidence" >&2
-  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # The App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removal at the head of this trap was to take (lib/github-apps.sh,
   # app_key_left). It costs this run its status rather than its remaining cleanup.
   app_key_left "$work/app-key" || status=1
@@ -1223,25 +1215,24 @@ if [ "$pod_reachability" = bridge ] && [ -n "$daemon_container_mounts" ]; then
       fail "LEGION_E2E_DAEMON_CONTAINER_MOUNTS names '$mount', which is not an existing absolute path holding no ',': each of its colon-separated entries is a host path the daemon's container mounts read-only at its own path"
   done
 fi
-# Under bridge the implement App's installation tokens are minted, and the review App's private key
-# written, into owner-only files on the devbox user's tmpfs (mint_app_tokens, below), so where they
-# go is refused here with the other inputs.
+# Under bridge the App's installation tokens are minted, or in key mode its private key written,
+# into owner-only files on the devbox user's tmpfs (mint_app_tokens, below), so where they go is
+# refused here with the other inputs.
 [ "$pod_reachability" != bridge ] || require_app_tokens_home
-# The run's two role Apps: their ids and the implement App's broker secret, this deployment's own
-# unless the App inputs name another's, and the review App's key command, which has no default and
-# is required (lib/github-apps.sh); a malformed input is refused here by name, never printed. No
-# process the run starts inherits an App secret: the listener and Dispatch run less app_key_unsets,
-# the daemon under aws-private-ip less daemon_env_unset, which takes the same list here, and the
-# daemon's container under bridge carries none of the caller's environment but the names
-# daemon_run_args passes.
-require_app_inputs implement review
+# The run's one App: its id and its broker secret, this deployment's own unless the App inputs name
+# another's, or its key command in key mode (lib/github-apps.sh); a malformed input is refused here
+# by name, never printed. No process the run starts inherits an App secret: the listener and
+# Dispatch run less app_key_unsets, the daemon under aws-private-ip less daemon_env_unset, which
+# takes the same list here, and the daemon's container under bridge carries none of the caller's
+# environment but the names daemon_run_args passes.
+require_app_inputs implement
 daemon_env_unset+=("${app_key_unsets[@]}")
 # sha256sum holds the session table's copy of the transcript to the pod's (pod-deleted-resumes-…).
 tools=(go docker jq curl ss kubectl bun gh sha256sum)
 # getent holds the bridge Service's name to resolving nowhere on the devbox (prerequisites, below).
 [ "$pod_reachability" != bridge ] || tools+=(getent)
 for tool in "${tools[@]}"; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's tokens come through, is required"
+app_key_mode || command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the App's tokens come through, is required"
 [ -r "$runtime_kubeconfig" ] || fail "the runtime kubeconfig $runtime_kubeconfig is not readable"
 refuse_leftovers legion-e2eccs
 ports_free "$port_daemon" "$port_worker_stream" "$port_dispatch" "$port_listener" "$port_nats" "$port_session_db"
@@ -1258,37 +1249,37 @@ note "the Claude Code implementer's key from $claude_key_file: ${preflight_base_
   note "the pods call that endpoint at $model_base_url, LEGION_E2E_MODEL_BASE_URL; the devbox reached it at $preflight_base_url"
 [ "$model_route" != key-file ] || [ -z "$model_base_url" ] ||
   note "the pods' Oh My Pi roles call $model_base_url too, with the same key (the key-file route's models.yml)"
-# Legion's two role Apps proved against GitHub before the run writes anything (lib/github-apps.sh):
-# each App's credential command runs as the daemon runs it, GraphQL's viewer under its token names
-# the bot, and GET /apps/<slug> must answer the App's id and the write permission its role needs.
-# legion.yaml's github_apps is the block proved, and every check that names an App compares with
-# the login read here.
+# Legion's App proved against GitHub before the run writes anything (lib/github-apps.sh): its
+# credential command runs as the daemon runs it, GraphQL's viewer under its token names the bot,
+# and GET /apps/<slug> must answer the App's id and the write permission the roles' work needs.
+# legion.yaml's github_apps is the block proved, and every check that names the App compares with
+# the login read here. The run opens no pull request, so it names no verdict repository.
 if [ "$pod_reachability" = bridge ]; then
   # The daemon's container can run neither agent-secrets (a broker that checks a process's
-  # ancestry finds none across its pid namespace) nor the operator's key command, so the implement
-  # App's releases are minted here, through agent-secrets, and the review App's key is written here
-  # once, from the operator's command, into owner-only files of a directory of the run's own on the
+  # ancestry finds none across its pid namespace) nor the operator's key command, so the App's
+  # releases are minted here, through agent-secrets, or in key mode its key is written here once,
+  # from the operator's command, into owner-only files of a directory of the run's own on the
   # devbox user's tmpfs, which the container mounts read-only and whose files its credential
-  # commands only read: the release of every installation, and the run's one repository owner's,
-  # read-write and read-only, and the key beside them.
+  # command only reads: the release of every installation, and the run's one repository owner's,
+  # read-write and read-only, or the key.
   # app_tokens_dir is set before a file is written, so a run stopped mid-way leaves cleanup the
-  # part it wrote. The implement App's github-app secret is agent tier, so its releases wait on no
-  # person; a deployment that names a human-tier secret of its own waits here, unbounded, for that
-  # approval, and a denial or an expired request fails the run. The review App asks the broker
-  # nothing. A token lasts an hour, so the refresher mints every release file again every 15
-  # minutes until cleanup stops it; the key, which does not expire, is written once.
+  # part it wrote. The App's github-app secret is agent tier, so its releases wait on no person; a
+  # deployment that names a human-tier secret of its own waits here, unbounded, for that approval,
+  # and a denial or an expired request fails the run. In key mode the broker is asked nothing. A
+  # token lasts an hour, so the refresher mints every release file again every 15 minutes until
+  # cleanup stops it; the key, which does not expire, is written once.
   remove_dead_app_tokens
   app_tokens_dir=$(mktemp -d "$XDG_RUNTIME_DIR/legion-e2eccs-app-tokens.$$.XXXXXXXX")
-  note "minting the implement App's installation tokens through agent-secrets, and writing the review App's private key from its key command, into owner-only files of $app_tokens_dir (a broker secret whose grant asks a person's approval waits for it)"
+  note "minting the App's credential (its installation tokens through agent-secrets, or in key mode its private key from its key command) into owner-only files of $app_tokens_dir (a broker secret whose grant asks a person's approval waits for it)"
   mint_app_tokens "$app_tokens_dir" "${repo%%/*}"
   start_app_token_refresher "$app_tokens_dir"
   note "the App credential files, whose releases the refresher mints again every ${app_token_refresh_seconds}s and which cleanup removes: $(stat -c '%n (mode %a)' -- "$app_tokens_dir"/*/* | paste -sd' ' -), on $(stat -f -c %T -- "$app_tokens_dir")"
-  write_github_apps --token-dir "$app_tokens_dir" implement review
+  write_github_apps --token-dir "$app_tokens_dir" implement
 else
-  # The daemon here runs the implement App's token_command itself, agent-secrets on this devbox,
-  # but never the operator's key command: that runs once, in this shell's own environment, into
+  # The daemon here runs the App's token_command itself, agent-secrets on this devbox, but never
+  # the operator's key command: in key mode that runs once, in this shell's own environment, into
   # $work/app-key, whose 0600 key file the daemon's private_key_command reads with `cat`.
-  write_github_apps --key-dir "$work/app-key" implement review
+  write_github_apps --key-dir "$work/app-key" implement
 fi
 read_app_logins
 require_proof_human

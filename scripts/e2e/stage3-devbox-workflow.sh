@@ -28,23 +28,23 @@
 # sjawhar-agent App), never a Legion App, so run the script from the operator's own Oh My Pi
 # session, not a Legion pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses
 # to start otherwise (require_proof_human, lib/workflow.sh).
-# Legion's two role Apps are this deployment's own by default, and three inputs name another
-# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id,
-# and LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that
-# releases the implement App's installation tokens (lib/github-apps.sh). Those three default. The
-# fourth, LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private
-# key on stdout, is no input for another deployment's Apps: every run needs it, this deployment's
-# own included, it has no default, and a run that sets none is refused.
-# `prerequisites` runs that command once, here on the driver, in the operator's own environment —
-# so it may read their HOME and their own gcloud or kubectl configuration — and writes what it
-# prints to $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which cleanup removes
-# on every exit. The daemon never runs it: the review App's private_key_command is a `cat` of that
-# file, and the daemon mints and renews that App's tokens from the key it reads there. The
-# implement App's tokens are released through its token_command, which runs agent-secrets.
-# `prerequisites` proves each App from its token before the run writes anything, whichever Apps it
-# took: either is proved once to lib/app-logins.ts, which reads its bot login from GitHub
-# (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an argv, or
-# this transcript.
+# Legion's one GitHub App is this deployment's own by default, and two inputs name another
+# deployment's: LEGION_E2E_IMPLEMENT_APP_ID, its numeric id, and LEGION_E2E_IMPLEMENT_APP_SECRET,
+# the name of the secrets broker github-app secret that releases its installation tokens
+# (lib/github-apps.sh); both default. Every role acts as that App. A third,
+# LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND, shell text that prints the App's PEM private key on stdout,
+# puts the run in key mode in place of the broker's release: `prerequisites` runs that command
+# once, here on the driver, in the operator's own environment — so it may read their HOME and their
+# own gcloud or kubectl configuration — and writes what it prints to $work/app-key/implement/key.pem,
+# 0600 in a directory of mode 0700, which cleanup removes on every exit. The daemon never runs it:
+# the App's private_key_command is a `cat` of that file, from whose key the daemon mints and renews
+# the App's tokens and the verdict token it writes legion-verdict with, which in key mode legion.yaml
+# names the smoke repository for (verdict_repositories), and each verdict the run asserts is then
+# also asserted as that check (assert_reviewer_verdict). In token mode the App's token_command runs
+# agent-secrets, and the daemon writes no legion-verdict. `prerequisites` proves the App from its
+# token before the run writes anything, whichever input it took, in lib/app-logins.ts, which reads
+# its bot login from GitHub (read_app_logins, lib/workflow.sh). No token and no key enters this
+# shell, a pane, an argv, or this transcript.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -188,9 +188,9 @@ cleanup() {
   # resolved path, must never survive this script on any exit, so it is never conditioned on how
   # the rest of cleanup goes.
   rm -rf "$work/model-gateway-key" || true
-  # The review App's private key, which prerequisites resolved the operator's key command into for
-  # the daemon to read, goes with it and for the same reason: $work itself is kept when a run
-  # fails, and a private key must not be what it keeps.
+  # The App's private key, which prerequisites resolved the operator's key command into for the
+  # daemon to read in key mode, goes with it and for the same reason: $work itself is kept when a
+  # run fails, and a private key must not be what it keeps.
   rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
     printf 'production audit after failure:\n' >&2
@@ -238,7 +238,7 @@ cleanup() {
   [ -n "${ok:-}" ] || [ "$check" != smoke-main-clean ] || [ -n "$audit_failed" ] ||
     [ -s "$evidence/pane-endpoint-violation.txt" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the close it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
-  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # The App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
   app_key_left "$work/app-key" || exit 1
   return 0
@@ -617,13 +617,14 @@ report_architect_suspension() {
 begin prerequisites
 refuse_leftovers legion-e2e3
 for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
-# implement App's broker secret and the review App's key command behind them (the header), proved
-# against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
-# github_apps is the block proved. The key command runs once, here, in this shell's own
-# environment, into $work/app-key, which the daemon reads the key from and cleanup removes.
-require_app_inputs implement review
-write_github_apps --key-dir "$work/app-key" implement review
+# Legion's App, this deployment's own id unless the App inputs name another's, with its broker
+# secret or its key command behind it (the header), proved against GitHub here, before the run
+# writes anything (lib/github-apps.sh); legion.yaml's github_apps is the block proved, and in key
+# mode its verdict_repositories names the smoke repository. A key command runs once, here, in this
+# shell's own environment, into $work/app-key, which the daemon reads the key from and cleanup
+# removes.
+require_app_inputs implement
+write_github_apps --key-dir "$work/app-key" --verdict-repository "$repo" implement
 read_app_logins
 # STAGE3_FROM is a development aid for iterating on the later scenarios against a fresh rig; a run
 # with it set is never the proof and never prints PASS. `held` skips the first issue's workflow:
@@ -874,12 +875,12 @@ primary_issue() {
     "gh -R '$repo' pr list --head 'legion/$root_issue' --state open --json number | jq -e 'length == 1' >/dev/null"
   pr_number=$(gh -R "$repo" pr list --head "legion/$root_issue" --state open --json number --jq '.[0].number')
   # The planner's handoff is a record on the Dispatch issue, so the pull request's commits are the
-  # implementer's alone, authored and committed by the implement App's bot (role_app); no commit is
-  # a handoff, and none changes only .legion/.
+  # implementer's alone, authored and committed by the App's bot (role_app); no commit is a
+  # handoff, and none changes only .legion/.
   authors=$(gh api "repos/$repo/pulls/$pr_number/commits" --jq '[.[] | .commit.author.name + "|" + .commit.committer.name] | unique | join(",")')
-  want_authors="$(role_app implementer)|$(role_app implementer)"
+  want_authors="$(role_app)|$(role_app)"
   [ "$authors" = "$want_authors" ] ||
-    fail "$repo#$pr_number commits are authored|committed by $authors, want the implementer's App bot for both: $want_authors"
+    fail "$repo#$pr_number commits are authored|committed by $authors, want the App's bot for both: $want_authors"
   wait_for_phase "$root_issue" testing
   assert_round_handoff "$root_issue" 0
   assert_handoff_record "$root_issue" implementer implementing 0
@@ -889,7 +890,7 @@ primary_issue() {
     fail "$repo#$pr_number changes product files '$(tr '\n' ' ' <<<"$smoke_file")', want the spec's one file"
   fi
   wait_for_worker "$root_issue" tester
-  note "implementer opened $repo#$pr_number on legion/$root_issue changing $smoke_file, its commits authored and committed by the implementer App bot alone, and its completion naming its Dispatch handoff record advanced the daemon to testing"
+  note "implementer opened $repo#$pr_number on legion/$root_issue changing $smoke_file, its commits authored and committed by the App's bot alone, and its completion naming its Dispatch handoff record advanced the daemon to testing"
   pass
 
   begin primary-tester-pass
@@ -899,9 +900,9 @@ primary_issue() {
   wait_for_worker "$root_issue" reviewer
   pass
 
-  # Three real GitHub changes-requested reviews, each posted by the reviewer pane and ended by its
-  # completion, exercise the round counter, the return to implementing, and the third `pr-blocked`
-  # publication. Every recovery repeats the real workers.
+  # Three review rounds, each ended by the reviewer pane's verdict changes on its completion, with
+  # its findings as a COMMENT review, exercise the round counter, the return to implementing, and
+  # the third `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -911,14 +912,22 @@ primary_issue() {
     if [ "$round" = 2 ]; then
       # Round 1 left the bot's thread answered and resolved by the implementer: the reviewer, the
       # independent party, adjudicates the finding now, with its reply, and names the thread to the
-      # implementer as accepted (already resolved, the implementer having closed it first).
+      # implementer as accepted (already resolved, the implementer having closed it first). Every
+      # role replies as the one App, so the reviewer's reply is told by when it lands: one more of
+      # the App's than the thread held before the reviewer's turn, read when its verdict is recorded.
+      bot_replies_before=$(bot_thread_replies "$bot_thread" | tail -n +2 | grep -c "^$(role_app_slug)"$'\t' || true)
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The round ends when the reviewer completes it: its review, its handoff record, its completion.
+    # The round ends when the reviewer completes it: its review, its handoff record, its verdict.
     wait_for_phase "$root_issue" implementing 1200
     assert_handoff_record "$root_issue" reviewer reviewing "$round"
-    assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
+    assert_reviewer_verdict "$root_issue" "$round" changes
+    if [ "$round" = 2 ]; then
+      bot_thread_resolved "$bot_thread" $((bot_replies_before + 1)) ||
+        fail "the bot's review thread $bot_thread holds no reply of the App's beyond the $bot_replies_before it held before the reviewer's round-2 turn, or is not resolved: the reviewer did not adjudicate it"
+      note "the bot's review thread $bot_thread carries the Legion reviewer's reply, the App's reply $((bot_replies_before + 1)), given in the reviewer's turn, and is resolved"
+    fi
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
     wait_for_worker "$root_issue" implementer
     if [ "$round" = 3 ]; then
@@ -930,10 +939,10 @@ primary_issue() {
     fi
     bot_note=""
     if [ "$round" = 1 ]; then
-      # A CI bot's review thread: the proof human is a GitHub App, a bot account that is none of
-      # Legion's role Apps. The implementer answers it as any thread it answers and resolves it
-      # with its own gh (the pull request author's resolveReviewThread); the reviewer adjudicates
-      # the finding in round 2.
+      # A CI bot's review thread: the proof human is a GitHub App, a bot account that is not
+      # Legion's App. The implementer answers it as any thread it answers and resolves it with its
+      # own gh (the pull request author's resolveReviewThread); the reviewer adjudicates the
+      # finding in round 2.
       bot_thread=$(post_bot_thread 2>"$work/bot-thread.err") ||
         fail "the proof human could not open a bot review thread on pull request #$pr_number: $(cat "$work/bot-thread.err")"
       bot_note=" A bot also left one review thread on the pull request asking whether the file change is needed: answer it and resolve it as your role says for a thread you answer (it is needed: the spec asks for it), before you complete."
@@ -944,12 +953,8 @@ primary_issue() {
     wait_for_phase "$root_issue" testing 1200
     until_true 120 "round $round's correction on pull request #$pr_number" round_correction_pushed "$round"
     if [ "$round" = 1 ]; then
-      until_true 120 "the implementer's answer on the bot's review thread, and its own resolution of it" bot_thread_resolved "$bot_thread" implementer
+      until_true 120 "the implementer's answer on the bot's review thread, and its own resolution of it" bot_thread_resolved "$bot_thread"
       note "the implementer answered the bot's review thread $bot_thread and resolved it with its own gh"
-    fi
-    if [ "$round" = 2 ]; then
-      until_true 120 "the Legion reviewer's reply on the bot's review thread, the thread resolved" bot_thread_resolved "$bot_thread" reviewer
-      note "the bot's review thread $bot_thread carries the Legion reviewer's reply and is resolved: the reviewer adjudicated it and named it to the implementer"
     fi
     assert_round_handoff "$root_issue" "$round"
     assert_handoff_record "$root_issue" implementer implementing "$round"
@@ -978,12 +983,12 @@ primary_issue() {
   # sent now meets the daemon's one rule for it, accepted in accepting alone, and is refused
   # (SIGNOFF_OUTSIDE_ACCEPTING), read in the architect's session by the refusal's own sentence, and
   # moves nothing.
-  send_agent "$root_issue" architect "Stage 3 proof acceptance control: $root_issue is still in reviewing, before the reviewer's decision; call the legion tool's sign_off for $root_issue now anyway, record its exact refusal, and then wait: do not retry it."
+  send_agent "$root_issue" architect "Stage 3 proof acceptance control: $root_issue is still in reviewing, before the reviewer's verdict; call the legion tool's sign_off for $root_issue now anyway, record its exact refusal, and then wait: do not retry it."
   until_true 180 "the architect to observe the SIGNOFF_OUTSIDE_ACCEPTING refusal" session_contains "$root_issue" architect "$root_issue is in phase reviewing, not accepting; this sign-off changed nothing"
-  issue_phase "$root_issue" reviewing >/dev/null || fail "$root_issue left reviewing on a sign_off sent before the reviewer's decision"
+  issue_phase "$root_issue" reviewing >/dev/null || fail "$root_issue left reviewing on a sign_off sent before the reviewer's verdict"
   note "a sign_off in reviewing was refused SIGNOFF_OUTSIDE_ACCEPTING and moved nothing (negative control)"
   approve_as_reviewer "$root_issue"
-  # The approval moves the issue to accepting, where no worker starts and the board keeps
+  # The verdict approve moves the issue to accepting, where no worker starts and the board keeps
   # needs_review: the tree's architect, told by the reviewer's phase-finished notice, accepts with
   # sign_off (retro-handoff) or sends the issue back. The wait is for accepting itself, read within
   # a poll of the reviewer's completion; the architect acts on no notice under the proof's
@@ -1001,8 +1006,8 @@ primary_issue() {
   dispatch_status_is "$root_issue" needs_review >/dev/null ||
     fail "the board shows $root_issue $(dispatch_get "issues/$root_issue" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
   assert_handoff_record "$root_issue" reviewer reviewing 3
-  assert_review_of_head "$root_issue" 3 APPROVED
-  note "the reviewer's approval moved $root_issue to accepting: no worker started (the implementer's claim holds ${pending_phase:+a $pending_phase task, }no retro task), the board still needs_review with no status write pending, and the architect holds the reviewer's phase-finished notice"
+  assert_reviewer_verdict "$root_issue" 3 approve
+  note "the reviewer's verdict approve moved $root_issue to accepting: no worker started (the implementer's claim holds ${pending_phase:+a $pending_phase task, }no retro task), the board still needs_review with no status write pending, and the architect holds the reviewer's phase-finished notice"
   pass
   [ "$until" != rework ] || return 0
 
@@ -1033,7 +1038,7 @@ primary_issue() {
   pass
 
   begin merger-merge
-  # The merger merges the pull request itself, as the implement App, at the head it read:
+  # The merger merges the pull request itself, as the App, at the head it read:
   # `gh pr merge --squash --match-head-commit` with the subject and the empty body it passes, since
   # sjawhar/legion-smoke's base carries no merge queue. await_merger_merge only reads the pull
   # request and never merges it by hand, so a merge here is the agent's. The smoke main is held
@@ -1303,7 +1308,7 @@ restart_scenarios() {
   until_true 240 "the implementer pane to name its claim's gh directory" session_contains "$restart_issue" implementer "CRED-DIR=$state/secrets/"
   until_true 240 "the implementer pane to list its gh bundle's root" pane_bundle_listing "$restart_issue"
   until_true 240 "the implementer pane to carry an empty GH_TOKEN" session_contains "$restart_issue" implementer "CRED-TOKEN=."
-  implement_app=$(role_app implementer)
+  implement_app=$(role_app)
   until_true 240 "the implementer pane to authenticate as its App, $implement_app" session_contains "$restart_issue" implementer "CRED-VIEWER=$implement_app"
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's

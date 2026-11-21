@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -13,7 +14,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
-// its two role Apps' credentials through the secrets broker's client, `agent-secrets`, and the
+// its one App's credential through the secrets broker's client, `agent-secrets`, or in key mode the
 // operator's own key command alone, and never ask the local store, or it can never pass there.
 // Every tool the prerequisites ask for is a stand-in, so the run touches nothing outside this
 // test's directory, and the stand-ins answer as far as read_app_logins, the last prerequisite that
@@ -31,16 +32,16 @@ const keyFile = join(dir, "anthropic-key");
 // The release prerequisites admits: it refuses any other Bun before it runs lib/app-logins.ts, so
 // the stand-in `bun` below answers `--version` with the pin out of the file that check reads.
 const pinned = readFileSync(join(import.meta.dir, "..", "..", "..", ".bun-version"), "utf8").trim();
-// What the operator's own key command prints here, which is the review App's whole credential:
-// prerequisites runs that command once, on the driver, into the run's own 0600 key file, and the
-// block it writes carries a `cat` of that file. It holds no apostrophe, since the row below gives
-// the command as a single-quoted `printf` argument.
-const keyCommandPrints = "a stand-in review App key, printed by the key command of this run";
-// Where the stand-in lib/app-logins.ts below leaves each App's credential as the block hands it to
-// the daemon: the review App's key from its private_key_command, the implement App's token from
-// its token_command.
-const keyRead = join(dir, "review-key-the-block-reads");
-const tokenRead = join(dir, "implement-token-the-block-reads");
+// What the operator's own key command prints here, which is the App's whole credential in key
+// mode: prerequisites runs that command once, on the driver, into the run's own 0600 key file, and
+// the block it writes carries a `cat` of that file. It holds no apostrophe, since the row below
+// gives the command as a single-quoted `printf` argument.
+const keyCommandPrints = "a stand-in App key, printed by the key command of this run";
+// Where the stand-in lib/app-logins.ts below leaves the App's credential as the block hands it to
+// the daemon: its key from its private_key_command, or its token from its token_command.
+const credentialRead = join(dir, "credential-the-block-reads");
+// Where the stand-in agent-secrets records that it was asked.
+const brokerAsked = join(dir, "agent-secrets-asked");
 function stub(name: string, body: string) {
   writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
   chmodSync(join(bin, name), 0o755);
@@ -65,6 +66,8 @@ const tools = [
   "basename",
   "grep",
   "env",
+  // The App's token_command prints its release with printenv, under the stand-in agent-secrets.
+  "printenv",
   "rm",
   "mkdir",
   "chmod",
@@ -113,23 +116,23 @@ beforeAll(() => {
   stub("curl", "printf 200");
   // The box's own store holds no App credential, and records that it was asked.
   stub("secrets", `printf '%s\\n' "$*" >> '${asked}'\necho "no secret named $2" >&2\nexit 1`);
-  // The broker's client the implement App's token comes through: it runs the command after `--`
-  // with that secret's release in its environment, under whatever flags the token command gave.
+  // The broker's client the App's token comes through: it runs the command after `--` with that
+  // secret's release in its environment, under whatever flags the token command gave, and records
+  // that it was asked.
   stub(
     "agent-secrets",
-    'name=$1; shift; while [ "$1" != -- ]; do shift; done; shift; export "$name={}"; exec "$@"'
+    `printf '%s\\n' "$1" >> '${brokerAsked}'; name=$1; shift; while [ "$1" != -- ]; do shift; done; shift; export "$name={}"; exec "$@"`
   );
   // The pinned Bun, and lib/app-logins.ts with it: prerequisites holds the version to the pin
-  // before it runs that script, and the script runs each App's credential command out of the
-  // block the lib wrote, as the daemon runs it. This stand-in does that much, leaves what each
-  // command printed where the row below reads it, and answers with the logins its caller parses.
+  // before it runs that script, and the script runs the App's credential command out of the block
+  // the lib wrote, as the daemon runs it. This stand-in does that much, leaves what the command
+  // printed where the rows below read it, and answers with the login its caller parses.
   stub(
     "bun",
     `case $1 in --version) echo ${pinned}; exit 0 ;; esac
 for arg in "$@"; do case $arg in *github-apps.yaml) yaml=$arg ;; esac; done
-sh -c "$(sed -n 's/^    private_key_command: //p' "$yaml" | jq -r .)" >'${keyRead}'
-sh -c "$(sed -n 's/^    token_command: //p' "$yaml" | jq -r .)" >'${tokenRead}'
-printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
+sh -c "$(sed -n 's/^    \\(private_key\\|token\\)_command: //p' "$yaml" | jq -r .)" >'${credentialRead}'
+printf '{"implement":"example-implement[bot]"}'`
   );
   for (const [name, path] of found) {
     if (path !== null) symlinkSync(path, join(bin, name));
@@ -137,41 +140,59 @@ printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
   writeFileSync(keyFile, "sk-test\n", { mode: 0o600 });
 });
 
+function prerequisites(env: Record<string, string>) {
+  rmSync(credentialRead, { force: true });
+  rmSync(brokerAsked, { force: true });
+  const run = Bun.spawnSync(["bash", script], {
+    env: {
+      HOME: dir,
+      PATH: bin,
+      TMPDIR: scratch,
+      LEGION_E2E_MODEL_ROUTE: "key-file",
+      LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
+      ...env,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 60_000,
+  });
+  const output = run.stdout.toString() + run.stderr.toString();
+  // read_app_logins passed, so every assertion a row makes is about a run that resolved the App's
+  // credential rather than one a stand-in stopped before it.
+  expect(output).toContain("the App acts on GitHub as example-implement[bot] for every role");
+  expect(output).not.toMatch(/^FAIL prerequisites: secrets\b/m);
+  // A prerequisites that reached the credential through the box's own store would leave a line in
+  // `asked`.
+  expect(existsSync(asked) ? readFileSync(asked, "utf8") : "").toBe("");
+  return {
+    credential: readFileSync(credentialRead, "utf8"),
+    broker: existsSync(brokerAsked) ? readFileSync(brokerAsked, "utf8") : "",
+  };
+}
+
 test.skipIf(skip)(
-  "the prerequisites reach both Apps' credentials and never ask the box's own secrets store",
+  "in token mode the prerequisites reach the App's release through agent-secrets and never ask the box's own secrets store",
   () => {
-    const run = Bun.spawnSync(["bash", script], {
-      env: {
-        HOME: dir,
-        PATH: bin,
-        TMPDIR: scratch,
-        LEGION_E2E_MODEL_ROUTE: "key-file",
-        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
-        // The review App's key command, which prerequisites requires and has no default for
-        // (lib/github-apps.sh). It runs once, here on the driver, before the Bun pin check and
-        // lib/app-logins.ts, and what it prints is the key the block's `cat` then reads.
-        // `printf` is the shell's own builtin, so it answers under this run's stand-in PATH.
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf %s '${keyCommandPrints}'`,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 60_000,
+    const { credential, broker } = prerequisites({});
+    // The token as the block hands it to the daemon: the broker client's release, as printenv
+    // prints it.
+    expect(credential).toBe("{}\n");
+    expect(broker).toContain("LEGION_IMPLEMENT_APP");
+  },
+  90_000
+);
+
+test.skipIf(skip)(
+  "in key mode the prerequisites reach the App's key through the operator's command alone, asking neither store",
+  () => {
+    const { credential, broker } = prerequisites({
+      // The App's key command. It runs once, here on the driver, before the Bun pin check and
+      // lib/app-logins.ts, and what it prints is the key the block's `cat` then reads. `printf` is
+      // the shell's own builtin, so it answers under this run's stand-in PATH.
+      LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND: `printf %s '${keyCommandPrints}'`,
     });
-    const output = run.stdout.toString() + run.stderr.toString();
-    // read_app_logins passed, so every assertion below is about a run that resolved both App
-    // credentials rather than one a stand-in stopped before them.
-    expect(output).toContain(
-      "the implement App acts on GitHub as example-implement[bot] and the review App as " +
-        "example-review[bot]"
-    );
-    expect(output).not.toMatch(/^FAIL prerequisites: secrets\b/m);
-    // Each credential as the block hands it to the daemon: the review App's key is what the
-    // operator's command printed, through the run's own key file, and the implement App's token
-    // is the broker client's release. A prerequisites that reached either through the box's own
-    // store would leave another value here and a line in `asked`.
-    expect(readFileSync(keyRead, "utf8")).toBe(keyCommandPrints);
-    expect(readFileSync(tokenRead, "utf8")).toBe("{}");
-    expect(existsSync(asked) ? readFileSync(asked, "utf8") : "").toBe("");
+    expect(credential).toBe(keyCommandPrints);
+    expect(broker).toBe("");
   },
   90_000
 );
