@@ -59,10 +59,11 @@ type Server struct {
 	// Account reads Token, as ciphertoken.AccountToken reads a projected token from its file.
 	Account StaticAccount
 
-	rows   map[string]Row
 	people map[string]string
 
+	// mu guards rows, calls and down: rows because SetRow changes one while the stand-in serves.
 	mu    sync.Mutex
+	rows  map[string]Row
 	calls int
 	down  bool
 }

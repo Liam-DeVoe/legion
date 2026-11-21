@@ -85,12 +85,11 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 		"dispatch": natsgrant.Dispatch("example-dispatch"),
 		"shared":   natsgrant.ListenerHost("example-shared"),
 		// The observer stands in for the relay socket's serving replica: it reads the session's
-		// relay subject and answers on whatever reply subject a frame names. At this head the edge's
-		// relay names its receipts under its inbox prefix, so the observer publishes there: reach no
-		// rendered grant holds, since Session publishes _INBOX.> and Edge no inbox. The receipt
-		// family the edge's own grant publishes (natsgrant.EdgeRelayReplyPrefix) is the relay
-		// socket's of #4658.
-		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
+		// relay subject and answers on whatever reply subject a frame names. An edge listener's
+		// frames name a relay receipt under its machine's receipt family
+		// (natsgrant.EdgeRelayReplyPrefix), which the serving replica's grant publishes, and its
+		// connection probe names the edge's own inbox.
+		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>", natsgrant.EdgeRelayReplyPrefix(edgeLiveMachine) + ".>"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
 	}
 	var static []testnats.StaticUser
 	for _, name := range []string{"edge", "dispatch", "shared", "observer"} {
