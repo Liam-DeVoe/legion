@@ -364,7 +364,7 @@ the push, whose own snapshot finds nothing new unless another process wrote the 
 between.
 Each of its other commands runs with `--ignore-working-copy`.
 The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
-role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 209).
+role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 212).
 The step reads what the push sends from a dry run of the same push, and reads the author and the
 first `Legion-Role` trailer of each of those commits.
 Where a commit's author is not the identity that the table gives the trailer's role, the step

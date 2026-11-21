@@ -3019,7 +3019,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 209: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
+// 212: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
 // commits as, keys sorted (runtime.RoleIdentities). The push step of `legion jj` reads it
@@ -3035,12 +3035,12 @@ package api
 // release has no table, and its step does nothing; the reader passes over a field of an identity
 // it does not know, so a field a later release adds turns no step off. No shape of `GET
 // /legion/v1/state` or of a request moves, and this change adds no store migration; its records
-// in contract-shapes.json and request-shapes.json are 205's, written again at 209 by `-update`.
-// (This entry takes 209, above main's 202: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head of each of the 36 open pull requests of cybermonklabs/legion, of 356 open,
-// whose file list names this file, made on 2026-11-21 between 05:30:05Z and 05:41:39Z, found 203
-// declared by #2230, #4065, #4175, #4553, #4596 and #4661, 204 by #3831, 205 by #3712 and #4573,
-// 206 by #4540, 207 by #3993, #4030, #4392, #4432, #4590 and #4592, and 208 by #4611, and none
-// declaring 209. This entry stood at 200 and 202 before. Read the base's own number and every open
-// pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 209
+// in contract-shapes.json and request-shapes.json are 205's, written again at 212 by `-update`.
+// (This entry takes 212, above main's 205: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head of each of the 38 open pull requests of cybermonklabs/legion, of 415 open,
+// whose file list names this file, made on 2026-11-21 between 21:15:31Z and 21:40:45Z, found 206
+// declared by #3712, 207 by #3993, #4392, #4432, #4590 and #4805, 208 by #4175, 209 by #4049, 210
+// by #4661, 211 by #4611, and 213 to 217 by others, and none declaring 212. This entry stood at
+// 200, 202 and 209 before. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+const DaemonAPIVersion = 212
