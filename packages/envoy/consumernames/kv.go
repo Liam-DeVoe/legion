@@ -38,20 +38,64 @@ func SessionBucketConfig(replicas int) jetstream.KeyValueConfig {
 // CreateSessionBucket creates SessionBucket at replicas copies (SessionBucketConfig) and writes
 // its sentinel state, as the operator's create-bucket does before the cutover, and answers a
 // KVStore of it on conn. A bucket that exists already is refused, since no writer may adopt a
-// bucket another may own.
+// bucket another may own. The sentinel is written only once the new stream answers, within ctx's
+// deadline, else createBucketWait (createBucket).
 func CreateSessionBucket(ctx context.Context, conn *nats.Conn, replicas int, state StoreState) (*KVStore, error) {
+	return createBucket(ctx, conn, SessionBucketConfig(replicas), state)
+}
+
+// createBucketWait bounds a create's wait for its new stream to answer when ctx carries no
+// deadline.
+const createBucketWait = 30 * time.Second
+
+// createBucket is CreateSessionBucket of the bucket config describes. On a cluster the new stream
+// answers nobody for a moment after its create: until it has a leader, and its interest has
+// reached the member conn is on, that member answers a read that the stream does not exist, or
+// finds no responder for a read or a write. Each is ErrNoStore, which for a bucket just created
+// means only "not yet", so the sentinel's leader read is tried again until the stream answers it
+// (no record, the key never written), and the sentinel's write until a responder takes it. Past
+// the bound the create fails naming the bucket; the bucket stays, with no sentinel, which every
+// call refuses (ErrNoSentinel) until a create-bucket run writes one.
+func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValueConfig, state StoreState) (*KVStore, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
-		return nil, fmt.Errorf("consumer names: create %s: %w", SessionBucket, err)
+	if _, err := js.CreateKeyValue(ctx, config); err != nil {
+		return nil, fmt.Errorf("consumer names: create %s: %w", config.Bucket, err)
 	}
-	store := NewKVStore(SessionBucket, ConnRequester{conn})
-	if _, err := store.WriteSentinel(ctx, state, 0); err != nil {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, createBucketWait)
+		defer cancel()
+	}
+	store := NewKVStore(config.Bucket, ConnRequester{conn})
+	_, _, err = untilAnswered(ctx, config.Bucket, func() ([]byte, uint64, error) { return store.last(ctx, SentinelKey) })
+	if err != nil && !errors.Is(err, ErrNoRecord) && !errors.Is(err, ErrRecordDeleted) {
+		return nil, err
+	}
+	_, _, err = untilAnswered(ctx, config.Bucket, func() ([]byte, uint64, error) {
+		revision, err := store.WriteSentinel(ctx, state, 0)
+		return nil, revision, err
+	})
+	if err != nil {
 		return nil, err
 	}
 	return store, nil
+}
+
+// untilAnswered runs attempt until it answers anything but ErrNoStore, and answers that; once ctx
+// ends it answers the last ErrNoStore, naming the bucket.
+func untilAnswered(ctx context.Context, bucket string, attempt func() ([]byte, uint64, error)) ([]byte, uint64, error) {
+	for {
+		data, revision, err := attempt()
+		if !errors.Is(err, ErrNoStore) {
+			return data, revision, err
+		}
+		if sleep(ctx, 50*time.Millisecond) != nil {
+			return nil, 0, fmt.Errorf("consumer names: %s did not answer after its create: %w", bucket, err)
+		}
+	}
 }
 
 // Requester sends one request and answers its one reply: a JetStream API request or a publish to
@@ -88,13 +132,6 @@ func NewKVStore(bucket string, request Requester) *KVStore {
 
 // Bucket is the bucket the store reads.
 func (s *KVStore) Bucket() string { return s.bucket }
-
-// The JetStream API's error codes this store reads.
-const (
-	errCodeNoMessageFound   = 10037
-	errCodeStreamNotFound   = 10059
-	errCodeWrongLastSubject = 10071
-)
 
 // kvOperationHeader marks a KV delete or purge marker (nats.go kv.go).
 const kvOperationHeader = "KV-Operation"
@@ -215,9 +252,9 @@ func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) 
 		return nil, 0, fmt.Errorf("consumer names: read the answer for %s from %s: %w", key, s.stream(), err)
 	}
 	switch {
-	case response.Error != nil && response.Error.ErrorCode == errCodeNoMessageFound:
+	case response.Error != nil && response.Error.ErrorCode == jetstream.JSErrCodeMessageNotFound:
 		return nil, 0, ErrNoRecord
-	case response.Error != nil && response.Error.ErrorCode == errCodeStreamNotFound:
+	case response.Error != nil && response.Error.ErrorCode == jetstream.JSErrCodeStreamNotFound:
 		return nil, 0, fmt.Errorf("%w: %s (%w)", ErrNoStore, s.stream(), response.Error)
 	case response.Error != nil:
 		return nil, 0, fmt.Errorf("consumer names: read %s from %s: %w", key, s.stream(), response.Error)
@@ -257,7 +294,10 @@ func (s *KVStore) put(ctx context.Context, key string, data []byte, revision uin
 		return 0, fmt.Errorf("consumer names: read the acknowledgement of %s's write to %s: %w", key, s.bucket, err)
 	}
 	switch {
-	case ack.Error != nil && ack.Error.ErrorCode == errCodeWrongLastSubject:
+	// A replicated stream answers a write that meets another in flight on the same key with 10164,
+	// one copy a stale write with 10071: either is the record changed under the write.
+	case ack.Error != nil && (ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
+		ack.Error.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant):
 		return 0, fmt.Errorf("%w: %s in %s is past revision %d (%w)", ErrConflict, key, s.bucket, revision, ack.Error)
 	case ack.Error != nil:
 		return 0, fmt.Errorf("consumer names: write %s to %s: %w", key, s.bucket, ack.Error)

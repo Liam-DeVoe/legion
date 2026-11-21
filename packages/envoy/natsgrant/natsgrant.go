@@ -553,15 +553,16 @@ func Host(machineID string) Permissions {
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state and the listener's lease keys in KV_envoy_listener, and
-// publishes on its own cutover inbox, _INBOX_envoy_measure.cutover.>, under which a probe sends a
-// numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
-// changes and removes no stream: a create or an update carries a configuration of the caller's
-// choosing, and a source or a republish in it would read every stream of the account, so
-// ENVOY_MEASURE is the operator's to make, inside a hold (envoy-infra streams update). It
-// subscribes only its own inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where the listener's
-// and Dispatch's push consumer deliveries and request replies arrive, so it reads no message of
-// another client.
+// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and a
+// session's selection record in KV_envoy_session_consumers, from the stream's leader only, as
+// consumernames.KVStore reads it (no direct get, no write), and publishes on its own cutover inbox,
+// _INBOX_envoy_measure.cutover.>, under which a probe sends a numbered sequence and reads it back to
+// count what a restart of the hub's servers loses. It makes, changes and removes no stream: a
+// create or an update carries a configuration of the caller's choosing, and a source or a
+// republish in it would read every stream of the account, so ENVOY_MEASURE is the operator's to
+// make, inside a hold (envoy-infra streams update). It subscribes only its own inbox prefix,
+// _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
+// deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -573,6 +574,7 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
+			jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
 			measureInbox + ".cutover.>",
 		},
 		Subscribe: []string{measureInbox + ".>"},
