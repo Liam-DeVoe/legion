@@ -62,9 +62,13 @@ func startResultBroker(t *testing.T, status int, answer map[string]any) *resultB
 }
 
 // placeholderGrant is the token endpoint's answer to a result entry's run (C8), with an airlock
-// authority whose certificate the command's trust bundle can hold.
-func placeholderGrant(t *testing.T) map[string]any {
+// authority whose certificate the command's trust bundle can hold, its entry binding hosts, or
+// resultHost alone when none is given.
+func placeholderGrant(t *testing.T, hosts ...string) map[string]any {
 	t.Helper()
+	if len(hosts) == 0 {
+		hosts = []string{resultHost}
+	}
 	authority, err := proxyrulestest.NewAuthority("result-grant test")
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +78,7 @@ func placeholderGrant(t *testing.T) map[string]any {
 		oauthwire.ExtraGrantID: resultGrantID,
 		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
 			ProxyURL: "http://127.0.0.1:13381", CACertificate: string(authority.CertificatePEM()), ProxyPassword: resultPlaceholder,
-			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: resultPlaceholder, Slots: map[string]string{"value": resultPlaceholder}, Hosts: []string{resultHost}}},
+			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: resultPlaceholder, Slots: map[string]string{"value": resultPlaceholder}, Hosts: hosts}},
 		},
 	}
 }
@@ -170,12 +174,25 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 
 // TestResultGrantRefusesADispatchURLOutsideTheGrant: a DISPATCH_URL whose host the grant does not
 // bind would send the command's writes around the proxy with the placeholder in them, so nothing
-// runs.
+// runs. A host is bound as the proxy binds one: exactly, or one label or more under a `*.` entry,
+// so `evilexample.test` is not under `*.example.test`, and `dispatch.example.test` is, which runs.
 func TestResultGrantRefusesADispatchURLOutsideTheGrant(t *testing.T) {
-	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t))
-	stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL=https://dispatch.elsewhere.test")
-	if exit == 0 || strings.Contains(stdout, resultPlaceholder) || !strings.Contains(stderr, "dispatch.elsewhere.test") || !strings.Contains(stderr, "around") {
-		t.Fatalf("result-grant with DISPATCH_URL outside the grant = exit %d, stdout %q, stderr %q; want a refusal naming the host, and nothing run", exit, stdout, stderr)
+	for _, c := range []struct {
+		name, dispatchURL, host string
+		bound                   []string
+	}{
+		{"another host", "https://dispatch.elsewhere.test", "dispatch.elsewhere.test", nil},
+		{"a name that ends in a wildcard entry's domain without its dot", "https://evilexample.test", "evilexample.test", []string{"*.example.test"}},
+	} {
+		broker := startResultBroker(t, http.StatusOK, placeholderGrant(t, c.bound...))
+		stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL="+c.dispatchURL)
+		if exit == 0 || strings.Contains(stdout, resultPlaceholder) || !strings.Contains(stderr, c.host) || !strings.Contains(stderr, "around") {
+			t.Errorf("%s: result-grant with DISPATCH_URL=%s = exit %d, stdout %q, stderr %q; want a refusal naming the host, and nothing run", c.name, c.dispatchURL, exit, stdout, stderr)
+		}
+	}
+	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t, "*.example.test"))
+	if stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL=https://"+resultHost); exit != 0 || !strings.Contains(stdout, oauthwire.AirlockResultsName+"=") {
+		t.Errorf("result-grant with DISPATCH_URL=https://%s under a grant bound to *.example.test = exit %d (%s); want the command run", resultHost, exit, stderr)
 	}
 }
 

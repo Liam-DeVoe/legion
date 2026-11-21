@@ -1994,11 +1994,17 @@ func parseExchangeResultWorkflows(setting, value string) ([]exchange.ResultWorkf
 }
 
 // ResultEntryRules checks the airlock rules a broker with BROKER_EXCHANGE_RESULT_WORKFLOWS starts
-// with: they hold the entry DISPATCH_RESULTS_TOKEN, which binds a host, is of kind dpop, has a
-// non-empty allow list and is carried in the Authorization header alone (an entry naming no
-// headers carries the default, Authorization). Without that entry a result entry's run would be
-// granted a placeholder that no proxy honours, or one that opens every route of Dispatch's host.
-// The refusal names the entry and what it lacks. The caller reads the rules file; Load reads none.
+// with: they hold the entry DISPATCH_RESULTS_TOKEN, which binds one exact host and no `*.` name,
+// is of kind dpop, has a non-empty allow list and is carried in the Authorization header alone (an
+// entry naming no headers carries the default, Authorization). Without that entry a result entry's
+// run would be granted a placeholder that no proxy honours, or one that opens every route of
+// Dispatch's host. The one host is Dispatch's public host: the proxy sends the run's token, and a
+// DPoP proof of the pod's key for the host it was sent to, to every host the entry binds, so a
+// second host or a name under a `*.` entry would receive both. The broker holds no setting that
+// names Dispatch's public URL to compare it with; agent-secrets result-grant runs a command only
+// when its https DISPATCH_URL names this host, and Dispatch accepts a proof only for its own
+// origin (DISPATCH_SERVER_URL). The refusal names the entry and what it lacks. The caller reads the
+// rules file; Load reads none.
 func ResultEntryRules(rules proxyrules.Rules) error {
 	name := oauthwire.AirlockResultsName
 	entry := rules.Lookup(name)
@@ -2007,6 +2013,8 @@ func ResultEntryRules(rules proxyrules.Rules) error {
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s, and BROKER_AIRLOCK_RULES_FILE holds no entry of that name", name)
 	case len(entry.Hosts) == 0:
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to bind Dispatch's host, and it binds no host", name)
+	case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to bind one exact host, Dispatch's, and no `*.` name, since the run's token goes to every host it binds; it binds %q", name, entry.Hosts)
 	case entry.Kind != proxyrules.KindDPoP:
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s of kind %s, a capability the broker mints and holds, and its kind is %q", name, proxyrules.KindDPoP, entry.Kind)
 	case len(entry.Allow) == 0:
