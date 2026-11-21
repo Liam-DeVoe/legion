@@ -40,11 +40,10 @@ A read GitHub refuses leaves the required set unknown: report it to the architec
 - The newest run of a name (latest `started_at`) decides, and the newest status of a context.
   `--paginate` runs `--jq` per page, so choose over the merged list.
 
-- A check run `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a status `pending`, is running: wait, unapproved.
+- A required check run `queued`, `requested`, `waiting`, `pending` or `in_progress`, or such a status `pending`: wait, unapproved.
   A run waiting on an environment's approval, another App's check run, or a status left `pending` has no bound: once it outlasts its usual CI time, tell the architect and wait.
 
-- A check the base does not require holds no approval.
-  A red one is a finding if its log shows the change breaks something; else name it in the review body.
+- A check the base does not require holds no approval: a red one is a finding if its log shows the change breaks something, else name it in the review body.
 
 - The `checkRuns` of the issue's `mergeWait` counts only the runs a settlement applied: read GitHub before you act.
 
@@ -96,7 +95,7 @@ gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submit
   When they name an agent or a role, `envoy_publish` the merge commit to its topic with `expects_reply: false` and await no reply.
   Open a `dispatch ask` only where the instructions name nobody; the look still ends `pending`.
 
-- A staging pass is no production pass: staging lacks resources production runs.
+- A staging pass is no production pass: staging may lack resources production runs.
 
 - Report each look's verdict as your role prompt says.
   A `fail` follows `skill://legion-worker/references/findings.md`: file no issue.

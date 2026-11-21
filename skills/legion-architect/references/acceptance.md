@@ -5,7 +5,7 @@ Where it says to ask a person, a child's own architect sends the question to the
 
 ## Retro's result
 
-Retro posts one `dispatch comment` of learnings and one `dispatch message`, brings the pull request body up to date, and commits nothing.
+Retro posts at most one `dispatch comment` of learnings and one `dispatch message`, brings the pull request body up to date, and commits nothing.
 When it reports that it cannot compute, read or write that body, it is still in its phase:
 answer it on its role topic from the deployment instructions, or open a `dispatch ask` naming the missing instruction.
 
@@ -51,7 +51,7 @@ Until those children close, leave the issue in `accepting`; that wait is no reas
 Before you park a child, move its criterion to the parent's own pull request or a released, open child; never downgrade it.
 Then, in one turn:
 
-1. Where the task has a tester step, `envoy_publish` to its tester:
+1. Where the task has a tester step, `envoy_publish` to its tester's role topic:
    "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
    With no tester step, the implementer's evidence for those checks at the merge head is the full round.
 
@@ -61,8 +61,11 @@ Then, in one turn:
 
 A child's merge while the parent waits needs no move of its own:
 the last round's forward merge takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
-If the pull request merged before its last round, move nothing back:
-once the children close, have a fresh `task` subagent run each check with no `ci_check` on the default branch and record each result, read each `ci_check` result in `dispatch results`, post them in the acceptance comment, then `sign_off`.
+If the pull request merged before its last round, move nothing back. Once the children close:
+
+1. Have a fresh `task` subagent run each check with no `ci_check` on the default branch and record each result, and `wait` for its report.
+2. Read each `ci_check` result in `dispatch results`.
+3. Post the results in the acceptance comment, then `sign_off`.
 
 ## After your sign-off
 

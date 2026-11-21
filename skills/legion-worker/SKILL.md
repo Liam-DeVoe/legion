@@ -24,7 +24,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
    the working copy is the next role's first commit.
 
 5. Every role writes the one workspace, so a file can change under your check.
-   Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
+   Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
    A run whose output you did not capture can be neither confirmed nor cleared.
 
@@ -44,7 +44,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
   - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded.
     Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
 
-  - `HANDOFF_NOT_CURRENT_PHASE`: report it; never complete again.
+  - `HANDOFF_NOT_CURRENT_PHASE`: report it; never complete that task again.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.
 
 - These waits stand rather than proceed, each ending the turn with a `WAITING` line naming what it waits on:

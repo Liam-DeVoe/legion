@@ -56,8 +56,9 @@ A refused release writes nothing: release the rest again without the child it na
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- A child's own architect starts beside the agent of its child's first step: decide first whether the child needs children.
-  If it does, file and release them, then tell the agent that holds the child's plan (its planner where the task names one, else its implementer, whose plan is its `Task text:`) that the plan covers only the child's own part and the join of their work.
+- A child's own architect starts beside the agent of its child's first step, so decide first whether the child needs children.
+  If it does, file and release them.
+  Then tell the agent that holds the child's plan that the plan covers only the child's own part and the join of their work: its planner where the task names one, else its implementer, whose plan is its `Task text:`.
 
 - Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
   building a missing path is this tree's work.
@@ -100,9 +101,8 @@ Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
 
-Set an issue's `blocked_by` list when it must wait on a sibling or on an issue outside this tree, in one call naming every blocker (`dispatch issue-update --issue <key> --blocked-by <a>
---blocked-by <b>`, which replaces the whole list, so read its links first with `dispatch read`;
-a credential scoped to one project cannot link another project's issue: `PROJECT_SCOPE`).
+When an issue must wait on a sibling or on an issue outside this tree, read its links with `dispatch read`, then set its `blocked_by` list in one call naming every blocker (`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`), because that call replaces the whole list.
+A credential scoped to one project cannot link another project's issue (`PROJECT_SCOPE`).
 A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
 Legion starts the issue once its blockers close.
 

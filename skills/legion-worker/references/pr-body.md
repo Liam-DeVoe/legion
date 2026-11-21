@@ -59,7 +59,7 @@ With no reviewer step, at retro the implementer updates `Not proven / risk` afte
 A requirement there is unmet, unless only the deploy can show it and the plan names its observation.
 A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
 
-## The `Thermo` line
+## The simplify pass and the `Thermo` line
 
 - The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes, whatever the diff touches, a docs-only diff included.
   Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.

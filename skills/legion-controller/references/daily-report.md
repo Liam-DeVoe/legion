@@ -58,7 +58,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
 - **What nothing starts.**
   `admission.held` grouped by `reason`, each group's count, issues and `heldBy`, and what ends it (`skill://legion-controller/references/admission.md`);
   an `unclassified` issue with its `phase` and `status`;
-  each `task_stopped` issue with its `heldFrom`, since only its architect's changed plan or a root's `todo` starts it.
+  each `task_stopped` issue with its `heldFrom`.
 
 - **Phase workers nothing will prompt.**
   The most recent tick's `silent` list, with each role and how long it has been quiet, or how long its background work has stood (`backgroundSince`).

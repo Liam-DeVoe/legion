@@ -24,11 +24,10 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- A block with no `steps`, or `steps=""`, runs the project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`: `planner implementer tester reviewer
-  acceptance:owner` unless the project sets others.
+- A block with no `steps`, or `steps=""`, runs the project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`: `planner implementer tester reviewer acceptance:owner` unless the project sets others.
 
 - This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because it records what the work needed.
+  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
 
 - Once `plan.md` exists, upload each new version with `--force --precondition-json '{"document":"sha256:…"}'`, the token `dispatch doc-read --issue <issue> --artifact plan.md` prints.
   An upload replaces the whole document, so Dispatch refuses one with no token (`400 PRECONDITION_REQUIRED`) and one whose token is behind the live version (`409 PRECONDITION_FAILED`):
@@ -44,50 +43,26 @@ The steps are some of these five, in this order, with `implementer` among them:
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and nobody runs them again. |
 | `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and you read no evidence before it. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
 
 Without `acceptance:owner`, two steps still hold the checks:
 a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
-An issue with no `before_merge` check has neither gate, so give it that step: your acceptance is then its only gate.
-Give it to a parent with children too, because a parent's last round runs from your acceptance (`skill://legion-architect/references/acceptance.md`, "The last round"):
+An issue with no `before_merge` check has neither gate, so give it `acceptance:owner`: your acceptance is then its only gate.
+Give `acceptance:owner` to a parent with children too, because a parent's last round runs from your acceptance (`skill://legion-architect/references/acceptance.md`, "The last round"):
 without it, Legion holds the parent before its retro until its children leave, then starts the retro at the head the parent stood on.
 
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-A reason that ends `This release of Legion
-does not carry it out yet.` names a plan a later release takes: write the plan again within the rules above.
-These are the reasons that end so, with `<…>` filled in:
+Fix each reason and give a new version.
+A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above and these rules.
 
-- `the plan has <n> tasks (<ids>), and this release runs one task for each issue.`
+- One `plan_task` block, with an id (`:::plan_task{#a …}`), and no `plan_role` block.
 
-- `task <id> needs <ids>.`
+- No `needs`, `merges`, `owner` or `part_of` attribute on the block.
 
-- `task <id> names <role> at step <i> after <role> at step <j>, and this release runs the steps in the order planner, implementer, tester, reviewer, acceptance.`
-
-- `task <id> has no step implementer.`
-
-- `task <id> names the role <role> at steps <i> and <j>.`
-
-- `step <i> of task <id> names acceptance with no key, which asks for a fresh agent of the role acceptance.`
-
-- `step <i> of task <id> names the key <key>.` (each key but `acceptance:owner`)
-
-- `the plan defines the role <role>.` (a `plan_role` block)
-
-- `task <id> names merges.`, `task <id> names owner.`, `task <id> names part_of.`
-
-These reasons of the plan's text end with no "yet", because no release takes such a plan:
-
-- `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`
-
-- `the plan has no task block, so it gives Legion no work.`
-
-- A block Legion cannot read, the one reason of its answer: `a <type> block has no id, so no step
-  of the plan can be named.`, `the id <id> names a <type> block and a <type> block, so it names no
-  one block.`, or `task <id>: the step "<word>" is neither a role nor a role:key, where each
-  matches [a-z][a-z0-9-]*.`
+- No `role:key` step but `acceptance:owner`; `acceptance` alone is refused.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
@@ -115,6 +90,5 @@ The version you give replaces them with your own one block: delete theirs, and p
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-Each finished issue of a project, with its plan, its retro's ratings, its time and its count of failed steps, is `GET /api/v1/projects/<KEY>/plans`:
-`curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/projects/<KEY>/plans"`.
+Each finished issue of a project, with its plan's source and steps, its retro's ratings, its time and its count of failed steps, is `dispatch plans --project <KEY>`.
 Read it before you choose the steps of an issue like one that finished.

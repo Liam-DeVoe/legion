@@ -56,7 +56,7 @@ When the head's checks have settled and no run of the name answers:
 2. A held-back job reads `skipped`, not absent: the label cures it.
 
 3. Otherwise the check's words are wrong.
-   A tester or reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
+   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
    No role fails the round or requests changes for it.
 
 ## What the evidence is
