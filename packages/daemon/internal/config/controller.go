@@ -228,26 +228,27 @@ var ControllerIdentityVariables = []string{cipherclient.BrokerURLVar, cipherclie
 // cipherclient.MachineIdentity, as the controller's Dispatch broker check reads it
 // (controllerDispatchBroker, cmd/legion), so a kind with one of its variables missing, or a kind
 // the client does not know, is refused in the client's words, and a broker or identity variable
-// holding only blanks is refused as an unset one is. An identity that holds, once its ASCII
-// whitespace is trimmed, any character outside printable ASCII is refused naming the variable and
-// never its value: Go's strings.TrimSpace, which MachineIdentity trims with, takes a NEL (U+0085)
-// off the kind and leaves a BOM (U+FEFF) on it, and the session's TypeScript client trims with
-// String.prototype.trim, which does the opposite, so the two could read different kinds. Both
-// trim ASCII whitespace alike. The host is judged as written, and the refusal names it alone,
-// never the URL.
+// holding only blanks is refused as an unset one is. An identity that holds a NEL (U+0085) or a
+// BOM (U+FEFF) anywhere is refused naming the variable and never its value: those are the two
+// characters on which Go's strings.TrimSpace, which this check and MachineIdentity trim with, and
+// the session's TypeScript client, which trims with String.prototype.trim, differ (Go takes a NEL
+// off the kind and leaves a BOM on it; JavaScript does the opposite), so the two could read
+// different kinds. Every other space both strip alike, a no-break space and an ideographic space
+// among them, so a kind padded with one is trimmed and taken. The host is judged as written, and
+// the refusal names it alone, never the URL.
 func (c ControllerConfig) CheckListener(env map[string]string) error {
 	noIdentity := slices.ContainsFunc(ControllerIdentityVariables, func(name string) bool { return strings.TrimSpace(env[name]) == "" })
-	notPrintable := false
+	trimsDiffer := false
 	var unproven error
 	if !noIdentity {
-		notPrintable = strings.ContainsFunc(strings.Trim(env[cipherclient.IdentityVar], " \t\n\v\f\r"), func(r rune) bool { return r < ' ' || r > '~' })
+		trimsDiffer = strings.ContainsAny(env[cipherclient.IdentityVar], "\u0085\ufeff")
 	}
-	if !noIdentity && !notPrintable {
+	if !noIdentity && !trimsDiffer {
 		var identity cipherclient.Source
 		identity, unproven = cipherclient.MachineIdentity(func(name string) string { return env[name] })
 		noIdentity = unproven == nil && identity == nil
 	}
-	if !noIdentity && !notPrintable && unproven == nil {
+	if !noIdentity && !trimsDiffer && unproven == nil {
 		return nil
 	}
 	parsed, err := endpointURL(c.EnvoyURL, "envoy_url")
@@ -261,9 +262,9 @@ func (c ControllerConfig) CheckListener(env map[string]string) error {
 	if isLoopbackHost(host) {
 		return nil
 	}
-	if notPrintable {
-		return fmt.Errorf("%s holds a character outside printable ASCII, which this check and the session's broker client trim differently, so the session may read another kind, trade nothing and present the Envoy listener %s no credential, and a listener off loopback answers a caller that presents none 401; write the kind in printable ASCII (%s, %s or %s), or name a loopback listener",
-			cipherclient.IdentityVar, host, cipherclient.IdentityKubernetes, cipherclient.IdentityMetadata, cipherclient.IdentityPool)
+	if trimsDiffer {
+		return fmt.Errorf("%s holds a NEL (U+0085) or a BOM (U+FEFF), which this check and the session's broker client trim differently, so the session may read another kind, trade nothing and present the Envoy listener %s no credential, and a listener off loopback answers a caller that presents none 401; remove it from the kind, or name a loopback listener",
+			cipherclient.IdentityVar, host)
 	}
 	if unproven != nil {
 		return fmt.Errorf("%w: the controller's session cannot prove this machine's identity, so it trades nothing and presents the Envoy listener %s no credential, and a listener off loopback answers a caller that presents none 401; give the identity what it needs, or name a loopback listener",
