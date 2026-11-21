@@ -1172,9 +1172,10 @@ FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
 # The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
-# to a version with no hooks fails the step), and one on 2.10.29.
+# to a version with no hooks fails the step), and one on 2.10.29, each over the hooks' own tests
+# and the session consumers', the protocol's and the listener durable's rows.
 ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
-ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/", "./internal/bus/", "./consumernames/", "./cmd/listener/"]
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
 
