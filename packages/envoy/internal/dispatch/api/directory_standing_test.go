@@ -23,13 +23,13 @@ import (
 // TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords: under IAP identity
 // (Standing.ChecksDirectory) a hold the Workspace Directory's answer recorded (RecordDirectoryHeld)
 // refuses a broker token whose introspection answers its person not held, at its admission
-// (brokerPersonAdmitted), and refuses an approve by such a token whose person was held while its
-// body was held back (approverStanding), each 401 MEMBERSHIP_HELD in the Directory's words, since a
-// sign-in releases nothing there. In cookie identity the same recorded hold keeps the sign-in's
-// words. The approve that is refused never reaches the broker.
+// (brokerPersonAdmitted), a read and an approve alike, each 401 MEMBERSHIP_HELD in the Directory's
+// words, since a sign-in releases nothing there. In cookie identity the same recorded hold keeps
+// the sign-in's words. With no hold the approve is 403 OAUTH_SCOPE_REQUIRED, since no
+// broker-issued token holds approve (brokerPersonScopes). Neither approve reaches the broker.
 //
-// Control: either check answering the recorded hold in the sign-in's words whatever the identity,
-// as both did before this row; its row fails naming the words.
+// Control: the admission answering the recorded hold in the sign-in's words whatever the identity,
+// as it did before this row; its row fails naming the words.
 func TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords(t *testing.T) {
 	for _, mode := range []struct {
 		name      string
@@ -84,16 +84,25 @@ func TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords(t *testing.T
 				return request
 			}
 			const decision = `{"code":"ABCD-1234"}`
-			body := newHeldRequestBody(decision)
 			before := relay.calls
-			response := serveWithBodyHeld(t, handler, request(body), body, func() {
-				if err := peopleOf(database).RecordDirectoryHeld(context.Background(), accessDave); err != nil {
-					t.Fatal(err)
-				}
-			})
-			wantHeldRefusal(t, response, mode.text, "dave's approve by his broker token, a Directory hold recorded while its body was held, "+mode.name)
+			// A broker token neither approves nor mints: no broker-issued token holds the approve
+			// scope, whatever its person's standing, so with no hold the route refuses it 403
+			// OAUTH_SCOPE_REQUIRED before it reads the body or calls the broker. The decision's own
+			// re-read of a broker token's hold went with that rule, so this row no longer holds the
+			// body back: the hold is read at the approve's admission, which answers before the scope.
+			unheld := httptest.NewRecorder()
+			handler.ServeHTTP(unheld, request(strings.NewReader(decision)))
+			if refusal := decodeBody[refusalAnswer](t, unheld); unheld.Code != http.StatusForbidden || refusal.Code != codeScopeRequired {
+				t.Fatalf("dave's approve by his broker token with no hold, %s = %d %s, want 403 %s", mode.name, unheld.Code, unheld.Body.String(), codeScopeRequired)
+			}
+			if err := peopleOf(database).RecordDirectoryHeld(context.Background(), accessDave); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request(strings.NewReader(decision)))
+			wantHeldRefusal(t, response, mode.text, "dave's approve by his broker token with a Directory hold recorded, "+mode.name)
 			if relay.calls != before {
-				t.Fatalf("dave's approve, refused, reached the broker %d times, want none", relay.calls-before)
+				t.Fatalf("dave's approves by his broker token, refused, reached the broker %d times, want none", relay.calls-before)
 			}
 		})
 	}

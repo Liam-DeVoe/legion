@@ -561,12 +561,17 @@ func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request
 	return recorder
 }
 
-// TestAHeldApproverRelaysNoApproval: a machine login's approve or deny whose caller was held while
-// its client held the body back is 401 MEMBERSHIP_HELD once the body arrives, and the broker is
-// not called: the decision's re-read of its caller (approverStanding) reads the hold, for a
-// personal token as its own check does and for a broker token the hold Dispatch records. The
-// control, the same decisions with no hold, reaches the broker stand-in, which shows it records a
-// call.
+// TestAHeldApproverRelaysNoApproval: a machine login's approve or deny by a personal token whose
+// owner was held while its client held the body back is 401 MEMBERSHIP_HELD once the body arrives,
+// and the broker is not called: the decision's re-read of its caller (approverStanding) reads the
+// hold, as the token's own check does. The control, the same decisions with no hold, reaches the
+// broker stand-in, which shows it records a call. The personal token proves the held approver,
+// since it is a credential that may approve.
+//
+// A broker token approves and denies nothing: no broker-issued token holds the approve scope
+// (brokerPersonScopes), so with no hold its decisions are 403 OAUTH_SCOPE_REQUIRED, and with its
+// person held the hold Dispatch records refuses them first, at the token's admission
+// (brokerPersonAdmitted), 401 MEMBERSHIP_HELD. Neither reaches the broker.
 func TestAHeldApproverRelaysNoApproval(t *testing.T) {
 	relay := newFakeBrokerRig(t)
 	introspection := ciphertokentest.NewStubBroker(t)
@@ -580,53 +585,65 @@ func TestAHeldApproverRelaysNoApproval(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const brokerToken = "carols-machine-broker-token"
 	introspection.Says(brokerToken, heldPersonToken(caller.jkt, accessCarol, false))
-	credentials := []struct {
-		name    string
-		request func(path string, body io.Reader) *http.Request
-	}{
-		{"a personal token", func(path string, body io.Reader) *http.Request {
-			request := httptest.NewRequest(http.MethodPost, path, body)
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Authorization", "Bearer "+personal)
-			return request
-		}},
-		{"a broker token", func(path string, body io.Reader) *http.Request {
-			signed := caller.caller.Signed(t, http.MethodPost, testServerURL+path, brokerToken)
-			request := httptest.NewRequest(http.MethodPost, path, body)
-			request.RemoteAddr = brokerTestAddress
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Authorization", signed.Header.Get("Authorization"))
-			request.Header.Set("DPoP", signed.Header.Get("DPoP"))
-			return request
-		}},
+	byPersonalToken := func(path string, body io.Reader) *http.Request {
+		request := httptest.NewRequest(http.MethodPost, path, body)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+personal)
+		return request
+	}
+	byBrokerToken := func(path string, body io.Reader) *http.Request {
+		signed := caller.caller.Signed(t, http.MethodPost, testServerURL+path, brokerToken)
+		request := httptest.NewRequest(http.MethodPost, path, body)
+		request.RemoteAddr = brokerTestAddress
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", signed.Header.Get("Authorization"))
+		request.Header.Set("DPoP", signed.Header.Get("DPoP"))
+		return request
+	}
+	serve := func(request *http.Request) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
 	}
 	const decision = `{"code":"ABCD-1234"}`
-	for _, credential := range credentials {
-		for _, route := range []string{"approve", "deny"} {
-			path := "/api/v1/credential-requests/rec1/" + route
-			before := relay.calls
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, credential.request(path, strings.NewReader(decision)))
-			if response.Code != http.StatusOK || relay.calls != before+1 {
-				t.Fatalf("the control: carol's %s by %s, not held = %d %s with %d broker calls, want 200 and one call",
-					route, credential.name, response.Code, response.Body.String(), relay.calls-before)
-			}
+	routes := []string{"approve", "deny"}
+	for _, route := range routes {
+		path := "/api/v1/credential-requests/rec1/" + route
+		before := relay.calls
+		if response := serve(byPersonalToken(path, strings.NewReader(decision))); response.Code != http.StatusOK || relay.calls != before+1 {
+			t.Fatalf("the control: carol's %s by a personal token, not held = %d %s with %d broker calls, want 200 and one call",
+				route, response.Code, response.Body.String(), relay.calls-before)
+		}
+		// A broker token neither approves nor mints, whatever its person's standing: the route
+		// refuses it 403 OAUTH_SCOPE_REQUIRED, since no broker-issued token holds approve. This row
+		// wanted 200 and a broker call until the base made that rule.
+		before = relay.calls
+		response := serve(byBrokerToken(path, strings.NewReader(decision)))
+		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired || relay.calls != before {
+			t.Fatalf("carol's %s by her broker token, not held = %d %s with %d broker calls, want 403 %s and none",
+				route, response.Code, response.Body.String(), relay.calls-before, codeScopeRequired)
 		}
 	}
-	for _, credential := range credentials {
-		for _, route := range []string{"approve", "deny"} {
-			path := "/api/v1/credential-requests/rec1/" + route
-			refresh := "carol-refresh-" + strings.ReplaceAll(credential.name, " ", "-") + "-" + route
-			signInFor(t, database, accessCarol, "carol-account", refresh, model.MemberFull, time.Minute)
-			before := relay.calls
-			body := newHeldRequestBody(decision)
-			response := serveWithBodyHeld(t, handler, credential.request(path, body), body, func() {
-				holdPerson(t, database, accessCarol, "carol-account", refresh)
-			})
-			wantHeldRefusal(t, response, membershipHeldText, "carol's "+route+" by "+credential.name+" whose body arrived after she was held")
-			if relay.calls != before {
-				t.Fatalf("carol's %s by %s, held while its body was held back, reached the broker %d times, want none", route, credential.name, relay.calls-before)
-			}
+	for _, route := range routes {
+		path := "/api/v1/credential-requests/rec1/" + route
+		refresh := "carol-refresh-a-personal-token-" + route
+		signInFor(t, database, accessCarol, "carol-account", refresh, model.MemberFull, time.Minute)
+		before := relay.calls
+		body := newHeldRequestBody(decision)
+		response := serveWithBodyHeld(t, handler, byPersonalToken(path, body), body, func() {
+			holdPerson(t, database, accessCarol, "carol-account", refresh)
+		})
+		wantHeldRefusal(t, response, membershipHeldText, "carol's "+route+" by a personal token whose body arrived after she was held")
+		if relay.calls != before {
+			t.Fatalf("carol's %s by a personal token, held while its body was held back, reached the broker %d times, want none", route, relay.calls-before)
+		}
+		// With carol held, her broker token's decision is refused at its admission, which answers
+		// before the route's scope and reads no body, so the body is not held back. Until the base
+		// made a broker token decide nothing, this row held the body back as the personal token's
+		// does.
+		wantHeldRefusal(t, serve(byBrokerToken(path, strings.NewReader(decision))), membershipHeldText, "carol's "+route+" by her broker token while she is held")
+		if relay.calls != before {
+			t.Fatalf("carol's %s by her broker token while she is held reached the broker %d times, want none", route, relay.calls-before)
 		}
 	}
 }
