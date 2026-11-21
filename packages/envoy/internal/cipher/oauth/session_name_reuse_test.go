@@ -16,8 +16,9 @@ import (
 
 // The two session accounts a reused session name is tried under: a private project's sessions
 // run as privSessionAccount, whose entry names privProject, and public sessions run as
-// pubSessionAccount, whose entry names pubProject. Each entry fixes no session, so each pod trades
-// under the name its registration gives it.
+// pubSessionAccount, whose entry names pubProject or, as a deployment's shared public-session
+// account does, no project. Each entry fixes no session, so each pod trades under the name its
+// registration gives it.
 const (
 	privSessionAccount = "system:serviceaccount:priv-sessions:agent-session"
 	pubSessionAccount  = "system:serviceaccount:pub-sessions:agent-session"
@@ -32,11 +33,12 @@ const (
 	reuseAccessLifetime = 15 * time.Minute
 )
 
-// newSessionAccountsFixture is an exchange whose policy lists the two session accounts above, and
-// whose Dispatch says each entry's person sees both projects: so the project check at mint
-// (oauth's projectAccess) admits either project for either account, and what decides a token's
-// projects in these tests is the entry of the account that traded, alone.
-func newSessionAccountsFixture(t *testing.T) *exchangeFixture {
+// newSessionAccountsFixture is an exchange whose policy lists the two session accounts above, the
+// public one naming pubEntryProject ("" for none), and whose Dispatch says each entry's person sees
+// both projects: so the project check at mint (oauth's projectAccess) admits either project for
+// either account, and what decides a token's projects in these tests is the entry of the account
+// that traded, alone.
+func newSessionAccountsFixture(t *testing.T, pubEntryProject string) *exchangeFixture {
 	t.Helper()
 	access := newFakeAccess()
 	access.set(func(a *fakeAccess) {
@@ -50,7 +52,7 @@ func newSessionAccountsFixture(t *testing.T) *exchangeFixture {
 		c.AccessLifetime = reuseAccessLifetime
 		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{
 			{Account: privSessionAccount, Project: privProject, Person: privSessionPerson},
-			{Account: pubSessionAccount, Project: pubProject, Person: pubSessionPerson},
+			{Account: pubSessionAccount, Project: pubEntryProject, Person: pubSessionPerson},
 		}, nil)
 		c.Exchange.Projects = access
 	})
@@ -62,7 +64,8 @@ func newSessionAccountsFixture(t *testing.T) *exchangeFixture {
 // oauthstore.SessionRetention past its last token (oauthstore.Store.BindSession), so a pod of
 // another account presenting that name is refused while the hold stands; once it has run out, the
 // name is the new account's, and its token lists that account's projects and nothing of the
-// name's earlier holder.
+// name's earlier holder. It holds for a public account whose entry names PUB, and for one whose
+// entry names no project, which is how a deployment lists its shared public-session account.
 //
 // Control (run by hand, then reverted): make the exchange give a session name the projects of the
 // first token minted under it, for example by keeping them in a map keyed by
@@ -70,7 +73,22 @@ func newSessionAccountsFixture(t *testing.T) *exchangeFixture {
 // on every later trade of that name. The last trade then lists PRIV, and this test fails naming
 // reusedSession and PRIV.
 func TestAReusedSessionNameCarriesOnlyItsPodsProjects(t *testing.T) {
-	f := newSessionAccountsFixture(t)
+	for _, tc := range []struct {
+		name, entryProject string
+		want               []string
+	}{
+		{name: "a public account whose entry names PUB", entryProject: pubProject, want: []string{pubProject}},
+		{name: "a public account whose entry names no project", entryProject: "", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) { reusedNameCarriesOnlyItsPodsProjects(t, tc.entryProject, tc.want) })
+	}
+}
+
+// reusedNameCarriesOnlyItsPodsProjects is TestAReusedSessionNameCarriesOnlyItsPodsProjects with the
+// public account's entry naming entryProject, whose token must list want and nothing else.
+func reusedNameCarriesOnlyItsPodsProjects(t *testing.T, entryProject string, want []string) {
+	t.Helper()
+	f := newSessionAccountsFixture(t, entryProject)
 	ctx := context.Background()
 	key := newKey(t)
 
@@ -109,9 +127,9 @@ func TestAReusedSessionNameCarriesOnlyItsPodsProjects(t *testing.T) {
 		t.Fatalf("the %s pod's token under %s lists %s, the project of the name's earlier holder %s: a pod token's projects come from its own account, never from the session name (it lists %v)",
 			pubSessionAccount, reusedSession, privProject, privSessionAccount, answer.Projects)
 	}
-	if answer.Session != reusedSession || answer.Person != pubSessionPerson || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{pubProject}) {
-		t.Fatalf("the %s pod's token under %s introspects %+v, want a named token of %s acting for %s and listing [%s] only",
-			pubSessionAccount, reusedSession, answer, reusedSession, pubSessionPerson, pubProject)
+	if answer.Session != reusedSession || answer.Person != pubSessionPerson || answer.ProjectScope != oauthwire.ProjectScopeNamed || !slices.Equal(answer.Projects, want) {
+		t.Fatalf("the %s pod's token under %s introspects %+v, want a named token of %s acting for %s and listing %v only",
+			pubSessionAccount, reusedSession, answer, reusedSession, pubSessionPerson, want)
 	}
 
 	// The name is now the public account's: the private project's pod, still registered for it, is
@@ -134,7 +152,7 @@ func TestAReusedSessionNameCarriesOnlyItsPodsProjects(t *testing.T) {
 // is refused only by the registration gate (pod_session_not_registered, naming the empty session),
 // not by the rule that a request names its session.
 func TestAPodTradeMustNameItsRegisteredSession(t *testing.T) {
-	f := newSessionAccountsFixture(t)
+	f := newSessionAccountsFixture(t, pubProject)
 	key := newKey(t)
 	const session, otherSession = reusedSession, "019a7c3e-another-session"
 	f.registers(t, privSessionAccount, "pod-uid-1", session)
