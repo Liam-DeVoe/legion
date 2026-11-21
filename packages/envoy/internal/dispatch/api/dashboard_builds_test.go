@@ -43,16 +43,17 @@ func getDashboardBuildsAs(t *testing.T, handler http.Handler, credential string)
 
 // registerProcess writes a registry row for a process of this build's binary serving the dashboard
 // build build, whose last heartbeat was ageSeconds ago by the database's clock. It carries this
-// build's schema numbers, as processes.Register writes them: a row without them reads as a build
-// that predates the fleet columns, which the document service reads as another build (docs'
-// anotherBuildServes).
+// build's schema numbers and owner lock protocol, as processes.Register writes them: a row without
+// the schema numbers reads as a build that predates the fleet columns, which the document service
+// reads as another build (docs' anotherBuildServes), and one without the owner lock protocol as a
+// build before it (store.OwnerLockProtocol).
 func registerProcess(t *testing.T, database *store.Store, build string, ageSeconds float64) string {
 	t.Helper()
 	var instance string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, dashboard_build, signing_keys, heartbeat_at, schema_version, schema_creatable)
-		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2), $3, $4)
-		returning instance::text`, build, ageSeconds, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()).Scan(&instance); err != nil {
+		insert into server_processes (instance, dashboard_build, signing_keys, heartbeat_at, schema_version, schema_creatable, owner_lock_protocol)
+		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2), $3, $4, $5)
+		returning instance::text`, build, ageSeconds, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("register a process on build %q: %v", build, err)
 	}
 	return instance

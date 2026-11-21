@@ -38,7 +38,8 @@ const decisionBlock =
 const storedDecision = ':::ask{#decision urgency="high" multiple="false"}\n';
 /** The decision's opener in a stored version once the close resolved it: a version keeps the state
  *  of an ask that is not open on its opener, for the release before's readers. */
-const storedResolvedDecision = ':::ask{#decision urgency="high" multiple="false" state="resolved"}\n';
+const storedResolvedDecision =
+  ':::ask{#decision urgency="high" multiple="false" state="resolved"}\n';
 
 /** The decision block's state as the text routes answer it, in their `asks` member, read from
  *  the ask: their markdown holds no ask's state. */
@@ -226,7 +227,9 @@ test("a person's Close withdraws the issue's asks and writes one version showing
     // reads the decision resolved.
     await expect.poll(() => decisionState(seeded.artifactId), PROBE).toBe("resolved");
     await expect.poll(() => newestVersion(seeded.artifactId), PROBE).toBe(before + 1);
-    expect((await getArtifactVersion(seeded.artifactId, before + 1)).markdown).toContain(storedResolvedDecision);
+    expect((await getArtifactVersion(seeded.artifactId, before + 1)).markdown).toContain(
+      storedResolvedDecision
+    );
     await page.getByRole("button", { name: "Reopen" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");
@@ -257,7 +260,9 @@ test("a person's Close withdraws the issue's asks and writes one version showing
     // from its ask.
     expect(await decisionState(seeded.artifactId)).toBe("open");
     await expect.poll(() => newestVersion(seeded.artifactId), PROBE).toBe(before + 2);
-    expect((await getArtifactVersion(seeded.artifactId, before + 2)).markdown).toContain(storedDecision);
+    expect((await getArtifactVersion(seeded.artifactId, before + 2)).markdown).toContain(
+      storedDecision
+    );
   } finally {
     await page.context().close();
   }

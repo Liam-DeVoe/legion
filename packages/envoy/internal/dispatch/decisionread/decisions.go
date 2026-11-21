@@ -62,7 +62,8 @@ func TextSum(text string) string {
 // present, at any state but gone (the spec's R12), or an ask node with an `asks` row.
 // A caller lists as decisions the asks a person answered; an ask in any other answer state reads
 // the same way, and the Decisions read takes the links of an open and a declined ask from here
-// too. Any other node, and a node the store does not hold, is left out.
+// too. Any other node, and a node the store does not hold, is left out with no log (isDecision):
+// the Keep reads the node at whatever block it was posted for.
 //
 // Each decision answers:
 //
@@ -121,7 +122,9 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 	versions := &walker{q: q, versions: map[versionKey]versionRead{}}
 	for index := range nodes {
 		node, found := held[index]
-		if !found {
+		// A node that is no decision is left out with no log: the Keep reads the node at whatever
+		// address it was posted, a heading of a decisions document's section among them.
+		if !found || !node.isDecision() {
 			continue
 		}
 		decision, err := node.decision(ctx, versions, facts[index], links[index])
@@ -406,9 +409,16 @@ func textChangedAfterTie(link model.DecisionLink) bool {
 	return link.TextChangedAt.After(link.CreatedAt)
 }
 
-// decision is node in model.Decision's shape, with the values it holds (facts) and its links, or
-// the error that says which stored value of it does not parse. Its words and the version they
-// last changed in come from one walk (walker.changed).
+// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a
+// block node of the `decision` supertag at any state but gone.
+func (node heldNode) isDecision() bool {
+	return node.kind == graphstore.KindAsk && node.question != nil ||
+		node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state != graphstore.StateGone
+}
+
+// decision is node, a decision (isDecision), in model.Decision's shape, with the values it holds
+// (facts) and its links, or the error that says which stored value of it does not parse. Its
+// words and the version they last changed in come from one walk (walker.changed).
 func (node heldNode) decision(ctx context.Context, versions *walker, facts []fact, links []model.DecisionLink) (model.Decision, error) {
 	decision := model.Decision{
 		NodeKind: node.kind, NodeID: node.id,
@@ -426,8 +436,7 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 	if node.document {
 		documentRef = refs.ArtifactRef(node.issueKey, stringOf(node.project), node.session, node.slug, node.artifactKind, node.primary)
 	}
-	switch {
-	case node.kind == graphstore.KindAsk && node.question != nil:
+	if node.kind == graphstore.KindAsk {
 		decision.Kind = "person"
 		decision.Text, decision.Heading = *node.question, *node.question
 		decision.Asks = []string{node.id}
@@ -448,7 +457,7 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 		case err == nil:
 			decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
 		}
-	case node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state != graphstore.StateGone:
+	} else {
 		decision.Kind = "agent"
 		decision.Ref = refs.BlockRef(documentRef, node.blockID)
 		changed, err := versions.changed(ctx, node, refs.DecisionSupertag)
@@ -466,8 +475,6 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 			}
 		}
 		decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
-	default:
-		return model.Decision{}, fmt.Errorf("the node is no decision: kind %s, supertag %s, state %s", node.kind, node.supertag, node.state)
 	}
 	decision.TextSHA256 = TextSum(decision.Text)
 	var kept *fact

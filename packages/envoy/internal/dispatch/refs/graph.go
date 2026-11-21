@@ -870,6 +870,18 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // document that would take it.
 const RetiredDecisionsSlug = "decisions-md"
 
+// DecisionsDocumentOf is the FROM and WHERE of a read of the issue's decisions document while it
+// stands, issue the SQL that names the issue's key (a parameter, or a column of an outer query),
+// with the document's artifacts row aliased `a`: of the documents decisions_documents() answers
+// for the issue, the oldest, by created_at and then id. Every read that names the issue's decisions
+// document - the issue's decisions_artifact_id, the Decisions read's `document` and the decisions
+// step's restore - selects through it, so for an issue that holds two they name the same one.
+// kept for one release: decisions-documents-fn
+func DecisionsDocumentOf(issue string) string {
+	return `from decisions_documents() d join artifacts a on a.id = d.id
+		where d.issue_key = ` + issue + ` order by a.created_at, a.id limit 1`
+}
+
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
 // whose conversation owns it, else (a project document) to no node.

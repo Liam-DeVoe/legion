@@ -23,7 +23,10 @@
 # default: only the caller knows which release that is. Once the base server has booted, the
 # commit it is stamped with (the `commit` of its /healthz, the one it registers in
 # server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
-# naming both, so that a binary built from another commit never stands in for that release.
+# naming both, so that a binary built from another commit never stands in for that release. In
+# the same way this head's server must be stamped with the commit this checkout stands on (`git
+# rev-parse HEAD`, which the Verification preamble stamps HEAD_BINARY with), so that a binary left
+# from an earlier head never stands in for the head the result is recorded at.
 #
 # It boots this head, HEAD_BINARY (default $TMPDIR/bin/envoy-dispatch), with the hold settings, so
 # neither its decisions step nor its boot's run of the backfill states a row before its own command
@@ -75,8 +78,10 @@
 # pairs with the removed ask's node and counts as one a rule of R9 deleted rather than one in no
 # spec, and the issues holding a section no rule dropped and no spec holds; and it sets the old
 # `decisions` member beside `entries` for each decision, by its address, and finds the same
-# decisions, block id, stale, changed_version and changed_at in both, an answered ask no document
-# holds read under the block id its asks row names. It reads each of R9's four further kinds on its
+# decisions, each under the same block id, in both, an answered ask no document holds read under
+# the block id its asks row names (each decision's stale, changed_version and changed_at, which
+# the handler fills in both members from one value, are held equal too, which proves that wiring
+# alone, so its pass line claims them not). It reads each of R9's four further kinds on its
 # section: the ask block a section held, which no row names, moved into the spec and the rest a
 # decision; and the sections citing two answered asks, an issue-level answered ask, and one answered
 # ask with a body no reading holds, each a decision that keeps its heading id, takes its links as
@@ -141,6 +146,12 @@ base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quie
   exit 2
 }
 readonly base_sha
+# The commit this checkout stands on, in full: the one this head's server must be stamped with.
+head_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet HEAD)" || {
+  printf 'this checkout stands on no commit (git rev-parse HEAD)\n' >&2
+  exit 2
+}
+readonly head_sha
 readonly project=SEED nodes_project=NODES
 # The kinds of this child the census holds to their projections.
 readonly -a kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
@@ -395,8 +406,10 @@ head_pid="$baseline_boot_pid"
 server="$baseline_boot_url"
 commit_of head
 readonly head_commit="$value"
-[[ "$head_commit" != "$base_commit" ]] || fail head "this head and the base are stamped apart" "both serve $head_commit"
-pass head "this head serves $head_commit over the database the base release ($base_commit) wrote, the step held"
+[[ "$head_commit" == "$head_sha" && "$head_commit" != "$base_commit" ]] ||
+  fail head "this head is stamped with the commit this checkout stands on, apart from the base" \
+    "it serves '$head_commit', the checkout stands on '$head_sha', the base serves '$base_commit'"
+pass head "this head serves $head_commit, the commit this checkout stands on, over the database the base release ($base_commit) wrote, the step held"
 sign_in head
 
 # edges_of ASK: the graph_edges rows out of ask ASK of the three kinds the old arms answer, one a
@@ -626,8 +639,9 @@ rows "select p.key,
 while IFS='|' read -r key asks followers typed readings; do
   printf 'half %s: asks=%s ask_followers=%s block_refs(shaped, from_ask, decided_by)=%s readings_with_a_parent=%s\n' \
     "$key" "$asks" "$followers" "$typed" "$readings"
-  [[ "$asks" -gt 0 && "$followers" -gt 0 && "$typed" -gt 0 ]] ||
-    fail halves "the half of $key holds rows of every projection" "asks=$asks ask_followers=$followers block_refs=$typed"
+  [[ "$asks" -gt 0 && "$followers" -gt 0 && "$typed" -gt 0 && "$readings" -gt 0 ]] ||
+    fail halves "the half of $key holds rows of every projection" \
+      "asks=$asks ask_followers=$followers block_refs=$typed readings_with_a_parent=$readings"
 done <"$work/rows"
 [[ "$(wc -l <"$work/rows")" == 2 ]] || fail halves "both halves are read" "$(<"$work/rows")"
 pass halves "both halves, the base release's and this head's, hold rows the census compared"
@@ -1024,10 +1038,13 @@ pairing_verdict
 
 # compare_members ISSUE: the old decisions member of ISSUE's node read beside its entries. Both
 # answer the same decisions, each by its node's address (ref), and each decision reads the same
-# block id, stale, changed_version and changed_at in both. An entry's block id is the block a
-# document holds of it. An answered ask whose block stands in no document - an ask on the issue
-# itself, or one a person removed from its spec - names none in entries, and the old member answers
-# it under the block id its asks row names: "" where the row names none.
+# block id in both. An entry's block id is the block a document holds of it. An answered ask whose
+# block stands in no document - an ask on the issue itself, or one a person removed from its spec
+# - names none in entries, and the old member answers it under the block id its asks row names: ""
+# where the row names none. Each decision's stale, changed_version and changed_at are held equal
+# in both too, but the handler fills both members' from one model.Decision (api/decisions.go,
+# decisionEntries), so that holds only the wiring, and the pass line claims the decisions and their
+# block ids alone.
 compare_members() {
   local issue="$1" file="${entries_file[$1]}" ref node block_id member_block_id
   jq -r '[.entries[] | select(.kind == "agent" or (.kind == "person" and .answer != null)) | .ref] | sort | .[]' "$file" >"$work/entry-refs"
@@ -1054,7 +1071,7 @@ compare_members() {
       fail member "the decision $ref of $issue reads the same block id in both members" \
         "entries: '$block_id'; decisions: '$member_block_id'"
   done <"$work/entry-refs"
-  pass member "entries and the old decisions member of $issue answer the same $(wc -l <"$work/entry-refs") decisions, with the same block id, stale, changed_version and changed_at"
+  pass member "entries and the old decisions member of $issue answer the same $(wc -l <"$work/entry-refs") decisions, each under the same block id"
 }
 for issue in "$issue_a" "$issue_b" "$issue_e"; do
   compare_members "$issue"

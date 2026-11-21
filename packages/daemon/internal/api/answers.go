@@ -585,8 +585,9 @@ var mergeWaitStates = valuesFrom(mergeWaitContract,
 // issue can stand in one. Both are recorded at gatedStepsContract, the contract `gatedSteps`
 // arrived at. `decisions` is no step any more (record.DesignSteps: decisions are nodes of the spec,
 // and a gate row or a queued publication naming the step is left out), so no answer of this daemon
-// carries it; it stays recorded because every contract since gatedStepsContract admits it, and
-// the reader of each still does (packages/contracts' GATED_STEPS).
+// carries it; it stays recorded because a value, once a contract admits it, stays admitted (each
+// contract's record in contract-shapes.json holds it), and this build's reader of the view still
+// parses it (packages/contracts' legionGatedStepView reads GATED_STEPS).
 var designSteps = valuesFrom(gatedStepsContract,
 	record.DesignStep("decisions"), record.DesignStepCriteria, record.DesignStepSpec)
 var gatedStepStatuses = valuesFrom(gatedStepsContract,

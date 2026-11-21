@@ -25,19 +25,26 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // fleetProcess writes the server_processes row of another server process straight into the
 // registry: one that reads schema version and creates up to creatable, whose last heartbeat is
 // age before the database's now(). A version of 0 is the row of a build that predates the fleet
-// columns.
+// columns. A row below the base release's version (baseSchemaVersion) is a build before the owner
+// lock protocol, which registers 0; any other registers store.OwnerLockProtocol, as the base
+// release and every build since do.
 func fleetProcess(t *testing.T, service *Service, version, creatable int, age time.Duration) {
 	t.Helper()
+	protocol := store.OwnerLockProtocol
+	if version < baseSchemaVersion {
+		protocol = 0
+	}
 	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() - make_interval(secs => $3))`,
-		version, creatable, age.Seconds()); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() - make_interval(secs => $3), $4)`,
+		version, creatable, age.Seconds(), protocol); err != nil {
 		t.Fatalf("add a server process reading schema version %d: %v", version, err)
 	}
 }

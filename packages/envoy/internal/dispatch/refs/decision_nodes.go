@@ -364,11 +364,10 @@ func DecisionWords(decision *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
 
-// TypedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
-// rendering writes it (pmdoc.BlockPointers).
+// TypedBlockID is a typed block's id as the block index keys it (storedBlockID).
 func TypedBlockID(node *pmdoc.Node) string {
 	id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-	return strings.ReplaceAll(id, "\x00", "\uFFFD")
+	return storedBlockID(id)
 }
 
 // decisionOf is decision block node as decisionFact holds it.

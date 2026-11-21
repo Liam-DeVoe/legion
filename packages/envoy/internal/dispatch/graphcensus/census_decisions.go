@@ -64,6 +64,7 @@ var decisionProjections = []projection{
 		  and reading.supertag = '` + refs.ReadingSupertag + `'`,
 		tuples:      readingParents,
 		owed:        typedNodeOwed,
+		rowOwed:     typedRowOwed,
 		emptyAgrees: true,
 	},
 	askProjection("ask_parent", "asks.block_artifact_id, asks.artifact_id",
@@ -134,15 +135,18 @@ var decisionProjections = []projection{
 	edgeProjection(refs.TupleShaped+edgeSuffix, refs.TupleShaped,
 		"graph_edges' shaped: the row side is every shaped edge graph_edges answers out of a block or ask node not"+
 			" gone, read node by node, as the triple of that node, shaped and its far end, against every shaped tuple"+
-			" a block or ask node not gone states now", "", "", refs.BlockNodeKind, graphstore.KindAsk),
+			" a block or ask node not gone states now, an edge the old arm answers from a row past the bound aside",
+		tieEdgePastBound, tiePastBound(refs.TupleShaped), refs.BlockNodeKind, graphstore.KindAsk),
 	edgeProjection(refs.TupleFromAsk+edgeSuffix, refs.TupleFromAsk,
 		"graph_edges' from_ask: the row side is every from_ask edge graph_edges answers out of a block node not"+
 			" gone, read node by node, as the triple of that node, from_ask and its ask, against every from_ask a"+
-			" block node not gone states now", "", "", refs.BlockNodeKind),
+			" block node not gone states now, an edge the old arm answers from a row past the bound aside",
+		tieEdgePastBound, tiePastBound(refs.TupleFromAsk), refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleDecidedBy+edgeSuffix, graphstore.TupleDecidedBy,
 		"graph_edges' decided_by: the row side is every decided_by edge graph_edges answers out of a block node"+
 			" not gone, read node by node, as the triple of that node, decided_by and its person or session, against"+
-			" every decided_by a block node not gone states now", "", "", refs.BlockNodeKind),
+			" every decided_by a block node not gone states now, an edge the old arm answers from a row past the bound aside",
+		tieEdgePastBound, tiePastBound(graphstore.TupleDecidedBy), refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleFollowedBy+edgeSuffix, graphstore.TupleFollowedBy,
 		"graph_edges' followed_by: the row side is every followed_by edge graph_edges answers out of an ask node"+
 			" not gone, read node by node, as the triple of that node, followed_by and its session, against every"+
@@ -267,6 +271,40 @@ var typedNodeOwed = `exists (
 		  and typed.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
 		  and owed.version is null)`
 
+// typedRowOwed is the row-side owed predicate (projection.rowOwed) of a kind whose row may name a
+// decision's or a reading's node: the node the row names is a decision or a reading the store
+// holds gone, in a document that still owes its block index (owesBlockIndex). Above the deferral
+// bound no block index runs in the write, and the typed-node pass states each decision and
+// reading the version no longer holds gone in that write's own transaction
+// (refs.PlanDecisionNodes), while the document_blocks row of its block and the block_refs rows it
+// holds stay until the block-index reconciliation deletes them. Such a row is owed its deletion,
+// and no difference until then; once the document owes nothing, the same row names a gone node
+// and is one. A gone node of any other supertag under its row is a difference still, since no
+// writer leaves one so. A ref_key holds no '#', so a block node's document is the part of its id
+// before the first one.
+var typedRowOwed = `node.kind = '` + refs.BlockNodeKind + `' and node.state = '` + graphstore.StateGone + `'
+		  and node.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
+		  and exists (select 1 from artifacts a where a.ref_key = split_part(node.id, '#', 1) and ` + owesBlockIndex("a.id") + `)`
+
+// tieInBound is true of a block_refs row r both of whose ends are inside the store's bound, the one
+// row of a tie its writer marks and states a tuple of (refs' queueBlockRefs).
+var tieInBound = `octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound
+
+// tiePastBound counts the block_refs rows of the tie kind that are not inside the store's bound
+// (tieInBound): the writer leaves each unmarked and states no tuple of it on purpose, and
+// graph_edges' block_refs arm answers it as the row alone.
+func tiePastBound(kind string) string {
+	return `
+		select count(*) from block_refs r
+		where r.kind = '` + kind + `' and not (` + tieInBound + `)`
+}
+
+// tieEdgePastBound is edgeProjection's unmarked predicate of a decision's tie and an ask's shaped:
+// the edge's far end is past the store's bound, so the block_refs row it answers is one the writer
+// left unmarked and stated no tuple of (tiePastBound), which graph_edges' block_refs arm answers.
+// The near end is a node of the store, inside the bound.
+var tieEdgePastBound = `(octet_length(edge.to_id) > ` + addressBound + `)`
+
 // tieProjection is the kind of one tie that block_refs projects - a
 // decision's shaped, from_ask or decided_by, and an ask's shaped - held triple by triple
 // (projection.tuples): each row is the triple of the node that states its tie (node_kind,
@@ -275,19 +313,18 @@ var typedNodeOwed = `exists (
 // of holders states now. So a tuple that reaches the wrong node is a row no tuple states and a
 // tuple no row projects, and not a count that still matches, and a row of the same node whose
 // tuple stands is no difference. A row that names no node is a difference, as a block_ref row's
-// is: every writer of these kinds names it, and a row past the store's bound is counted apart.
+// is: every writer of these kinds names it, and a row past the store's bound is counted apart. A
+// row of a decision a deferred version removed is owed its deletion (typedRowOwed).
 func tieProjection(kind, note string, holders ...string) projection {
-	inBound := `octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound
 	return projection{
 		name: kind, nodeKind: strings.Join(holders, ", "), table: "block_refs", note: note, emptyAgrees: true,
 		rows: `
 		select 'block_ref ' || r.from_node, r.node_kind, r.node_address, r.kind, r.to_kind, r.to_id
 		from block_refs r
-		where r.kind = '` + kind + `' and ` + inBound,
-		tuples: heldTuples(`t.kind = '`+kind+`'`, holders...),
-		pastBound: `
-		select count(*) from block_refs r
-		where r.kind = '` + kind + `' and not (` + inBound + `)`,
+		where r.kind = '` + kind + `' and ` + tieInBound,
+		tuples:    heldTuples(`t.kind = '`+kind+`'`, holders...),
+		pastBound: tiePastBound(kind),
+		rowOwed:   typedRowOwed,
 	}
 }
 
@@ -324,9 +361,11 @@ const edgeSuffix = "_edge"
 // unmarked is a predicate over the node n and its edge that holds where an old arm answers the
 // edge from a row that names no node - an asks or ask_followers row a process of the release
 // before wrote, or one the ask's writer leaves unmarked on purpose because a document it names is
-// past the store's bound, while it writes the ask's node all the same - and is empty for a kind no
-// old arm answers that way. Such an edge is no row here, as such a row is no row of the ask kinds
-// (unmarked_rows, addresses_past_bound); pastBound is the class the ask kinds count beside it.
+// past the store's bound, while it writes the ask's node all the same, or a block_refs row of a
+// decision's tie or an ask's shaped whose far end is past that bound (tieEdgePastBound) - and is
+// empty for a kind no old arm answers that way. Such an edge is no row here, as such a row is no
+// row of the kind that projects it (unmarked_rows, addresses_past_bound); pastBound is the class
+// that kind counts beside it.
 func edgeProjection(name, kind, note, unmarked, pastBound string, holders ...string) projection {
 	return projection{
 		name: name, nodeKind: strings.Join(holders, ", "), table: "graph_edges", note: note, emptyAgrees: true,

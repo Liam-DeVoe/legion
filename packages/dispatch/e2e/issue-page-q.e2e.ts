@@ -94,8 +94,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
   test.setTimeout(240_000);
   await phase(browser, seedDecisionsFilter, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const D = (index: number) => blockNodeId(decisionsSlug, seeded.decisions[index] ?? "");
+    const D = (index: number) => blockNodeId(specSlug, seeded.decisions[index] ?? "");
     const open = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
     const stored = (await getAsk(seeded.optionedAskId)).ask.answer;
     expect(stored?.text ?? "", "the seed's answered ask holds no answer").not.toBe("");
@@ -277,7 +276,7 @@ test("only a decision that changed a statement waits for review @phone", async (
   const phone = test.info().project.name === "iphone";
   const sizes = phone ? [PHONE] : [DESKTOP, PHONE];
   await phase(browser, seedReviewList, async (page, seeded) => {
-    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const id = (block: string) => blockNodeId(seeded.specSlug, block);
     for (const size of sizes) {
       const at = `at ${size.width} px`;
       await page.setViewportSize(size);
@@ -359,7 +358,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
 }) => {
   test.setTimeout(150_000);
   await phase(browser, seedReviewList, async (page, seeded) => {
-    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const id = (block: string) => blockNodeId(seeded.specSlug, block);
     const changed = id(seeded.tiedNewer);
     const words = "Tie it to the first statement instead.";
 
@@ -500,7 +499,7 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
   const size = test.info().project.name === "iphone" ? PHONE : DESKTOP;
   const at = `at ${size.width} px`;
   await phase(browser, seedReviewList, async (page, seeded) => {
-    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const id = (block: string) => blockNodeId(seeded.specSlug, block);
     const newer = id(seeded.tiedNewer);
     const older = id(seeded.tiedOlder);
     const review = decisionsPart(page, "review");

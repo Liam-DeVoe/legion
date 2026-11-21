@@ -24,13 +24,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // storeMigrations is the store's migrations directory, where each of store.TypeMigrations is read
 // from. The test runs them all a second time, in that order and through the same path the
-// migration runner runs each, to prove a second run leaves the same nodes. The seed alone would
-// not do: run again, it puts back the version and the attributes it was written at, which every
-// later type migration has moved on from.
+// migration runner runs each, to prove a second run leaves the same nodes (runTypeMigrationsAgain).
+// The seed alone would not do: run again, it puts back the version and the attributes it was
+// written at, which every later type migration has moved on from. A type migration written after
+// the store's backfill writes graph_tuples above the census limit, so it may write only bounded
+// writes under the migration census's bounded-write rule (typeMigrationShape), and the seed tuples
+// it inserts at source_event 0 fall under no unique key, so a second run would append them again.
+// Such a migration is listed in literalTypeMigrations too.
 const storeMigrations = "../../internal/dispatch/store/migrations"
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -199,11 +204,11 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 			held, stated := tuples[name]
 			switch {
 			case !stated:
-				t.Errorf("type node %s/%s carries %s = %s on its row and no value tuple states it: a type migration appends a value tuple for each value it sets, as %s does",
-					kind, id, name, want, typeMigrationExample)
+				t.Errorf("type node %s/%s carries %s = %s on its row and no value tuple states it: a type migration appends a value tuple for each value it sets, and writes %s",
+					kind, id, name, want, typeMigrationShape)
 			case held != want:
-				t.Errorf("type node %s/%s carries %s = %s on its row, and its newest value tuple states %s: a type migration appends a value tuple for each value it moves, as %s does",
-					kind, id, name, want, held, typeMigrationExample)
+				t.Errorf("type node %s/%s carries %s = %s on its row, and its newest value tuple states %s: a type migration appends a value tuple for each value it moves, and writes %s",
+					kind, id, name, want, held, typeMigrationShape)
 			}
 			compared++
 		}
@@ -424,10 +429,19 @@ func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool
 	}
 }
 
-// typeMigrationExample is the type migration a failing run names as the shape of the one a change
-// to blocks.json needs: it writes the node of the attribute it adds, with its tuples, and moves
-// every block type to the new version.
-const typeMigrationExample = "20261113230000_graph_supertags_check_ci_check.up.sql"
+// typeMigrationShape is the shape a failing run names for the type migration a change to
+// blocks.json needs, written out in words because no migration of that shape exists yet to point
+// at. The type migrations written before the store's backfill (store.TypeMigrations but
+// literalTypeMigrations) write `with … insert … select … where not exists`, and two of them `on
+// conflict … do update`, which the migration census refuses once graph_tuples and graph_nodes are
+// above its limit, so none of them is the shape. A later one writes under the census's
+// bounded-write rule (pgmigrate.BoundedWriteRows): the node of each type or attribute it adds and
+// its tuples as literal rows, and each node it moves, every block type's supertag node to the new
+// version among them, by an update of the node's primary key for each value it sets.
+var typeMigrationShape = fmt.Sprintf("literal rows alone - `insert into graph_nodes (…) values (…)` and `insert into graph_tuples (…) values (…)`, "+
+	"at most %s rows a statement, each with no `on conflict` or with `on conflict … do nothing` - "+
+	"and, for a node it moves, `update graph_nodes set <column> = <literal> where (kind, id) in ((…))`, one statement for each value it sets",
+	pgmigrate.Thousands(pgmigrate.BoundedWriteRows))
 
 // schemaDrift is every type and attribute on which blocks.json and the store's type nodes
 // disagree, and the two schema versions where those differ, gathered while the checks above
@@ -504,18 +518,71 @@ func (d *schemaDrift) report(t *testing.T) {
 		versions = fmt.Sprintf(", and the file is at version %d where the store's nodes build version %d", d.fileVersion, d.storeVersion)
 	}
 	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
-		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
+		"A change to pmdoc/schema/blocks.json needs a store migration of its own: "+
 		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
-		"Write one for this change and add it to store.TypeMigrations (internal/dispatch/store/type_migrations.go).",
-		what, versions, typeMigrationExample)
+		"Written after the store's backfill, it writes under the migration census's bounded-write rule: %s. "+
+		"Write one for this change and add it to store.TypeMigrations (internal/dispatch/store/type_migrations.go) "+
+		"and to literalTypeMigrations in this file, whose rows the second run of the type migrations takes out before it writes them again.",
+		what, versions, typeMigrationShape)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
-// order, and holds every node row and every tuple to being the one the first run left.
-func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
+// literalTypeMigrations are the type migrations of store.TypeMigrations written after the store's
+// backfill, by file name, each with the writer its rows carry. Each runs where graph_nodes and
+// graph_tuples can be past pgmigrate.CensusTableLimit, on which the pre-deploy census admits only
+// an insert of literal rows and an update of literals by primary key, so it has no `not exists`
+// and no `on conflict` to skip what an earlier run wrote: run again over its own rows, its insert
+// into graph_nodes fails on the primary key, and its seed tuples at source_event 0 would be
+// appended again. The runner applies a version once, so no store runs one twice.
+var literalTypeMigrations = []struct{ name, writer string }{
+	{"20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
+}
+
+// shadowedTypeMigrations are the type migrations of store.TypeMigrations, by file name, each with
+// the writer its tuples carry, that append a value tuple only where the node holds no tuple of
+// that value (`where not exists`) and run after a literal type migration (literalTypeMigrations)
+// that states an older value under the same name. Run again, the literal one appends its older
+// value again as the newest tuple of that name, and the not-exists append, seeing its own tuple
+// held, appends nothing after it: 20261116082319 appends each block type's `version` 5 again
+// after 20261116163700's 6, and the row would carry a 6 its newest tuple does not state. So such
+// a migration's tuples are taken out before the run, and its nodes kept, and it appends each
+// again after the literal one's.
+var shadowedTypeMigrations = []struct{ name, writer string }{
+	{"20261116163700_issue_tree_block_schema.up.sql", `{"kind": "system", "id": "block-schema-issue-tree"}`},
+}
+
+// runTypeMigrationsAgain runs the named type migrations of store.TypeMigrations a second time, in
+// the order given, through the same path the migration runner runs each.
+//
+// A literal type migration among them (literalTypeMigrations) never runs over its own rows. A
+// second run of the type migrations before it puts back what it wrote, which each later migration
+// has moved on from: 20261116082319's settings of the `decision` and `reading` supertag nodes, of
+// `ask/invalid` and of the element versions. So the nodes each literal migration made and the
+// tuples it appended, each carrying its writer, are taken out first, and it runs again where the
+// runner orders it: its stamps are literals, so each row it writes is the one it wrote the first
+// time, and its updates move again what the type migrations before it put back. A shadowed type
+// migration among them (shadowedTypeMigrations) has its tuples taken out first too.
+func runTypeMigrationsAgain(t *testing.T, ctx context.Context, pool *store.Pool, names []string) {
 	t.Helper()
-	before, beforeTuples := schemaRows(t, ctx, pool)
-	for _, name := range store.TypeMigrations {
+	for _, migration := range literalTypeMigrations {
+		if !slices.Contains(names, migration.name) {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_tuples where who = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the tuples %s appended: %v", migration.name, err)
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_nodes where made_by = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the nodes %s made: %v", migration.name, err)
+		}
+	}
+	for _, migration := range shadowedTypeMigrations {
+		if !slices.Contains(names, migration.name) {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `delete from graph_tuples where who = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the tuples %s appended: %v", migration.name, err)
+		}
+	}
+	for _, name := range names {
 		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
 		if err != nil {
 			t.Fatalf("read the type migration %s: %v", name, err)
@@ -524,6 +591,15 @@ func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx co
 			t.Fatalf("run the type migration %s a second time: %v", name, err)
 		}
 	}
+}
+
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration of
+// store.TypeMigrations again, in order (runTypeMigrationsAgain), and holds every node row and
+// every tuple to being the one the first run left.
+func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	before, beforeTuples := schemaRows(t, ctx, pool)
+	runTypeMigrationsAgain(t, ctx, pool, store.TypeMigrations)
 	after, afterTuples := schemaRows(t, ctx, pool)
 	if !slices.Equal(before, after) {
 		t.Errorf("a second run of the type migrations left different nodes\nbefore: %v\nafter:  %v", before, after)

@@ -12,8 +12,8 @@
 // explained (GenericPlan) or run and measured (AnalyzedGenericPlan). For a statement over a batch
 // of rows (batch.go) it runs the statement a writer sent, after the statements it sent first,
 // under each plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the batch once
-// and each named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with
-// a control that must fail it (RequireTheCheckFails).
+// and each named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce),
+// with a control that must fail it (RequireTheCheckFails).
 // dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/grapherase and cipher/requests each
 // pin a plan with these checks, so they live here once rather than as a second (or third) hand
 // copy of the same recursive walk; it is an ordinary package rather than a _test.go file because

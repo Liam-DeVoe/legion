@@ -8,7 +8,7 @@ import { api } from "../../api/client";
 import type { Comment, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails } from "./decisions-filter/decisions-fixtures";
 import { TWO_THREADS, waitInAct } from "./outline-fixtures";
 import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
@@ -95,11 +95,7 @@ test("the body and a second caller of the outline's reads send each read once an
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
+    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
     tree: spyOn(api, "getIssueTree").mockResolvedValue(treeOf(TWO_THREADS)),
@@ -201,12 +197,7 @@ test("the outline's reads are settled once each read and the tree read have answ
       spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
       spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
       spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-      spyOn(api, "getIssueDecisions").mockResolvedValue({
-        decisions: [],
-        document: null,
-        entries: [],
-        open_questions: [],
-      } as never),
+      spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
       spyOn(api, "listIssueMessages").mockReturnValue(messages.promise as never),
       spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
       spyOn(api, "getIssueTree").mockReturnValue(tree.promise),

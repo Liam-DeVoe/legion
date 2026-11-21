@@ -911,12 +911,7 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	} else if artifact.Retired {
-		// A retired decisions document is refused as a new one is: decisions are nodes now.
-		refusal := decisionsAreNodes(target, input.name)
-		if refusal == nil {
-			refusal = documentRetiredRefusal(artifact)
-		}
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, input.name))
 		return
 	} else if artifact.DecisionsQuery {
 		s.writeHandlerError(w, decisionsQueryRefusal(artifact))
@@ -1768,7 +1763,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if artifact.Retired {
-		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, artifact.Name))
 		return
 	}
 	if artifact.DecisionsQuery {
@@ -2733,7 +2728,8 @@ var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerif
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 
 // decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
-// is the slug of a decisions document: a decision is a
+// is the slug of a decisions document, and any write of new text to an issue's decisions document
+// once it is retired (retiredDocumentRefusal): a decision is a
 // `decision` block of the spec, and a document of that name would be stored where nothing reads
 // it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
 // It reads the name and not the issue, so a document of any other name is taken. An upload that
@@ -2759,10 +2755,27 @@ func decisionsQueryRefusal(artifact model.Artifact) error {
 		artifact.Name, artifact.Slug, artifact.ID)
 }
 
+// retiredDocumentRefusal is the 409 refusing a write of new text to artifact, a retired document
+// (docs.RetireDocument): an upload or a create under name, its name or its slug, and an edit by its
+// id or its slug, whose name is the document's own. An issue's decisions document - one whose
+// slug, or the name the write gives, is a decisions document's - is refused as a new document of
+// that name is (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another
+// name would lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED
+// (documentRetiredRefusal).
+func retiredDocumentRefusal(artifact model.Artifact, name string) error {
+	target := artifactTarget{IssueKey: artifact.IssueKey}
+	for _, held := range []string{name, artifact.Slug} {
+		if refusal := decisionsAreNodes(target, held); refusal != nil {
+			return refusal
+		}
+	}
+	return documentRetiredRefusal(artifact)
+}
+
 // documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
-// (docs.RetireDocument): an upload or a create under its name or slug, and an edit by its id or
-// its slug. The document is in no list of its issue's or its project's documents, so text written
-// into it would be stored where no reader looks for it. Its versions stay readable.
+// that is no decisions document (retiredDocumentRefusal). The document is in no list of its
+// issue's or its project's documents, so text written into it would be stored where no reader
+// looks for it. Its versions stay readable.
 func documentRetiredRefusal(artifact model.Artifact) error {
 	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
 		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable at /api/v1/artifacts/%s/versions; write a document of another name",

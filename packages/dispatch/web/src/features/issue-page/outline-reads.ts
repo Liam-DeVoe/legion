@@ -100,7 +100,7 @@ function sixReads(key: string) {
     },
     {
       bringsQuestions: false,
-      line: "decisions",
+      line: "issue-decisions",
       message: STATE_LINES.issue_decisions_unreadable,
       query: { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
     },

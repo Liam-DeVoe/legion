@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -593,7 +594,7 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	// it as a tuple no row projects until the backfill retracts it.
 	referenceDifferences := func(stage string) (rows, tuples int64) {
 		t.Helper()
-		report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+		report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 		if err != nil {
 			t.Fatalf("%s take the store census: %v", stage, err)
 		}

@@ -22,7 +22,10 @@ import (
 // not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
 // build made for the new version installs the old one. A new type migration also joins
 // store.TypeMigrations (internal/dispatch/store/type_migrations.go), each of which cmd/dispatch's
-// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt runs a second time.
+// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt runs a second time. Written after the
+// store's backfill, it writes under the migration census's bounded-write rule and cannot run twice
+// unchanged, so it joins literalTypeMigrations in cmd/dispatch/supertag_nodes_test.go too, whose
+// rows the second run takes out before it runs the migration again.
 //
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte

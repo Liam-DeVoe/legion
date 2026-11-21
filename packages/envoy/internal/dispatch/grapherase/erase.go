@@ -11,6 +11,7 @@ package grapherase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -113,18 +114,20 @@ func ParseNode(value string) (kind, id string, err error) {
 //
 // What derives from a node is fixed by the node (erasedRead): its tuples on both sides, its
 // projection rows and the rows that cannot exist without one, its own embedding rows and window
-// state, the events about it, for a block its own document - the versions at which its own block
-// held the text and the approvals over them, the document's editing state, its search rows and
-// its windows - and the excerpts cut from its text, for a comment the editing state of every
-// document whose margin record holds its body, and for a run of the command bar its
-// going_requests row and its going_events rows (runTables), so a run erased is a run no backfill
-// writes back. The run deletes those, or rewrites them with the marker where it may take no row
-// away. Every other row that holds the same bytes derives from another node and is that node's
-// text - a sibling block of the same document among them: the run lists it with its address and
-// changes nothing in it. An operator erases the text of a comment, a block or a run of the
-// command bar by a run over that node; an issue's, a document's, an ask's or a message's text is
-// in its own row and the events about it, which no run reaches, and is changed through that
-// object's own route (an issue's title, a document's name and versions).
+// state, its own keyword versions (search_text_versions), the events about it, for a block its own
+// document - the versions at which its own block held the text and the approvals over them, the
+// document's editing state, its search rows, the keyword versions of its issue that name one of
+// those versions where it is the issue's spec, and its windows - and the excerpts cut from its
+// text, for a comment the editing state of every document whose margin record holds its body, and
+// for a run of the command bar its going_requests row and its going_events rows (runTables), so a
+// run erased is a run no backfill writes back. The run deletes those, or rewrites them with the
+// marker where it may take no row away. Every other row that holds the same bytes derives from
+// another node and is that node's text - a sibling block of the same document among them: the
+// run lists it with its address and changes nothing in it. An operator erases the text of a
+// comment, a block or a run of the command bar by a run over that node; an issue's, a document's,
+// an ask's or a message's text is in its own row and the events about it, which no run reaches,
+// and is changed through that object's own route (an issue's title, a document's name and
+// versions).
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -132,12 +135,14 @@ func ParseNode(value string) (kind, id string, err error) {
 // the rows it leaves in a read-only transaction of its own, which takes no lock (searchLeft), then
 // takes its locks in the store's lock order (lockInStoreOrder), reads the rest of the listing again
 // under them, and erases only when that listing has the digest it was given (Erasure.Mismatch);
-// otherwise it answers both digests and removes nothing. It refuses, removing nothing, while
-// another node's row states something about this one (Blockers), or while its document's live
-// text holds the erased bytes where its markdown spells them otherwise (Unredacted), since the
-// seed would keep them. A tuple another writer commits into the node after that listing was read
-// ends the run as an error with nothing removed (graphstore.EraseNode), since the run deletes the
-// tuples it listed and no others.
+// otherwise it answers both digests and removes nothing. A row written between that search and
+// the locks is not on the listing the digest covers; the search the run makes again after its
+// commit names it (Erasure.LeftAfterCommit). It refuses, removing nothing, while another node's
+// row states something about this one (Blockers), or while its document's live text holds the
+// erased bytes where its markdown spells them otherwise (Unredacted), since the seed would keep
+// them. A tuple another writer commits into the node after that listing was read ends the run as
+// an error with nothing removed (graphstore.EraseNode), since the run deletes the tuples it listed
+// and no others.
 //
 // It refuses a type node, a supertag or an attribute, before it opens a connection: a type is
 // data the block schema seeds (migration 20261109051232, pmdoc/schemanodes), and no route and no
@@ -166,15 +171,18 @@ func ParseNode(value string) (kind, id string, err error) {
 // text. Nobody addresses that row and no read of the graph answers it.
 //
 // Once it has committed it counts again, outside its locks, the term statistics of every project
-// it took erased words out of (recountTermStats), then waits treeStoreBound and deletes the
-// display trees it deleted once more (sweepTrees). treeStoreBound is how long after the commit a
-// read that began before it can still store the display tree of a text the erase removed: a read
-// stores the trees it read on a goroutine of its own, detached from the request and bounded by
-// api.StoreTreesTimeout, which is what cmd/dispatch passes; a test passes a shorter one. An error
-// there comes back beside the Erasure, which is then Applied: the erase stands, and what the
-// sweep could not do is the error's to say. A count that fails is no failure of the erase and
-// comes back as no error: the Erasure names it (NotRecounted), with the refresh pass that counts
-// the project again.
+// it took erased words out of (recountTermStats), then searches again, outside its locks, for the
+// rows it leaves, and reports each the search before its locks did not list
+// (searchLeftAfterCommit), then waits treeStoreBound and deletes the display trees it deleted once
+// more (sweepTrees). treeStoreBound is how long after the commit a read that began before it can
+// still store the display tree of a text the erase removed: a read stores the trees it read on a
+// goroutine of its own, detached from the request and bounded by api.StoreTreesTimeout, which is
+// what cmd/dispatch passes; a test passes a shorter one. An error of that search or of the sweep
+// comes back beside the Erasure, which is then Applied, the two joined where both fail
+// (errors.Join): the erase stands, the sweep runs whether or not the search ended, and what either
+// could not do is the error's to say. A count that fails is no failure of the erase and comes back
+// as no error: the Erasure names it (NotRecounted), with the refresh pass that counts the project
+// again.
 func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
 	if kind == schemanodes.KindSupertag || kind == schemanodes.KindAttribute {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a type node is data the block schema seeds, and no command deletes it", kind, id)
@@ -239,28 +247,28 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 	}
 	erasure.Applied = true
 	erasure.recountTermStats(ctx, conn)
-	if err := erasure.sweepTrees(ctx, conn, treeStoreBound); err != nil {
-		return erasure, err
-	}
-	return erasure, nil
+	searched := erasure.searchLeftAfterCommit(ctx, conn, read)
+	swept := erasure.sweepTrees(ctx, conn, treeStoreBound)
+	return erasure, errors.Join(searched, swept)
 }
 
 // apply removes and rewrites every row the listing named as deriving from the node, in the one
 // order the foreign keys allow. Before anything goes it reads the keys of the display trees of
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
-// (forgetEmbeddings). Then go the whole text of the node's block, the rows that cannot exist
-// without a projection row, the projection rows, a run's frames and its row, and the approvals and
-// the versions they stood on, each such version's node stated gone (endErasedVersions). Then it
-// rewrites what it may not remove - the blocks holding the node's block and the mentions whose
-// excerpt was cut from it, the events about it, the search vectors that stood on a version that
-// went, the embedding rows of what it leaves (restateEmbeddings), and the live state of every
-// document whose history it replaces - takes out of the term statistics of every project whose
-// items moved the lexemes the run removed (api.ForgetErasedTermsTx, which reads no item but the
-// ones the run changed: counting those projects again is recountTermStats's, after the commit),
-// and deletes the display trees of the texts that went. Last go the tuples the listing named and
-// the node (graphstore.EraseNode), which refuses the run where a tuple landed since, and the
-// record of what the run did goes in. Every row it writes is one the read under its locks listed
-// (erasedRead).
+// (forgetEmbeddings). Then go the whole text of the node's block and its Keep, the rows that
+// cannot exist without a projection row, the projection rows, a run's frames and its row, and the
+// approvals and the versions they stood on, each such version's node stated gone
+// (endErasedVersions). Then it rewrites what it may not remove - the blocks holding the node's
+// block and the mentions whose excerpt was cut from it, the events about it, the search vectors
+// that stood on a version that went and the keyword vectors of its spec issue that did, once the
+// node's own keyword versions have gone (restateKeywordVersions), the embedding rows of what it
+// leaves (restateEmbeddings), and the live state of every document whose history it replaces -
+// takes out of the term statistics of every project whose items moved the lexemes the run removed
+// (api.ForgetErasedTermsTx, which reads no item but the ones the run changed: counting those
+// projects again is recountTermStats's, after the commit), and deletes the display trees of the
+// texts that went. Last go the tuples the listing named and the node (graphstore.EraseNode),
+// which refuses the run where a tuple landed since, and the record of what the run did goes in.
+// Every row it writes is one the read under its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
@@ -344,6 +352,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 		return err
 	}
 	if err := e.restateSearch(ctx, tx, read.artifacts); err != nil {
+		return err
+	}
+	if err := e.restateKeywordVersions(ctx, tx, read); err != nil {
 		return err
 	}
 	if err := e.restateEmbeddings(ctx, tx, forgotten); err != nil {
@@ -445,12 +456,17 @@ func (e *Erasure) recountTermStats(ctx context.Context, conn *pgx.Conn) {
 }
 
 // eraseBlockTexts deletes the whole text of the node's block at every version, which is the
-// most of the bytes an erased block holds. document_block_texts is keyed by
-// (artifact_id, block_id, version) and carries a foreign key to artifacts alone (migration
-// 0121), so the walk of single-column references into a projected table never names it and
-// the text would outlive the node that held it. It is deleted by the document and the block id
-// the node's address names (ownDocument), so the texts of a block a version dropped, which has
-// no document_blocks row left, go as well. Any other node names no block and deletes nothing.
+// most of the bytes an erased block holds, and the block's Keep, the decision_keeps row whose
+// text_sha256 digests the erased words beside the keeper's login, which a decision a later version
+// writes under the same id would otherwise read as its own (decisionread). Both tables are keyed by
+// the document and the block id - document_block_texts by (artifact_id, block_id, version) and
+// decision_keeps by (artifact_id, block_id) - and carry a foreign key to artifacts alone
+// (migrations 0121 and 20261101162254), so the walk of single-column references into a projected
+// table never names either, and each would outlive the node that held it. The texts are deleted
+// by the document keying the block's rows and the block id the node's address names
+// (erasedRead.document), so the texts of a block a version dropped, which has no document_blocks
+// row left, go as well; the Keep by the document the block stands in (erasedRead.versioned), which
+// the Keep route and decisionread key it by. Any other node names no block and deletes nothing.
 func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if read.document == nil {
 		return nil
@@ -461,6 +477,12 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 		return fmt.Errorf("delete the texts of the block %s:%s: %w", e.Kind, e.ID, err)
 	}
 	e.removed("document_block_texts", tag.RowsAffected())
+	tag, err = tx.Exec(ctx, `delete from decision_keeps where artifact_id = $1::uuid and block_id = $2`,
+		read.versioned.artifact, read.blockID)
+	if err != nil {
+		return fmt.Errorf("delete the Keep of the block %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.removed("decision_keeps", tag.RowsAffected())
 	return nil
 }
 

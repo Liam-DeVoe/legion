@@ -21,8 +21,22 @@ import (
 
 // blockNodeAddress is a block's address in the store, which document_blocks.node_id and
 // block_refs.from_node hold and which the graph addresses a block by: the document's ref_key,
-// '#' and the block's id.
+// '#' and the block's id as the block index keys it (storedBlockID). An id read from the store,
+// or from the rendering the index is written from, is already in that form.
 func blockNodeAddress(refKey, blockID string) string { return refKey + "#" + blockID }
+
+// BlockAddress is the store's address of block blockID of the document whose ref_key is refKey,
+// for an id that may not be in the form the block index keys it - one a request posted, or one a
+// caller read off a typed block - read as the index keys it (storedBlockID). It is the one
+// address a reader outside this package names a block's node by, so the Keep's lookup of a
+// decision and the restore's moved_to tuples name the node the index wrote.
+func BlockAddress(refKey, blockID string) string {
+	return blockNodeAddress(refKey, storedBlockID(blockID))
+}
+
+// storedBlockID is a block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
+// rendering writes it (pmdoc.BlockPointers).
+func storedBlockID(blockID string) string { return strings.ReplaceAll(blockID, "\x00", "\uFFFD") }
 
 // MaxBlockNodeBytes bounds a block's address in the store, which is one address of the store:
 // graph_nodes keys a node by (kind, id) in a B-tree, and graph_tuples_once, the repeat key of a
