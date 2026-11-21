@@ -68,17 +68,35 @@ var createTables = []string{
 // named public.<table>. It is SET LOCAL, and no startup parameter of the connection, because
 // pods reach the database through a PgBouncer pool in transaction mode, which refuses
 // search_path at startup and carries no setting of a session from one transaction to the next.
+//
+// The pin covers name lookup alone. What the tables' owner attaches to the tables themselves, a
+// trigger, a rule, a row-security policy, a column default, a CHECK constraint, a domain or an
+// expression index, runs as whoever writes, whatever the search_path, and this package does not
+// check for it; only the reads refuse a policy (refuseRowSecurity).
 const pinSearchPath = "SET LOCAL search_path = pg_catalog, pg_temp"
 
+// refuseRowSecurity is the second statement of every read-only transaction (inTransaction). A
+// row-security policy's expression runs in each reader's session, as that reader, so the tables'
+// owner could make Written, FindByID and Read run its code. With row_security off, a query that
+// a policy would affect fails instead (`query would be affected by row-level security policy`),
+// and no policy runs. Oh My Pi's tables carry no policy, so a read of them is unchanged.
+const refuseRowSecurity = "SET LOCAL row_security = off"
+
 // inTransaction runs fn in one transaction on conn, read-only where access is pgx.ReadOnly,
-// whose first statement is pinSearchPath. It is the one place the package runs a statement, and
-// fn runs each of its statements on the transaction it is handed
-// (TestNoStatementRunsOutsideTheHelper holds the package to both). The transaction commits when
-// fn returns nil and rolls back otherwise, and fn's error is returned as it is.
+// whose first statement is pinSearchPath and, in a read-only one, whose second is
+// refuseRowSecurity. It is the one place the package runs a statement, and fn runs each of its
+// statements on the transaction it is handed (TestNoStatementRunsOutsideTheHelper holds the
+// package to both). The transaction commits when fn returns nil and rolls back otherwise, and
+// fn's error is returned as it is.
 func inTransaction(ctx context.Context, conn *pgx.Conn, access pgx.TxAccessMode, fn func(pgx.Tx) error) error {
 	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, pinSearchPath); err != nil {
 			return fmt.Errorf("pin the transaction's search_path: %w", err)
+		}
+		if access == pgx.ReadOnly {
+			if _, err := tx.Exec(ctx, refuseRowSecurity); err != nil {
+				return fmt.Errorf("turn the read's row security off: %w", err)
+			}
 		}
 		return fn(tx)
 	})

@@ -3,6 +3,7 @@ package ompsessions
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -11,6 +12,26 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
+
+// dropRole drops role, which the test login made and granted itself with the SET option. First
+// it runs revokes, the statements that take back what another role granted role, since DROP
+// OWNED BY takes back only what the role running it may: the test login's grants on the database
+// and on its public schema, and the tables' owner's grants on its tables. Then, as the role
+// itself, it drops what role owns, and last it drops the role, as its creator. DROP OWNED BY
+// needs the role's privileges, which a login that is no superuser and made the role with
+// CREATEROLE holds only through SET, since the membership CREATE ROLE gives such a creator does
+// not inherit (createrole_self_grant is empty by default). A Legion pod's test login is one
+// (packages/daemon/docker/legion-testpg).
+func dropRole(t *testing.T, admin *pgx.Conn, role string, revokes ...string) {
+	t.Helper()
+	statements := append(slices.Clone(revokes), "SET ROLE "+role, "DROP OWNED BY "+role, "RESET ROLE", "DROP ROLE "+role)
+	for _, statement := range statements {
+		if _, err := admin.Exec(context.Background(), statement); err != nil {
+			t.Errorf("drop the test's role: %s: %v", statement, err)
+			_, _ = admin.Exec(context.Background(), "RESET ROLE")
+		}
+	}
+}
 
 // The labels the planted objects record in public.plant_runs when a statement runs them.
 const (
@@ -78,12 +99,8 @@ func plantDatabase(t *testing.T, prefix string, tables bool, plant func(login st
 	// dropped, before testdb.Database's cleanup, registered earlier and so run later, drops the
 	// database.
 	t.Cleanup(func() {
-		if _, err := admin.Exec(context.Background(), "DROP OWNED BY "+role); err != nil {
-			t.Errorf("drop what %s planted: %v", planter, err)
-		}
-		if _, err := admin.Exec(context.Background(), "DROP ROLE "+role); err != nil {
-			t.Errorf("drop %s: %v", planter, err)
-		}
+		dropRole(t, admin, role, "REVOKE ALL ON DATABASE "+pgx.Identifier{database}.Sanitize()+" FROM "+role,
+			"REVOKE ALL ON SCHEMA public FROM "+role)
 	})
 	var statements []string
 	if tables {
@@ -166,6 +183,97 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			t.Errorf("after CreateTables public holds omp_session_files %t and omp_session_files_parts %t, want both: "+
 				"the planted schema's table of each name stood in for it", files, parts)
 		}
+	})
+
+	// The tables' owner can attach a row-security policy to a table, and the policy's function
+	// runs in each reader's own session, as that reader, wherever its search_path points. So the
+	// planter owns the tables here, enables row security on both, and attaches a policy whose
+	// function raises PLANTED, and the package's client signs in as a login of its own that
+	// neither owns them nor bypasses row security, as a pod's login does. Each read refuses the
+	// policy rather than run it: a read-only transaction turns row_security off, under which a
+	// query a policy would affect fails. The control is Written's read in a transaction with the
+	// search_path pin alone: it runs the policy. The writes are not held to this.
+	t.Run("a row-security policy the tables' owner attached runs in no read", func(t *testing.T) {
+		db := plantDatabase(t, "legion_ompsessions_plant_policy", false, func(string) []string {
+			plant := append(slices.Clone(createTables),
+				"INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ('"+podSessionFile+"', '{}', 1, 2)",
+				"CREATE FUNCTION public.planted_policy() RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'PLANTED'; END $$")
+			for _, table := range []string{"public.omp_session_files", "public.omp_session_files_parts"} {
+				plant = append(plant, "ALTER TABLE "+table+" ENABLE ROW LEVEL SECURITY",
+					"CREATE POLICY planted ON "+table+" USING (public.planted_policy())")
+			}
+			return plant
+		})
+		reader, err := testdb.RandomName("legion_ompsessions_reader")
+		if err != nil {
+			t.Fatal(err)
+		}
+		role := pgx.Identifier{reader}.Sanitize()
+		const password = "a reader of this test alone"
+		if _, err := db.admin.Exec(ctx, "CREATE ROLE "+role+" LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '"+password+"'"); err != nil {
+			t.Fatal(err)
+		}
+		var owner string
+		if err := db.admin.QueryRow(ctx, "SELECT tableowner FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'omp_session_files'").Scan(&owner); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			dropRole(t, db.admin, role, "SET ROLE "+pgx.Identifier{owner}.Sanitize(),
+				"REVOKE ALL ON public.omp_session_files, public.omp_session_files_parts FROM "+role, "RESET ROLE")
+		})
+		if _, err := db.admin.Exec(ctx, "GRANT "+role+" TO CURRENT_USER WITH INHERIT FALSE"); err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{"SET ROLE " + pgx.Identifier{owner}.Sanitize(),
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON public.omp_session_files, public.omp_session_files_parts TO " + role, "RESET ROLE"} {
+			if _, err := db.admin.Exec(ctx, statement); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+		}
+		config := db.admin.Config().Copy()
+		config.User, config.Password = reader, password
+		conn, err := pgx.ConnectConfig(ctx, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		live := t.Run("control: a read with the search_path pin alone runs the policy", func(t *testing.T) {
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := tx.Exec(ctx, pinSearchPath); err != nil {
+				t.Fatal(err)
+			}
+			var mtime int64
+			if err := tx.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime); err == nil ||
+				!strings.Contains(err.Error(), "PLANTED") {
+				t.Errorf("the read with the pin alone = %d, %v; want the policy's PLANTED", mtime, err)
+			}
+		})
+		if !live {
+			t.Fatal("a policy no read runs is no plant: the rows below would pass whatever the package runs")
+		}
+		refused := func(t *testing.T, what string, err error) {
+			t.Helper()
+			if err == nil || strings.Contains(err.Error(), "PLANTED") || !strings.Contains(err.Error(), "row-level security") {
+				t.Errorf("%s = %v; want the read refused for the row-level security policy, which it does not run", what, err)
+			}
+		}
+		t.Run("Written", func(t *testing.T) {
+			_, _, err := Written(ctx, conn, podSessionFile)
+			refused(t, "Written", err)
+		})
+		t.Run("FindByID", func(t *testing.T) {
+			_, _, err := FindByID(ctx, conn, podSessionID)
+			refused(t, "FindByID", err)
+		})
+		t.Run("Read", func(t *testing.T) {
+			_, _, err := Read(ctx, conn, podSessionFile)
+			refused(t, "Read", err)
+		})
 	})
 
 	db := plantDatabase(t, "legion_ompsessions_plant", true, func(login string) []string {
