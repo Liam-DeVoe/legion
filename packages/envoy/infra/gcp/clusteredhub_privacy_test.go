@@ -11,12 +11,13 @@ import (
 )
 
 // The inputs a private hub's session listener reads each decision's privacy with: the secrets
-// broker's base URL and its privacy route there, the broker's audience (BROKER_K8S_OIDC_AUDIENCE),
-// which the projected token of the listener's own account carries, the listener's own origin,
-// and Dispatch's account, the one caller served every project's sessions.
+// broker's base URL, which is the privacy source too (the listener appends the privacy route to
+// it), the broker's audience (BROKER_K8S_OIDC_AUDIENCE), which the projected token of the
+// listener's own account carries, the listener's own origin, and Dispatch's account, the one
+// caller served every project's sessions.
 const (
 	privacyBrokerURL       = "https://example-broker.example-dispatch.svc.cluster.local:8443"
-	privacySourceURL       = privacyBrokerURL + "/v1/project-privacy"
+	privacySourceURL       = privacyBrokerURL
 	privacyBrokerAudience  = "example-broker-audience"
 	privacyPublicURL       = "http://envoy-nats-listener.envoy.svc.cluster.local:9020"
 	privacyDispatchAccount = "system:serviceaccount:example-dispatch:example-dispatch"
@@ -152,6 +153,11 @@ func TestTheClusteredSessionListenerFollowsItsHubsPrivacy(t *testing.T) {
 				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.PrivacySourceUrl = "" }},
 			{"no all-projects caller", "listener.allProjectsAccounts", "listener.allProjectsAccounts is required with privateProjects",
 				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.AllProjectsAccounts = nil }},
+			{"a privacy URL naming the route", "listener",
+				`listener renders ENVOY_PROJECT_PRIVACY_URL "` + privacyBrokerURL + `/v1/project-privacy" with the path "/v1/project-privacy"`,
+				func(a *gcp.ClusteredNatsHubArgs) {
+					a.Listener.PrivacySourceUrl = privacyBrokerURL + "/v1/project-privacy"
+				}},
 			{"an envoy-nats token at the broker token's path", "listener.brokerAudience",
 				"listener.brokerAudience is listener.natsAudience's audience",
 				func(a *gcp.ClusteredNatsHubArgs) { a.Listener.BrokerAudience = calloutNatsAudience }},

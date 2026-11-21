@@ -83,9 +83,10 @@ type ListenerConfig struct {
 	ServiceGoogleAudience string
 	// PrivacySourceURL, PrivacyRequired and AllProjectsAccounts are the listener's privacy
 	// settings, which a listener of a hub that may make a Dispatch project private carries and every
-	// other listener renders none of: the route the listener reads each decision's private
-	// projects from, with its broker credential, ENVOY_PROJECT_PRIVACY_URL (the secrets broker's
-	// GET /v1/project-privacy); its required mode, ENVOY_PROJECT_PRIVACY_REQUIRED=true, in which a
+	// other listener renders none of: the secrets broker's base URL, ENVOY_PROJECT_PRIVACY_URL, to
+	// which the listener appends the privacy route (GET /v1/project-privacy) and reads each
+	// decision's private projects there with its broker credential, so it names no path, the
+	// route's included; its required mode, ENVOY_PROJECT_PRIVACY_REQUIRED=true, in which a
 	// decision whose privacy cannot be read is refused; and the callers it serves every project's
 	// sessions to, ENVOY_ALL_PROJECTS_ACCOUNTS, each a ServiceAccount's subject. PlanC's #t-c-8
 	// makes the listener read them; a component sets PrivacyRequired from its own hub's
@@ -270,8 +271,11 @@ func CheckBroker(prefix, brokerURL, audience, tokenFile, origin string) error {
 // in required mode, and its every privacy decision is a read of the secrets broker's privacy
 // route with the projected token of its own account, so it needs the privacy URL, the flag, the
 // all-projects callers and the broker check in its token-file form: the broker URL, the token file
-// and the origin, and no Google audience beside the file. A listener of any other hub renders no
-// privacy setting (R9). Each refusal is an InputError naming listener and the variable.
+// and the origin, and no Google audience beside the file. The privacy URL is the broker's base
+// URL, to which the listener appends the route itself, so one naming a path other than "/" is
+// refused: the listener would read the route under the route, and the source it reports would
+// match no source Dispatch's inventory names. A listener of any other hub renders no privacy
+// setting (R9). Each refusal is an InputError naming listener and the variable.
 //
 // It runs on what the component renders, after the component's own input rules, so a render that
 // drops a piece its inputs gave is refused before anything registers rather than deploying a
@@ -300,6 +304,10 @@ func CheckPrivacySource(listener string, c ListenerConfig, hubPrivate bool) erro
 			return InputErrorf(listener, "%s renders no %s, which a listener of a hub that may make a project private needs: it reads each decision's privacy from the secrets broker, as the projected token of its own account",
 				listener, missing.variable)
 		}
+	}
+	if source, err := url.Parse(c.PrivacySourceURL); err == nil && source.Path != "" && source.Path != "/" {
+		return InputErrorf(listener, "%s renders %s %q with the path %q: it is the secrets broker's base URL, to which the listener appends /v1/project-privacy itself",
+			listener, privacyVars[0].variable, c.PrivacySourceURL, source.Path)
 	}
 	if c.AgentSecretsAudience != "" {
 		return InputErrorf(listener, "%s renders %s beside %s: in a pod the listener presents its own projected token to the broker, and refuses a second identity",

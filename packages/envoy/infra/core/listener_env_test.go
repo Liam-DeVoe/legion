@@ -289,7 +289,7 @@ func privateListenerConfig() core.ListenerConfig {
 		AgentSecretsURL: "https://example-broker.internal.example", BrokerTokenFile: "/var/run/secrets/envoy-broker/token",
 		PublicURL:        "http://example-hub-listener.example-namespace.svc.cluster.local:9020",
 		ServiceTokenFile: "/var/run/secrets/envoy/nats-token",
-		PrivacySourceURL: "https://example-broker.internal.example/v1/project-privacy", PrivacyRequired: true,
+		PrivacySourceURL: "https://example-broker.internal.example", PrivacyRequired: true,
 		AllProjectsAccounts: []string{"system:serviceaccount:example-dispatch:example-dispatch"},
 	}
 }
@@ -322,7 +322,7 @@ func TestListenerEnvRendersThePrivacySettingsLast(t *testing.T) {
 	on, err := private.Env(urls)
 	require.NoError(t, err)
 	require.Equal(t, append(slices.Clone(off),
-		"ENVOY_PROJECT_PRIVACY_URL=https://example-broker.internal.example/v1/project-privacy",
+		"ENVOY_PROJECT_PRIVACY_URL=https://example-broker.internal.example",
 		"ENVOY_PROJECT_PRIVACY_REQUIRED=true",
 		"ENVOY_ALL_PROJECTS_ACCOUNTS=system:serviceaccount:example-dispatch:example-dispatch"), on)
 }
@@ -388,6 +388,16 @@ func TestCheckPrivacySourceNamesTheListenerAndThePiece(t *testing.T) {
 			requireInputError(t, core.CheckPrivacySource("tailnet.listener", config, true), "tailnet.listener", want)
 		})
 	}
+	// The privacy URL is the secrets broker's base URL, to which the listener appends the route
+	// itself, so a URL naming a path, the route included, is refused naming the listener; a bare
+	// trailing slash is no path.
+	slash := privateListenerConfig()
+	slash.PrivacySourceURL += "/"
+	require.NoError(t, core.CheckPrivacySource("tailnet.listener", slash, true), "the base URL with a trailing slash")
+	route := privateListenerConfig()
+	route.PrivacySourceURL += "/v1/project-privacy"
+	requireInputError(t, core.CheckPrivacySource("tailnet.listener", route, true), "tailnet.listener",
+		`tailnet.listener renders ENVOY_PROJECT_PRIVACY_URL "https://example-broker.internal.example/v1/project-privacy" with the path "/v1/project-privacy"`)
 	for _, row := range []struct {
 		name, piece string
 		edit        func(*core.ListenerConfig)
@@ -416,8 +426,8 @@ func TestListenerConfigCheckRefusesAHalfSetPrivacyMode(t *testing.T) {
 	}{
 		{"a URL without the flag", "privacyRequired", "privacySourceUrl is set without privacyRequired", func(c *core.ListenerConfig) { c.PrivacyRequired = false }},
 		{"the flag without a URL", "privacySourceUrl", "privacySourceUrl is required with privacyRequired", func(c *core.ListenerConfig) { c.PrivacySourceURL = "" }},
-		{"a URL with no scheme", "privacySourceUrl", "privacySourceUrl \"example-broker/v1/project-privacy\" must be an http or https URL with a host",
-			func(c *core.ListenerConfig) { c.PrivacySourceURL = "example-broker/v1/project-privacy" }},
+		{"a URL with no scheme", "privacySourceUrl", "privacySourceUrl \"example-broker\" must be an http or https URL with a host",
+			func(c *core.ListenerConfig) { c.PrivacySourceURL = "example-broker" }},
 		{"a caller that is no subject", "allProjectsAccounts", "allProjectsAccounts[0] \"dispatch\" must be system:serviceaccount:<namespace>:<name>",
 			func(c *core.ListenerConfig) { c.AllProjectsAccounts = []string{"dispatch"} }},
 		{"a repeated caller", "allProjectsAccounts", "allProjectsAccounts[1] \"system:serviceaccount:example-dispatch:example-dispatch\" repeats allProjectsAccounts[0]",

@@ -48,7 +48,7 @@
           },
           {
             "name": "ENVOY_PROJECT_PRIVACY_URL",
-            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443/v1/project-privacy"
+            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443"
           },
           {
             "name": "ENVOY_PROJECT_PRIVACY_REQUIRED",

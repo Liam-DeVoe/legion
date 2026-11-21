@@ -358,7 +358,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"tailnet.listener.publicUrl", "tailnet.listener.publicUrl", func(a *A, s string) { listener(a).PublicUrl = "http://" + strings.ToLower(s) + ".example.com:9020" }},
 		{"tailnet.listener.brokerAudience", "tailnet.listener.brokerAudience", func(a *A, s string) { listener(a).BrokerAudience = splitSeed(s, "-") }},
 		{"tailnet.listener.privacySourceUrl", "tailnet.listener.privacySourceUrl", func(a *A, s string) {
-			listener(a).PrivacySourceUrl = "https://" + strings.ToLower(s) + ".example.com/v1/project-privacy"
+			listener(a).PrivacySourceUrl = "https://" + strings.ToLower(s) + ".example.com"
 		}},
 		{"tailnet.listener.allProjectsAccounts", "tailnet.listener.allProjectsAccounts[0]", func(a *A, s string) {
 			listener(a).AllProjectsAccounts = []string{"system:serviceaccount:dispatch:" + strings.ToLower(s)}
@@ -387,7 +387,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"listener.publicUrl", "listener.publicUrl", func(a *A, s string) { ownListener(a).PublicUrl = "http://" + strings.ToLower(s) + ".example.com:9020" }},
 		{"listener.brokerAudience", "listener.brokerAudience", func(a *A, s string) { ownListener(a).BrokerAudience = splitSeed(s, "-") }},
 		{"listener.privacySourceUrl", "listener.privacySourceUrl", func(a *A, s string) {
-			ownListener(a).PrivacySourceUrl = "https://" + strings.ToLower(s) + ".example.com/v1/project-privacy"
+			ownListener(a).PrivacySourceUrl = "https://" + strings.ToLower(s) + ".example.com"
 		}},
 		{"listener.allProjectsAccounts", "listener.allProjectsAccounts[0]", func(a *A, s string) {
 			ownListener(a).AllProjectsAccounts = []string{"system:serviceaccount:dispatch:" + strings.ToLower(s)}
