@@ -126,8 +126,9 @@ func TestARecordedIssuesEventOnAnotherRepositoryCarriesGitHubsReadOfIt(t *testin
 
 // A recorded issue's event onto a repository a role App is not installed on carries GitHub's
 // refusal and its kind, which the change waits on the record with; one onto a repository GitHub
-// cannot read carries neither, so its correction writes nothing and says nothing, and the issue's
-// next event or the next boot reads it again. Neither fails the fact: the event is applied.
+// cannot read carries neither, so its correction writes nothing and says nothing, and the
+// preparation asks for a follow of the issue (requestFollowOf), which reads it again until GitHub
+// answers. Neither fails the fact: the event is applied.
 func TestARecordedIssuesEventCarriesWhatGitHubAnsweredForItsNewRepository(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -152,6 +153,9 @@ func TestARecordedIssuesEventCarriesWhatGitHubAnsweredForItsNewRepository(t *tes
 			if got.RepositoryRead != nil || got.RepositoryRefusal != tc.refusal || got.RepositoryRefusalKind != tc.kind {
 				t.Fatalf("the prepared event carries the read %+v and the refusal %q (%v), want no read and %q (%v)",
 					got.RepositoryRead, got.RepositoryRefusal, got.RepositoryRefusalKind, tc.refusal, tc.kind)
+			}
+			if asked, want := w.followRequested.Load(), tc.refusal == ""; (asked != 0) != want {
+				t.Fatalf("the preparation asked for %d follows, want one only for a read GitHub did not answer (%t)", asked, want)
 			}
 		})
 	}

@@ -12,11 +12,12 @@ package daemon
 // installed is a refusal the preparation carries on the fact
 // (intake.DispatchIssue.RepositoryRefusal), and the change waits on the record with it; a read
 // GitHub did not answer, a read the preparation's bound cut short, or a fact no preparation read
-// GitHub for, applies nothing and says nothing. A waiting change is applied at the issue's next
-// event or at the next boot, whatever the repository: nothing reads it again in between. These
-// tests run the daemon's own preparation and handlers over a real PostgreSQL and NATS, with a
-// GitHub that names strangerRepo as strangerNamed, a repository no record names before a test's
-// own.
+// GitHub for, applies nothing and says nothing, and a follow reads the issue again until GitHub
+// answers (requestFollow, requestFollowOf, followRecorded). A waiting change is applied at the
+// issue's next event or at the next boot, whatever the repository: nothing reads it again in
+// between. These tests run the daemon's own preparation and handlers over a real PostgreSQL and
+// NATS, with a GitHub that names strangerRepo as strangerNamed, a repository no record names
+// before a test's own.
 
 import (
 	"context"
@@ -325,6 +326,117 @@ func handOverCorrection(t *testing.T, w *workflowRuntime, _ *repositoryDispatch)
 		t.Fatalf("apply the hand-over's correction: %v", err)
 	}
 	committed()
+}
+
+// A correction whose reads GitHub does not answer writes nothing and says nothing, and its issue
+// is owed a follow (requestFollowOf) that the refresher makes at once and again on its backoff
+// (installReadRetry) while GitHub still does not answer, each pass reading the repository again
+// and writing nothing: the record stays where it was, with nothing waiting and nothing said. Once
+// GitHub answers, the follow corrects the record onto GitHub's spelling and default branch, with
+// no further event of the issue and no boot, as any correction does, and the follow is settled.
+// A live event and a hand-over owe it alike. The repository is one no record names, which nothing
+// else reads again. Control: with no follow owed for such a correction, nothing in the running
+// process read the change again, and the record stayed on the repository the issue left until
+// the issue's next event or the next boot.
+func TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers(t *testing.T) {
+	const key = "LEGION-1041"
+	for _, tc := range []struct {
+		name string
+		// correct moves key onto strangerRepo as the row's pass does.
+		correct func(t *testing.T, w *workflowRuntime, client *repositoryDispatch)
+		// seq is the Dispatch sequence the record holds once the row's pass is applied: an
+		// event's is applied though its correction writes nothing, and a hand-over carries none.
+		seq int64
+	}{
+		{name: "a live event", correct: deliverCorrection, seq: 2},
+		{name: "a hand-over the outbox prepares", correct: handOverCorrection, seq: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			quickInstallReads(t)
+			installs := &installations{}
+			implement := "implement " + strangerRepo
+			installs.setFailing(errors.New("GitHub answered 502"), implement)
+			w, client, _ := changingRig(t, installs)
+			recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
+			client.show(issue(key, strangerRepo, "in_progress", true, "", 2))
+
+			tc.correct(t, w, client)
+			read := installs.reads(implement)
+			if !testwait.Holds(testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll, func() bool { return installs.reads(implement) >= read+2 }) {
+				t.Errorf("%s's implement App was read %d times in all, %d of them after the correction, want the follow to read it again "+
+					"on its backoff while GitHub does not answer", strangerRepo, installs.reads(implement), installs.reads(implement)-read)
+			}
+			got := onWidgets(t, w, key)
+			if got.RepoChange != nil {
+				t.Fatalf("%s waits on %+v, want nothing waiting: a read GitHub did not answer is no refusal", key, got.RepoChange)
+			}
+			if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+				t.Fatalf("notes on %s = %q, want none: a read GitHub did not answer says nothing", key, notes)
+			}
+			if got.LastDispatchSeq != tc.seq {
+				t.Fatalf("%s is at Dispatch sequence %d, want %d", key, got.LastDispatchSeq, tc.seq)
+			}
+
+			installs.setFailing(nil, implement)
+			testwait.Eventually(t, key+" corrected onto "+strangerNamed+" with no event of it and no boot", func() bool {
+				got := recordedIssue(t, w, key)
+				return got != nil && got.Repo == strangerNamed
+			})
+			onStranger(t, w, key, "trunk")
+			if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+				t.Fatalf("notes on %s = %q, want none: its record followed Dispatch onto a repository both Apps are installed on", key, notes)
+			}
+			testwait.Eventually(t, "the follow settled once GitHub answered", func() bool {
+				return w.followApplied.Load() >= w.followRequested.Load()
+			})
+		})
+	}
+}
+
+// A follow owed for one issue whose correction GitHub does not answer goes on reading it, and a
+// follow asked for another issue while it is owed reads that issue too: the passes made for the
+// first are not narrowed to it. Each issue is corrected once GitHub answers for the repository it
+// moves onto, the one whose repository answers first while the other's still does not, with no
+// event of either after the one GitHub did not answer, and the follow is settled once both are.
+func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
+	quickInstallReads(t)
+	const first, second = "LEGION-1091", "LEGION-1092"
+	installs := &installations{}
+	stranger, answered := "implement "+strangerRepo, "implement "+answeredRepo
+	installs.setFailing(errors.New("GitHub answered 502"), stranger, answered)
+	w, client, _ := changingRig(t, installs)
+	recordCorrectionRoot(t, w.pool, w.records, first, first, 0)
+	recordCorrectionRoot(t, w.pool, w.records, second, second, 1)
+
+	deliver(t, w, client, issue(first, strangerRepo, "in_progress", true, "", 2))
+	read := installs.reads(stranger)
+	testwait.Eventually(t, "the follow owed for "+first+" reading "+strangerRepo+" again", func() bool { return installs.reads(stranger) >= read+2 })
+	deliver(t, w, client, issue(second, answeredRepo, "in_progress", true, "", 2))
+	installs.setFailing(nil, answered)
+	testwait.Eventually(t, second+" corrected onto "+answeredNamed+" with no event of it", func() bool {
+		got := recordedIssue(t, w, second)
+		return got != nil && got.Repo == answeredNamed
+	})
+	if got := recordedIssue(t, w, second); got.DefaultBranch != "main" || got.RepoCorrection == nil || got.RepoCorrection.Before != "acme/widgets" {
+		t.Fatalf("%s = %+v, want it on %s at main, having left acme/widgets", second, got, answeredNamed)
+	}
+	if got := onWidgets(t, w, first); got.RepoChange != nil {
+		t.Fatalf("%s waits on %+v, want nothing waiting: GitHub still does not answer for %s", first, got.RepoChange, strangerRepo)
+	}
+	if applied, asked := w.followApplied.Load(), w.followRequested.Load(); applied >= asked {
+		t.Fatalf("the follow is applied (%d of %d) with %s unread, want it owed for that issue", applied, asked, first)
+	}
+
+	installs.setFailing(nil, stranger)
+	testwait.Eventually(t, "the follow settled once GitHub answered for both repositories", func() bool {
+		return w.followApplied.Load() >= w.followRequested.Load()
+	})
+	onStranger(t, w, first, "trunk")
+	for _, key := range []string{first, second} {
+		if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+			t.Fatalf("notes on %s = %q, want none", key, notes)
+		}
+	}
 }
 
 // The boot's listing reads GitHub for no repository, a recorded issue's change included: it runs

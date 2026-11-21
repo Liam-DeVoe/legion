@@ -190,12 +190,13 @@ type workflowRuntime struct {
 	// repositories is the repository state: what GitHub answered for each repository the daemon
 	// prepared, and the repositories the live records name. installs answers each App's
 	// installation on a repository (prepareName). followRequested counts the follows asked for
-	// (requestFollow: a boot's listing found a recorded issue Dispatch resolves to another
-	// repository, which that listing reads GitHub for none of), and followApplied is the last of
-	// them whose recorded issues followed Dispatch's listing after it (followRecorded). recovering
-	// is each repository,
-	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
-	// listing (recoverRepositories): one a preparation left unread and whose reads a later
+	// (requestFollow, requestFollowOf), followApplied is the last of them a pass completed
+	// (followRecorded), and followEvery and followOwed, under followMu, are what the follows no
+	// pass has taken yet are of: every recorded issue, which a boot's listing asks for, and each
+	// recorded issue by key whose correction's reads GitHub did not answer, or which a pass its
+	// bound cut short did not read. recovering is each repository, lowercased, GitHub answered
+	// for again whose issues are still to recover from Dispatch's listing (recoverRepositories):
+	// one a preparation left unread and whose reads a later
 	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
 	// repository, each issue whose apply said nothing because the repository was unread
 	// (noteUnread), which the repository's recovery takes into its scope whatever the issue
@@ -209,8 +210,11 @@ type workflowRuntime struct {
 	// time.After when nil; a test sees each wait through it.
 	repositories      *repositories
 	installs          appauth.Installations
+	followMu          sync.Mutex
 	followRequested   atomic.Uint64
 	followApplied     atomic.Uint64
+	followEvery       bool
+	followOwed        map[string]bool
 	recoveringMu      sync.Mutex
 	recovering        map[string]bool
 	silenced          map[string]map[string]bool
@@ -222,9 +226,9 @@ type workflowRuntime struct {
 	// second job's clock), a repository left unread or answered again (its third,
 	// recoverRepositories), a consumer update JetStream refused (its fourth, republishHeard), a
 	// default branch held through a rate limit (its fifth, rereadHeldBranches), a write that can
-	// change the live records (its sixth, refreshLive), and a follow a boot's listing asked for
-	// (its seventh, followRecorded). heldReads is each repository whose default branch is held
-	// through a rate limit, by its lowercased <owner>/<name>, with the limit's end
+	// change the live records (its sixth, refreshLive), and a follow asked for (its seventh,
+	// followRecorded). heldReads is each repository whose default branch is held through a rate
+	// limit, by its lowercased <owner>/<name>, with the limit's end
 	// (heldThroughLimit), under heldMu. backfillPending marks a record the backfill left without
 	// its repository columns, which the second job tries again (backfillLater).
 	rereadWake, recoverWake, heardWake, heldWake, liveWake, followWake chan struct{}

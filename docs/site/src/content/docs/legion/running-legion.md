@@ -39,7 +39,11 @@ applies the change only from what GitHub answers then. Under `runtime: kubernete
 replaces the issue's pod, so its workspace, its GitHub token and its clone are of the new owner;
 under `runtime: tmux` there is no pod to replace, and each pane works the repository the issue
 left until its next launch, which provisions it a workspace of the new repository on the daemon's
-host. A change onto a repository a role App is not installed on, or one GitHub does not have, is
+host. When GitHub does not answer such a pass's reads (a failure, its rate limit, or no answer in
+time), the pass applies nothing and says nothing on the issue, and the daemon reads that issue
+again from Dispatch's listing and GitHub, 30 seconds doubling to 10 minutes, until GitHub
+answers, with no event of the issue and no restart: the change is then applied, or waits as
+below. A change onto a repository a role App is not installed on, or one GitHub does not have, is
 not applied; the record keeps what it has, the daemon says so once on the issue, and the record
 carries the waiting change (`repoChangePending` and `repoChangeReason` of `legion state --json`)
 until the issue's next event or the daemon's next boot, the two passes that read the repository

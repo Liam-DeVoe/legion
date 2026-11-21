@@ -1656,6 +1656,11 @@ resolution:
 an event of the issue from Dispatch,
 the hand-over that completes a child handed to Legion,
 or the pass over every recorded issue that the daemon makes once a boot is over.
+When GitHub does not answer that pass's reads of the repository (a failure, its rate limit, or no
+answer in time), the issue is told nothing and nothing waits on the record:
+the daemon reads the issue again from Dispatch's listing and GitHub, 30 s doubling to 10 min,
+until GitHub answers,
+and then moves it, or says why not with the line above, with no event of the issue and no restart.
 The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
 and whatever runs for it.
 
