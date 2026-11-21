@@ -27,12 +27,12 @@
 #       words and frames - out of that database and keeps it as a file.
 #   H1  This head's server (DISPATCH_E2E_SERVER_BIN, stamped with its own commit) boots over the
 #       same database and runs every migration it holds that the database does not record, so the
-#       migrations it applied are the versions schema_migrations holds now and did not after B1,
-#       20261116205055_interaction_nodes among them; its /healthz names its own commit as the
-#       fleet's. The driver runs `envoy-dispatch backfill-graph-store`, waits ten minutes at most
-#       until no document_block_versions row has a null version, and compares the store with the
-#       inventory row by row, then going_requests and going_events the same way, naming every run
-#       a side lacks.
+#       migrations it applied are the versions schema_migrations holds now and did not after B1;
+#       its /healthz names its own commit as the fleet's. The driver runs `envoy-dispatch
+#       backfill-graph-store`, which gives each run the base build recorded its interaction node,
+#       waits ten minutes at most until no document_block_versions row has a null version, and
+#       compares the store with the inventory row by row, then going_requests and going_events the
+#       same way, naming every run a side lacks.
 #   H2  Through this build's routes: a pre-mortem reserved for alice with one risk prevented by a
 #       check, a trade-off lens with one finding block, triggered by the pre-mortem, a constraint
 #       reserved for bob, the requirement's constrained_by tuple to it, one lens_kind through
@@ -82,7 +82,7 @@
 #       a frame value for each frame that build appended, and the run whose row it deleted at state
 #       gone. alice moves her pre-mortem to proposed, the finding to settled and her risk to
 #       overtaken. Only then the census, the store-to-projection comparison, which is reported
-#       apart from the inventory's: a run the migration lost shows in the first and never in the
+#       apart from the inventory's: a run the upgrade lost shows in the first and never in the
 #       second. Run whole, it exits 0, every kind of the store checked and none read apart, and it
 #       reads zero differences for the interaction and frame kinds, for both block projections of
 #       cybermonklabs/legion#3178, for comment, person, session, role and page, for the eight kinds
@@ -543,10 +543,10 @@ nodes_json() {
 # psql's :'by', an interval, on both sides, for a caller to run inside its own transaction. In
 # production no recorded fact moves: a run's ends_at is written once, by the write that records the
 # run. So a move moves the going_requests row, the interaction node's ends_at attribute and a new
-# ends_at value tuple together, written as graphstore.InteractionFacts writes that attribute (RFC
-# 3339 in UTC with the fraction of a second time.RFC3339Nano writes, as migration 20261116205055
-# spells it, stated by the run's made_by and caused by no event), so the newest tuple and the column
-# agree with the row.
+# ends_at value tuple together, written as graphstore.InteractionFacts writes that attribute, the
+# writer through which the backfill gives each run its node (RFC 3339 in UTC with the fraction of
+# a second time.RFC3339Nano writes, stated by the run's made_by and caused by no event), so the
+# newest tuple and the column agree with the row.
 readonly ends_at_moved="
   update going_requests set ends_at = now() + :'by'::interval where id = :'run'::uuid;
   with moved as (
@@ -778,10 +778,10 @@ printf '%s\n' "$answer" >"$work/head.migrations"
 head_migrations="$(comm -13 <(sort "$work/base.migrations") <(sort "$work/head.migrations") | tr '\n' ' ')" ||
   fail H1 "compare the versions of schema_migrations after this head's boot with the base build's" "comm refused them"
 readonly head_migrations="${head_migrations% }"
-[[ -n "$head_migrations" && " $head_migrations " == *" 20261116205055 "* ]] ||
-  fail H1 "this head ran its migrations over the base build's schema, 20261116205055_interaction_nodes among them" \
+[[ -n "$head_migrations" ]] ||
+  fail H1 "this head ran its migrations over the base build's schema" \
     "the versions schema_migrations holds after this head's boot and did not hold after B1 are: '$head_migrations'"
-pass H1 "this head ran $(wc -w <<<"$head_migrations") migration(s) the base build had not, 20261116205055_interaction_nodes among them: $head_migrations"
+pass H1 "this head ran $(wc -w <<<"$head_migrations") migration(s) the base build had not: $head_migrations"
 
 backfill H1
 query H1 "read the owed block versions" "select count(*) from document_block_versions where version is null"
