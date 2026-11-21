@@ -36,7 +36,7 @@ func (c Credential) Sees(project string, private bool) bool {
 	return inList
 }
 
-// BrokerTokenAdmits is the bus's rule for a broker token (PlanC), projectscope.BrokerTokenAdmits:
+// BrokerTokenAdmits is the bus's rule for a broker token, projectscope.BrokerTokenAdmits:
 // a listed project, or, with no list, any project that is not private. The rule itself lives in
 // that leaf package so the Envoy listener reads it without linking this package's store.
 func BrokerTokenAdmits(listed []string, project string, private bool) bool {

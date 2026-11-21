@@ -1,9 +1,9 @@
 package main
 
-// edge_repositories.go is the edge listener's reader of contract K-E5: which repositories the
-// issues of each project it serves resolve to, as the secrets broker relays Dispatch's one rule
+// edge_repositories.go is the edge listener's reader of which repositories the issues of each
+// project it serves resolve to, as the secrets broker relays Dispatch's one rule
 // (GET /v1/project-repositories, internal/broker/api/project_repositories.go). The edge asks it
-// with its own broker account, fresh at each registration that names a GitHub topic and every
+// with its own broker account, fresh at each registration that follows a GitHub topic and every
 // edgeRepositoryRefresh for each project it serves, and fails closed on any answer that is not a
 // whole list: a registration it cannot read for is 503 repositories_unknown, and while no answer
 // of a session's projects is younger than edgeRepositoryAnswerLife that session is relayed no
@@ -34,21 +34,31 @@ import (
 )
 
 const (
-	// edgeRepositoriesPath is the broker's route K-E5 names, asked as ?project=<KEY>.
+	// edgeRepositoriesPath is the broker's route of the repositories of a project's issues,
+	// asked as ?project=<KEY>.
 	edgeRepositoriesPath = "/v1/project-repositories"
-	// edgeRepositoryRefresh is how often the edge reads every project's answer again (R15: at
-	// least every 30 seconds).
+	// edgeRepositoryRefresh is how often the edge reads every project's answer again: at least
+	// every 30 seconds.
 	edgeRepositoryRefresh = 30 * time.Second
-	// edgeRepositoryAnswerLife is how long an answer holds for the relay (R15: a GitHub event is
-	// relayed only while its repository is in a list no older than 60 seconds). Two refreshes
-	// fit in it, so one failed read alone withholds nothing.
+	// edgeRepositoryAnswerLife is how long an answer holds for the relay: a GitHub event is
+	// relayed only while its repository is in a list no older than 60 seconds. Two refreshes fit
+	// in it, so one failed read alone withholds nothing.
 	edgeRepositoryAnswerLife = 60 * time.Second
-	// edgeRepositoryReadTimeout bounds one read of the broker: its own read of Dispatch is
-	// bounded at 2 s (K-E5), and a registration's budget (sendRequestBudget) bounds the whole of
-	// a registration's reads below this.
+	// edgeRepositoryReadTimeout bounds one read of the broker: the broker bounds its own read of
+	// Dispatch at 2 s, and a registration's budget (sendRequestBudget) bounds the whole of a
+	// registration's reads below this.
 	edgeRepositoryReadTimeout = 5 * time.Second
+	// edgeRepositoryReadsAtOnce bounds the reads one pass runs at once (readEach). Each project
+	// is read on its own, so a project whose read hangs holds back no other project's answer,
+	// which would otherwise age past edgeRepositoryAnswerLife behind it; and the most projects
+	// an edge serves (oauthwire.MaxProjects, 16) are read in two rounds, a pass ending within
+	// two read timeouts, well inside edgeRepositoryRefresh.
+	edgeRepositoryReadsAtOnce = 8
 	// edgeRepositoryBodyLimit bounds an answer's body; a list past it is no answer.
 	edgeRepositoryBodyLimit = 1 << 20
+	// edgeRepositoryErrorExcerpt bounds how much of a refused answer's body the log line about it
+	// quotes.
+	edgeRepositoryErrorExcerpt = 512
 )
 
 // The reasons envoy_edge_github_withheld_total counts a GitHub frame under.
@@ -113,7 +123,8 @@ func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 }
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
-// one. Every other outcome is errRepositoriesUnknown, naming what went wrong, and keeps nothing.
+// one. Every other outcome is errRepositoriesUnknown, naming what went wrong, for the log alone:
+// what a client is told is the listener's own sentence (edgeTopicHold.repositoriesUnknown).
 func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, error) {
 	bearer, err := e.account.Read()
 	if err != nil {
@@ -136,7 +147,7 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 		return nil, fmt.Errorf("%w: read the broker's answer: %w", errRepositoriesUnknown, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, excerpt(body))
 	}
 	if len(body) > edgeRepositoryBodyLimit {
 		return nil, fmt.Errorf("%w: the broker's answer is longer than %d bytes", errRepositoriesUnknown, edgeRepositoryBodyLimit)
@@ -165,13 +176,13 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 // readFresh reads the answer of each of projects now, for a registration: the union of their
 // repositories, or errRepositoriesUnknown when any one of them could not be read.
 func (e *edgeRepositories) readFresh(ctx context.Context, projects []string) ([]string, error) {
+	answers, errs := e.readEach(ctx, projects)
 	var repositories []string
-	for _, project := range projects {
-		answered, err := e.read(ctx, project)
-		if err != nil {
-			return nil, err
+	for i := range projects {
+		if errs[i] != nil {
+			return nil, errs[i]
 		}
-		repositories = append(repositories, answered...)
+		repositories = append(repositories, answers[i]...)
 	}
 	return repositories, nil
 }
@@ -179,12 +190,43 @@ func (e *edgeRepositories) readFresh(ctx context.Context, projects []string) ([]
 // refresh reads the answer of every project the edge serves again. A read that fails keeps the
 // last answer, which ages out at edgeRepositoryAnswerLife, and is logged.
 func (e *edgeRepositories) refresh(ctx context.Context) {
-	for _, project := range e.projects {
-		if _, err := e.read(ctx, project); err != nil {
+	_, errs := e.readEach(ctx, e.projects)
+	for i, err := range errs {
+		if err != nil {
 			e.logger.Warn("edge listener could not read its project's repositories; GitHub events wait for the next answer",
-				slog.String("project", project), slog.String("error", err.Error()))
+				slog.String("project", e.projects[i]), slog.String("error", err.Error()))
 		}
 	}
+}
+
+// readEach reads the answer of each of projects, each on its own and at most
+// edgeRepositoryReadsAtOnce at once, and returns once every read has ended: each project's
+// repositories and error, in projects' order.
+func (e *edgeRepositories) readEach(ctx context.Context, projects []string) ([][]string, []error) {
+	answers := make([][]string, len(projects))
+	errs := make([]error, len(projects))
+	slots := make(chan struct{}, edgeRepositoryReadsAtOnce)
+	var reads sync.WaitGroup
+	for i, project := range projects {
+		reads.Add(1)
+		go func() {
+			defer reads.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			answers[i], errs[i] = e.read(ctx, project)
+		}()
+	}
+	reads.Wait()
+	return answers, errs
+}
+
+// excerpt is body as a log line quotes it: trimmed, and cut at edgeRepositoryErrorExcerpt bytes.
+func excerpt(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if len(text) > edgeRepositoryErrorExcerpt {
+		return text[:edgeRepositoryErrorExcerpt] + "…"
+	}
+	return text
 }
 
 // standing is the repositories the fresh answers of projects name, and whether every one of
@@ -207,27 +249,69 @@ func (e *edgeRepositories) standing(projects []string) (repositories []string, c
 	return repositories, complete
 }
 
-// relayVerdict is whether the relay withholds a frame on subject from a session whose token
-// lists projects, and why: a frame that is no GitHub event's is never withheld; a GitHub event is
-// relayed while a fresh answer of the session's projects names its repository, withheld
-// not_in_project once every one of those answers is fresh and none names it, and withheld
-// answer_unknown otherwise.
-func (e *edgeRepositories) relayVerdict(projects []string, subject string) (withhold bool, reason string) {
+// relayVerdict is whether the relay withholds a frame on subject, whose stored data is data, from
+// a session whose token lists projects, and why: a frame that is no GitHub event's is never
+// withheld; a GitHub event is relayed while a fresh answer of the session's projects names the
+// repository the event itself names (eventRepository), withheld not_in_project when the event
+// names none or once every one of those answers is fresh and none names it, and withheld
+// answer_unknown otherwise. The event's own repository decides, not the subject's tokens: a
+// subject writes a dot in a name as an underscore (contracts.SanitizeSubjectSegment), so acme/a.b
+// and acme/a_b publish on one subject, and an answer naming one must not admit the other's events.
+func (e *edgeRepositories) relayVerdict(projects []string, subject string, data []byte) (withhold bool, reason string) {
 	if !strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
 		return false, ""
 	}
-	owner, name, single := githubSubjectRepository(subject)
-	if !single {
+	owner, name, named := eventRepository(data)
+	if !named {
 		return true, withheldNotInProject
 	}
 	repositories, complete := e.standing(projects)
-	if repositoryAmong(repositories, owner, name) {
+	if repositoryNamed(repositories, owner, name) {
 		return false, ""
 	}
 	if complete {
 		return true, withheldNotInProject
 	}
 	return true, withheldAnswerUnknown
+}
+
+// eventRepository is the owner and name of the repository a GitHub event names, data being its
+// stored envelope: the payload's repo, which every GitHub event carries (contracts' githubPayload,
+// and the CI settlement's summary), and false for an event that names none, whose envelope or
+// payload does not decode or whose repo is no owner/name.
+func eventRepository(data []byte) (owner, name string, ok bool) {
+	var envelope struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Payload == "" {
+		return "", "", false
+	}
+	var payload struct {
+		Repo string `json:"repo"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+		return "", "", false
+	}
+	owner, name, found := strings.Cut(payload.Repo, "/")
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", "", false
+	}
+	return owner, name, true
+}
+
+// repositoryNamed reports whether one of repositories, each owner/name as Dispatch answers it,
+// is owner/name itself, owner and name each compared ignoring case and nothing else: Dispatch
+// answers a repository lower-cased (canonicalRepo) while the event keeps GitHub's own case, and
+// GitHub's names are case-insensitive, so Acme/Pub's events are acme/pub's; acme/a_b's are not
+// acme/a.b's.
+func repositoryNamed(repositories []string, owner, name string) bool {
+	for _, repository := range repositories {
+		answerOwner, answerName, _ := strings.Cut(repository, "/")
+		if strings.EqualFold(answerOwner, owner) && strings.EqualFold(answerName, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // githubSubjectRepository is the owner and name a GitHub subject or topic names, its third and
@@ -252,11 +336,11 @@ func isRepositoryToken(token string) bool {
 }
 
 // repositoryAmong reports whether one of repositories, each owner/name as Dispatch answers it,
-// is the repository whose subject tokens are owner and name: the tokens
-// contracts.GithubRepositoryPrefix writes for it, compared ignoring case. Dispatch answers a
-// repository lower-cased (canonicalRepo) while the intake writes GitHub's own case and replaces
-// only dots and white space (contracts.SanitizeSubjectSegment), and GitHub's names are
-// case-insensitive, so Acme/Pub's events are acme/pub's.
+// is one a topic whose repository tokens are owner and name can follow: the tokens
+// contracts.GithubRepositoryPrefix writes for it, compared ignoring case. A topic is all a
+// registration names, and it cannot write a dot in a name (acme/a.b is followed as acme.a_b), so
+// a topic is taken on these tokens; each event it brings is then held to the repository it names
+// itself at relay (relayVerdict).
 func repositoryAmong(repositories []string, owner, name string) bool {
 	for _, repository := range repositories {
 		answerOwner, answerName, _ := strings.Cut(repository, "/")
