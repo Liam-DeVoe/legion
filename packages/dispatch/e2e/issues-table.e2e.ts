@@ -333,6 +333,47 @@ test("New epic over an issue in progress, confirmed, leaves the epic in progress
   }
 });
 
+// A refused write leaves Pending changes open at the bottom of the window, as the issues table's
+// Finish flows do. The selection bar's controls must still take a press while it is open: at
+// 1600x1000 the panel lay over "New epic from these" and "Clear selection".
+test("with a refused change pending, New epic from these and Clear selection still take a press", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    await page.goto("/projects/CORE/issues");
+    const select = (key: string) =>
+      page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
+    await select(refused.key).check();
+    await page.getByRole("button", { name: "Take out of epic" }).click();
+    await expect(page.getByRole("region", { name: "Pending changes" })).toContainText(refused.key);
+    await select(refused.key).setChecked(false);
+    await select(other.key).check();
+    // A press that another element takes fails here, where Playwright reads the element at the
+    // control's point, rather than hanging until the test's own timeout.
+    await page.getByRole("button", { name: "New epic from these" }).click({ timeout: 5_000 });
+    const naming = page.getByRole("dialog", { name: "Name the new epic" });
+    await naming.getByRole("button", { name: "Cancel" }).click();
+    await expect(naming).toHaveCount(0);
+    await page.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
+    await expect(select(other.key)).not.toBeChecked();
+  } finally {
+    await context.close();
+  }
+});
+
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
