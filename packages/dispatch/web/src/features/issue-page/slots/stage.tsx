@@ -127,7 +127,7 @@ export const SLOT_FILLED: SlotsFilled = {
   decisions: true,
   plan: false,
   spec: false,
-  verification: false,
+  verification: true,
 };
 
 /** A slot's tree itself, which holds the focus only where it has no row to give it to. */
