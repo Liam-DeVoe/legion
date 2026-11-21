@@ -16,6 +16,7 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
+  type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
@@ -45,7 +46,6 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
-import { ListenerRelay } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
 import { refusedTopicsNoticeText, registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
@@ -373,6 +373,9 @@ export interface ChannelSessionOptions {
    * alone. A failed move leaves the relay closed and the next registration retries it.
    */
   readonly followSession?: () => Promise<void>
+  /** Has a refused trade of the connection's own told the session's outage report: the relay
+   *  socket's (`ListenerRelay.reportOutagesTo`); absent for NATS. */
+  readonly reportOutagesTo?: (outage: InboundUnavailable) => void
   /**
    * Told each `/clear` this session adopts from the handoff file, as it moves from `previous` to
    * `next` (`adoptHandoff`), before the new id registers: what else the server keeps under the
@@ -1343,8 +1346,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     },
   )
   // A relay socket's refused trade is this session's outage too, told once with its
-  // registrations', and the socket that opens again ends it (`ListenerRelay.reportOutagesTo`).
-  if (options.connection instanceof ListenerRelay) options.connection.reportOutagesTo(inboundOutage)
+  // registrations', which only a registration the listener accepted ends.
+  options.reportOutagesTo?.(inboundOutage)
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
@@ -2134,7 +2137,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     connection = live
     followSession = reopened.followSession
-    if (live instanceof ListenerRelay) live.reportOutagesTo(inboundOutage)
+    reopened.reportOutagesTo?.(inboundOutage)
     // A handoff that waits for its relay opens it on this connection as it registers.
     if (relay !== undefined && !handoffDeliveryPending) subscribeRelay(relay)
     watchConnection(live)
@@ -2870,6 +2873,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
         ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
         // The live view follows a `/clear` the mod reported before it began listening.
         adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
         reopen,

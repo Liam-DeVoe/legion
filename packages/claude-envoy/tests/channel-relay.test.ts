@@ -172,6 +172,9 @@ test("a relay subject the listener refuses is told as an outage naming why, and 
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity(SESSION, "/tmp"), scratchState(), {
       connection: dialled.connection,
+      ...(dialled.reportOutagesTo === undefined
+        ? {}
+        : { reportOutagesTo: dialled.reportOutagesTo }),
       notifier,
       heartbeatMs: 50,
       client: recordingClient([], { subscribe: async (input) => noInterest(input.sessionID) }),

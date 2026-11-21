@@ -46,17 +46,23 @@
 // it, so only a registration the listener accepted ends it. Each open is followed by one, the
 // start's or the one a `reconnect` (`status`) sets off.
 //
-// The connection has the shape of the NATS connection a session plugin holds (`InboundConnection`),
-// so a plugin's delivery runs on either: its subscriptions, a publish, a round trip (`flush`, a
-// WebSocket ping, whose pong the listener's reader sends only after it handled every frame the
-// socket sent before it, every `sub` included), the status events `disconnect` and `reconnect`, a
-// drain and a close.
+// The connection is an `InboundConnection` (`./inbound-connection.ts`), the shape of the NATS
+// connection a session plugin holds, so a plugin's delivery runs on either: its subscriptions, a
+// publish, a round trip (`flush`, a WebSocket ping, whose pong the listener's reader sends only
+// after it handled every frame the socket sent before it, every `sub` included), the status events
+// `disconnect` and `reconnect`, a drain and a close.
 
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { RequestCredential } from "./bearer";
 import { type BrokerSessionName, sessionName } from "./broker-credential";
 import type { InboundUnavailable, RelayHeaders } from "./consumer-delivery";
 import { LoggableError, messageFor } from "./errors";
+import type {
+  InboundConnection,
+  InboundMessage,
+  InboundStatus,
+  InboundSubscription,
+} from "./inbound-connection";
 import { NATS_MAX_PINGS_OUT, NATS_PING_INTERVAL_MS } from "./nats-connection";
 import { FOLLOW_DEADLINE_MS, TRADE_DEADLINE_MS } from "./nats-credential";
 
@@ -117,43 +123,6 @@ const BunWebSocket = WebSocket as unknown as new (
   url: string,
   options: Bun.WebSocketOptions
 ) => Bun.WebSocket;
-
-/** A message on an inbound subscription: a nats.js `Msg` is one, and so is a relay socket's. */
-export interface InboundMessage {
-  readonly subject: string;
-  readonly data: Uint8Array;
-  readonly reply?: string;
-  readonly headers?: RelayHeaders;
-}
-
-/** A subscription of an inbound connection, which ends when it is closed. */
-export interface InboundSubscription extends AsyncIterable<InboundMessage> {
-  unsubscribe(): void;
-}
-
-/** A connection's status event; only its `type` is read (`disconnect`, `reconnect`). */
-export interface InboundStatus {
-  readonly type: string;
-}
-
-/**
- * What a session plugin holds its inbound messages over: a nats.js `NatsConnection` is one, and so
- * is the listener's relay socket (`ListenerRelay`).
- */
-export interface InboundConnection {
-  subscribe(subject: string): InboundSubscription;
-  publish(subject: string, data?: Uint8Array): void;
-  /** A round trip: resolves once the server has taken everything sent before it. */
-  flush(): Promise<void>;
-  isClosed(): boolean;
-  drain(): Promise<void>;
-  close(): Promise<void>;
-  /** The connection's status events, which end when it closes for good. */
-  status(): AsyncIterable<InboundStatus>;
-  /** Settles once the connection is closed for good; nats.js settles it with the error that closed
-   *  the connection, where one did, which no caller here reads. */
-  closed(): Promise<unknown>;
-}
 
 /** The relay socket of `session` at the listener `url`, in its http(s) form: what the proof of
  *  the upgrade names as its `htu`. */
@@ -627,7 +596,7 @@ export class ListenerRelay implements InboundConnection {
     this.#options.log(line);
   }
 
-  #emit(type: string): void {
+  #emit(type: InboundStatus["type"]): void {
     for (const status of this.#statuses) status.push({ type });
   }
 

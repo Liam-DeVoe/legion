@@ -7,7 +7,7 @@
 // servers take theirs from here: Claude Code's (`./envoy-channel-server`) and Codex's
 // (`./codex/codex-server`).
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
+import { type InboundUnavailable, inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
 import { LoggableError } from "@legion/envoy-client/errors"
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay"
 import {
@@ -245,6 +245,10 @@ export interface ChannelInbound {
    *  broker token (`followNatsCredential`), and the relay socket, which is opened for one session
    *  with that session's own token (`ListenerRelay.follow`). */
   readonly followSession?: () => Promise<void>
+  /** Has a refused trade of the connection's own told `outage`, the session's, rather than the
+   *  report it was opened with: the relay socket's (`ListenerRelay.reportOutagesTo`); absent for
+   *  NATS, which trades no token of its own outside the keeper. */
+  readonly reportOutagesTo?: (outage: InboundUnavailable) => void
   /** Whether the session's live view takes its control subject on the connection: never over the
    *  relay socket, which carries no agent stream (`ControlSubscriptionOptions.liveView`). */
   readonly liveView: boolean
@@ -287,7 +291,13 @@ export async function dialChannelInbound(
     },
     signal,
   )
-  return { connection: relay, stop: () => {}, followSession: () => relay.follow(), liveView: false }
+  return {
+    connection: relay,
+    stop: () => {},
+    followSession: () => relay.follow(),
+    reportOutagesTo: (outage) => relay.reportOutagesTo(outage),
+    liveView: false,
+  }
 }
 
 /** How long a start that failed waits for its connection to drain before closing it. */
@@ -310,6 +320,8 @@ export interface ReopenedConnection {
   readonly connection: ChannelConnection
   /** `ChannelSessionOptions.followSession`, for this connection. */
   readonly followSession?: () => Promise<void>
+  /** `ChannelSessionOptions.reportOutagesTo`, for this connection. */
+  readonly reportOutagesTo?: (outage: InboundUnavailable) => void
 }
 
 /** Opens a new inbound connection in place of one closed for good
@@ -381,6 +393,7 @@ export function channelReopener(options: ChannelReopenerOptions): ReopenConnecti
     return {
       connection: next.connection,
       ...(followSession === undefined ? {} : { followSession }),
+      ...(next.reportOutagesTo === undefined ? {} : { reportOutagesTo: next.reportOutagesTo }),
     }
   }
 }

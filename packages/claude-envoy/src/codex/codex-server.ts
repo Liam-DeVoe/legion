@@ -595,6 +595,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
         heartbeatMs: envoy.heartbeatMs,
         identity: id,
         ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
         notifier: {
           notification: ({ content, eventId }) =>
             codexDelivery.deliver({ content, ...(eventId === undefined ? {} : { eventId }) }),
