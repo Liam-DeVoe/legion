@@ -13,6 +13,10 @@
 // LEGION_PROOF_DEADLINE_MS, which dispatch-claimant-delivery.sh's proof_guard sets.
 import { span, until } from "@legion/test-fixtures/wait";
 import { connect, StringCodec } from "nats";
+// Each exit waits until what the driver wrote has reached the pipe (`exitProcess`):
+// dispatch-claimant-delivery.sh, which runs it, reads its output as it comes, and what stops a
+// reader that takes nothing is the limit of the e2e job that runs the proof.
+import { exitProcess } from "../../packages/envoy-client/src/process-exit";
 
 const [dispatchUrl, natsUrl, envoyUrl] = process.argv.slice(2);
 const agentToken = process.env.CLAIMANT_E2E_AGENT_TOKEN ?? "";
@@ -20,7 +24,7 @@ if (dispatchUrl === undefined || natsUrl === undefined || envoyUrl === undefined
   process.stderr.write(
     "usage: CLAIMANT_E2E_AGENT_TOKEN=<token> bun dispatch-claimant-delivery.ts <dispatch-url> <nats-url> <fake-envoy-url>\n"
   );
-  process.exit(2);
+  await exitProcess(2);
 }
 const origin = new URL(dispatchUrl).origin;
 
@@ -131,9 +135,9 @@ function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
   return call(method, path, { Cookie: personCookie, Origin: origin }, body);
 }
 
-function setupFailed(step: string, error: unknown): never {
+function setupFailed(step: string, error: unknown): Promise<never> {
   process.stderr.write(`setup ${step} failed: ${error instanceof Error ? error.message : error}\n`);
-  process.exit(2);
+  return exitProcess(2);
 }
 
 function issuePath(key: string, rest = ""): string {
@@ -312,7 +316,7 @@ const seeded = await fetch(new URL("/__fixture/sessions", envoyUrl), {
   headers: { "Content-Type": "application/json" },
   method: "PUT",
 }).catch((error: unknown) => setupFailed("fake Envoy seed", error));
-if (!seeded.ok) setupFailed("fake Envoy seed", `${seeded.status} ${await seeded.text()}`);
+if (!seeded.ok) await setupFailed("fake Envoy seed", `${seeded.status} ${await seeded.text()}`);
 
 await asPerson("POST", "/api/v1/projects", { key: "CLM", name: "Claimant delivery" }).catch(
   (error: unknown) => setupFailed("project", error)
@@ -336,10 +340,10 @@ console.log(
   `setup: person ${person}; sessions P=${sessionP} C=${sessionC} Q=${sessionQ}; issue ${claimedKey} claim=${JSON.stringify(holder)} route=${JSON.stringify(claimedIssue.route ?? null)}`
 );
 if (holder?.kind !== "session" || holder.id !== sessionP) {
-  setupFailed("claim", `${claimedKey} is not held by ${sessionP}`);
+  await setupFailed("claim", `${claimedKey} is not held by ${sessionP}`);
 }
 if (claimedIssue.route !== null && claimedIssue.route !== undefined) {
-  setupFailed("route", `${claimedKey} has a route; the cases need none`);
+  await setupFailed("route", `${claimedKey} has a route; the cases need none`);
 }
 
 // --- cases -------------------------------------------------------------------------------------
@@ -525,4 +529,4 @@ console.log(
 );
 subscription.unsubscribe();
 await nats.close();
-process.exit(failed.length === 0 ? 0 : 1);
+await exitProcess(failed.length === 0 ? 0 : 1);

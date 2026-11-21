@@ -47,6 +47,10 @@ import { connect, StringCodec } from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
+// Each exit waits until what the driver wrote has reached the pipe (`exitProcess`):
+// verification-results.sh, which runs it, reads its output as it comes, and what stops a reader
+// that takes nothing is the limit of the e2e job that runs the proof.
+import { exitProcess } from "../../packages/envoy-client/src/process-exit";
 import { psqlStatement } from "./lib/psql-statement";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
@@ -62,7 +66,7 @@ if (
   process.stderr.write(
     "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
   );
-  process.exit(2);
+  await exitProcess(2);
 }
 const origin = new URL(dispatchUrl).origin;
 
@@ -243,9 +247,9 @@ async function signIn(login: string): Promise<string> {
   return cookie;
 }
 
-function setupFailed(step: string, error: unknown): never {
+function setupFailed(step: string, error: unknown): Promise<never> {
   process.stderr.write(`setup ${step} failed: ${error instanceof Error ? error.message : error}\n`);
-  process.exit(2);
+  return exitProcess(2);
 }
 
 const personCookie = await signIn(person).catch((error: unknown) => setupFailed("sign-in", error));
@@ -576,14 +580,14 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
   console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
 }
 
-function summarise(stopped?: string): never {
+function summarise(stopped?: string): Promise<never> {
   const failed = results.filter((result) => !result.ok).map((result) => result.name);
   if (stopped !== undefined) console.log(`   ${stopped}`);
   console.log(
     `summary: ${results.length - failed.length} ok, ${failed.length} FAIL${failed.length === 0 ? "" : ` (${failed.join(", ")})`}`
   );
   void nats.close();
-  process.exit(failed.length === 0 ? 0 : 1);
+  return exitProcess(failed.length === 0 ? 0 : 1);
 }
 
 // --- setup ---------------------------------------------------------------------------------------
@@ -635,7 +639,7 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
     headers: { "Content-Type": "application/json" },
     method: "PUT",
   }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
-  if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
+  if (!seeded.ok) await setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
 }
 
 await seedRepositories({});
@@ -734,7 +738,9 @@ await runCase("the-results-route-is-served", async () => {
   return answer === "400 UNKNOWN_CHECK" ? undefined : `the record route answers ${answer}`;
 });
 if (!results[0]?.ok) {
-  summarise("every later case records a result too, so the run stops at the first result write");
+  await summarise(
+    "every later case records a result too, so the run stops at the first result write"
+  );
 }
 
 // A2. A recorded result is read back under its check, with the fields it was recorded with.
@@ -2051,4 +2057,4 @@ await runCase("values-kept", async () => {
   }
 });
 
-summarise();
+await summarise();

@@ -177,7 +177,7 @@ No helper sets a timeout of its own, but for these, each of which states its bou
 
 - `packages/dispatch/e2e/__tests__/bounded-subprocess.ts`, whose `whether` and `eventually` waits end at `bounds.short` (60,000 ms) and whose `rowLimit` is the one third argument a row of that directory's test files gives `test` itself, the sum of the bounds it names; `row-limits.test.ts` holds that rule over those files, and `web/src/__tests__/setup.ts` says why the dashboard's own rows set none.
 
-- `packages/dispatch/e2e/__tests__/outside-path-reach-fixtures.ts`, a module the outside-path reach rows of that directory import, whose `row` and `probingRow` give `test` a third argument of their own, 60,000 ms and 435,000 ms, each with its reading beside it; `row-limits.test.ts` reads the test files alone, so it does not read these two.
+- `packages/dispatch/e2e/__tests__/outside-path-reach-fixtures.ts`, a module the outside-path reach rows of that directory import, whose `row` and `probingRow` give `test` a third argument of their own, 109,000 ms and 435,000 ms, each with its reading beside it; `row-limits.test.ts` reads the test files alone, so it does not read these two.
 
 - the Bun hooks and rows that hold one measured download or process run, below.
 
@@ -298,8 +298,9 @@ A Bun test waits and is guarded as R2 and R5 above say:
 - A row that reads a file a live process appends to, such as the transcript of a pane it drives, reads it through `@legion/test-fixtures/transcript-lines`.
   `completeLines` and `writtenLines` leave out a last line the writer has not finished, and `endsWhole` says whether a read ends on a finished line, so a poll answers "not yet" rather than parsing half a line.
 
-- Every `bun test` command loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
-  It marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
+- Every `bun test` command but packages/claude-envoy's `test` script loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
+  That script stays main's `bun test --timeout=60000` until #4655, which carries that package's own commands.
+  The preload marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
   A hook that no mark directly precedes counts from an earlier mark, so its waits end earlier than its own clock would allow, never later (`packages/test-fixtures/src/row-deadline.ts`).
   So a row's second `afterEach` counts from the mark before its first, and the time the first took is gone from it.
 
@@ -310,7 +311,7 @@ A Bun test waits and is guarded as R2 and R5 above say:
   A file whose rows need a much larger guard than the rest runs in a second `bun test` command of the same script, with its own `--timeout` and the same preload, as `packages/pi-envoy`'s `-omp` files do.
 
 The Bun tests under `scripts/`, which is no workspace, each run as their CI step runs them: `bun test --preload @legion/test-fixtures/row-deadline --timeout <guard> <path>`, with the guard that step passes, which the step's comment gives with its reading.
-`ci-job-test.yaml` runs eight of them, one step each and in this order: `scripts/third-party-notices.test.ts`, `scripts/semantic-line-breaks.test.ts`, `scripts/priorities-seed.test.ts` and `scripts/bun-cache-census.test.ts` (5000 each), `scripts/semantic-line-breaks.guides.test.ts` (35000), `scripts/dispatch` (15000), `scripts/approval-eval` (5000) and `scripts/e2e/lib` (200000).
+`ci-job-test.yaml` runs eight of them, one step each and in this order: `scripts/third-party-notices.test.ts`, `scripts/semantic-line-breaks.test.ts`, `scripts/priorities-seed.test.ts` and `scripts/bun-cache-census.test.ts` (5000 each), `scripts/semantic-line-breaks.guides.test.ts` (35000), `scripts/dispatch` (15000), `scripts/approval-eval` (5000) and `scripts/e2e/lib` (240000).
 The guides' layout check, `scripts/semantic-line-breaks.guides.test.ts`, runs there only when its `guide_layout` filter matched, and the census test skips its rows where `strace` is missing, which that job installs for it.
 `scripts/conflicts` (5000) runs in `ci-job-conflicts-script.yaml` instead, after that job's biome and tsc steps over the same directory, `scripts/sessions` (5000) in `ci-job-sessions-script.yaml`, and `ci-job-lint.yaml` runs `scripts/e2e/lib/nats-image.test.ts` (5000) once more on its own.
 

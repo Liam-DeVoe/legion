@@ -401,6 +401,17 @@ close_fd() {
   [[ -z "$f" ]] || exec {f}>&-
   unset "fd[$1]"
 }
+
+# server_psql ARGS… runs psql on LEGION_TEST_PG_DSN's server, connected to its `postgres`
+# database, to make and drop the run's own database. lib/loopback-dsn.sh's exec_run_database hands
+# psql the connection in libpq's own variables (--libpq-env), PGPASSWORD among them, so no argument
+# list holds the password, as stage1-skeleton.sh's server_psql does. It runs in a subshell of its
+# own, which the exec replaces.
+server_psql() {
+  (exec_run_database LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
+    "this run creates and force-drops a database there" --libpq-env -- psql -X "$@")
+}
+
 cleanup() {
   local status=$? label
   trap - EXIT
@@ -412,7 +423,7 @@ cleanup() {
     stop_label "$label"
   done
   if [[ -n "$database_created" ]]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    server_psql -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
   fi
   printf '%s: evidence kept in %s\n' "$me" "$work"
@@ -724,7 +735,9 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
+  "this run creates and force-drops a database there" --libpq-env || fail "$refusal"
+server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')

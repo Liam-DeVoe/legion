@@ -1,8 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { check } from "recheck";
 import { temporaryDirectory } from "./temporary-directories";
-import { placeArming, recordTimers, type TimerStep, timersBetween } from "./timer-record";
+import {
+  FRAME_PATTERNS,
+  placeArming,
+  recordTimers,
+  type TimerStep,
+  timersBetween,
+} from "./timer-record";
 import { settled, until } from "./wait";
 
 const root = temporaryDirectory("timer-record");
@@ -133,6 +140,49 @@ test("records an arming whose stack names no file as unplaced, and refuses a win
   expect(timersBetween(steps, 0, 4)).toEqual([{ delayMs: 100, from: "b.ts:2" }]);
   expect(() => timersBetween(steps, 0, 6)).toThrow(/could not place 1 timer/);
 });
+
+test("reads the file and line of each shape of frame", () => {
+  const shapes: Record<string, { readonly from: string } | "unplaced"> = {
+    "    at fn (/work/file.ts:12:34)": { from: "/work/file.ts:12" },
+    "    at /work/file.ts:12:34": { from: "/work/file.ts:12" },
+    "    at fn (file:///work/file.ts:12:34)": { from: "/work/file.ts:12" },
+    "    at deliver (/work/envoy.ts?nats-stall:12:34)": { from: "/work/envoy.ts:12" },
+    "    at /work/file.ts?mtime=123:4:5": { from: "/work/file.ts:4" },
+    "    at fn (/work/file.ts:12)": { from: "/work/file.ts:12" },
+    "    at fn (/work/file.ts:12:34) \t": { from: "/work/file.ts:12" },
+    "    at native": "unplaced",
+    "    at <anonymous>": "unplaced",
+  };
+  expect(
+    Object.fromEntries(
+      Object.keys(shapes).map((frame) => [
+        frame,
+        placeArming(["Error", frame].join("\n"), ["/work/"]),
+      ])
+    )
+  ).toEqual(shapes);
+});
+
+// recheck's automaton checker decides from a pattern's automaton whether some text costs a
+// backtracking engine more than linear work in its length, so the verdict holds for every text
+// and not only the one a row builds. `timeout: null` takes the clock out of the analysis: the
+// verdict is the same on every machine, however loaded.
+for (const [name, pattern] of Object.entries(FRAME_PATTERNS)) {
+  test(`the frame pattern ${name} is linear in the frame, as recheck's automaton checker reads it`, async () => {
+    const diagnostics = await check(pattern.source, pattern.flags, {
+      checker: "automaton",
+      timeout: null,
+    });
+    const why =
+      diagnostics.status === "vulnerable"
+        ? `${diagnostics.complexity.summary}, attack ${diagnostics.attack.pattern}`
+        : diagnostics.status === "unknown"
+          ? JSON.stringify(diagnostics.error)
+          : diagnostics.complexity.summary;
+    const failure = `${name} ${pattern} is ${diagnostics.status}: ${why}`;
+    expect(diagnostics.status, failure).toBe("safe");
+  });
+}
 
 test("records a deadline armed with AbortSignal.timeout, fired as its signal aborts", async () => {
   const steps: TimerStep[] = [];

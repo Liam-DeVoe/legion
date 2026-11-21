@@ -7,18 +7,21 @@ import {
   followUp,
   wakeMessage,
 } from "../test/card-wake-host";
-import { STARTUP_TURN_POLL_MS } from "./card-wake";
+import { STARTUP_TURN_CAP_MS, STARTUP_TURN_POLL_MS } from "./card-wake";
 
 // The Legion controller's start message is its session's first turn however slowly the pod
-// starts: no clock ends the start-turn mark's hold, only the mark going does, and the Legion entry
-// clears it on a fact (`src/card-wake.ts`, "The start turn"). One row per fact, each after the
-// mark held for twice the 30 s that main's `STARTUP_TURN_CAP_MS` held the wake back for, from the
-// unsent mark's first read or from the start's send, so a cap of that length put back sends its
-// wake ahead of the start in every row. The one clearing a bound makes, the daemon's registration
-// deadline for its own controller whose claim never answers, ends the process and the hold with it:
-// no card is left to wake (`packages/daemon/internal/supervise/table.go`, `registrationDeadline`).
+// starts: no clock ends an unsent start-turn mark's hold, only the mark going does, and the Legion
+// entry clears it on a fact (`src/card-wake.ts`, "The start turn"). One row per fact, each after
+// the unsent mark held for twice the 30 s that main held it for from its first read, so a cap of
+// that length put back on the unsent mark sends its wake ahead of the start in every row. The one
+// clearing a bound makes, the daemon's registration deadline for its own controller whose claim
+// never answers, ends the process and the hold with it: no card is left to wake
+// (`packages/daemon/internal/supervise/table.go`, `registrationDeadline`). A sent mark keeps main's
+// cap, `STARTUP_TURN_CAP_MS` from the send, until the daemon retries a start it failed to deliver
+// (that cap's own doc says why): the rows that send the start hold the sent mark short of its cap,
+// and one holds a start the daemon never delivered to that cap and no further.
 
-/** Twice the 30 s main's `STARTUP_TURN_CAP_MS` capped the hold at. */
+/** Twice the 30 s main capped an unsent mark's hold at, from the wake's first read of it. */
 const TWO_OLD_CAPS_MS = 60_000;
 
 const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
@@ -60,8 +63,8 @@ async function phaseOver(host: CardWakeHarness, sent: number): Promise<void> {
   expect(host.sent).toHaveLength(sent);
 }
 
-describe("the start-turn mark holds the startup wake until a fact clears it", () => {
-  test("the start sent and taken: a start held 60 s unsent and 60 s more sent is still the session's first turn, and its agent_end sends the one wake", async () => {
+describe("the start-turn mark holds the startup wake until a fact clears it, or a sent mark's cap", () => {
+  test("the start sent and taken: a start held 60 s unsent, and sent 29 s before its run begins, is still the session's first turn, and its agent_end sends the one wake", async () => {
     const host = await heldTerminal("before-the-send");
     await holdsFor(host, TWO_OLD_CAPS_MS);
     // The phase holds however long the start takes: a card now is a startup card too.
@@ -69,9 +72,10 @@ describe("the start-turn mark holds the startup wake until a fact clears it", ()
     expect(later.delivery).toMatchObject(followUp);
     host.message(later.message);
 
-    // `/legion-controller-start` sends the start, and its run is slow to begin.
+    // `/legion-controller-start` sends the start, and its run is slow to begin: it begins a poll
+    // short of the sent mark's cap.
     host.markSent(host.clock());
-    await holdsFor(host, TWO_OLD_CAPS_MS);
+    await holdsFor(host, STARTUP_TURN_CAP_MS - STARTUP_TURN_POLL_MS);
 
     host.startTurn();
     await host.fire();
@@ -79,25 +83,25 @@ describe("the start-turn mark holds the startup wake until a fact clears it", ()
     await phaseOver(host, 1);
   });
 
-  // The daemon's controller in RPC mode is marked sent right before its ready, and the daemon's
-  // start prompt can come long after it on a loaded pod.
-  test("a mark whose start was sent 60 s ago still holds: a terminal's idle card starts no turn, and an RPC check sends no wake", async () => {
-    const terminal = cardWakeHarness({ mode: "tui" });
-    terminal.markSent(terminal.clock() - TWO_OLD_CAPS_MS);
-    terminal.setIdle(true);
-    expect(terminal.card("sent-long-ago-terminal").delivery).toMatchObject(followUp);
+  // The daemon's controller in RPC mode is marked sent right before its ready, and a start the
+  // daemon fails to deliver at that ready is only logged there: no fact clears the mark, and its
+  // cap is what ends the hold (`STARTUP_TURN_CAP_MS`).
+  test("the daemon's start never delivered: the sent mark holds the wake to its cap, 30 s from the send, and no further", async () => {
+    const host = cardWakeHarness();
+    host.markSent(host.clock());
+    host.setIdle(true);
+    const card = host.card("start-never-delivered");
+    expect(card.delivery).toMatchObject(followUp);
+    host.message(card.message);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+    await holdsFor(host, STARTUP_TURN_CAP_MS - STARTUP_TURN_POLL_MS);
 
-    const rpc = cardWakeHarness();
-    rpc.markSent(rpc.clock() - TWO_OLD_CAPS_MS);
-    rpc.setIdle(true);
-    rpc.message(rpc.card("sent-long-ago-rpc").message);
-    await rpc.fire();
-    expect(rpc.sent).toEqual([]);
-    expect(rpc.delays.at(-1)).toBe(STARTUP_TURN_POLL_MS);
-
-    rpc.startTurn();
-    await rpc.fire();
-    expect(rpc.sent).toEqual([wakeMessage(oneCard)]);
+    // The read at the cap ends the hold with no fact behind it, and sends the one wake.
+    host.advance(STARTUP_TURN_POLL_MS);
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(oneCard)]);
+    await phaseOver(host, 1);
   });
 
   test("the claim refused before the send: the unsent mark cleared with no host event releases the wake at the next poll", async () => {
@@ -112,10 +116,11 @@ describe("the start-turn mark holds the startup wake until a fact clears it", ()
     await phaseOver(host, 1);
   });
 
-  test("the start's send failing: the sent mark cleared with no run releases the wake at the next poll", async () => {
+  test("the start's send failing: the sent mark cleared with no run releases the wake at the next poll, before its cap", async () => {
     const host = await heldTerminal("failed-send");
-    host.markSent(host.clock());
     await holdsFor(host, TWO_OLD_CAPS_MS);
+    host.markSent(host.clock());
+    await holdsFor(host, STARTUP_TURN_CAP_MS / 2);
 
     // The host rejected the send, so no run starts: the Legion entry clears the mark on that.
     host.clearMark();

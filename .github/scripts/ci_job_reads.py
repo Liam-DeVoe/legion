@@ -2648,7 +2648,7 @@ GATES = [
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:195 sources it"),
         ("scripts/e2e/lib/proof-wait.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/proof-wait.sh\"` line)"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
-        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:165,225 runs it, for "
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:166,257 runs it, for "
                                             "scripts/e2e/stage1-skeleton.sh:269,271's check of the DSN, "
                                             ":284's psql, :307's start of the daemon, :323's read of the "
                                             "server's address and :508's start of the daemon behind the proxy"),
@@ -2723,9 +2723,9 @@ GATES = [
     # and the natsfloor command the pin scanner asks the NATS floor through.
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
-                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 200000 scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
+                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 240000 scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
         script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
-                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 200000 scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
+                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 240000 scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
@@ -2738,11 +2738,14 @@ GATES = [
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
         ("scripts/bun-cache-census.test.ts", at("test", "Test the Bun transpiler-cache census")),
         ("scripts/bun-cache-census.ts", "scripts/bun-cache-census.test.ts:8 runs it"),
-        ("scripts/e2e/**", f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 200000 scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
+        ("packages/envoy-client/src/process-exit.ts", "scripts/bun-cache-census.ts:33 imports it, so the census the test runs exits through it; "
+                                                      "scripts/e2e/lib/h2-settings.ts:20 and dispatch-keyed-comment.ts:26 import it, so the probes "
+                                                      "lib/h2-settings.test.ts and lib/dispatch-keyed-comment.test.ts spawn exit through it"),
+        ("scripts/e2e/**", f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 240000 scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
                         "scripts/priorities-seed.ts:29"),
-        (TEST_FIXTURES_SRC, f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 200000 scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 240000 scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
@@ -2949,12 +2952,12 @@ GATES = [
         ("packages/pi-shared/test/**", "packages/pi-envoy/extensions/dispatch-first-omp.test.ts:4-14, src/skills-guard.test.ts:9-23, scripts/prepack.test.ts:6"),
         (TEST_FIXTURES_SRC, "packages/pi-envoy's extensions and src tests import @legion/test-fixtures"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
-        ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts:63-75 imports four of its modules, and extensions/askgate/decision-record.test.ts:9 its fake-dispatch"),
+        ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts:65-77 imports four of its modules, and extensions/askgate/decision-record.test.ts:9 its fake-dispatch"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:31 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:31; scripts/pi-plugin-prepack.sh:96"),
         (CONTRACTS_SRC, f"{at('pi-envoy', 'Build contracts for pi-envoy')}; tsconfig paths @legion/contracts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:391"),
-        (f"{FIX}/envelope-without-role.json", "packages/pi-envoy/extensions/envoy.test.ts:109"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:407"),
+        (f"{FIX}/envelope-without-role.json", "packages/pi-envoy/extensions/envoy.test.ts:118"),
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:32 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:86"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
@@ -2975,7 +2978,7 @@ GATES = [
         ("packages/envoy-client/bin/dispatch.ts", "the sixth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:56), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
         ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:18, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
-        ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:51 "
+        ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:52 "
                                                            "imports @legion/envoy-client/test/subscribe-answer, and "
                                                            "packages/pi-shared/test/omp-harness.ts:17, which this "
                                                            "package's omp tests drive, imports it too"),
@@ -3693,7 +3696,7 @@ GATES = [
         (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:1257-1288 posts each fixture"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
-        ("scripts/e2e/lib/proof-wait.sh", "packages/envoy/scripts/e2e-local.sh:319 and e2e-local.test.sh:32 source it: "
+        ("scripts/e2e/lib/proof-wait.sh", "packages/envoy/scripts/e2e-local.sh:320 and e2e-local.test.sh:32 source it: "
                                           "the run's guard and its one wait, and the test's"),
         (TEST_FIXTURES_SRC, "packages/envoy/scripts/e2e-local.sh:771's Bun driver imports @legion/test-fixtures/wait, "
                             "which reads ./deadline beside it"),
@@ -3728,7 +3731,21 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
-    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
+    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL), exact=[
+        # The two steps that build the stack suites' binaries before the first suite, with the
+        # packages and the command buildGoBinaries runs, so that each suite's own build is a cache
+        # hit. Each line has an `-o`, which is no form this check reduces, so each entry pins its
+        # step's whole script and names the packages it compiles.
+        pinned_step(STALL, "Build the Go binaries the Envoy stack suites start", ENVOY,
+                    'go build -o "$RUNNER_TEMP/stack-build/" ./internal/testnats/cmd/natsd ./cmd/listener', [
+            (ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"],
+             'go build -o "$RUNNER_TEMP/stack-build/" ./internal/testnats/cmd/natsd ./cmd/listener', {"mode": "build"}),
+        ]),
+        pinned_step(STALL, "Build the Dispatch server the live suites start", ENVOY,
+                    'go build -o "$RUNNER_TEMP/stack-build/" ./cmd/dispatch', [
+            (ENVOY, ["./cmd/dispatch"], 'go build -o "$RUNNER_TEMP/stack-build/" ./cmd/dispatch', {"mode": "build"}),
+        ]),
+    ]),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),

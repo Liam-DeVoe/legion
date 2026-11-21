@@ -30,6 +30,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { exitProcess } from "../packages/envoy-client/src/process-exit.ts";
 
 interface Finding {
   readonly pid: string;
@@ -131,16 +132,22 @@ export function readTrace(
 }
 
 if (import.meta.main) {
+  // How long the exit gives stderr to take the census's lines before it exits whatever is still
+  // queued (`exitProcess`): a person reads them as they come, and the rows that run this script
+  // read its output whole (`Bun.spawnSync`) inside a row deadline of 5 s
+  // (`bun-cache-census.test.ts`'s step in ci-job-test.yaml), so only a reader that takes nothing
+  // keeps it this long, a fifth of that deadline.
+  const exitFlushMs = 1_000;
   // Bun removed the `--` after the script from Bun.argv when measured; one is dropped if present.
   const given = Bun.argv.slice(2);
   const command = given[0] === "--" ? given.slice(1) : given;
   if (command.length === 0) {
     console.error("usage: bun scripts/bun-cache-census.ts -- <command> [args...]");
-    process.exit(2);
+    await exitProcess(2, exitFlushMs);
   }
   if (Bun.which("strace") === null) {
     console.error("bun-cache-census: strace is not on PATH, so nothing was traced");
-    process.exit(2);
+    await exitProcess(2, exitFlushMs);
   }
   const directory = mkdtempSync(join(tmpdir(), "bun-cache-census-"));
   let status: number;
@@ -180,5 +187,5 @@ if (import.meta.main) {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-  process.exit(status);
+  await exitProcess(status, exitFlushMs);
 }

@@ -1,11 +1,12 @@
 # shellcheck shell=bash
 # The helpers a proof that writes a PostgreSQL server reads its caller's DSN with: which host
 # libpq reads from that DSN, whether the run can have a database of its own on that host, and
-# the start of a command that is handed that database and nothing else of the DSN. None of them
-# assigns a variable of the caller's the connection string, which carries the DSN's password.
-# lib/loopback-dsn.py answers each, and this file addresses it beside itself, so it needs nothing
-# of its caller's. A fourth helper, empty_public_schema, empties the database a run was given, so
-# that a server migrates it from nothing. lib/rig.sh sources this file, and so does
+# the start of a command that is handed that database, or the database the DSN itself names,
+# and nothing else of the DSN. None of them assigns a variable of the caller's the connection
+# string, which carries the DSN's password. lib/loopback-dsn.py answers each, and this file
+# addresses it beside itself, so it needs nothing of its caller's. Another helper,
+# empty_public_schema, empties the database a run was given, so that a server migrates it from
+# nothing. lib/rig.sh sources this file, and so does
 # scripts/e2e/envoy-session-delivery.sh, which sources no rig: that proof keeps an
 # await_port_file and a keep_port of its own, written for its own pid map.
 # Sourced, never run.
@@ -50,7 +51,7 @@
 # them give every server they start a database of the run's own through exec_run_database below,
 # in the connection string the helper rebuilds and libpq reads back inside it.
 #
-# The other two read the DSN a second time, with pgx. lib/two-builds.sh:286, which starts both
+# The other two read the DSN a second time, with pgx. lib/two-builds.sh:298, which starts both
 # servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh, gives Dispatch the
 # caller's raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
 # (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The
@@ -165,10 +166,41 @@ exec_run_database() {
   exec python3 "${BASH_SOURCE[0]%/*}/loopback-dsn.py" "$1" "$4" --dbname "$3" "${@:5}"
 }
 
-# empty_public_schema URL empties the public schema of the database URL names, so that a server
-# migrates it from nothing, and returns psql's status, so the caller ends the run in its own words:
+# require_dsn_database VAR NAME DSN WHAT is require_run_database for exec_dsn_database below: it
+# runs every check that one runs on the database DSN itself names, and assigns VAR the empty
+# string and returns 0, or assigns VAR the refusal line and returns 1. A DSN that names no
+# database is one it refuses.
+require_dsn_database() {
+  _loopback_dsn "$1" "$2" "$3" "$4" --own-dbname --libpq-env --check
+}
+
+# exec_dsn_database NAME DSN WHAT -- COMMAND... is exec_run_database's --libpq-env form on the
+# database DSN itself names, for a run that works in that database (lib/two-builds.sh's) rather
+# than in one of its own: COMMAND replaces the shell that calls it, handed that database in
+# libpq's own variables, PGPASSWORD among them, so no argument list and no variable of the
+# caller's holds the password (lib/loopback-dsn.py's --own-dbname). A DSN that names no database
+# is refused, as every DSN exec_run_database refuses is: COMMAND never runs, the refusal line goes
+# to stderr and the subshell ends with status 1. It runs, and refuses the script's own shell, as
+# exec_run_database does:
 #
-#   empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+#   (exec_dsn_database DATABASE_URL "$database_url" "$what" -- psql -X -tAc 'select 1')
+exec_dsn_database() {
+  if [ "$BASHPID" = "$$" ]; then
+    echo "exec_dsn_database runs its command in place of the shell that calls it, and this is the script's own shell: call it in ( … ) or with &" >&2
+    return 2
+  fi
+  export "$1=$2"
+  exec python3 "${BASH_SOURCE[0]%/*}/loopback-dsn.py" "$1" "$3" --own-dbname --libpq-env "${@:4}"
+}
+
+# empty_public_schema NAME DSN empties the public schema of the database DSN itself names, so that
+# a server migrates it from nothing, and returns psql's status, so the caller ends the run in its
+# own words:
+#
+#   empty_public_schema DATABASE_URL "$database_url" || fail "could not empty the database's public schema"
+#
+# psql is handed that database by exec_dsn_database above, so no argument list holds DSN's
+# password. NAME is the variable the caller read DSN from, which starts a refusal.
 #
 # Every table, view, routine and type of the public schema goes, and the extensions it holds stay.
 # `vector` is installed by the cluster's master role (0072_embeddings_core.up.sql says so, and
@@ -205,8 +237,8 @@ begin
   end loop;
 end
 \$\$;"
-  psql "$1" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
-    -c "$reset_sql" >/dev/null
+  (exec_dsn_database "$1" "$2" "the run empties that database's public schema" -- \
+    psql -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' -c "$reset_sql") >/dev/null
 }
 
 # _loopback_dsn VAR NAME DSN WHAT [--dbname DATABASE [--uri | --libpq-env] --check] assigns VAR

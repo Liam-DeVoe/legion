@@ -1496,10 +1496,14 @@ So on a step with no `continue-on-error` a bound is loud: it fails the job. This
 are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-four installs
 there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
 would satisfy that control and leave the job green, where the job's own ceiling would have
-cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
-the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the sixteen corrupted cases by
-`report` itself - and why a new bound on a step some later assertion accepts the failure of
-needs the same treatment or none at all (dispatch://INFRA-2605).
+cancelled it and failed ci-ok. That is why each of those installs is read for whether it
+ended on its own as well as for its outcome - the eight with nowhere to go by the clock, in
+the control step "Check all eight installs with nowhere to go failed, and failed in their own
+time", since they run the merge base's actions, whose ci-tools.sh writes no end record; the
+sixteen corrupted cases by `report` in .github/scripts/ci-tools-proof.sh, which reads no
+clock but the end record each of their installs writes as its last act
+(.github/scripts/ci-tools.sh:265-270) - and why a new bound on a step some later assertion
+accepts the failure of needs the same treatment or none at all (dispatch://INFRA-2605).
 
 ## Why the tool-fallback job needs no packages scope
 

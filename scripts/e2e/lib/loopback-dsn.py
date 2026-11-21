@@ -7,6 +7,8 @@ usage:
   loopback-dsn.py NAME WHAT --dbname DATABASE [--uri] --env VAR -- COMMAND [ARG...]
   loopback-dsn.py NAME WHAT --dbname DATABASE [--uri] --env-only VAR -- COMMAND [ARG...]
   loopback-dsn.py NAME WHAT --dbname DATABASE --libpq-env -- COMMAND [ARG...]
+  loopback-dsn.py NAME WHAT --own-dbname --libpq-env --check
+  loopback-dsn.py NAME WHAT --own-dbname --libpq-env -- COMMAND [ARG...]
 
 NAME is the environment variable that holds the DSN. WHAT is what the run does on that server,
 in a few words, and a refusal that is about the host ends with it. The DSN is read from the
@@ -63,7 +65,13 @@ refusal is one line on stderr and exit 1, before anything runs.
   COMMAND, and libpq reads it for a keyword the DSN does not set, as it does beside a connection
   string. libpq reads the variables back (PQconndefaults) before the helper runs COMMAND, and
   must read DATABASE as the database, the same host as the DSN names, and every other keyword as
-  the DSN sets it.
+  the DSN sets.
+
+  --own-dbname in place of --dbname DATABASE, with --libpq-env alone, hands COMMAND the database
+  the DSN itself names, for a run that works in that database rather than in one of its own
+  (lib/two-builds.sh's): every check and every variable --libpq-env hands over, with the DSN's
+  own dbname as PGDATABASE. It refuses a DSN that names no database, where libpq would read
+  PGDATABASE or the user name in its place, and none of its refusals names the database.
 
 COMMAND is looked up on the PATH this helper was started with, under --env-only too. A COMMAND
 that cannot be found or run is one line on stderr naming it, and exit 127 or 126.
@@ -125,6 +133,9 @@ SERVICE = b"PGSERVICE"
 
 #: What VAR must be: a name a shell can export.
 VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: --own-dbname's DATABASE: the database the DSN itself names, which the helper never prints.
+OWN = object()
 
 
 class Refusal(Exception):
@@ -332,7 +343,8 @@ def host_and_keywords(dsn, what):
 
 def run_keywords(dsn, what, database):
     """Return the host dsn names and the keywords that name database on it, which are every
-    keyword libpq reads from dsn with database as dbname, or raise the Refusal dsn earns."""
+    keyword libpq reads from dsn with database as dbname (for OWN, the dbname dsn itself sets),
+    or raise the Refusal dsn earns."""
     host, read = host_and_keywords(dsn, what)
     # Every value the DSN sets reaches the command, and libpq decodes a percent sign, so a value
     # can hold a character that does not print where the DSN's own text holds none.
@@ -344,7 +356,19 @@ def run_keywords(dsn, what, database):
                 " DSN sets reaches the command's environment, and this refusal prints no value"
                 " that holds one"
             )
+    if database is OWN:
+        if read.get("dbname", "") == "":
+            raise Refusal(
+                "names no database: --own-dbname hands the command the database the DSN names,"
+                " and libpq would read PGDATABASE or the user name in its place"
+            )
+        return host, read
     return host, dict(read, dbname=database)
+
+
+def named(database):
+    """What a refusal calls database: its name, or for OWN no name, which is the caller's own."""
+    return "the database the DSN names" if database is OWN else f"the database {shown(database)}"
 
 
 def rewritten(dsn, what, database, as_uri=False):
@@ -358,7 +382,7 @@ def rewritten(dsn, what, database, as_uri=False):
     lost = sorted(keyword for keyword in want if got.get(keyword) != want[keyword])
     if lost:
         raise Refusal(
-            f"cannot be rewritten to name the database {shown(database)} on the host {host}:"
+            f"cannot be rewritten to name {named(database)} on the host {host}:"
             f" the rewritten connection string loses what the DSN sets for {', '.join(lost)}"
         )
     return string
@@ -386,7 +410,7 @@ def libpq_environment(dsn, what, database):
     lost = sorted(keyword for keyword in want if got.get(keyword) != want[keyword])
     if lost:
         raise Refusal(
-            f"cannot be handed over to name the database {shown(database)} on the host {host}:"
+            f"cannot be handed over to name {named(database)} on the host {host}:"
             f" libpq reads back from the environment otherwise what the DSN sets for"
             f" {', '.join(lost)}"
         )
@@ -436,16 +460,23 @@ def run(command, environment):
 
 def arguments(argv):
     """Return what argv asks for, (name, what, database, form, action, variable, command), or None
-    for argv that matches no usage line. database is None for host mode; form is "", "--uri" or
-    "--libpq-env"; action is "check", "--env", "--env-only" or "--libpq-env"."""
+    for argv that matches no usage line. database is None for host mode and OWN for --own-dbname;
+    form is "", "--uri" or "--libpq-env"; action is "check", "--env", "--env-only" or
+    "--libpq-env"."""
     if len(argv) < 2:
         return None
     name, what, rest = argv[0], argv[1], argv[2:]
     if rest == []:
         return name, what, None, "", "", None, None
-    if rest[0] != "--dbname" or len(rest) < 2 or rest[1] == "":
+    if rest[0] == "--own-dbname":
+        # The DSN's own database is handed over in libpq's variables alone.
+        database, rest = OWN, rest[1:]
+        if rest[:1] != ["--libpq-env"]:
+            return None
+    elif rest[0] != "--dbname" or len(rest) < 2 or rest[1] == "":
         return None
-    database, rest = rest[1], rest[2:]
+    else:
+        database, rest = rest[1], rest[2:]
     form = ""
     if rest[:1] in (["--uri"], ["--libpq-env"]):
         form, rest = rest[0], rest[1:]

@@ -36,8 +36,9 @@
  *   the events `postprocess` hands the compile.
  * - `milkdownRunnerCalls` of src/lib-headless.ts: each mdast node and mark Milkdown's parser state
  *   hands a spec's runner, counted where this package builds the specs, with no patch; and
- *   `milkdownMarkOpens`, each mark a runner opens (an ask nested inside asks opens one, not one
- *   for each ask around it: src/dispatch-marks.ts).
+ *   `milkdownMarkOpens`, each mark a runner opens (an ask opens its own, and those of the asks
+ *   around it again, after a block closed inside it, only where a node then holds them:
+ *   src/dispatch-marks.ts, held by tests/dispatch-marks.test.ts).
  * - `htmlFlowResolveSteps` of src/html-flow.ts: each event the HTML (flow) resolver reads and
  *   each its splice shifts, which the tokenizer's count does not see.
  * - `blockIdWalkSteps` and `leafMarkWalkSteps` (src/editor/schema/block-ids.ts and leaf-marks.ts):
@@ -48,20 +49,31 @@
  * - The stages no patch reaches, each counted from outside through a counting `Proxy` it is handed
  *   in place of what it takes (`counted`), one step for every read and every write it makes of an
  *   object it reaches through it: each mdast transform of the parse, this package's own and the
- *   ones it installs, by the name of its plugin, handed the tree; `micromark-util-subtokenize`,
+ *   ones it installs, by the name of its plugin, handed the tree, and each transform's writes to
+ *   the tree's lists again as a stage of their own (`counted`'s `writes`), since a transform that
+ *   shifts a list for each child it removes hides that square behind its walk's reads of every
+ *   node at the sizes a row reads; `micromark-util-subtokenize`,
  *   handed the events `postprocess` gives it and the events content's resolver gives it; the GFM
  *   and front matter extensions, their resolvers handed the events, their compile handlers the
  *   token and the compile's own state (whose stack is the tree it builds) and their transforms the
- *   tree; and `mdast-util-from-markdown`'s compile, handed the events. micromark's document
- *   tokenizer hands its events on through the Proxy itself (`document.resolveAll`, set below on
- *   micromark's own initializer): the steps go to subtokenize until `postprocessedEvents` moves,
- *   which is the moment `postprocess` hands them to the compile, and to the compile after it.
+ *   tree; the `:::` containers' compile handlers (`mdast-util-directive`'s) the same way, the
+ *   containers' resolver counting its own steps (`directiveScanSteps`, above);
+ *   `mdast-util-from-markdown`'s compile, handed the events; and micromark's list of the
+ *   identifiers a document's definitions define (`parser.defined`), which each definition writes
+ *   and each label end's lookup reads (`document.tokenize`, set below on micromark's own
+ *   initializer, hands the list on). micromark's document tokenizer hands its events on through
+ *   the Proxy itself (`document.resolveAll`, set below on micromark's own initializer): the steps
+ *   go to subtokenize until `postprocessedEvents` moves, which is the moment `postprocess` hands
+ *   them to the compile, and to the compile after it.
  *
- * The dependency patches. Five of the root `package.json`'s `patchedDependencies` entries are the
- * parsers this package reads markdown with and the proof marks' transform, patched so that a body
- * costs time in proportion to its length rather than to its square (sjawhar/legion#2519). Each
- * patch leaves the package's output as it was, and each of the four parser patches patches both
- * `lib/` and `dev/lib/`, because Vite resolves the `development` export condition. What each makes
+ * The dependency patches. Six of the root `package.json`'s `patchedDependencies` entries are the
+ * parsers this package reads markdown with, the proof marks' transform and the transform that
+ * resolves reference-style links, patched so that a body costs time in proportion to its length
+ * rather than to its square (sjawhar/legion#2519), but for emphasis nested inside emphasis, whose
+ * cost stays the square of its depth, as upstream's does (docs/upstream.md, "Parser patches").
+ * Each patch leaves the package's output as it
+ * was, and each of the four parser patches patches both `lib/` and `dev/lib/`, because Vite
+ * resolves the `development` export condition. What each makes
  * linear, and what it counts:
  *
  * - `micromark@4.0.2`: `lib/initialize/document.js`'s lazy-line test. `writeToChild` scanned every
@@ -85,8 +97,12 @@
  *   balanced, rather than walking every event again on each `]`; and the definition lookup is
  *   skipped outright where the document defines nothing, and otherwise bails, without serializing
  *   the label, once the label holds more characters that are not markdown whitespace than the
- *   longest defined identifier. The patch counts each event the scan reads and each label character
- *   the lookup counts or serializes (`labelEndScan`). It also counts the events each resolver
+ *   longest defined identifier. The lookup, and a full reference's (`[a][b]`), read a set of the
+ *   identifiers defined that the patch keeps beside micromark's list of them
+ *   (`definedIdentifiers`), where each searched the whole list, so K references among M
+ *   definitions read K × M; the list's reads are a stage the rows count through a Proxy (above).
+ *   The patch counts each event the scan reads and each label character the lookup counts or
+ *   serializes (`labelEndScan`). It also counts the events each resolver
  *   reads: attention, label end, ATX heading, setext underline and code text, each `splice` counted
  *   from its own arguments (`spliceCounted`: each event it removes or puts in, and each event after
  *   them it shifts); and, for content, the events `micromark-util-subtokenize` hands back.
@@ -121,8 +137,17 @@
  *   formatting of every proof span of a node's whole subtree again at each level of its walk. The
  *   children are now read once and written back once, and each level converts only its own spans'
  *   children: a paragraph of 500 spans side by side read 47.59 times the transform's steps for 8
- *   times the spans before (1,053 at 7, 50,113 at 62) and reads them in proportion now. The patch
- *   is written against the fork's own `src/`, to go to sjawhar/proof-sdk as it is.
+ *   times the spans before (1,053 at 7, 50,113 at 62) and reads them in proportion now. The
+ *   legacy-formatting step (`convertHtmlFormatting`) searched forward for each `<code>`,
+ *   `<strong>`, `<em>` or `<del>` tag's closer, to the span's end for a tag nothing closes; it now
+ *   reads each tag's closer from one pass from the end (`nextClosingTags`), with the same matches.
+ *   The patch is written against the fork's own `src/`, to go to sjawhar/proof-sdk as it is.
+ * - `remark-inline-links@7.0.0`: `lib/index.js` spliced each definition out of its parent during
+ *   its walk, shifting every later sibling, so the definitions of one parent cost the square of
+ *   their number; it now removes each parent's definitions in one pass once the walk is done. The
+ *   transform is counted through its Proxy, by its plugin's name (`remarkInlineLinks`), and its
+ *   writes to the tree's lists on their own: on 12 and then 100 definitions with their references,
+ *   the splice's writes read 114 and 5,350 (46.93 times), the one pass's 14 and 102 (7.29 times).
  *
  * `micromark-extension-gfm-footnote@2.1.0` is held by nothing here: neither
  * `tests/heavy-bodies.test.ts` nor `tests/nested-directive.test.ts` has a footnote shape. To check
@@ -332,6 +357,8 @@ const POSTPROCESS_SUBTOKENIZE = "subtokenize's steps on the events postprocess h
 const CONTENT_SUBTOKENIZE = "subtokenize's steps on the events content's resolver hands it";
 /** The stage the compile is, once `postprocess` has handed it the events. */
 const COMPILE = "the mdast compile's steps on the events";
+/** The list of the identifiers a document's definitions define, as a failure names it. */
+const DEFINED_IDENTIFIERS = "the steps on micromark's list of defined identifiers (parser.defined)";
 
 /** The steps of each stage counted through a Proxy in the parse being read; undefined between
  *  readings, when every stage gets what it takes as it is. */
@@ -346,14 +373,21 @@ const fronted = new WeakMap<object, object>();
  * through it. An object the stage writes that it was not handed is its own, and it reads it back
  * as it wrote it, so the stage's own identity checks hold; what it reaches through the Proxy it
  * reaches through one Proxy for each object, so they hold there too.
+ *
+ * With `writes`, each write the stage makes to a list it reaches (an element set or deleted, a
+ * length set) also counts to that stage of its own: the work of a splice, which shifts every
+ * element after the ones it removes, and which the reads of a stage's walk, in proportion to the
+ * tree, would otherwise hide at the sizes a row reads.
  */
-function counted<T extends object>(stage: string | (() => string), root: T): T {
+function counted<T extends object>(stage: string | (() => string), root: T, writes?: string): T {
   const proxies = new WeakMap<object, object>();
   const owned = new WeakSet<object>();
-  const step = (): void => {
-    if (staged === undefined) return;
-    const name = typeof stage === "string" ? stage : stage();
-    staged.set(name, (staged.get(name) ?? 0) + 1);
+  const stepTo = (name: string): void => {
+    if (staged !== undefined) staged.set(name, (staged.get(name) ?? 0) + 1);
+  };
+  const step = (): void => stepTo(typeof stage === "string" ? stage : stage());
+  const listWrite = (target: object): void => {
+    if (writes !== undefined && Array.isArray(target)) stepTo(writes);
   };
   const front = (value: unknown): unknown => {
     if (typeof value !== "object" || value === null || fronted.has(value) || owned.has(value)) {
@@ -373,12 +407,14 @@ function counted<T extends object>(stage: string | (() => string), root: T): T {
     },
     set(target, key, value) {
       step();
+      listWrite(target);
       const raw = (typeof value === "object" && value !== null && fronted.get(value)) || value;
       if (typeof raw === "object" && raw !== null && !proxies.has(raw)) owned.add(raw);
       return Reflect.set(target, key, raw);
     },
     deleteProperty(target, key) {
       step();
+      listWrite(target);
       return Reflect.deleteProperty(target, key);
     },
     has(target, key) {
@@ -458,7 +494,12 @@ function unfrontEvents<T>(events: T): T {
 const micromarkDocument = (
   (await import(
     join(dirname(Bun.resolveSync("micromark", import.meta.dir)), "lib", "initialize", "document.js")
-  )) as { document: { resolveAll?: (events: unknown[]) => unknown[] } }
+  )) as {
+    document: {
+      resolveAll?: (events: unknown[]) => unknown[];
+      tokenize: (this: { parser: { defined: string[] } }, effects: unknown) => unknown;
+    };
+  }
 ).document;
 micromarkDocument.resolveAll = (events) => {
   if (staged === undefined) return events;
@@ -468,6 +509,19 @@ micromarkDocument.resolveAll = (events) => {
     () => (workCount("postprocessedEvents") === before ? POSTPROCESS_SUBTOKENIZE : COMPILE),
     events
   );
+};
+
+// micromark's parse makes one list a document's definitions add their identifiers to
+// (`parser.defined`), which every label end's lookup reads (the micromark-core-commonmark patch's
+// `isDefined` and the full reference's `referenceFullAfter`, through `definedIdentifiers`). The
+// document's initializer is the first tokenizer of a parse, so the list is handed on through the
+// Proxy from here: a lookup that read every definition for each label shows the product of the two.
+const tokenizeDocument = micromarkDocument.tokenize;
+micromarkDocument.tokenize = function (this, effects) {
+  if (staged !== undefined) {
+    this.parser.defined = counted(DEFINED_IDENTIFIERS, this.parser.defined);
+  }
+  return tokenizeDocument.call(this, effects);
 };
 
 // Content's resolver hands its events to subtokenize: the construct is the one micromark's flow
@@ -560,29 +614,45 @@ function countCompileExtension(plugin: string, extension: CompileExtension): voi
   });
 }
 
-/** The extensions whose parse work the rows count by Proxy, by the plugin that installs them. */
-const COUNTED_EXTENSIONS = new Set(["remarkGfm", "remarkFrontmatter"]);
+/** The extensions whose parse work the rows count by Proxy, by the plugin that installs them: GFM,
+ *  front matter, and the `:::` containers (src/lib-remark-directive-plugin.ts), whose compile
+ *  handlers are `mdast-util-directive`'s. */
+const COUNTED_EXTENSIONS = new Set(["remarkGfm", "remarkFrontmatter", "remarkContainerDirectives"]);
+
+/**
+ * The plugins of `COUNTED_EXTENSIONS` whose micromark extension is counted by its own count, not
+ * by Proxy: the `:::` container is this package's document construct, its resolver counts its own
+ * steps (`directiveScanSteps`), and micromark's document tokenizer runs a construct's `resolveAll`
+ * after its initializer's (`create-tokenizer.js`), so a Proxy put in front of it would take away
+ * the one `document.resolveAll` hands the events on through, and with it the counts of subtokenize
+ * and the compile.
+ */
+const SELF_COUNTED_SYNTAX = new Set(["remarkContainerDirectives"]);
 
 /**
  * `observeParser` for the rows (src/lib-headless.ts): counts each stage of every parse `processor`
- * runs through a Proxy, while a row reads one. Each plugin's transform is handed the tree, and the
- * GFM and front matter plugins' micromark and compile extensions what each part of them takes.
+ * runs through a Proxy, while a row reads one. Each plugin's transform is handed the tree, the GFM
+ * and front matter plugins' micromark and compile extensions what each part of them takes, and the
+ * container directive plugin's compile extension what it takes.
  */
 export function countParseStages(processor: Processor): void {
   processor.attachers.forEach(([attacher, ...settings], index) => {
     const name = attacher.name === "" ? `plugin ${index}` : attacher.name;
     const transformStage = `the mdast transform ${name}'s steps on the tree`;
+    const listWritesStage = `the mdast transform ${name}'s writes to the tree's lists`;
     const counting = function (this: Processor, ...options: unknown[]) {
       const micromarkBefore = (this.data("micromarkExtensions") ?? []).length;
       const compileBefore = (this.data("fromMarkdownExtensions") ?? []).length;
       const transformer = (attacher as (...options: unknown[]) => unknown).apply(this, options);
-      if (COUNTED_EXTENSIONS.has(name)) {
+      if (COUNTED_EXTENSIONS.has(name) && !SELF_COUNTED_SYNTAX.has(name)) {
         for (const extension of (this.data("micromarkExtensions") ?? []).slice(micromarkBefore)) {
           countExtension(
             `${name}'s micromark resolvers' steps on the events`,
             extension as Record<string, unknown>
           );
         }
+      }
+      if (COUNTED_EXTENSIONS.has(name)) {
         for (const extension of (this.data("fromMarkdownExtensions") ?? []).slice(compileBefore)) {
           for (const one of Array.isArray(extension) ? extension : [extension]) {
             countCompileExtension(name, one as CompileExtension);
@@ -595,7 +665,7 @@ export function countParseStages(processor: Processor): void {
         if (staged === undefined) return transform.apply(this, args);
         const raw = unfrontTree(args[0]);
         const result = transform.apply(this, [
-          counted(transformStage, raw as object),
+          counted(transformStage, raw as object, listWritesStage),
           ...args.slice(1),
         ]);
         unfrontTree(raw);
@@ -774,7 +844,9 @@ function expectWorkInProportion(what: string, reading: WorkReading<unknown>): vo
  * Fails when a count grew more than `growthSlack` times faster from `small` to `full` than the
  * shape's growing dimension did: the kept counts, or, for two staged readings, each stage's steps.
  * A count that read nothing at either size has nothing to grow; one that read nothing at the small
- * size and something at the full one grew without bound.
+ * size and something at the full one grew without bound. The failure names every count that grew
+ * too fast, the steepest first, so a count that grew with the square is named before one its walk
+ * held near the bound.
  */
 function expectWorkGrowsLinearly(
   what: string,
@@ -795,15 +867,16 @@ function expectWorkGrowsLinearly(
           small.counts.stages.get(stage) ?? 0,
           full.counts.stages.get(stage) ?? 0,
         ]);
-  for (const [name, from, to] of counts) {
-    if (from === 0 && to === 0) continue;
-    expect(
-      to,
-      `${what} took ${to} ${name} at ${full.size} of its growing dimension against ${from} at ` +
+  const over = counts
+    .filter(([, from, to]) => to > bound * from)
+    .sort(([, fromA, toA], [, fromB, toB]) => toB / fromB - toA / fromA)
+    .map(
+      ([name, from, to]) =>
+        `${what} took ${to} ${name} at ${full.size} of its growing dimension against ${from} at ` +
         `${small.size}, ${(to / from).toFixed(2)} times for a dimension ${growthStep} times larger ` +
         `(at most ${bound} times)`
-    ).toBeLessThanOrEqual(bound * from);
-  }
+    );
+  expect(over, `${over.length} counts grew more than ${bound} times`).toEqual([]);
 }
 
 /**

@@ -21,6 +21,9 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
 } from "../../../packages/contracts/src/dispatch-api";
+// The exit comes once what the check printed has reached the pipe (`exitProcess`): a person reads
+// it as it comes and dispatch-keyed-comment.test.ts reads it whole, so nothing bounds the flush.
+import { exitProcess } from "../../../packages/envoy-client/src/process-exit";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";
@@ -316,4 +319,4 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+await exitProcess(await main(Bun.argv.slice(2)));

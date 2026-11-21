@@ -359,6 +359,16 @@ stop_agent() {
   [ -z "$started" ] || kill_held "$work" "${run_marks[@]}" <<<"$started" || true
 }
 
+# server_psql ARGS… runs psql on ENVOY_SESSION_STATES_PG_DSN's server, connected to its `postgres`
+# database, to make and drop the run's own database, as run_psql below reaches the run's own.
+# lib/loopback-dsn.sh's exec_run_database hands psql the connection in libpq's own variables
+# (--libpq-env), PGPASSWORD among them, so no argument list holds the password, as
+# stage1-skeleton.sh's server_psql does. It runs in a subshell of its own, which the exec replaces.
+server_psql() {
+  (exec_run_database ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" postgres \
+    "the run creates and drops a database there" --libpq-env -- psql -X "$@")
+}
+
 cleanup() {
   local status=$1
   trap - EXIT INT TERM
@@ -381,7 +391,7 @@ cleanup() {
   # process the run marked (both agents carry LEGION_E2E_RUN).
   stop_marked_processes "$work" || true
   if [ -n "$database" ]; then
-    psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
+    server_psql -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
@@ -790,7 +800,9 @@ run_psql() {
 
 if [ -n "$needs_dispatch" ]; then
   database=envoy_session_states_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-  psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
+  require_run_database refusal ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" postgres \
+    "the run creates and drops a database there" --libpq-env || fail "$refusal"
+  server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
     fail "could not create database $database in ENVOY_SESSION_STATES_PG_DSN"
   # The run's own database reaches Dispatch, and the psql of run_psql, through exec_run_database
   # alone, in the two forms these two checks run first.

@@ -533,7 +533,7 @@ index 744e302f9811781f732af20ba2aa40790f2a0a0b..dd7149199fe284c242dd6b86953a0534
        ['enter', text, context],
        ['exit', text, context],
 diff --git a/dev/lib/label-end.js b/dev/lib/label-end.js
-index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..ce984a8c51adf3d56ce8060549f6c869b676ff9e 100644
+index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..9d6a6ec5c56eb4fa7264f8794a6bed737d324b5e 100644
 --- a/dev/lib/label-end.js
 +++ b/dev/lib/label-end.js
 @@ -2,6 +2,7 @@
@@ -679,7 +679,7 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..ce984a8c51adf3d56ce8060549f6c869
      effects.enter(types.labelEnd)
      effects.enter(types.labelMarker)
      effects.consume(code)
-@@ -359,10 +401,86 @@ function tokenizeLabelEnd(effects, ok, nok) {
+@@ -359,10 +401,107 @@ function tokenizeLabelEnd(effects, ok, nok) {
     */
    function labelEndNok(code) {
      labelStart._balanced = true
@@ -691,6 +691,42 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..ce984a8c51adf3d56ce8060549f6c869
    }
  }
  
++/**
++ * The identifiers the definitions of this document define (`parser.defined`), as a set kept beside
++ * that list, and the length of the longest (`parser._definedMax`). Definitions only ever add to
++ * the list, so each call adds the ones added since the last: a label end looked each label up in
++ * the list itself, which read every definition for each label, K labels among M definitions
++ * costing K × M.
++ *
++ * @param {TokenizeContext['parser']} parser
++ *   Parser.
++ * @returns {Set<string>}
++ *   The identifiers defined.
++ */
++function definedIdentifiers(parser) {
++  const defined = parser.defined
++  let names = parser._definedNames
++  let index = parser._definedCount
++
++  if (names === undefined || index === undefined || index > defined.length) {
++    names = new Set()
++    parser._definedNames = names
++    parser._definedMax = 0
++    index = 0
++  }
++
++  index--
++
++  while (++index < defined.length) {
++    const identifier = defined[index]
++    if (identifier.length > parser._definedMax) parser._definedMax = identifier.length
++    names.add(identifier)
++  }
++
++  parser._definedCount = defined.length
++  return names
++}
++
 +/**
 + * Whether a label is one of the identifiers a definition in this document defines.
 + *
@@ -704,23 +740,10 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..ce984a8c51adf3d56ce8060549f6c869
 + *   Whether it is defined.
 + */
 +function isDefined(context, start, end) {
-+  const defined = context.parser.defined
++  if (context.parser.defined.length === 0) return false
 +
-+  if (defined.length === 0) return false
-+
-+  let max = context.parser._definedMax
-+
-+  if (max === undefined || context.parser._definedCount !== defined.length) {
-+    max = 0
-+    let index = -1
-+
-+    while (++index < defined.length) {
-+      if (defined[index].length > max) max = defined[index].length
-+    }
-+
-+    context.parser._definedMax = max
-+    context.parser._definedCount = defined.length
-+  }
++  const names = definedIdentifiers(context.parser)
++  const max = context.parser._definedMax
 +
 +  // `normalizeIdentifier` keeps every character that is not markdown whitespace, and collapses
 +  // or drops the whitespace, so a label with more than `max` of them is longer than every
@@ -758,14 +781,21 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..ce984a8c51adf3d56ce8060549f6c869
 +
 +  countWork('labelEndScan', end.offset - start.offset)
 +
-+  return defined.includes(
-+    normalizeIdentifier(context.sliceSerialize({start, end}))
-+  )
++  return names.has(normalizeIdentifier(context.sliceSerialize({start, end})))
 +}
 +
  /**
   * @this {TokenizeContext}
   *   Context.
+@@ -576,7 +715,7 @@ function tokenizeReferenceFull(effects, ok, nok) {
+    * @type {State}
+    */
+   function referenceFullAfter(code) {
+-    return self.parser.defined.includes(
++    return definedIdentifiers(self.parser).has(
+       normalizeIdentifier(
+         self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1)
+       )
 diff --git a/dev/lib/list.js b/dev/lib/list.js
 index 55671e12ec43194115cecf4e58c23bc4b2e5fcb5..0de401bc8b59d4015292292e490a6f162fc2e761 100644
 --- a/dev/lib/list.js
@@ -1517,7 +1547,7 @@ index 39db4a4555261a8c991789d8f529d4b3ce482809..779eb0eae2da17207f510d2f0a0fcde3
    return events;
  }
 diff --git a/lib/label-end.js b/lib/label-end.js
-index 927808f648bac3803c8149d3b24c97e6def7e103..1a099254913bb0d0c75ab41217c0fe56539f0e10 100644
+index 927808f648bac3803c8149d3b24c97e6def7e103..88190c379994a9891a322a3e2c855f716ea30b99 100644
 --- a/lib/label-end.js
 +++ b/lib/label-end.js
 @@ -15,9 +15,10 @@ import { factoryLabel } from 'micromark-factory-label';
@@ -1634,7 +1664,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..1a099254913bb0d0c75ab41217c0fe56
      effects.enter("labelEnd");
      effects.enter("labelMarker");
      effects.consume(code);
-@@ -311,10 +339,73 @@ function tokenizeLabelEnd(effects, ok, nok) {
+@@ -311,10 +339,96 @@ function tokenizeLabelEnd(effects, ok, nok) {
     */
    function labelEndNok(code) {
      labelStart._balanced = true;
@@ -1646,6 +1676,38 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..1a099254913bb0d0c75ab41217c0fe56
    }
  }
  
++/**
++ * The identifiers the definitions of this document define (`parser.defined`), as a set kept beside
++ * that list, and the length of the longest (`parser._definedMax`). Definitions only ever add to
++ * the list, so each call adds the ones added since the last: a label end looked each label up in
++ * the list itself, which read every definition for each label, K labels among M definitions
++ * costing K × M.
++ *
++ * @param {TokenizeContext['parser']} parser
++ *   Parser.
++ * @returns {Set<string>}
++ *   The identifiers defined.
++ */
++function definedIdentifiers(parser) {
++  const defined = parser.defined;
++  let names = parser._definedNames;
++  let index = parser._definedCount;
++  if (names === undefined || index === undefined || index > defined.length) {
++    names = new Set();
++    parser._definedNames = names;
++    parser._definedMax = 0;
++    index = 0;
++  }
++  index--;
++  while (++index < defined.length) {
++    const identifier = defined[index];
++    if (identifier.length > parser._definedMax) parser._definedMax = identifier.length;
++    names.add(identifier);
++  }
++  parser._definedCount = defined.length;
++  return names;
++}
++
 +/**
 + * Whether a label is one of the identifiers a definition in this document defines.
 + *
@@ -1659,18 +1721,9 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..1a099254913bb0d0c75ab41217c0fe56
 + *   Whether it is defined.
 + */
 +function isDefined(context, start, end) {
-+  const defined = context.parser.defined;
-+  if (defined.length === 0) return false;
-+  let max = context.parser._definedMax;
-+  if (max === undefined || context.parser._definedCount !== defined.length) {
-+    max = 0;
-+    let index = -1;
-+    while (++index < defined.length) {
-+      if (defined[index].length > max) max = defined[index].length;
-+    }
-+    context.parser._definedMax = max;
-+    context.parser._definedCount = defined.length;
-+  }
++  if (context.parser.defined.length === 0) return false;
++  const names = definedIdentifiers(context.parser);
++  const max = context.parser._definedMax;
 +
 +  // `normalizeIdentifier` keeps every character that is not markdown whitespace, and collapses
 +  // or drops the whitespace, so a label with more than `max` of them is longer than every
@@ -1699,7 +1752,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..1a099254913bb0d0c75ab41217c0fe56
 +    }
 +  }
 +  countWork('labelEndScan', end.offset - start.offset);
-+  return defined.includes(normalizeIdentifier(context.sliceSerialize({
++  return names.has(normalizeIdentifier(context.sliceSerialize({
 +    start,
 +    end
 +  })));
@@ -1708,6 +1761,15 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..1a099254913bb0d0c75ab41217c0fe56
  /**
   * @this {TokenizeContext}
   *   Context.
+@@ -487,7 +601,7 @@ function tokenizeReferenceFull(effects, ok, nok) {
+    * @type {State}
+    */
+   function referenceFullAfter(code) {
+-    return self.parser.defined.includes(normalizeIdentifier(self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1))) ? ok(code) : nok(code);
++    return definedIdentifiers(self.parser).has(normalizeIdentifier(self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1))) ? ok(code) : nok(code);
+   }
+ 
+   /**
 diff --git a/lib/list.js b/lib/list.js
 index dd3368ecbc8a1995cfdaab38b08738f01b4c02b1..d7081cf036b7977506f6867d08636481ac3a30cc 100644
 --- a/lib/list.js

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -731,6 +731,90 @@ describe.skipIf(skip)("exec_run_database --libpq-env hands psql libpq's own vari
         `${variable} sets keepalives, which libpq reads from no environment variable:` +
         " --libpq-env hands the command every keyword the DSN sets in the variable libpq reads" +
         " it from",
+    });
+  });
+});
+
+/** What exec_dsn_database handed its command for dsn: the shell's exit status, the command's whole
+ *  environment and its argument list (each null when no command ran), and the shell's stderr,
+ *  which is the helper's refusal line when it refused. The command is a shell that writes both to
+ *  files of this test's own, run with the arguments a psql call of the two-builds proofs takes;
+ *  env is the environment of the shell that sources the rig. */
+function handedOwn(
+  dsn: string,
+  env: Record<string, string | undefined> = process.env
+): {
+  code: number;
+  environment: Map<string, string> | null;
+  argv: string[] | null;
+  refusal: string;
+} {
+  const file = join(files(), "environment");
+  const run = sourced(
+    `out=$1 dsn=$2 what=$3
+: >"$out"
+(exec_dsn_database ${variable} "$dsn" "$what" -- sh -c 'env -0 >"$1"; printf "%s\\n" "$0" "$@" >"$1.argv"' psql "$out" -X -tAc 'select 1')`,
+    [file, dsn, what],
+    env
+  );
+  const argvFile = `${file}.argv`;
+  return {
+    code: run.code,
+    environment: writtenEnvironment(file),
+    argv: existsSync(argvFile) ? readFileSync(argvFile, "utf8").split("\n").slice(0, -1) : null,
+    refusal: run.stderr.trim(),
+  };
+}
+
+describe.skipIf(skip)("exec_dsn_database hands psql the database the DSN itself names", () => {
+  /** The database the DSN names, as the two-builds proofs' DATABASE_URL names the one they run in. */
+  const own = "two_builds_own";
+  const dsn = `postgres://legion_test:${password}@127.0.0.1:5433/${own}?sslmode=disable`;
+  /** This process's environment without a variable libpq reads, and with PGSERVICE, which names a
+   *  ~/.pg_service.conf entry the command must not be handed. */
+  const withService = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PG"))),
+    PGSERVICE: "elsewhere",
+  };
+
+  test("the DSN's own database is PGDATABASE, each keyword is the variable libpq reads it from, and NAME and PGSERVICE are not handed on", () => {
+    const answer = handedOwn(dsn, withService);
+    expect(answer.code).toBe(0);
+    expect(answer.refusal).toBe("");
+    expect(answer.environment?.has(variable)).toBe(false);
+    expect(
+      [...(answer.environment ?? [])].filter(([name]) => name.startsWith("PG")).sort()
+    ).toEqual([
+      ["PGDATABASE", own],
+      ["PGHOST", "127.0.0.1"],
+      ["PGPASSWORD", password],
+      ["PGPORT", "5433"],
+      ["PGSSLMODE", "disable"],
+      ["PGUSER", "legion_test"],
+    ]);
+  });
+
+  test("the password is in PGPASSWORD alone: no other variable and no argument of the command holds it", () => {
+    const answer = handedOwn(dsn, withService);
+    expect(answer.code).toBe(0);
+    expect(
+      [...(answer.environment ?? [])]
+        .filter(([, value]) => value.includes(password))
+        .map(([name]) => name)
+    ).toEqual(["PGPASSWORD"]);
+    expect(answer.argv?.slice(2)).toEqual(["-X", "-tAc", "select 1"]);
+    expect((answer.argv ?? []).filter((argument) => argument.includes(password))).toEqual([]);
+  });
+
+  test("a DSN that names no database is refused without its password, and no command runs", () => {
+    const answer = handedOwn(`postgres://legion_test:${password}@127.0.0.1:5433?sslmode=disable`);
+    expect(answer).toEqual({
+      code: 1,
+      environment: null,
+      argv: null,
+      refusal:
+        `${variable} names no database: --own-dbname hands the command the database the DSN` +
+        " names, and libpq would read PGDATABASE or the user name in its place",
     });
   });
 });

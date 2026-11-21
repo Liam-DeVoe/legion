@@ -1,11 +1,14 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import { analyzePattern } from "@legion/envoy-client/test/pattern-analysis";
 
 import { wordsOf } from "../refs/tree-fragment";
 import { lineWordsRaw } from "./issue-tree";
 import {
+  edgeSpaceReads,
   isPlainText,
   parsedReading,
   plainReading,
+  STORED_READING_PATTERNS,
   storedReading,
   storedTextParses,
 } from "./stored-reading";
@@ -342,4 +345,66 @@ test("the parse reads a bare URL, a www address and an email as the words they a
   expect(collapsed(wordsOf(withShortAddresses(reading)))).toBe(
     "See https://example.com/a?b=c, www.example.com and someone@example.com beside ACME-12."
   );
+});
+
+// Every line of a plain text is trimmed of the spaces and tabs it opens and ends with
+// (`plainReading`), on the page's own thread on every draw, and the text is what an author wrote,
+// up to a body's 1 MiB: a line that costs more than its length would stall the page. A run of
+// spaces followed by any other character is the line the end-anchored trim it once ran
+// (`/[ \t]+$/`) read from every start in the run: about the square of the run, which no count sees
+// inside a regular expression. The trim is a loop now, and the count is of the characters it
+// reads, at two lengths of each run.
+describe("the edge spaces a plain text's lines are trimmed of", () => {
+  /** The characters the trim read for `text`, a plain text whose reading is one paragraph of
+   *  `words`. */
+  function readsFor(text: string, words: string): number {
+    expect(isPlainText(text)).toBe(true);
+    const before = edgeSpaceReads();
+    const reading = storedReading(text);
+    const read = edgeSpaceReads() - before;
+    expect(reading).toEqual({
+      content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    });
+    return read;
+  }
+
+  const n = 20_000;
+
+  test("a line that ends in a run of spaces costs the run once", () => {
+    const short = readsFor(`x${" ".repeat(n)}`, "x");
+    const long = readsFor(`x${" ".repeat(2 * n)}`, "x");
+    // The run is read from its end, once, and the line's first character a read more.
+    expect(short).toBeGreaterThanOrEqual(n);
+    expect(short).toBeLessThanOrEqual(n + 16);
+    expect(long).toBeLessThanOrEqual(2 * short);
+  });
+
+  test("a run of spaces between two words costs no more than its ends", () => {
+    const short = readsFor(`a${" ".repeat(n)}b`, `a${" ".repeat(n)}b`);
+    const long = readsFor(`a${" ".repeat(2 * n)}b`, `a${" ".repeat(2 * n)}b`);
+    // Each end stops the trim at its first character.
+    expect(short).toBeGreaterThan(0);
+    expect(short).toBeLessThanOrEqual(16);
+    expect(long).toBe(short);
+  });
+});
+
+// The patterns this module still runs on a stored text (`STORED_READING_PATTERNS`) go over the
+// whole of what an author wrote, and a pattern that backtracks costs more than linear work in it
+// within one call, which no count sees: JavaScriptCore counts no step a regular expression takes.
+// recheck's automaton checker decides it from the pattern's automaton instead, for every text and
+// not only one a row builds, with no clock of its own (`analyzePattern`, `timeout: null`), so its
+// verdict is the same on every machine, however loaded. The `/^[ \t]+|[ \t]+$/gu` the edge trim
+// ran before it became a loop reads `2nd degree polynomial` here.
+describe("each pattern a stored text is read with, as recheck's automaton checker reads it", () => {
+  for (const [name, pattern] of Object.entries(STORED_READING_PATTERNS)) {
+    test(`stored-reading.ts ${name} is linear in the text`, async () => {
+      const analysis = await analyzePattern(pattern);
+      expect(
+        analysis.status,
+        `stored-reading.ts ${name} /${analysis.source}/${analysis.flags} is ${analysis.status}: ${analysis.verdict}`
+      ).toBe("safe");
+    });
+  }
 });

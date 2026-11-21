@@ -47,15 +47,44 @@ const thisFile = new URL(import.meta.url).pathname;
 const COMPILED_BUNDLE = "/$bunfs/";
 
 /**
+ * The patterns `frameLocation` runs over a frame of a stack, text this module does not control:
+ * a row of `timer-record.test.ts` holds each to a match linear in the text's length, as recheck's
+ * automaton checker reads it.
+ */
+export const FRAME_PATTERNS = {
+  /** `:line` or `:line:column` at the frame's end, before one `)` and any whitespace. */
+  tail: /:(\d+)(?::\d+)?\)?\s*$/,
+  /** The location after `file:`, when its path starts at its third `/`. */
+  fileUrlPath: /^\/\/\/[^?]/,
+  /** Where a location's path starts: its first `/` that a character other than `?` follows. */
+  pathStart: /\/[^?]/,
+} as const;
+
+/**
  * The file and line of one frame of a stack, or undefined for a frame that names no file. A
  * module loaded with a query after its path (Oh My Pi loads an extension as `file.ts?mtime=…`, a
- * test imports `./envoy.ts?nats-stall`) names the file without it.
+ * test imports `./envoy.ts?nats-stall`) names the file without it. The frame is read from its
+ * end, at a cost linear in its length: a pattern that looked for the path from every `/` of the
+ * frame took time quadratic in a frame of many `/` and no line after them.
  */
 function frameLocation(frame: string): { readonly file: string; readonly at: string } | undefined {
-  const match = /\(?(?:file:\/\/)?(\/[^():?]+)(?:\?[^():]*)?:(\d+)(?::\d+)?\)?\s*$/.exec(frame);
-  if (match === null) return undefined;
-  const [, file, line] = match;
-  if (file === undefined || line === undefined) return undefined;
+  const tail = FRAME_PATTERNS.tail.exec(frame);
+  const line = tail?.[1];
+  if (tail === null || line === undefined) return undefined;
+  // The location runs to the tail's `:` from the last `(`, `)` or `:` before it: `file:`'s, for a
+  // URL.
+  const head = frame.slice(0, tail.index);
+  const opened = Math.max(head.lastIndexOf("("), head.lastIndexOf(")"), head.lastIndexOf(":"));
+  const location = head.slice(opened + 1);
+  // Its path starts at the `/` after `file://`, else at the first `/` that `pathStart` finds, and
+  // ends at the query's `?`.
+  const start =
+    head.endsWith("file:", opened + 1) && FRAME_PATTERNS.fileUrlPath.test(location)
+      ? 2
+      : location.search(FRAME_PATTERNS.pathStart);
+  if (start === -1) return undefined;
+  const query = location.indexOf("?", start);
+  const file = location.slice(start, query === -1 ? location.length : query);
   return { file, at: `${file}:${line}` };
 }
 

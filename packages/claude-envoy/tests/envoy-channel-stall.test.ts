@@ -156,7 +156,7 @@ async function startChannelServer(
       // No heartbeat registration runs in the test's window: the reconnect's registration, on a
       // new epoch, is the only one that restarts the relay.
       ENVOY_HEARTBEAT_MS: "240000",
-      // The server's own record of its dial, its steps and its bounded waits
+      // The server's own record of its dial and its steps
       // (`../src/channel-record`), and into the same file, so one order holds both, each timer
       // its own code arms and fires (`@legion/test-fixtures/timer-record`).
       [CHANNEL_RECORD_FILE]: recordFile,

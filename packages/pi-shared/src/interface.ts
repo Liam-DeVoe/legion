@@ -20,7 +20,7 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * `task` subagent, so a per-instance callback stored here would be the last instance's, not the
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
-export const ENVOY_PLUGIN_INTERFACE_VERSION = 5;
+export const ENVOY_PLUGIN_INTERFACE_VERSION = 6;
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -56,8 +56,10 @@ export interface EnvoyPluginInterface {
    * a controller claim (`/legion-controller-start`'s, `/legion-claim-controller`'s, or a re-claim
    * after a session change) fails before the send or hands over to a new session, and a sent mark
    * once its send fails. The Envoy entry reads it (`packages/pi-envoy/src/card-wake.ts`): while it
-   * names the Envoy entry's own live session, unsent or sent and however long ago, a card that
-   * arrived while that session started takes no turn, and its wake waits for the start turn.
+   * names the Envoy entry's own live session, unsent however long ago, or sent less than 30 s ago,
+   * a card that arrived while that session started takes no turn, and its wake waits for the start
+   * turn. An unsent mark has no cap there, so every way above that clears one is what ends its
+   * hold.
    */
   startupTurn: { readonly session: string; readonly sentAt: number | undefined } | undefined;
 }
