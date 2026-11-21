@@ -2129,6 +2129,7 @@ listener_server_change:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
   - '!packages/envoy/cmd/listener/dispatch_grant_fresh_test.go'
+  - '!packages/envoy/cmd/listener/dispatch_grant_rebind_test.go'
   - '!packages/envoy/cmd/listener/forced_order_mode_test.go'
   - '!packages/envoy/cmd/listener/forced_order_test.go'
   - '!packages/envoy/consumernames/**/*_test.go'
