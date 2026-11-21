@@ -454,15 +454,20 @@ stop_tree() {
 # proc_walk_complaint ERRFILE PROC prints the first line of a walk of PROC's stderr that is neither an
 # entry this user may not read, another user's process's, nor one whose process ended during the
 # walk, and fails when every line is one of those two: what a walk of every process meets on a
-# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
-# there, or one too old to read -files0-from) leaves a line of its own or the shell's, which is a
-# complaint. listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their
-# find's stderr with it.
+# busy machine and no error of its own. It reads a find's lines (`find: 'PROC/<pid>…': …`) and a
+# grep's of an environment (`grep: PROC/<pid>/environ: …`), for which a process that ended between
+# the path's lookup and the open reads as ESRCH (`No such process`), the kernel's answer for an
+# environ whose task has gone. A walk that could not start (E2BIG, a find that is not there, or
+# one too old to read -files0-from) leaves a line of its own or the shell's, which is a complaint.
+# listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their find's stderr
+# with it, and procs_naming its grep's.
 proc_walk_complaint() {
   local line rest
   while IFS= read -r line; do
     rest=${line#*find: \'"$2"/}
     [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] || continue
+    rest=${line#*grep: "$2"/}
+    [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+/environ:\ (Permission\ denied|No\ such\ file\ or\ directory|No\ such\ process)$ ]] || continue
     printf '%s\n' "$line"
     return 0
   done <"$1"
@@ -477,40 +482,80 @@ proc_walk_complaint() {
 # host's process count. Every process is read since a process that left every tree the run
 # recorded, a double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the
 # environments to those holding a NAME=DIR anywhere, and each is then read whole, variable by
-# variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
+# variable. The shell's glob lists the entries, the shell's own test keeps those this user may read
+# (another user's environment, which a walk of a shared machine meets by the thousand, is no
+# process of a run, and each would add a complaint below), and xargs hands them to grep in calls
 # that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start. The
 # start is read before and after the environment, and a process that ended or whose start moved
-# between is left out. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an
-# environment this user may not read, another user's, or whose process ended during the walk),
-# which is no error here. Any other status is xargs's own, a batch it could not start or a grep a
-# signal ended (125), and like a proc root that lists no process at all (an empty tmpfs where /proc
-# should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
-# fail with 2, so no caller reads an unread machine as one with nothing left.
+# between is left out. xargs exits 123 both for a batch whose command exits 1 and for one whose
+# command exits 2, and grep exits 1 for no match in its batch, as most batches of a busy machine
+# have, and 2 for an error. So each batch runs grep under a sh of its own (batch below), which
+# turns grep's no match into 0, passes grep's complaints on, and, for a grep that failed and said
+# nothing, says so itself: every failed batch leaves a line of its own, whatever another batch
+# printed, and a 123 is always a grep's error. A grep a signal ended ends its sh with that signal,
+# which xargs reads as 125. A grep's complaint about an environment this user may not read or
+# whose process ended during the walk is no error (proc_walk_complaint). Any other complaint, and
+# any other status, xargs's own (a batch it could not start, a grep a signal ended, 125), like a
+# proc root that lists no process at all (an empty tmpfs where /proc should be, or one whose pid
+# entries this user cannot see), make procs_naming print why and fail with 2, so no caller reads an
+# unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name
-  local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err complaint
+  # $0 is the batch's name and "$@" the patterns and the batch's entries; grep's matches go out on
+  # fd 3, the walk's own output, and its complaints on stderr.
+  local batch='said=$(grep -lzF "$@" 2>&1 >&3 3>&-)
+status=$?
+[ -z "$said" ] || printf "%s\n" "$said" >&2
+case $status in
+  0 | 1) exit 0 ;;
+  2) [ -n "$said" ] || echo "grep exited 2 and printed nothing" >&2 ;;
+  *)
+    [ "$status" -le 128 ] || kill "-$((status - 128))" "$$"
+    echo "grep exited $status" >&2
+    ;;
+esac
+exit 2'
+  local -a names=("${@:2}") naming_patterns=() naming_files=() listed=() entries=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
     return 2
   }
-  entries=("$proc"/[0-9]*/environ)
-  [ -e "${entries[0]}" ] || {
+  listed=("$proc"/[0-9]*/environ)
+  [ -e "${listed[0]}" ] || {
     echo "procs_naming: $proc lists no process's environ, so the processes naming $dir were not read" >&2
     return 2
   }
+  for p in "${listed[@]}"; do [ ! -r "$p" ] || entries+=("$p"); done
+  # This shell's own environment is always one of them on a /proc: none read is no answer.
+  [ "${#entries[@]}" -gt 0 ] || {
+    echo "procs_naming: $proc lists no environ this user may read, so the processes naming $dir were not read" >&2
+    return 2
+  }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
+  err=$(mktemp "${TMPDIR:-/tmp}/procs-naming.XXXXXX") || {
+    echo "procs_naming: no file to keep grep's complaints in, so the processes naming $dir were not read" >&2
+    return 2
+  }
   # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  # firing inside the substitution for an entry whose process ended during the walk.
+  # The C locale keeps grep's complaints in the words proc_walk_complaint reads.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" |
+    LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" || exit)
   wait "$!" || status=$?
-  case $status in
-    0 | 123) ;;
-    *)
-      echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
-      return 2
-      ;;
-  esac
+  complaint=
+  if [ "$status" != 0 ]; then
+    complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
+    # A 123 whose every line is an entry each walk of a busy machine meets is an answer. Each failed
+    # batch printed a line, so a 123 with none lost its complaints, and any other status is none.
+    [ -n "$complaint" ] || [ "$status" != 123 ] || [ -s "$err" ] || complaint="its complaints were lost"
+    [ -n "$complaint" ] || [ "$status" = 123 ] || complaint="xargs printed nothing"
+  fi
+  rm -f -- "$err"
+  if [ -n "$complaint" ]; then
+    echo "procs_naming: xargs exited $status reading $proc/<pid>/environ: $complaint, so the processes naming $dir were not read" >&2
+    return 2
+  fi
   for p in ${naming_files[@]+"${naming_files[@]}"}; do
     pid=${p%/environ}
     pid=${pid##*/}

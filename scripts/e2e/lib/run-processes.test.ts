@@ -329,6 +329,91 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
 );
 
 test.skipIf(skip)(
+  "a walk whose grep could not read an environment is no answer: run_processes and stop_marked_processes exit 2 and leave the marked process running, and a grep that met only unreadable or ended entries still answers",
+  async () => {
+    // xargs exits 123 when a batch's grep exits 1 (no match in it, as most batches of a busy machine
+    // have) and when one exits 2 (an error). Read as one, a grep that could not read the marked
+    // process's environment named nothing, and the sweep returned 0 and ended nothing while that
+    // process ran on. One stub fails as GNU grep does, saying why on stderr and exiting 2, and one
+    // exits 2 and says nothing, alone and beside batches that each report an ended entry (an xargs
+    // of one entry per batch), whose lines are no word of the silent one's. The control stub runs
+    // the real grep and then reports, with exit 2, what a walk of a shared machine meets and is no
+    // error: another user's environment, and one whose process ended before the open (ENOENT) or
+    // during it (ESRCH).
+    const work = join(dir, "grep-failed");
+    mkdirSync(work);
+    const grepStub = (name: string, body: string) => {
+      const stubBin = join(dir, `grep-${name}`);
+      mkdirSync(stubBin);
+      writeFileSync(join(stubBin, "grep"), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+      return stubBin;
+    };
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilRunning(marked, "sleep");
+    const sweep = (path: string) => {
+      const r = harness(
+        work,
+        `st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?; echo "run_processes $st"
+st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_marked_processes $st"`,
+        path
+      );
+      return {
+        ...r,
+        named: pids(readFileSync(join(work, "rp.out"), "utf8")),
+        said: readFileSync(join(work, "rp.err"), "utf8"),
+      };
+    };
+    const reported = sweep(
+      grepStub("reported", `for f; do :; done\necho "grep: $f: Input/output error" >&2\nexit 2`)
+    );
+    expect(reported.err).toBe("");
+    expect(reported.out).toBe("run_processes 2\nstop_marked_processes 2\n");
+    expect(reported.said).toMatch(
+      /^procs_naming: xargs exited 123 reading \S+: grep: \S+\/environ: Input\/output error, so /m
+    );
+    const silent = sweep(grepStub("silent", "exit 2"));
+    expect(silent.err).toBe("");
+    expect(silent.out).toBe("run_processes 2\nstop_marked_processes 2\n");
+    expect(silent.said).toMatch(
+      /^procs_naming: xargs exited 123 reading \S+: grep exited 2 and printed nothing, so /m
+    );
+    const mixed = grepStub(
+      "mixed",
+      `for f; do :; done
+[ "$f" != "$proc_root/${marked}/environ" ] || exit 2
+/usr/bin/grep "$@"
+echo "grep: $proc_root/2/environ: No such file or directory" >&2
+exit 2`
+    );
+    writeFileSync(join(mixed, "xargs"), `#!/bin/bash\nexec /usr/bin/xargs -n 1 "$@"\n`, {
+      mode: 0o755,
+    });
+    const split = sweep(mixed);
+    expect(split.err).toBe("");
+    expect(split.out).toBe("run_processes 2\nstop_marked_processes 2\n");
+    expect(split.said).toMatch(
+      /^procs_naming: xargs exited 123 reading \S+: grep exited 2 and printed nothing, so /m
+    );
+    expect(state(marked)).toBe("S");
+    const unreadable = sweep(
+      grepStub(
+        "unreadable",
+        `/usr/bin/grep "$@"
+echo "grep: $proc_root/1/environ: Permission denied" >&2
+echo "/usr/bin/grep: $proc_root/2/environ: No such file or directory" >&2
+echo "grep: $proc_root/3/environ: No such process" >&2
+exit 2`
+      )
+    );
+    expect(unreadable.err).toBe("");
+    expect(unreadable.said).toBe("");
+    expect(unreadable.out).toBe("run_processes 0\nstop_marked_processes 0\n");
+    expect(unreadable.named).toContain(String(marked));
+    expect(await gone(marked)).toBe(true);
+  }
+);
+
+test.skipIf(skip)(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");
