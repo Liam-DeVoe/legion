@@ -199,6 +199,65 @@ func TestDecisionsThroughOneDepsShareTheHoldFloor(t *testing.T) {
 	require.Equal(t, 2, stub.called())
 }
 
+// A hold row whose phase is none of the three is unknown, and the refusal's cause, which the
+// callout's refusal log writes, holds no part of the phase the row holds: the phase is read before
+// its signature is checked, so it is whatever a database writer put there. The migration's check
+// constraint keeps the table to the three phases, so the row comes from the hold view's read.
+//
+// Run by hand, the control is the hold view at bb2b623923: its cause reads `the writer hold's row
+// holds the phase "CANARY-PHASE-4f1c", none of the three`.
+func TestAHoldRowsUnknownPhaseIsNotPrinted(t *testing.T) {
+	signer := newHoldSigner(t)
+	stub := &holdStub{}
+	now := time.Now()
+	deps := Deps{
+		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
+		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil),
+	}
+	const canary = "CANARY-PHASE-4f1c"
+	stub.set(rowOf(signer.reading(t, 2, canary, "hold-1")))
+	_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
+	var refused *Refusal
+	require.True(t, errors.As(err, &refused), "the listener %s was admitted under a phase none of the three", listenerAccount)
+	require.Equal(t, labelHoldUnknown, refused.Label)
+	require.ErrorContains(t, refused.Cause, "none of the three")
+	require.NotContains(t, refused.Cause.Error(), canary, "the refusal's cause prints the row's phase")
+	require.NotContains(t, err.Error(), canary)
+}
+
+// A second signed row at the gen this view has read reads unknown: the view reads held at gen 3,
+// then the operator's released at gen 3, which the operator signs when a database writer has put
+// the hold's older prepare row (gen 2) back and its abort moves the row from gen 2, as Review
+// 4679's round 3 ran over the routes. Both rows verify; the floor keeps the row it read at gen 3,
+// so the released row at that gen is a fork and refuses every client but the operator. The held
+// row reads known again, and a released row at gen 4 moves the floor on.
+//
+// Run by hand, the control is the floor at bb2b623923, which keeps the gen alone: the view reads
+// the released row at gen 3 as released, known.
+func TestADifferentRowAtTheGenReadReadsUnknown(t *testing.T) {
+	signer := newHoldSigner(t)
+	stub := &holdStub{}
+	view := NewHoldView(stub.read, signer.HoldKeys, nil)
+	held := signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")
+	stub.set(rowOf(held))
+	phase, known := view.State(t.Context())
+	require.True(t, known)
+	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
+
+	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseReleased, "hold-1")))
+	phase, err := view.phase(t.Context())
+	require.ErrorIs(t, err, signedrecord.ErrFork, "the released row at the held row's gen read as %q", phase)
+
+	stub.set(rowOf(held))
+	phase, known = view.State(t.Context())
+	require.True(t, known, "the held row read before is unknown after the fork")
+	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
+	stub.set(rowOf(signer.reading(t, 4, natsgrant.OperatorPhaseReleased, "hold-1")))
+	phase, known = view.State(t.Context())
+	require.True(t, known)
+	require.Equal(t, natsgrant.OperatorPhaseReleased, phase)
+}
+
 // openPool is a pool on dsn, closed when the test ends.
 func openPool(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()

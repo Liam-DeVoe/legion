@@ -353,19 +353,19 @@ func Host(machineID string) Permissions {
 // reads the account's JetStream state and the listener's lease keys in KV_envoy_listener, and
 // publishes on its own cutover inbox, _INBOX_envoy_measure.cutover.>, under which a probe sends a
 // numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
-// changes and removes no stream: a create or an update carries a configuration of the caller's
-// choosing, and a source or a republish in it would read every stream of the account. The same
-// grant writes any KV bucket of the account: a RePublish whose destination is a KV subject
-// (Source envoy-measure.>, Destination $KV.envoy_session_consumers.>) is accepted, since
-// nats-server checks only that the destination does not loop into the stream itself (v2.15.1
-// stream.go:2479-2514, checkStreamCfgLocked; measured on 2.15.1 and 2.10.29), so its publishes
-// become chosen self-keyed records and the bucket's sentinel.
-// The streams change (#4687) removes those calls from every
-// callout answer but the held operator's (ForCallout) and narrows every static user on a callout
-// hub (core.Authorization.Render), so after the cutover the held operator is their only holder;
-// ENVOY_MEASURE is the operator's to make (envoy-infra streams update). It subscribes only its own
-// inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push
-// consumer deliveries and request replies arrive, so it reads no message of another client.
+// changes and removes no stream. The grant before this change held stream creates and updates, and
+// a create or an update carries a configuration of the caller's choosing: a source or a republish
+// in it would read every stream of the account, and the same grant wrote any KV bucket of the
+// account, since a RePublish whose destination is a KV subject (Source envoy-measure.>, Destination
+// $KV.envoy_session_consumers.>) is accepted: nats-server checks only that the destination does not
+// loop into the stream itself (v2.15.1 stream.go:2479-2514, checkStreamCfgLocked; measured on
+// 2.15.1 and 2.10.29), so its publishes became chosen self-keyed records and the bucket's sentinel.
+// The streams change (#4687) removes those calls from every callout answer but the held
+// operator's, and narrows every static user on a callout hub, so after the cutover the held
+// operator is their only holder; ENVOY_MEASURE is the operator's to make (envoy-infra streams
+// update). It subscribes only its own inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where
+// the listener's and Dispatch's push consumer deliveries and request replies arrive, so it reads
+// no message of another client.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -401,9 +401,12 @@ const (
 	OperatorPhaseHeld     OperatorPhase = "held"
 )
 
-// ReplyRoot is the one subject token every reply prefix of Envoy's own clients sits under, so a
-// render that moves JetStream into an account of its own and exports only the reply roots to the
-// clients' account exports this one token, and no client's prefix needs an export of its own.
+// ReplyRoot is the subject token Envoy's reply prefixes move under, so that a render that moves
+// JetStream into an account of its own exports one reply root to the clients' account rather than
+// a prefix for each client. The operator's prefix (OperatorInbox) is the first under it. Measure's
+// _INBOX_envoy_measure, which shares the root's characters but not its token, moves under it in a
+// later change, and the listener and Dispatch still use nats.go's _INBOX.; until each moves, such
+// a render exports that prefix as well.
 const ReplyRoot = "_INBOX_envoy"
 
 // OperatorInbox is the inbox prefix of every operator connection (nats.CustomInboxPrefix), the

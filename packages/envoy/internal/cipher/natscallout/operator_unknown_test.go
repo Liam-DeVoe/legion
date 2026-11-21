@@ -207,7 +207,7 @@ func TestAPostgresOutageRefusesOnlyWhileItLasts(t *testing.T) {
 	table.write(t, 1, natsgrant.OperatorPhaseReleased, "hold-1")
 
 	var phase atomic.Int32 // 0 before the outage, 1 during it, 2 after it
-	var during, after outcomes
+	var before, during, after outcomes
 	stop := make(chan struct{})
 	var storm sync.WaitGroup
 	for worker := range 4 {
@@ -237,6 +237,8 @@ func TestAPostgresOutageRefusesOnlyWhileItLasts(t *testing.T) {
 				}
 				var counted *outcomes
 				switch ended {
+				case 0:
+					counted = &before
 				case 1:
 					counted = &during
 				case 2:
@@ -254,7 +256,13 @@ func TestAPostgresOutageRefusesOnlyWhileItLasts(t *testing.T) {
 	}
 	defer func() { close(stop); storm.Wait() }()
 
-	time.Sleep(time.Second)
+	// The storm runs on a real NATS cluster and a real Postgres, so the test waits on the fact, not
+	// on a clock: both kinds of client admitted before the outage, within a ceiling a loaded
+	// machine does not reach.
+	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "connections admitted before the outage", func() bool {
+		return before.admitted.Load() >= 4
+	})
+	require.Zero(t, before.refused.Load(), "a client was refused before the outage (%d admitted)", before.admitted.Load())
 	proxy.Cut()
 	// The outage is marked by Postgres's own answer through the relay, not by the view's gauge: a
 	// view that hid the outage would hide it from the gauge too.
