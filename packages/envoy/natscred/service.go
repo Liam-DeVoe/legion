@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ServiceUser is the CONNECT user a service presents beside its platform identity token as the
@@ -220,13 +222,17 @@ func (f serviceFile) Read() (string, error) {
 const googleReadTimeout = 10 * time.Second
 
 // ServiceGoogle is this VM's Google identity token for audience, minted by its metadata server at
-// every Read (cipherclient.MetadataIdentity).
-func ServiceGoogle(audience string) TokenReader {
-	return serviceGoogle{identity: cipherclient.NewMetadataIdentity(audience)}
+// every Read (cipherclient.MetadataIdentity). setting is what the caller read audience from (a
+// variable or a flag), which a failed Read names: the audience is a value a person can paste a
+// credential into, so it prints whole only where internal/redact's allow-list prints it, a plain
+// http(s) URL, and by setting alone otherwise.
+func ServiceGoogle(audience, setting string) TokenReader {
+	return serviceGoogle{identity: cipherclient.NewMetadataIdentity(audience), setting: setting}
 }
 
 type serviceGoogle struct {
 	identity *cipherclient.MetadataIdentity
+	setting  string
 }
 
 func (g serviceGoogle) Read() (string, error) {
@@ -234,7 +240,18 @@ func (g serviceGoogle) Read() (string, error) {
 	defer cancel()
 	token, _, err := g.identity.Token(ctx)
 	if err != nil {
-		return "", fmt.Errorf("natscred: read %s: %w", g.identity.Describe(), err)
+		return "", fmt.Errorf("natscred: read %s: %w", g.describe(), err)
 	}
 	return token, nil
+}
+
+// describe names the token Read reads by the setting its audience came from. It is not
+// cipherclient.MetadataIdentity.Describe, which names AGENT_SECRETS_MACHINE_AUDIENCE, the setting
+// of agent-secrets' own identity.
+func (g serviceGoogle) describe() string {
+	audience := "the audience " + g.setting + " names"
+	if redact.Clean(g.identity.Audience) {
+		audience = g.identity.Audience + " (" + g.setting + ")"
+	}
+	return "this machine's Google identity token for " + audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
 }
