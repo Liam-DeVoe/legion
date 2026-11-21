@@ -46,14 +46,15 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// Four are constants rather than numbers. shapedAnswersContract, 193, is the contract that
+// Five are constants rather than numbers. shapedAnswersContract, 193, is the contract that
 // brought this list, and the entry that added the shaped answers names it.
 // repositoriesLiveContract, 202, is dispatch://INFRA-4401's entry, childRouteRemovedContract,
-// 205, is dispatch://INFRA-3178's, and questionsForControllerContract is this change's own entry,
-// the last one. A renumber of any of the four entries moves its constant and this list with it,
+// 205, is dispatch://INFRA-3178's, unreachableContract, 208, is the contract of a change of its
+// own, which names its constant, and questionsForControllerContract is this change's own entry,
+// the last one. A renumber of any of the five entries moves its constant and this list with it,
 // and moving the constant or the list alone would describe a shape at a contract no entry
 // declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, questionsForControllerContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, unreachableContract, questionsForControllerContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -79,6 +80,7 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
+	AnswerRelaunch           AnswerID = "relaunch"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -200,6 +202,10 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
+	// version.go's 208: the controller's relaunch of a claim Envoy cannot reach, on its same
+	// session (`api.RelaunchResponse`, `{}`). The route arrives with the answer, so no contract
+	// below 208 records either.
+	{ID: AnswerRelaunch, Routes: []string{"POST /legion/v1/claims/relaunch"}, Since: unreachableContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,

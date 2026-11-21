@@ -289,14 +289,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerRelaunch:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerRelaunch arrived whole at unreachableContract, so no older contract records any
+		// of them at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -558,6 +560,8 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: unreachableContract, state: withoutUnreachableLocator, issue: withoutUnreachableClaims,
+		dropped: "the claim views' and the controller's unreachable"},
 	{contract: questionsForControllerContract, state: withoutQuestionsForController, dropped: "questionsForController"},
 }
 
@@ -860,6 +864,14 @@ const quietTimeContract = 111
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
 
+// unreachableContract is the daemon contract that added `unreachable` to every claim view and to
+// the controller's locator (version.go's 208, R5): a plugin before it reads both with a schema that
+// knows no such key, so a caller from a pod below it is served the state without the mark
+// (withoutUnreachableLocator, withoutUnreachableClaims). It is the next to last number of
+// answers.go's SupportedContracts, followed by questionsForControllerContract, and the arrival of
+// the relaunch's answer.
+const unreachableContract = 208
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
@@ -972,8 +984,9 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with that change's own number, and answers.go's SupportedContracts names the constant rather
-// than its number for that reason.
+// with that change's own number, which is why answers.go's SupportedContracts names the constant
+// rather than its number, as it names unreachableContract and questionsForControllerContract, the
+// last, for the same reason.
 const repositoriesLiveContract = 202
 
 // questionsForControllerContract is the daemon contract that added `questionsForController` to
@@ -983,11 +996,11 @@ const repositoriesLiveContract = 202
 // before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
 // for a key it does not name, empty as surely as naming a question, and one built after strips the
 // key instead, so the band keeps the body its own contract's record describes.
-// repositoriesLiveContract stands below it with no row of stateNarrowings between the two, so a
-// caller from repositoriesLiveContract to below this contract is served the `repositories` block
-// this daemon writes and not the questions. The one enumerated field it added is
-// `questionsForController.*.role` (answers.go's questionRoles), whose values arrived with the key
-// and ride its band.
+// unreachableContract stands below it with no row of stateNarrowings between the two, so a caller
+// from unreachableContract to below this contract is served the `unreachable` marks and the
+// `repositories` block this daemon writes and not the questions. The one enumerated field it
+// added is `questionsForController.*.role` (answers.go's questionRoles), whose values arrived with
+// the key and ride its band.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
@@ -1617,6 +1630,28 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 	return withEachClaimView(issue, func(view ClaimView) ClaimView {
 		view.UpdateState, view.Wake = "", nil
+		return view
+	})
+}
+
+// withoutUnreachableLocator is state whose controller locator carries no `unreachable`, the
+// state's own half of unreachableContract's band. The locator is copied before it is written, so
+// the state the source answered is left as it was.
+func withoutUnreachableLocator(state State) (State, bool) {
+	if state.ControllerLocator == nil || state.ControllerLocator.Unreachable == nil {
+		return state, false
+	}
+	locator := *state.ControllerLocator
+	locator.Unreachable = nil
+	state.ControllerLocator = &locator
+	return state, true
+}
+
+// withoutUnreachableClaims is the issue with no claim view carrying `unreachable`, the issues' half
+// of unreachableContract's band.
+func withoutUnreachableClaims(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.Unreachable = nil
 		return view
 	})
 }

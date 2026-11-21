@@ -339,7 +339,14 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			}}},
 		},
 		LastPause: &last,
-		Settings:  SettingsOf(loadSettingsFile(t, shapeSettingsFile)),
+		// A controller the daemon found out of Envoy's reach (contract 208), so the walk reads
+		// the locator's `unreachable` beside the claim views' (populatedState carries those).
+		ControllerLocator: &ControllerLocator{
+			Runtime: "kubernetes", External: true, SessionID: "ses_controller",
+			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
+			Unreachable:  &UnreachableView{Since: since, LastSeen: &since},
+		},
+		Settings: SettingsOf(loadSettingsFile(t, shapeSettingsFile)),
 	}
 }
 
@@ -685,6 +692,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// The relaunch's golden own value (`relaunch.json`): `{}`, the answer of a relaunch made,
+		// which carries no key at the one contract that records it, unreachableContract.
+		AnswerRelaunch: {roots: typesOf(RelaunchResponse{}), bodies: []any{RelaunchResponse{}}},
 	}
 }
 

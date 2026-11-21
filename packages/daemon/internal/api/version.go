@@ -3019,6 +3019,114 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
+// 208: a claim Envoy cannot reach, and its relaunch on its same session.
+// Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
+// locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
+// last registration with Envoy is more than 20 minutes old, counted from the latest of that
+// registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
+// read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
+// the key is absent while it is reachable, and absent from every view the route serves a caller
+// below 208 (api.stateFor, withoutUnreachableLocator, withoutUnreachableClaims), whose plugin
+// reads claim views with a schema that knows no such key. The `legion` tool's controller gains
+// `relaunch`, which posts
+// `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
+// token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
+// `api.RelaunchResponse`, `{}`, also for a relaunch whose launch after the stop waits for the
+// daemon's store, which the daemon then makes itself at the probe interval; an uncoded 400 for a
+// body that does not decode, and 400 MISSING_FIELD for an empty `grantId` or `claim`; 403
+// GRANT_EXPIRED, GRANT_UNAVAILABLE or GRANT_REVOKED for a grant that is expired, unknown or no
+// longer held by its claim, 409 STALE_PLUGIN_CONTRACT for a worker grant whose claim speaks another
+// contract, and 403 CONTROLLER_REQUIRED for every other worker grant; 409 CLAIM_IS_CONTROLLER for
+// the project's own controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; 409
+// PROJECT_PAUSED, naming the pause that stands, for any other claim while the project is paused,
+// which stops nothing and spends no relaunch; an uncoded 503 once the daemon's stop has begun; 409
+// CLAIM_REACHABLE, CLAIM_UNSETTLED,
+// RELAUNCH_GUARD, RELAUNCHED_RECENTLY, POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED,
+// RELAUNCH_REPLACES_POD, PROCESS_OUTLIVED_STOP or TREE_REFUSES_LAUNCH (the tree itself refuses the
+// claim's launch: its cleanup is reserved or confirmed, its lifecycle is absent, or its bound
+// epoch is stale or unset, so nothing was stopped) for a relaunch
+// the daemon refuses; 503 TREE_CHECK_FAILED for a relaunch whose tree check before the stop the
+// daemon's store did not answer, which stopped nothing and may be asked for again; and 500
+// RELAUNCH_FAILED for a daemon with no relaunch, a refusal whose record it could not write, and
+// every other failure.
+// `packages/contracts/src/legion-claim-recovery.ts` mirrors the request and the `{}`. The
+// controller's plugin starts to post `POST /legion/v1/claims/activity` as a worker's does, under
+// the registration a daemon-launched controller holds, which the relaunch guard reads. Every
+// plugin session, a worker's and that controller's, posts the same report again every 5 minutes
+// while a turn is open, whatever it says, and the guard refuses a claim in a turn whose last
+// report of that turn is less than 20 minutes old; the body is the one it already posted, so a
+// plugin before it sends none of them and its claim is judged by the rules before it.
+// (This change took 157 at its forward merge over main's 146, read just before
+// 2026-11-17T10:29Z: of the remote branches committed to since 2026-11-10, the heads above 146
+// declare 147 to 156, among them two merge-queue groups at 151, so 157 was the lowest number no
+// head declared at that reading. It took 159 at the forward merge of 2026-11-17 that brought main
+// in at f3dc51da8bcd, which landed cybermonklabs/legion#4106 at 151, the entry right above and the
+// number the base then carried. A reading of `const DaemonAPIVersion` at each of the 1,292 remote
+// branches committed to since 2026-11-10, made between 2026-11-17T16:05:31Z and 16:07:13Z, gave
+// above the base's 151: 152, 153 and 154 at one head each, 155 at twelve, 156 at seven, 157 at
+// four heads of other changes and 158 at one; one head, a branch of images, holds no daemon. The
+// 13 open pull requests whose heads stood on no such branch, read by 16:10:08Z, declared 155 or
+// below. A second reading of the 1,294 such branches between 16:33:02Z and 16:40:03Z gave the
+// same but for 158, then at two heads, and the 9 open pull requests on no such branch, read by
+// 16:40:20Z, declared 151 or below. So 157 was no longer free, and this change took 159, the
+// lowest number above every head's. That is a reading and never the rule: read the base's own
+// number and every open pull request again at the next merge, as the solution named above says.
+// It keeps 159 at the forward merge of 2026-11-18 that brings main in at 4018e58a0d, which landed
+// contract 152, the entry right above: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 232 open pull requests, made between 2026-11-18T12:07:34Z
+// and 12:07:41Z, gave 159 to this change alone, with 153 to 158 at nine heads below it and 160 to
+// 165 at nine above it. It took 168 at the forward merge of 2026-11-19 that brought main in at
+// fd1efd0418, which landed contract 160, the entry right above: a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 234 open pull requests, made at
+// 2026-11-19T08:34Z, gave 161 to 167 at fifteen heads, so 168 was the lowest number above the
+// base's 160 that no open head declared. It took 178 at the forward merge of 2026-11-19 that
+// brought main in at d079920d94, which landed contract 168 (cybermonklabs/legion#4488), the entry
+// right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 242
+// open pull requests, made at 2026-11-19T20:24Z, gave 168 at the 55 heads that had merged that main,
+// and 169 to 177 at twenty heads, so 178 was the lowest number above the base's 168 that no open
+// head declared. It took 180 at the forward merge of 2026-11-19 that brought main in at d7c7c53143:
+// a reading at refs/pull/<n>/head for each of the 239 open pull requests, made at
+// 2026-11-19T22:54Z, gave 178 at two other heads (cybermonklabs/legion#3831 among them, which
+// declared it first) and 179 at two, so 180 was the lowest number above 178 that no open head
+// declared. It took 185 at the forward merge of 2026-11-20 that brought main in at 32a82acbee,
+// which landed contract 178 (cybermonklabs/legion#4115): a reading at refs/pull/<n>/head for each
+// of the 248 open pull requests, made at 2026-11-20T04:11Z, gave 179 at one other head, 180 at one
+// (cybermonklabs/legion#4049), 181 at two, 182 at six, 183 at five and 184 at four, so 185 was the
+// lowest number above the base's 178 that no other open head declared. It took 192 at the forward
+// merge of 2026-11-20 that brought main in at 1c7c825367, which landed contract 188
+// (cybermonklabs/legion#4543): a reading at refs/pull/<n>/head for each of the 264 open pull
+// requests, made at 2026-11-20T10:33Z, gave 186 at one other head, 187 at two, 188 at three, 189
+// at three, 190 at two and 191 at one, so 192 was the lowest number above the base's 188 that no
+// other open head declared. It took 198 at the forward merge of 2026-11-20 that brought main in at
+// f21107b285, which landed contract 189 (cybermonklabs/legion#4581): a reading at
+// refs/pull/<n>/head for each of the 289 open pull requests, made at 2026-11-20T18:38Z, gave 189 at
+// 22 heads, 190 at two, 191 at two, 192 at three others, 193 at three, 194 at two, 195 at one, 196
+// at nine and 197 at three, so 198 was the lowest number above the base's 189 that no other open
+// head declared. It keeps 198 at the forward merge of 2026-11-20 that brought main in at
+// 8a9540682d, which landed contract 193 (cybermonklabs/legion#3659), the entry right above: a
+// reading at refs/pull/<n>/head for each of the 292 open pull requests, made at 2026-11-20T20:52Z,
+// gave 193 at one other head, 194 at two, 195 at one, 196 at eleven, 197 at three and 198 at this
+// change alone. It took 203 at the forward merge of 2026-11-21 that brought main in at
+// 81cf5a7938, which landed contract 199 (cybermonklabs/legion#4495), the entry right above: a
+// reading at refs/pull/<n>/head for each of the 315 open pull requests, made at 2026-11-21T00:06Z,
+// gave 198 at one other head, 199 at eighteen, 200 at two, 201 at two and 202 at two, so 203 was
+// the lowest number above every open head's. It keeps 203 at the forward merge of 2026-11-21 that
+// brought main in at f3e26096c7, which landed contract 202 (cybermonklabs/legion#4493), the entry
+// right above: a reading at refs/pull/<n>/head for each of the 355 open pull requests, made at
+// 2026-11-21T05:01Z, gave 202 at twenty-two heads, 203 at six other heads (cybermonklabs/legion#2230,
+// #3993, #4065, #4553, #4596 and #4661), none of which declared it at the reading of 00:06Z, 204 at
+// one, 205 at three, 206 at one, 207 at four and 208 at one. It took 208 at the forward merge of
+// 2026-11-21 that brought main in at 0497e861b0, which landed contract 205
+// (cybermonklabs/legion#4573), the entry right above: a reading at refs/pull/<n>/head made between
+// 2026-11-21T19:23:15Z and 19:23:42Z found 208 at no open head. That reading listed 400 of the 416
+// open pull requests: the list it read stopped at 400 and left out every pull request below #2653,
+// and one it left out, cybermonklabs/legion#2230, declared 208 too. A reading of all 416 open pull
+// requests, 0 unread, made between 2026-11-21T21:01:31Z and 21:01:50Z, gave 205 at twenty-eight
+// heads, 206 at two, 207 at eight, 208 at this change and #2230, 209 at two, 210 at one, 211 at
+// two, 212 at one, 213 at two, 214 at two, 215 at one and 216 at three. This change keeps 208, and
+// #2230 moves to a free number at its own merge of main. Its band of the state's shape is the 208
+// row of shaping.go's stateNarrowings, and 208 is in answers.go's SupportedContracts.)
+//
 // 211: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
@@ -3029,17 +3137,18 @@ package api
 // highest its pod's claims record below 193, since a plugin from 193 states its contract — is
 // served the state without the key (shaping.go's stateNarrowings, questionsForControllerContract,
 // withoutQuestionsForController), since a reader before 211 does not take it. The bands compose
-// with the pause's: a caller below 178 is served neither the pause's keys nor this one, and a
-// caller from 178 to 210 is served the pause alone of the two; 193's and 202's bands, between
-// them, decide their own keys, and 205 has no band, since it moves no key path or value of any
-// answer (205's entry). The 211 reader takes the key as optional for that body alone, as it takes
-// `wakesWaiting`; a daemon below 211 is not what serves it a body without the key, since the boot
-// gate and `legion probe-image` refuse that mixed pair. The key's one enumerated field is each
-// question's `role` (answers.go's questionRoles), whose values arrived with the key and ride its
-// band. 211's records are 205's under its own number with the key paths of
-// `questionsForController` and that field's domain on the state's. Each state record from 46 to
-// 205 gains that domain empty, as `"questionsForController.*.role": []`, since a record holds the
-// domain of every enumerated field of its answer at every contract
+// with the pause's and with 208's: a caller below 178 is served neither the pause's keys nor this
+// one, and a caller from 178 to 210 is served the pause alone of the two; 193's, 202's and 208's
+// bands, between them, decide their own keys, so a caller from 208 to 210 is served the pause's
+// keys and 208's `unreachable` but not this one, and 205 has no band, since it moves no key path
+// or value of any answer (205's entry). The 211 reader takes the key as optional for that body
+// alone, as it takes `wakesWaiting`; a daemon below 211 is not what serves it a body without the
+// key, since the boot gate and `legion probe-image` refuse that mixed pair. The key's one
+// enumerated field is each question's `role` (answers.go's questionRoles), whose values arrived
+// with the key and ride its band. 211's records are 208's under its own number with the key
+// paths of `questionsForController` and that field's domain on the state's. Each state record
+// from 46 to 208 gains that domain empty, as `"questionsForController.*.role": []`, since a
+// record holds the domain of every enumerated field of its answer at every contract
 // (TestTheRecordSetIsOneRecordPerAnswerPerContract) and no value of this one arrived below 211;
 // nothing else of a record below 211 moves. No request a plugin sends moves. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main

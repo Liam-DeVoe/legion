@@ -156,5 +156,13 @@
     ],
     "since": 178,
     "noBody": false
+  },
+  {
+    "id": "relaunch",
+    "routes": [
+      "POST /legion/v1/claims/relaunch"
+    ],
+    "since": 208,
+    "noBody": false
   }
 ]
