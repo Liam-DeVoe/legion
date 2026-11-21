@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // b7Answer is one answer a row holds to the bytes it was answered before projects could be
@@ -74,7 +74,7 @@ func TestABrokerTokenActingAsItsPersonAnswersAsBeforeWhileNoProjectIsPrivate(t *
 	caller := newBrokerCaller(t)
 	const token = "a-person-token-whose-trade-named-one-project"
 	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, []string{brokerTestProject}
 	rig.broker.Says(token, answer)
 	own := seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTHER", "Other")
