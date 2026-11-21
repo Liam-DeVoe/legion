@@ -426,7 +426,7 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 	}
 	stub := &holdStub{}
 	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens), Now: func() time.Time { return now },
-		Hold: NewHoldView(stub.read, signer.HoldKeys, nil)}
+		Hold: NewHoldView(stub.read, signer.HoldKeys, nil, nil)}
 	operatorName := "operator/" + operatorAccount
 	for _, row := range []struct {
 		name   string

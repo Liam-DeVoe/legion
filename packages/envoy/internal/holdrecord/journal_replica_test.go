@@ -227,6 +227,50 @@ func rowFloorRows(t *testing.T) {
 		return r, c, prepared
 	}
 
+	t.Run("a prepare row put back reads as unknown on a replica whose hold view read the held row, and no release is moved from it", func(t *testing.T) {
+		// The reviewer's case: the second replica's routes never served the held row, but its auth
+		// service's hold view read it, and one floor serves both. Fails while the routes and the view
+		// keep floors of their own: the routes take the put-back prepare row, MoveRow(2, released)
+		// stores released at gen 3, and the view, which read held at gen 3, then reads unknown.
+		r := newRig(t)
+		c := r.client(t)
+		current := row(t, c)
+		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, "h-shared-floor", "prepare")
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved := savedHoldRow(t, r)
+		if err := c.StartJournal(ctx, "h-shared-floor", holdrecord.WorkflowCutover, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-shared-floor", cmd(holdrecord.CommandSet), nil); err != nil {
+			t.Fatal(err)
+		}
+		held, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, "h-shared-floor", "held")
+		if err != nil {
+			t.Fatal(err)
+		}
+		view := r.HoldView(true)
+		if phase, known := view.State(ctx); !known || phase != natsgrant.OperatorPhaseHeld {
+			t.Fatalf("the second replica's view read %q, known %v; want held", phase, known)
+		}
+		putHoldRowBack(t, r, saved)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log where gen = $1`, int64(held.Gen)); err != nil {
+			t.Fatal(err)
+		}
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		if moved, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseReleased, "h-shared-floor", "abort"); err == nil {
+			phase, known := view.State(ctx)
+			t.Errorf("MoveRow(%d, released) on the second replica stored %+v, and its view then reads %q, known %v; want a refusal", prepared.Gen, moved, phase, known)
+		}
+		var storedGen int64
+		var storedPhase string
+		if err := r.Pool.QueryRow(ctx, `select gen, phase from nats_hold`).Scan(&storedGen, &storedPhase); err != nil || storedPhase != "prepare" || storedGen != int64(prepared.Gen) {
+			t.Errorf("after the move the row is %s at gen %d (%v), want the put-back prepare at gen %d", storedPhase, storedGen, err, prepared.Gen)
+		}
+	})
+
 	t.Run("a move from a row put back below the log, on a replica that served only that row, is 409 below_floor", func(t *testing.T) {
 		// TN's round-4 case: the second replica served the prepare row alone, so its floor takes
 		// the prepare row put back after the move to held, and the move from it would store gen 3,

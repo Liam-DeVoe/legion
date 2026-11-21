@@ -46,6 +46,12 @@ type NATSHold struct {
 	// operator entry, admits none.
 	OperatorAccount string
 	OperatorGoogle  bool
+	// RowFloor is this process's one floor of the hold row (signedrecord.Floor): the routes put
+	// every verified row they serve, write or restore through it, and the auth service's hold view
+	// (natscallout.NewHoldView) puts every row it reads through the same one, so neither half of the
+	// process trusts a row the other has moved past. cmd/cipherd makes one; nil gives the routes a
+	// floor of their own, as a test that runs no view does.
+	RowFloor *signedrecord.Floor
 }
 
 // longestOperatorToken is the longest life the operator's token may have from its issue, the bound

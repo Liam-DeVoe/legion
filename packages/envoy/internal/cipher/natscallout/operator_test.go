@@ -577,7 +577,7 @@ func newOperatorRigSigned(t *testing.T, read func(context.Context) (natshold.Rea
 	}
 	metrics := NewMetrics(r.registry)
 	deps := Deps{Introspect: introspector(sessions...), ServiceToken: readUnsignedToken, Metrics: metrics,
-		Hold: NewHoldView(read, signer.HoldKeys, metrics)}
+		Hold: NewHoldView(read, signer.HoldKeys, nil, metrics)}
 	r.service = startReplica(t, r.cluster.URLs(), keys, holdServices, deps, r.decisions.wrap(Decide))
 	return r
 }

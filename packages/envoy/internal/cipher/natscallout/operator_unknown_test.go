@@ -156,7 +156,7 @@ func TestTheHoldRuleIsInertWithoutItsSetting(t *testing.T) {
 	now := time.Now()
 	a := newSession(t, "ses_a", 15*time.Minute)
 	deps := tE3Deps(now, a)
-	deps.Hold = NewHoldView(nil, newHoldSigner(t).HoldKeys, nil)
+	deps.Hold = NewHoldView(nil, newHoldSigner(t).HoldKeys, nil, nil)
 	deps.Now = func() time.Time { return now }
 	requireAsBefore(t, deps, holdServices, tE3Rows(t, now, a))
 	operator, err := Decide(t.Context(), Deps{ServiceToken: serviceTokens(map[string]platformToken{
@@ -181,7 +181,7 @@ func TestWithNoOperatorEntryNothingChanges(t *testing.T) {
 	stub := &holdStub{}
 	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")))
 	held := tE3Deps(now, a)
-	held.Hold = NewHoldView(stub.read, signer.HoldKeys, nil)
+	held.Hold = NewHoldView(stub.read, signer.HoldKeys, nil, nil)
 	requireAsBefore(t, held, exampleServices, rows)
 }
 

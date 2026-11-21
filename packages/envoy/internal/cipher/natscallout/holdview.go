@@ -33,24 +33,30 @@ import (
 // the wrong order, the older reading after the newer one; that reading is unknown and its client is
 // refused and retries, which fails closed.
 //
-// One view serves every decision made through the Deps that holds it, so the floor is that Deps'
-// whoever calls Decide: cmd/cipherd makes one for its replica. Every method is safe for concurrent
-// use.
+// One view serves every decision made through the Deps that holds it, and its floor is the
+// process's one floor of the row, which the broker's /v1/nats-hold routes share
+// (api.NATSHold.RowFloor): cmd/cipherd makes one floor and gives it to both, so neither half of the
+// process trusts a row the other has moved past, and a row the routes wrote moves the view's floor
+// too. Every method is safe for concurrent use.
 type HoldView struct {
 	read    func(ctx context.Context) (natshold.Reading, bool, error)
 	keys    []ed25519.PublicKey
-	floor   signedrecord.Floor
+	floor   *signedrecord.Floor
 	metrics *Metrics
 }
 
-// NewHoldView is the view over read and keys, BROKER_NATS_HOLD_SIGNING_KEYS, setting
+// NewHoldView is the view over read and keys, BROKER_NATS_HOLD_SIGNING_KEYS, with floor the
+// process's floor of the row (nil gives the view one of its own), setting
 // broker_nats_callout_hold_unknown on metrics (nil for none). With read nil it is nil, the setting
 // off, which reads nothing and answers released, known.
-func NewHoldView(read func(ctx context.Context) (natshold.Reading, bool, error), keys []ed25519.PublicKey, metrics *Metrics) *HoldView {
+func NewHoldView(read func(ctx context.Context) (natshold.Reading, bool, error), keys []ed25519.PublicKey, floor *signedrecord.Floor, metrics *Metrics) *HoldView {
 	if read == nil {
 		return nil
 	}
-	return &HoldView{read: read, keys: keys, metrics: metrics}
+	if floor == nil {
+		floor = &signedrecord.Floor{}
+	}
+	return &HoldView{read: read, keys: keys, floor: floor, metrics: metrics}
 }
 
 // errNoHoldRow is the reading of a table that holds no hold row: the operator has not written the

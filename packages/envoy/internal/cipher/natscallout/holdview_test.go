@@ -144,7 +144,7 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			registry := metrics.New()
 			stub := &holdStub{}
-			view := NewHoldView(stub.read, signer.HoldKeys, NewMetrics(registry))
+			view := NewHoldView(stub.read, signer.HoldKeys, nil, NewMetrics(registry))
 			for index, step := range row.steps {
 				stub.set(step.answer)
 				phase, known := view.State(t.Context())
@@ -161,7 +161,7 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 	}
 	t.Run("no read: the setting off", func(t *testing.T) {
 		registry := metrics.New()
-		view := NewHoldView(nil, signer.HoldKeys, NewMetrics(registry))
+		view := NewHoldView(nil, signer.HoldKeys, nil, NewMetrics(registry))
 		require.Nil(t, view, "a view over no read is the setting off, which is no view")
 		phase, known := view.State(t.Context())
 		require.True(t, known)
@@ -185,7 +185,7 @@ func TestDecisionsThroughOneDepsShareTheHoldFloor(t *testing.T) {
 	now := time.Now()
 	deps := Deps{
 		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
-		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil),
+		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil, nil),
 	}
 	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")))
 	_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
@@ -212,7 +212,7 @@ func TestAHoldRowsUnknownPhaseIsNotPrinted(t *testing.T) {
 	now := time.Now()
 	deps := Deps{
 		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
-		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil),
+		Hold:         NewHoldView(stub.read, signer.HoldKeys, nil, nil),
 	}
 	const canary = "CANARY-PHASE-4f1c"
 	stub.set(rowOf(signer.reading(t, 2, canary, "hold-1")))
@@ -237,7 +237,7 @@ func TestAHoldRowsUnknownPhaseIsNotPrinted(t *testing.T) {
 func TestADifferentRowAtTheGenReadReadsUnknown(t *testing.T) {
 	signer := newHoldSigner(t)
 	stub := &holdStub{}
-	view := NewHoldView(stub.read, signer.HoldKeys, nil)
+	view := NewHoldView(stub.read, signer.HoldKeys, nil, nil)
 	held := signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")
 	stub.set(rowOf(held))
 	phase, known := view.State(t.Context())
@@ -353,7 +353,7 @@ func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
 	read := func(ctx context.Context) (natshold.Reading, bool, error) { return natshold.Read(ctx, pool, schema) }
 	running := Deps{
 		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
-		Hold:         NewHoldView(read, table.signer.HoldKeys, NewMetrics(registry)),
+		Hold:         NewHoldView(read, table.signer.HoldKeys, nil, NewMetrics(registry)),
 	}
 	listener := func(deps Deps) error {
 		_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
@@ -388,7 +388,7 @@ func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
 	require.Equal(t, "1", holdUnknownGauge(t, registry))
 
 	restarted := running
-	restarted.Hold = NewHoldView(read, table.signer.HoldKeys, nil)
+	restarted.Hold = NewHoldView(read, table.signer.HoldKeys, nil, nil)
 	phase, known = restarted.Hold.State(t.Context())
 	require.True(t, known, "a new view did not accept the older signed row: the residual is not what the design states")
 	require.Equal(t, natsgrant.OperatorPhaseReleased, phase)
