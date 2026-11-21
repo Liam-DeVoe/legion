@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -213,6 +215,53 @@ func TestAWriteWhoseRequestEndsWhileItWaitsForTheOwnersRowIsDocServiceUnavailabl
 		t.Fatalf("release the owner's row: %v", err)
 	}
 	assertUnchanged(t, "a write whose request ended while it waited for the owner's row", before, databaseFingerprint(t, database))
+
+	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},
+	}, "alice"); retried.Code != http.StatusOK {
+		t.Fatalf("the retry answered status=%d body=%s, want %d", retried.Code, retried.Body.String(), http.StatusOK)
+	}
+	requireEditedOnce(t, handler, artifactID)
+}
+
+// The same refusal for a write the server's own bound ends while its request is still live: Join
+// puts docs.WriteRequestBound on a caller's whole document write, from its request's start, and a
+// write that bound ends is answered 503 DOC_SERVICE_UNAVAILABLE as one its request's end cuts
+// short is, so every write of a burst is answered 200 or 503 (cmd/dispatch's
+// TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory). The error the bound leaves carries
+// context.DeadlineExceeded and nothing that says whose deadline it was, as a bound a handler puts
+// on one of its own waits would leave, which stays a 500; what makes this one the call's is the
+// bound passed on the call the answer names (docs.WriteRequestBoundPassed,
+// endedWithACancelledContext).
+//
+// The request is taken past the bound by its mark rather than by the clock, as the write-bound
+// tests take theirs (docs.CallerRequestSinceForTest): the edit route's handler runs inside
+// compressAnswers, on the request's context marked as begun docs.WriteRequestBound ago where
+// trackTransactions would mark it begun now.
+func TestAWriteTheWholeWriteBoundEndsWhileItsRequestIsLiveIsDocServiceUnavailable(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	_, artifactID := seedCancelledWriteIssue(t, handler, served)
+	before := databaseFingerprint(t, database)
+
+	const editRoute = "POST /api/v1/artifacts/{id}/edits"
+	pastTheBound := http.NewServeMux()
+	for _, route := range served.routes() {
+		if route.Method+" "+route.Pattern == editRoute {
+			pastTheBound.HandleFunc(editRoute, func(w http.ResponseWriter, r *http.Request) {
+				marked := docs.CallerRequestSinceForTest(store.WithTransactionTracking(r.Context()), docs.WriteRequestBound)
+				compressAnswers(route.Handler)(w, r.WithContext(marked))
+			})
+		}
+	}
+	request, endRequest := context.WithCancel(context.Background())
+	defer endRequest()
+	response := httptest.NewRecorder()
+	pastTheBound.ServeHTTP(response, editRequest(t, artifactID).WithContext(request))
+	if request.Err() != nil {
+		t.Fatalf("the request ended (%v): the refusal must be the server's own bound", request.Err())
+	}
+	requireDocServiceUnavailable(t, "a write whose request had spent the whole-write bound", response)
+	assertUnchanged(t, "a write whose request had spent the whole-write bound", before, databaseFingerprint(t, database))
 
 	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
 		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},

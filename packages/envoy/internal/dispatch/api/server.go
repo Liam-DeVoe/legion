@@ -964,12 +964,15 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, with nothing between them but the answers
-	// read's timing below, so every one of those answers is compressed for a caller that takes
-	// gzip and the line counts the bytes that went on the wire. The two websockets register
-	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
-	// frames after it are the socket's (compressAnswers).
-	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	// them resolved. Compression sits inside it with nothing between them that answers: the
+	// answers read's timing below, the broker token's decision and the request's marks
+	// (trackTransactions) write no byte, so every one of those answers is compressed for a
+	// caller that takes gzip and the line counts the bytes that went on the wire. It sits
+	// inside the marks so that its writer names the call as every layer inside it runs it
+	// (answersCall, which writeHandlerError reads). The two websockets register mounts beside
+	// the table carry no compressed answer: the upgrade is not a body, and the frames after it
+	// are the socket's (compressAnswers).
+	served := s.decideBrokerToken(trackTransactions(compressAnswers(handler)))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
 		// pauses on is the time the line records for it, every layer of the chain included.

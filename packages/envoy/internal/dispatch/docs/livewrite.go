@@ -628,11 +628,28 @@ func boundWriteRequest(ctx context.Context) (context.Context, context.CancelFunc
 // continuation detached from its request, keep the context they have, and a continuation that
 // takes a deadline of its own again is held to the bound from its request's start (above).
 func boundCallerWrite(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
-	began, marked := ctx.Value(callerRequestKey{}).(time.Time)
-	if !marked || ctx.Done() == nil {
+	deadline, bounded := callerWriteDeadline(ctx, bound)
+	if !bounded {
 		return ctx, func() {}
 	}
-	return context.WithDeadline(ctx, began.Add(bound))
+	return context.WithDeadline(ctx, deadline)
+}
+
+// callerWriteDeadline is the deadline boundCallerWrite puts on ctx for bound, and false for a
+// context it leaves as it is.
+func callerWriteDeadline(ctx context.Context, bound time.Duration) (time.Time, bool) {
+	began, marked := ctx.Value(callerRequestKey{}).(time.Time)
+	return began.Add(bound), marked && ctx.Done() != nil
+}
+
+// WriteRequestBoundPassed reports whether a call running on ctx has spent the bound Join puts on
+// its whole document write (WriteRequestBound, from its request's start): a write of that call
+// the bound ended was refused by the server's own bound, which the API answers as it answers the
+// request's end (api's endedWithACancelledContext). A context Join puts no bound on has none to
+// spend.
+func WriteRequestBoundPassed(ctx context.Context) bool {
+	deadline, bounded := callerWriteDeadline(ctx, WriteRequestBound)
+	return bounded && !time.Now().Before(deadline)
 }
 
 // giveFork drops this write's share of the transaction's slot (releaseFork), and gives the slot

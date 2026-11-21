@@ -329,7 +329,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		detached, stop := context.WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
-		answer := &keyedAnswer{w: w}
+		answer := &keyedAnswer{w: w, answersCall: answersCall{detached}}
 		// running bounds the commit step to the handler: a delivery the handler detached (a
 		// broadcast's recipients) commits after the answer, and is not the request's write.
 		var running atomic.Bool
@@ -1235,7 +1235,10 @@ func replayRecovered[T recoveryPoint](
 // would hand its client an answer the key had not kept, so http.ResponseController refuses it
 // (ErrNotSupported) and every byte waits for the key.
 type keyedAnswer struct {
-	w      http.ResponseWriter
+	w http.ResponseWriter
+	// answersCall names the run's own context (detached, which keyedRunLimit bounds): the call
+	// the handler answers, which no Unwrap reaches through this writer.
+	answersCall
 	header http.Header
 	status int
 	body   bytes.Buffer
