@@ -675,6 +675,15 @@ RULES = {
         (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
          "for way_back_doc_test.go:129, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
+    # internal/store's plan_needs_way_back_test.go runs this committed copy, which stands in its own
+    # directory, so it reads no text outside its package; this row holds the copy to the guide.
+    f"{DAEMON}/internal/textcheck/plan_needs_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+                               "for plan_needs_way_back_doc_test.go:25 (assertTheExtractIsTheGuidesBlock, "
+                               "way_back_doc_test.go:181, shippedText)"),
+        (f"{DAEMON}/internal/store/plan_needs_way_back_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../store/plan_needs_way_back_extract.txt "
+         "for way_back_doc_test.go:129, the committed copy it holds the guide's block of the needs' way back to (quotedBody)")),
     # This test reads the store's migrations through migrations.All: its import puts their embed
     # in the go list closure of the text-check run, which needs no row, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(

@@ -2593,6 +2593,29 @@ A run of a step that was open at the rollback stays open in `step_starts`, which
 Nothing ends such a run: Dispatch keeps its start with no end, which `dispatch steps --issue <KEY>` lists, so read it as a run the rollback stopped.
 While it stands open, the earlier release reads its agent as the agent of a running step of the issue, so each request of that agent on the issue, and each that names no issue, waits up to 5 seconds for the agent's stream before it applies (`RunsAStepOn` and `RunsAStep` in `api/fact_apply.go`).
 
+#### Rolling back the release that records each task's needs
+
+This release writes the tasks each task needs on every `plan_record` row: each task of the row's `tasks` carries `needs`, the ids of the tasks it needs, `[]` for none (`PlanRecordTask` in `record/outbox.go`).
+The release before decodes a `plan_record` row strictly (`DisallowUnknownFields` in `record/outbox.go`) and its `PlanRecordTask` has no `needs`.
+A decode error is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so each such row still queued at the rollback fails at every attempt and is retried on its backoff until the roll forward, and that run's plan never reaches Dispatch.
+This change runs no migration and changes no column, so no dump and no `alter table` belong here.
+
+At the rollback, with the project's daemon stopped and before the earlier image is pinned, run the statement below once in `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`, with `<PROJECT>` the key of the project whose daemon rolls back.
+It takes `needs` off each task of each queued `plan_record` row of that project and leaves the rest of the row as it was.
+The outbox is shared by every project's daemon on the database, so the statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
+A second run changes nothing.
+
+```sql
+update outbox set payload = jsonb_set(payload, '{tasks}',
+    (select jsonb_agg(task - 'needs' order by place) from jsonb_array_elements(payload->'tasks') with ordinality as t(task, place)))
+  where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>' and jsonb_path_exists(payload, '$.tasks[*].needs');
+```
+
+The statement strips the member rather than deleting the rows because each row is a write of a run's plan to Dispatch, the first one at the start of the run's work, not a copy Dispatch already holds.
+A deleted row would leave the run with no plan in Dispatch until Legion takes a later version of the owner's plan.
+A stripped row is the write the release before would have made: Dispatch takes it and records that plan's needs as not recorded, and the steps read and `dispatch steps` show each task of that plan with its needs not recorded.
+A row whose write already reached Dispatch, which the daemon runs again after a stop before it marked the row done, then writes that plan again without its needs at the same version, and Dispatch keeps the needs it already holds, since a write at or below the version it holds changes nothing.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
