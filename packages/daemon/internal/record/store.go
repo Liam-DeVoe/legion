@@ -597,7 +597,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, reviewed_head from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -681,8 +681,8 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		from = string(phase.EntryFrom)
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, entry_from, entry_given_task, entry_given_entry, reviewed_head)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, entry_from, entry_given_task, entry_given_entry, entry_given_generation, reviewed_head)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
@@ -692,11 +692,12 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		completed_at = excluded.completed_at,
 		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
 		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back, entry_from = excluded.entry_from,
-		entry_given_task = excluded.entry_given_task, entry_given_entry = excluded.entry_given_entry,
+		entry_given_task = excluded.entry_given_task, entry_given_entry = excluded.entry_given_entry, entry_given_generation = excluded.entry_given_generation,
 		reviewed_head = excluded.reviewed_head`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, from, phase.EntryGivenTask, phase.EntryGivenEntry, phase.ReviewedHead,
+		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, from, phase.EntryGivenTask, phase.EntryGivenEntry, phase.EntryGivenGeneration,
+		phase.ReviewedHead,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -711,7 +712,8 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.EntryFrom, &phase.EntryGivenTask, &phase.EntryGivenEntry, &phase.ReviewedHead); err != nil {
+		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.EntryFrom, &phase.EntryGivenTask, &phase.EntryGivenEntry,
+		&phase.EntryGivenGeneration, &phase.ReviewedHead); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -1537,21 +1539,23 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
 		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The task the
-		// role was last given for an entry goes with it, and the entry it was given for
-		// (PhaseRow.EntryGivenTask, EntryGivenEntry): it was the old run's. That the number is
-		// never reset is also what keeps a review of the old entry from moving the reviewer's
-		// commit after the promotion: its footer names a number the row has left
-		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
-		// that the task is sent as written goes with the task it was about. The time the entry was
-		// raised stays with the number it belongs to, and so does the move that raised it
-		// (entry_moved_back), which that same promotion writes again. The counts go with the
-		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
-		// with them, so the architect is told again at the new generation's own first crossing of
-		// the cap. The commit the daemon recorded for the reviewer's own review goes with the
-		// decision: the new generation's first review reads the whole change.
+		// role was last given for an entry goes with it, with the entry and the generation it was
+		// given for (PhaseRow.EntryGivenTask, EntryGivenEntry, EntryGivenGeneration): it was the old
+		// run's. The generation alone would not retire it on a member of a re-admitted tree, which
+		// keeps its own generation while its root takes a new one. That the number is never reset
+		// is also what keeps a review of the old entry from moving the reviewer's commit after the
+		// promotion: its footer names a number the row has left (PhaseRow.ReviewedHead), and until
+		// the promotion the row holds no entry's task. The mark that the task is sent as written
+		// goes with the task it was about. The time the entry was raised stays with the number it
+		// belongs to, and so does the move that raised it (entry_moved_back), which that same
+		// promotion writes again. The counts go with the rounds: the new generation counts its
+		// moves back from nothing, and the cap mark goes with them, so the architect is told again
+		// at the new generation's own first crossing of the cap. The commit the daemon recorded
+		// for the reviewer's own review goes with the decision: the new generation's first review
+		// reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
-			"entry_task = '', entry_verbatim = false, entry_given_task = '', entry_given_entry = 0 where " + where,
+			"entry_task = '', entry_verbatim = false, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0 where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)

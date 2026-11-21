@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -34,8 +35,9 @@ const pnForwardMerge = "merge the default branch main into the branch, push, and
 // pnBaseMerge is the sentence the testing task of a parent carries once, and the testing task of
 // an issue with no Dispatch child carries not at all: the tester's rule for every round of a
 // parent (dispatch://INFRA-3320 R12 and R14), where a parent is an issue with a Dispatch child of
-// any status in the daemon's copy. workflow's task and ResumePhaseTask end a testing task of a
-// parent with it.
+// any status in the daemon's copy. The start of a phase worker of a parent in testing ends the
+// task it composed with it (workflow's withBaseMergeRunFor), the phase's resume task among them;
+// neither workflow's task nor ResumePhaseTask adds it.
 const pnBaseMerge = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
 // pnMergedChildren is the words with which the task a return starts names the children that
@@ -1339,7 +1341,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 				pwApplied(t, pool, admission, "api", "tested", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
 					Claim: "tester", Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1})
 				reviewing := pnWorkerStart(t, pool, spParent, claim.RoleReviewer)
-				named := fmt.Sprintf(" Last reviewed commit: none. Review entry: %d.", reviewing.Entry)
+				named := reviewround.Sentences("", reviewing.Entry)
 				if !strings.HasSuffix(reviewing.Task, named) {
 					t.Fatalf("the reviewer's start after the tester's pass = %+v, want its task ending with its round's sentences %q", reviewing, named)
 				}
@@ -1350,8 +1352,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			{name: "on an entry the release before raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
 				token := pwMidPhase(t, pool, spParent, phase.Reviewing, supervise.StateWorking, "")
 				spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleReviewer, Claim: token, Entry: 3,
-					EntryTask: pwTask(spParent, phase.Reviewing) + " Last reviewed commit: none. Review entry: 3.", EntryRaisedAt: fixedNow.Add(-time.Hour)})
-				return workflow.ResumePhaseTask(issue(t, pool, spParent), false)
+					EntryTask: pwTask(spParent, phase.Reviewing) + reviewround.Sentences("", 3), EntryRaisedAt: fixedNow.Add(-time.Hour)})
+				return workflow.ResumePhaseTask(issue(t, pool, spParent))
 			}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1370,13 +1372,13 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 				}
 
 				work := pnWorkerStart(t, pool, spParent, claim.RoleReviewer).Task
-				for _, label := range []string{"Last reviewed commit:", "Review entry:"} {
+				for _, label := range []string{reviewround.CommitLabel + ":", reviewround.EntryLabel + ":"} {
 					if got := strings.Count(work, label); got != 1 {
 						t.Fatalf("the reviewer's task after the return = %q, which says %q %d times; want once", work, label, got)
 					}
 				}
 				row := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
-				if entry := fmt.Sprintf(" Review entry: %d.", row.Entry); row.Entry != stopped.Entry+1 || !strings.HasSuffix(work, entry) {
+				if entry := fmt.Sprintf(" %s: %d.", reviewround.EntryLabel, row.Entry); row.Entry != stopped.Entry+1 || !strings.HasSuffix(work, entry) {
 					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry %d, above the stopped %d: %q",
 						work, row.Entry, stopped.Entry+1, stopped.Entry, entry)
 				}

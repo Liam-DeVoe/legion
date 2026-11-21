@@ -234,10 +234,10 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		seedPullRequest(t, pool, spParent, 42, record.PullRequestOpen)
 		// The retry of a held testing whose worker's start waits for the slot the parent no
 		// longer holds: the retry writes its own task on the phases row as the task the tester was
-		// given for entry 2 (workflow's restart), and its start carries it.
+		// given for entry 2 in generation 1 (workflow's restart), and its start carries it.
 		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleTester, Claim: "tester", Entry: 2,
 			EntryTask: "Continue LEGION-300. Issue: LEGION-300. Phase: testing.", EntryRaisedAt: fixedNow.Add(-time.Hour),
-			EntryGivenTask: retried, EntryGivenEntry: 2})
+			EntryGivenTask: retried, EntryGivenEntry: 2, EntryGivenGeneration: 1})
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), spParent, record.SuperviseRequest{Op: "start",
 				Tree: spParent, Role: claim.RoleTester, Task: retried, Generation: 1, Phase: phase.Testing, Entry: 2, ResendEntry: true}, fixedNow); err != nil {
@@ -250,7 +250,8 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 
 		got := issue(t, pool, spParent)
 		if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != phase.Testing || got.ChildrenWait.Task != retried {
-			t.Fatalf("the parent = phase %s, held start %+v; want awaiting_children holding testing with the queued row's task", got.Phase, got.ChildrenWait)
+			t.Fatalf("the parent = phase %s, held start %+v; want awaiting_children holding testing with the task the phases row keeps as given for entry 2", got.Phase,
+				got.ChildrenWait)
 		}
 		if !strings.Contains(got.ChildrenWait.Reason, "its start of testing was written and had not reached the tester") {
 			t.Fatalf("the held reason = %q, want it to say the start had not been delivered", got.ChildrenWait.Reason)

@@ -302,8 +302,8 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 // base-merge sentence of a testing task of a parent and the reviewer's round sentences: the row
 // keeps the task that way (record.PhaseRow.EntryGivenTask), a fact of the record rather than a
 // reading of the task's text, and the return's start decorates the task it gives once (start). A
-// row whose entry a release before this one raised keeps no such task, and entryWork says what is
-// held for it.
+// row that keeps no such task for its entry in the issue's generation, as on an entry a release
+// before this one raised, has entryWork say what is held for it.
 //
 // Every start the parent owes is finished in the same transaction (Store.FinishOutbox), so none
 // delivers later: the wait keeps its start on the record (record.ChildrenWait), and the return
@@ -347,22 +347,22 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return false, err
 	}
 	hold := childrenHold{Start: issue.Phase, Open: open}
-	switch {
-	case issue.Phase == phase.Accepting:
+	if issue.Phase == phase.Accepting {
 		review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {
 			return false, err
 		}
 		hold.Task, hold.Cause = task(issue, review, pr, ""), "its reviewed head waited in accepting for the architect's sign-off"
-	case undeliveredStart(issue, owed):
+	} else {
 		hold.Task = entryWork(issue, entry)
-		hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
-	default:
-		hold.Task = entryWork(issue, entry)
-		hold.Cause, hold.Ended = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role
-		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role,
-			Generation: issue.Generation, Phase: issue.Phase, Entry: entry.Entry}); err != nil {
-			return false, err
+		if undeliveredStart(issue, owed) {
+			hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
+		} else {
+			hold.Cause, hold.Ended = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role
+			if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role,
+				Generation: issue.Generation, Phase: issue.Phase, Entry: entry.Entry}); err != nil {
+				return false, err
+			}
 		}
 	}
 	for _, start := range owed {
@@ -374,8 +374,10 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // undeliveredStart says whether owed holds a start of the phase issue stands in that it owes that
-// phase's worker at its own generation: the start written and not yet delivered that
-// StopForChildren holds.
+// phase's worker at its own generation: a start written and not yet delivered, which
+// StopForChildren finishes undelivered with every start the parent owes, names in the held start's
+// cause, and tells no worker of. The held task is the one the role's phases row keeps
+// (entryWork), as for a phase stopped in its middle, and never the start row's own.
 func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 	for _, start := range owed {
 		if start.Phase == issue.Phase && start.Generation == issue.Generation && start.Role == RoleFor(issue.Phase) {

@@ -2189,24 +2189,18 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return waits[issue.Key].Open, err
 }
 
-// isParent says whether issue is a parent: an issue with a Dispatch child of any status in the
-// daemon's copy of Dispatch (Store.HasDispatchChildren, one exists query), whether or not it ever
-// waited on one. Every testing task of a parent asks for the round on the head merged with the tip
-// of the pull request's base branch (withBaseMergeRun), so the answer is read for a testing task
-// alone (testingParent).
-func (e *Engine) isParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
-	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
-}
-
-// testingParent is the parent flag of a task of the phase issue stands in (withBaseMergeRunFor,
-// ResumePhaseTask): whether issue is a parent (isParent) where that phase is testing, the one
-// phase whose task reads the flag, and false with no read of the copy for any other, so a start
-// of another phase, the admission pass's send of each owed entry among them, reads nothing more.
+// testingParent is the parent flag of a task of the phase issue stands in (withBaseMergeRunFor):
+// whether issue is a parent where that phase is testing, the one phase whose task reads the flag,
+// and false with no read of the copy for any other, so a start of another phase, the admission
+// pass's send of each owed entry among them, reads nothing more. A parent is an issue with a
+// Dispatch child of any status in the daemon's copy of Dispatch (Store.HasDispatchChildren, one
+// exists query), whether or not it ever waited on one: every testing task of a parent asks for the
+// round on the head merged with the tip of the pull request's base branch (withBaseMergeRun).
 func (e *Engine) testingParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Testing {
 		return false, nil
 	}
-	return e.isParent(ctx, tx, issue)
+	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
 }
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to

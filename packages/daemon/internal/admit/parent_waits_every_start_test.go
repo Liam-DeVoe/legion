@@ -986,8 +986,9 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	})
 
 	// A parent whose implementer's start was written and waits for the slot the full cap does not
-	// give it moves at the pass, holding that start with the task its row carries, and the row is
-	// finished there, so the start is never delivered.
+	// give it moves at the pass, holding that start with the task the implementer's phases row
+	// keeps for entry 2, the entry the start was written for, and the start's row is finished
+	// there, so the start is never delivered.
 	t.Run("a parent whose implementer's start was written and waits for a slot moves at the pass, the start not delivered", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 1)
@@ -1013,7 +1014,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 
 		const cause = "its start of implementing was written and had not reached the implementer"
 		if wait := pwHeld(t, pool, spParent, phase.Implementing, cause, spChild+" (todo)"); wait.Task != pwTask(spParent, phase.Implementing) {
-			t.Fatalf("the held task = %q, want the queued start's", wait.Task)
+			t.Fatalf("the held task = %q, want the task the implementer's phases row keeps for entry 2", wait.Task)
 		}
 		pwNotice(t, pool, phase.Implementing, phase.Implementing, cause, spChild+" (todo)")
 		if starts := startsOf(t, pool, spParent); len(starts) != 0 {
@@ -1323,6 +1324,51 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 	})
 
+	// The architect's retry of a parent held from implementing whose phases row a re-admission
+	// cleared (record.Store.ClearTreeGeneration): the clear empties the task of the entry and keeps
+	// the entry, and a held member is given no promoted worker, so the row stands on entry 3 with
+	// no task when the retry comes. The retry writes its own task as the one the implementer was
+	// given for entry 3 in the issue's generation, and leaves the row's empty task as it stands
+	// (workflow's restart). The pass that then finds a child open holds implementing with the
+	// retry's task, not the phase's resume task, and the return starts implementing on it
+	// (dispatch://INFRA-3320 R9, "with the task its worker was given").
+	t.Run("a retry after a re-admission cleared the entry's task, then a child opens: the held task and the return's task are the retry's", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		spSeedParent(t, pool, spParent, phase.Implementing, true, nil)
+		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+		token := pwRoleToken(t, spParent, claim.RoleImplementer)
+		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+			EntryRaisedAt: fixedNow.Add(-time.Hour)})
+		pwApplied(t, pool, admission, "supervisor", "failed", intake.ClaimFailed{Issue: spParent, Role: claim.RoleImplementer,
+			Reason: "the launch budget ran out"})
+		pwApplied(t, pool, admission, "api", "retry", intake.RetryOrEscalate{Issue: spParent, Decision: intake.RetryDecision,
+			Reason: "the runner is back"})
+		retry := pnWorkerStart(t, pool, spParent, claim.RoleImplementer)
+		if row := spPhaseRow(t, pool, spParent, claim.RoleImplementer); retry.Entry != 3 || !strings.Contains(retry.Task, "Reason: the runner is back.") ||
+			row.Entry != 3 || row.EntryTask != "" {
+			t.Fatalf("the retry's start = %+v over the phases row %+v; want the retry's own task on entry 3, the row's task still empty", retry, row)
+		}
+		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateWorking, "")
+		pwDeliver(t, pool, token, retry)
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		spPass(t, pool, admission)
+
+		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
+		if wait.Task != retry.Task {
+			t.Fatalf("the held task = %q, want the retry's task the implementer was given, %q, not the phase's resume task", wait.Task, retry.Task)
+		}
+
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+
+		work := retry.Task + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
+			t.Fatalf("starts of %s = %+v, want one implementer start on the retry's task %q", spParent, starts, work)
+		}
+	})
+
 	// The phase's resume task, which the catch-up of the implementer's ready claim queues at no
 	// entry, the claim being level with the entry its phases row names (workflow's
 	// readyWorkerTask), delivered to that implementer before a child opens: it says to carry the
@@ -1370,20 +1416,19 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 
 	// A task a retry gave the implementer for an entry before the one its phases row stands on is
 	// no task of that entry. A rollback and a roll forward leave such a task on the row: the
-	// earlier release raises the entry and names neither of this release's columns of the task the
-	// role was given and its entry, so they keep the task and the entry the retry wrote
-	// (record.PhaseRow.EntryGivenTask, EntryGivenEntry). The pass that then finds a child open
-	// holds implementing with the work of the entry the row stands on, and the return starts
-	// implementing on it.
+	// earlier release raises the entry and names none of this release's columns of the task the
+	// role was given, its entry and its generation, so they keep what the retry wrote
+	// (record.PhaseRow.EntryGivenTask, EntryGivenEntry, EntryGivenGeneration). The pass that then
+	// finds a child open holds implementing with the work of the entry the row stands on, and the
+	// return starts implementing on it.
 	t.Run("a task given for an entry before the one the row stands on, then a child opens: the held task and the return's task are the entry's work", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)
-		pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
+		token := pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
 		older := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
-		if _, err := pool.Exec(context.Background(), `update phases set entry_given_task = $2, entry_given_entry = 2 where issue = $1 and role = 'implementer'`,
-			spParent, older); err != nil {
-			t.Fatalf("leave the task of a retry of entry 2 on the implementer's row of entry 3: %v", err)
-		}
+		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+			EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour),
+			EntryGivenTask: older, EntryGivenEntry: 2, EntryGivenGeneration: 1})
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
@@ -1392,6 +1437,44 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if wait.Task != pwTask(spParent, phase.Implementing) {
 			t.Fatalf("the held task = %q, want the work of entry 3, which the row stands on, %q, not the task %q given for entry 2",
 				wait.Task, pwTask(spParent, phase.Implementing), older)
+		}
+
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+
+		work := pwTask(spParent, phase.Implementing) + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
+			t.Fatalf("starts of %s = %+v, want one implementer start on the entry's work %q", spParent, starts, work)
+		}
+	})
+
+	// A task the implementer was given for the entry its phases row stands on, in a generation of
+	// the issue before the one it runs now, is no task of this run
+	// (record.PhaseRow.EntryGivenGeneration): the release before names none of the given columns,
+	// so a generation it gives the issue leaves them beside the entry it keeps. Written straight to
+	// the store here, the row keeps the work its entry was raised with too, so the given task's
+	// generation alone decides the hold: the pass that finds a child open holds implementing with
+	// the entry's work, not the task of the earlier generation, and the return starts implementing
+	// on it.
+	t.Run("a task given for the entry the row stands on in an earlier generation, then a child opens: the held task and the return's task are the entry's work", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		spSeedParent(t, pool, spParent, phase.Implementing, true, func(rerun *record.Issue) { rerun.Generation = 2 })
+		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+		token := putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 2, supervise.StateIdle, "")
+		markGivenEntry(t, pool, token, 3)
+		earlier := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing. Reason: the runner is back."
+		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+			EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour),
+			EntryGivenTask: earlier, EntryGivenEntry: 3, EntryGivenGeneration: 1})
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		spPass(t, pool, admission)
+
+		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
+		if wait.Task != pwTask(spParent, phase.Implementing) {
+			t.Fatalf("the held task = %q, want the work of entry 3 in generation 2, %q, not the task %q given for entry 3 in generation 1",
+				wait.Task, pwTask(spParent, phase.Implementing), earlier)
 		}
 
 		pnChildMerged(t, pool, spChild, spParent, 51)
@@ -1416,7 +1499,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		token := pwMidPhase(t, pool, spParent, phase.Testing, supervise.StateIdle, "")
 		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleTester, Claim: token, Entry: 3,
 			EntryTask: pwTask(spParent, phase.Testing) + " " + pnBaseMerge, EntryRaisedAt: fixedNow.Add(-time.Hour),
-			EntryGivenTask: pwTask(spParent, phase.Testing), EntryGivenEntry: 3})
+			EntryGivenTask: pwTask(spParent, phase.Testing), EntryGivenEntry: 3, EntryGivenGeneration: 1})
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
