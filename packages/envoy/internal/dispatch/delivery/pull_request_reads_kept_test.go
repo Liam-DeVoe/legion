@@ -73,6 +73,9 @@ func TestAFailedReadHoldsNoSlotThatOtherRepositoriesShare(t *testing.T) {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
+			// Every envelope answered: each acme envelope's owe is written before its answer, so the
+			// count below reads all four.
+			awaitAcknowledged(t, natsClient)
 			var owedAcme int
 			if err := pool.QueryRow(ctx, `select count(*) from pull_request_reads_owed where repo = 'acme/widgets'`).Scan(&owedAcme); err != nil {
 				t.Fatal(err)
