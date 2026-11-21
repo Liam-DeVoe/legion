@@ -185,6 +185,10 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check harness compare: %v\n", err)
 		return 2
 	}
+	if err := NoOutputIsAnInput(Files("--out", *out), append(Files("--a", *dirA, "cases.jsonl", "run.json", "scores.json"), Files("--b", *dirB, "cases.jsonl", "run.json", "scores.json")...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check harness compare: %v\n", err)
+		return 2
+	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check harness compare: %v\n", err)

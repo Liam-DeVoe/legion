@@ -531,6 +531,9 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
+	if err := NoOutputIsAnInput(Files("--out", *out, "loaded.jsonl"), slices.Concat(Files("--local", *localPath), Files("--cases", *casesDir, casesFile, documentsFile, "counts.json"), Files("--verdicts", *verdicts))); err != nil {
+		return usage(err.Error())
+	}
 	data, err := os.ReadFile(*localPath)
 	if err != nil {
 		return fail(err)

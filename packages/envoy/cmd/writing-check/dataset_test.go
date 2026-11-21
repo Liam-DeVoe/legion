@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1550,6 +1551,75 @@ func TestDatasetBuildFromADirectoryOfASplitPackAndAWholeBundleOfOneNameRefuses(t
 	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
 		t.Errorf("the refused build made %s (%v)", out, err)
+	}
+}
+
+// build --from a directory reads its files of one name as one bundle only where they are one: the
+// bundle, manifest and parts pack wrote are read, and every other mix of them is refused, naming
+// what the directory holds, with no --out made, rather than read one bundle's inputs for
+// another's: parts with no manifest beside a bundle, a manifest whose parts are not all there, a
+// part the manifest does not name, a newer pack's manifest and parts beside an earlier bundle,
+// and the manifests of two names.
+func TestDatasetBuildFromADirectoryReadsOnePackOrRefusesTheMix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	type pack struct {
+		bundle, manifest string
+		parts            []string
+	}
+	split := func(seed uint64) pack {
+		bundle := filepath.Join(t.TempDir(), "dataset.tar.gz")
+		_, files, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: seed}, bundle, 4096)
+		if err != nil || len(files) < 3 {
+			t.Fatalf("the pack of seed %d wrote %v (%v), want parts and a manifest", seed, files, err)
+		}
+		return pack{bundle, files[len(files)-1], files[:len(files)-1]}
+	}
+	earlier, newer := split(fixtureSeed), split(fixtureSeed+1)
+	whole := func(p pack) []string { return append([]string{p.bundle, p.manifest}, p.parts...) }
+	for _, c := range []struct {
+		name  string
+		files []string
+		as    map[string]string
+		want  string
+	}{
+		{name: "the bundle, manifest and parts of one pack", files: whole(newer)},
+		{name: "parts with no manifest beside a bundle", files: append([]string{newer.bundle}, earlier.parts...), want: "no manifest of them"},
+		{name: "a manifest whose parts are not all there", files: append([]string{earlier.manifest}, earlier.parts[1:]...), want: "which is not beside it"},
+		{name: "a part the manifest does not name", files: append(whole(newer), earlier.parts[0]), as: map[string]string{earlier.parts[0]: "dataset.tar.gz.part-099"}, want: "dataset.tar.gz.part-099, which the manifest dataset.tar.gz.manifest.json does not name"},
+		{name: "a newer pack's manifest and parts beside an earlier bundle", files: append([]string{earlier.bundle, newer.manifest}, newer.parts...), want: "two bundles of one name; name one"},
+		{name: "the manifests of two names", files: append(whole(newer), earlier.manifest), as: map[string]string{earlier.manifest: "other.tar.gz.manifest.json"}, want: "2 bundles: name one"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			from := t.TempDir()
+			for _, f := range c.files {
+				data, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				name := cmp.Or(c.as[f], filepath.Base(f))
+				if err := os.WriteFile(filepath.Join(from, name), data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out := filepath.Join(t.TempDir(), "out")
+			var stdout, stderr bytes.Buffer
+			code := run(t.Context(), []string{"dataset", "build", "--from", from, "--out", out}, &stdout, &stderr)
+			if c.want == "" {
+				var counts dsCounts
+				if data, err := os.ReadFile(filepath.Join(out, "counts.json")); code != 0 || err != nil || json.Unmarshal(data, &counts) != nil || counts.Seed != fixtureSeed+1 {
+					t.Errorf("build --from %s: exit %d, seed %d: %s; want 0 and the pack's seed %d", c.name, code, counts.Seed, stderr.String(), fixtureSeed+1)
+				}
+				return
+			}
+			if code == 0 || !strings.Contains(stderr.String(), c.want) {
+				t.Errorf("build --from %s: exit %d: %s; want the refusal %q", c.name, code, stderr.String(), c.want)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Errorf("the refused build made %s (%v)", out, err)
+			}
+		})
 	}
 }
 

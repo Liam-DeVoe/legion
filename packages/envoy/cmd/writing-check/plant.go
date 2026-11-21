@@ -256,6 +256,10 @@ func runPlant(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check plant: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, "planted.jsonl", "manifest.jsonl", "sha256"), append(harness.Files("--in", *in), harness.Files("--corpus", *corpus)...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check plant: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check plant: %v\n", err)
 		return 1

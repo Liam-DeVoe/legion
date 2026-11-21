@@ -240,6 +240,9 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
+	if err := NoOutputIsAnInput(Files("--out", *out, "local.json", "local.log"), mf.files()); err != nil {
+		return usage(err.Error())
+	}
 	env := map[string]string{}
 	for _, kv := range settings {
 		name, value, _ := strings.Cut(kv, "=")
@@ -386,8 +389,12 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	err = cmd.Wait()
-	if ctx.Err() != nil {
+	// An instance stopped once it was up ran as asked; a start stopped before it was up did not.
+	switch {
+	case ctx.Err() != nil && up:
 		return 0
+	case ctx.Err() != nil:
+		return fail(fmt.Errorf("stopped (%w) before the instance was up (its output is in %s)", ctx.Err(), filepath.Join(*out, "local.log")))
 	}
 	if err != nil {
 		return fail(fmt.Errorf("bun run dispatch:local: %w (its output is in %s)", err, filepath.Join(*out, "local.log")))

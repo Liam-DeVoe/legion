@@ -26,10 +26,11 @@ type textsSource struct {
 
 // readTextsFrom reads the runs of --texts-from dir: the run in dir, or, where dir holds no
 // run.json, the run in each directory of dir that holds one, by name, as a lockstep run (score
-// --models) writes them; lockstep says it is the latter. The runs must agree on all that decides
-// which texts they hold: the change, the part, the groups, the sample, the cases, the session
-// export and the session part's length. Each run of a lockstep names its candidate, a different
-// one.
+// --models) writes them; lockstep says it is the latter. A dir that holds both, a run's run.json
+// and a directory with a run of its own, is refused, since it does not say which is meant. The
+// runs must agree on all that decides which texts they hold: the change, the part, the groups,
+// the sample, the cases, the session export and the session part's length. Each run of a
+// lockstep names its candidate, a different one.
 func readTextsFrom(dir string) (sources []textsSource, lockstep bool, err error) {
 	read := func(d string) error {
 		data, err := os.ReadFile(filepath.Join(d, "run.json"))
@@ -47,14 +48,19 @@ func readTextsFrom(dir string) (sources []textsSource, lockstep bool, err error)
 		sources = append(sources, textsSource{dir: d, params: p, lines: lines})
 		return nil
 	}
-	switch _, err := os.Stat(filepath.Join(dir, "run.json")); {
-	case err == nil:
-		return sources, false, read(dir)
-	case !errors.Is(err, os.ErrNotExist):
-		return nil, false, fmt.Errorf("--texts-from: %w", err)
-	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		return nil, false, fmt.Errorf("--texts-from: %w", err)
+	}
+	switch _, err := os.Stat(filepath.Join(dir, "run.json")); {
+	case err == nil:
+		for _, e := range entries {
+			if _, err := os.Stat(filepath.Join(dir, e.Name(), "run.json")); e.IsDir() && err == nil {
+				return nil, false, fmt.Errorf("--texts-from %s holds a run's run.json and the run of a lockstep in %s, two runs: name one", dir, e.Name())
+			}
+		}
+		return sources, false, read(dir)
+	case !errors.Is(err, os.ErrNotExist):
 		return nil, false, fmt.Errorf("--texts-from: %w", err)
 	}
 	for _, e := range entries {

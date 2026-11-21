@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/rules"
 )
@@ -110,6 +111,10 @@ func runRuleCost(args []string, stdout, stderr io.Writer) int {
 	}
 	if *plant != "" && rulePlants[*plant] == "" {
 		fmt.Fprintf(stderr, "writing-check rule-cost: --plant %q names no carried rule\n", *plant)
+		return 2
+	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, "table.md", "table.json", "manifest.jsonl", "manifest.sha256"), harness.Files("--in", *in)); err != nil {
+		fmt.Fprintf(stderr, "writing-check rule-cost: %v\n", err)
 		return 2
 	}
 	fail := func(err error) int {

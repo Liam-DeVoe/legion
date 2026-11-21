@@ -227,7 +227,10 @@ func TestCandidateSentencesMatchInAnyOrder(t *testing.T) {
 	}
 }
 
-// scoreFixture scores the fixture's stratum against the stub and answers the run's directory.
+// scoreFixture scores the fixture's stratum against the stub and answers the run's directory. The
+// stub fails the call of the write that says "pays off", so a stratum that holds it ends with
+// exit 1 and the count of failed calls, once it has written its figures
+// (TestAScoreRunWithAFailedCallExitsOne).
 func scoreFixture(t *testing.T, dir, stratum string, extra ...string) (string, *stubModel) {
 	t.Helper()
 	labels, manifest := fixtureLabels(t, dir)
@@ -236,7 +239,7 @@ func scoreFixture(t *testing.T, dir, stratum string, extra ...string) (string, *
 	args := append([]string{"score", "--labels", labels, "--planted", manifest, "--stratum", stratum, "--out", out,
 		"--root", "../..", "--labeller-bound", "0.02", "--heldout-seed", "3231"}, stub.args(t, dir)...)
 	code, _, stderr := runCmd(t, append(args, extra...)...)
-	if code != 0 {
+	if code != 0 && (code != 1 || !strings.Contains(stderr, "reader calls failed")) {
 		t.Fatalf("score exited %d: %s", code, stderr)
 	}
 	return out, stub
@@ -318,6 +321,30 @@ func TestScoreRunsTheDetectorPerWriteAndComputesTheFigures(t *testing.T) {
 		if o.Write == "101/w1" && (len(o.Candidates) != 1 || o.Candidates[0].SentenceID != "s1" || o.Model != stubModelID || len(o.Verdicts) != 1 || o.Verdicts[0].Rewrite == "") {
 			t.Errorf("w1's output: %+v", o)
 		}
+	}
+}
+
+// A score run in which a reader call failed still writes its figures, which count that write as a
+// missed failure, and exits 1 with the count of failed calls: the run is not complete. A run whose
+// calls all read exits 0.
+func TestAScoreRunWithAFailedCallExitsOne(t *testing.T) {
+	dir := t.TempDir()
+	labels, manifest := fixtureLabels(t, dir)
+	vacuous := containsAny("names the", "shows the", "frames", "lists the steps", "carries")
+	score := func(stub *stubModel, out string) (int, string) {
+		args := append([]string{"score", "--labels", labels, "--planted", manifest, "--stratum", stratumReal, "--out", out, "--root", "../.."}, stub.args(t, dir)...)
+		code, _, stderr := runCmd(t, args...)
+		return code, stderr
+	}
+	out := filepath.Join(dir, "failed")
+	if code, stderr := score(newStubModel(t, vacuous, containsAny("pays off")), out); code != 1 || !strings.Contains(stderr, "1 of 4 reader calls failed") {
+		t.Errorf("a score run with a failed call = %d:\n%s", code, stderr)
+	}
+	if g := readFigures(t, filepath.Join(out, "figures.json")).Figures; g.ScannerVerdicts[scanError] != 1 {
+		t.Errorf("the figures of the run with a failed call: %v", g.ScannerVerdicts)
+	}
+	if code, stderr := score(newStubModel(t, vacuous, nil), filepath.Join(dir, "read")); code != 0 {
+		t.Errorf("a score run whose calls all read = %d:\n%s", code, stderr)
 	}
 }
 

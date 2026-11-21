@@ -131,3 +131,23 @@ func TestCachedExcerptsReadTheCache(t *testing.T) {
 		t.Error("a read at another limit was answered from the cache")
 	}
 }
+
+// The cache is written through a file of a name of its own beside it: another run's file under
+// the name the temporary file had before (<cache>.tmp) is left as it was, and none of the write's
+// own is left behind.
+func TestTheCacheWriteLeavesAnotherRunsFileAlone(t *testing.T) {
+	dir := writeExport(t)
+	cache := filepath.Join(t.TempDir(), "excerpts.jsonl.gz")
+	if err := os.WriteFile(cache+".tmp", []byte("another run's\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CachedExcerpts(dir, []string{"c-late"}, 1000, cache); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(cache + ".tmp"); err != nil || string(data) != "another run's\n" {
+		t.Errorf("the cache write left another run's %s.tmp as %q (%v)", cache, data, err)
+	}
+	if left, _ := filepath.Glob(cache + ".*.tmp"); len(left) != 0 {
+		t.Errorf("the cache write left %v", left)
+	}
+}

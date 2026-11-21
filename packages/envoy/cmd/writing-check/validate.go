@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // The labeller's validation bound: at least minAgreeing planted cases agree and none disagrees,
@@ -65,6 +68,12 @@ func runValidateLabeller(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check validate-labeller: --labels, --planted, --seed and --out are required, and nothing else")
 		return 2
 	}
+	jsonPath := strings.TrimSuffix(*out, ".md") + ".json"
+	writes := append(harness.Files("--out", *out), harness.File{Flag: "--out", Path: jsonPath, Name: filepath.Base(jsonPath)})
+	if err := harness.NoOutputIsAnInput(writes, append(harness.Files("--labels", *labelsPath), harness.Files("--planted", *plantedPath)...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check validate-labeller: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check validate-labeller: %v\n", err)
 		return 1
@@ -96,7 +105,7 @@ func runValidateLabeller(args []string, stdout, stderr io.Writer) int {
 	if err := os.WriteFile(*out, []byte(md), 0o644); err != nil {
 		return fail(err)
 	}
-	if err := writeJSON(strings.TrimSuffix(*out, ".md")+".json", report); err != nil {
+	if err := writeJSON(jsonPath, report); err != nil {
 		return fail(err)
 	}
 	fmt.Fprint(stdout, md)

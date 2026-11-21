@@ -613,17 +613,14 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// writeJSON writes v to path as indented JSON, by a file beside it renamed over it.
+// writeJSON writes v to path as indented JSON, by a file of its own beside it renamed over it
+// (ReplaceFile).
 func writeJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return ReplaceFile(path, append(data, '\n'), 0o600)
 }
 
 // checkParams writes params to run.json in out, or refuses a run.json of other parameters.
@@ -927,14 +924,6 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return usage(fmt.Sprintf("--texts-from %s scored other cases or sessions than --cases and --sessions hold: its run.json records cases_sha256 %s and sessions_counts_sha256 %s", *textsFrom, p.CasesSHA256, p.SessionsSHA))
 		}
 	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		return fail(err)
-	}
-	var fallbacks []string
-	for _, f := range cfg.Models.Roles.GraderFallbacks {
-		fallbacks = append(fallbacks, f.ID)
-	}
-	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleGraderFallback: strings.Join(fallbacks, ","), RoleReader: cfg.Models.Roles.Reader.ID}
 	// candidates are the candidate of each lane: the models of --models, in its order, or the one
 	// of --model, "" for a change that calls none; under --texts-from, the candidate of each run
 	// it names.
@@ -951,6 +940,43 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			lockstep = candidates
 		}
 	}
+	// No file the run writes is a file another flag names as an input: each lane's files, the
+	// session excerpts and, for a held-out run, the exposure log.
+	written := []string{"session-excerpts.jsonl.gz"}
+	for _, m := range candidates {
+		for _, name := range []string{"run.json", "cases.jsonl", "scores.json", "scores.md"} {
+			if len(lockstep) > 0 {
+				name = filepath.Join(m, name)
+			}
+			written = append(written, name)
+		}
+	}
+	writes := Files("--out", *out, written...)
+	if *part == PartHeldOut && !*figuresOnly && !*dryRun {
+		writes = append(writes, Files("--exposure-log", *exposureLog)...)
+	}
+	reads := slices.Concat(Files("--cases", *casesDir, casesFile, documentsFile),
+		Files("--sessions", *sessionsDir, claude.ExportFiles()...),
+		Files("--local", *localPath), Files("--loaded", *loadedPath), Files("--case-list", *caseList),
+		Files("--readers-from", *readersFrom, "cases.jsonl"), Files("--vocabulary", *vocabulary),
+		Files("--reader-vocabulary", *readerVocabulary), Files("--repeatability", *repeatability), mf.files())
+	for _, dir := range gradesDirs {
+		reads = append(reads, Files("--grades-from", dir, "cases.jsonl")...)
+	}
+	for _, src := range sources {
+		reads = append(reads, Files("--texts-from", src.dir, "run.json", "cases.jsonl")...)
+	}
+	if err := NoOutputIsAnInput(writes, reads); err != nil {
+		return usage(err.Error())
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return fail(err)
+	}
+	var fallbacks []string
+	for _, f := range cfg.Models.Roles.GraderFallbacks {
+		fallbacks = append(fallbacks, f.ID)
+	}
+	models := map[string]string{RoleGrader: cfg.Models.Roles.Grader.ID, RoleGraderFallback: strings.Join(fallbacks, ","), RoleReader: cfg.Models.Roles.Reader.ID}
 	var run *changeRun
 	var inst LocalInstance
 	if plan != nil {
@@ -1221,9 +1247,22 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				l.change = runs[i]
 			}
 		}
+		// Each lane's cases.jsonl is opened, and the gateway's key read, before the held-out claim:
+		// a run refused on either has read no case, so the exposure log holds no line of it.
+		files, err := openLanes(lanes)
+		if err != nil {
+			return fail(err)
+		}
+		if !foreign {
+			if _, err := os.ReadFile(mf.keyFile); err != nil {
+				closeLines(files)
+				return fail(fmt.Errorf("the gateway key file: %w", err))
+			}
+		}
 		if heldOut != nil {
 			e, err := ClaimHeldOut(*exposureLog, *heldOut, finished)
 			if err != nil {
+				closeLines(files)
 				return fail(err)
 			}
 			if e.Continues != "" {
@@ -1234,7 +1273,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		s := &scorer{ds: ds, reader: reader, grader: grader, sessions: sessions, places: places, readersFrom: priorReaders,
 			gradesFrom: priorGrades, vocabulary: ownWords, readerVocabulary: readerWords, only: only, skipped: skipped, noExport: *sessionsDir == ""}
-		if err := scoreAll(ctx, s, lanes, todo, mf.concurrency, stderr, started); err != nil {
+		if err := scoreAll(ctx, s, lanes, files, todo, mf.concurrency, stderr, started); err != nil {
 			return fail(err)
 		}
 		uncached = runner.Pacer.Use()
@@ -1336,29 +1375,38 @@ func printDryRun(w io.Writer, groups []string, selected []*Case, lanes []*lane) 
 	}
 }
 
-// scoreAll scores each of cases for the lanes whose todo holds it, workers cases at once
-// (scorer.scoreCase), and appends each lane's result to the lane's cases.jsonl as the case ends.
-// A result its line does not hold is scored again by the next run, so the run stops at the first
-// line that is not written, and answers it; else it answers a file's failure to close.
-func scoreAll(ctx context.Context, s *scorer, lanes []*lane, cases []*Case, workers int, progress io.Writer, started time.Time) error {
+// openLanes opens each lane's cases.jsonl to append its results to, in the lanes' order.
+func openLanes(lanes []*lane) ([]*lineFile, error) {
 	files := make([]*lineFile, 0, len(lanes))
-	closeAll := func() error {
-		var first error
-		for _, f := range files {
-			if err := f.close(); err != nil && first == nil {
-				first = err
-			}
-		}
-		return first
-	}
 	for _, l := range lanes {
 		f, err := appendLines(filepath.Join(l.out, "cases.jsonl"))
 		if err != nil {
-			closeAll()
-			return err
+			closeLines(files)
+			return nil, err
 		}
 		files = append(files, f)
 	}
+	return files, nil
+}
+
+// closeLines closes each of files, and answers the first line one did not write, or the first
+// failure to close.
+func closeLines(files []*lineFile) error {
+	var first error
+	for _, f := range files {
+		if err := f.close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// scoreAll scores each of cases for the lanes whose todo holds it, workers cases at once
+// (scorer.scoreCase), and appends each lane's result to the lane's file of files (openLanes) as
+// the case ends, then closes them. A result its line does not hold is scored again by the next
+// run, so the run stops at the first line that is not written, and answers it; else it answers a
+// file's failure to close.
+func scoreAll(ctx context.Context, s *scorer, lanes []*lane, files []*lineFile, cases []*Case, workers int, progress io.Writer, started time.Time) error {
 	scoreCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var mu sync.Mutex
@@ -1416,7 +1464,7 @@ feeding:
 	}
 	close(feed)
 	wg.Wait()
-	if err := closeAll(); err != nil {
+	if err := closeLines(files); err != nil {
 		return fmt.Errorf("%w: the cases scored after it have no result, so run it again to score them", err)
 	}
 	return nil

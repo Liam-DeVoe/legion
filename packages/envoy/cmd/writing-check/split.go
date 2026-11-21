@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 )
 
 // The three sets, in time order.
@@ -56,6 +58,10 @@ func runSplit(args []string, stdout, stderr io.Writer) int {
 	}
 	if *cutA >= *cutB {
 		fmt.Fprintln(stderr, "writing-check split: --cut-a must be below --cut-b")
+		return 2
+	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, setDevelopment+".jsonl", setCalibration+".jsonl", setFinalPool+".jsonl", "counts.json"), harness.Files("--in", *in)); err != nil {
+		fmt.Fprintf(stderr, "writing-check split: %v\n", err)
 		return 2
 	}
 	fail := func(err error) int {

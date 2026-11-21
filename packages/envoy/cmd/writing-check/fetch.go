@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -51,10 +52,32 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
 		return 2
 	}
+	// The cases file, its partial file and their fetchParams are written beside each other.
+	writes := harness.Files("--out", *out)
+	for _, suffix := range []string{".partial", ".params.json", ".partial.params.json"} {
+		writes = append(writes, harness.File{Flag: "--out", Path: *out + suffix, Name: filepath.Base(*out) + suffix})
+	}
+	if err := harness.NoOutputIsAnInput(writes, harness.Files("DISPATCH_TOKEN_FILE", tokenFile)); err != nil {
+		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
+		return 2
+	}
 	if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
 		return 2
 	}
+	// One fetch at a time writes the cases file, its partial file and their fetchParams: a second
+	// fetch on --out, resumed or not, would truncate or move the files the first one writes. The
+	// lock is <out>.lock, held until the fetch ends.
+	lock, held, err := harness.LockRun(*out + ".lock")
+	if held {
+		fmt.Fprintf(stderr, "writing-check fetch: another fetch holds %s, the lock of %s and %s.partial: wait for it to end, or give another --out\n", *out+".lock", *out, *out)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
+		return 1
+	}
+	defer lock.Close()
 	c := newClient(base, tokenFile)
 	x := newExtractor(newLiveSource(c))
 	// The cases go to <out>.partial, which becomes --out once the fetch has read through
@@ -66,7 +89,6 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	params := fetchParams{DispatchURL: c.base, After: *after}
 	start := *after
 	var file *os.File
-	var err error
 	if *resume {
 		var from string
 		if from, err = resumeFrom(*out, partial, params); err != nil {

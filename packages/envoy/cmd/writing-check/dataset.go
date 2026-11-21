@@ -1516,15 +1516,6 @@ func dsPages(dir string) ([]dsPage, error) {
 	return pages, nil
 }
 
-// dsWriteAtomic writes data to path by a file beside it renamed over it.
-func dsWriteAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // fetchEventPages pages the log from where the work directory's pages end, writing each page's
 // events created at or before end as one page file, until the log ends or its events pass end by
 // dsEndMargin. It answers the last event id read.
@@ -1593,7 +1584,7 @@ func fetchEventPages(ctx context.Context, c *client, dir string, end time.Time, 
 			return cursor, err
 		}
 		name := filepath.Join(dir, fmt.Sprintf("events-%d-%d.jsonl.gz", cursor, last))
-		if err := dsWriteAtomic(name, buf.Bytes()); err != nil {
+		if err := harness.ReplaceFile(name, buf.Bytes(), 0o600); err != nil {
 			return cursor, err
 		}
 		cursor = last
@@ -1607,7 +1598,7 @@ func fetchEventPages(ctx context.Context, c *client, dir string, end time.Time, 
 		}
 	}
 	data, _ := json.Marshal(map[string]int64{"last": cursor})
-	return cursor, dsWriteAtomic(donePath, data)
+	return cursor, harness.ReplaceFile(donePath, data, 0o600)
 }
 
 // eachPageEvent calls fn with every event of the work directory's pages, in id order.
@@ -1705,6 +1696,19 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 			return 2
 		}
 	}
+	// The snapshot and the work directory's files are written; the labelled sets, the token and
+	// the work directory's files are read. readLabelled reads every labels.jsonl in a directory of
+	// the sets, so nothing is written in one.
+	workFiles := []string{"fetch.json", "bodies.jsonl", "versions.jsonl", "events.done"}
+	labelledSets := harness.Files("--labelled", *labelled)
+	if info, err := os.Stat(*labelled); err == nil && info.IsDir() {
+		labelledSets[0].Tree = true
+	}
+	if err := harness.NoOutputIsAnInput(append(harness.Files("--out", *out), harness.Files("--work", *work, workFiles...)...),
+		slices.Concat(labelledSets, harness.Files("DISPATCH_TOKEN_FILE", tokenFile), harness.Files("--work", *work, workFiles...))); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset fetch: %v\n", err)
+		return 2
+	}
 	if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset fetch: %v\n", err)
 		return 2
@@ -1713,6 +1717,18 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	if err := os.MkdirAll(*work, 0o700); err != nil {
 		return fail(err)
 	}
+	// One fetch at a time writes the work directory: a second fetch on it would write the same
+	// pages and append to the same reads. The lock is fetch.lock in it, held until the fetch ends.
+	lockPath := filepath.Join(*work, "fetch.lock")
+	lock, held, err := harness.LockRun(lockPath)
+	if held {
+		fmt.Fprintf(stderr, "writing-check dataset fetch: another fetch holds %s, the lock of the work directory %s: wait for it to end, or give another --work\n", lockPath, *work)
+		return 2
+	}
+	if err != nil {
+		return fail(err)
+	}
+	defer lock.Close()
 	endText := end.UTC().Format(time.RFC3339Nano)
 	if err := dsCheckWorkEnd(*work, endText, *owner, base); err != nil {
 		return fail(err)
@@ -1809,7 +1825,7 @@ func dsCheckWorkEnd(dir, end, owner, dispatchURL string) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		b, _ := json.Marshal(want)
-		return dsWriteAtomic(path, b)
+		return harness.ReplaceFile(path, b, 0o600)
 	}
 	if err != nil {
 		return err
@@ -1948,7 +1964,8 @@ func dsSortedLines(path string, sortKey func(snapLine) string) ([]dsLineAt, erro
 
 // assembleSnapshot writes the snapshot: the header, the events in id order, the bodies by kind
 // and id, the versions by artifact and number, and the labels by event and source. It answers
-// the snapshot's SHA-256.
+// the snapshot's SHA-256. The snapshot goes to a file of its own beside out
+// (harness.CreateBeside), renamed over out once whole; a failed write removes that file alone.
 func assembleSnapshot(out, work string, header snapLine, labels []snapLine) (string, error) {
 	bodyLines, err := dsSortedLines(filepath.Join(work, "bodies.jsonl"), bodyLineKey)
 	if err != nil {
@@ -1961,12 +1978,17 @@ func assembleSnapshot(out, work string, header snapLine, labels []snapLine) (str
 		return "", err
 	}
 	header.Bodies, header.Versions = len(bodyLines), len(versionLines)
-	tmp := out + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := harness.CreateBeside(out, 0o644)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	renamed := false
+	defer func() {
+		if !renamed {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
 	h := sha256.New()
 	buffered := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
 	gz := dsGzip(buffered)
@@ -2014,9 +2036,10 @@ func assembleSnapshot(out, work string, header snapLine, labels []snapLine) (str
 	if err := f.Close(); err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp, out); err != nil {
+	if err := os.Rename(f.Name(), out); err != nil {
 		return "", err
 	}
+	renamed = true
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -2284,6 +2307,10 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 		return 2
 	}
 	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset classify: %v\n", err)
+		return 2
+	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out), append(harness.Files("--snapshot", *snapshot), harness.Files("--key-file", *keyFile)...)); err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset classify: %v\n", err)
 		return 2
 	}
@@ -2763,6 +2790,11 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset build: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, dsBuildFiles...), slices.Concat(harness.Files("--snapshot", *snapshot), harness.Files("--verdicts", *verdicts),
+		harness.Files("--confirmed", *confirmed), harness.Files("--to-development", *toDevelopment), harness.Files("--from", *from))); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset build: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check dataset build: %v\n", err)
 		return 1
@@ -2862,6 +2894,10 @@ func correctionShapes(owner, agent string) []string {
 	}
 	return shapes
 }
+
+// dsBuildFiles are the four files of a build directory, which build and named write, and
+// followups writes in explanations/.
+var dsBuildFiles = []string{"cases.jsonl.gz", "documents.jsonl.gz", "sessions.tsv", "counts.json"}
 
 // buildDataset builds the dataset from its inputs into out, and answers its counts and digests.
 // It reads nothing else, so the same inputs write the same bytes. It refuses a snapshot that
@@ -3682,6 +3718,10 @@ func runDatasetOwnerTexts(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, dsOwnerTextsFile), append(harness.Files("--snapshot", *snapshot), harness.Files("--from", *from)...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check dataset owner-texts: %v\n", err)
 		return 1
@@ -3776,6 +3816,19 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset pack: %v\n", err)
 		return 2
 	}
+	// pack writes the bundle and its manifest, and removes and writes the parts of its name.
+	dir, base := filepath.Dir(*out), filepath.Base(*out)
+	writes := append(harness.Files("--out", *out), harness.File{Flag: "--out", Path: *out + ".manifest.json", Name: base + ".manifest.json"})
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), base+".part-") {
+			writes = append(writes, harness.File{Flag: "--out", Path: filepath.Join(dir, e.Name()), Name: e.Name()})
+		}
+	}
+	if err := harness.NoOutputIsAnInput(writes, slices.Concat(harness.Files("--snapshot", *snapshot), harness.Files("--verdicts", *verdicts), harness.Files("--confirmed", *confirmed))); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset pack: %v\n", err)
+		return 2
+	}
 	in := dsInputs{Snapshot: *snapshot, Verdicts: *verdicts, Seed: *seed, Confirmed: *confirmed, ConfirmedSeed: *confirmedSeed}
 	sum, parts, err := packBundle(in, *out, *partSize)
 	if err != nil {
@@ -3793,8 +3846,9 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 // when given, the confirmation read, with no time, owner or mode of the files in it, so the same
 // inputs write the same bytes. A bundle larger than partSize is also written as parts with a
 // manifest. It first removes the manifest and the parts an earlier pack to out left, which build
-// --from a directory would read before the bundle. It answers the bundle's SHA-256 and the paths
-// of the parts and the manifest.
+// --from a directory would read before the bundle. The bundle goes to a file of its own beside
+// out (harness.CreateBeside), renamed over out once whole; a failed write removes that file
+// alone. It answers the bundle's SHA-256 and the paths of the parts and the manifest.
 func packBundle(in dsInputs, out string, partSize int64) (string, []string, error) {
 	s := dsSeeds{Seed: &in.Seed}
 	files := []struct{ name, path string }{{dsBundleSnapshot, in.Snapshot}, {dsBundleVerdicts, in.Verdicts}}
@@ -3809,12 +3863,17 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	if err := removeParts(out); err != nil {
 		return "", nil, err
 	}
-	tmp := out + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := harness.CreateBeside(out, 0o644)
 	if err != nil {
 		return "", nil, err
 	}
-	defer f.Close()
+	renamed := false
+	defer func() {
+		if !renamed {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
 	h := sha256.New()
 	buffered := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
 	gz := dsGzip(buffered)
@@ -3855,9 +3914,10 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	if err := f.Close(); err != nil {
 		return "", nil, err
 	}
-	if err := os.Rename(tmp, out); err != nil {
+	if err := os.Rename(f.Name(), out); err != nil {
 		return "", nil, err
 	}
+	renamed = true
 	sum := hex.EncodeToString(h.Sum(nil))
 	info, err := os.Stat(out)
 	if err != nil || info.Size() <= partSize {
@@ -3926,7 +3986,9 @@ func splitBundle(bundle, sum string, size, partSize int64) ([]string, error) {
 // directory that holds one bundle: its manifest, read in place of the bundle where there is one,
 // or the bundle. A directory with parts, a manifest or a tarball of more than one bundle (an
 // earlier pack's beside a newer one) is refused, naming each, since it does not say which one
-// is meant.
+// is meant. So is one whose files of one name are not one bundle: parts with no manifest, a part
+// the manifest does not name, or a bundle whose SHA-256 is not the one the manifest gives (an
+// earlier pack's manifest and parts beside a newer bundle of the same name, or the other way).
 func openBundle(from, dir string) (dsInputs, error) {
 	var in dsInputs
 	info, err := os.Stat(from)
@@ -3956,11 +4018,14 @@ func openBundle(from, dir string) (dsInputs, error) {
 		case len(names) > 1:
 			return in, fmt.Errorf("%s holds %s, %d bundles: name one", from, strings.Join(sortedKeys(names), " and "), len(names))
 		case len(manifests) == 1:
+			if err := onePack(from, manifests[0], bundles, parts); err != nil {
+				return in, err
+			}
 			from = manifests[0]
-		case len(bundles) == 1:
-			from = bundles[0]
-		default:
+		case len(parts) > 0:
 			return in, fmt.Errorf("%s holds parts of %s and no manifest of them: name the bundle", from, sortedKeys(names)[0])
+		default:
+			from = bundles[0]
 		}
 	}
 	bundle := from
@@ -4013,15 +4078,53 @@ func openBundle(from, dir string) (dsInputs, error) {
 	return in, nil
 }
 
+// onePack refuses the manifest, the parts and the bundle of one name in the directory dir where
+// they are not one bundle: a part the manifest does not name, or a bundle whose SHA-256 is not
+// the one the manifest gives. joinParts then checks each part the manifest names.
+func onePack(dir, manifestPath string, bundles, parts []string) error {
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	named := map[string]bool{}
+	for _, p := range m.Parts {
+		named[p.Name] = true
+	}
+	for _, p := range parts {
+		if !named[filepath.Base(p)] {
+			return fmt.Errorf("%s holds %s, which the manifest %s does not name: the parts of two bundles of one name; name one", dir, filepath.Base(p), filepath.Base(manifestPath))
+		}
+	}
+	for _, b := range bundles {
+		sum, err := fileSHA256(b)
+		if err != nil {
+			return err
+		}
+		if sum != m.SHA256 {
+			return fmt.Errorf("%s holds %s, whose SHA-256 is %s, and the manifest %s of a bundle whose SHA-256 is %s: two bundles of one name; name one", dir, filepath.Base(b), sum, filepath.Base(manifestPath), m.SHA256)
+		}
+	}
+	return nil
+}
+
+// readManifest reads the manifest of a bundle split into parts.
+func readManifest(path string) (dsManifest, error) {
+	var m dsManifest
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, fmt.Errorf("%s: %w", path, err)
+	}
+	return m, nil
+}
+
 // joinParts joins the parts a manifest names, read beside it, into one bundle in dir.
 func joinParts(manifestPath, dir string) (string, error) {
-	data, err := os.ReadFile(manifestPath)
+	m, err := readManifest(manifestPath)
 	if err != nil {
 		return "", err
-	}
-	var m dsManifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return "", fmt.Errorf("%s: %w", manifestPath, err)
 	}
 	bundle := filepath.Join(dir, "bundle.tar.gz")
 	f, err := os.Create(bundle)
@@ -4032,6 +4135,9 @@ func joinParts(manifestPath, dir string) (string, error) {
 	whole := sha256.New()
 	for _, p := range m.Parts {
 		part, err := os.ReadFile(filepath.Join(filepath.Dir(manifestPath), p.Name))
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s names the part %s, which is not beside it: name the whole bundle, or put every part beside the manifest", manifestPath, p.Name)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -4136,6 +4242,11 @@ func runDatasetSessions(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if err := harness.OutsideRepository("--out", *out); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset sessions: %v\n", err)
+		return 2
+	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, dsSessionRowsFile, dsPlacesFile, dsSessionCountsFile),
+		append(harness.Files("--manifest", *manifest), harness.Files("--cases", dsCasesFile(*casesPath))...)); err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset sessions: %v\n", err)
 		return 2
 	}

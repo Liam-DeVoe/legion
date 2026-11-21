@@ -62,11 +62,14 @@ func runReaders(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	case *in == "" || *out == "":
 		fmt.Fprintln(stderr, "writing-check readers: --in and --out are required")
 		return 2
-	case sameFile(*in, *out):
-		fmt.Fprintln(stderr, "writing-check readers: --out names the --in file: give another --out")
-		return 2
 	case *logThrough <= *logAfter:
 		fmt.Fprintln(stderr, "writing-check readers: --log-through must be above --log-after")
+		return 2
+	}
+	// --out and --state are written after the replay; one that is an input would lose it.
+	if err := harness.NoOutputIsAnInput(append(harness.Files("--out", *out), harness.Files("--state", *statePath)...),
+		slices.Concat(harness.Files("--in", *in), harness.Files("--state", *statePath), harness.Files("DISPATCH_TOKEN_FILE", tokenFile))); err != nil {
+		fmt.Fprintf(stderr, "writing-check readers: %v\n", err)
 		return 2
 	}
 	// The cases file and the replayed state hold Dispatch's texts and records.
@@ -119,13 +122,6 @@ func runReaders(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	stats.print(stdout)
 	return 0
-}
-
-// sameFile is whether a and b name one file that exists, by one path or two.
-func sameFile(a, b string) bool {
-	infoA, errA := os.Stat(a)
-	infoB, errB := os.Stat(b)
-	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
 }
 
 // change is a value a record took at an event, in force from that event on.
@@ -260,17 +256,14 @@ func loadReplayState(path string, logAfter int64) (*replayState, error) {
 	return s, nil
 }
 
-// saveReplayState writes s to path whole: to a file beside it, then renamed over it.
+// saveReplayState writes s to path whole: to a file of its own beside it, then renamed over it
+// (harness.ReplaceFile).
 func saveReplayState(path string, s *replayState) error {
 	data, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return harness.ReplaceFile(path, data, 0o600)
 }
 
 // replayLog pages the log from the event after s.Through through through, and applies each
@@ -912,20 +905,25 @@ func (st *readerStats) print(w io.Writer) {
 
 // writeReaders writes every case of in to out with its reader and reader rule, and counts them.
 // Every case of one write has one reader. A case outside the replayed window is refused: the
-// replay holds no record it wrote. The cases go to a file beside out, renamed over it once every
-// case is written, so a refused run leaves out as it was.
+// replay holds no record it wrote. The cases go to a file of its own beside out
+// (harness.CreateBeside), renamed over it once every case is written, so a refused run leaves out
+// as it was, and removes that file alone.
 func writeReaders(in, out string, s *replayState, logAfter, logThrough int64) (*readerStats, error) {
 	r := &resolver{s: s, missing: map[string]int{}}
 	through := min(logThrough, s.Through)
 	index := map[writeKey]*readerWrite{}
 	var writes []*readerWrite
-	tmp := out + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := harness.CreateBeside(out, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	defer os.Remove(tmp)
-	defer f.Close()
+	renamed := false
+	defer func() {
+		if !renamed {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
 	w := bufio.NewWriter(f)
 	err = eachLine(in, func(line []byte, _ int) error {
 		var c Case
@@ -972,8 +970,9 @@ func writeReaders(in, out string, s *replayState, logAfter, logThrough int64) (*
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(tmp, out); err != nil {
+	if err := os.Rename(f.Name(), out); err != nil {
 		return nil, err
 	}
+	renamed = true
 	return newReaderStats(writes, r.missing), nil
 }

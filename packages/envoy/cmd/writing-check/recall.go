@@ -71,6 +71,11 @@ func runRecall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check recall: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, "nolist-tuning.jsonl", "nolist-heldout.jsonl", "recall.json", "recall.md"),
+		append(harness.Files("--labels", *labelsPath), harness.Files("--planted", *plantedPath)...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check recall: %v\n", err)
+		return 2
+	}
 	var split *heldout
 	if flagGiven(flags, "heldout-seed") {
 		if *shareFlag <= 0 || *shareFlag >= 1 {

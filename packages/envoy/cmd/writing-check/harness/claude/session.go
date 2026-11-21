@@ -23,6 +23,10 @@ const (
 	countsFile = "sessions-counts.json"
 )
 
+// ExportFiles are the names of a session export's files, for a command that refuses an output of
+// one of them (harness.NoOutputIsAnInput); package claude alone reads them.
+func ExportFiles() []string { return []string{rowsFile, placesFile, countsFile} }
+
 // PlaceFound is the status of a case whose writer session has rows before its write.
 const PlaceFound = "found"
 
@@ -333,10 +337,11 @@ func readCache(path string, want excerptHeader) (map[string]SessionText, bool) {
 	}
 }
 
-// writeCache writes excerpts to path under header, by a file beside it renamed over it.
+// writeCache writes excerpts to path under header, by a file of a name of its own beside it
+// (os.CreateTemp) renamed over it, so a second run on one output directory never truncates or
+// removes the first run's; a failed write removes that file alone.
 func writeCache(path string, header excerptHeader, excerpts map[string]SessionText) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -355,8 +360,11 @@ func writeCache(path string, header excerptHeader, excerpts map[string]SessionTe
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		err = os.Rename(f.Name(), path)
 	}
-	return os.Rename(tmp, path)
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }

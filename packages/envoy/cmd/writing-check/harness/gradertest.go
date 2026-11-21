@@ -213,6 +213,11 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
+	if err := NoOutputIsAnInput(Files("--out", *out, "session-excerpts.jsonl.gz", "grader-test.json", "grader-test.md"),
+		slices.Concat(Files("--planted", *plantedPath), Files("--cases", *casesDir, casesFile, documentsFile),
+			Files("--sessions", *sessionsDir, claude.ExportFiles()...), mf.files())); err != nil {
+		return usage(err.Error())
+	}
 	inputs, err := ParseGraderInputs(*inputsFlag)
 	if err != nil {
 		return usage(err.Error())

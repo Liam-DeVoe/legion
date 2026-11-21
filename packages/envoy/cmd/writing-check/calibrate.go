@@ -135,6 +135,15 @@ func runCalibrate(args []string, stdout, stderr io.Writer) int {
 			return usage("--run lists an empty directory")
 		}
 	}
+	// --measured is appended to; one that is an input would take the record in that input.
+	reads := slices.Concat(harness.Files("--labels-v1", *labelsV1), harness.Files("--labels-v2", *labelsV2), harness.Files("--split", *splitPath),
+		harness.Files("--read-before-split", *readPath), harness.Files("--rows", *rowsPath), harness.Files("--pairs", *pairsPath), harness.Files("--verdicts", *verdictsPath))
+	for _, dir := range runDirs {
+		reads = append(reads, harness.Files("--run", dir, "cases.jsonl")...)
+	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--measured", *measured), reads); err != nil {
+		return usage(err.Error())
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check calibrate: %v\n", err)
 		return 1

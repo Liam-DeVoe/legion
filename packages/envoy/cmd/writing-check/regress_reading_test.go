@@ -164,6 +164,26 @@ func TestReadingCoversTheWindowLessTheExcludedManifests(t *testing.T) {
 	}
 }
 
+// A reading in which a detector call failed still writes its report, which counts the write among
+// the faults, and exits 1 with the count of failed calls: the reading is not complete.
+func TestAReadingWithAFailedCallExitsOne(t *testing.T) {
+	dir := t.TempDir()
+	in := writeCases(t, dir, "cases.jsonl", []Case{
+		{EventID: 210, SourceID: "r1", Surface: surfaceComment, Field: "body", Text: sentA, Project: "ALPHA"},
+		{EventID: 220, SourceID: "r2", Surface: surfaceComment, Field: "body", Text: sentH, Project: "BETA"},
+	})
+	stub := newStubModel(t, containsAny("names the"), containsAny("lists the steps"))
+	out := filepath.Join(dir, "reading")
+	code, _, stderr := runCmd(t, append([]string{"reading", "--in", in, "--after", "200", "--through", "300", "--out", out, "--root", "../.."}, stub.args(t, dir)...)...)
+	if code != 1 || !strings.Contains(stderr, "1 of 2 detector calls failed") {
+		t.Errorf("a reading with a failed call = %d:\n%s", code, stderr)
+	}
+	var r readingReport
+	if data, err := os.ReadFile(filepath.Join(out, "report.json")); err != nil || json.Unmarshal(data, &r) != nil || r.DetectorFaults == nil || r.DetectorFaults.Hits != 1 {
+		t.Errorf("the report of the reading with a failed call: %+v (%v)", r.DetectorFaults, err)
+	}
+}
+
 func TestBootstrapIsSeeded(t *testing.T) {
 	var writes []refWrite
 	var flagged [][]bool

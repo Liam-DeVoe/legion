@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/eval"
 )
 
@@ -73,6 +74,30 @@ func TestAFinalTestWhoseOutCannotBeMadeSpendsNoSet(t *testing.T) {
 	}
 	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the run that read no write wrote the exposure log (%v)", err)
+	}
+	if stub.calls.Load() != 0 {
+		t.Error("the refused run called the model")
+	}
+}
+
+// A final-test score whose reader key file cannot be read fails before it claims the set: every
+// call would fail with no write read, so the exposure log holds no run, and no --out is made.
+func TestAFinalTestWhoseKeyCannotBeReadSpendsNoSet(t *testing.T) {
+	dir := t.TempDir()
+	labels, manifest := fixtureLabels(t, dir)
+	log := filepath.Join(dir, "exposure.jsonl")
+	out := filepath.Join(dir, "out")
+	stub := newStubModel(t, containsAny("names the"), nil)
+	args := append([]string{"score", "--labels", labels, "--planted", manifest, "--stratum", stratumReal, "--out", out,
+		"--root", "../..", "--final-test", "--set-digest", strings.Repeat("ab", 32), "--seed", "42", "--exposure-log", log}, stub.args(t, dir)...)
+	code, _, stderr := runCmd(t, append(args, "--key-file", filepath.Join(dir, "no-key"))...)
+	if code != 1 || !strings.Contains(stderr, "--key-file: open "+filepath.Join(dir, "no-key")) {
+		t.Errorf("a final test whose key file cannot be read = %d:\n%s", code, stderr)
+	}
+	for _, made := range []string{log, out} {
+		if _, err := os.Stat(made); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused final test made %s (%v)", made, err)
+		}
 	}
 	if stub.calls.Load() != 0 {
 		t.Error("the refused run called the model")
@@ -338,5 +363,237 @@ func TestClassifyKeepsOnlyAVerdictOfItsOwnInputs(t *testing.T) {
 	}
 	if _, ok := got["t1"]; ok || got["t2"].Verdict != "plain" {
 		t.Errorf("the verdicts read: %+v", got)
+	}
+}
+
+// Every command of package main refuses, with exit 2 and before it writes anything, an output
+// that is one of its inputs by one path or another: a file it writes, one it writes in its output
+// directory, or one in a directory it replaces whole, that is a file another of its flags reads
+// (probe-model's --bodies, label's --definition, a key file, the token file and every other
+// input), and an output in a directory it reads whole. The input is left as it was.
+func TestEveryCommandRefusesAnOutputThatIsAnInput(t *testing.T) {
+	dir := t.TempDir()
+	// file writes an input at name under dir and answers its path.
+	file := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("keep\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	at := func(name string) string { return filepath.Join(dir, name) }
+	// The token file is where named writes its counts.json, so one file serves every command that
+	// reads it. Dispatch and the model are a port that answers nothing, so a command that went on
+	// past its refusal fails at once.
+	token := file("named/counts.json")
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", token)
+	key, other := file("key"), file("other.jsonl")
+	reader := []string{"--kind", "openai-chat", "--endpoint", "http://127.0.0.1:1/", "--deployment", "stub", "--key-file", key}
+	endpoint := []string{"--endpoint", "http://127.0.0.1:1/", "--key-file", key}
+	bodies, definition, labelled := file("bodies.jsonl"), file("definition.md"), file("labelled/set/labels.jsonl")
+	for _, c := range []struct {
+		args         []string
+		input, wants string
+	}{
+		{append([]string{"probe-model", "--bodies", bodies, "--out", bodies}, reader...), bodies, "--out names the --bodies file"},
+		{append([]string{"probe-model", "--out", key}, reader...), key, "--out names the --key-file file"},
+		{append([]string{"label", "--in", other, "--definition", definition, "--out", definition, "--resume"}, endpoint...), definition, "--out names the --definition file"},
+		{append([]string{"label", "--in", other, "--definition", other, "--out", key, "--resume"}, endpoint...), key, "--out names the --key-file file"},
+		{[]string{"readers", "--in", file("readers/in.jsonl"), "--state", at("readers/in.jsonl"), "--out", at("readers/out.jsonl"), "--log-through", "10"}, at("readers/in.jsonl"), "--state names the --in file"},
+		{[]string{"readers", "--in", other, "--state", file("readers/state.json"), "--out", at("readers/state.json"), "--log-through", "10"}, at("readers/state.json"), "--out names the --state file"},
+		{[]string{"readers", "--in", other, "--out", token, "--log-through", "10"}, token, "--out names the DISPATCH_TOKEN_FILE file"},
+		{[]string{"fetch", "--through", "10", "--out", token}, token, "--out names the DISPATCH_TOKEN_FILE file"},
+		{[]string{"group", "--in", file("group.jsonl"), "--out", at("group.jsonl")}, at("group.jsonl"), "--out names the --in file"},
+		{[]string{"rule-cost", "--in", file("rule-cost/table.json"), "--seed", "1", "--out", at("rule-cost")}, at("rule-cost/table.json"), "table.json of --out is the --in file"},
+		{[]string{"split", "--in", file("split/counts.json"), "--cut-a", "1", "--cut-b", "2", "--out", at("split")}, at("split/counts.json"), "counts.json of --out is the --in file"},
+		{[]string{"plant", "--in", other, "--corpus", file("plant/planted.jsonl"), "--seed", "1", "--out", at("plant")}, at("plant/planted.jsonl"), "planted.jsonl of --out is the --corpus file"},
+		{[]string{"validate-labeller", "--labels", file("validate/report.json"), "--planted", other, "--seed", "1", "--out", at("validate/report.md")}, at("validate/report.json"), "report.json of --out is the --labels file"},
+		{[]string{"recall", "--labels", file("recall/recall.json"), "--out", at("recall")}, at("recall/recall.json"), "recall.json of --out is the --labels file"},
+		{append([]string{"score", "--labels", file("score.jsonl"), "--stratum", stratumReal, "--out", at("score"), "--final-test", "--set-digest", "ab", "--seed", "1", "--exposure-log", at("score.jsonl"), "--model-id", "stub"}, reader...), at("score.jsonl"), "--exposure-log names the --labels file"},
+		{append([]string{"regress", "--cases", file("regress.jsonl"), "--repeat-bound", "0.1", "--out", at("regress.jsonl")}, reader...), at("regress.jsonl"), "--out names the --cases file"},
+		{append([]string{"reading", "--in", other, "--after", "1", "--through", "2", "--exclude", file("reading/report.json"), "--out", at("reading")}, reader...), at("reading/report.json"), "report.json of --out is the --exclude file"},
+		{[]string{"calibrate", "--name", "n", "--rows", file("rows.jsonl"), "--pairs", other, "--measured", at("rows.jsonl")}, at("rows.jsonl"), "--measured names the --rows file"},
+		{[]string{"dataset", "fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", token}, token, "--out names the DISPATCH_TOKEN_FILE file"},
+		{[]string{"dataset", "fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--labelled", at("labelled"), "--out", at("labelled/snapshot.jsonl.gz")}, labelled, "the --out file lies in the --labelled directory"},
+		{[]string{"dataset", "classify", "--snapshot", file("snapshot.jsonl.gz"), "--out", at("snapshot.jsonl.gz")}, at("snapshot.jsonl.gz"), "--out names the --snapshot file"},
+		{[]string{"dataset", "build", "--snapshot", file("build/counts.json"), "--verdicts", other, "--seed", "1", "--out", at("build")}, at("build/counts.json"), "counts.json of --out is the --snapshot file"},
+		{[]string{"dataset", "pack", "--snapshot", other, "--verdicts", file("pack/dataset.tar.gz.manifest.json"), "--seed", "1", "--out", at("pack/dataset.tar.gz")}, at("pack/dataset.tar.gz.manifest.json"), "dataset.tar.gz.manifest.json of --out is the --verdicts file"},
+		{[]string{"dataset", "pack", "--snapshot", file("pack/dataset.tar.gz.part-000"), "--verdicts", other, "--seed", "1", "--out", at("pack/dataset.tar.gz")}, at("pack/dataset.tar.gz.part-000"), "dataset.tar.gz.part-000 of --out is the --snapshot file"},
+		{[]string{"dataset", "sessions", "--manifest", file("sessions/places.jsonl"), "--cases", other, "--out", at("sessions")}, at("sessions/places.jsonl"), "places.jsonl of --out is the --manifest file"},
+		{[]string{"dataset", "owner-texts", "--snapshot", file("owner/owner-texts.jsonl.gz"), "--out", at("owner")}, at("owner/owner-texts.jsonl.gz"), "owner-texts.jsonl.gz of --out is the --snapshot file"},
+		{[]string{"dataset", "followups", "--from", other, "--cases", filepath.Dir(file("followups/explanations/cases.jsonl.gz")), "--out", at("followups")}, at("followups/explanations/cases.jsonl.gz"), "explanations of --out, which this command replaces whole, holds the --cases file"},
+		{[]string{"dataset", "named", "--doc", "NAMED-2/notes-md@2", "--owner", fixtureOwner, "--out", at("named")}, token, "counts.json of --out is the DISPATCH_TOKEN_FILE file"},
+		{[]string{"dataset", "lists", "--cases", other, "--verdicts", file("lists/question.txt"), "--plain-labels", other, "--out", at("lists")}, at("lists/question.txt"), "question.txt of --out is the --verdicts file"},
+	} {
+		code, _, stderr := runCmd(t, c.args...)
+		if code != 2 || !strings.Contains(stderr, c.wants) {
+			t.Errorf("%v = %d:\n%s\nwant 2 and %q", c.args, code, stderr, c.wants)
+		}
+		if data, err := os.ReadFile(c.input); err != nil || string(data) != "keep\n" {
+			t.Errorf("%v changed its input %s to %q (%v)", c.args[:2], c.input, data, err)
+		}
+	}
+}
+
+// A write renamed over its output once whole goes through a file of a name of its own: a file
+// beside the output under the name the temporary file had before (<out>.tmp), which another run
+// on the same output may be writing, is neither truncated, renamed nor removed, whether the write
+// ends or is refused, and a refused write leaves no file of its own behind.
+func TestAWriteBesideAnOutputLeavesAnotherRunsFileAlone(t *testing.T) {
+	dir := t.TempDir()
+	// another writes another run's file beside out, and checks it and that no other file of a
+	// name beside out is left.
+	another := func(out string) func(string) {
+		if err := os.WriteFile(out+".tmp", []byte("another run's\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return func(what string) {
+			t.Helper()
+			if data, err := os.ReadFile(out + ".tmp"); err != nil || string(data) != "another run's\n" {
+				t.Errorf("%s left another run's %s.tmp as %q (%v)", what, out, data, err)
+			}
+			if left, _ := filepath.Glob(out + ".*.tmp"); len(left) != 0 {
+				t.Errorf("%s left %v", what, left)
+			}
+		}
+	}
+	labels := filepath.Join(dir, "labels.jsonl")
+	check := another(labels)
+	f, err := startLabels(labels, []labelRecord{{EventID: 7, SourceID: "c7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	check("label's start of the labels file")
+
+	cases, out := filepath.Join(dir, "cases.jsonl"), filepath.Join(dir, "readers.jsonl")
+	writeJSONLines(t, cases, Case{EventID: 99, SourceID: "c99", Surface: "comment", Field: "body", Text: "Late."})
+	check = another(out)
+	if _, err := writeReaders(cases, out, &replayState{Through: 10}, 0, 10); err == nil || !strings.Contains(err.Error(), "outside the replayed window") {
+		t.Errorf("readers of a case outside the window: %v", err)
+	}
+	check("a refused readers")
+
+	state := filepath.Join(dir, "state.json")
+	check = another(state)
+	if err := saveReplayState(state, &replayState{Through: 10}); err != nil {
+		t.Fatal(err)
+	}
+	check("the replayed state's save")
+
+	snapshot, verdicts := standardFixture().write(t, dir)
+	bundle := filepath.Join(dir, "dataset.tar.gz")
+	check = another(bundle)
+	if _, _, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, bundle, dsPartSize); err != nil {
+		t.Fatal(err)
+	}
+	check("pack")
+}
+
+// One fetch at a time writes fetch's cases files and dataset fetch's work directory: a second run
+// on the same --out or --work while the first holds its lock, resumed or not, is refused with exit
+// 2, naming the lock, before it writes anything, and the first run's files are left as they were.
+func TestASecondFetchOnTheFilesOfARunningOneIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, data string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unchanged := func(path, data string) {
+		t.Helper()
+		if got, err := os.ReadFile(path); err != nil || string(got) != data {
+			t.Errorf("the refused run left %s as %q (%v), want %q", path, got, err, data)
+		}
+	}
+	token := filepath.Join(dir, "token")
+	write(token, "stand-in\n")
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", token)
+	hold := func(path string) {
+		lock, held, err := harness.LockRun(path)
+		if err != nil || held {
+			t.Fatalf("the first run's lock %s: held %t, %v", path, held, err)
+		}
+		t.Cleanup(func() { lock.Close() })
+	}
+
+	out := filepath.Join(dir, "cases.jsonl")
+	partial := out + ".partial"
+	params, err := json.Marshal(fetchParams{DispatchURL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(partial, "the first fetch's cases\n")
+	write(fetchParamsPath(partial), string(params))
+	hold(out + ".lock")
+	for _, args := range [][]string{{"fetch", "--through", "10", "--out", out}, {"fetch", "--through", "10", "--out", out, "--resume"}} {
+		if code, _, stderr := runCmd(t, args...); code != 2 || !strings.Contains(stderr, "another fetch holds "+out+".lock") {
+			t.Errorf("%v while another fetch holds the lock = %d:\n%s", args, code, stderr)
+		}
+		unchanged(partial, "the first fetch's cases\n")
+		unchanged(fetchParamsPath(partial), string(params))
+	}
+
+	work := filepath.Join(dir, "snapshot.work")
+	write(filepath.Join(work, "bodies.jsonl"), "the first fetch's reads\n")
+	hold(filepath.Join(work, "fetch.lock"))
+	code, _, stderr := runCmd(t, "dataset", "fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", filepath.Join(dir, "snapshot.jsonl.gz"), "--work", work)
+	if code != 2 || !strings.Contains(stderr, "another fetch holds "+filepath.Join(work, "fetch.lock")) {
+		t.Errorf("dataset fetch while another fetch holds its work directory = %d:\n%s", code, stderr)
+	}
+	unchanged(filepath.Join(work, "bodies.jsonl"), "the first fetch's reads\n")
+	if _, err := os.Stat(filepath.Join(work, "fetch.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused dataset fetch wrote %s (%v)", filepath.Join(work, "fetch.json"), err)
+	}
+}
+
+// One label run at a time writes a labels file: a resume while another run holds its lock is
+// refused with exit 2, naming the lock, before it renames a file over --out, so the file the first
+// run appends its records to stays the labels file. The first run's record is one the resume
+// would keep, so with no lock the resume would go on and replace the file.
+func TestASecondLabelRunOnTheLabelsFileOfARunningOneIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	text := "The fix names the risk."
+	cases, definition, key := labelFixture(t, dir, text)
+	rubric, err := os.ReadFile(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := labelJobs([]Case{{EventID: 7, SourceID: "c7", Surface: "comment", Field: "body", Text: text}}, func(string, int64) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "labels.jsonl")
+	writeJSONLines(t, out, labelRecord{EventID: 7, SourceID: "c7", Family: "comment", WriteLabel: writePass,
+		Params: labelParams(labelPreamble+string(rubric), "claude-opus-5-5", "off", 60), Input: jobs[0].input,
+		Sentences: []sentenceLabel{{ID: "s1", Field: "body", Text: text, Verdict: verdictNotVacuous, Shape: "none"}}, Calls: []labelCall{}})
+	before, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, held, err := harness.LockRun(out + ".lock")
+	if err != nil || held {
+		t.Fatalf("the first run's lock: held %t, %v", held, err)
+	}
+	defer lock.Close()
+	stub := newStubModel(t, containsAny("names the"), nil)
+	code, _, stderr := runCmd(t, labelArgs(stub, cases, definition, key, out, "--resume")...)
+	if code != 2 || !strings.Contains(stderr, "another label run holds "+out+".lock") {
+		t.Errorf("label --resume while another run holds the lock = %d:\n%s", code, stderr)
+	}
+	if after, err := os.Stat(out); err != nil || !os.SameFile(before, after) {
+		t.Errorf("the refused run replaced %s (%v)", out, err)
+	}
+	if stub.calls.Load() != 0 {
+		t.Error("the refused run called the model")
 	}
 }

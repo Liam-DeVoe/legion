@@ -29,13 +29,15 @@ const (
 	modelErrorReasonHd = "ms-azureml-model-error-reason"
 )
 
-// probeCall is one probe call's outcome.
+// probeCall is one probe call's outcome. A call the context stopped, before it was made or while
+// it was in flight, is none: stopped marks it, and no row counts it.
 type probeCall struct {
 	Status  int     `json:"status"`
 	Reason  string  `json:"reason,omitempty"`
 	Served  string  `json:"served,omitempty"`
 	Error   string  `json:"error,omitempty"`
 	Seconds float64 `json:"seconds"`
+	stopped bool
 }
 
 // ProbeRow is one model's probe: its calls, what answered, and whether it passes.
@@ -223,6 +225,10 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return 2
 		}
 	}
+	if err := NoOutputIsAnInput(Files("--out", *outPath), mf.files()); err != nil {
+		fmt.Fprintf(stderr, "writing-check harness probe: %v\n", err)
+		return 2
+	}
 	for _, u := range [][2]string{{"--gateway", mf.gateway}, {"--foundry-endpoint", mf.foundry}} {
 		if err := CredentialURL(u[0], u[1]); err != nil {
 			fmt.Fprintf(stderr, "writing-check harness probe: %v\n", err)
@@ -237,7 +243,7 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	p := &prober{http: &http.Client{Timeout: 120 * time.Second}, gateway: mf.gateway, keyFile: mf.keyFile, foundry: mf.foundryConfig()}
 	models := cfg.AllModels()
 	if slices.ContainsFunc(models, func(m ModelEntry) bool { return m.Family == llm.FamilyFoundry }) {
-		if p.tokens, err = p.foundry.Tokens(); err != nil {
+		if p.tokens, err = foundryTokens(p.foundry); err != nil {
 			fmt.Fprintf(stderr, "writing-check harness probe: %v\n", err)
 			return 2
 		}
@@ -259,10 +265,11 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				select {
 				case slots <- struct{}{}:
 				case <-ctx.Done():
-					calls[i][k] = probeCall{Error: ctx.Err().Error()}
+					calls[i][k] = probeCall{stopped: true}
 					return
 				}
 				calls[i][k] = p.call(ctx, m)
+				calls[i][k].stopped = calls[i][k].Status == 0 && ctx.Err() != nil
 				<-slots
 			}()
 		}
@@ -270,8 +277,11 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	wg.Wait()
 	rows := make([]ProbeRow, len(models))
 	pass := true
+	stopped := 0
 	for i, m := range models {
-		rows[i] = probeRow(m, cfg.RoleOf(m.ID), calls[i])
+		made := slices.DeleteFunc(calls[i], func(c probeCall) bool { return c.stopped })
+		stopped += *n - len(made)
+		rows[i] = probeRow(m, cfg.RoleOf(m.ID), made)
 		pass = pass && rows[i].Pass
 	}
 	fmt.Fprintf(stdout, "| Model | Family | Role | Calls | 200 | route_not_found | Statuses | Served ids | p50 / p95 s | Pass |\n| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |\n")
@@ -298,6 +308,12 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		for _, e := range r.Errors {
 			fmt.Fprintf(stderr, "writing-check harness probe: %s: %s\n", r.Model, e)
 		}
+	}
+	// A probe the context stopped before it made every call it was asked for measured fewer
+	// calls than --calls says: it fails, and --out, which records --calls, is not written.
+	if stopped > 0 {
+		fmt.Fprintf(stderr, "writing-check harness probe: stopped (%v) with %d of %d calls made; run it again\n", ctx.Err(), *n*len(models)-stopped, *n*len(models))
+		return 1
 	}
 	if *outPath != "" {
 		if err := writeJSON(*outPath, map[string]any{"time": started.UTC().Format(time.RFC3339), "calls_each": *n, "rows": rows, "pending": cfg.Models.Pending}); err != nil {

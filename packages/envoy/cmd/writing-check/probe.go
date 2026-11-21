@@ -75,6 +75,11 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check probe-model: %v\n", err)
 		return 2
 	}
+	// --out is made before the calls; one that is --bodies or a key file would lose that input.
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out), append(harness.Files("--bodies", *bodies), rf.files()...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check probe-model: %v\n", err)
+		return 2
+	}
 	texts := syntheticBodies
 	if *bodies != "" {
 		if texts, err = readBodies(*bodies); err != nil {

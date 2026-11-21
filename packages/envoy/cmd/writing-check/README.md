@@ -9,6 +9,25 @@ a repository. The commands that write Dispatch's own texts or sentences of them 
 harness refuse an output path inside a repository, before they read any input: a directory at or
 above it that holds `.git` or `.jj`.
 
+Every command that reads an input file and writes an output refuses, with exit 2 and before it
+writes anything, an output that is one of its inputs, by one path or another (a link, or another
+name of the same file): a file it writes, or one it writes in its output directory, that another
+of its flags reads, the key and token files and `DISPATCH_TOKEN_FILE` among them. So
+`probe-model --bodies X --out X` and `label --definition X --out X --resume` are refused, and so is
+`split --in <dir>/counts.json --out <dir>`. A file one flag both reads and writes, such as the
+output a run continues, `readers --state` or `calibrate --measured`, is that flag's own.
+`dataset followups` also refuses an input inside the `explanations/` it replaces whole, and
+`dataset fetch` an output inside a `--labelled` directory, whose every `labels.jsonl` it reads.
+
+A file a command writes whole and renames over its output is written first to a file of a name of
+its own beside the output (`<name>.<random>.tmp`), and a write that fails removes that file
+alone: two runs on one output never truncate or remove each other's file. `fetch`,
+`dataset fetch` and `label` keep files under fixed names that the next run continues (a resumed
+`label` renames its file over the labels file), so each run holds a lock until it ends:
+`<out>.lock` for `fetch` and `label`, `fetch.lock` in the work directory for `dataset fetch`. A
+second run on the same files, resumed or not, is refused with exit 2, naming the lock, before it
+writes anything. The lock file stays after the run.
+
 Each command sends a key, a token or a bearer only over https, or over http to a host inside the
 machine or the cluster: localhost, a loopback address, or a Kubernetes Service's name (ending
 `.svc` or `.cluster.local`). It refuses any other `http://` address with exit 2: the model
@@ -73,7 +92,7 @@ bounds are the bundle's.
 | `--calls` | The number of calls (default 20). |
 | `--deadline` | The reader's time bound for one call (default 0: no bound). |
 | `--bodies` | A JSONL file of `{"text": ...}` bodies. Without it, the command uses a built-in set of synthetic sentences. A body that holds no candidate is not sent. |
-| `--out` | A JSONL file for the per-call records. |
+| `--out` | A JSONL file for the per-call records. It may not name the `--bodies`, `--key-file` or `--federated-token-file` file (exit 2). |
 | `--no-effort` | Send no `reasoning_effort` (`openai-chat` only), for a deployment that refuses the parameter. Without it, the reader asks for effort `off`, which Chat Completions receives as `reasoning_effort: none`. |
 
 Give either `--key-file` or the Azure sign-in flags.
@@ -145,6 +164,10 @@ Beside each cases file, `<file>.params.json` records the Dispatch it was read fr
 (`DISPATCH_URL`, without a trailing slash) and `--after`, and moves with the file. `--resume`
 refuses, with exit 2, a file read from another Dispatch or after another event, and a file that
 has no such record: those cases are not this fetch's.
+
+A fetch holds `<out>.lock` until it ends. A second fetch on the same `--out`, resumed or not, is
+refused with exit 2, naming the lock, before it writes anything: it would truncate or move the
+`<out>.partial` the first one writes.
 
 `DISPATCH_URL` names the Dispatch server. `DISPATCH_TOKEN_FILE` names the file that holds the
 bearer token. The command reads the token file on every request and never prints the token.
@@ -332,8 +355,10 @@ is refused (exit 2). The state is saved after a replay that stopped too,
 through the last event it applied: an event whose payload does not decode is not applied, so the
 next run reads it again. A case outside the replayed window is refused.
 
-`--out` is refused when it names the `--in` file. The cases go to a file beside `--out`, renamed
-over it once every case is written, so a refused run leaves `--out` as it was.
+`--out` is refused when it names the `--in`, the `--state` or the `DISPATCH_TOKEN_FILE` file, and
+`--state` when it names the `--in` file (exit 2). The cases go to a file of a name of their own
+beside `--out`, renamed over it once every case is written, so a refused run leaves `--out` as it
+was, and removes that file alone.
 
 Some history is not in the log:
 
@@ -498,8 +523,8 @@ Output, in `--out`:
 | `--in` | A cases file, or the `planted.jsonl` of `plant`. |
 | `--titles` | A cases file to read issue titles from (default `--in`). For planted copies, give the corpus. |
 | `--definition` | The definition file. The command sends it to the model as the rubric. Keep it out of the repository. |
-| `--out` | The labels file. The command refuses a file that exists, unless `--resume` is given, and an `--out` that names the `--in` or the `--titles` file (exit 2). |
-| `--resume` | Keep the writes the labels file holds with no error, and label the others. The kept lines go to a file beside the labels file, renamed over it once they are written whole, so a resume that stops before then leaves the file as it was. A resume is refused (exit 2) when a kept line was made with another definition, model, effort or `--chunk` (its `params_sha256`), or from another text or issue title of its write than `--in` holds (its `input_sha256`). |
+| `--out` | The labels file. The command refuses a file that exists, unless `--resume` is given, and an `--out` that names the `--in`, the `--titles`, the `--definition` or the `--key-file` file (exit 2). A run holds `<out>.lock` until it ends: a second run on the same `--out` while it does, resumed or not, is refused with exit 2. |
+| `--resume` | Keep the writes the labels file holds with no error, and label the others. The kept lines go to a file of a name of its own beside the labels file, renamed over it once they are written whole, so a resume that stops before then leaves the file as it was, and a second run on the same `--out` never truncates or removes that file. A resume is refused (exit 2) when a kept line was made with another definition, model, effort or `--chunk` (its `params_sha256`), or from another text or issue title of its write than `--in` holds (its `input_sha256`). |
 | `--concurrency` | The calls in flight at once (default 4). |
 | `--kind` | The endpoint's protocol (default `anthropic-messages`). |
 | `--endpoint` | The model gateway's base URL. |
@@ -708,11 +733,18 @@ resamples, and `decimals`, 4), and the figures. `figures.md` is the same as tabl
 
 With `--final-test` (which needs `--set-digest`, `--seed`, `--exposure-log` and a `--model-id`),
 the command refuses a set whose digest the exposure log already holds a final-test run for. It
-makes `--out` first, so an `--out` that cannot be made spends no set, then appends one line to
+reads the reader's `--key-file` and `--federated-token-file` and makes `--out` first, so a key the
+calls could not send or an `--out` that cannot be made spends no set, then appends one line to
 the log (`run_id`, `kind: final_test`, `time`, `set_digest`, `bundle_digest`, `seed`,
 `model_id`, `stratum`) before it reads any write, so a run that stops part way still spends the
 set. It computes the figures before it writes any file, so a run whose figures are refused
 leaves `--out` as it was.
+
+A run in which a reader call failed (any outcome but `read`, `candidate_cap` or `not_called`: a
+timeout, a provider error, a malformed reply, a model mismatch) still writes its files, whose
+figures count that write as a missed failure, and then exits 1, naming how many of its reader
+calls failed: the run is not complete. A run stopped before every write was scored writes none
+of them and exits 1.
 
 ## reproduce
 
@@ -776,6 +808,10 @@ outcome, whether the rules refused it, and its bytes; no text); `report.json` an
 with the window, the excluded manifests and their SHA-256, the projects, the manifest's SHA-256
 and the bundle digest. The manifest and the results are written once every write is read, so a
 reading that stops writes none of them.
+
+A reading in which a detector call failed (an outcome other than `refused`, `clean` or
+`candidate_cap`) still writes its files, whose report counts that write among the faults, and
+then exits 1, naming how many of its detector calls failed: the reading is not complete.
 
 ## validate
 
@@ -861,7 +897,7 @@ plain check (see "lists").
 | `--end` | The end time, RFC 3339. The snapshot holds the events created at or before it. |
 | `--out` | The snapshot file, gzipped JSONL. |
 | `--labelled` | The labelled sets (`writing-check-sets-and-labels-tar-gz`), as the tarball or the directory it was extracted to. |
-| `--work` | The work directory (default `<out>.work`). |
+| `--work` | The work directory (default `<out>.work`). A fetch holds `fetch.lock` in it until it ends: a second fetch on the same work directory, resumed or not, is refused with exit 2. |
 | `--owner` | The person whose texts select the cases, by login (required; no default). |
 | `--concurrency` | The reads in flight at once (default 4). |
 
@@ -972,7 +1008,7 @@ reads them. An agent's text is a text that `writingcheck.Checks` checks.
 | --- | --- |
 | `--snapshot`, `--verdicts`, `--seed` | The three inputs. |
 | `--confirmed`, `--confirmed-seed` | Optional, together: the result of a fresh reader's read of a sample of question cases (`{"reader", "confirmed", "total", "items": [{"case_id", "about_words"}]}`), and the seed of its draw. |
-| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. A directory that holds the files (tarball, manifest or parts) of more than one bundle, such as an earlier pack's beside a newer one, is refused, naming each. |
+| `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. A directory that holds the files (tarball, manifest or parts) of more than one bundle, such as an earlier pack's beside a newer one, is refused, naming each. So is a directory whose files of one name are not one bundle: parts with no manifest, a part the manifest does not name, a manifest whose parts are not all there, or a tarball whose SHA-256 is not the one its manifest gives (an earlier pack's manifest and parts beside a newer tarball of the same name, or the other way). The tarball, manifest and parts one `pack` wrote are read as one bundle. |
 | `--to-development` | Optional: the split groups whose cases go to the development part whatever the split says, one key a line. A blank line and a line that opens with `#` are skipped. See below the split. |
 | `--out` | The directory for the output files. |
 
@@ -1100,8 +1136,12 @@ same inputs write the same bytes. A bundle larger than `--part-size` (default 24
 Dispatch's 25 MiB file limit) is also written as parts, `<bundle>.part-000` and on, with
 `<bundle>.manifest.json`. The manifest gives each part's size and SHA-256, and the bundle's.
 `build --from` the manifest joins the parts. It refuses a part or a joined bundle whose SHA-256
-differs from the manifest. `pack` first removes the manifest and the parts that an earlier pack
-to the same `--out` left, so `build --from` the directory never joins an earlier bundle's parts.
+differs from the manifest, and a part the manifest names that is not beside it. `pack` first
+removes the manifest and the parts that an earlier pack to the same `--out` left, so
+`build --from` the directory never joins an earlier bundle's parts; `build --from` a directory
+also refuses one whose tarball, manifest and parts of one name are not one bundle (see `--from`
+above). The bundle goes to a file of a name of its own beside `--out`, renamed over it once
+whole. `pack` refuses an `--out` whose bundle, manifest or parts would be one of its inputs.
 
 `TestDatasetFlippedVerdictChangesTheDigest` is the negative control of
 `TestDatasetBuildIsDeterministic`: the same inputs build the same SHA-256, and one changed verdict
@@ -1521,7 +1561,10 @@ Its inputs are in the package, and they are among the paths that decide a score:
 
 Every file the harness writes holds Dispatch text or session text. Write them under `$TMPDIR`.
 Each subcommand refuses an `--out` inside a repository: a directory at or above it that holds a
-`.git` or a `.jj`.
+`.git` or a `.jj`. Each refuses, with exit 2 and before it writes anything, a file it writes that
+is a file another of its flags reads (see the top of this README): for example `score --out` whose
+`cases.jsonl` is the one of `--readers-from`, an `--exposure-log` that is a file of `--cases`, or
+a `compare --out` that is `run.json` of `--a`.
 
 ### Model flags
 
@@ -1689,7 +1732,10 @@ model that plays a role and is a candidate has one row, whose role names both
 `off` sent as `none`), and its row bears its name, `<id>:<effort>`; a Claude call asks for no
 thinking. A model fails when a call answers `route_not_found`, a 404 or a 400 that names the
 model, when the provider serves another model's id, or when no call answers. Then `probe`
-exits 1. `--out` also writes the rows as JSON.
+exits 1. `--out` also writes the rows as JSON; it may not name the `--gateway-key-file` or the
+`--federated-token-file` file (exit 2). A probe stopped (Ctrl-C) before it made every call it was
+asked for exits 1 and writes no `--out`: a call the stop cut short, or never made, is no answer,
+and the rows would hold fewer calls than `--calls` says.
 
 ### score
 
@@ -1724,7 +1770,7 @@ exits 1. `--out` also writes the rows as JSON.
 | `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
 | `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
 | `--added-grader` | How the `added` judgement is asked (see "The added grader"): `old` (the default), the request as it was; `inputs-first`, `lost`'s and `added`'s texts after the other parts; `verify`, the old request, then a check of each fact it lists; or `inputs-first-verify`, `inputs-first`'s requests, then the same check. `run.json` records it as `added_grader`, and `scores.md` names it, `old` included. |
-| `--texts-from` | A run directory, or a lockstep's directory of them, whose texts this run grades again with no call of the change (see "Texts of another run"). It takes the change, its candidates, the part, the groups, the sample and `--session-chars` from that run. |
+| `--texts-from` | A run directory, or a lockstep's directory of them, whose texts this run grades again with no call of the change (see "Texts of another run"). It takes the change, its candidates, the part, the groups, the sample and `--session-chars` from that run. A directory that holds both, a run's `run.json` and a directory with a run of its own, is refused (exit 2), since it does not say which is meant. |
 | `--uncached-input-per-minute` | Hold the run's own model calls to this many uncached input tokens in any one minute (default 0: no pacing). See "Pacing". |
 
 For each case, the judgements are:
@@ -1817,7 +1863,8 @@ A run of the held-out part appends one line to the exposure log before it scores
 commit, the time, the changes, the models by role and the output directory, as an absolute path.
 It checks the log first, and appends the line just before it scores, after every refusal of its
 own that needs no model call (the session parts, the gateway, the key, the prices, the local
-instance): a run refused there read no text of the part and writes no line.
+instance), after it opens each lane's `cases.jsonl` to append its results and after it reads the
+gateway's key file: a run refused there read no text of the part and writes no line.
 The held-out part is scored once at a commit for each cell of the grid: a change with one
 candidate, or a change that calls none. A line's cells are its changes with each candidate that
 its `models.candidate` names. A lockstep run (see "Lockstep") names all its models there,
@@ -2263,7 +2310,9 @@ file holds its URL, its fake Envoy, its database, the settings, `seeded` and `re
 plain-words skill, and the writing check's bundle, under `--repo`): a
 start that reset and seeded the database writes a new mark on it (`COMMENT ON DATABASE`), and a
 `--keep` start reads that mark back. The file goes when the start ends, only while it is still the
-file that start made: `local` never removes a `local.json` another start wrote.
+file that start made: `local` never removes a `local.json` another start wrote. A stop (Ctrl-C or
+SIGTERM) once the instance is up ends `local` with exit 0; a stop before it is up exits 1, since
+no instance was started.
 
 `--test-models` sets the server up for `score`: every candidate a test model at the gateway or
 the Foundry account the model flags name (with the Foundry sign-in), each by its name, so a

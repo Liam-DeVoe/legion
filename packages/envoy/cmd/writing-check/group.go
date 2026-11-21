@@ -40,6 +40,10 @@ func runGroup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check group: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out), harness.Files("--in", *in)); err != nil {
+		fmt.Fprintf(stderr, "writing-check group: %v\n", err)
+		return 2
+	}
 	cases, err := readCases(*in)
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check group: %v\n", err)

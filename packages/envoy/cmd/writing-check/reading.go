@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
+	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/reader"
 )
 
 // manifestList is a repeatable flag of manifest paths.
@@ -107,6 +108,14 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "writing-check reading: %v\n", err)
 		return 2
 	}
+	reads := append(harness.Files("--in", *in), rf.files()...)
+	for _, path := range excludes {
+		reads = append(reads, harness.Files("--exclude", path)...)
+	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, "manifest.jsonl", "manifest.sha256", "results.jsonl", "report.json", "report.md"), reads); err != nil {
+		fmt.Fprintf(stderr, "writing-check reading: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check reading: %v\n", err)
 		return 1
@@ -139,9 +148,10 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(err)
 	}
+	var results []readingResult
 	if len(writes) > 0 {
 		rules := writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules})
-		results := make([]readingResult, len(writes))
+		results = make([]readingResult, len(writes))
 		done := make([]bool, len(writes))
 		eachWrite(ctx, len(writes), rf.concurrency,
 			func() *writingcheck.Checker {
@@ -176,6 +186,22 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return fail(err)
 	}
 	fmt.Fprint(stdout, md)
+	// A write whose detector call failed has no verdict of the reader: the report counts it among
+	// the faults, and the reading is not complete. A stopped reading ended above.
+	failed, called := 0, 0
+	for _, r := range results {
+		if r.Candidates == 0 {
+			continue
+		}
+		called++
+		if o := r.DetectorOutcome; o != writingcheck.OutcomeRefused && o != writingcheck.OutcomeClean && o != reader.OutcomeCandidateCap {
+			failed++
+		}
+	}
+	if failed > 0 {
+		fmt.Fprintf(stderr, "writing-check reading: %d of %d detector calls failed (their outcomes are in results.jsonl), so the reading is not complete; run it again\n", failed, called)
+		return 1
+	}
 	return 0
 }
 

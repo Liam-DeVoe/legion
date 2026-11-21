@@ -267,3 +267,140 @@ func TestASecondLocalStartOnOneOutIsRefused(t *testing.T) {
 		t.Errorf("the first start, as it ended, removed or changed the local.json another wrote (%q, %v)", data, err)
 	}
 }
+
+// A `harness local` start stopped (Ctrl-C) before its instance is up fails: it started no
+// instance, as it was asked to. A stop once the instance is up is how it ends.
+func TestALocalStartStoppedBeforeItsInstanceIsUpFails(t *testing.T) {
+	bin, out := t.TempDir(), t.TempDir()
+	pids := filepath.Join(t.TempDir(), "pids")
+	script := "#!/bin/sh\necho $$ >> \"$HARNESS_TEST_BUN_PID\"\nexec sleep 300\n"
+	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HARNESS_TEST_BUN_PID", pids)
+	t.Cleanup(func() {
+		data, _ := os.ReadFile(pids)
+		for _, line := range strings.Fields(string(data)) {
+			if pid, err := strconv.Atoi(line); err == nil {
+				syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+	})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	done := make(chan int, 1)
+	var stderr strings.Builder
+	go func() {
+		var stdout strings.Builder
+		done <- Run(ctx, []string{"local", "--out", out, "--pg-dsn", "postgres://harness@127.0.0.1:1/postgres", "--database", "dispatch_harness_1", "--repo", t.TempDir()}, &stdout, &stderr)
+	}()
+	testwait.Eventually(t, "the start's instance to run", func() bool {
+		data, _ := os.ReadFile(pids)
+		return len(strings.Fields(string(data))) == 1
+	})
+	stop()
+	if code := <-done; code != 1 || !strings.Contains(stderr.String(), "before the instance was up") {
+		t.Errorf("a start stopped before its instance was up = %d:\n%s", code, stderr.String())
+	}
+}
+
+// Every harness command refuses, with exit 2 and before it writes anything, an output that is one
+// of its inputs: a file it writes, or one it writes in its output directory, that is a file
+// another of its flags reads (a key file, --case-list, the build's cases, --planted, a run's
+// files, local.json). The input is left as it was.
+func TestEveryHarnessCommandRefusesAnOutputThatIsAnInput(t *testing.T) {
+	build, sessions := writeFixture(t)
+	dir := t.TempDir()
+	// file writes an input at name under dir and answers its path.
+	file := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("keep\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	at := func(name string) string { return filepath.Join(dir, name) }
+	key := file("key")
+	// The gateway and Postgres are a port that answers nothing, so a command that went on past
+	// its refusal fails at once.
+	gateway := []string{"--gateway", "http://127.0.0.1:1", "--gateway-key-file", key}
+	builtCases := filepath.Join(build, casesFile)
+	for _, c := range []struct {
+		args         []string
+		input, wants string
+	}{
+		{append([]string{"probe", "--out", key}, gateway...), key, "--out names the --gateway-key-file file"},
+		{append([]string{"score", "--cases", build, "--sessions", sessions, "--out", at("score"), "--case-list", file("score/scores.md")}, gateway...), at("score/scores.md"), "scores.md of --out is the --case-list file"},
+		{append([]string{"score", "--part", PartHeldOut, "--commit", "c0ffee", "--cases", build, "--sessions", sessions, "--out", at("held"), "--exposure-log", builtCases}, gateway...), builtCases, "--exposure-log names cases.jsonl.gz of --cases"},
+		{append([]string{"grader-test", "--planted", file("grader/grader-test.json"), "--cases", build, "--sessions", sessions, "--out", at("grader")}, gateway...), at("grader/grader-test.json"), "grader-test.json of --out is the --planted file"},
+		{[]string{"compare", "--a", filepath.Dir(file("a/run.json")), "--b", at("a"), "--out", at("a/run.json")}, at("a/run.json"), "--out names run.json of --a"},
+		{[]string{"phrases-labels", "--labels", at("labels"), "--out", at("phrases"), "--gateway-key-file", file("phrases/results.jsonl")}, at("phrases/results.jsonl"), "results.jsonl of --out is the --gateway-key-file file"},
+		{[]string{"asked-words", "--run", filepath.Dir(file("run/cases.jsonl")), "--cases", build, "--out", at("run/cases.jsonl")}, at("run/cases.jsonl"), "--out names cases.jsonl of --run"},
+		{[]string{"local", "--out", at("local"), "--pg-dsn", "postgres://127.0.0.1:1/x", "--gateway-key-file", file("local/local.json")}, at("local/local.json"), "local.json of --out is the --gateway-key-file file"},
+		{[]string{"load", "--local", file("load/loaded.jsonl"), "--cases", build, "--verdicts", key, "--out", at("load")}, at("load/loaded.jsonl"), "loaded.jsonl of --out is the --local file"},
+	} {
+		before, err := os.ReadFile(c.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runHarness(c.args...)
+		if code != 2 || !strings.Contains(stderr, c.wants) {
+			t.Errorf("harness %v = %d:\n%s\nwant 2 and %q", c.args, code, stderr, c.wants)
+		}
+		if after, err := os.ReadFile(c.input); err != nil || string(after) != string(before) {
+			t.Errorf("harness %s changed its input %s (%v)", c.args[0], c.input, err)
+		}
+	}
+}
+
+// writeJSON, and each write ReplaceFile makes, goes through a file of a name of its own beside its
+// output: another run's file under the name the temporary file had before (<path>.tmp) is left
+// as it was, and a write that fails leaves no file of its own behind.
+func TestReplaceFileLeavesAnotherRunsFileAlone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.json")
+	if err := os.WriteFile(path+".tmp", []byte("another run's\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(path, map[string]int{"cases": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "{\n  \"cases\": 1\n}\n" {
+		t.Errorf("writeJSON wrote %q (%v)", data, err)
+	}
+	if data, err := os.ReadFile(path + ".tmp"); err != nil || string(data) != "another run's\n" {
+		t.Errorf("writeJSON left another run's run.json.tmp as %q (%v)", data, err)
+	}
+	// A rename over a directory that holds a file fails.
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.MkdirAll(filepath.Join(blocked, "inside"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceFile(blocked, []byte("x"), 0o600); err == nil {
+		t.Error("a write over a directory that holds a file answered no error")
+	}
+	for _, own := range []string{path + ".*.tmp", blocked + ".*.tmp"} {
+		if left, _ := filepath.Glob(own); len(left) != 0 {
+			t.Errorf("the writes left %v", left)
+		}
+	}
+	a, err := CreateBeside(path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(a.Name())
+	defer a.Close()
+	b, err := CreateBeside(path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(b.Name())
+	defer b.Close()
+	if info, err := a.Stat(); a.Name() == b.Name() || filepath.Dir(a.Name()) != dir || err != nil || info.Mode().Perm() != 0o644 {
+		t.Errorf("two files beside %s: %s and %s (%v)", path, a.Name(), b.Name(), err)
+	}
+}

@@ -1,10 +1,19 @@
 package harness
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
@@ -205,6 +214,71 @@ func TestProbeRows(t *testing.T) {
 		if got := servedMatches(tc.requested, tc.served); got != tc.want {
 			t.Errorf("servedMatches(%q, %q) = %t", tc.requested, tc.served, got)
 		}
+	}
+}
+
+// A probe the context stops before it made every call it was asked for fails and writes no --out,
+// though every model answered 200 before the stop: a call the stop cut short, or never made, is
+// no answer, and the run made fewer calls than --calls says.
+func TestAProbeTheContextStopsFails(t *testing.T) {
+	stubFoundryTokens(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each model by the id and the effort its calls send.
+	want := map[string]bool{}
+	for _, m := range cfg.AllModels() {
+		effort := m.Effort
+		if m.Family != llm.FamilyFoundry {
+			effort = ""
+		} else if effort == "off" {
+			effort = "none"
+		}
+		want[m.ID+" "+effort] = true
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var mu sync.Mutex
+	answered := map[string]bool{}
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model  string `json:"model"`
+			Effort string `json:"reasoning_effort"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		every := len(answered) == len(want)
+		if !every {
+			answered[req.Model+" "+req.Effort] = true
+		}
+		mu.Unlock()
+		if every {
+			// Every model has answered 200: the next call is stopped in flight, as by Ctrl-C.
+			cancel()
+			<-r.Context().Done()
+			return
+		}
+		fmt.Fprintf(w, `{"model": %q}`, req.Model)
+	}))
+	t.Cleanup(gateway.Close)
+	out := filepath.Join(t.TempDir(), "probe.json")
+	var stdout, stderr bytes.Buffer
+	code := Run(ctx, []string{"probe", "--calls", "20", "--concurrency", "1", "--gateway", gateway.URL, "--gateway-key-file", keyFile(t),
+		"--foundry-endpoint", gateway.URL + "/models", "--azure-tenant", "tenant", "--azure-client-id", "client", "--out", out}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "stopped (context canceled) with ") {
+		t.Errorf("a probe stopped after every model answered = %d:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	mu.Lock()
+	if !maps.Equal(answered, want) {
+		t.Errorf("the models that answered before the stop, %v, are not every model, %v", slices.Sorted(maps.Keys(answered)), slices.Sorted(maps.Keys(want)))
+	}
+	mu.Unlock()
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the stopped probe wrote %s (%v)", out, err)
 	}
 }
 

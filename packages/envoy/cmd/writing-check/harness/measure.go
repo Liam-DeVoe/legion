@@ -338,6 +338,9 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err := OutsideRepository("--out", *out); err != nil {
 		return fail(2, err)
 	}
+	if err := NoOutputIsAnInput(Files("--out", *out, "run.json", "results.jsonl", "agreement.json", "agreement.md"), append(Files("--labels", *labelsDir, "cases.jsonl", "labels.jsonl"), mf.files()...)); err != nil {
+		return fail(2, err)
+	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		return fail(1, err)
@@ -561,6 +564,9 @@ func runAskedWords(args []string, stdout, stderr io.Writer) int {
 		return fail(2, errors.New("--run, --cases and --out are required, and nothing else"))
 	}
 	if err := OutsideRepository("--out", *out); err != nil {
+		return fail(2, err)
+	}
+	if err := NoOutputIsAnInput(Files("--out", *out), append(Files("--run", *run, "run.json", "cases.jsonl"), Files("--cases", *casesDir, casesFile, documentsFile)...)); err != nil {
 		return fail(2, err)
 	}
 	var params RunParams

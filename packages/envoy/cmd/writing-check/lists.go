@@ -181,6 +181,11 @@ func runDatasetLists(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset lists: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, dsListQuestion, dsListAnswer, dsListPlain),
+		slices.Concat(harness.Files("--cases", dsCasesFile(*casesPath)), harness.Files("--verdicts", *verdictsPath), harness.Files("--plain-labels", *labelsPath))); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset lists: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check dataset lists: %v\n", err)
 		return 1

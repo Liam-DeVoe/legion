@@ -94,6 +94,12 @@ func (m *modelFlags) foundryConfig() llm.FoundryConfig {
 	}
 }
 
+// files are the files the flags name that a command reads: the gateway's key and the federated
+// token.
+func (m *modelFlags) files() []File {
+	return append(Files("--gateway-key-file", m.keyFile), Files("--federated-token-file", m.tokenFile)...)
+}
+
 // claudeClient is the client of a Claude model of the config, at a gateway the key may be sent to
 // (CredentialURL).
 func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runner) (*claude.Client, error) {

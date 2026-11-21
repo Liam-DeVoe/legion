@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/candidates"
@@ -65,6 +66,12 @@ func (f *readerFlags) model() (agentloop.Model, error) {
 		return agentloop.Model{}, errors.New("--concurrency must be at least 1")
 	}
 	return model, nil
+}
+
+// files are the files the flags name that a command reads: the endpoint's key and the federated
+// token.
+func (f *readerFlags) files() []harness.File {
+	return append(harness.Files("--key-file", f.keyFile), harness.Files("--federated-token-file", f.federated)...)
 }
 
 // observedReader is a reader with the last call it made, for a command that records each call's

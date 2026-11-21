@@ -175,6 +175,12 @@ func runDatasetFollowups(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset followups: %v\n", err)
 		return 2
 	}
+	// explanations/ takes the place of the one in --out whole (dsStaged), with every file in it.
+	writes := append(harness.Files("--out", *out, dsFollowupsFile), harness.File{Flag: "--out", Path: filepath.Join(*out, dsExplanationsDir), Name: dsExplanationsDir, Tree: true})
+	if err := harness.NoOutputIsAnInput(writes, append(harness.Files("--from", *from), harness.Files("--cases", dsCasesFile(*casesPath))...)); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset followups: %v\n", err)
+		return 2
+	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check dataset followups: %v\n", err)
 		return 1

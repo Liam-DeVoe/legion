@@ -257,11 +257,10 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	// The labels file is renamed over --out before the cases are read again on a resume, so an
 	// --out that is an input would lose that input.
-	for _, input := range [][2]string{{"--in", *in}, {"--titles", *titles}} {
-		if input[1] != "" && sameFile(input[1], *out) {
-			fmt.Fprintf(stderr, "writing-check label: --out names the %s file: give another --out\n", input[0])
-			return 2
-		}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out), slices.Concat(harness.Files("--in", *in), harness.Files("--titles", *titles),
+		harness.Files("--definition", *definition), harness.Files("--key-file", *keyFile))); err != nil {
+		fmt.Fprintf(stderr, "writing-check label: %v\n", err)
+		return 2
 	}
 	model, err := probeModel(*kind, *endpoint, *modelID, "", *keyFile, embed.EntraConfig{})
 	if err != nil {
@@ -281,6 +280,19 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check label: %s exists; give --resume to continue it\n", *out)
 		return 2
 	}
+	// One run at a time writes the labels file: a resume renames its file over --out, and the
+	// records another run appended after that would go to the file it replaced. The lock is
+	// <out>.lock, held until the run ends.
+	lock, held, err := harness.LockRun(*out + ".lock")
+	if held {
+		fmt.Fprintf(stderr, "writing-check label: another label run holds %s, the lock of %s: wait for it to end, or give another --out\n", *out+".lock", *out)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "writing-check label: %v\n", err)
+		return 1
+	}
+	defer lock.Close()
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "writing-check label: %v\n", err)
 		return 1
@@ -389,12 +401,12 @@ feeding:
 	return 0
 }
 
-// startLabels writes keep, the records --resume keeps, to a file beside path and renames it over
-// path, so path holds its old lines until the kept ones are written whole, and answers that file
-// open to take the run's records. With nothing kept it starts an empty file.
+// startLabels writes keep, the records --resume keeps, to a file of its own beside path
+// (harness.CreateBeside) and renames it over path, so path holds its old lines until the kept ones
+// are written whole and a second run on path never truncates or removes this run's file, and
+// answers that file open to take the run's records. With nothing kept it starts an empty file.
 func startLabels(path string, keep []labelRecord) (*os.File, error) {
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := harness.CreateBeside(path, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -405,11 +417,11 @@ func startLabels(path string, keep []labelRecord) (*os.File, error) {
 		}
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = os.Rename(f.Name(), path)
 	}
 	if err != nil {
 		f.Close()
-		os.Remove(tmp)
+		os.Remove(f.Name())
 		return nil, err
 	}
 	return f, nil

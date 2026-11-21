@@ -333,6 +333,13 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := harness.OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}
+	written := harness.Files("--out", *out, "outputs.jsonl", "figures.json", "figures.md")
+	if *finalTest {
+		written = append(written, harness.Files("--exposure-log", *exposureLog)...)
+	}
+	if err := harness.NoOutputIsAnInput(written, slices.Concat(harness.Files("--labels", *labelsPath), harness.Files("--planted", *plantedPath), rf.files())); err != nil {
+		return usage(err.Error())
+	}
 	params := figureParams{Stratum: *stratum, BootstrapSeed: *bootstrapSeed, Bootstrap: *bootstrapN, Decimals: figureDecimals}
 	if flagGiven(flags, "heldout-seed") {
 		params.Heldout = &heldout{Seed: *heldoutSeed, Share: *heldoutShare}
@@ -373,8 +380,14 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 	}
-	// --out is made before the final test is claimed, so an --out that cannot be made spends no
-	// set; the claim is the last step before the first write is read.
+	// The reader's key and token files are read, and --out made, before the final test is claimed,
+	// so a key the calls could not send or an --out that cannot be made spends no set; the claim is
+	// the last step before the first write is read.
+	for _, f := range rf.files() {
+		if _, err := os.ReadFile(f.Path); err != nil {
+			return fail(fmt.Errorf("%s: %w", f.Flag, err))
+		}
+	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(err)
 	}
@@ -414,6 +427,22 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return fail(err)
 	}
 	fmt.Fprint(stdout, md)
+	// A write whose reader call failed has no verdict of the reader: the figures count it as a
+	// missed failure, as the method does, and the run is not complete. A stopped run ended above.
+	asked, failed := 0, 0
+	for _, o := range outputs {
+		if o.Outcome == outcomeNotCalled {
+			continue
+		}
+		asked++
+		if o.Outcome != outcomeRead && o.Outcome != reader.OutcomeCandidateCap {
+			failed++
+		}
+	}
+	if failed > 0 {
+		fmt.Fprintf(stderr, "writing-check score: %d of %d reader calls failed (their outcomes and errors are in outputs.jsonl), so the run is not complete; run it again\n", failed, asked)
+		return 1
+	}
 	return 0
 }
 

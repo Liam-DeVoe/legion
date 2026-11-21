@@ -149,6 +149,10 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
 		return 2
 	}
+	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, dsBuildFiles...), harness.Files("DISPATCH_TOKEN_FILE", tokenFile)); err != nil {
+		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
+		return 2
+	}
 	if err := harness.CredentialURL("DISPATCH_URL", base); err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
 		return 2

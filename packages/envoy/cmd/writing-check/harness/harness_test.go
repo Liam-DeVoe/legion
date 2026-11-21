@@ -407,6 +407,34 @@ func TestAHeldOutRunWritesTheExposureLogAndIsRefusedAtTheSameCommit(t *testing.T
 	}
 }
 
+// A held-out run refused on a file of its own before it reads a case, a lane's cases.jsonl it
+// cannot open or a gateway key file it cannot read, writes no line to the exposure log: it read
+// no text of the part, so the next run at its commit is no second run.
+func TestAHeldOutRunRefusedOnItsOwnFilesClaimsNothing(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, graderRules(t)...)
+	// cases.jsonl names a file in a directory that is not there: the run reads it as no result,
+	// and cannot open it to append one.
+	unopened := t.TempDir()
+	if err := os.Symlink(filepath.Join(unopened, "missing", "cases.jsonl"), filepath.Join(unopened, "cases.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, out, key, want string }{
+		{"a lane's cases.jsonl it cannot open", unopened, keyFile(t), filepath.Join(unopened, "cases.jsonl")},
+		{"a gateway key file it cannot read", t.TempDir(), filepath.Join(t.TempDir(), "no-key"), "the gateway key file"},
+	} {
+		exposure := filepath.Join(t.TempDir(), "exposure.log")
+		code, _, stderr := runHarness("score", "--part", PartHeldOut, "--commit", "c0ffee", "--cases", build, "--sessions", sessions, "--out", c.out,
+			"--gateway", stand.URL, "--gateway-key-file", c.key, "--draws", "50", "--exposure-log", exposure)
+		if code != 1 || !strings.Contains(stderr, c.want) || len(stand.Requests()) != 0 {
+			t.Errorf("a held-out run with %s = %d after %d calls:\n%s", c.name, code, len(stand.Requests()), stderr)
+		}
+		if logged, err := ReadExposures(exposure); err != nil || len(logged) != 0 {
+			t.Errorf("the held-out run with %s, which read no case, wrote the exposure log: %+v (%v)", c.name, logged, err)
+		}
+	}
+}
+
 // The log holds one run of each cell at a commit: a second run of a cell needs a reason, a cell
 // of its own at the same commit does not, and a run in the directory of the run of its very cells
 // continues that run while it has a case left.
