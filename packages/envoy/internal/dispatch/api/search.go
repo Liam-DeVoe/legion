@@ -671,9 +671,10 @@ var searchMeaningScan = []string{
 // is: 20 once it is partitioned by project, and the base's 400 on the one graph before the swap
 // (searchMeaningScan says why each). It reads which from the catalog in the transaction, one
 // lookup of embeddings' relation, so a transaction begun after the swap reads the new width and
-// one begun before it the old, whichever process runs it.
+// one begun before it the old, whichever process runs it. The catalog is named by its schema, as
+// a statement's census reads a catalog read (TestEveryProjectReadBindsTheFragmentPerStatement).
 const searchMeaningWidth = `select set_config('hnsw.ef_search',
-	case when (select relkind from pg_class where oid = 'embeddings'::regclass) = 'p' then '20' else '400' end, true)`
+	case when (select relkind from pg_catalog.pg_class where oid = 'embeddings'::regclass) = 'p' then '20' else '400' end, true)`
 
 // searchMeaningStatementBound is the first of those settings. It is named because two readers
 // outside the list need the very same string: the measurement of these statements, which has to

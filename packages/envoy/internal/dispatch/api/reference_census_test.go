@@ -131,7 +131,6 @@ var referenceDispositions = map[string]referenceDisposition{
 	"document_search.artifact_id":               {ownColumn, "the searched document (searchProjectVisible)"},
 	"document_search_backfill.artifact_id":      {internalColumn, "a backfill's cursor"},
 	"embeddings.project_key":                    {ownColumn, "the embedded item's project"},
-	"embeddings_partitioned.project_key":        {ownColumn, "the embedded item's project, in the table embeddings is copied into until the swap"},
 	"events.artifact_id":                        {ownColumn, "the event's document"},
 	"events.issue_key":                          {ownColumn, "the event's issue"},
 	"events.project_key":                        {ownColumn, "the event's project"},
