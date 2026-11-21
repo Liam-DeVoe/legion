@@ -615,55 +615,55 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
 		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time,
 		// `mergeWait`, the assignments, the entry times, the repositories' `apps`, the claim views'
-		// keys of contract 193 and the basis keys of contract 202 are held back.
+		// keys of contract 193 and the basis keys of contract 203 are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, contract: whyAndLineFieldsContract},
 		// The band at leakCheckCauseContract: the cause is served too, and the entry numbers,
 		// the held list, the tree quiet time, `mergeWait`, the assignments, the entry times, the
 		// repositories' `apps`, the pause, the claim views' keys of contract 193 and the basis keys
-		// of contract 202 are the ten bands left above it.
+		// of contract 203 are the ten bands left above it.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, contract: leakCheckCauseContract},
 		// The band from phaseEntriesContract to below heldContract: the entry numbers are
 		// served too, and the held list, the tree quiet time, `mergeWait`, the assignments, the
 		// entry times, the repositories' `apps`, the pause, the claim views' keys of contract 193
-		// and the basis keys of contract 202 are the nine bands left above it.
+		// and the basis keys of contract 203 are the nine bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, contract: phaseEntriesContract},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
 		// and the tree quiet time, `mergeWait`, the assignments, the entry times, the
 		// repositories' `apps`, the pause, the claim views' keys of contract 193 and the basis keys
-		// of contract 202 are the eight key-carrying bands left above it.
+		// of contract 203 are the eight key-carrying bands left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, contract: heldContract},
 		// The band from quietTimeContract to below mergeWaitContract: the tree quiet time is
 		// served too, and `mergeWait`, the assignments, the entry times, the repositories' `apps`,
-		// the pause, the claim views' keys of contract 193 and the basis keys of contract 202 are
+		// the pause, the claim views' keys of contract 193 and the basis keys of contract 203 are
 		// the seven bands left above it. 123, INFRA-3146's contract, moves no shape of the state.
 		// The strip of 132 takes a word of the line's `kind` and no key, so it changes no column of
 		// this table; waiting_on_issue_test.go reads that word.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
 		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served
 		// too, and the assignments, the entry times, the repositories' `apps`, the pause, the
-		// claim views' keys of contract 193 and the basis keys of contract 202 are the six bands
+		// claim views' keys of contract 193 and the basis keys of contract 203 are the six bands
 		// left above it.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: mergeWaitContract},
 		// The band from assignmentsContract to below entryTimesContract: the assignments are
 		// served too, and the entry times and the architect-stalled arms, the repositories'
 		// `apps`, the pause, the claim views' keys of contract 193 and the basis keys of contract
-		// 202 are the five bands left above it, at the band's foot and at its top alike.
+		// 203 are the five bands left above it, at the band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: assignmentsContract, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: entryTimesContract - 1, assigned: true},
 		// The band from entryTimesContract to below repositoryAppsContract: the entry times and
 		// the architect-stalled arms are served too, and the repositories' `apps`, the pause, the
-		// claim views' keys of contract 193 and the basis keys of contract 202 are the four bands
+		// claim views' keys of contract 193 and the basis keys of contract 203 are the four bands
 		// left above it, at the band's foot and at its top alike.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: entryTimesContract, assigned: true, times: true},
 		{name: "a pod just below repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract - 1, assigned: true, times: true},
 		// The band from repositoryAppsContract to below pauseContract: the repositories' `apps`
 		// are served too, and the pause, the claim views' keys of contract 193 and the basis keys
-		// of contract 202 are the three bands left above it, at the band's foot and at its top
+		// of contract 203 are the three bands left above it, at the band's foot and at its top
 		// alike.
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract, assigned: true, times: true, apps: true},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract - 1, assigned: true, times: true, apps: true},
 		// The band from pauseContract to below shapedAnswersContract: the project's pause is served
-		// too, and the claim views' keys of contract 193 and the basis keys of contract 202 are the
+		// too, and the claim views' keys of contract 193 and the basis keys of contract 203 are the
 		// two bands left above it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, the contract from which every build
@@ -705,7 +705,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// nor the held list, nor the tree quiet time, nor `mergeWait`, nor the assignments,
 			// nor the entry times and the architect-stalled arms, nor the repositories' `apps`,
 			// nor the pause, nor the claim views' keys of contract 193, nor the basis keys of
-			// contract 202, the twelve bands between it and this daemon's own that these rows
+			// contract 203, the twelve bands between it and this daemon's own that these rows
 			// compare; a pod at whyAndLineFieldsContract is served the answers and none of the other
 			// eleven; a pod at leakCheckCauseContract is served the cause and none of the ten above
 			// it; a pod at phaseEntriesContract is served the entry numbers and none of the nine
@@ -800,7 +800,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with `apps` gone from every entry of `repositories.mapped` and `repositories.refused`,
 			// the key repositoryAppsContract added (withoutRepositoryApps), with the project's
 			// pause gone, the `paused` contract 178 added (withoutPause), and with every root's
-			// `treeRuns` gone, the key contract 202 added beside the gated steps of a root on an
+			// `treeRuns` gone, the key contract 203 added beside the gated steps of a root on an
 			// ancestor's basis, which go with `gatedSteps` itself for a caller this far back
 			// (withoutGateBasis). Every row that reaches here is below all of them, so every one of
 			// them goes whatever the row is; contract 132's strip takes a word of the line's `kind`

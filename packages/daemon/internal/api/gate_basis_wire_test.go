@@ -70,7 +70,7 @@ func TestGatedStepsAnswerAStepOnAnAncestorsBasisInItsOwnWords(t *testing.T) {
 // status words and each root's `treeRuns`, and this daemon's own contract is never below it: a
 // caller at this contract is served them.
 func TestTheGateBasisContractIsTheContractThatAddedTheBasis(t *testing.T) {
-	const addedGateBasis = 202
+	const addedGateBasis = 203
 	if gateBasisContract != addedGateBasis {
 		t.Fatalf("gateBasisContract = %d, want %d, the contract whose entry in version.go added the gated steps' basis and the roots' treeRuns",
 			gateBasisContract, addedGateBasis)
@@ -87,7 +87,8 @@ func TestTheGateBasisContractIsTheContractThatAddedTheBasis(t *testing.T) {
 // which reads `open_on_basis` or `pending_on_basis` — neither `waiting` nor `approved` is true of
 // such a step — while every other issue keeps its gated steps and every key beside them, its
 // `designGate` among them. That holds for each way a caller below it reaches the daemon: one that
-// states a number between shapedAnswersContract and this contract, which is served 193's shape
+// states a number between shapedAnswersContract and this contract, which is served the shape of
+// the nearest recorded contract below it, 193 or 199, whose shapes are one
 // (recordedContractAtOrBelow), one that states shapedAnswersContract itself, and one that states
 // nothing from a pod whose claims record a contract below shapedAnswersContract, the newest a pod
 // reading places (podContracts). A caller at the contract is served both: every root's

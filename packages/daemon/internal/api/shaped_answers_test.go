@@ -495,8 +495,8 @@ func valueStripCases() map[string]valueStripCase {
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
 		},
-		// The three strips of gateBasisContract's values read a mixed pod recording 178 and 202,
-		// and no pod reading counts the 202 claim: podContracts leaves out a claim at
+		// The three strips of gateBasisContract's values read a mixed pod recording 178 and 203,
+		// and no pod reading counts the 203 claim: podContracts leaves out a claim at
 		// shapedAnswersContract or above, since every build from there states its contract in the
 		// header. So the pod is served as its 178 process alone, on both sides, and these cases hold
 		// each strip to the body that process reads; a strip keyed to the pod's highest contract is
@@ -506,8 +506,8 @@ func valueStripCases() map[string]valueStripCase {
 		// names a value that arrived with the field.
 		//
 		// A gated step on an ancestor's basis reads `open_on_basis` or `pending_on_basis`, which a
-		// reader from 55 up to 201 refuses the whole body for, so the pod is served neither issue's
-		// `gatedSteps`, and every other issue keeps its gated steps as the body at 202 serves them.
+		// reader from 55 up to 202 refuses the whole body for, so the pod is served neither issue's
+		// `gatedSteps`, and every other issue keeps its gated steps as the body at 203 serves them.
 		// The band of the same contract takes those lists for the same caller first (shapeIssue runs
 		// the bands before the strips), so the strip finds nothing left to take on this pod.
 		droppedStepStatus: {
@@ -539,8 +539,8 @@ func valueStripCases() map[string]valueStripCase {
 			}},
 		},
 		// An issue in `awaiting_children`, and the word at `heldFrom` and at a held task's `phase`,
-		// which no reader below 202 admits: the pod is served the issue's `phase` as `admitted` and
-		// neither other key where it names the word, and every other phase word as the body at 202
+		// which no reader below 203 admits: the pod is served the issue's `phase` as `admitted` and
+		// neither other key where it names the word, and every other phase word as the body at 203
 		// serves it.
 		droppedPhase: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: gateBasisContract,
@@ -574,7 +574,7 @@ func valueStripCases() map[string]valueStripCase {
 			undeclaredIssue: Issue{Key: "LEGION-215", Phase: phase.Phase(undeclaredValue), HeldFrom: undeclaredValue,
 				Architect: &ClaimView{Session: "ses_architect_215", PendingTask: &PendingTaskView{Phase: phase.Phase(undeclaredValue), QueuedAt: answeredAt}}},
 		},
-		// A held row of `awaiting_children`, which a reader from 98 up to 201 refuses the whole
+		// A held row of `awaiting_children`, which a reader from 98 up to 202 refuses the whole
 		// body for: the pod is served it as `children_first`, and every other row as it is.
 		droppedHeldReason: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: gateBasisContract,

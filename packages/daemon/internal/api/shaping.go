@@ -956,7 +956,7 @@ const repositoryAppsContract = 152
 const pauseContract = 178
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 202,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 203,
 // dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
 // awaiting_children and the held word of that name (R11 to R13). It added two keys to an issue:
 // the gated step's `basis`, which rides only on a step of the two status words it added, and each
@@ -982,15 +982,16 @@ const pauseContract = 178
 //
 // shapedAnswersContract stands right below it, and the two bands touch no key of each other's:
 // shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
-// `wake`, and this one `treeRuns` and some `gatedSteps`. So a caller at 193 through 201 is served
+// `wake`, and this one `treeRuns` and some `gatedSteps`. So a caller at 193 through 202 is served
 // the keys 193 added and none of this contract's keys and words; one that states a number from 194
-// to 201 is served 193's shape, the nearest recorded contract below it
-// (recordedContractAtOrBelow). Every such caller states its contract: podContracts leaves out a
+// to 198 is served 193's shape, and one that states 199 to 202 is served 199's, the nearest
+// recorded contract below it (recordedContractAtOrBelow), which is 193's, since 199 moves no shape
+// of an answer a plugin parses. Every such caller states its contract: podContracts leaves out a
 // claim at shapedAnswersContract or above, so a pod reading places no caller there.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const gateBasisContract = 202
+const gateBasisContract = 203
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
