@@ -23,12 +23,18 @@ on:
 jobs:
   pi-envoy:
     runs-on: ubuntu-24.04
-    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its
-    # 227 s measured maximum, plus its slowest retried step alone — install-jj's two
-    # `ci_tools_fetch` calls and its `mise install` of the jj release, 3416 + 450 = 3866 s,
-    # above setup-bun's 3416 s, the tmux install's 625 + 775 = 1400 s, the workspace install's
-    # 1050 s, install-omp's 450 s and the ci-ok report's 2160 s. 600 + 3866 = 4466 s -> 75 min.
-    timeout-minutes: 75
+    # At least the job's sum, so that a hook or row that hangs fails by name at the test script's
+    # --timeout (package.json) rather than as a job this limit cancels: over the job's 42 green
+    # merge-group runs from 2026-11-20T01:35Z to 2026-11-21T08:58Z, its other steps at their
+    # longest, 94 s, 5 s of its clock over its steps, and its test step's longest, 406 s
+    # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. 15 leaves the test step
+    # room to grow as it did from 285 s on 2026-11-18 to 406 s.
+    # Budget (ci-budgets.md's Budgets note): those 15 minutes, 900 s, are the first term, plus the
+    # job's slowest retried step alone - install-jj's two `ci_tools_fetch` calls and its `mise
+    # install` of the jj release, 3416 + 450 = 3866 s, above setup-bun's 3416 s, the tmux install's
+    # 625 + 775 = 1400 s, the workspace install's 1050 s, install-omp's 450 s and the ci-ok
+    # report's 2160 s. 900 + 3866 = 4766 s -> 80 min.
+    timeout-minutes: 80
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
