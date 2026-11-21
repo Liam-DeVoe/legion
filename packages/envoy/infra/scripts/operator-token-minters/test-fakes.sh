@@ -93,6 +93,11 @@ case "${words[*]}" in
       // error("no such cluster")' "$world/clusters.json" ||
       { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
     ;;
+  "container fleet scopes list")
+    # The fleet's scopes: the world's scopes.json, or none.
+    [ ! -e "$world/refuse-scopes" ] || refuse container.fleet.scopes.list "Permission 'gkehub.scopes.list' denied on 'projects/${flag[project]:-}/locations/global/scopes'"
+    if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi
+    ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
     id="${words[4]}"

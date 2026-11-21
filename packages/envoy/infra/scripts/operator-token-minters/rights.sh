@@ -134,7 +134,14 @@ MEMBER_PERMISSIONS=(container.namespaces.create container.serviceAccounts.create
 SQL_PERMISSIONS=(cloudsql.users.create cloudsql.users.update)
 # Who can register a cluster to the pool project's fleet: a registered cluster shares the pool's
 # Workload Identity, so its ServiceAccount envoy-operator/envoy-operator is the operator's member.
-FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update)
+# Beside it, who can make a namespace or RBAC on the fleet's members: a fleet namespace and an RBAC
+# role binding of a scope reach every member cluster bound to the scope, so the scopes' and their
+# bindings' writes, and the features', are asked too (names read from roles/gkehub.admin's
+# includedPermissions on 2026-11-21).
+FLEET_PERMISSIONS=(gkehub.memberships.create gkehub.memberships.update gkehub.namespaces.create gkehub.namespaces.update
+  gkehub.rbacrolebindings.create gkehub.rbacrolebindings.update gkehub.membershipbindings.create
+  gkehub.membershipbindings.update gkehub.scopes.create gkehub.scopes.update gkehub.scopes.setIamPolicy
+  gkehub.features.create gkehub.features.update)
 # granting_role sets GRANTING_ROLE to the predefined role whose includedPermissions must hold a
 # checked permission.
 granting_role() {

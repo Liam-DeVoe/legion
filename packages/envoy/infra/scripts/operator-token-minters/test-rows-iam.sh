@@ -38,7 +38,11 @@
 #        container.validatingWebhookConfigurations.create and update, each held on the project by an
 #        agent's Google service account, exit 1 (their RBAC rights are row bf's);
 #   (bk) container.certificateSigningRequests.approve held on the project by an agent's Google
-#        service account exits 1 (its RBAC chain is row bj's).
+#        service account exits 1 (its RBAC chain is row bj's);
+#   (bl) each permission by which a holder makes a namespace or RBAC on the fleet's members
+#        (gkehub.namespaces, rbacrolebindings and membershipbindings create and update, the scopes'
+#        create, update and setIamPolicy, and the features' create and update), held alone on the
+#        pool project by an agent's Google service account, exits 1.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -182,7 +186,7 @@ if row ae; then
   iam "$project_res" roles/gkehub.admin "serviceAccount:$ci_gsa"
   run
   want_status 1 "a CI account holding roles/gkehub.admin"
-  want_line "FINDING serviceAccount:$ci_gsa: gkehub.memberships.create, gkehub.memberships.update on $project_res through roles/gkehub.admin, granted at $project_res" \
+  want_line "FINDING serviceAccount:$ci_gsa: gkehub.memberships.create, gkehub.memberships.update, gkehub.namespaces.create, gkehub.namespaces.update, gkehub.rbacrolebindings.create, gkehub.rbacrolebindings.update, gkehub.membershipbindings.create, gkehub.membershipbindings.update, gkehub.scopes.create, gkehub.scopes.update, gkehub.scopes.setIamPolicy, gkehub.features.create, gkehub.features.update on $project_res through roles/gkehub.admin, granted at $project_res" \
     "a CI account holding roles/gkehub.admin"
   passed "(ae) a CI account holding roles/gkehub.admin on the pool project exits 1"
 fi
@@ -308,4 +312,14 @@ fi
 if row bk; then
   each new_container_row container.certificateSigningRequests.approve
   passed "(bk) container.certificateSigningRequests.approve held by an agent's Google service account exits 1"
+fi
+
+# --- (bl) The fleet's namespaces, RBAC and scopes, through IAM: a fleet scope's namespace and RBAC
+# role binding reach every member cluster bound to it, the operator's namespace and Workload
+# Identity member included. ---
+if row bl; then
+  each new_container_row gkehub.namespaces.create gkehub.namespaces.update gkehub.rbacrolebindings.create \
+    gkehub.rbacrolebindings.update gkehub.membershipbindings.create gkehub.membershipbindings.update gkehub.scopes.create \
+    gkehub.scopes.update gkehub.scopes.setIamPolicy gkehub.features.create gkehub.features.update
+  passed "(bl) each fleet namespace, RBAC, scope and feature permission, held alone on the pool project by an agent's Google service account, exits 1"
 fi

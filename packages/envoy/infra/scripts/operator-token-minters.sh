@@ -143,8 +143,12 @@
 #                     page) with the running identity's access token, not through `gcloud container
 #                     fleet memberships list`, which drops the answer's `unreachable` locations: a
 #                     listing that could not reach a location reads complete there. A refused
-#                     listing, and one with an unreachable location, is UNKNOWN; a fleet the API
-#                     answers with no membership says so. A member that is a GKE cluster is read
+#                     listing, one with an unreachable location, and one that lists no membership
+#                     (which cannot be told from one that saw nothing) are UNKNOWN. Each fleet scope
+#                     (`gcloud container fleet scopes list`) is UNKNOWN too: its namespaces and RBAC
+#                     role bindings reach every member cluster bound to it, the operator's namespace
+#                     and member included, and this check does not analyse them; a refused listing
+#                     is UNKNOWN. A member that is a GKE cluster is read
 #                     through `gcloud container clusters get-credentials` in its own project, any
 #                     other through `gcloud container fleet memberships get-credentials` (the
 #                     Connect gateway); the operator's cluster, and a cluster the project step read,
@@ -157,10 +161,13 @@
 #                     validatingWebhookConfigurations create and update) and of the IAM writers
 #                     (setIamPolicy, iam.roles.update) are judged as the GKE IAM step judges its own
 #                     (--project's are in that step).
-#   live: fleet       Policy Analyzer's holders of gkehub.memberships.create and update on the pool
-#     registration    project, each judged as in the GKE IAM step: a cluster registered to the
-#                     pool's fleet shares the pool's Workload Identity, so its ServiceAccount
-#                     envoy-operator/envoy-operator is the operator's member there.
+#   live: fleet       Policy Analyzer's holders on the pool project of gkehub.memberships.create and
+#     registration    update, of gkehub.namespaces, rbacrolebindings and membershipbindings create
+#                     and update, of the scopes' create, update and setIamPolicy, and of the
+#                     features' create and update, each judged as in the GKE IAM step: a cluster
+#                     registered to the pool's fleet shares the pool's Workload Identity, so its
+#                     ServiceAccount envoy-operator/envoy-operator is the operator's member there,
+#                     and a scope's namespace and RBAC role binding reach every member bound to it.
 #   live: IAM on      For each folder and organization above --project, the pool project and each
 #     ancestors       fleet member's project (`gcloud projects get-ancestors`), Policy Analyzer's
 #                     holders of its setIamPolicy, and of the organization's iam.roles.update: each

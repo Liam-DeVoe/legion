@@ -66,8 +66,9 @@ for anc_project in "${ancestor_projects[@]}"; do
   done 8<"$WORK/ancestors.list"
 done
 
-# --- live: who can register a cluster to the pool project's fleet. A registered cluster shares the
-# pool's Workload Identity, so whoever registers one makes the operator's member on it. ---
+# --- live: who can register a cluster to the pool project's fleet, or write the namespaces and RBAC
+# its scopes put on the fleet's members. A registered cluster shares the pool's Workload Identity, so
+# whoever registers one makes the operator's member on it. ---
 live_iam fleet
 
 # --- live: hold writers ---

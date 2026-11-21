@@ -245,8 +245,11 @@ build_world() {
   role roles/container.serviceAgent container.pods.create container.pods.update container.serviceAccounts.createToken container.secrets.get
   role roles/viewer container.pods.get resourcemanager.projects.get storage.objects.list
   # Its names checked against `gcloud iam roles describe roles/gkehub.admin` on 2026-11-21.
-  role roles/gkehub.admin gkehub.memberships.create gkehub.memberships.delete gkehub.memberships.get gkehub.memberships.list \
-    gkehub.memberships.update resourcemanager.projects.get
+  role roles/gkehub.admin gkehub.features.create gkehub.features.update gkehub.memberships.create gkehub.memberships.delete \
+    gkehub.memberships.get gkehub.memberships.list gkehub.memberships.update gkehub.membershipbindings.create \
+    gkehub.membershipbindings.update gkehub.namespaces.create gkehub.namespaces.update gkehub.rbacrolebindings.create \
+    gkehub.rbacrolebindings.update gkehub.scopes.create gkehub.scopes.list gkehub.scopes.setIamPolicy gkehub.scopes.update \
+    resourcemanager.projects.get
   # The IAM writers' roles, each name checked against `gcloud iam roles describe` on 2026-11-21, cut
   # to the permission the check names and a few beside it.
   role roles/resourcemanager.projectIamAdmin resourcemanager.projects.get resourcemanager.projects.getIamPolicy \

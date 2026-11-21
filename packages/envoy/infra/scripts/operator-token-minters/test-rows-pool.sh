@@ -12,9 +12,9 @@
 #        page, whose cluster lets a ServiceAccount make a namespace, exits 1 naming the member (the
 #        control is the script before this step, which misses it); a GKE member in another project
 #        holding the namespace envoy-operator exits 1 naming the cluster; a fleet the API answers
-#        empty exits 0 and says so; a listing with an unreachable location, a refused listing, a
-#        member whose credentials are refused, and a project's cluster list gcloud says is
-#        incomplete each exit 2 with UNKNOWN; --pool-project naming another pool cannot read clean;
+#        empty, a listing with an unreachable location, a refused listing, a member whose
+#        credentials are refused, and a project's cluster list gcloud says is incomplete each exit 2
+#        with UNKNOWN; --pool-project naming another pool cannot read clean;
 #   (s)  a binding subject on a fleet member: grade-ci, a Google service account, bound to
 #        cluster-admin on a GKE member in another project exits 1 naming grade-ci and create
 #        namespaces; a person's email bound the same way, and a Group bound the same way while the
@@ -36,7 +36,9 @@
 #        kube-system (where namespace-controller may create namespaces) exits 1 naming it;
 #   (az) with --pool-project example-pool, that project's own cluster holding the namespace
 #        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
-#        UNKNOWN.
+#        UNKNOWN;
+#   (bm) a fleet scope, whose namespaces and RBAC role bindings reach its bound members, and a
+#        refused scope listing each read UNKNOWN; a fleet with no scope says so.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -106,7 +108,7 @@ if row r; then
   add_member "$(jq -nc --arg p "$project" '{id: "other", location: "global", gke: {project: $p, location: "us-east1", cluster: "other-cluster"}}')"
   run
   want_status 0 "a fleet member that is one of the project's clusters"
-  want_line "PASS $fleet_step: 2 membership(s) listed, every location reached: 1 the operator's cluster, 1 read above as clusters of the project, 0 read here" \
+  want_line "PASS $fleet_step: 2 membership(s) listed, every location reached: 1 the operator's cluster, 1 read above as clusters of the project, 0 read here, and the fleet holds no scope" \
     "a fleet member that is one of the project's clusters"
   passed "(r) a fleet member that is one of the project's clusters is read once, by the project's step"
 
@@ -114,9 +116,9 @@ if row r; then
   base_world
   edit "$world/fleet.json" '.memberships = []'
   run
-  want_status 0 "an empty fleet"
-  want_line "PASS $fleet_step: the GKE Hub API lists no membership in the fleet, and no location it could not reach" "an empty fleet"
-  passed "(r) a fleet the API answers with no membership exits 0 and says so"
+  want_status 2 "an empty fleet"
+  want_line "UNKNOWN $fleet_step: the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none" "an empty fleet"
+  passed "(r) a fleet the API answers with no membership reads UNKNOWN"
 
   # A listing that could not reach a location.
   base_world
@@ -378,4 +380,35 @@ pool_row() {
 if row az; then
   each pool_row holds refused
   passed "(az) the pool project's own cluster holding envoy-operator exits 1, and a pool project whose clusters cannot be listed reads UNKNOWN"
+fi
+
+# --- (bm) The fleet's scopes. A scope's namespaces and RBAC role bindings reach every member cluster
+# bound to it, and this check does not analyse them, so a scope reads UNKNOWN. ---
+scope_row() {
+  base_world
+  case "$1" in
+    present)
+      jq -n --arg p "$project" '[{name: "projects/\($p)/locations/global/scopes/team-a", uid: "uid-team-a"}]' >"$world/scopes.json"
+      run
+      want_status 2 "a fleet scope"
+      want_line "UNKNOWN $fleet_step: the fleet holds the scope projects/$project/locations/global/scopes/team-a, whose namespaces and RBAC role bindings reach every member cluster bound to it, which this check does not analyse" \
+        "a fleet scope"
+      ;;
+    refused)
+      : >"$world/refuse-scopes"
+      run
+      want_status 2 "a refused scope listing"
+      want_text "UNKNOWN $fleet_step: gcloud container fleet scopes list --project $project was refused (it needs gkehub.scopes.list)" "a refused scope listing"
+      ;;
+    none)
+      run
+      want_status 0 "a fleet with no scope"
+      want_text "PASS $fleet_step: 1 membership(s) listed, every location reached" "a fleet with no scope"
+      want_text ", and the fleet holds no scope" "a fleet with no scope"
+      ;;
+  esac
+}
+if row bm; then
+  each scope_row present refused none
+  passed "(bm) a fleet scope, or a scope listing that is refused, reads UNKNOWN; a fleet with none says so"
 fi
