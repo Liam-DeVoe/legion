@@ -21,11 +21,11 @@ export function privateSlackSubject(
   project: string,
   team: string,
   channel: string,
-  kind: string,
+  kind: string
 ): string {
   return privateSlackLane(
     project,
-    slackSubject(team, channel, kind).slice(SLACK_SUBJECT_PREFIX.length),
+    slackSubject(team, channel, kind).slice(SLACK_SUBJECT_PREFIX.length)
   );
 }
 
@@ -35,10 +35,10 @@ export function privateSlackThreadSubject(
   team: string,
   channel: string,
   threadTs: string,
-  kind: string,
+  kind: string
 ): string {
   return privateSlackLane(
     project,
-    slackThreadSubject(team, channel, threadTs, kind).slice(SLACK_SUBJECT_PREFIX.length),
+    slackThreadSubject(team, channel, threadTs, kind).slice(SLACK_SUBJECT_PREFIX.length)
   );
 }
