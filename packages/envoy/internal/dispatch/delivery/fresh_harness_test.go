@@ -34,14 +34,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// namingMode is a process's ENVOY_CONSUMER_NAMES, as the rows name it.
-type namingMode string
-
+// The two values of a process's ENVOY_CONSUMER_NAMES, as the rows name them.
 const (
-	fixedNames namingMode = "fixed"
-	freshNames namingMode = "fresh"
+	fixedNames = consumernames.ModeFixed
+	freshNames = consumernames.ModeFresh
 )
 
 // freshMachineID is the machine id the auth service grants Dispatch's connections for.
@@ -88,7 +87,7 @@ func startClusterHub(t *testing.T, replicas int) *freshHub {
 	return &freshHub{cluster: cluster, replicas: replicas, url: cluster.URL()}
 }
 
-// hubTopology is one of the three a §7 row runs on.
+// hubTopology is one of the three hubs a take-over row runs on.
 type hubTopology struct {
 	name  string
 	start func(t *testing.T) *freshHub
@@ -162,7 +161,7 @@ func (h *freshHub) connect(name string) (*bus.Client, error) {
 	token := h.tokenFile
 	return bus.Connect([]string{h.url},
 		bus.WithEnvironment(func(key string) (string, bool) {
-			if key == "NATS_SERVICE_TOKEN_FILE" {
+			if key == bus.ServiceTokenFileEnvVar {
 				return token, true
 			}
 			return "", false
@@ -275,7 +274,7 @@ func atStep(step func(p *durableProcess, point, name string) error) processOptio
 
 // startDurableProcess runs kind's durable as a process of its own in mode, over pool's database
 // and the hub, until the test ends or its stop is called.
-func startDurableProcess(t *testing.T, hub *freshHub, pool *store.Pool, kind durableKind, mode namingMode, options ...processOption) *durableProcess {
+func startDurableProcess(t *testing.T, hub *freshHub, pool *store.Pool, kind durableKind, mode consumernames.Mode, options ...processOption) *durableProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
 	process := &durableProcess{
@@ -295,8 +294,7 @@ func startDurableProcess(t *testing.T, hub *freshHub, pool *store.Pool, kind dur
 	process.held = &held
 	if mode == freshNames {
 		process.store = &cuttableStore{inner: consumernames.NewPGStore(second.Pool)}
-		held.nameFreshly(process.store, hub.connect, reader, nil)
-		held.nats = nil
+		held.nameFreshly(process.store, hub.connect, nil)
 		held.freshHook = func(point, name string) error {
 			if step := process.step.Load(); step != nil {
 				return (*step)(process, point, name)
@@ -524,7 +522,7 @@ func (s *cuttableStore) Write(ctx context.Context, logical string, record consum
 func writeCutover(t *testing.T, pool *store.Pool, cutover string) {
 	t.Helper()
 	records := consumernames.NewPGStore(pool)
-	_, revision, err := sentinelRow(t.Context(), pool)
+	revision, err := sentinelRevision(t.Context(), pool)
 	if err != nil {
 		t.Fatalf("read the sentinel: %v", err)
 	}
@@ -533,15 +531,14 @@ func writeCutover(t *testing.T, pool *store.Pool, cutover string) {
 	}
 }
 
-// sentinelRow is the sentinel row's revision, 0 when there is none.
-func sentinelRow(ctx context.Context, pool *store.Pool) (string, uint64, error) {
-	var record string
+// sentinelRevision is the sentinel row's revision, 0 when there is none.
+func sentinelRevision(ctx context.Context, pool *store.Pool) (uint64, error) {
 	var revision uint64
-	err := pool.QueryRow(ctx, `select record::text, revision from intake_consumers where logical = $1`, consumernames.PGSentinelKey).Scan(&record, &revision)
+	err := pool.QueryRow(ctx, `select revision from intake_consumers where logical = $1`, consumernames.PGSentinelKey).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, nil
+		return 0, nil
 	}
-	return record, revision, err
+	return revision, err
 }
 
 // writeSelectionRow writes logical's selection row with no current, as the cutover's convert
@@ -647,16 +644,31 @@ func (s *consumerSpy) requireEachNameCreatedOnce(t *testing.T) {
 			t.Errorf("consumer %s was sent to a create %d times; creates %v", name, n, s.creates)
 		}
 	}
-	for _, fixed := range natsFixedDurables() {
+	for _, fixed := range natsgrant.DispatchDurables() {
 		if seen[fixed] > 0 || slices.Contains(s.deletes, fixed) {
 			t.Errorf("the fixed name %s was created %d times and deleted in %v", fixed, seen[fixed], s.deletes)
 		}
 	}
 }
 
-// natsFixedDurables are the intakes' fixed durable names.
-func natsFixedDurables() []string {
-	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
+// requireSeesACreate fails t unless the spy sees a consumer create the admin sends now: the control
+// that an empty answer of the spy's is no blind spot.
+func (s *consumerSpy) requireSeesACreate(t *testing.T, hub *freshHub) {
+	t.Helper()
+	_, js := hub.admin(t)
+	const probe = "spy-probe"
+	if _, err := js.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Durable: probe, AckPolicy: natsgo.AckExplicitPolicy}); err != nil {
+		t.Fatalf("create the spy's probe consumer: %v", err)
+	}
+	waitFor(t, 10*time.Second, func() bool { return slices.Contains(s.createdNames(), probe) },
+		func() string { return "the spy never saw the probe's create, so its empty answers show nothing" })
+	if err := js.DeleteConsumer(bus.Stream, probe); err != nil {
+		t.Fatalf("delete the spy's probe consumer: %v", err)
+	}
+	s.mu.Lock()
+	s.creates = slices.DeleteFunc(s.creates, func(name string) bool { return name == probe })
+	s.deletes = slices.DeleteFunc(s.deletes, func(name string) bool { return name == probe })
+	s.mu.Unlock()
 }
 
 // createdNames are the names sent to a create, in order.

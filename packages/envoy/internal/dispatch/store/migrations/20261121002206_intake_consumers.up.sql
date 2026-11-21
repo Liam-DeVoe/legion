@@ -17,7 +17,8 @@
 --   revision   the row's version, 1 at its insert and one more at each update: every write is
 --              conditional on the revision it read, so two processes' writes never pass each other.
 --
--- A row is never deleted. The fixed mode, the default, neither reads nor writes this table, and
+-- A row is never deleted. The fixed mode, the default, writes nothing to this table and reads its
+-- sentinel row alone (delivery.CheckNamingMode, delivery.WatchFixedMarker), and
 -- no row is written by this migration: the cutover's convert writes the two durables' rows and the
 -- sentinel, and until it has, the fresh mode refuses (a missing row or sentinel is a refusal,
 -- never a first create).

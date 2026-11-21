@@ -2,12 +2,13 @@
 
 package delivery
 
-// §7 family 1 for the intakes' two durables, on the hooked nats-server (scripts/forced-order.sh):
-// a held state write of the take-over's predecessor, released after its successor is created,
-// with the store restarted. The build before the fresh mode creates its successor under the
-// predecessor's own name, so the late write lands in the successor's file and the successor,
-// once restarted, has skipped a message nobody acknowledged on it (M4). A fresh name sends the late
-// write to a directory no consumer reads (M5).
+// The held state write of a take-over's predecessor, for the intakes' two durables, on the hooked
+// nats-server (scripts/forced-order.sh): nats-server answers a consumer's delete while its state
+// writer can still write, so a write held across the delete, released after the successor is
+// created, lands where the predecessor's name points. The build before the fresh mode creates its
+// successor under that same name, so the late write lands in the successor's file and the
+// successor, once its store restarts, has skipped a message nobody acknowledged on it. A fresh
+// name sends the late write to a directory no consumer reads.
 
 import (
 	"fmt"
@@ -86,7 +87,7 @@ func ackThrough(t *testing.T, sub *natsgo.Subscription, last uint64) *natsgo.Msg
 // the state write carrying that floor is held before its I/O. Released in turn, after the
 // successor's own first write, then restarted, the successor must still owe 21: nobody
 // acknowledged 21 on it. Control: a same-name re-creation on the same server, under the same holds,
-// comes back from the restart with 21 acknowledged (M4).
+// comes back from the restart with 21 acknowledged.
 func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 	for _, topology := range hubTopologies[:2] {
 		for _, kind := range durableKinds {
@@ -105,12 +106,9 @@ func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 					t.Fatalf("the gone holder's next message is %d, want %d", meta.Sequence.Stream, sent[20])
 				}
 				server := heldServer(t, hub)
-				request := hooks.Hold(testnats.APIWorker, testnats.Where("the take-over's create or delete after its read", func(e testnats.Event) bool {
-					return e.Subject == "$JS.API.CONSUMER.DELETE."+bus.Stream+"."+old ||
-						strings.HasPrefix(e.Subject, "$JS.API.CONSUMER.CREATE."+bus.Stream+"."+kind.logical+"~")
-				}))
+				request := holdTheSuccessor(t, hub, hooks, kind, old)
 				process := startDurableProcess(t, hub, pool, kind, freshNames, blockingHandlers())
-				request.Reached(t)
+				request.reached(t)
 
 				write := hooks.Hold(testnats.WritePreIO, testnats.OnServer(server), testnats.Consumer(old), ackFloorAt(sent[20]))
 				if err := late.Ack(); err != nil {
@@ -118,7 +116,7 @@ func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 				}
 				write.Reached(t)
 				mark := hooks.Mark()
-				request.Release()
+				request.release()
 
 				var successor string
 				waitFor(t, 30*time.Second, func() bool {
@@ -148,6 +146,12 @@ func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 					t.Fatalf("the successor %s came back from the restart with ack floor %d: message %d, which nobody acknowledged on it, is skipped",
 						successor, info.AckFloor.Stream, sent[20])
 				}
+				// The handlers' acknowledgements must reach the successor, not a connection still
+				// reconnecting after the restart, where they would wait out the ack wait.
+				waitFor(t, 30*time.Second, func() bool {
+					info, err := js.ConsumerInfo(bus.Stream, successor)
+					return err == nil && info.PushBound
+				}, func() string { return "the successor " + successor + " is not bound again after the restart" })
 				process.unblock()
 				awaitHandled(t, sent[20:], process)
 			})
@@ -155,10 +159,49 @@ func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 	}
 }
 
-// sameNameRecreationLoses is the control of family 1: on the hub's server, consumer C acknowledged
+// heldSuccessor is the hold, on every server it can reach, of the take-over's step that makes the
+// successor: reached once each is.
+type heldSuccessor []*testnats.Hold
+
+func (h heldSuccessor) reached(t *testing.T) {
+	t.Helper()
+	for _, hold := range h {
+		hold.Reached(t)
+	}
+}
+
+func (h heldSuccessor) release() {
+	for _, hold := range h {
+		hold.Release()
+	}
+}
+
+// holdTheSuccessor holds the take-over's next step after its read of old: on a lone server the
+// request that creates a fresh generation, or the build before's delete of its fixed name, where
+// the server takes it; on a cluster, where the request is answered through the meta layer, the
+// fresh generation's assignment on every member before it applies it.
+func holdTheSuccessor(t *testing.T, hub *freshHub, hooks *testnats.Hooks, kind durableKind, old string) heldSuccessor {
+	t.Helper()
+	if hub.cluster == nil {
+		return heldSuccessor{hooks.Hold(testnats.APIWorker, testnats.Where("the take-over's create or delete after its read", func(e testnats.Event) bool {
+			return e.Subject == "$JS.API.CONSUMER.DELETE."+bus.Stream+"."+old ||
+				strings.HasPrefix(e.Subject, "$JS.API.CONSUMER.CREATE."+bus.Stream+"."+kind.logical+"~")
+		}))}
+	}
+	successor := testnats.Where("the take-over's fresh generation", func(e testnats.Event) bool {
+		return strings.HasPrefix(e.Consumer, kind.logical+"~") && e.Consumer != old
+	})
+	holds := make(heldSuccessor, len(hub.cluster.Servers))
+	for i, srv := range hub.cluster.Servers {
+		holds[i] = hooks.Hold(testnats.MetaApply, testnats.OnServer(srv), testnats.Stream(bus.Stream), successor)
+	}
+	return holds
+}
+
+// sameNameRecreationLoses is the control of the held-write row: on the hub's server, consumer C acknowledged
 // to 20, its write of floor 21 held, C deleted and created again at 21 under its own name, its
 // first write done, the held write released and the store restarted -- and C comes back with 21
-// acknowledged. It shows the holds reach the order M4 measured, so the treatment's clean result
+// acknowledged. It shows the holds reach the order that loses a message, so the treatment's clean result
 // is no blind spot.
 func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks, kind durableKind) {
 	t.Helper()
@@ -202,7 +245,7 @@ func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks,
 		return err == nil
 	}, func() string { return fmt.Sprintf("the control consumer did not come back from the restart: %v", err) })
 	if info.AckFloor.Stream < sent[20] {
-		t.Fatalf("control: the same-name re-creation came back with ack floor %d, below %d: the holds did not reach M4's order", info.AckFloor.Stream, sent[20])
+		t.Fatalf("control: the same-name re-creation came back with ack floor %d, below %d: the holds did not reach the order that loses a message", info.AckFloor.Stream, sent[20])
 	}
 	if err := js.DeleteConsumer(bus.Stream, name); err != nil {
 		t.Fatalf("delete the control consumer: %v", err)

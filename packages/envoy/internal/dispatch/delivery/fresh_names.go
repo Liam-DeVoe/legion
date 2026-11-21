@@ -36,7 +36,8 @@ import (
 // Every call is refused until the table's sentinel row says the cutover is done
 // (consumernames.Admit), and a missing table, sentinel or row is a refusal too, never a create: the
 // intake then delivers nothing and says so at ERROR, naming the durable. The fixed mode, the
-// default, runs the take-over of the fixed names unchanged and never reads the table.
+// default, runs the take-over of the fixed names unchanged, writes nothing to the table, and reads
+// its sentinel row alone (CheckNamingMode, WatchFixedMarker).
 //
 // Each generation's calls go on a connection of its own, named for it, which the auth service
 // grants exactly that generation's calls (natsgrant.ParseDispatchConnection): a take-over opens
@@ -164,6 +165,35 @@ type freshNaming struct {
 	current string
 	// refusals throttles the ERROR line of a refused call, per message, as standbys are.
 	refusals bindThrottle
+	// unadmitted is set when a generation's connection was not admitted, and cleared once a probe
+	// connection is (admitted): until then no take-over reserves another candidate.
+	unadmitted bool
+}
+
+// admissionProbeConnection names the connection a take-over opens, after a generation's connection
+// was not admitted, to learn whether the auth service admits connections again before it reserves
+// another candidate. The name asks for no generation (natsgrant.ParseDispatchConnection), so its
+// grant is the fixed one.
+const admissionProbeConnection = "dispatch-admission"
+
+// admitted reports whether a take-over may reserve a candidate: always, unless the last
+// generation's connection was not admitted, and then only once a probe connection is. A candidate
+// reserved while the auth service admits nothing would be retired unborn at the next attempt, and
+// one each attempt would grow the record's retired list, and its cleanup connections, for as long
+// as the outage lasts. A probe that is not admitted is logged as a refusal.
+func (d *heldDurable) admitted(ctx context.Context) bool {
+	f := d.fresh
+	if !f.unadmitted {
+		return true
+	}
+	probe, err := f.open(ctx, admissionProbeConnection)
+	if err != nil {
+		d.refused(fmt.Errorf("the auth service admits no connection, so no candidate is reserved: %w", err))
+		return false
+	}
+	probe.Close()
+	f.unadmitted = false
+	return true
 }
 
 // candidateConn is the connection a take-over opened for one candidate generation: granted its
@@ -180,22 +210,21 @@ type candidateConn struct {
 // does not answer, and the take-over stops before anything is deleted.
 const generationConnectWithin = 5 * time.Second
 
-// nameFreshly puts the intake's durable in the fresh mode: its selection records in store,
-// each generation's connection opened by connect, the stream read on reader, and each step
-// counted on steps.
-func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string) (*bus.Client, error), reader *bus.Client, steps *metrics.Counter) {
+// nameFreshly puts the intake's durable in the fresh mode: its selection records in store, each
+// generation's connection opened by connect, and each step counted on steps. The intake's own
+// client becomes the stream's reader (freshNaming.reader), and d.nats is nil until the first
+// take-over sets it to the connection of the generation it delivers from.
+func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string) (*bus.Client, error), steps *metrics.Counter) {
 	fresh := &freshNaming{
-		logical: d.name, store: store, connect: connect, reader: reader,
+		logical: d.name, store: store, connect: connect, reader: d.nats,
 		candidates: map[string]*candidateConn{}, read: map[string]*natsgo.ConsumerInfo{},
 	}
 	fresh.names = consumernames.New(consumernames.Config{
-		Store:  store,
-		Server: freshServer{d},
-		Prefix: func(logical string) string { return logical },
-		Floor:  func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
-		StreamID: func(ctx context.Context) (string, error) {
-			return fresh.streamID(ctx)
-		},
+		Store:    store,
+		Server:   freshServer{d},
+		Prefix:   func(logical string) string { return logical },
+		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		StreamID: fresh.streamID,
 		MissingRecord: func(_ context.Context, logical string) error {
 			return fmt.Errorf("%w: Dispatch's durable %s has no selection row", consumernames.ErrNoRecord, logical)
 		},
@@ -205,7 +234,7 @@ func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string
 			steps.Inc([2]string{"durable", d.name}, [2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})
 		},
 	})
-	d.fresh = fresh
+	d.fresh, d.nats = fresh, nil
 }
 
 // streamID is the stream's identity (bus.StreamIDMetadataKey), read on the intake's own connection.
@@ -277,6 +306,7 @@ func (d *heldDurable) reserved(ctx context.Context, logical string, op consumern
 	}
 	client, err := f.open(ctx, natsgrant.DispatchIntakeConnection(logical, generation, old))
 	if err != nil {
+		f.unadmitted = true
 		return err
 	}
 	f.candidates[op.Candidate] = &candidateConn{client: client, old: op.Old}
@@ -403,12 +433,8 @@ func (d *heldDurable) createFresh(ctx context.Context, name string, start consum
 		return nil, notSent(errHoldNotHeld)
 	}
 	config := d.config()
-	if deployed := d.fresh.read[candidate.old]; deployed != nil &&
-		bus.MetadataGeneration(deployed.Config.Metadata, consumerGenerationKey) > consumerConfigGeneration {
-		config = deployed.Config
-		config.DeliverSubject = natsgo.NewInbox()
-		config.OptStartTime = nil
-		config.Metadata = bus.OwnMetadata(deployed.Config.Metadata, 0)
+	if deployed := d.fresh.read[candidate.old]; deployed != nil {
+		config = newestConfig(deployed, config)
 	}
 	config.Durable = name
 	config.Metadata = maps.Clone(config.Metadata)
@@ -528,6 +554,9 @@ func (d *heldDurable) takeOverFresh(context.Context) {
 	ctx, cancelHeld := context.WithDeadline(finish, d.hold.Deadline())
 	defer cancelHeld()
 	f := d.fresh
+	if !d.admitted(ctx) {
+		return
+	}
 	sel, _, err := f.names.Ensure(ctx, f.logical, consumernames.CreateRequest{Create: d.createFresh, First: d.firstCreate})
 	if err == nil && !sel.Created {
 		if sel.Info != nil && d.boundElsewhere(natsInfo(sel.Info)) {

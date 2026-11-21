@@ -79,7 +79,7 @@ func TestAnIntakeConnectionCreatesAcknowledgesAndDeletesOnlyItsOwnGenerations(t 
 	require.NoError(t, err)
 	_, err = adminJS.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}})
 	require.NoError(t, err)
-	const logical, gen, old, other = "delivery-events", "GenNowA1b2", "GenOldA1b2", "GenElseA1b2"
+	const logical, gen, old, other = bus.DispatchDeliveryDurable, "GenNowA1b2", "GenOldA1b2", "GenElseA1b2"
 	const filter = "notifications.github.example"
 	pushed := func(name string) *nats.ConsumerConfig {
 		return &nats.ConsumerConfig{Durable: name, DeliverSubject: nats.NewInbox(), FilterSubject: filter, AckPolicy: nats.AckExplicitPolicy}
@@ -89,10 +89,11 @@ func TestAnIntakeConnectionCreatesAcknowledgesAndDeletesOnlyItsOwnGenerations(t 
 		require.NoError(t, err, "the admin creates %s", name)
 	}
 
-	// apiCall sends one JetStream API request on nc, as nats.go would send it, and answers its error:
-	// a refused publish draws no answer, so the request ends at its timeout, and the server's
-	// violation, naming the subject, reaches the connection's error handler.
-	apiCall := func(nc *nats.Conn, call, name string) (string, func() error) {
+	// apiCall sends one JetStream API request on nc, as nats.go would send it, without waiting for
+	// an answer: a refused publish draws none, and the server's violation, naming the subject,
+	// reaches the connection's error handler (awaitPublishViolation), which is the proof the row
+	// reads; a call the grant wrongly admits draws no violation, and the row fails at its wait.
+	apiCall := func(nc *nats.Conn, call, name string) (string, func()) {
 		subject := "$JS.API.CONSUMER." + call + "." + bus.Stream + "." + name
 		var body []byte
 		if call == "CREATE" {
@@ -100,16 +101,16 @@ func TestAnIntakeConnectionCreatesAcknowledgesAndDeletesOnlyItsOwnGenerations(t 
 			body = []byte(`{"stream_name":"` + bus.Stream + `","config":{"durable_name":"` + name + `","deliver_subject":"` + nats.NewInbox() +
 				`","filter_subject":"` + filter + `","ack_policy":"explicit"},"action":""}`)
 		}
-		return subject, func() error {
-			_, err := nc.Request(subject, body, 2*time.Second)
-			return err
+		return subject, func() {
+			require.NoError(t, nc.PublishRequest(subject, nats.NewInbox(), body))
+			require.NoError(t, nc.Flush())
 		}
 	}
 
 	t.Run("control: the fixed intake's name is refused the fresh generation", func(t *testing.T) {
 		errs := make(chan error, 16)
 		subject, call := apiCall(connectDispatch(t, url, "dispatch-intake", errs), "CREATE", logical+"~"+gen)
-		require.Error(t, call(), "%s was served", subject)
+		call()
 		awaitPublishViolation(t, errs, subject)
 	})
 
@@ -150,7 +151,7 @@ func TestAnIntakeConnectionCreatesAcknowledgesAndDeletesOnlyItsOwnGenerations(t 
 		{"INFO", "legion-go-p-github"},
 	} {
 		subject, call := apiCall(nc, row.call, row.name)
-		require.Error(t, call(), "%s was served", subject)
+		call()
 		awaitPublishViolation(t, errs, subject)
 	}
 	for _, name := range []string{logical + "~" + other, "s-x", "listener-m2", "legion-go-p-github", logical + "~" + gen} {

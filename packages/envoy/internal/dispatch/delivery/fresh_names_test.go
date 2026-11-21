@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,8 @@ import (
 
 // Compatibility control, the fixed mode: a process of the default mode takes its fixed durable
 // over, delivers from it, and writes no selection row; with the selection table gone it still
-// does, since the fixed mode never reads it.
+// does, since its take-over reads nothing of the table (only its start and its reconnects read
+// the sentinel, CheckNamingMode).
 func TestTheFixedModeTakesItsFixedDurableAndReadsNoSelectionTable(t *testing.T) {
 	for _, kind := range durableKinds {
 		t.Run(kind.logical, func(t *testing.T) {
@@ -55,7 +57,11 @@ func TestTheFixedModeTakesItsFixedDurableAndReadsNoSelectionTable(t *testing.T) 
 			second := startDurableProcess(t, hub, pool, kind, fixedNames)
 			sent = append(sent, hub.publish(t, kind, 3)...)
 			awaitHandled(t, sent, first, second)
-			for _, name := range spy.createdNames() {
+			created := spy.createdNames()
+			if len(created) == 0 {
+				t.Fatal("UNKNOWN: the spy saw no consumer create at all, so it shows nothing")
+			}
+			for _, name := range created {
 				if name != kind.logical {
 					t.Errorf("the fixed mode created %s, want only its fixed durable %s", name, kind.logical)
 				}
@@ -74,8 +80,8 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 		mode    consumernames.Mode
 		refused bool
 	}{
-		"fixed over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFixed, true},
-		"the default over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, "", true},
+		"fixed over a converted store":       {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverDone) }, consumernames.ModeFixed, true},
+		"the default over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverDone) }, "", true},
 		"fixed with no sentinel":             {func(*testing.T, *store.Pool) {}, consumernames.ModeFixed, false},
 		"fixed with no table": {func(t *testing.T, pool *store.Pool) {
 			if _, err := pool.Exec(t.Context(), `drop table intake_consumers`); err != nil {
@@ -83,8 +89,8 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 			}
 		}, consumernames.ModeFixed, false},
 		"fixed before the cutover":         {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, consumernames.ModeFixed, false},
-		"fixed after a rollback":           {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "rolled_back") }, consumernames.ModeFixed, false},
-		"fresh over a converted store":     {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFresh, false},
+		"fixed after a rollback":           {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverRolledBack) }, consumernames.ModeFixed, false},
+		"fresh over a converted store":     {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, consumernames.CutoverDone) }, consumernames.ModeFresh, false},
 		"fresh over an unconverted store": {func(*testing.T, *store.Pool) {}, consumernames.ModeFresh, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -192,22 +198,54 @@ func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
 	})
 }
 
+// readSignal is a database whose every read of a row signals read once its Scan has returned.
+type readSignal struct {
+	consumernames.PGQuerier
+	read chan struct{}
+}
+
+func (r readSignal) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return signalledRow{Row: r.PGQuerier.QueryRow(ctx, sql, args...), read: r.read}
+}
+
+type signalledRow struct {
+	pgx.Row
+	read chan struct{}
+}
+
+func (r signalledRow) Scan(dest ...any) error {
+	defer func() { r.read <- struct{}{} }()
+	return r.Row.Scan(dest...)
+}
+
 // Defence in depth: a fixed process reads its marker again each time its database or NATS
-// reconnects, and is told to exit once it reads done. The control: the same marker written done,
-// with no reconnect after it, tells it nothing, so it is the reconnect that reads it.
+// reconnects, and is told to exit once it reads done. The control: a reconnect before done was
+// written, and done written with no reconnect after it, tell it nothing, so it is the reconnect
+// after done that reads it. Each read is awaited before the row writes, so no read races a write.
 func TestAFixedProcessExitsWhenAReconnectReadsTheCutoverDone(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
+	db := readSignal{PGQuerier: pool, read: make(chan struct{}, 1)}
 	reconnects := make(chan struct{})
 	told := make(chan error, 1)
-	go WatchFixedMarker(ctx, pool, reconnects, func(err error) { told <- err })
+	go WatchFixedMarker(ctx, db, reconnects, func(err error) { told <- err })
+	awaitRead := func() {
+		t.Helper()
+		select {
+		case <-db.read:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the reconnect read nothing")
+		}
+	}
 	reconnects <- struct{}{}
-	writeCutover(t, pool, "done")
+	awaitRead()
+	writeCutover(t, pool, consumernames.CutoverDone)
 	select {
 	case err := <-told:
 		t.Fatalf("told %v with no reconnect since done was written", err)
 	case <-time.After(500 * time.Millisecond):
 	}
 	reconnects <- struct{}{}
+	awaitRead()
 	select {
 	case err := <-told:
 		if err == nil || !strings.Contains(err.Error(), "ENVOY_CONSUMER_NAMES=fixed") {
@@ -235,7 +273,8 @@ func freshRigOn(t *testing.T, topology hubTopology, maxConsumers int) (*freshHub
 	return hub, pool
 }
 
-// onEveryHub runs row on one copy, an R1 cluster and R3, as §7's families run.
+// onEveryHub runs row on one copy, an R1 cluster and R3: a consumer's store, and so what a
+// take-over leaves behind, differ between a lone server and a cluster's Raft-replicated one.
 func onEveryHub(t *testing.T, row func(t *testing.T, topology hubTopology)) {
 	for _, topology := range hubTopologies {
 		t.Run(topology.name, func(t *testing.T) { row(t, topology) })
@@ -348,13 +387,13 @@ func lostSelectionStateRefusesTheTakeOver(t *testing.T, topology hubTopology) {
 				}
 			}, "selection store is missing"},
 			"no sentinel": {func(t *testing.T, pool *store.Pool) {
-				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = 'envoy.sentinel'`); err != nil {
+				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = $1`, consumernames.PGSentinelKey); err != nil {
 					t.Fatalf("delete the sentinel: %v", err)
 				}
 			}, "sentinel is missing"},
 			"the cutover not run": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, "the cutover has not run"},
 			"the cutover rolled back": {func(t *testing.T, pool *store.Pool) {
-				writeCutover(t, pool, "rolled_back")
+				writeCutover(t, pool, consumernames.CutoverRolledBack)
 			}, "the cutover has not run"},
 			"no row of the durable": {func(t *testing.T, pool *store.Pool) {
 				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = $1`, kind.logical); err != nil {
@@ -386,6 +425,8 @@ func lostSelectionStateRefusesTheTakeOver(t *testing.T, topology hubTopology) {
 				if created := spy.createdNames(); len(created) != 0 {
 					t.Fatalf("the refused take-over created %v", created)
 				}
+				// Control: the spy sees a create, so its empty answer above is no blind spot.
+				spy.requireSeesACreate(t, hub)
 				if name == "no table" {
 					return
 				}
@@ -400,8 +441,8 @@ func lostSelectionStateRefusesTheTakeOver(t *testing.T, topology hubTopology) {
 // readyAgain writes the cutover's records again over whatever a row left of them.
 func readyAgain(t *testing.T, pool *store.Pool, logical string) {
 	t.Helper()
-	writeCutover(t, pool, "done")
-	if _, err := pool.Exec(t.Context(), `insert into intake_consumers (logical, record, revision) values ($1, '{}', 1) on conflict do nothing`, logical); err != nil {
+	writeCutover(t, pool, consumernames.CutoverDone)
+	if _, err := consumernames.NewPGStore(pool).Write(t.Context(), logical, consumernames.Record{}, 0); err != nil && !errors.Is(err, consumernames.ErrConflict) {
 		t.Fatalf("write %s's row: %v", logical, err)
 	}
 }
@@ -465,17 +506,20 @@ func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, to
 				_, js := hub.admin(t)
 				waitFor(t, 30*time.Second, func() bool {
 					_, err := js.ConsumerInfo(bus.Stream, first)
-					return err != nil && strings.Contains(err.Error(), "not found")
+					return errors.Is(err, natsgo.ErrConsumerNotFound)
 				}, func() string { return "the first generation " + first + " was never deleted" })
 			})
 		}
 	}
 }
 
-// Race regression, a callout outage: the auth service stops after the standby reserved its
+// Race regression, an auth service outage: the auth service stops after the standby reserved its
 // replace, so the connection its generations are granted on is never admitted. The take-over
 // stops there with nothing deleted: the current stays, and once the service is back the next
-// attempt settles the reserved replace and delivers every message published meanwhile.
+// attempt settles the reserved replace and delivers every message published meanwhile. While the
+// service is down, no later attempt reserves another candidate: each would be retired unborn, and
+// the record's retired list, with a cleanup connection for each of its names, would grow every
+// attempt for as long as the outage lasts.
 func TestForcedOrderACalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted(t *testing.T) {
 	for _, kind := range durableKinds {
 		t.Run(kind.logical, func(t *testing.T) {
@@ -487,8 +531,10 @@ func TestForcedOrderACalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted(t *tes
 			awaitHandled(t, sent, holder)
 
 			outage := make(chan struct{})
+			var reserved atomic.Int32
 			standby := startDurableProcess(t, hub, pool, kind, freshNames, atStep(func(_ *durableProcess, point, _ string) error {
 				if point == stepReserved {
+					reserved.Add(1)
 					select {
 					case <-outage:
 					default:
@@ -505,8 +551,12 @@ func TestForcedOrderACalloutOutageStopsTheTakeOverBeforeAnythingIsDeleted(t *tes
 				t.Fatal("the standby's take-over never reserved its replace")
 			}
 			sent = append(sent, hub.publish(t, kind, 2)...)
-			// Attempts during the outage: none may delete the current.
-			time.Sleep(3 * durableBindInterval)
+			// Attempts during the outage, four at least: none may delete the current, and none may
+			// reserve another candidate.
+			time.Sleep(4 * (generationConnectWithin + durableBindInterval))
+			if n := reserved.Load(); n != 1 {
+				t.Errorf("the standby reserved %d candidates during the outage, want 1", n)
+			}
 			_, js := hub.admin(t)
 			if _, err := js.ConsumerInfo(bus.Stream, first); err != nil {
 				t.Fatalf("the current %s is gone during the outage: %v", first, err)
@@ -586,7 +636,7 @@ func twoProcessesGivenOneGenerationCreateItOnce(t *testing.T, topology hubTopolo
 	}
 }
 
-// Compatibility control, family 5: at a full consumer cap a take-over of each durable answers as
+// Compatibility control, the consumer cap: at a full consumer cap a take-over of each durable answers as
 // the build before the fresh mode does -- the durable delivers again and its pending messages
 // arrive -- and nothing updates the stream's max_consumers.
 func TestForcedOrderATakeOverAtAFullCapDeliversWithNoCapUpdate(t *testing.T) {
@@ -623,8 +673,11 @@ func aTakeOverAtAFullCapDeliversWithNoCapUpdate(t *testing.T, topology hubTopolo
 				}
 			}
 			info, err := js.StreamInfo(bus.Stream)
-			if err != nil || info.Config.MaxConsumers != capacity {
-				t.Errorf("the stream's max_consumers is %d (%v), want %d unchanged", info.Config.MaxConsumers, err, capacity)
+			if err != nil {
+				t.Fatalf("read the stream: %v", err)
+			}
+			if info.Config.MaxConsumers != capacity {
+				t.Errorf("the stream's max_consumers is %d, want %d unchanged", info.Config.MaxConsumers, capacity)
 			}
 		})
 	}

@@ -128,13 +128,11 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
 	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
-	var readers []*bus.Client
+	durables := []*heldDurable{&intake.heldDurable, &job.heldDurable}
 	if naming.Mode == consumernames.ModeFresh {
 		records := consumernames.NewPGStore(pool)
-		for _, durable := range []*heldDurable{&intake.heldDurable, &job.heldDurable} {
-			readers = append(readers, durable.nats)
-			durable.nameFreshly(records, connect, durable.nats, naming.Steps)
-			durable.nats = nil
+		for _, durable := range durables {
+			durable.nameFreshly(records, connect, naming.Steps)
 		}
 	}
 	var running sync.WaitGroup
@@ -142,9 +140,11 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	running.Go(func() { intake.Run(ctx) })
 	running.Go(func() { job.Run(ctx) })
 	return sync.OnceFunc(func() {
-		stopIntakes(&running, &intake.heldDurable, &job.heldDurable)
-		for _, reader := range readers {
-			reader.Close()
+		stopIntakes(&running, durables...)
+		for _, durable := range durables {
+			if durable.fresh != nil {
+				durable.fresh.reader.Close()
+			}
 		}
 	}), nil
 }

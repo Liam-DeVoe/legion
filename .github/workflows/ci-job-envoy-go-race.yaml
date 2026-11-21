@@ -41,8 +41,10 @@ jobs:
     # where cmd/listener took 785 s here (run 43875539224), so the sum stands. Each forced-order
     # step then compiles a hooked nats-server and the packages above it under the detector again,
     # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66 in
-    # all.
-    timeout-minutes: 75
+    # all. Delivery's forced-order rows add 30 minutes to the second step (its -timeout 30m: they
+    # took 17 minutes on a dev box at a load of about 1,000), and its held-write row 5 to the first,
+    # so 101 in all.
+    timeout-minutes: 105
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -79,12 +81,21 @@ jobs:
       # refuses it and the step fails until the hooks are ported. The second step hooks v2.10.29.
       # The script also fails a package that declares no such test. Neither step sets an
       # environment variable: check-ci-filters.sh reduces no go command of a job one of whose
-      # steps sets a GO* name.
+      # steps sets a GO* name, so the delivery steps pass go test's -run and -timeout after the
+      # package, where the later flag wins. Delivery's rows other than its held write use no hold
+      # point and run on the linked nats-server in the race step above already, so the first step
+      # runs the held write alone and the second runs them all on v2.10.29.
       - name: Forced-order tests on the hooked nats-server the module links
         run: scripts/forced-order.sh ./internal/testnats/hooktest/
         working-directory: packages/envoy
+      - name: Delivery's held-write forced-order test on the hooked nats-server the module links
+        run: scripts/forced-order.sh ./internal/dispatch/delivery/ -run '^TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor$'
+        working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
+        working-directory: packages/envoy
+      - name: Delivery's forced-order tests on the hooked nats-server v2.10.29
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/dispatch/delivery/ -timeout 30m
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

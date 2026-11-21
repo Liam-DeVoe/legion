@@ -3954,9 +3954,11 @@ this set; its seed belongs to the daemon, not to a host or session.
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
 delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
 durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
-agent-stream control subject; for the listener beside it, the selection bucket's stream message
-get (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, which reads the bucket's sentinel and that
-listener's record, and, taking the key in its body, any other key) and the write of that one
+agent-stream control subject; for the listener beside it, the selection bucket's stream info, which
+its lookup of the bucket reads at start (`$JS.API.STREAM.INFO.KV_envoy_session_consumers`), and the
+stream's message get (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, which reads the bucket's
+sentinel and that listener's record, and, taking the key in its body, any other key: that listener
+holds Dispatch's credential, which already reaches every delivery) and the write of that one
 listener's record alone, `$KV.envoy_session_consumers.durable.<listener-<machine id>>`
 (`consumernames.DurableKey`), never the bucket's wildcard; and subscription to every session's
 agent-stream frames. A `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none

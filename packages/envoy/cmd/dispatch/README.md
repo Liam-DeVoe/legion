@@ -2321,7 +2321,7 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 Migration `20261121002206_intake_consumers` creates `intake_consumers (logical, record, revision)`, the selection records of the delivery intakes' two durables under the fresh consumer names (`ENVOY_CONSUMER_NAMES=fresh`, `consumernames.PGStore`):
 one row per logical name, `delivery-events` and `delivery-jobs`, whose `record` (JSON, `consumernames.Record`) says which physical consumer, `<durable>~<generation>`, the intake delivers from, the operation in flight, the start saved before anything is deleted, the last ack floor read and the retired generations; and the sentinel row `envoy.sentinel`, whose record (`consumernames.StoreState`) holds the cutover marker.
 Every write is conditional on the `revision` it read, and no row is ever deleted.
-The migration writes no row: the cutover's `convert` writes them, and until it has, a `fresh` process refuses every consumer call while a `fixed` one reads only the sentinel, at boot (`delivery.CheckNamingMode`).
+The migration writes no row: the cutover's `convert` writes them, and until it has, a `fresh` process refuses every consumer call, while a `fixed` one reads the sentinel alone and writes nothing: at boot, where `done` refuses the start (`delivery.CheckNamingMode`), and after each database or NATS reconnect, where `done` makes the process exit (`delivery.WatchFixedMarker`).
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:

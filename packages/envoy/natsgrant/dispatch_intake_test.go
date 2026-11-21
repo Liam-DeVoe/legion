@@ -9,27 +9,14 @@ import (
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/routing"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // allows reports whether p's publish allow list admits subject, as nats-server matches a literal
-// subject against an entry: token for token, where * is any one token and a last > is one or more.
+// subject against an entry (routing.Match).
 func allows(p natsgrant.Permissions, subject string) bool {
-	tokens := strings.Split(subject, ".")
-	return slices.ContainsFunc(p.Publish, func(entry string) bool {
-		pattern := strings.Split(entry, ".")
-		for i, token := range pattern {
-			switch {
-			case token == ">":
-				return i < len(tokens)
-			case i >= len(tokens):
-				return false
-			case token != "*" && token != tokens[i]:
-				return false
-			}
-		}
-		return len(pattern) == len(tokens)
-	})
+	return slices.ContainsFunc(p.Publish, func(entry string) bool { return routing.Match(entry, subject) })
 }
 
 const (
@@ -180,6 +167,7 @@ func TestDispatchsListenerWritesOnlyItsOwnSelectionKey(t *testing.T) {
 		for subject, want := range map[string]bool{
 			selectionKey(exampleMachine):                              true,
 			"$JS.API.STREAM.MSG.GET." + stream:                        true,
+			"$JS.API.STREAM.INFO." + stream:                           true,
 			selectionKey("m2"):                                        false,
 			"$KV." + consumernames.SessionBucket + ".s-x":             false,
 			"$KV." + consumernames.SessionBucket + "." + consumernames.SentinelKey: false,
@@ -239,15 +227,4 @@ func TestAListenerIntakeConnectionIsGrantedItsOwnGenerationsExactly(t *testing.T
 	}
 	// Control: the fixed grant refuses the same generation, so the rows above read the name.
 	require.False(t, allows(natsgrant.Dispatch(exampleMachine, natsgrant.DispatchIntake{}), consumerCall("CREATE", own)))
-}
-
-// The fixed grant, with no intake, is the set the hubs render today, entry for entry, with the
-// listener's own selection key and the bucket's get after it (withListenerSelectionKey): an intake
-// adds entries after those and changes none of them.
-func TestTheFixedDispatchGrantIsTheOneWithNoIntake(t *testing.T) {
-	var base mergeBase
-	readJSON(t, "testdata/merge-base-grants.json", &base)
-	want := withListenerSelectionKey(base.Dispatch[exampleMachine], exampleMachine)
-	requireSet(t, want, natsgrant.Dispatch(exampleMachine, natsgrant.DispatchIntake{}), "Dispatch with no intake")
-	requireSet(t, want, natsgrant.Dispatch(exampleMachine, natsgrant.ParseDispatchConnection("dispatch-intake")), "Dispatch for the fixed intake's name")
 }

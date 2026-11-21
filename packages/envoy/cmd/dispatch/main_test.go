@@ -632,7 +632,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 
 // /healthz names the delivery intakes' consumer naming mode the process read at its boot
 // (ENVOY_CONSUMER_NAMES), so a deploy check reads which mode each process runs; both modes are
-// told apart, the default among them.
+// told apart (the default is the settings row's to show, TestEverySettingReachesItsReader).
 func TestHealthzReportsTheConsumerNamingMode(t *testing.T) {
 	for _, mode := range []consumernames.Mode{consumernames.ModeFixed, consumernames.ModeFresh} {
 		response := httptest.NewRecorder()
@@ -645,9 +645,6 @@ func TestHealthzReportsTheConsumerNamingMode(t *testing.T) {
 		if got := health["consumer_names"]; got != string(mode) {
 			t.Errorf("healthz consumer_names = %#v, want %q", got, mode)
 		}
-	}
-	if boot := resolveWith(t, nil); boot.ConsumerNames != consumernames.ModeFixed {
-		t.Errorf("an unset ENVOY_CONSUMER_NAMES boots %q, so /healthz would not say fixed", boot.ConsumerNames)
 	}
 }
 

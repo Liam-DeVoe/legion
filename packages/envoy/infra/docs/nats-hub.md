@@ -196,7 +196,8 @@ through it is not registered at all and receives nothing until its listener's gr
 session consumers. The same two sets end with the reads and writes of the session consumers'
 selection bucket `envoy_session_consumers` and none of its stream's create or update
 (`natsgrant.KVWriteExisting`), so a listener keeps each session's current consumer name there in
-the fresh consumer naming mode and never makes the bucket itself
+the fresh consumer naming mode and never makes the bucket itself. `DispatchPermissions` ends with
+that bucket's stream info and stream message get and the write of its own listener's record alone
 ([Permission sets](../README.md#permission-sets)). Every set above subscribes to the role lanes in
 the queue group every listener shares, `envoy-roles`, beside the machine's own, since each user
 runs a listener.
@@ -752,6 +753,10 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The release that adds Dispatch's fresh consumer names adds to `DispatchPermissions` the selection
+bucket's stream info and stream message get and the write of its own listener's record, which changes the rendered
+user of every hub with a `dispatchMachineId` user: upgrading such a hub to it replaces its VM once,
+with the outage below, and a hub with none keeps its VM.
 The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it

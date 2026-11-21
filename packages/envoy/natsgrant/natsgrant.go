@@ -282,22 +282,22 @@ func ListenerIntakeConnection(machineID, generation, old string) string {
 // Dispatch's own two durables and its own listener's or holds a wildcard, a dot or a space.
 func ParseDispatchConnection(name string) DispatchIntake {
 	parts := strings.Split(name, "/")
-	if len(parts) < 3 || !generationToken(parts[2]) {
-		return DispatchIntake{}
-	}
-	if len(parts) == 4 && (!generationToken(parts[3]) || parts[3] == parts[2]) {
+	if len(parts) < 3 || len(parts) > 4 || !generationToken(parts[2]) {
 		return DispatchIntake{}
 	}
 	old := ""
 	if len(parts) == 4 {
 		old = parts[3]
+		if !generationToken(old) || old == parts[2] {
+			return DispatchIntake{}
+		}
 	}
 	switch {
-	case len(parts) > 4:
 	case parts[0] == listenerIntakeConnection && parts[1] != "":
 		return DispatchIntake{ListenerMachine: parts[1], Generation: parts[2], Old: old}
 	case !slices.Contains(DispatchDurables(), parts[1]):
-	case parts[0] == dispatchCleanupConnection && len(parts) == 3:
+		return DispatchIntake{}
+	case parts[0] == dispatchCleanupConnection && old == "":
 		return DispatchIntake{Logical: parts[1], Generation: parts[2], Cleanup: true}
 	case parts[0] == dispatchIntakeConnection:
 		return DispatchIntake{Logical: parts[1], Generation: parts[2], Old: old}
@@ -349,10 +349,11 @@ func (intake DispatchIntake) entries(machineID string) []string {
 }
 
 // listenerSelection is what the listener beside Dispatch, as machine machineID, needs of the
-// session consumers' selection bucket (consumernames.SessionBucket): the stream's leader-answered
-// message get, which reads the bucket's sentinel and the listener's own record, and the write of
-// that one record's key (consumernames.DurableKey of its durable), never the bucket's wildcard. No
-// other call of the bucket's stream is granted, so it changes no record but its own.
+// session consumers' selection bucket (consumernames.SessionBucket): the bucket's stream info,
+// which its lookup of the bucket reads at start, the stream's leader-answered message get, which
+// reads the bucket's sentinel and the listener's own record, and the write of that one record's
+// key (consumernames.DurableKey of its durable), never the bucket's wildcard. No other call of the
+// bucket's stream is granted, so it changes no record but its own, and creates no bucket.
 //
 // The get takes the key in its body, so it reads any key of the bucket, and that is kept on
 // purpose: the listener runs with Dispatch's credential, which already reaches every delivery
@@ -360,9 +361,11 @@ func (intake DispatchIntake) entries(machineID string) []string {
 // names, gives it nothing it does not hold. A per-key direct get could be scoped by subject, but
 // a follower may answer it, and a stale selection record could name a retired generation.
 func listenerSelection(machineID string) []string {
+	stream := kvStream + consumernames.SessionBucket
 	return []string{
-		jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
-		"$KV." + consumernames.SessionBucket + "." + consumernames.DurableKey(bus.ListenerDurable(machineID)),
+		jsAPI + "STREAM.INFO." + stream,
+		jsAPI + "STREAM.MSG.GET." + stream,
+		kvSubjects + consumernames.SessionBucket + "." + consumernames.DurableKey(bus.ListenerDurable(machineID)),
 	}
 }
 

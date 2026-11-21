@@ -481,14 +481,21 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 // The deployed metadata keeps its own keys and drops the ones nats-server sets itself (the
 // `_nats.` prefix), which the server sets again on create.
 func takeOverConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig) natsgo.ConsumerConfig {
-	config := wanted
-	if bus.MetadataGeneration(deployed.Config.Metadata, consumerGenerationKey) > consumerConfigGeneration {
-		config = deployed.Config
-		config.DeliverSubject = natsgo.NewInbox()
-		config.OptStartTime = nil
-		config.Metadata = bus.OwnMetadata(deployed.Config.Metadata, 0)
+	return startingAt(newestConfig(deployed, wanted), deployed.AckFloor.Stream+1)
+}
+
+// newestConfig is wanted, or deployed's config where a newer build created deployed (its
+// configuration generation is higher than this build's), with a deliver subject of its own, no
+// start time and its own metadata (takeOverConfig).
+func newestConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig) natsgo.ConsumerConfig {
+	if bus.MetadataGeneration(deployed.Config.Metadata, consumerGenerationKey) <= consumerConfigGeneration {
+		return wanted
 	}
-	return startingAt(config, deployed.AckFloor.Stream+1)
+	config := deployed.Config
+	config.DeliverSubject = natsgo.NewInbox()
+	config.OptStartTime = nil
+	config.Metadata = bus.OwnMetadata(deployed.Config.Metadata, 0)
+	return config
 }
 
 // startingAt is config delivering from stream sequence start on.
