@@ -64,9 +64,10 @@ func pageOf[T any](items []T, query pageQuery) page[T] {
 // includedPageMax is the largest page a list answers with an include member that renders each
 // listed row whole, which the list's query names in its include field's `renders` tag and the
 // decoder holds (holdIncludedPage): include=text and include=blocks on a list of an owner's
-// artifacts, each document's text up to pmdoc.MaxDocumentBytes and its tree of blocks, and
-// include=body on an issue's handoffs, each body up to contracts.DispatchHandoffBodyMax. A page of
-// maxListLimit could hold 200 of them at once.
+// artifacts, each document's text up to pmdoc.MaxDocumentBytes and its tree of blocks,
+// include=body on an issue's handoffs, each body up to contracts.DispatchHandoffBodyMax, and
+// include=thread on a list of asks, each thread's replies, rewordings, answers and followers. A
+// page of maxListLimit could hold 200 of them at once.
 const includedPageMax = 20
 
 // includedPageDefault is the page a list with bounds reads where a request names a member that

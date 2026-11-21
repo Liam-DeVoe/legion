@@ -79,7 +79,7 @@ func (s *server) v2AskRows() []routeRow {
 				"no document is 404 NOT_FOUND and a prefix two sources carry 409 ID_AMBIGUOUS (any other source is 400 " +
 				"INVALID_QUERY). " + askRowText + " sort=priority (the default: the issue's priority, unset last, then whose " +
 				"turn it is, the person's before the agent's, then the latest activity, newest first) or created_at (oldest " +
-				"first), each reversed after a -. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, count, " +
+				"first), each reversed after a -. " + includedPageLimitText(askListV2Query{}) + " {items, total, limit, offset, count, " +
 				"waiting_on_human, waiting_on_agent, as_of}: count the asks the filters keep, as total does, the two waiting_on " +
 				"counts the asks among them whose state is open by whose turn it is (under state=open, the open asks on open " +
 				"issues and project documents; under another state, every ask of state open it keeps, one on a closed issue " +
@@ -192,8 +192,8 @@ func (s *server) v2AskRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/asks", Auth: authAny, Versions: onlyV2,
 			Description: "List an issue's asks, oldest first, each as GET /api/v2/asks answers it. state=all (the default), " +
-				"open, answered or resolved. " + askRowText + " limit 1 to 200 (default 50) and offset; {items, total, limit, " +
-				"offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+				"open, answered or resolved. " + askRowText + " " + includedPageLimitText(issueAsksV2Query{}) +
+				" {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueAsksV2,
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
 			Query:       issueAsksV2Query{},
@@ -279,8 +279,8 @@ type askListV2Query struct {
 	// From and To window created_at.
 	From *time.Time `query:"from"`
 	To   *time.Time `query:"to"`
-	// Include adds thread and mark.
-	Include []string `query:"include,comma" enum:"thread,mark"`
+	// Include adds thread, which renders each listed row whole (renders), and mark.
+	Include []string `query:"include,comma" enum:"thread,mark" renders:"thread"`
 	// Sort is priority (the Inbox's order) or created_at.
 	Sort querySort `query:"sort" enum:"priority,created_at" default:"priority"`
 }
@@ -305,8 +305,9 @@ type askReadV2Query struct {
 // issueAsksV2Query is GET /api/v2/issues/{key}/asks's query.
 type issueAsksV2Query struct {
 	pageQuery
-	State   string   `query:"state" enum:"all,open,answered,resolved" default:"all"`
-	Include []string `query:"include,comma" enum:"thread,mark"`
+	State string `query:"state" enum:"all,open,answered,resolved" default:"all"`
+	// Include adds thread, which renders each listed row whole (renders), and mark.
+	Include []string `query:"include,comma" enum:"thread,mark" renders:"thread"`
 }
 
 // editAskV2Input is PATCH /api/v2/asks/{id}'s body: a reword, editAskInput's fields, or a hand-on,

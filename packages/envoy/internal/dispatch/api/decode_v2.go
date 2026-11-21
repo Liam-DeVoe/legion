@@ -49,12 +49,14 @@ package api
 // INVALID_LIMIT naming the bound, and an offset that is no integer of 0 or more 400 INVALID_OFFSET.
 //
 // `renders:"a,b"` on a list's include field names the members of its enum that render each listed
-// row whole - include=text on a list of artifacts, each document's text up to a MiB - so a request
-// that names one reads a page of at most includedPageMax rows (holdIncludedPage): a limit it names
-// past that is 400 INVALID_LIMIT naming the bound and the members it named, and one that names no
-// limit reads the row's default, held to includedPageMax (includedPageDefault). A query declares it
-// on one slice field at most, each member one its enum holds, and only beside a limit (pageQuery);
-// the route's description says so (includedPageLimitText), and so does the document's limit.
+// row whole - include=text on a list of artifacts, each document's text up to a MiB, or
+// include=thread on a list of asks, each thread's replies, rewordings, answers and followers - so a
+// request that names one reads a page of at most includedPageMax rows (holdIncludedPage): a limit it
+// names past that is 400 INVALID_LIMIT naming the bound and the members it named, and one that
+// names no limit reads the row's default, held to includedPageMax (includedPageDefault). A query
+// declares it on one slice field at most, each member one its enum holds, and only beside a limit
+// (pageQuery); the route's description says so (includedPageLimitText), and so does the document's
+// limit.
 //
 // `session` is declared on every route the decoder reads, once, beside the row's own keys (R4):
 // actingPerson and resolveIDPrefixes read the session it names through requestSession, the decoded
