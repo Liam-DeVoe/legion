@@ -746,7 +746,9 @@ func (r *leaverRig) signInTrade(t *testing.T, p *leaverPerson) (status int, refu
 		"actor_token_type":    {oauthwire.ActorTokenTypeMachine},
 		oauthwire.FormSession: {localPart(p.email) + "-sign-in"},
 	}
-	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.signInKey, &http.Transport{}), Timeout: 30 * time.Second}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.signInKey, transport), Timeout: 30 * time.Second}
 	response, err := client.PostForm(r.broker.URL+brokerclient.TokenPath, form)
 	if err != nil {
 		t.Fatalf("trade %s's Google sign-in: %v", p.email, err)
@@ -948,7 +950,9 @@ func (r *leaverRig) exchange(t *testing.T, p *leaverPerson) (token string, statu
 		"subject_token": {p.machineToken.AccessToken}, "subject_token_type": {oauthwire.SubjectTokenTypeAccessToken},
 		oauthwire.FormSession: {localPart(p.email) + "-leaver-hold"},
 	}
-	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.machineKey, &http.Transport{}), Timeout: 30 * time.Second}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.machineKey, transport), Timeout: 30 * time.Second}
 	response, err := client.PostForm(r.broker.URL+brokerclient.TokenPath, form)
 	if err != nil {
 		t.Fatalf("the exchange of %s's machine login's token got no answer: %v", p.email, err)
