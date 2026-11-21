@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,37 +47,43 @@ type NeutralizeConfig struct {
 
 // NeutralMap is every name a neutralization replaced, by what it names, each from the record's
 // name to its neutral one: what turns a neutral window's names back into the record's, which is
-// why it is written outside the neutral window and never committed.
+// why it is written outside the neutral window and never committed. Addresses holds each network
+// address by its canonical form (netip.Addr's String).
 type NeutralMap struct {
-	Projects map[string]string `json:"projects"`
-	Keys     map[string]string `json:"keys"`
-	Repos    map[string]string `json:"repos"`
-	People   map[string]string `json:"people"`
-	Sessions map[string]string `json:"sessions"`
-	Titles   map[string]string `json:"titles"`
-	Machines map[string]string `json:"machines"`
-	Hosts    map[string]string `json:"hosts"`
-	Paths    map[string]string `json:"paths"`
-	IDs      map[string]string `json:"ids"`
-	Digests  map[string]string `json:"digests"`
-	Links    map[string]string `json:"links"`
-	Names    map[string]string `json:"names"`
-	Text     map[string]string `json:"text"`
+	Projects  map[string]string `json:"projects"`
+	Keys      map[string]string `json:"keys"`
+	Repos     map[string]string `json:"repos"`
+	People    map[string]string `json:"people"`
+	Sessions  map[string]string `json:"sessions"`
+	Titles    map[string]string `json:"titles"`
+	Machines  map[string]string `json:"machines"`
+	Hosts     map[string]string `json:"hosts"`
+	Addresses map[string]string `json:"addresses"`
+	Paths     map[string]string `json:"paths"`
+	IDs       map[string]string `json:"ids"`
+	Digests   map[string]string `json:"digests"`
+	Links     map[string]string `json:"links"`
+	Names     map[string]string `json:"names"`
+	Text      map[string]string `json:"text"`
 }
 
 // Neutralize writes the window in cfg.In to cfg.Out with every private name in it renamed, the
 // same name to the same neutral name in every file: each issue key of every project (in the
 // order of its number within its project) and each claim token, workspace and daemon's name that
 // spells one; each repository but this one; each actor's and session's id, each session's title,
-// machine and host; each person's login and email; each uuid and document digest; each link
-// outside this repository; each label but Legion's, component and priority; and the free text of
-// Dispatch's events (titles, summaries, reasons, questions, answers, bodies) to numbered neutral
-// text. It changes values alone: every member, JSON type and list length of every line is the
-// record's, so the neutral window is read by the same readers. The daemon's msgs, document names,
-// ranks, statuses and times are kept, and so are the daemon's own words in its lines, their names
-// renamed. It writes the map to cfg.Map and returns it. It refuses a map inside cfg.Out or already
-// there, an Out that is In or holds files, and a neutral window that still holds a deny word or a
-// key of a project it renamed.
+// machine and host; each IPv4 and IPv6 address, a name of the deployment's network, to one of the
+// documentation ranges (RFC 5737's 192.0.2.0/24, then its 198.51.100.0/24 and 203.0.113.0/24;
+// RFC 3849's 2001:db8::/32), keeping the loopback and unspecified addresses and every address
+// already in a documentation range; each person's login and email; each uuid and document
+// digest; each link outside this repository; each label but Legion's, component and priority;
+// and the free text of Dispatch's events (titles, summaries, reasons, questions, answers, bodies)
+// to numbered neutral text. It changes values alone: every member, JSON type and list length of
+// every line is the record's, so the neutral window is read by the same readers. The daemon's
+// msgs, document names, ranks, statuses and times are kept, and so are the daemon's own words in
+// its lines, their names renamed. It writes the map to cfg.Map and returns it. It refuses a map
+// inside cfg.Out or already there, an Out that is In or holds files, a window holding more IPv4
+// addresses than the documentation ranges hold, and a neutral window that still holds a deny word
+// or a key of a project it renamed.
 func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 	if !claim.IsIssueKey(cfg.Project + "-1") {
 		return NeutralMap{}, fmt.Errorf("replay: neutralize: %q is no Dispatch project key", cfg.Project)
@@ -127,6 +135,9 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 			renamed[i] = Merge{SHA: merge.SHA, At: merge.At, Branch: n.visit(merge.Branch, field{source: sourceMerges, key: "branch"})}
 		}
 		out.Merges[n.repo(repo)] = renamed
+	}
+	if n.err != nil {
+		return NeutralMap{}, n.err
 	}
 	_, statErr := os.Stat(cfg.Out)
 	if err := out.Write(cfg.Out); err != nil {
@@ -304,21 +315,27 @@ type neutralizer struct {
 	// repos is every repository the window names but keptRepository, in the order first met.
 	repos []string
 	// values is every string the first walk met outside a person's text, which collectKeys reads
-	// for keys once every project is registered.
+	// for keys and collectAddresses for documentation addresses once every project is registered.
 	values []string
 	// names is the matcher of every name a string can hold anywhere (rename), built by number.
 	names *regexp.Regexp
 	// counters is the next number of each kind of neutral name.
 	counters map[string]int
+	// documented is each address of a documentation range the window holds, which it keeps and so
+	// no renamed address may become; err is the first address the documentation ranges had no
+	// neutral address left for, which refuses the neutralization.
+	documented map[netip.Addr]bool
+	err        error
 }
 
 func newNeutralizer(cfg NeutralizeConfig) *neutralizer {
-	n := &neutralizer{project: cfg.Project, keys: make(map[string]map[int]bool), counters: make(map[string]int), m: NeutralMap{
-		Projects: map[string]string{}, Keys: map[string]string{}, Repos: map[string]string{}, People: map[string]string{},
-		Sessions: map[string]string{}, Titles: map[string]string{}, Machines: map[string]string{}, Hosts: map[string]string{},
-		Paths: map[string]string{}, IDs: map[string]string{}, Digests: map[string]string{}, Links: map[string]string{},
-		Names: map[string]string{}, Text: map[string]string{},
-	}}
+	n := &neutralizer{project: cfg.Project, keys: make(map[string]map[int]bool), counters: make(map[string]int),
+		documented: make(map[netip.Addr]bool), m: NeutralMap{
+			Projects: map[string]string{}, Keys: map[string]string{}, Repos: map[string]string{}, People: map[string]string{},
+			Sessions: map[string]string{}, Titles: map[string]string{}, Machines: map[string]string{}, Hosts: map[string]string{},
+			Addresses: map[string]string{}, Paths: map[string]string{}, IDs: map[string]string{}, Digests: map[string]string{},
+			Links: map[string]string{}, Names: map[string]string{}, Text: map[string]string{},
+		}}
 	for _, word := range cfg.Deny {
 		if word = strings.TrimSpace(word); word != "" {
 			n.deny = append(n.deny, regexp.MustCompile(`(?i)`+regexp.QuoteMeta(word)))
@@ -343,6 +360,27 @@ var (
 	githubRepoURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(.*)$`)
 	// workspacePath is a Legion workspace on a pod, /legion/workspaces/<owner>/<name>/<issue>….
 	workspacePath = regexp.MustCompile(`^/legion/workspaces/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(.*)$`)
+	// anyAddress is a network address standing anywhere in a string (addressShape).
+	anyAddress = regexp.MustCompile(addressShape)
+)
+
+// addressShape is the shape of a network address in a string: an IPv4 address in dotted decimal,
+// an IPv6 address that ends in an IPv4 one, or an IPv6 address written whole or with a run of
+// zero groups cut to "::". It has no capturing group, so namesPattern holds it as one of its
+// alternatives. A match is an address only where netip reads it as one (neutralizer.address).
+const addressShape = `\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b` +
+	`|(?:[0-9A-Fa-f]{0,4}:){2,6}(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b` +
+	`|\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\b` +
+	`|(?:\b[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6}\b)?`
+
+// ipv4Documentation and ipv6Documentation are the address ranges set aside for documentation,
+// RFC 5737's three and RFC 3849's one: an address in one names no deployment's network, so a
+// neutral window keeps it, and every neutral address is drawn from them, the IPv4 ones from the
+// three in turn.
+var (
+	ipv4Documentation = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("198.51.100.0/24"),
+		netip.MustParsePrefix("203.0.113.0/24")}
+	ipv6Documentation = netip.MustParsePrefix("2001:db8::/32")
 )
 
 // Field rules: how the string value of a member is renamed, by the member's name. A member no
@@ -460,10 +498,13 @@ func (n *neutralizer) addRepo(repo string) {
 // and the keys of those projects that stand anywhere in the window are found: the window's own
 // project the configured one and each other OTHERA, OTHERB, … in the order met; each project's
 // keys 1, 2, … in the order of their numbers, so the neutral keys sort as the record's did within
-// a project. It builds the matcher rename finds names with.
+// a project. It finds the documentation addresses the window holds, which no neutral address may
+// be, and builds the matcher rename finds names with.
 func (n *neutralizer) number(own string) {
 	n.addProject(own)
 	n.collectKeys()
+	n.collectAddresses()
+	n.values = nil
 	others := 0
 	for _, project := range n.sourceProjects {
 		if project == own {
@@ -501,7 +542,19 @@ func (n *neutralizer) collectKeys() {
 			}
 		}
 	}
-	n.values = nil
+}
+
+// collectAddresses registers every address of a documentation range that stands in a string
+// anywhere in the window: the record's own, which the neutral window keeps, so no address renamed
+// becomes one and two names stay two.
+func (n *neutralizer) collectAddresses() {
+	for _, s := range n.values {
+		for _, match := range anyAddress.FindAllString(s, -1) {
+			if addr, err := netip.ParseAddr(match); err == nil && documentationAddress(addr.Unmap()) {
+				n.documented[addr.Unmap()] = true
+			}
+		}
+	}
 }
 
 // letters is the n-th name of the spreadsheet column kind: A, B, …, Z, AA, AB, ….
@@ -515,9 +568,9 @@ func letters(n int) string {
 
 // namesPattern is the matcher of every name rename finds in a string by its shape, as one
 // alternation so a string is read once, left to right, and a name already renamed is never read
-// again: a link, an email, a uuid, a registered repository, a host name of three labels or more,
-// the daemon's Dispatch session of a registered project, a claim token's or a machine's
-// legion-<project token>-, and a key of a registered project in either case.
+// again: a link, an email, a uuid, a network address, a registered repository, a host name of
+// three labels or more, the daemon's Dispatch session of a registered project, a claim token's or
+// a machine's legion-<project token>-, and a key of a registered project in either case.
 func (n *neutralizer) namesPattern() *regexp.Regexp {
 	var repos, upper, lower []string
 	for _, repo := range slices.SortedFunc(slices.Values(n.repos), func(a, b string) int { return len(b) - len(a) }) {
@@ -531,6 +584,7 @@ func (n *neutralizer) namesPattern() *regexp.Regexp {
 		`(?P<link>https?://[^\s"'<>(){}\[\]]+)`,
 		`(?P<email>[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})`,
 		`(?P<uuid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`,
+		`(?P<address>` + addressShape + `)`,
 	}
 	if len(repos) > 0 {
 		alternatives = append(alternatives, `(?P<repo>\b(?:`+strings.Join(repos, "|")+`)\b)`)
@@ -646,6 +700,8 @@ func (n *neutralizer) rename(s string) string {
 				name = n.person(name)
 			case "uuid":
 				name = n.named(n.m.IDs, "uuid", strings.ToLower(name), func(i int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012x", i) })
+			case "address":
+				name = n.address(name)
 			case "repo":
 				name = n.repo(name)
 			case "host":
@@ -677,6 +733,68 @@ func (n *neutralizer) named(names map[string]string, kind, s string, neutral fun
 	n.counters[kind]++
 	names[s] = neutral(n.counters[kind])
 	return names[s]
+}
+
+// address is the neutral form of s, a match of addressShape: an address of the documentation
+// ranges, the same for each address however it is written (its canonical form, an IPv4 address
+// written as an IPv6 one read as the IPv4 one). s is kept where it reads as no address, and where
+// it is a loopback or an unspecified address or one of a documentation range, none of which names
+// a deployment's network. Where the ranges have no neutral address left, s is kept and the first
+// such address refuses the neutralization (neutralizer.err).
+func (n *neutralizer) address(s string) string {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return s
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() || addr.IsUnspecified() || documentationAddress(addr) {
+		return s
+	}
+	if neutral, known := n.m.Addresses[addr.String()]; known {
+		return neutral
+	}
+	neutral, ok := n.neutralAddress(addr.Is4())
+	if !ok {
+		if n.err == nil {
+			n.err = fmt.Errorf("replay: neutralize: the window holds more IPv4 addresses than the %d the documentation ranges hold",
+				len(ipv4Documentation)*254)
+		}
+		return s
+	}
+	n.m.Addresses[addr.String()] = neutral.String()
+	return neutral.String()
+}
+
+// neutralAddress is the next address of the documentation ranges that no address of the window
+// is: for IPv4, 192.0.2.1 to 192.0.2.254, then the same of 198.51.100.0/24 and of 203.0.113.0/24,
+// and false once those are spent; for IPv6, 2001:db8::1 on.
+func (n *neutralizer) neutralAddress(ipv4 bool) (netip.Addr, bool) {
+	for {
+		var neutral netip.Addr
+		if ipv4 {
+			i := n.counters["ipv4"]
+			if i == len(ipv4Documentation)*254 {
+				return netip.Addr{}, false
+			}
+			n.counters["ipv4"]++
+			octets := ipv4Documentation[i/254].Addr().As4()
+			octets[3] = byte(i%254 + 1)
+			neutral = netip.AddrFrom4(octets)
+		} else {
+			n.counters["ipv6"]++
+			octets := ipv6Documentation.Addr().As16()
+			binary.BigEndian.PutUint64(octets[8:], uint64(n.counters["ipv6"]))
+			neutral = netip.AddrFrom16(octets)
+		}
+		if !n.documented[neutral] {
+			return neutral, true
+		}
+	}
+}
+
+// documentationAddress says whether addr is in one of the documentation ranges.
+func documentationAddress(addr netip.Addr) bool {
+	return ipv6Documentation.Contains(addr) || slices.ContainsFunc(ipv4Documentation, func(r netip.Prefix) bool { return r.Contains(addr) })
 }
 
 // projectName is a registered project's neutral key; a project the first walk did not register

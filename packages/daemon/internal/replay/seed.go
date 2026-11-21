@@ -49,6 +49,11 @@ const seedSession = "replay-seed"
 // repository of, one whose turn stands in a tree the record shows running no lifecycle, one a fact
 // the trace could not place before at leaves in doubt, and one the daemon's own judgement of the
 // line, read back from what Seed wrote, finds held by no word it has (record.HeldUnclassified).
+// A fact leaves an issue in doubt where it bears on what Seed writes for it — its phase and entry,
+// its slot, its hold, its linger — which a fact of every kind but a turn's does (UnplacedKind). A
+// turn fact is of a turn that ended at the fact's own moment, before at, so it bears on no claim
+// Seed writes, which are of the turns standing at at; a turn the trace holds open at at in a tree
+// that runs no lifecycle is named on its own, above.
 func Seed(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, t Trace, at time.Time) ([]Unplaced, error) {
 	token, err := claim.ProjectToken(t.Project)
 	if err != nil {
@@ -73,7 +78,7 @@ func Seed(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.St
 		}
 	}
 	for _, fact := range t.Unplaced {
-		if _, considered := t.Issues[fact.Issue]; considered && fact.At.Before(at) {
+		if _, considered := t.Issues[fact.Issue]; considered && fact.At.Before(at) && fact.Kind != UnplacedTurn {
 			s.unplaced(fact.Issue, "the trace could not place a fact of it before the window's start: %s", fact.Reason)
 		}
 	}

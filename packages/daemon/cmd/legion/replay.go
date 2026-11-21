@@ -197,10 +197,13 @@ func newReplayNeutralizeCommand(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Write the window in --in to --out with every private name renamed, the same name to the same
 neutral name in every file: each issue key of every project and each claim token that spells
 one, each repository but cybermonklabs/legion, each actor's and session's id, each session's
-title, each person's login and email, each uuid, link, label and digest, and the free text of
-Dispatch's events. Every member, JSON type and list length is kept, and so are the daemon's
-msgs, ranks, statuses and times. The window's own project becomes --project, every other
-OTHERA, OTHERB, ….
+title, each person's login and email, each host name and machine name, each IPv4 and IPv6
+address but a loopback, unspecified or documentation one, which becomes an address of the
+documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32), each uuid,
+link, label and digest, and the free text of Dispatch's events. Every member, JSON type and list
+length is kept, and so are the daemon's msgs, ranks, statuses and times. The window's own project
+becomes --project, every other OTHERA, OTHERB, …. A window holding more IPv4 addresses than those
+ranges hold is refused.
 
 The map of every name replaced is written to --map, which must be outside --out and not there
 yet: it holds every private name, so it is never committed. --deny names a word no file may

@@ -57,20 +57,52 @@ type Trace struct {
 	Ticks []time.Time
 	// Pauses is each pause of the project the log shows, in order.
 	Pauses []PauseSpan
-	// Unplaced is each issue or line the trace could not place, with the reason: a line that
-	// disagrees with what the trace already holds, a move whose trigger has no source, a turn end
-	// with no start. The trace still places what it can of it.
+	// Unplaced is each issue or line the trace could not place, with what part of the record it is
+	// about and the reason: a line that disagrees with what the trace already holds, a move whose
+	// trigger has no source, a turn end with no start. The trace still places what it can of it.
 	Unplaced []UnplacedFact
 }
 
 // UnplacedFact is a line or an issue the trace could not place: the issue it is about ("" for
-// none), the moment of the line or the fact, and why. The start state names each issue a fact
-// before its moment leaves in doubt (Seed).
+// none), the moment of the line or the fact, the part of the record it is about, and why. The
+// start state names each issue a fact before its moment leaves in doubt (Seed).
 type UnplacedFact struct {
 	At     time.Time
 	Issue  string
+	Kind   UnplacedKind
 	Reason string
 }
+
+// UnplacedKind is the part of the record an unplaced fact is about, which says what of a start
+// state the fact can leave in doubt (Seed).
+type UnplacedKind string
+
+const (
+	// UnplacedTurn is a fact of a claim's turn: a turn that starts while the claim's turn before
+	// is open, which ends that turn there, or a turn's own end line with no turn of the claim open,
+	// which ends none. Either is of a turn that ended at the fact's own moment.
+	UnplacedTurn UnplacedKind = "turn"
+	// UnplacedMove is a fact of a phase move: a move out of a phase the trace does not hold the
+	// issue in, a move whose trigger has no source in MoveSources, or a move back with no cause.
+	UnplacedMove UnplacedKind = "move"
+	// UnplacedEntry is a fact of an issue's entry into the workflow: a move of an issue none of
+	// whose Dispatch events entered it, or an issue in the workflow the window holds no Dispatch
+	// event of.
+	UnplacedEntry UnplacedKind = "entry"
+	// UnplacedSlot is a fact of a slot: one given to an issue that holds one.
+	UnplacedSlot UnplacedKind = "slot"
+	// UnplacedHold is a fact of a hold: the release of one the trace does not hold, but for the
+	// operator's retry of a phase's worker, which writes a release where no hold stands too.
+	UnplacedHold UnplacedKind = "hold"
+	// UnplacedLinger is a fact of a linger: the close of one the trace does not hold.
+	UnplacedLinger UnplacedKind = "linger"
+	// UnplacedBoot is a fact of a boot's hold on the listing's summaries: the release of one no
+	// boot of the trace holds.
+	UnplacedBoot UnplacedKind = "boot"
+	// UnplacedPause is a fact of a pause of the project: the end of one the trace does not hold
+	// open.
+	UnplacedPause UnplacedKind = "pause"
+)
 
 // IssueTrace is one issue of a window as its record shows it.
 type IssueTrace struct {
@@ -327,6 +359,16 @@ const (
 	TurnEndClaimFailed TurnEnd = "claim_failed"
 	// TurnEndSuspended is a turn its claim's suspend ended (`supervise: suspended`).
 	TurnEndSuspended TurnEnd = "suspended"
+	// TurnEndDied is a turn its process's death ended (`supervise: process died`).
+	TurnEndDied TurnEnd = "died"
+	// TurnEndDisplaced is a turn whose process was found gone, or found to be another runtime's,
+	// through no fault of its own (`supervise: the process was displaced through no fault of its
+	// own, …`).
+	TurnEndDisplaced TurnEnd = "displaced"
+	// TurnEndLetGo is a turn the let-go of its process cut off — a relaunch, a suspension, a
+	// failure or a retirement stopping it (`supervise: the relaunch ended work the agent had
+	// running`).
+	TurnEndLetGo TurnEnd = "let_go"
 	// TurnEndLeft is a turn its issue's leaving the workflow ended.
 	TurnEndLeft TurnEnd = "left"
 	// TurnEndOpen is a turn that stands at the window's end.
@@ -334,8 +376,9 @@ const (
 )
 
 // Turn is one turn of a claim's session, joined to its issue and role by the claim token: from its
-// `supervise: a turn started` to its `supervise: a turn ended`, its claim's failure or suspend, or
-// its issue's leave; End zero while it stands at the window's end.
+// `supervise: a turn started` to its `supervise: a turn ended`, its claim's failure or suspend, the
+// end of the process it ran on (ProcessEnded), or its issue's leave; End zero while it stands at
+// the window's end.
 type Turn struct {
 	Claim      ClaimRef
 	Generation uint64
@@ -562,9 +605,9 @@ func (b *traceBuilder) issue(key string) *IssueTrace {
 	return iss
 }
 
-// unplaced names what the trace could not place.
-func (b *traceBuilder) unplaced(issue string, at time.Time, format string, args ...any) {
-	b.t.Unplaced = append(b.t.Unplaced, UnplacedFact{At: at, Issue: issue, Reason: fmt.Sprintf(format, args...)})
+// unplaced names what the trace could not place, of the part of the record kind.
+func (b *traceBuilder) unplaced(kind UnplacedKind, issue string, at time.Time, format string, args ...any) {
+	b.t.Unplaced = append(b.t.Unplaced, UnplacedFact{At: at, Issue: issue, Kind: kind, Reason: fmt.Sprintf(format, args...)})
 }
 
 // openVisit is the visit iss stands in, nil where it stands in none.
@@ -785,10 +828,16 @@ func (b *traceBuilder) onLine(line LogLine) {
 		iss.Gates = append(iss.Gates, GateFact{At: at, Kind: GateClosedFact, Artifact: l.Artifact, Version: l.Version, Event: l.Event})
 	case HoldReleased:
 		iss := b.issue(l.Issue)
-		if wait := iss.openWait(WaitHeld); wait != nil {
+		switch wait := iss.openWait(WaitHeld); {
+		case wait != nil:
 			wait.End, wait.EndedBy = at, WaitReleased
-		} else {
-			b.unplaced(l.Issue, at, "%s at %s releases a hold the trace does not hold", l.Msg, stamp(at))
+		case l.Reason == operatorRetryReason:
+			// The operator's retry of a phase's worker writes this line whether or not the issue
+			// stands held (workflow/engine.go at e6edc575: (*Engine).restartPhase hands the phase
+			// its worker works to (*Engine).retryPhase, which writes the line with no regard to a
+			// hold), so with no hold held it is that retry, and releases nothing.
+		default:
+			b.unplaced(UnplacedHold, l.Issue, at, "%s at %s releases a hold the trace does not hold", l.Msg, stamp(at))
 		}
 	case PhaseHeld:
 		if b.heldLines {
@@ -814,7 +863,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 		if n := len(root.Lingers); n > 0 && root.Lingers[n-1].Closed.IsZero() {
 			root.Lingers[n-1].Closed = at
 		} else {
-			b.unplaced(l.Tree, at, "%s at %s closes a linger the trace does not hold", l.Msg, stamp(at))
+			b.unplaced(UnplacedLinger, l.Tree, at, "%s at %s closes a linger the trace does not hold", l.Msg, stamp(at))
 		}
 	case TurnStarted:
 		b.turnStarts(l)
@@ -824,6 +873,8 @@ func (b *traceBuilder) onLine(line LogLine) {
 		}
 	case Suspended:
 		b.turnEnds(l.Claim, at, TurnEndSuspended, false)
+	case ProcessEnded:
+		b.turnEnds(l.Claim, at, l.By, false)
 	case QueueLeftNothingRead:
 		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
 	case QueueLeftReadOnce:
@@ -840,7 +891,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 		if boot := &b.t.Boots[len(b.t.Boots)-1]; !boot.Holding.IsZero() && boot.CaughtUp.IsZero() {
 			boot.CaughtUp = at
 		} else {
-			b.unplaced("", at, "%s at %s releases a hold no boot of the trace holds", l.Msg, stamp(at))
+			b.unplaced(UnplacedBoot, "", at, "%s at %s releases a hold no boot of the trace holds", l.Msg, stamp(at))
 		}
 	case PauseBegan:
 		b.t.Pauses = append(b.t.Pauses, PauseSpan{Pause: l.Pause, Reason: l.Reason, From: at})
@@ -848,7 +899,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 		if n := len(b.t.Pauses); n > 0 && b.t.Pauses[n-1].To.IsZero() && b.t.Pauses[n-1].Pause == l.Pause {
 			b.t.Pauses[n-1].To = at
 		} else {
-			b.unplaced("", at, "%s at %s ends the pause %d, which the trace does not hold open", l.Msg, stamp(at), l.Pause)
+			b.unplaced(UnplacedPause, "", at, "%s at %s ends the pause %d, which the trace does not hold open", l.Msg, stamp(at), l.Pause)
 		}
 	case Launched, ProcessStart, BootStage:
 	}
@@ -903,7 +954,7 @@ func (b *traceBuilder) moved(l PhaseChanged) {
 	from, to := foldPhase(l.From), foldPhase(l.To)
 	source, sourced := MoveSources[l.Trigger]
 	if !sourced {
-		b.unplaced(l.Issue, at, "the move of %s from %s to %s at %s is by %s, which has no source in MoveSources", l.Issue, l.From, l.To, stamp(at), l.Trigger)
+		b.unplaced(UnplacedMove, l.Issue, at, "the move of %s from %s to %s at %s is by %s, which has no source in MoveSources", l.Issue, l.From, l.To, stamp(at), l.Trigger)
 	}
 	visit := iss.openVisit()
 	switch {
@@ -913,12 +964,12 @@ func (b *traceBuilder) moved(l PhaseChanged) {
 		enter, before := b.t.Start, true
 		if len(iss.Dispatch) > 0 && iss.Dispatch[0].At.After(b.t.Start) {
 			enter, before = iss.Dispatch[0].At, false
-			b.unplaced(l.Issue, at, "%s moves out of %s at %s, and none of its Dispatch events entered it into the workflow", l.Issue, l.From, stamp(at))
+			b.unplaced(UnplacedEntry, l.Issue, at, "%s moves out of %s at %s, and none of its Dispatch events entered it into the workflow", l.Issue, l.From, stamp(at))
 		}
 		iss.Entries = append(iss.Entries, Entry{At: enter, Tree: l.Tree, Generation: 1})
 		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: enter, Before: before})
 	case visit == nil:
-		b.unplaced(l.Issue, at, "%s moves out of %s at %s while the trace holds it in no phase", l.Issue, l.From, stamp(at))
+		b.unplaced(UnplacedMove, l.Issue, at, "%s moves out of %s at %s while the trace holds it in no phase", l.Issue, l.From, stamp(at))
 		iss.Entries = append(iss.Entries, Entry{At: at, Tree: l.Tree, Generation: iss.Generation() + 1, Reopen: true})
 		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: at})
 	case visit.Phase != from && visit.Enter.Before(b.t.Start):
@@ -926,7 +977,7 @@ func (b *traceBuilder) moved(l PhaseChanged) {
 		visit.Exit = b.t.Start
 		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: b.t.Start, Before: true})
 	case visit.Phase != from:
-		b.unplaced(l.Issue, at, "%s moves out of %s at %s while the trace holds it in %s", l.Issue, l.From, stamp(at), visit.Phase)
+		b.unplaced(UnplacedMove, l.Issue, at, "%s moves out of %s at %s while the trace holds it in %s", l.Issue, l.From, stamp(at), visit.Phase)
 		visit.Exit = at
 		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: at})
 	}
@@ -957,7 +1008,7 @@ func (b *traceBuilder) moved(l PhaseChanged) {
 		if cause, named := CauseOf(SendBack{Trigger: l.Trigger, From: from, To: to, Drop: move.Drop}); named {
 			move.Cause = cause
 		} else {
-			b.unplaced(l.Issue, at, "the move back of %s from %s to %s at %s by %s has no cause", l.Issue, from, to, stamp(at), l.Trigger)
+			b.unplaced(UnplacedMove, l.Issue, at, "the move back of %s from %s to %s at %s by %s has no cause", l.Issue, from, to, stamp(at), l.Trigger)
 		}
 	}
 	out := move
@@ -1092,7 +1143,7 @@ func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
 // turnStarts opens a turn of a claim.
 func (b *traceBuilder) turnStarts(l TurnStarted) {
 	if _, open := b.turns[l.Claim.Token]; open {
-		b.unplaced(l.Claim.Issue, l.Time, "%s starts a turn at %s while its turn before is open; that turn ends here", l.Claim.Token, stamp(l.Time))
+		b.unplaced(UnplacedTurn, l.Claim.Issue, l.Time, "%s starts a turn at %s while its turn before is open; that turn ends here", l.Claim.Token, stamp(l.Time))
 		b.turnEnds(l.Claim, l.Time, TurnEndLine, false)
 	}
 	turn := Turn{Claim: l.Claim, Generation: l.Generation, Delivery: l.Delivery, Start: l.Time}
@@ -1108,12 +1159,13 @@ func (b *traceBuilder) turnStarts(l TurnStarted) {
 
 // turnEnds ends ref's open turn at at. A turn's own end line with no turn open is a line the trace
 // cannot place (the turn began before the inputs reach, or its start was lost); a failure, a
-// suspend or a leave ends no turn where none is open, and says nothing.
+// suspend, the end of the claim's process or a leave ends no turn where none is open, and says
+// nothing.
 func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine bool) {
 	open, ok := b.turns[ref.Token]
 	if !ok {
 		if ownLine {
-			b.unplaced(ref.Issue, at, "%s ends a turn at %s and no turn of it is open", ref.Token, stamp(at))
+			b.unplaced(UnplacedTurn, ref.Issue, at, "%s ends a turn at %s and no turn of it is open", ref.Token, stamp(at))
 		}
 		return
 	}
@@ -1136,7 +1188,7 @@ func (b *traceBuilder) finish() {
 	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
 		iss := b.t.Issues[key]
 		if len(iss.Visits) > 0 && len(iss.Dispatch) == 0 {
-			b.unplaced(key, iss.Visits[0].Enter, "%s runs in the workflow and the window holds no Dispatch event of it", key)
+			b.unplaced(UnplacedEntry, key, iss.Visits[0].Enter, "%s runs in the workflow and the window holds no Dispatch event of it", key)
 		}
 		b.linkWaits(iss)
 		b.childrenWaitEnds(iss)
@@ -1173,7 +1225,7 @@ func (b *traceBuilder) spans() {
 		holding := n > 0 && iss.Slots[n-1].End.IsZero()
 		switch {
 		case move.Given && holding:
-			b.unplaced(move.Issue, move.At, "%s takes a slot at %s while it holds one", move.Issue, stamp(move.At))
+			b.unplaced(UnplacedSlot, move.Issue, move.At, "%s takes a slot at %s while it holds one", move.Issue, stamp(move.At))
 			iss.Slots[n-1].End = move.At
 			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
 		case move.Given:

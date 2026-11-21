@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -462,5 +463,100 @@ func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("the refused neutralization left %s: %v", path, err)
 		}
+	}
+}
+
+// A network address of the deployment is a name of its private infrastructure, which no neutral
+// window may hold (AGENTS.md, "Conventions"). A window whose log names, in the detail of a
+// displacement, a worker's IPv4 address with its port beside its host's name, and, in the detail
+// of a death, a cluster's IPv6 address, another IPv4 address, and the loopback, unspecified and
+// documentation addresses, and one of whose events names the worker's address again, is
+// neutralized: each address of the deployment becomes one of a documentation range, the same
+// address the same one in the log and in the event and two addresses two, none of them an address
+// the record itself holds; the host's name becomes a neutral one; and the loopback, unspecified
+// and documentation addresses are kept. The map holds each address renamed, and the neutral
+// window none of them.
+func TestNeutralizeRenamesEveryAddressToADocumentationOne(t *testing.T) {
+	recorded, err := ReadWindow(privateWindow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		worker  = "10.20.30.40"
+		another = "172.16.9.8"
+		cluster = "fd00:10:96::1a"
+		host    = "vault-runner.hush.internal"
+	)
+	at := time.Date(2026, time.March, 2, 10, 8, 0, 0, time.UTC)
+	token := "legion-nimbus-nimbus-412-implementer"
+	kept := "via 127.0.0.1:8080, [::1]:9000, 0.0.0.0:13371, 192.0.2.1, 198.51.100.7 and [2001:db8::42]:80"
+	recorded.Log = append(recorded.Log,
+		privateLine(t, at, slog.LevelWarn, processDisplacedLine, "claim", token, "incarnation", "5e0c1a01", "process", "pod/nimbus-412",
+			"observed", "gone", "detail", "dial tcp "+worker+":13371: connect: connection refused; the pod on "+host+" is gone"),
+		privateLine(t, at.Add(time.Minute), slog.LevelWarn, processDiedLine, "claim", token, "incarnation", "5e0c1a02", "observed", "gone",
+			"detail", "dial tcp ["+cluster+"]:443 from "+another+" "+kept, "podEnd", "", "chargedBefore", false))
+	recorded.Lines = slices.Sorted(slices.Values(append(slices.Clone(recorded.Lines), processDisplacedLine, processDiedLine)))
+	recorded.Events["NIMBUS-412"] = append(slices.Clone(recorded.Events["NIMBUS-412"]), privateEvent(t, 17, 7, "NIMBUS-412", "NIMBUS",
+		"issue.commented", at, map[string]any{"kind": "user", "id": privateEmail}, map[string]any{"endpoint": worker + ":13371"}))
+	scratch := t.TempDir()
+	in, out := filepath.Join(scratch, "addresses"), filepath.Join(scratch, "neutral")
+	if err := recorded.Write(in); err != nil {
+		t.Fatal(err)
+	}
+	names, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: filepath.Join(scratch, "map.json"), Deny: []string{privateWord}})
+	if err != nil {
+		t.Fatalf("Neutralize: %v", err)
+	}
+
+	// 192.0.2.1 is the record's own, so the first address renamed is the next one.
+	want := map[string]string{worker: "192.0.2.2", cluster: "2001:db8::1", another: "192.0.2.3"}
+	if !maps.Equal(names.Addresses, want) {
+		t.Errorf("the map renames the addresses %v; want %v", names.Addresses, want)
+	}
+	for address, neutral := range names.Addresses {
+		addr, err := netip.ParseAddr(neutral)
+		if err != nil || !documentationAddress(addr) {
+			t.Errorf("%s became %q, which is no address of a documentation range", address, neutral)
+		}
+	}
+	w, err := ReadWindow(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := len(w.Log)
+	displaced, died := w.Log[n-2], w.Log[n-1]
+	for _, check := range []struct {
+		what      string
+		got, want any
+	}{
+		{"the displacement's detail", pick(t, displaced, "detail"),
+			"dial tcp 192.0.2.2:13371: connect: connection refused; the pod on " + names.Hosts[host] + " is gone"},
+		{"the death's detail", pick(t, died, "detail"), "dial tcp [2001:db8::1]:443 from 192.0.2.3 " + kept},
+		{"the event's endpoint", pick(t, w.Events["ACME-2"][len(w.Events["ACME-2"])-1], "payload", "endpoint"), "192.0.2.2:13371"},
+	} {
+		if !reflect.DeepEqual(check.got, check.want) {
+			t.Errorf("%s is %v, want %v", check.what, check.got, check.want)
+		}
+	}
+	if !strings.HasSuffix(names.Hosts[host], ".example.invalid") {
+		t.Errorf("the worker's host became %q", names.Hosts[host])
+	}
+	err = filepath.WalkDir(out, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, address := range []string{worker, another, cluster, host} {
+			if bytes.Contains(data, []byte(address)) {
+				t.Errorf("%s still holds %s", path, address)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

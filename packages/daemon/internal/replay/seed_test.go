@@ -411,10 +411,10 @@ func withoutRepository(t *testing.T, w Window, key string) Window {
 // Seed names each issue it cannot place at the window's start, with the reason, and places every
 // other: a root held from merging with no slot, which the daemon's own reading of the line holds by
 // no word (record.HeldUnclassified); a root Dispatch names no repository of, which the daemon
-// records no issue without; a root a line of whose the trace could not place before the start; and
-// a root whose architect's turn stands at the start in a tree the record never opened. No issue of
-// a fixture window is unplaced, at its start or at any hour of it, and the trace of each places
-// every line.
+// records no issue without; a root whose phase line the trace could not place before the start (a
+// move out of testing while the trace holds it in implementing); and a root whose architect's
+// turn stands at the start in a tree the record never opened. No issue of a fixture window is
+// unplaced, at its start or at any hour of it, and the trace of each places every line.
 func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 	st := seedStore(t)
 	cases := []struct {
@@ -440,8 +440,7 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 				b.reaches(2 * time.Hour)
 				b.boot(clock(8, 0))
 				rootThrough(b, "ACME-1", "a0", clock(8, 5), clock(8, 20), builtMove{clock(9, 0), phase.Implementing, workflow.TriggerPlannerCompleted})
-				b.info(clock(9, 30), "supervise: a turn ended", "claim", string(b.token("ACME-1", claim.RoleTester)), "generation", 1,
-					"delivery", "outbox:99")
+				b.moved(clock(9, 30), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
 				return b.build()
 			}},
 		{name: "a turn in a tree the record never opened", issue: "ACME-2", reason: "runs no lifecycle", window: func(t *testing.T) Window {
@@ -492,5 +491,42 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A fact the trace could not place before the window's start leaves in doubt only what of the
+// start state it bears on. ACME-1 and ACME-2 run from their filing to implementing, and at 09:30,
+// before the start at 10:00, the log holds two lines the trace cannot place: the turn end of
+// ACME-1's tester, which has no turn open, and an admission pass giving ACME-2 a slot while it
+// holds one. The first is of a turn that ended before the start, which bears on nothing the start
+// state writes, so ACME-1 is placed; the second leaves ACME-2's slot in doubt, so the seed names
+// ACME-2, with the reason. The trace holds the two facts, each of its kind.
+func TestSeedNamesAnIssueOnlyForAFactItsStartStateRestsOn(t *testing.T) {
+	st := seedStore(t)
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(2 * time.Hour)
+	b.boot(clock(8, 0))
+	implementing := builtMove{clock(9, 0), phase.Implementing, workflow.TriggerPlannerCompleted}
+	rootThrough(b, "ACME-1", "a0", clock(8, 5), clock(8, 20), implementing)
+	rootThrough(b, "ACME-2", "a1", clock(8, 10), clock(8, 25), implementing)
+	b.info(clock(9, 30), "supervise: a turn ended", "claim", string(b.token("ACME-1", claim.RoleTester)), "generation", 1,
+		"delivery", "outbox:99")
+	b.info(clock(9, 30), "admission: slot taken", "issue", "ACME-2", "slots", 3, "cap", 4)
+	window := b.build()
+	trace, unplaced := seeded(t, st, window, window.From, nil)
+
+	facts := make(map[string]UnplacedKind)
+	for _, fact := range trace.Unplaced {
+		if !fact.At.Equal(clock(9, 30)) {
+			t.Errorf("the trace could not place %+v, which is no line of 09:30", fact)
+		}
+		facts[fact.Issue] = fact.Kind
+	}
+	if want := map[string]UnplacedKind{"ACME-1": UnplacedTurn, "ACME-2": UnplacedSlot}; !maps.Equal(facts, want) {
+		t.Errorf("the trace could not place %+v; want a turn fact of ACME-1 and a slot fact of ACME-2", trace.Unplaced)
+	}
+	if len(unplaced) != 1 || unplaced[0].Issue != "ACME-2" || !strings.Contains(unplaced[0].Reason, "the trace could not place") ||
+		!strings.Contains(unplaced[0].Reason, "takes a slot") {
+		t.Errorf("the seed names %+v; want ACME-2 alone, for the slot the trace could not place", unplaced)
 	}
 }

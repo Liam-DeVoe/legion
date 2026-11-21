@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -137,6 +138,15 @@ const (
 const (
 	reconcileHoldingLine = "admission reconcile: holding roots for the Dispatch consumer to reach a stream position"
 	consumerCaughtUpLine = "admission: the Dispatch consumer has caught up; releasing held roots"
+)
+
+// processDiedLine, processDisplacedLine and workEndedLine are the msgs of the three lines the end
+// of a claim's process writes (ProcessEnded): its death (supervise's died), its displacement
+// through no fault of its own (displaced), and the let-go of a process that ran work (recordEnd).
+const (
+	processDiedLine      = "supervise: process died"
+	processDisplacedLine = "supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged"
+	workEndedLine        = "supervise: the relaunch ended work the agent had running"
 )
 
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
@@ -289,6 +299,9 @@ type GateClosed struct {
 // request stood on it, under the deployment's gated steps GatedSteps (the empty list gates none,
 // and the registration opens the gate at once). A replay rebuilds intake.GateRegistered from it
 // and the Dispatch shadow, since the registration is an API fact and no Dispatch event carries it.
+// A line of an older release lacks some of those members and is read as that release meant it
+// (ParseLogLine): Step the spec, ChangesRequested false where the line lacks it, and GatedSteps
+// none, the window's own gate steps being what a replay gates by.
 type GateRegistered struct {
 	LineHead
 	Issue            string
@@ -301,7 +314,9 @@ type GateRegistered struct {
 }
 
 // HoldReleased is a `workflow: a held phase is released` line (workflow's retryPhase): an issue
-// held where its phase's worker failed was put back in Phase, for Reason.
+// held where its phase's worker failed was put back in Phase, for Reason. The operator's retry of
+// a phase's worker (workflow's restartPhase, operatorRetryReason) writes it for an issue that
+// stands in no hold too, where it releases nothing and is that retry alone.
 type HoldReleased struct {
 	LineHead
 	Issue  string
@@ -382,12 +397,37 @@ type Suspended struct {
 // of a budget the machine keeps (launches, deaths, prompts) for Cause (died, launch_refused, …),
 // Why being the error it gives. A phase worker's failed claim is what puts its issue in the
 // phase held (workflow's claimFailed), which writes no line of its own, so the trace reads the
-// hold's start from this line and a replay injects intake.ClaimFailed at its offset.
+// hold's start from this line and a replay injects intake.ClaimFailed at its offset. A line of a
+// release that recorded no cause carries none, and its Cause is the one the hold of a failure that
+// names none carries, supervise.CauseUnrecorded (ParseLogLine).
 type ClaimFailed struct {
 	LineHead
 	Claim ClaimRef
 	Cause string
 	Why   string
+}
+
+// ProcessEnded is one of the lines the end of a claim's process writes, each of which ends the
+// turn that process ran with no `supervise: a turn ended` of its own (supervise's turnEnded names
+// the ways out of a turn that write a line of their own): `supervise: process died` (the machine's
+// died), the process found gone, or found to be another runtime's, through no fault of its own
+// (displaced), and `supervise: the relaunch ended work the agent had running` (recordEnd), which
+// the let-go of a process that ran work writes as it stops it — a relaunch, a suspension, a
+// failure, a retirement — and which died and displaced write after their own line. By is how the
+// line ends the claim's open turn: the trace ends it there, and a line of a claim with no turn
+// open ends nothing.
+//
+// The lines the same decisions write beside these end no turn of their own, and the trace does
+// not read them: died's `supervise: the process died in the task's turn; …` (interrupted) and
+// `supervise: the agent died with work outstanding` (chargeDeath), and displaced's `supervise: the
+// process was displaced mid-turn, …` (replaceProcess), each written after its decision's first
+// line at the same moment; `supervise: the turn an earlier daemon saw start is over`, which
+// askTurnOver follows with that turn's own end line (turnEnded); and `supervise: launch cut
+// short; its context ended`, the end of a launch, in which no turn runs.
+type ProcessEnded struct {
+	LineHead
+	Claim ClaimRef
+	By    TurnEnd
 }
 
 // DaemonStarted is a `legion daemon started` line: a daemon process of Project finished its boot
@@ -537,6 +577,25 @@ type RootJoined struct {
 // the daemon renames fails the read rather than reading as a zero value. The two attributes whose
 // absence a field's doc gives a meaning, TurnStarted.Delivery and TurnEnded.Outcome, are the
 // exceptions.
+//
+// So are the older shapes of two kinds, each read as the release that wrote it meant it:
+//
+//   - `workflow: design gate registered`: the releases before 5c4548f0 (#2253) wrote issue,
+//     artifact, version, open and policy, and the releases from it until b7866f96 (#2848) added
+//     changes_requested; b7866f96 replaced policy with step and gated_steps, which every release
+//     since writes. A line with no step and no gated_steps is of a gate of one step, the spec, as
+//     every gate was before b7866f96, and names no gated steps, the window's own (Window.GateSteps)
+//     being what a replay gates by. One with no changes_requested either applied no changes
+//     request, since a registration of those releases read no review: it opened the gate where the
+//     deployment gated nothing and recorded it closed otherwise.
+//   - `supervise: claim failed`: the releases before 97519812 (#3662) wrote no cause, and a line of
+//     theirs is read with the cause the hold of a failure that names none carries,
+//     supervise.CauseUnrecorded (workflow's claimFailed and noticeFailure).
+//
+// A line of a shape no release wrote — step or gated_steps without the other, or the two without
+// changes_requested — is refused as any line lacking a member it reads is, and so is a member of
+// another JSON type in any shape. A member an older shape carries and the trace does not read, the
+// old gate line's policy, is left as every unread member is.
 func ParseLogLine(line []byte) (LogLine, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil || raw == nil {
@@ -629,12 +688,23 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return GateClosed{LineHead: h, Issue: a.str("issue"), Artifact: a.str("artifact"), Event: a.str("event"), Version: a.count("version")}
 	},
 	"workflow: design gate registered": func(h LineHead, a *lineAttrs) LogLine {
-		var gated []record.DesignStep
-		for _, step := range a.strs("gated_steps") {
-			gated = append(gated, record.DesignStep(step))
+		// The older shapes (ParseLogLine): a line with neither step nor gated_steps is of the spec
+		// alone and names no gated steps, and one without changes_requested too applied none.
+		stepped := a.has("step") || a.has("gated_steps")
+		registered := GateRegistered{LineHead: h, Issue: a.str("issue"), Artifact: a.str("artifact"), Step: record.DesignStepSpec}
+		if stepped {
+			registered.Step = record.DesignStep(a.str("step"))
 		}
-		return GateRegistered{LineHead: h, Issue: a.str("issue"), Artifact: a.str("artifact"), Step: record.DesignStep(a.str("step")),
-			Version: a.count("version"), Open: a.flag("open"), ChangesRequested: a.flag("changes_requested"), GatedSteps: gated}
+		registered.Version, registered.Open = a.count("version"), a.flag("open")
+		if stepped || a.has("changes_requested") {
+			registered.ChangesRequested = a.flag("changes_requested")
+		}
+		if stepped {
+			for _, step := range a.strs("gated_steps") {
+				registered.GatedSteps = append(registered.GatedSteps, record.DesignStep(step))
+			}
+		}
+		return registered
 	},
 	"workflow: a held phase is released": func(h LineHead, a *lineAttrs) LogLine {
 		return HoldReleased{LineHead: h, Issue: a.str("issue"), Phase: phase.Phase(a.str("phase")), Reason: a.str("reason")}
@@ -665,7 +735,22 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return Suspended{LineHead: h, Claim: a.claim("claim"), By: a.str("by"), Reason: a.str("reason")}
 	},
 	"supervise: claim failed": func(h LineHead, a *lineAttrs) LogLine {
-		return ClaimFailed{LineHead: h, Claim: a.claim("claim"), Cause: a.str("cause"), Why: a.str("why")}
+		// A line of a release that recorded no cause (ParseLogLine) has the hold's word for none.
+		failed := ClaimFailed{LineHead: h, Claim: a.claim("claim"), Cause: string(supervise.CauseUnrecorded)}
+		if a.has("cause") {
+			failed.Cause = a.str("cause")
+		}
+		failed.Why = a.str("why")
+		return failed
+	},
+	processDiedLine: func(h LineHead, a *lineAttrs) LogLine {
+		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndDied}
+	},
+	processDisplacedLine: func(h LineHead, a *lineAttrs) LogLine {
+		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndDisplaced}
+	},
+	workEndedLine: func(h LineHead, a *lineAttrs) LogLine {
+		return ProcessEnded{LineHead: h, Claim: a.claim("claim"), By: TurnEndLetGo}
 	},
 	"legion daemon started": func(h LineHead, a *lineAttrs) LogLine {
 		return DaemonStarted{LineHead: h, Project: a.str("project"), AdmissionCap: a.count("admissionCap")}

@@ -21,7 +21,8 @@ import (
 // heldRootReleaseReason is the reason of the release of a held root a person set to todo
 // (workflow's releaseReason): the person's own event releases it in a replay, so no retry is
 // entered for it. operatorRetryReason is the reason of the operator's retry of a phase
-// (workflow's restartPhase), which a replay enters as intake.RestartPhase.
+// (workflow's restartPhase), which a replay enters as intake.RestartPhase, and by which the trace
+// tells that retry of a worker whose issue stands in no hold from a release of a hold it missed.
 const (
 	heldRootReleaseReason = "the issue was set to todo while its phase was held"
 	operatorRetryReason   = "the operator retried this phase's worker"
