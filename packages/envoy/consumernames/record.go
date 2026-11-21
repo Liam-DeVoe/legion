@@ -369,6 +369,27 @@ func decodeSentinel(key, family string, data []byte) (StoreState, error) {
 	return state, nil
 }
 
+// DecodeKVValue reads data, the value of key in the session bucket (SessionBucket), as KVStore
+// reads it: under SentinelKey the session family's sentinel (decodeSentinel, isSentinel true),
+// under any other key that key's record (decodeRecord). A value that is not that key's own record
+// or the bucket's own sentinel is ErrMalformedRecord or ErrMalformedSentinel, naming the key: the
+// answer KVStore's Read and State give, which call it, so a reader of the bucket's raw messages
+// decodes them as the store does. It reads no delete or purge marker: a reader that sees the
+// message's KV-Operation header answers ErrRecordDeleted, or ErrNoSentinel under SentinelKey,
+// itself, as KVStore does, before it decodes anything.
+func DecodeKVValue(key string, data []byte) (record Record, state StoreState, isSentinel bool, err error) {
+	if key == SentinelKey {
+		if state, err = decodeSentinel(key, SessionFamily, data); err != nil {
+			return Record{}, StoreState{}, true, fmt.Errorf("consumer names: the key %s: %w", key, err)
+		}
+		return Record{}, state, true, nil
+	}
+	if record, err = decodeRecord(key, data); err != nil {
+		return Record{}, StoreState{}, false, fmt.Errorf("consumer names: the key %s: %w", key, err)
+	}
+	return record, StoreState{}, false, nil
+}
+
 // decodeStrict decodes data into v, which is a struct: data must be one JSON object, with no field
 // v does not have, and nothing but space after it.
 func decodeStrict(data []byte, v any) error {

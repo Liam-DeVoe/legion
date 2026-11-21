@@ -81,6 +81,15 @@ revision:
   this build does not know among them. It is never `ErrNoSentinel`, which is an absent sentinel
   alone, so a creator in the fixed mode that reads `ErrNoSentinel` as no marker reads a malformed
   one as a failed read.
+
+  `DecodeKVValue(key, data) (record, state, isSentinel, err)` is the session bucket's decode, the
+  one `KVStore`'s `Read` and `State` call: under `envoy.bucket` the session family's sentinel
+  (`isSentinel` true), under any other key that key's record, and anything else
+  `ErrMalformedSentinel` or `ErrMalformedRecord`, naming the key. A reader of the bucket's raw
+  messages, such as an operator's walk of the stream, decodes each value with it as the store
+  does. It reads values only: a message whose `KV-Operation` header marks a delete or purge is the
+  reader's to answer, as `ErrRecordDeleted`, or `ErrNoSentinel` under `envoy.bucket`, before it
+  decodes anything.
 - **The family fence.** A record's current, retired names and candidate must be
   `<Prefix(logical)>~<nuid>` names of its own key. Its operation's old name may also be the key's
   fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`.
