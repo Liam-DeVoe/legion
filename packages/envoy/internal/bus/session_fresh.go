@@ -110,11 +110,12 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 	return fresh
 }
 
-// SelectionStore is the selection bucket (consumernames.SessionBucket) through c's confirmed
-// requests, so a read or write c's user may not make answers ErrPublishDenied at once. The session
-// consumers keep their records in it, and the listener its own durable's (consumernames.DurableKey).
+// SelectionStore is the session family's selection bucket (consumernames.SessionBucket) through c's
+// confirmed requests, so a read or write c's user may not make answers ErrPublishDenied at once.
+// The session consumers keep their records in it, and the listener its own durable's
+// (consumernames.DurableKey).
 func (c *Client) SelectionStore() *consumernames.KVStore {
-	return consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{c})
+	return consumernames.NewKVStore(consumernames.SessionFamily, clientRequester{c})
 }
 
 // ConsumerNames is how c's session consumers are named (WithConsumerNames): consumernames.ModeFixed

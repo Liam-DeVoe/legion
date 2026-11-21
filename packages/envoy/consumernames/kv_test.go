@@ -103,7 +103,7 @@ func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *
 	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: testStream, Subjects: []string{"names.>"}, Replicas: replicas}); err != nil {
 		t.Fatalf("create %s: %v", testStream, err)
 	}
-	live := &liveStore{conn: conn, js: js, store: NewKVStore(SessionBucket, ConnRequester{conn}), family: jsFamily{js}}
+	live := &liveStore{conn: conn, js: js, store: NewKVStore(SessionFamily, ConnRequester{conn}), family: jsFamily{js}}
 	if state == nil {
 		if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
 			t.Fatalf("create %s: %v", SessionBucket, err)
@@ -131,7 +131,7 @@ func TestTheKVStoreRefusesAMissingBucketAndAMissingSentinel(t *testing.T) {
 	uri := testnats.URL(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	store := NewKVStore(SessionBucket, ConnRequester{conn})
+	store := NewKVStore(SessionFamily, ConnRequester{conn})
 	if _, err := store.State(context.Background()); !errors.Is(err, ErrNoStore) {
 		t.Fatalf("State with no bucket = %v, want ErrNoStore", err)
 	}
@@ -154,7 +154,7 @@ func TestTheKVStoreRefusesAMissingBucketAndAMissingSentinel(t *testing.T) {
 func TestAReadNoServerAnswersIsNoMissingStore(t *testing.T) {
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	if _, err := NewKVStore(SessionBucket, ConnRequester{conn}).State(context.Background()); !errors.Is(err, ErrNoStore) {
+	if _, err := NewKVStore(SessionFamily, ConnRequester{conn}).State(context.Background()); !errors.Is(err, ErrNoStore) {
 		t.Fatalf("control: State with no bucket = %v, want ErrNoStore", err)
 	}
 	_, uri := testnats.StartConfig(t, "", nil, true)
@@ -163,39 +163,9 @@ func TestAReadNoServerAnswersIsNoMissingStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(silent.Close)
-	_, err = NewKVStore(SessionBucket, ConnRequester{silent}).State(context.Background())
+	_, err = NewKVStore(SessionFamily, ConnRequester{silent}).State(context.Background())
 	if !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, ErrNoStore) || IsSelectionStateLost(err) {
 		t.Fatalf("State that no server answered = %v, want a failed read wrapping nats.ErrNoResponders, no missing store", err)
-	}
-}
-
-// The selection bucket is the session family's alone, so its sentinel must name that family: a
-// well-formed sentinel naming another family (Dispatch's, a daemon's) under envoy.bucket is a
-// missing sentinel, refused, never a marker read. The control is the generic decode, which takes the
-// same bytes, since another store's sentinel may name them; the session family's sentinel is read.
-func TestTheKVStoresSentinelMustNameTheSessionFamily(t *testing.T) {
-	ctx := context.Background()
-	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
-		t.Run(family, func(t *testing.T) {
-			live := newLiveStore(t, testnats.URL(t), nil)
-			if _, err := live.store.WriteSentinel(ctx, StoreState{Family: family, Cutover: CutoverDone, Boundary: 1}, 0); err != nil {
-				t.Fatal(err)
-			}
-			data, _, err := live.store.last(ctx, SentinelKey)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if state, err := decodeSentinel(SentinelKey, data); err != nil || state.Family != family {
-				t.Fatalf("control: the generic decode of %s = %+v, %v; want it taken", data, state, err)
-			}
-			if state, err := live.store.State(ctx); !errors.Is(err, ErrNoSentinel) || !strings.Contains(err.Error(), family) {
-				t.Fatalf("the bucket's sentinel naming the family %s = %+v, %v; want ErrNoSentinel naming it", family, state, err)
-			}
-		})
-	}
-	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, Boundary: 1})
-	if state, err := live.store.State(ctx); err != nil || state.Family != SessionFamily {
-		t.Fatalf("control: the session family's sentinel = %+v, %v; want it read", state, err)
 	}
 }
 
@@ -437,7 +407,7 @@ func TestTheKVStoreRacesOnAGrantWithNoDirectGet(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(conn.Close)
-		return NewKVStore(SessionBucket, ConnRequester{conn})
+		return NewKVStore(SessionFamily, ConnRequester{conn})
 	}
 	first, second := writer(), writer()
 	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {
@@ -532,7 +502,7 @@ func TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict(t *testin
 			if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
 				t.Fatal(err)
 			}
-			store := NewKVStore(SessionBucket, ConnRequester{conn})
+			store := NewKVStore(SessionFamily, ConnRequester{conn})
 			first, err := store.Write(ctx, "ses-1", Record{Start: 1}, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -566,13 +536,13 @@ func (r answeringRequester) Request(context.Context, *natsgo.Msg) (*natsgo.Msg, 
 // reads the record again. The control is another refusal, which stays an error of its own.
 func TestTheKVStoreReadsEitherWrongLastSequenceAnswerAsAConflict(t *testing.T) {
 	for code, description := range map[int]string{10071: "wrong last sequence: 5", 10164: "wrong last sequence"} {
-		store := NewKVStore(SessionBucket, answeringRequester{fmt.Sprintf(`{"error":{"code":400,"err_code":%d,"description":%q}}`, code, description)})
+		store := NewKVStore(SessionFamily, answeringRequester{fmt.Sprintf(`{"error":{"code":400,"err_code":%d,"description":%q}}`, code, description)})
 		if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); !errors.Is(err, ErrConflict) {
 			t.Errorf("a write answered %d = %v, want ErrConflict", code, err)
 		}
 	}
 	// Control: a refusal that is no wrong last sequence is no conflict.
-	store := NewKVStore(SessionBucket, answeringRequester{`{"error":{"code":503,"err_code":10008,"description":"jetstream temporarily unavailable"}}`})
+	store := NewKVStore(SessionFamily, answeringRequester{`{"error":{"code":503,"err_code":10008,"description":"jetstream temporarily unavailable"}}`})
 	if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); err == nil || errors.Is(err, ErrConflict) {
 		t.Fatalf("a write answered 10008 = %v, want an error that is no conflict", err)
 	}
@@ -591,7 +561,7 @@ func TestTwoWritersRacingOnAThreeCopyBucketEndWithOneWriteAndOneConflict(t *test
 	writer := func() *KVStore {
 		conn := testnats.Connect(t, cluster.URL())
 		t.Cleanup(conn.Close)
-		return NewKVStore(SessionBucket, ConnRequester{conn})
+		return NewKVStore(SessionFamily, ConnRequester{conn})
 	}
 	first, second := writer(), writer()
 	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {

@@ -166,9 +166,9 @@ type StoreState struct {
 	Key string `json:"key"`
 	// Family is the store's family, required: SessionFamily for the bucket's sentinel,
 	// DispatchFamily for Dispatch's store, DaemonFamily(project) for a daemon's. Key alone cannot
-	// tell two Postgres stores apart, so a creator reading its own sentinel can check this names
-	// its own family. The library writes whatever family its caller gives; CreateSessionBucket
-	// writes SessionFamily.
+	// tell two stores apart, so each store reads only a sentinel that names the family it was made
+	// for (NewKVStore, NewPGStore). WriteSentinel writes whatever family its caller gives;
+	// CreateSessionBucket writes SessionFamily.
 	Family string `json:"family"`
 	// Cutover is the family's cutover marker: CutoverDone, CutoverRolledBack, or "" before any.
 	Cutover string `json:"cutover,omitempty"`
@@ -267,7 +267,7 @@ var (
 	// before its context ended.
 	ErrBusy = errors.New("consumer names: another process's operation is in flight")
 	// ErrSentinelFamily is a well-formed sentinel under a store's sentinel key that names another
-	// store's family (KVStore: any but SessionFamily): a missing sentinel, as ErrNoSentinel.
+	// family than the store's own (NewKVStore, NewPGStore): a missing sentinel, as ErrNoSentinel.
 	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
 	// creates it: a start or a setting no update can change differs from what the operation
@@ -296,14 +296,15 @@ func decodeRecord(key string, data []byte) (Record, error) {
 	return record, nil
 }
 
-// decodeSentinel reads data as the sentinel under key, as decodeRecord reads a record: anything
-// else is ErrMalformedRecord, which the store answers as ErrNoSentinel.
-func decodeSentinel(key string, data []byte) (StoreState, error) {
+// decodeSentinel reads data as the sentinel under key of a store of family, as decodeRecord reads a
+// record: anything else, a sentinel of another family among them (ErrSentinelFamily), is
+// ErrMalformedRecord, which the store answers as ErrNoSentinel.
+func decodeSentinel(key, family string, data []byte) (StoreState, error) {
 	var state StoreState
 	if err := decodeStrict(data, &state); err != nil {
 		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
 	}
-	if err := state.check(key); err != nil {
+	if err := state.check(key, family); err != nil {
 		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
 	}
 	return state, nil
@@ -395,15 +396,18 @@ func (op Op) check() error {
 	return nil
 }
 
-// check refuses a sentinel that is not key's or sets a field that is not well formed: no family or
-// one of no form this package names, a cutover marker this package does not know, or an orphan no
-// consumer can be named.
-func (s StoreState) check(key string) error {
+// check refuses a sentinel that is not key's, names no family or one of no form this package names,
+// names another family than family, the store's (ErrSentinelFamily), or sets a field that is not
+// well formed: a cutover marker this package does not know, or an orphan no consumer can be named.
+func (s StoreState) check(key, family string) error {
 	if s.Key != key {
 		return fmt.Errorf("its key is %q, not %q", s.Key, key)
 	}
 	if !storeFamily(s.Family) {
 		return fmt.Errorf("its family %q is none of %s, %s or %s<project>", s.Family, SessionFamily, DispatchFamily, daemonFamilyPrefix)
+	}
+	if s.Family != family {
+		return fmt.Errorf("%w: it names the family %q, not %q", ErrSentinelFamily, s.Family, family)
 	}
 	if s.Cutover != "" && s.Cutover != CutoverDone && s.Cutover != CutoverRolledBack {
 		return fmt.Errorf("its cutover marker %q is none", s.Cutover)

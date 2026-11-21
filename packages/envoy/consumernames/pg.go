@@ -40,13 +40,17 @@ type PGQuerier interface {
 // the row still holds that one. Either refusal is ErrConflict.
 type PGStore struct {
 	db PGQuerier
+	// family is the family the store's sentinel row must name (NewPGStore).
+	family string
 }
 
-// NewPGStore is a PGStore on db.
-func NewPGStore(db PGQuerier) *PGStore { return &PGStore{db: db} }
+// NewPGStore is the store of family's selection records on db: DispatchFamily for Dispatch's
+// database, DaemonFamily(project) for a daemon's. It reads only a sentinel row that names family
+// (StoreState.Family), since the key alone cannot tell two Postgres stores apart.
+func NewPGStore(family string, db PGQuerier) *PGStore { return &PGStore{db: db, family: family} }
 
-// State implements Store: it reads the sentinel row. A row whose record is not the sentinel
-// (decodeSentinel) is a missing sentinel.
+// State implements Store: it reads the sentinel row. A row whose record is not the sentinel of the
+// store's family (decodeSentinel) is a missing sentinel.
 func (s *PGStore) State(ctx context.Context) (StoreState, error) {
 	data, revision, err := s.row(ctx, PGSentinelKey)
 	if errors.Is(err, ErrNoRecord) {
@@ -55,7 +59,7 @@ func (s *PGStore) State(ctx context.Context) (StoreState, error) {
 	if err != nil {
 		return StoreState{}, err
 	}
-	state, err := decodeSentinel(PGSentinelKey, data)
+	state, err := decodeSentinel(PGSentinelKey, s.family, data)
 	if err != nil {
 		return StoreState{}, fmt.Errorf("%w: %s's %s row at revision %d holds no sentinel (%w)", ErrNoSentinel, IntakeConsumersTable, PGSentinelKey, revision, err)
 	}

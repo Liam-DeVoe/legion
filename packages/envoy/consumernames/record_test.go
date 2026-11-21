@@ -90,9 +90,10 @@ func TestDecodeRecordTakesOnlyTheRecordOfTheKeyItRead(t *testing.T) {
 
 // The sentinel is the sentinel key's own StoreState, read as strictly as a record: anything else
 // under that key is a missing sentinel, never a sentinel with no cutover marker. It names its
-// store's family, which a sentinel without one, or with one of no form, fails: Key alone cannot
-// tell two Postgres stores apart. The controls are today's decode, which takes a STREAM.INFO answer
-// for a sentinel whose cutover has not run, and takes a sentinel that names no family.
+// store's family, which a sentinel without one, with one of no form, or with another store's fails:
+// Key alone cannot tell two Postgres stores apart. The controls are today's decode, which takes a
+// STREAM.INFO answer for a sentinel whose cutover has not run, and takes a sentinel that names no
+// family.
 func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 	for value, family := range map[string]string{
 		`{"key":"envoy.bucket","family":"session"}`:                                                                                                     SessionFamily,
@@ -101,7 +102,7 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 		`{"key":"envoy.bucket","family":"daemon/legion-go"}`:                                                                                            DaemonFamily("legion-go"),
 	} {
 		t.Run("takes "+value, func(t *testing.T) {
-			state, err := decodeSentinel(SentinelKey, []byte(value))
+			state, err := decodeSentinel(SentinelKey, family, []byte(value))
 			if err != nil || state.Key != SentinelKey || state.Family != family {
 				t.Fatalf("decodeSentinel(%q) = %+v, %v; want the sentinel of the family %s", value, state, err, family)
 			}
@@ -117,13 +118,15 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 		"a daemon project with a slash": `{"key":"envoy.bucket","family":"daemon/a/b","cutover":"done"}`,
 		"a record of a session":         `{"key":"ses_a","current":"session~A"}`,
 		"another store's sentinel":      `{"key":"envoy.sentinel","family":"session","cutover":"done"}`,
+		"another family's sentinel":     `{"key":"envoy.bucket","family":"dispatch","cutover":"done"}`,
+		"a daemon's sentinel":           `{"key":"envoy.bucket","family":"daemon/legion-go","cutover":"done"}`,
 		"an unknown cutover marker":     `{"key":"envoy.bucket","family":"session","cutover":"started"}`,
 		"an orphan no consumer has":     `{"key":"envoy.bucket","family":"session","orphans":["session A"]}`,
 		"data after the sentinel":       `{"key":"envoy.bucket","family":"session"}{}`,
 		"null":                          `null`,
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
-			if _, err := decodeSentinel(SentinelKey, []byte(value)); !errors.Is(err, ErrMalformedRecord) {
+			if _, err := decodeSentinel(SentinelKey, SessionFamily, []byte(value)); !errors.Is(err, ErrMalformedRecord) {
 				t.Fatalf("decodeSentinel(%q) = %v, want ErrMalformedRecord", value, err)
 			}
 		})
@@ -146,9 +149,9 @@ func TestDecodeSentinelTakesOnlyTheSentinelOfItsKey(t *testing.T) {
 // gives is what State reads back, and CreateSessionBucket names the session family alone.
 func TestASentinelsFamilyRoundTrips(t *testing.T) {
 	ctx := context.Background()
-	db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
-	store := NewPGStore(db)
 	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
+		db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
+		store := NewPGStore(family, db)
 		if _, err := store.WriteSentinel(ctx, StoreState{Family: family, Cutover: CutoverDone}, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -169,6 +172,66 @@ func TestASentinelsFamilyRoundTrips(t *testing.T) {
 	}
 	if state, err := kv.State(ctx); err != nil || state.Family != SessionFamily {
 		t.Fatalf("the session bucket's sentinel read back as %+v, %v; want the family %s", state, err, SessionFamily)
+	}
+}
+
+// Each store reads only a sentinel that names the family it was made for (NewKVStore, NewPGStore):
+// a key alone cannot tell two stores apart, so a well-formed sentinel naming another family, or one
+// naming none, under the store's sentinel key is a missing sentinel, never a marker read. The
+// control in each store is a sentinel of its own family, read. Without the family, PGStore read
+// another store's sentinel as its own: Dispatch's store took a daemon's done marker, which a creator
+// in the fixed mode would obey.
+func TestEachStoreReadsOnlyTheSentinelOfItsOwnFamily(t *testing.T) {
+	ctx := context.Background()
+	others := map[string][]string{
+		SessionFamily:             {DispatchFamily, DaemonFamily("legion-go")},
+		DispatchFamily:            {SessionFamily, DaemonFamily("legion-go")},
+		DaemonFamily("legion-go"): {DaemonFamily("legion-other"), DispatchFamily, SessionFamily},
+	}
+	refused := func(t *testing.T, store, family string, state StoreState, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrNoSentinel) || !errors.Is(err, ErrMalformedRecord) {
+			t.Fatalf("%s reading a sentinel of the family %q = %+v, %v; want ErrNoSentinel, malformed", store, family, state, err)
+		}
+		if family != "" && (!errors.Is(err, ErrSentinelFamily) || !strings.Contains(err.Error(), family)) {
+			t.Fatalf("%s reading a sentinel of the family %q = %v; want ErrSentinelFamily naming it", store, family, err)
+		}
+	}
+	for _, family := range []string{DispatchFamily, DaemonFamily("legion-go")} {
+		t.Run("PGStore of "+family, func(t *testing.T) {
+			db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
+			store := NewPGStore(family, db)
+			sentinel := func(of string) {
+				data, err := json.Marshal(StoreState{Key: PGSentinelKey, Family: of, Cutover: CutoverDone})
+				if err != nil {
+					t.Fatal(err)
+				}
+				db.rows[PGSentinelKey] = pgRow{data: data, revision: 1}
+			}
+			for _, other := range append(others[family], "") {
+				sentinel(other)
+				state, err := store.State(ctx)
+				refused(t, "PGStore of "+family, other, state, err)
+			}
+			sentinel(family)
+			if state, err := store.State(ctx); err != nil || state.Family != family || state.Cutover != CutoverDone {
+				t.Fatalf("control: PGStore of %s reading its own family's sentinel = %+v, %v", family, state, err)
+			}
+		})
+	}
+	for _, other := range append(others[SessionFamily], "") {
+		t.Run("KVStore of session, a sentinel of "+other, func(t *testing.T) {
+			live := newLiveStore(t, testnats.URL(t), nil)
+			if _, err := live.store.WriteSentinel(ctx, StoreState{Family: other, Cutover: CutoverDone, Boundary: 1}, 0); err != nil {
+				t.Fatal(err)
+			}
+			state, err := live.store.State(ctx)
+			refused(t, "KVStore of session", other, state, err)
+		})
+	}
+	live := newLiveStore(t, testnats.URL(t), &StoreState{Cutover: CutoverDone, Boundary: 1})
+	if state, err := live.store.State(ctx); err != nil || state.Family != SessionFamily {
+		t.Fatalf("control: KVStore of session reading its own family's sentinel = %+v, %v", state, err)
 	}
 }
 
@@ -222,7 +285,7 @@ func (f *fakePG) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 func TestThePGStoreWritesAndReadsOnlySelfKeyedRecords(t *testing.T) {
 	ctx := context.Background()
 	db := &fakePG{rows: map[string]pgRow{}, written: map[string][]byte{}}
-	store := NewPGStore(db)
+	store := NewPGStore(DaemonFamily("legion-go"), db)
 	if _, err := store.Write(ctx, "legion-go-CAPTURE-wake", Record{Current: "legion-go-CAPTURE-wake~A"}, 0); err != nil {
 		t.Fatal(err)
 	}
