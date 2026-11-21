@@ -7,17 +7,18 @@
 // Each call returns lists of its own, so a caller may narrow a grant without changing another's.
 //
 // WithinProjects (projects.go) holds a grant to a Scope: the projects a token lists and the
-// account the token names. The auth service answers a Legion daemon whose entry is held to
-// projects with it. It writes _INBOX.> as the account's own reply prefix (InboxPrefix, which the
-// client sets with nats.CustomInboxPrefix; it keeps [A-Za-z0-9-] and writes every other byte, '_'
-// included, as '_' and two hex digits, so no two accounts share one), each issue, role-exception
-// and Legion lane as the scope's projects', and each consumer call on the stream as the calls on
-// the daemon's own legion-go-<project>-<kind> consumers, each create subject naming its one
-// filter. It keeps every repository's GitHub events (notifications.github.>) whole, since a
-// GitHub event is a message of no project, which every service is granted, and grants each
-// project one GitHub consumer, legion-go-<project>-github, on that whole family: a grant could
-// name a consumer per repository only from a list of the repositories, which a Scope does not
-// hold. The daemon drops in its own process the events of a repository it does not work in.
+// account the token names. Nothing calls it yet: today the auth service refuses a Legion daemon
+// whose entry is held to projects, and from #4197 on it answers that daemon with this grant. It
+// writes _INBOX.> as the account's own reply prefix (InboxPrefix, which the client sets with
+// nats.CustomInboxPrefix; it keeps [A-Za-z0-9-] and writes every other byte, '_' included, as '_'
+// and two hex digits, so no two accounts share one), each issue, role-exception and Legion lane as
+// the scope's projects', and each consumer call on the stream as the calls on the daemon's own
+// legion-go-<project>-<kind> consumers, each create subject naming its one filter. It keeps every
+// repository's GitHub events (notifications.github.>) whole, since a GitHub event is a message of
+// no project, which every service is granted, and grants each project one GitHub consumer,
+// legion-go-<project>-github, on that whole family: a grant could name a consumer per repository
+// only from a list of the repositories, which a Scope does not hold. The daemon drops in its own
+// process the events of a repository it does not work in.
 //
 // WithinProjects drops the stream's info and stored-message get, and refuses, naming the entry,
 // any other stored-message read, a create that names no filter, a KV bucket's call,
