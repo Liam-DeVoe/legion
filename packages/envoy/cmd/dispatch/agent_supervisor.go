@@ -56,13 +56,9 @@ const (
 	// agentExitRecordWait is the record's share of the server's shutdown: how long the server's
 	// close waits for that database work once the agent process has exited, after which the
 	// record is cancelled and the runs it would have freed keep their leases, which run out. With
-	// the database answering the record takes milliseconds. With it unanswering, every moment
-	// waited here delays the shutdown's idle wait (waitUntilIdle), which counts the database
-	// silent only after silentProbes probes with no connection taken back, and a connection that
-	// failed when the database went silent is taken back, discarded, once pgx gives up the cancel
-	// request it sends, 15 s after the failure: the registry heartbeat's, whose timeout is 2 s,
-	// as early as 17 s after the silence began, while the HTTP drain's 11 s and the three probes'
-	// 6.75 s already reach 17.75 s. So the share is kept to half a second.
+	// the database answering the record takes milliseconds; with it unanswering, every moment
+	// waited here is added to the shutdown before its idle wait (waitUntilIdle) begins counting
+	// the database silent. So the share is kept to half a second.
 	agentExitRecordWait = 500 * time.Millisecond
 )
 

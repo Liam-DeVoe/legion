@@ -41,11 +41,11 @@ const documentShutdownTimeout = docs.ShutdownDrainBudget + 5*time.Second
 const httpDrainBeforeDocuments = stopGrace - 5*time.Second - documentShutdownTimeout
 
 // silentProbes is how many health probes (store.Pool.Healthy, two seconds each) in a row must fail,
-// with no connection of the shared, document-rooms or room-appends pool taken back meanwhile,
-// before Dispatch counts the database as having stopped answering. A probe that answers, or a
-// connection taken back while it ran, starts the count again: a slow database that is still
-// finishing work is answering. Three is the count the load balancer waits for before it replaces
-// the task.
+// with no connection of the shared, document-rooms or room-appends pool answered meanwhile, before
+// Dispatch counts the database as having stopped answering. A probe that answers, or a connection
+// given back, made or closed for its age while it ran, starts the count again: a slow database
+// that is still finishing work is answering. A connection pgx discards after a failure does not
+// (silence.probe). Three is the count the load balancer waits for before it replaces the task.
 const silentProbes = 3
 
 // drainPollInterval is how often the last phase asks whether the requests in flight and the
@@ -231,7 +231,7 @@ func waitUntilIdle(drained <-chan struct{}, pool *store.Pool) bool {
 // not stop can take one after that - ygo's persistence worker compacting a room as it exits, which
 // takes its connection with no deadline - and Close waits for every connection in use to come
 // back. So the close waits by waitUntilIdle's rule: for as long as the database answers, and no
-// longer once silentProbes probes in a row have failed with no connection taken back meanwhile,
+// longer once silentProbes probes in a row have failed with no connection answered meanwhile,
 // when Dispatch exits with Close still waiting. store.Pool.Close closes the health probe's pool
 // last, so the probe answers while the other pools close.
 func closePool(pool *store.Pool) {
@@ -255,18 +255,22 @@ func closePool(pool *store.Pool) {
 }
 
 // silence counts the health probes in a row that have failed with no connection of the shared,
-// document-rooms or room-appends pool taken back meanwhile; silentProbes of them mean the database
+// document-rooms or room-appends pool answered meanwhile; silentProbes of them mean the database
 // has stopped answering.
 type silence struct{ failed int }
 
 // probe runs one health probe and reports whether the database has stopped answering, logging
 // that Dispatch exits without the connections still in use when it has. before is the pools'
-// ConnectionUse read before the wait this probe ends, so a connection taken back during that wait
-// or the probe starts the count again, as an answered probe does.
+// ConnectionUse read before the wait this probe ends, so a connection the database answered
+// during that wait or the probe - given back, made, or closed for its age - starts the count
+// again, as an answered probe does. A connection pgx discards after a failure does not
+// (store.ConnectionUse.Answered): its pool takes it back only once pgx gives up the cancel request
+// it sends, 15 s after the failure, so one that failed when the database stopped answering - the
+// registry heartbeat's, as early as 17 s in - would start the count again with nothing answered.
 func (s *silence) probe(pool *store.Pool, before store.ConnectionUse) bool {
 	_, err := pool.Healthy(context.Background())
 	after := pool.Use()
-	if err == nil || after.Returned > before.Returned {
+	if err == nil || after.Answered > before.Answered {
 		s.failed = 0
 		return false
 	}
