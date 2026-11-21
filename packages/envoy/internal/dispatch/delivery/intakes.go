@@ -75,7 +75,9 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // both intakes read and write through: cmd/dispatch hands them the background pool
 // (store.Pool.Background), so a message's handling neither waits for the requests' connections nor
 // takes one. broker is the server's event broker, through which Intake appends issue.deployed
-// (RecordDeployedEvents).
+// (RecordDeployedEvents). pushes is what Intake hands a push of a branch to (PushImports): in the
+// server, the architecture importer, which imports nothing without the App either. nil hands
+// pushes nowhere.
 //
 // leases is each intake's reservation of the lease pool (ReserveIntakeLeases), taken by the
 // caller while it wires itself rather than here, so that a configuration these intakes are idle
@@ -109,7 +111,7 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // measurement is on consumerLease).
 func StartIntakes(
 	ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases,
-	github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{},
+	github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports,
 ) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
@@ -126,6 +128,7 @@ func StartIntakes(
 	}
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
+	intake.pushes = pushes
 	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
