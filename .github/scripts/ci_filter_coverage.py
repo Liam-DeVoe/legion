@@ -881,28 +881,58 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
                                             f"this check and gates its job on whatever it says, unread"))
 
 
-# A `uses:` of dorny/paths-filter pinned to a commit, in a workflow's or an action's text.
-PATHS_FILTER_PIN = re.compile(r"""^[ \t-]*uses:[ \t]*['"]?dorny/paths-filter@([0-9A-Fa-f]{40})\b""", re.M)
+# What a step's `uses:` names when it pins dorny/paths-filter to a commit.
+PATHS_FILTER_PIN = re.compile(r"dorny/paths-filter@([0-9A-Fa-f]{40})")
+
+
+def paths_filter_uses(document) -> list[str]:
+    """Every `uses` value naming dorny/paths-filter in a parsed workflow or action, at any depth:
+    a job's step, a composite action's step, or one written as a flow mapping or a block scalar
+    alike, since they are the same mapping once parsed. A value of any other key, a `run:` script
+    that only mentions the action among them, is no step of it."""
+    found, stack, seen = [], [document], set()
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, dict):
+            uses = node.get("uses")
+            if isinstance(uses, str) and uses.strip().startswith("dorny/paths-filter@"):
+                found.append(uses.strip())
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return found
 
 
 def check_paths_filter_pins(files: list, problems: list[Annotation]) -> None:
     """Rule 21's pin half: every dorny/paths-filter step pinned to a commit, in a workflow of
-    .github/workflows or in an action of any directory (a composite action's steps run as its
-    caller's do), pins one whose js-yaml workflow_paths.PATHS_FILTER_JS_YAML records. The filters
-    are read with that js-yaml (load_paths_filter), so a bump of the pin is refused until its
-    js-yaml is recorded and package.json's alias installs it. The text is read, not the parsed
-    steps, so a step in a file no other rule parses is not passed over."""
+    .github/workflows or in an action file (action.yml, action.yaml) of any directory, since a
+    composite action's steps run as its caller's do, pins one whose js-yaml
+    workflow_paths.PATHS_FILTER_JS_YAML records. The filters are read with that js-yaml
+    (load_paths_filter), so a bump of the pin is refused until its js-yaml is recorded and
+    package.json's alias installs it. Each file is parsed and its steps read (paths_filter_uses);
+    a file that does not parse is refused here too, since its pins could not be read."""
     for path in files:
         name = path.rsplit("/", 1)[-1]
         workflow = path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml"))
         if not (workflow or name in ("action.yml", "action.yaml")):
             continue
         text = read_repository_text(REPO / path)
-        for match in PATHS_FILTER_PIN.finditer(text):
-            if match.group(1).lower() in PATHS_FILTER_JS_YAML:
+        try:
+            document = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            problems.append(error(path, f"{path} is not valid YAML ({' '.join(str(exc).split())}), so the "
+                                        f"dorny/paths-filter commits it pins could not be read"))
+            continue
+        for uses in paths_filter_uses(document):
+            match = PATHS_FILTER_PIN.fullmatch(uses)
+            if match is None or match.group(1).lower() in PATHS_FILTER_JS_YAML:
                 continue
-            line = text.count("\n", 0, match.start()) + 1
-            problems.append(error(path, f"{path}:{line} pins dorny/paths-filter@{match.group(1)}, whose js-yaml "
+            at = text.find(uses)
+            where = f"{path}:{text.count(chr(10), 0, at) + 1}" if at >= 0 else path
+            problems.append(error(path, f"{where} pins dorny/paths-filter@{match.group(1)}, whose js-yaml "
                                         f"workflow_paths.PATHS_FILTER_JS_YAML does not record; read that commit's "
                                         f"package-lock.json (node_modules/js-yaml), record the pair there, and set "
                                         f"package.json's js-yaml-paths-filter alias to that version, so this check "

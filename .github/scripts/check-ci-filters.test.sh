@@ -3498,6 +3498,30 @@ git -C "$root" add tools/choose/action.yml
 run_check "$root"
 check "a composite action's pin in any directory, written quoted in upper case, fails too" \
   "$(contains "$out" "::error file=tools/choose/action.yml::tools/choose/action.yml:5 pins dorny/paths-filter@0123456789ABCDEF0123456789ABCDEF01234567, whose js-yaml ")"
+mkdir -p "$root/tools/shapes"
+cat > "$root/tools/shapes/action.yml" <<'YAML'
+name: Shapes
+runs:
+  using: composite
+  steps:
+    - {uses: dorny/paths-filter@1111111111111111111111111111111111111111, with: {filters: .github/ci-filters.yaml}}
+    - "uses": dorny/paths-filter@2222222222222222222222222222222222222222
+    - uses: >-
+        dorny/paths-filter@3333333333333333333333333333333333333333
+    - shell: bash
+      run: |
+        cat <<'EOF'
+        uses: dorny/paths-filter@4444444444444444444444444444444444444444
+        EOF
+YAML
+git -C "$root" add tools/shapes/action.yml
+run_check "$root"
+for commit in 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333; do
+  check "a step written as a flow mapping, behind a quoted key or as a block scalar is read: ${commit:0:4}" \
+    "$(contains "$out" "::error file=tools/shapes/action.yml::tools/shapes/action.yml:[0-9]* pins dorny/paths-filter@$commit, whose js-yaml ")"
+done
+check "a run script that only mentions the action pins nothing" \
+  "$(is "$(contains "$out" 'dorny/paths-filter@4444444444444444444444444444444444444444')" false)"
 
 echo "case: no node to read the filters with"
 # The filters are read with js-yaml under Node; without node the check ends naming it, as an

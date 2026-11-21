@@ -3754,6 +3754,10 @@ GATES = [
                                     "from the project it runs in"),
         (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
                                "local action a step's `uses:` names, for the inputs it checks"),
+        # An action.yaml, which the pin check reads too, is declared once one exists: a read of a
+        # pattern no file matches is refused (check_dead_patterns).
+        ("**/action.yml", f"{at('ci-filters', CHECK_STEP)}: check_paths_filter_pins reads every action file of the "
+                          "repository for a dorny/paths-filter pin whose js-yaml is not recorded"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "

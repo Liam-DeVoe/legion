@@ -2450,6 +2450,7 @@ ci_filters:
   - '.github/scripts/check-workflow-files.sh'
   - '.github/actionlint.yaml'
   - '.github/actions/**'
+  - '**/action.yml'
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/scripts/ci_workflow_rules.py'
