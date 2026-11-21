@@ -949,7 +949,7 @@ func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
 	released := releasedClaim(t, sup, claim.RoleTester)
 	issue := record.Issue{Key: pauseIssue, Tree: pauseIssue, Generation: 1}
 	wake := func(role claim.Role) record.OutboxRow {
-		return mustOutboxRow(t, pauseIssue, workflow.PauseWakeRow(issue, role, 7), time.Now())
+		return mustOutboxRow(t, pauseIssue, workflow.PauseWakeRow(issue, role, mustClaimToken(t, pauseIssue, role), 7), time.Now())
 	}
 
 	if err := runner.execute(ctx, wake(claim.RoleImplementer)); err != nil {

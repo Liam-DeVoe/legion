@@ -277,7 +277,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if err != nil || !taken {
 		return made, err
 	}
-	row, err := record.NewOutboxRow(c.Issue, workflow.PauseWakeRow(*issue, c.Role, held.ID), at)
+	row, err := record.NewOutboxRow(c.Issue, workflow.PauseWakeRow(*issue, c.Role, c.Token, held.ID), at)
 	if err != nil {
 		return made, err
 	}

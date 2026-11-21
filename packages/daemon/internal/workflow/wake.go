@@ -110,14 +110,16 @@ func wakeRow(issue record.Issue, role claim.Role, token claim.Token, kind string
 		WakeKind: kind, Pause: pause}
 }
 
-// PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
-// the stop transaction writes beside its held wake (pods.WakePause, decision 6 of
-// dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
-// finishes without acting once a park, a close or a moved phase has taken the role over (decision
-// 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
-// carries no task: the task the role holds pending, if any, is what its launch delivers.
-func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
-	return wakeRow(issue, role, "", pods.WakePause, pause, "")
+// PauseWakeRow is the start a project's pause owes the claim token it stopped, of role, with a
+// launch owed: the row the stop transaction writes beside its held wake (pods.WakePause, decision
+// 6 of dispatch://INFRA-3759), in wakeRow's shape, naming that claim, so the start brings back the
+// claim the pause stopped and no other claim of its role, a keyed agent's on another role's step
+// included. It is marked with the wake's kind and the pause, so it finishes without acting once a
+// park, a close or a moved phase has taken the role over (decision 10). The outbox holds it while
+// a pause stands, as it holds every start of a paused project. It carries no task: the task the
+// claim holds pending, if any, is what its launch delivers.
+func PauseWakeRow(issue record.Issue, role claim.Role, token claim.Token, pause int64) record.SuperviseRequest {
+	return wakeRow(issue, role, token, pods.WakePause, pause, "")
 }
 
 // WakeStop is what stopped the session a wake brings back, which the wake's task names first.
