@@ -879,15 +879,16 @@ function stoppedEvent(
 /**
  * Dispatch's refusal of a broker token the secrets broker does not hold as live: unknown to it,
  * lapsed, or ended by a revoke before it lapsed (`brokerTokenActor`,
- * packages/envoy/internal/dispatch/api/broker_token.go).
+ * packages/envoy/internal/dispatch/api/broker_token.go). Exported for `dispatch proxy`, which
+ * reads a `401` by the rule this client reads it by.
  */
-const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
+export const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
 
 /**
  * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
  * so the body stays whole for whoever reads the answer.
  */
-async function tokenNotLive(response: Response): Promise<boolean> {
+export async function tokenNotLive(response: Response): Promise<boolean> {
   if (response.status !== 401 || !isJson(response)) return false;
   const body: unknown = await response
     .clone()
