@@ -5062,6 +5062,51 @@ case_result "a symbol whose second part names a line its own file does not hold 
     "citation-our-code: f-our-1 cites merge-gate\\.md:3, and skills/legion-worker/references/merge-gate\\.md holds no such line at [0-9a-f]+, 2 lines" \
     "$(fixture_run "$dir" --citations)"
 
+# 172. A qualified name its file holds only by its local part resolves only when each
+# component of its prefix stands in the file too (the architect's rule of round 46 on
+# resolve_symbol's local-part readings). resolve_symbol read a prefixed name by the text
+# after its last colon, and a dotted name by the text after its last dot, when its file did
+# not hold the part whole, and read nothing of the prefix, so at a1062b2e 'Engin.match'
+# resolved in a file holding `class Engine` and `def match`, on match alone, as any prefix
+# with a mistyped component did. The case commits packages/daemon/internal/api/engine.py into
+# the fixture, a class Engine with a method match, names that commit as our repository's in
+# sources.json, and writes the fixture's row f-our-1 as citing that file with the symbol
+# 'Engin.match', then 'Engine.match', running --citations over each: the first must fail
+# citation-our-code, naming the row, the part and the component Engin, which the file holds
+# only inside Engine; the honest form passes it.
+for form in mistyped honest; do
+    case "$form" in
+    mistyped) owner='Engin' ;;
+    honest) owner='Engine' ;;
+    esac
+    dir="$(fresh "symbol-prefix-$form")"
+    evidence_copy="$dir/repo/docs/research/internet-of-cognition"
+    printf 'class Engine:\n    def match(self, row):\n        return row\n' >"$dir/repo/packages/daemon/internal/api/engine.py"
+    engine="$(
+        cd "$dir/repo" &&
+            git add packages/daemon/internal/api/engine.py &&
+            git commit --quiet -m "the engine" &&
+            git rev-parse HEAD
+    )"
+    jq --arg c "$engine" '.our_repository.commit = $c' "$evidence_copy/sources.json" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$evidence_copy/sources.json"
+    sed -i "/\"id\":\"f-our-1\"/s#\"file\":\"packages/daemon/internal/api/handoff.go\",\"symbol\":\"TesterVerdictRequired\"#\"file\":\"packages/daemon/internal/api/engine.py\",\"symbol\":\"$owner.match\"#" \
+        "$evidence_copy/claims.jsonl"
+    [ -n "$engine" ] && [ "$(jq -r '.our_repository.commit' "$evidence_copy/sources.json")" = "$engine" ] &&
+        grep -F '"id":"f-our-1"' "$evidence_copy/claims.jsonl" | grep -qF "\"file\":\"packages/daemon/internal/api/engine.py\",\"symbol\":\"$owner.match\"" || {
+        printf 'FAIL the symbol %s.match and its file could not be planted in the fixture row f-our-1\n' "$owner"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    mistyped)
+        case_result "a dotted name whose file holds its local part but not the component of its prefix fails --citations, naming the row, the part and the component" \
+            "citation-our-code: f-our-1 cites the symbol Engin\\.match, which packages/daemon/internal/api/engine\\.py holds only by its local part 'match', and the component 'Engin' of its prefix 'Engin' does not stand in it" "$out"
+        ;;
+    honest) honest_result "a dotted name whose file holds each component of its prefix and its local part, Engine.match, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

@@ -5638,6 +5638,31 @@ symbol_file() {
     printf '%s' "$name"
 }
 
+# prefix_held <family> <id> <part> <separator> <here name> <root> <commit> <path>...; holds
+# to the paths a part that resolved only by its local part, the text after its last
+# <separator>, a colon or a dot, as `Engine.match` resolves on `match`. The part's prefix,
+# the text before that separator, is split into its components, each a word of letters,
+# digits, `_` and `-`, so that `.`, `[]`, `:`, `;`, a space, a quote or a bracket parts two
+# of them, and each component stands in the paths at the commit as a whole word, as git grep
+# -w reads one: `Engine` stands in `class Engine`, and `Engin` does not. It returns 0 when
+# each does, a prefix of no component among them; else it fails <family>, naming the row,
+# the part and the first component the paths do not hold, and returns 1.
+prefix_held() {
+    local family="$1" id="$2" part="$3" separator="$4" here_name="$5" root="$6" commit="$7"
+    local prefix rest component word='[A-Za-z0-9_-]+'
+    shift 7
+    prefix="${part%"$separator"*}"
+    rest="$prefix"
+    while [[ "$rest" =~ $word ]]; do
+        component="${BASH_REMATCH[0]}"
+        rest="${rest#*"$component"}"
+        git -C "$root" grep -qwF -- "$component" "$commit" -- "$@" 2>/dev/null && continue
+        fail "$family" "$id cites the symbol $part, which $here_name holds only by its local part '${part##*"$separator"}', and the component '$component' of its prefix '$prefix' does not stand in it as a word at $commit: each component of the prefix of a qualified name stands in its file"
+        return 1
+    done
+    return 0
+}
+
 # resolve_symbol <id> <repo root> <commit> <pathspec> <symbol>
 #
 # How a symbol is read, which is a reading of its own and so is written here. The symbol
@@ -5652,16 +5677,22 @@ symbol_file() {
 # line, and a range whose end stands before its start names no lines and fails; a name
 # before the colon that is no file is a name its file holds. Every other part is looked for
 # in its file: as literal text, as a file name, as a prefixed name, as a path, as a regular
-# expression where the part holds `|` or `*`, and as the last element of a dotted name; a
-# part that starts with a digit and holds no space, and is neither text the file holds nor
-# a line or a line range, fails by name. A part written in words that none of those finds
-# names a part of the file a reader judges, and this gate does not read it; nor does it
-# read any part of a symbol whose citation writes its file in words. Each such part is
-# written to $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with
-# its row, so that a part nothing checked is never counted as checked. Any other part that
-# no search finds fails the citation. A line names no line of a glob or a directory, so a
-# line read against one is a figure of the prose, as before any part named a file of a
-# citation of a set.
+# expression where the part holds `|` or `*`, and as the last element of a dotted name. A
+# prefixed or a dotted name, a qualified name, that its file holds only by its local part,
+# the text after its last colon or its last dot, resolves only when each component of its
+# prefix stands in the file too, as a whole word, each component a word of letters, digits,
+# `_` and `-` that `.`, `[]`, `:`, `;`, a space, a quote or a bracket parts from the next
+# (prefix_held); a component the file does not hold fails the citation, naming the row, the
+# part and the component, so `Engin.match` fails in a file of `class Engine` and `def
+# match`, where `Engine.match` resolves. A part that starts with a digit and holds no
+# space, and is neither text the file holds nor a line or a line range, fails by name. A
+# part written in words that none of those finds names a part of the file a reader judges,
+# and this gate does not read it; nor does it read any part of a symbol whose citation
+# writes its file in words. Each such part is written to $RUN_SCRATCH/unchecked-parts,
+# which --citations prints, one line per part with its row, so that a part nothing checked
+# is never counted as checked. Any other part that no search finds fails the citation. A
+# line names no line of a glob or a directory, so a line read against one is a figure of
+# the prose, as before any part named a file of a citation of a set.
 resolve_symbol() {
     local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
     # The paths the citation names, each part of its file field.
@@ -5759,10 +5790,15 @@ resolve_symbol() {
             ;;
         esac
         # A prefixed name, such as a Turtle term `mas:sessionId`, resolves on its local
-        # part too: the prefix names a namespace and the file declares the local name.
+        # part too: the prefix names a namespace and the file declares the local name. Each
+        # component of the prefix stands in the file too (prefix_held), so a prefix with a
+        # mistyped component fails rather than resolving on its local part alone.
         case "$part" in
         *:*)
-            git -C "$root" grep -qF -- "${part##*:}" "$commit" -- "${here[@]}" 2>/dev/null && continue
+            if git -C "$root" grep -qF -- "${part##*:}" "$commit" -- "${here[@]}" 2>/dev/null; then
+                prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                continue
+            fi
             ;;
         esac
         # A symbol that is itself a path resolves as a path does.
@@ -5785,10 +5821,15 @@ resolve_symbol() {
             ;;
         esac
         # A dotted name is read by its last element too, since a citation writes
-        # `Envelope.Validate` where the file declares `Validate` on a receiver.
+        # `Envelope.Validate` where the file declares `Validate` on a receiver, and each
+        # component of what stands before that element stands in the file too
+        # (prefix_held), as `Envelope` does there.
         case "$part" in
         *.*)
-            git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "${here[@]}" 2>/dev/null && continue
+            if git -C "$root" grep -qF -- "${part##*.}" "$commit" -- "${here[@]}" 2>/dev/null; then
+                prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                continue
+            fi
             ;;
         esac
         fail "$family" "$id cites the symbol $part, which $here_name does not hold at $commit"
