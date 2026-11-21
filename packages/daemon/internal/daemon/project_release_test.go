@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -48,7 +49,7 @@ func TestProjectReleaseRefusesARuntimeThatRunsNoPod(t *testing.T) {
 // pausePreCheckSkipped is the real store with the release's first read of the pause answering no
 // refusal, as when a pause commits between that read and the release's own transaction: what then
 // refuses the release is the transaction's read (store.StartProjectRelease).
-type pausePreCheckSkipped struct{ *store.Store }
+type pausePreCheckSkipped struct{ releasingStore }
 
 func (pausePreCheckSkipped) PauseRefusesProjectRelease(context.Context, string) error { return nil }
 
@@ -95,7 +96,7 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 	pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
 		Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}}
 	mark := &projectRelease{}
-	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: st, machines: sup, pods: pods,
+	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: releasingStore{st}, machines: sup, pods: pods,
 		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
 		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
 
@@ -129,9 +130,9 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 	refused("while the project is paused", true, true, false)
 
 	// A dry run records nothing, so only the release's own transaction reads the pause again.
-	r.store = pausePreCheckSkipped{st}
+	r.store = pausePreCheckSkipped{releasingStore{st}}
 	refused("with a pause committed after the release's first read", true, false)
-	r.store = st
+	r.store = releasingStore{st}
 
 	if _, err := st.Resume(ctx, store.ResumeRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator}, At: time.Now()}); err != nil {
 		t.Fatalf("resume: %v", err)
@@ -162,7 +163,10 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 // finishFails is how many finish writes it refuses before it takes one, and with loseFinishAnswer
 // the write it takes answers an error all the same, as one whose answer the connection lost; once
 // a write was taken, every later one is refused as the store refuses a write of a finished
-// release. finishes counts the writes asked, and reads the reads of the claims.
+// release. finishes counts the writes asked, and reads the reads of the claims. holds is the
+// session names each claim holds, each read of them refused with holdsErr where it is set, and
+// merged whether the record holds the pull request of every issue merged, each read of it refused
+// with mergedErr where it is set.
 type releaseRecord struct {
 	stop             []store.ProjectReleaseClaim
 	takenOver        []store.TakenOverIdleRelease
@@ -172,6 +176,10 @@ type releaseRecord struct {
 	loseFinishAnswer bool
 	claimsFails      int
 	claimsErr        error
+	holds            map[claim.Token][]supervise.Hold
+	merged           bool
+	holdsErr         error
+	mergedErr        error
 
 	mu       sync.Mutex
 	finishes int
@@ -268,14 +276,23 @@ func (s *releaseRecord) claimReads() int {
 	return s.reads
 }
 
+func (s *releaseRecord) ClaimHolds(_ context.Context, _ string, token claim.Token) ([]supervise.Hold, error) {
+	return s.holds[token], s.holdsErr
+}
+
+func (s *releaseRecord) PullRequestMerged(context.Context, string) (bool, error) {
+	return s.merged, s.mergedErr
+}
+
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue
 // pod's delete asks its authorize and records the issue it deleted, each other Sandbox's delete
 // records its name, and each release of the controller's claim records the claim and answers
 // releaseErr; with deleteErr set, each delete of either kind is refused with it, once an issue
-// pod's authorize said yes. Each read of an issue pod's workspace is refused, with readErr where
-// it is set. The runtime's store lists the Sandboxes after storeListFails lists of it that fail,
-// each with storeListErr where it is set, and the API server lists the same Sandboxes as its store
-// after listFails lists of it that fail; storeLists and lists count the lists asked of each.
+// pod's authorize said yes. Each read of an issue pod's workspace is recorded (reads) and refused,
+// with readErr where it is set. The runtime's store lists the Sandboxes after storeListFails lists
+// of it that fail, each with storeListErr where it is set, and the API server lists the same
+// Sandboxes as its store after listFails lists of it that fail; storeLists and lists count the
+// lists asked of each.
 type releasePods struct {
 	sandboxes      []runtime.ProjectSandbox
 	storeListFails int
@@ -289,6 +306,7 @@ type releasePods struct {
 	deleted    []string
 	removed    []string
 	released   []claim.Token
+	reads      []runtime.UnpushedRead
 	storeLists int
 	lists      int
 }
@@ -329,7 +347,10 @@ func (p *releasePods) ProjectSandboxesFromAPI(context.Context) ([]runtime.Projec
 	return p.sandboxes, nil
 }
 
-func (p *releasePods) ReadUnpushed(context.Context, string, claim.Role) (runtime.UnpushedWork, error) {
+func (p *releasePods) ReadUnpushed(_ context.Context, read runtime.UnpushedRead, _ claim.Role) (runtime.UnpushedWork, error) {
+	p.mu.Lock()
+	p.reads = append(p.reads, read)
+	p.mu.Unlock()
 	if p.readErr != nil {
 		return runtime.UnpushedWork{}, p.readErr
 	}
@@ -388,6 +409,95 @@ func runRelease(t *testing.T, records *releaseRecord, sup *supervisor, pods *rel
 		t.Fatal("the release did not record its finish")
 	}
 	return result
+}
+
+// The term "Unpushed work" of dispatch://INFRA-3583's spec: the release's read of an issue pod's
+// workspace carries what the shim tells the issue's own commits by. It names the issue, whether
+// the record holds its pull request merged, and each name of kind `session` or `file-id` that a
+// claim of the issue holds, of every role and whether or not its claim runs, sorted and each once.
+// A `file-name`, a name no trailer carries (claim.SessionIDRule) and a name of another issue's
+// claim are left out. Claims that hold more names than the frame carries are read through no
+// shim: the pod's read is a refusal that names both numbers, which asks the pod's roles, as a read
+// of the names or of the record that failed is, with its error; names up to the bound are read.
+func TestProjectReleaseReadCarriesTheIssuesSessionNamesAndWhetherItsPullRequestMerged(t *testing.T) {
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	implementer := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	// A ready claim with a process is a running role, which the release reads the pod through.
+	if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: implementer, Project: "legion", Tree: "LEGION-208",
+		Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer", State: supervise.StateReady,
+		Locator: workingPane(implementer)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	read := func(t *testing.T, records *releaseRecord) (releaseRead, []runtime.UnpushedRead) {
+		t.Helper()
+		pods := &releasePods{}
+		r := &projectReleaser{ctx: context.Background(), project: "legion", store: records, machines: sup, pods: pods,
+			now: time.Now, log: quietLogger()}
+		got := r.read(context.Background(), "LEGION-208")
+		pods.mu.Lock()
+		defer pods.mu.Unlock()
+		return got, slices.Clone(pods.reads)
+	}
+	names := func(n int) []supervise.Hold {
+		holds := make([]supervise.Hold, n)
+		for i := range holds {
+			holds[i] = supervise.Hold{Kind: supervise.HoldSessionID, Name: fmt.Sprintf("ses_%04d", i)}
+		}
+		return holds
+	}
+
+	t.Run("the names of the issue's claims and the merge", func(t *testing.T) {
+		records := &releaseRecord{merged: true, holds: map[claim.Token][]supervise.Hold{
+			implementer: {
+				{Kind: supervise.HoldSessionID, Name: "ses_implementer"},
+				{Kind: supervise.HoldFileName, Name: "2026-11-17T00-00-00-000Z_ses_implementer.jsonl"},
+				{Kind: supervise.HoldFileID, Name: "ses_implementer"},
+			},
+			// The reviewer runs no process, and its sessions made commits of the issue all the same.
+			mustClaimToken(t, "LEGION-208", claim.RoleReviewer): {
+				{Kind: supervise.HoldSessionID, Name: "019a3f2e.reviewer"},
+				{Kind: supervise.HoldSessionID, Name: "a name no trailer carries"},
+			},
+			mustClaimToken(t, "LEGION-209", claim.RoleImplementer): {{Kind: supervise.HoldSessionID, Name: "ses_another_issue"}},
+		}}
+		got, reads := read(t, records)
+		want := runtime.UnpushedRead{Issue: "LEGION-208", Merged: true, Sessions: []string{"019a3f2e.reviewer", "ses_implementer"}}
+		if len(reads) != 1 || reads[0].Issue != want.Issue || reads[0].Merged != want.Merged || !slices.Equal(reads[0].Sessions, want.Sessions) {
+			t.Fatalf("the release asked the shim to read %+v, want one read of %+v", reads, want)
+		}
+		if !got.read || got.refusal != "the test's pods read no workspace" {
+			t.Fatalf("the read is %+v, want the test pods' refusal", got)
+		}
+	})
+
+	t.Run("names up to the frame's bound are read, and one more is not", func(t *testing.T) {
+		_, reads := read(t, &releaseRecord{holds: map[claim.Token][]supervise.Hold{implementer: names(shimwire.MaxReadUnpushedSessions)}})
+		if len(reads) != 1 || len(reads[0].Sessions) != shimwire.MaxReadUnpushedSessions {
+			t.Fatalf("the release asked %d reads of claims holding %d names, want one carrying them all", len(reads), shimwire.MaxReadUnpushedSessions)
+		}
+		over := shimwire.MaxReadUnpushedSessions + 1
+		got, reads := read(t, &releaseRecord{holds: map[claim.Token][]supervise.Hold{implementer: names(over)}})
+		if len(reads) != 0 {
+			t.Fatalf("the release asked the shim to read with %d names, more than the frame carries", len(reads[0].Sessions))
+		}
+		if !got.read || !strings.Contains(got.refusal, fmt.Sprintf("hold %d session names, more than the %d", over, shimwire.MaxReadUnpushedSessions)) {
+			t.Fatalf("the read is %+v, want a refusal naming the %d names and the bound %d", got, over, shimwire.MaxReadUnpushedSessions)
+		}
+	})
+
+	t.Run("a read of the names that failed", func(t *testing.T) {
+		got, reads := read(t, &releaseRecord{holdsErr: errors.New("the store did not answer")})
+		if len(reads) != 0 || !got.read || !strings.Contains(got.refusal, "the store did not answer") {
+			t.Fatalf("the read is %+v after %d reads of the shim, want a refusal with the store's error and no read", got, len(reads))
+		}
+	})
+
+	t.Run("a read of the record that failed", func(t *testing.T) {
+		got, reads := read(t, &releaseRecord{mergedErr: errors.New("the record did not answer whether the pull request merged")})
+		if len(reads) != 0 || !got.read || !strings.Contains(got.refusal, "the record did not answer whether the pull request merged") {
+			t.Fatalf("the read is %+v after %d reads of the shim, want a refusal with the record's error and no read", got, len(reads))
+		}
+	})
 }
 
 // A claim of the stop set that failed or retired before the release came to its pod holds no

@@ -7268,7 +7268,14 @@ The release does five things, in this order:
    The daemon still serves its API, and `legion state --json` shows the release and its result as `projectRelease`.
 
 2. It reads each issue pod's workspace through the shim of one running role, each pod on its own and all pods at the same time.
-   The read counts the unpushed commits: every visible commit that no remote branch or tag holds, the working copy's own commit among them when it holds a change (`unpushedRevset`, `packages/daemon/internal/shim/unpushed.go`).
+   The read counts the issue's unpushed commits (`unpushedRevset`, `packages/daemon/internal/shim/unpushed.go`).
+   Of the commits that no remote branch and no tag holds, less the root and each commit with no change and no description, it counts each commit under a working copy or a local bookmark, the working copy's own commit among them when it holds a change, and each commit with a change and no description.
+   Until the issue's pull request merges, it also counts each commit whose description has a line `Omp-Session: <session>` naming a session that a claim of the issue holds (`claim_sessions`), or `Dispatch: <KEY>` naming the issue.
+   The daemon sends the shim the issue's key, whether the record holds the pull request merged, and those session names; where the issue's claims hold more than 256 of them (`shimwire.MaxReadUnpushedSessions`), or the daemon cannot read them or whether the pull request merged, it makes no read and treats the pod as one whose shim refused the read.
+   Any other commit is another issue's: a clone keeps every head visible (`git.abandon-unreachable-commits = false`), so after a fetch it holds the commits of each branch the remote deleted or rewrote, and a pod restored from an idle release's bundle holds the heads the bundle brought back.
+   A described commit with no trailer that no working copy and no bookmark reaches is not counted.
+   A commit pushed with no description that no remote branch holds now, a commit of the issue that a rewrite of `legion/<KEY>` replaced, and, after a merge, the first pull request's commits once a second one opens, are counted, and each makes the release ask the pod's roles.
+   The pod update round reads a narrower set, the commits under a working copy or a local bookmark ([The disk dies with its pod](#the-disk-dies-with-its-pod)), because it replaces the pod and only names what goes with it.
    It builds no bundle and sends no commit.
    A pod in which no role process runs has no shim to read, and the release deletes it with no read.
    A pod that holds a claim an operator suspended is left with its disk, and the release reads and asks nothing there.

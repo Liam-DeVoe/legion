@@ -320,15 +320,18 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
 }
 
-// ReadUnpushed asks the shim whether the workspace it runs in holds unpushed work: how many of its
-// commits no remote branch or tag holds, and whether its working copy holds a change. The shim
-// runs its jj reads within timeout; the answer is awaited for that plus the RPC timeout, the round
-// trip. A shim built before the read forwards the frame to Oh My Pi, which refuses a command it
-// does not know, and that refusal is a RefusedError like the shim's own, so the caller reads such
-// a pod as one whose workspace could not be read, never as one with nothing unpushed.
-func (c *Conn) ReadUnpushed(ctx context.Context, issue string, timeout time.Duration) (runtime.UnpushedWork, error) {
+// ReadUnpushed asks the shim whether the workspace it runs in holds the issue's unpushed work: how
+// many commits of the issue's work no remote branch or tag holds, and whether its working copy
+// holds a change. The frame carries read whole, the issue, whether its pull request merged and
+// the session names its claims hold, which the shim tells the issue's own commits by, and a read
+// the frame's rules refuse is never sent (shimwire.ReadUnpushed.Validate). The shim runs its jj
+// reads within timeout; the answer is awaited for that plus the RPC timeout, the round trip. A
+// shim built before the read forwards the frame to Oh My Pi, which refuses a command it does not
+// know, and that refusal is a RefusedError like the shim's own, so the caller reads such a pod as
+// one whose workspace could not be read, never as one with nothing unpushed.
+func (c *Conn) ReadUnpushed(ctx context.Context, read runtime.UnpushedRead, timeout time.Duration) (runtime.UnpushedWork, error) {
 	id := rand.Text()
-	frame := shimwire.ReadUnpushed{ID: id, Issue: issue, TimeoutMs: int(timeout.Milliseconds())}
+	frame := shimwire.ReadUnpushed{ID: id, Issue: read.Issue, Merged: read.Merged, Sessions: read.Sessions, TimeoutMs: int(timeout.Milliseconds())}
 	if err := frame.Validate(); err != nil {
 		return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}

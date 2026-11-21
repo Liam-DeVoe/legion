@@ -899,15 +899,18 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 // roles whenever the read did not say: a shim that could not read, and a shim built before the
 // read, which forwards the frame to Oh My Pi and is refused as an unknown command. Both reach the
 // caller as a RefusedError carrying the far side's words and naming the read, never as a
-// workspace with nothing unpushed, and neither is a sentinel the supervisor charges.
+// workspace with nothing unpushed, and neither is a sentinel the supervisor charges. The frame
+// carries the read whole, the issue, whether its pull request merged and the session names its
+// claims hold, and a read whose session name the frame's rule refuses is not sent.
 func TestReadUnpushedAsksTheShimAndReadsItsResult(t *testing.T) {
+	asked := runtime.UnpushedRead{Issue: "INFRA-945", Merged: true, Sessions: []string{"019a3f2e.implementer", "ses_reviewer"}}
 	read := func(t *testing.T, answer func(id string) shimwire.Frame) (shimwire.ReadUnpushed, runtime.UnpushedWork, error) {
 		t.Helper()
 		h := startListener(t, harnessOptions{})
 		p := h.connect(testToken)
 		var work runtime.UnpushedWork
 		result := async(func() (err error) {
-			work, err = h.conn().ReadUnpushed(context.Background(), "INFRA-945", 3*time.Second)
+			work, err = h.conn().ReadUnpushed(context.Background(), asked, 3*time.Second)
 			return err
 		})
 		request := p.expect(shimwire.TypeReadUnpushed).(shimwire.ReadUnpushed)
@@ -918,11 +921,19 @@ func TestReadUnpushedAsksTheShimAndReadsItsResult(t *testing.T) {
 		request, work, err := read(t, func(id string) shimwire.Frame {
 			return shimwire.ReadUnpushedResult{ID: id, OK: true, Commits: 2, WorkingCopyChanged: true}
 		})
-		if request.ID == "" || request.Issue != "INFRA-945" || request.TimeoutMs != 3000 {
-			t.Fatalf("read-unpushed frame = %#v", request)
+		if request.ID == "" || request.Issue != asked.Issue || !request.Merged || !slices.Equal(request.Sessions, asked.Sessions) || request.TimeoutMs != 3000 {
+			t.Fatalf("read-unpushed frame = %#v, want %+v within 3000 ms", request, asked)
 		}
 		if err != nil || work != (runtime.UnpushedWork{Commits: 2, WorkingCopyChanged: true}) {
 			t.Fatalf("ReadUnpushed = %#v, %v; want the shim's 2 commits and its changed working copy", work, err)
+		}
+	})
+	t.Run("a session name the frame's rule refuses", func(t *testing.T) {
+		h := startListener(t, harnessOptions{})
+		h.connect(testToken)
+		refused := runtime.UnpushedRead{Issue: "INFRA-945", Sessions: []string{`ses") | all() | ("`}}
+		if _, err := h.conn().ReadUnpushed(context.Background(), refused, 3*time.Second); !errors.Is(err, shimwire.ErrMalformedFrame) {
+			t.Fatalf("ReadUnpushed of %+v = %v, want the frame refused as malformed before it is sent", refused, err)
 		}
 	})
 	for _, tc := range []struct {

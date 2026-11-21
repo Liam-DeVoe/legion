@@ -334,9 +334,9 @@ type ProjectPods interface {
 	// ProjectSandboxesFromAPI is ProjectSandboxes as the API server lists them now rather than
 	// as the runtime's store holds them, so a Sandbox the store has not heard of yet is in it.
 	ProjectSandboxesFromAPI(ctx context.Context) ([]ProjectSandbox, error)
-	// ReadUnpushed has role's shim read the unpushed work of the issue's workspace
+	// ReadUnpushed has role's shim read the issue's unpushed work in the workspace of read.Issue
 	// (Conn.ReadUnpushed), under WorkspaceBundleTimeout.
-	ReadUnpushed(ctx context.Context, issue string, role claim.Role) (UnpushedWork, error)
+	ReadUnpushed(ctx context.Context, read UnpushedRead, role claim.Role) (UnpushedWork, error)
 	// DeleteProjectSandbox deletes the repository cache's or the image probe's Sandbox name, as
 	// the runtime's own deletes of those do: under the pod's launch turn, fenced to the Sandbox
 	// as the API holds it when the delete reads it, behind the session-volume guard, whose refusal

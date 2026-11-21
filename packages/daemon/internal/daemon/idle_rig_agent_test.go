@@ -1280,8 +1280,9 @@ func (p *idleRigRoleProcess) serve() (shutdown bool, err error) {
 // readUnpushed answers a project release's read of the workspace's unpushed work: with the plan's
 // refusal, as an older shim's; with the count and the working-copy flag the plan scripts; or,
 // where the plan scripts none, with the shim's own read of the pod's workspace
-// (shim.ReadUnpushed), and nothing unpushed for a pod that has none. A read that fails is
-// answered with its failure, as the shim answers it.
+// (shim.ReadUnpushed), which counts the issue's work as the frame's issue, merged flag and session
+// names say, and nothing unpushed for a pod that has none. A read that fails is answered with its
+// failure, as the shim answers it.
 func (p *idleRigRoleProcess) readUnpushed(read shimwire.ReadUnpushed) error {
 	plan, err := p.plan()
 	if err != nil {
@@ -1300,7 +1301,7 @@ func (p *idleRigRoleProcess) readUnpushed(read shimwire.ReadUnpushed) error {
 	case err != nil:
 		answer.OK, answer.Error = false, err.Error()
 	case ok:
-		work, err := workershim.ReadUnpushed(context.Background(), ws.Dir, ws.Env, time.Duration(read.TimeoutMs)*time.Millisecond)
+		work, err := workershim.ReadUnpushed(context.Background(), ws.Dir, ws.Env, read)
 		if err != nil {
 			answer.OK, answer.Error = false, err.Error()
 		} else {

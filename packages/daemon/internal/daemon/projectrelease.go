@@ -95,8 +95,10 @@ const projectReleaseErrorInFull = "project release: an error in full; the result
 // the project's pause refuses it, its record, the stop set a dry run reads as the release's own
 // transaction reads it, each claim it stops or holds as the store holds it, which is what decides
 // that the claim is stored suspended (awaitSettled), every claim as the store holds it, which is
-// where each claim's line of the result is read from at the end, and the activity report of a
-// claim's launch, which is where the background hold of an issue pod is read from (background).
+// where each claim's line of the result is read from at the end, the activity report of a
+// claim's launch, which is where the background hold of an issue pod is read from (background),
+// and the session names each claim of an issue holds and whether the record holds the issue's pull
+// request merged, which the read of the issue's workspace carries to the shim (unpushedRead).
 type projectReleaseStore interface {
 	PauseRefusesProjectRelease(ctx context.Context, project string) error
 	StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
@@ -107,6 +109,19 @@ type projectReleaseStore interface {
 	ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error)
 	Claims(ctx context.Context) ([]supervise.Claim, error)
 	ClaimActivity(ctx context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error)
+	ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error)
+	PullRequestMerged(ctx context.Context, issue string) (bool, error)
+}
+
+// releasingStore is the daemon's store as a project release reads it: the store itself, and whether
+// the record holds an issue's pull request merged, read as the per-issue read reads the pull
+// request's record (issueRecord). An issue the record does not hold, and one with no pull request
+// recorded, has none merged.
+type releasingStore struct{ *store.Store }
+
+func (s releasingStore) PullRequestMerged(ctx context.Context, issue string) (bool, error) {
+	_, pr, err := issueRecord(ctx, s.Pool(), record.NewStore(), issue)
+	return pr != nil && pr.State == record.PullRequestMerged, err
 }
 
 // projectReleaser is the daemon's project release (dispatch://INFRA-3583 R6): the operator's
@@ -186,7 +201,7 @@ type projectReleaser struct {
 // pod (tmux) gives it no pods, and every start it is asked is refused (api.ErrProjectReleaseRunsNoPod).
 func newProjectReleaser(s *supervision, st *store.Store, w *workflowRuntime) *projectReleaser {
 	r := &projectReleaser{
-		ctx: s.supervisor.ctx, project: s.plan.project, mark: s.plan.release, store: st, machines: s.supervisor,
+		ctx: s.supervisor.ctx, project: s.plan.project, mark: s.plan.release, store: releasingStore{st}, machines: s.supervisor,
 		// The workflow set supervision's enqueue as it attached, which the boot does before it serves.
 		enqueue:      s.enqueue,
 		defaultBound: s.cfg.PodUpdateGrace, stopTimeout: s.cfg.WorkerStopTimeout,

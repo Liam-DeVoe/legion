@@ -425,7 +425,7 @@ func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runt
 	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
 }
 
-func (c *stubConn) ReadUnpushed(context.Context, string, time.Duration) (runtime.UnpushedWork, error) {
+func (c *stubConn) ReadUnpushed(context.Context, runtime.UnpushedRead, time.Duration) (runtime.UnpushedWork, error) {
 	return runtime.UnpushedWork{}, errors.New("the stream stub reads no workspace")
 }
 

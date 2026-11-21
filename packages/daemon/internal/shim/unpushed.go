@@ -2,58 +2,133 @@ package shim
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The project release's read: whether the workspace every role of the issue shares holds work no
-// remote branch or tag holds, which the release asks before it deletes the pod with its disk. Two
-// facts cross the wire, a count and a flag; the read builds no bundle, sends no commit and writes
-// no file. What it does write is jj's own record of the working copy's snapshot.
+// The project release's read: whether the workspace every role of the issue shares holds the
+// issue's work that no remote branch or tag holds, which the release asks before it deletes the
+// pod with its disk. Two facts cross the wire, a count and a flag; the read builds no bundle, sends
+// no commit and writes no file. What it does write is jj's own record of the working copy's
+// snapshot.
 
-// unpushedRevset is the commits of a workspace's unpushed work: every visible commit no remote
-// branch or tag holds, on any head, less each workspace's working copy with no change and less the
-// root commit. It starts from the set the bundle builder keeps (bundleKeptRevset) and is written
-// out here rather than built from it, because dispatch://INFRA-3271's R4 removes the bundle code,
-// and this read stays.
+// unpushedCandidates is every commit that can be unpushed work: each visible commit that no remote
+// branch and no tag holds, less the root commit and each commit with no change and no description.
+// A commit a remote bookmark or a tag reaches is pushed already; tags are subtracted beside remote
+// bookmarks for the reason bundleKeptRevset subtracts them. A commit with no change and no
+// description carries nothing a deletion can lose: each working copy left so, and the parent a
+// bare `jj new` leaves (workspaceWorkRevset). Every such working copy is subtracted, not only this
+// workspace's own: a pod's shared clone has a workspace of its own, `default`, whose working copy
+// is an empty commit on the default branch that no remote holds (workspace's feedClone abandons the
+// clone's first snapshot), so a read that subtracted only `@` would count one commit in every pod.
+// A working copy with a change, whichever workspace's, stays in. The set is written out here rather
+// than built from bundleKeptRevset, because dispatch://INFRA-3271's R4 removes the bundle code, and
+// this read stays.
+const unpushedCandidates = `~::(remote_bookmarks() | tags()) ~ root() ~ (empty() & description(exact:""))`
+
+// unpushedRevset is the commits of the issue's unpushed work as read asks for them, the term
+// "Unpushed work" of dispatch://INFRA-3583's spec: of unpushedCandidates, each commit under a working
+// copy or a local bookmark, which is the set of the pod update round's read
+// (workspaceWorkRevset); each commit with a change and no description; and, while the issue's pull
+// request has not merged (read.Merged), each commit whose description has a line
+// `Omp-Session: <id>` naming one of read.Sessions, the session names the issue's claims hold, or a
+// line `Dispatch: <read.Issue>`. Any other such commit is another's, and is not counted.
 //
-// It differs from the update round's read (workspaceWorkRevset, workspace_work.go) on purpose. The
-// release deletes the pod with its disk and replaces it with nothing, so it counts every visible
-// head: a side head that no working copy and no bookmark reaches can be the issue's own work (a
-// role's `jj new legion/<KEY>@origin` after a fetch), and the release asks the pod's roles about it
-// before the disk goes. The cost is that the commits a fetch left visible with no bookmark count
-// too, other issues' work among them, which the round's read leaves out.
+// No other visible head is counted, because a pod's clone keeps every head visible
+// (git.abandon-unreachable-commits = false, workspace's ensureFetchConfiguration): the heads the
+// idle release's bundle restores, and after any role's `jj git fetch` the commits of each branch
+// origin deleted or rewrote, with no bookmark. The spec cites INFRA-3582's pod, which held 19 such
+// heads, each with another issue's trailer or none: a read of every head would name them as this
+// issue's work, and the release would ask the pod's roles about work that is not theirs.
 //
-// Every empty working copy is subtracted, not only this workspace's own. A pod's shared clone has
-// a workspace of its own, `default`, whose working copy is an empty commit on the default branch
-// that no remote holds (workspace's feedClone abandons the clone's first snapshot), so with
-// `~ (@ & empty())` in its place every pod's workspace would read one unpushed commit. A `default`
-// working copy that does hold a change is still counted.
-const unpushedRevset = `(::visible_heads() | ::@) ~ ::(remote_bookmarks() | tags()) ~ (working_copies() & empty()) ~ root()`
+// The trailers tell the issue's own side heads from those. A role's commits carry
+// `Omp-Session: <id>` (cmd/legion's gitTrailers, and jj's commit_trailers that
+// packages/pi-shared/src/jj-attribution.ts writes), and those jj makes in the workspace of an issue
+// on a repository the deployment names also carry `Dispatch: <KEY>`. They count only until the pull
+// request merges: the merge deletes the issue's branch, and the issue's own commits stay visible
+// with their trailers, merged work a read after the merge would count again.
+//
+// A commit with a change and no description counts wherever it is: jj pushes no commit with no
+// description unless the push says --allow-empty-description, so such a commit is the workspace's
+// own, such as the change a role's `jj new <base>` left as a side head.
+//
+// The limits are the spec's. A described commit with no trailer that no working copy and no
+// bookmark reaches is not counted. These are counted although they are not the issue's unpushed
+// work: a commit someone pushed with no description, through --allow-empty-description or plain
+// git, that no remote branch holds now; a commit of the issue that a person's rewrite of
+// legion/<KEY> replaced before the merge; and, when the issue opens a second pull request after a
+// merge, the first pull request's commits. Each makes the release ask the pod's roles once more,
+// and none makes it lose work.
+//
+// It differs from the update round's set on purpose, and that set stays as it is: the round
+// replaces the pod and names what goes with it, so it counts only what a working copy or a bookmark
+// reaches and lets a side head of the issue's own go unnamed. The release deletes the pod with its
+// disk, replaces it with nothing and asks the roles before the disk goes, so it also counts each
+// side head it can tell is the issue's own.
+func unpushedRevset(read shimwire.ReadUnpushed) string {
+	issueWork := []string{`::(working_copies() | bookmarks())`, `(~empty() & description(exact:""))`}
+	if !read.Merged {
+		for _, session := range read.Sessions {
+			issueWork = append(issueWork, trailerRevset("Omp-Session", session))
+		}
+		issueWork = append(issueWork, trailerRevset("Dispatch", read.Issue))
+	}
+	return "(" + unpushedCandidates + ") & (" + strings.Join(issueWork, " | ") + ")"
+}
+
+// trailerRevset is the commits whose description has the line `<key>: <value>`. The value is
+// matched as written, each regular-expression metacharacter of it quoted, so the `.` a session id
+// can hold matches a `.` alone; the pattern then goes into a jj string literal, where each `\` of
+// it is written `\\`. Measured with jj 0.45.1, `description(regex:"(?m)^Omp-Session: ab\\.c-1$")`
+// matches a commit whose description has the line `Omp-Session: ab.c-1` and not one with
+// `Omp-Session: abXc-1`, and `(?m)` lets `^` and `$` match at each line of the description, its
+// first included.
+func trailerRevset(key, value string) string {
+	return `description(regex:` + jjStringLiteral(`(?m)^`+key+`: `+regexp.QuoteMeta(value)+`$`) + `)`
+}
+
+// jjStringEscapes escapes the two characters a double-quoted jj string literal cannot hold as
+// they are. A name and an issue key the frame lets through hold neither
+// (shimwire.ReadUnpushed.Validate), but the quoted `.` of a session id is a `\`.
+var jjStringEscapes = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+// jjStringLiteral is s as a double-quoted jj string literal.
+func jjStringLiteral(s string) string {
+	return `"` + jjStringEscapes.Replace(s) + `"`
+}
 
 // workingCopyChangedRevset is the workspace's own working copy when it holds a change, and nothing
 // when it holds none.
 const workingCopyChangedRevset = `@ & ~empty()`
 
-// Unpushed is a workspace's unpushed work as ReadUnpushed counts it, and nothing of the work
-// itself: Commits is how many of its commits no remote branch or tag holds (unpushedRevset), and
-// WorkingCopyChanged is whether its own working copy holds a change.
+// Unpushed is the issue's unpushed work in a workspace as ReadUnpushed counts it, and nothing of
+// the work itself: Commits is how many commits of it no remote branch or tag holds
+// (unpushedRevset), and WorkingCopyChanged is whether the workspace's own working copy holds a
+// change.
 type Unpushed struct {
 	Commits            int
 	WorkingCopyChanged bool
 }
 
-// ReadUnpushed reads the unpushed work of the jj workspace at dir with the jj of PATH, the one the
-// pane's or pod's own shell runs, under env and within budget, which bounds ctx (openWorkspaceAt).
-// Its first jj runs without --ignore-working-copy, so jj snapshots the working copy before it reads
-// whether the working copy holds a change: a change not yet snapshotted is unpushed work too. The
-// count after it is --ignore-working-copy, so both facts describe one state of the workspace. Both
-// commands run in dir itself (workspace.RunCommand). It is exported for a test's stand-in agent,
-// which answers the daemon's read-unpushed on a workspace of its own as this shim does.
-func ReadUnpushed(ctx context.Context, dir string, env []string, budget time.Duration) (Unpushed, error) {
-	opened, done, err := openWorkspaceAt(ctx, dir, "read", env, budget)
+// ReadUnpushed reads the issue's unpushed work in the jj workspace at dir, as request asks for it
+// (unpushedRevset), with the jj of PATH, the one the pane's or pod's own shell runs, under env and
+// within the request's budget, which bounds ctx (openWorkspaceAt). A request the frame's rules
+// refuse is refused here too (shimwire.ReadUnpushed.Validate), since its issue and its session
+// names go into the revset. Its first jj runs without --ignore-working-copy, so jj snapshots the
+// working copy before it reads whether the working copy holds a change: a change not yet
+// snapshotted is unpushed work too. The count after it is --ignore-working-copy, so both facts
+// describe one state of the workspace. Both commands run in dir itself (workspace.RunCommand). It
+// is exported for a test's stand-in agent, which answers the daemon's read-unpushed on a workspace
+// of its own as this shim does.
+func ReadUnpushed(ctx context.Context, dir string, env []string, request shimwire.ReadUnpushed) (Unpushed, error) {
+	if err := request.Validate(); err != nil {
+		return Unpushed{}, err
+	}
+	opened, done, err := openWorkspaceAt(ctx, dir, "read", env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
 		return Unpushed{}, err
 	}
@@ -63,7 +138,7 @@ func ReadUnpushed(ctx context.Context, dir string, env []string, budget time.Dur
 	if err != nil {
 		return Unpushed{}, err
 	}
-	commits, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", unpushedRevset, "--no-graph", "-T", `commit_id ++ "\n"`)
+	commits, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", unpushedRevset(request), "--no-graph", "-T", `commit_id ++ "\n"`)
 	if err != nil {
 		return Unpushed{}, err
 	}
@@ -87,7 +162,7 @@ func (s *shim) readUnpushed(request shimwire.ReadUnpushed) {
 		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else if dir := envValue(s.cfg.Env, "LEGION_WORKSPACE"); dir == "" {
 		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no workspace to read for unpushed work"
-	} else if read, err := ReadUnpushed(s.commands, dir, s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond); err != nil {
+	} else if read, err := ReadUnpushed(s.commands, dir, s.cfg.Env, request); err != nil {
 		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else {
 		result.Commits, result.WorkingCopyChanged = read.Commits, read.WorkingCopyChanged

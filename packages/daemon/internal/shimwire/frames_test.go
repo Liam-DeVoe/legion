@@ -150,9 +150,18 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			AdoptWorkingCopyResult{ID: "r4", OK: false, Error: "no workspace"},
 		},
 		{
+			// The session names the issue's claims hold, sorted, and the pull request not merged:
+			// the shim counts a commit whose trailer names one of them as the issue's own.
 			"read-unpushed",
-			`{"type":"read-unpushed","id":"read-1","issue":"INFRA-945","timeoutMs":300000}`,
-			ReadUnpushed{ID: "read-1", Issue: "INFRA-945", TimeoutMs: 300_000},
+			`{"type":"read-unpushed","id":"read-1","issue":"INFRA-945","merged":false,"sessions":["019a3f2e.implementer","ses_reviewer"],"timeoutMs":300000}`,
+			ReadUnpushed{ID: "read-1", Issue: "INFRA-945", Sessions: []string{"019a3f2e.implementer", "ses_reviewer"}, TimeoutMs: 300_000},
+		},
+		{
+			// A merged pull request says so in its member, and claims that hold no session name
+			// send no `sessions` member.
+			"read-unpushed of a merged pull request whose claims hold no session name",
+			`{"type":"read-unpushed","id":"read-1","issue":"INFRA-945","merged":true,"timeoutMs":300000}`,
+			ReadUnpushed{ID: "read-1", Issue: "INFRA-945", Merged: true, TimeoutMs: 300_000},
 		},
 		{
 			"read-unpushed-result",
@@ -771,17 +780,35 @@ func TestTokenFramesRoundTrip(t *testing.T) {
 // The project release reads a refused read as a pod whose workspace it could not read, never as
 // one with nothing unpushed, so a result that refuses and still counts work, one that refuses
 // with no reason and one with a negative count are each refused before the release reads them;
-// and the request is the daemon's alone, so a malformed one is refused by the shim.
+// and the request is the daemon's alone, so a malformed one is refused by the shim. The shim
+// writes the request's issue and session names into a revset, so a name that is not a session id
+// (claim.SessionIDRule) is malformed, a quote or a line break among them, and so is a list longer
+// than MaxReadUnpushedSessions. A list at the bound, each name as long as the rule lets it be,
+// validates. What binds the bound is the revset the shim builds of the names, one argument of
+// jj's, which internal/shim's TestTheLongestUnpushedRevsetAReadCanAskFitsOneExecArgument holds.
 func TestAReadOfUnpushedWorkRefusesItsMalformedForms(t *testing.T) {
 	if err := (ReadUnpushed{ID: "read-1", Issue: "INFRA-945", TimeoutMs: 1}).Validate(); err != nil {
 		t.Fatalf("ReadUnpushed.Validate: %v", err)
 	}
+	full := make([]string, MaxReadUnpushedSessions)
+	for i := range full {
+		full[i] = fmt.Sprintf("%0128d", i)
+	}
+	atBound := ReadUnpushed{ID: "read-1", Issue: "INFRA-945", Sessions: full, TimeoutMs: 1}
+	if err := atBound.Validate(); err != nil {
+		t.Fatalf("a read-unpushed naming %d sessions of 128 bytes: Validate = %v", len(full), err)
+	}
 	for name, request := range map[string]ReadUnpushed{
-		"no id":              {Issue: "INFRA-945", TimeoutMs: 1},
-		"no issue":           {ID: "read-1", TimeoutMs: 1},
-		"an issue not a key": {ID: "read-1", Issue: `INFRA-945") | all() | ("`, TimeoutMs: 1},
-		"no timeout":         {ID: "read-1", Issue: "INFRA-945"},
-		"a negative timeout": {ID: "read-1", Issue: "INFRA-945", TimeoutMs: -1},
+		"no id":                       {Issue: "INFRA-945", TimeoutMs: 1},
+		"no issue":                    {ID: "read-1", TimeoutMs: 1},
+		"an issue not a key":          {ID: "read-1", Issue: `INFRA-945") | all() | ("`, TimeoutMs: 1},
+		"no timeout":                  {ID: "read-1", Issue: "INFRA-945"},
+		"a negative timeout":          {ID: "read-1", Issue: "INFRA-945", TimeoutMs: -1},
+		"more sessions than the cap":  {ID: "read-1", Issue: "INFRA-945", Sessions: append(full, "ses_one_more"), TimeoutMs: 1},
+		"an empty session":            {ID: "read-1", Issue: "INFRA-945", Sessions: []string{""}, TimeoutMs: 1},
+		"a session longer than 128":   {ID: "read-1", Issue: "INFRA-945", Sessions: []string{strings.Repeat("s", 129)}, TimeoutMs: 1},
+		"a session holding a quote":   {ID: "read-1", Issue: "INFRA-945", Sessions: []string{`ses") | all() | ("`}, TimeoutMs: 1},
+		"a session holding a newline": {ID: "read-1", Issue: "INFRA-945", Sessions: []string{"ses_a\nDispatch: INFRA-945"}, TimeoutMs: 1},
 	} {
 		if err := request.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Errorf("a read-unpushed with %s: Validate = %v, want ErrMalformedFrame", name, err)

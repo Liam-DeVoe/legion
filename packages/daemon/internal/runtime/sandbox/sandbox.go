@@ -1125,20 +1125,20 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	return bundle, nil
 }
 
-// ReadUnpushed has role's shim read whether the issue workspace every role of the issue shares
-// holds unpushed work, over that claim's connection, for a project release about to delete the
-// pod and its disk. It makes BundleWorkspace's checks (runningRoleConn): its shim reads the
-// workspace it already works in, so a claim with no locator, one whose pod is not the recorded
+// ReadUnpushed has role's shim read whether the issue workspace every role of read.Issue shares
+// holds the issue's unpushed work, over that claim's connection, for a project release about to
+// delete the pod and its disk. It makes BundleWorkspace's checks (runningRoleConn): its shim reads
+// the workspace it already works in, so a claim with no locator, one whose pod is not the recorded
 // one, and one with no connection are each a refusal rather than a workspace with nothing
 // unpushed. The budget is the bundle's (runtime.WorkspaceBundleTimeout).
-func (r *Runtime) ReadUnpushed(ctx context.Context, issue string, role claim.Role) (runtime.UnpushedWork, error) {
-	conn, token, _, err := r.runningRoleConn(ctx, issue, role, "read")
+func (r *Runtime) ReadUnpushed(ctx context.Context, read runtime.UnpushedRead, role claim.Role) (runtime.UnpushedWork, error) {
+	conn, token, _, err := r.runningRoleConn(ctx, read.Issue, role, "read")
 	if err != nil {
 		return runtime.UnpushedWork{}, err
 	}
-	work, err := conn.ReadUnpushed(ctx, issue, runtime.WorkspaceBundleTimeout)
+	work, err := conn.ReadUnpushed(ctx, read, runtime.WorkspaceBundleTimeout)
 	if err != nil {
-		return runtime.UnpushedWork{}, fmt.Errorf("read %s's workspace for unpushed work over %s: %w", issue, token, err)
+		return runtime.UnpushedWork{}, fmt.Errorf("read %s's workspace for unpushed work over %s: %w", read.Issue, token, err)
 	}
 	return work, nil
 }

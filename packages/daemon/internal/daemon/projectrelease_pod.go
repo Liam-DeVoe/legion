@@ -17,6 +17,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -43,26 +45,72 @@ func (r *projectReleaser) readAll(ctx context.Context, run *releaseRun, pods []*
 	return reads
 }
 
-// read reads issue's workspace through one running role's shim, the first by token. A pod where
-// no role process runs now is unread; a shim that refused, and a read that failed, are a refusal,
-// whose text is the error's as the store keeps a far side's error text (storetext.FarSideError):
-// a runtime's error names the request's URL, with its query. Where that cuts the text to its
-// start, the whole text goes to the log, in parts that name the issue and the role read
-// (storetext.LogWhole, projectReleaseErrorInFull), at each read the shim refuses; the parts name
-// no release, since a dry run's reads have none.
+// read reads issue's workspace through one running role's shim, the first by token, with what
+// the shim tells the issue's own commits by (unpushedRead). A pod where no role process runs now
+// is unread; a shim that refused, a read that failed, and a read the daemon could not make are a
+// refusal, which asks the pod's roles, whose text is the error's as the store keeps a far side's
+// error text (storetext.FarSideError): a runtime's error names the request's URL, with its query.
+// Where that cuts the text to its start, the whole text goes to the log, in parts that name the
+// issue and the role read (storetext.LogWhole, projectReleaseErrorInFull), at each read refused;
+// the parts name no release, since a dry run's reads have none.
 func (r *projectReleaser) read(ctx context.Context, issue string) releaseRead {
 	running := runningClaims(r.issueViews(issue))
 	if len(running) == 0 {
 		return releaseRead{}
 	}
 	role := running[0].Role
-	work, err := r.pods.ReadUnpushed(ctx, issue, role)
+	request, err := r.unpushedRead(ctx, issue)
+	var work runtime.UnpushedWork
+	if err == nil {
+		work, err = r.pods.ReadUnpushed(ctx, request, role)
+	}
 	if err != nil {
 		refused := err.Error()
 		storetext.LogWhole(r.log, projectReleaseErrorInFull, refused, "issue", issue, "role", role)
 		return releaseRead{read: true, refusal: storetext.FarSideError(refused)}
 	}
 	return releaseRead{read: true, work: work}
+}
+
+// unpushedRead is what the read of issue's workspace carries to the shim (runtime.UnpushedRead):
+// the issue, whether the record holds its pull request merged, and each session name a claim of
+// the issue holds (claim_sessions), sorted and each once, which is how the shim tells a side head
+// of the issue's own by its `Omp-Session` trailer. Every claim of the issue is read, one a role,
+// whatever its state: a retired claim's session made commits of the issue too. A name of kind
+// `session` or `file-id` is a session id; a `file-name` is a file's base name, never a trailer's
+// value, so it is left out, and so is a name that claim.SessionIDRule refuses, since `legion git`
+// and jj's trailer writer give such an id no trailer. Claims that hold more names than the frame
+// carries (shimwire.MaxReadUnpushedSessions) are an error, as a names or record read that failed
+// is: the release reads nothing then, and the refusal asks the pod's roles, where a list cut to
+// the bound could leave a commit of the issue uncounted and the pod deleted with it.
+func (r *projectReleaser) unpushedRead(ctx context.Context, issue string) (runtime.UnpushedRead, error) {
+	merged, err := r.store.PullRequestMerged(ctx, issue)
+	if err != nil {
+		return runtime.UnpushedRead{}, fmt.Errorf("read whether the pull request of %s merged, for the read of its workspace: %w", issue, err)
+	}
+	var sessions []string
+	for _, role := range claim.Roles {
+		token, err := claim.NewToken(r.project, issue, role)
+		if err != nil {
+			return runtime.UnpushedRead{}, fmt.Errorf("derive the %s claim of %s: %w", role, issue, err)
+		}
+		holds, err := r.store.ClaimHolds(ctx, r.project, token)
+		if err != nil {
+			return runtime.UnpushedRead{}, fmt.Errorf("read the session names %s holds, for the read of %s's workspace: %w", token, issue, err)
+		}
+		for _, h := range holds {
+			if (h.Kind == supervise.HoldSessionID || h.Kind == supervise.HoldFileID) && claim.SessionIDRule.MatchString(h.Name) {
+				sessions = append(sessions, h.Name)
+			}
+		}
+	}
+	slices.Sort(sessions)
+	sessions = slices.Compact(sessions)
+	if len(sessions) > shimwire.MaxReadUnpushedSessions {
+		return runtime.UnpushedRead{}, fmt.Errorf("the claims of %s hold %d session names, more than the %d a read of its workspace carries, so the daemon did not read it",
+			issue, len(sessions), shimwire.MaxReadUnpushedSessions)
+	}
+	return runtime.UnpushedRead{Issue: issue, Merged: merged, Sessions: sessions}, nil
 }
 
 // noteRead writes what read found on pod's line, as the line reports it at the end.

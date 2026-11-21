@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -70,7 +71,7 @@ const (
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
 	// The project release's read of the unpushed work of the workspace every role of an issue
-	// shares: the daemon asking one role's shim how many of the workspace's commits no remote
+	// shares: the daemon asking one role's shim how many commits of the issue's work no remote
 	// branch or tag holds, and whether its working copy holds a change. The answer carries the
 	// count and the flag, never a commit, and the shim builds no bundle for it.
 	TypeReadUnpushed       = "read-unpushed"
@@ -980,19 +981,41 @@ type LauncherRestored struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// ReadUnpushed asks the shim whether the workspace it runs in holds unpushed work, for a project
-// release that is about to delete the pod with its disk. The daemon names the issue, as it does
-// for a bundle, and the budget, never a command or a path: the shim reads the workspace with the
-// jj it already works in, and builds no bundle and sends no commit.
+// MaxReadUnpushedSessions is the most session names one ReadUnpushed carries. The shim writes a
+// term of its revset for each name (internal/shim's unpushedRevset) and hands that revset to jj as
+// one argument, and Linux refuses an exec whose one argument is longer than MAX_ARG_STRLEN, 32
+// pages (128 KiB with 4 KiB pages; execve(2)). A name of 128 bytes adds at most 427 bytes to the
+// revset, its bytes with each `.` written `\\.` and the term around it, so 256 names take at most
+// 109,312 bytes of it, and at most 33,536 bytes of the frame, far inside MaxFrameBytes. 256 is six
+// roles that each started 42 fresh sessions, the most one claim started over 28 days of
+// production (supervise.MaxHeldNamesPerClaim's measurement), at one name a session once a
+// session's id and its file's id, the same word, are counted once; a claim holds about 4.5 names
+// on average. The daemon reads no workspace whose issue's claims hold more, and asks the pod's
+// roles instead (internal/daemon's projectReleaser.unpushedRead): a list cut to the bound could
+// leave a commit of the issue uncounted.
+const MaxReadUnpushedSessions = 256
+
+// ReadUnpushed asks the shim whether the workspace it runs in holds the issue's unpushed work, for
+// a project release that is about to delete the pod with its disk. The daemon names the issue, as
+// it does for a bundle, whether the record holds the issue's pull request merged (Merged), the
+// session names the issue's claims hold (Sessions: claim_sessions' `session` and `file-id` names
+// that meet claim.SessionIDRule), and the budget, never a command or a path: the shim reads the
+// workspace with the jj it already works in, and builds no bundle and sends no commit. Until the
+// merge the shim counts a commit whose `Omp-Session` trailer names one of Sessions, or whose
+// `Dispatch` trailer names Issue, as the issue's own (internal/shim's unpushedRevset). A frame with
+// no `merged` member reads as a pull request that has not merged, which counts more commits, never
+// fewer.
 type ReadUnpushed struct {
-	ID        string `json:"id"`
-	Issue     string `json:"issue"`
-	TimeoutMs int    `json:"timeoutMs"`
+	ID        string   `json:"id"`
+	Issue     string   `json:"issue"`
+	Merged    bool     `json:"merged"`
+	Sessions  []string `json:"sessions,omitempty"`
+	TimeoutMs int      `json:"timeoutMs"`
 }
 
 // ReadUnpushedResult answers ReadUnpushed with two facts and nothing of the work itself: Commits
-// is how many of the workspace's commits no remote branch or tag holds, each working copy with no
-// change left out, and WorkingCopyChanged is whether the shim's own working copy holds a change.
+// is how many commits of the issue's unpushed work the workspace holds (internal/shim's
+// unpushedRevset), and WorkingCopyChanged is whether the shim's own working copy holds a change.
 // A refusal carries its reason and claims neither, so a shim that could not read the workspace
 // never answers that nothing is unpushed.
 type ReadUnpushedResult struct {
@@ -1350,18 +1373,14 @@ func (f Compact) Validate() error {
 	return nil
 }
 
-// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts a bundle's
-// issue into a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not
-// one is refused here rather than quoted into a command; a workspace read's issue is held to the
-// same shape, since it names the issue whose workspace is read.
-var issueKeyShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-
-// Validate refuses a bundle request the shim would refuse. The daemon is its only sender.
+// Validate refuses a bundle request the shim would refuse. The daemon is its only sender. The
+// shim puts the issue into a revset (`remote_bookmarks(exact:"legion/<issue>")`), so an issue that
+// is not an issue key (claim.IsIssueKey) is refused here rather than quoted into a command.
 func (f BundleWorkspace) Validate() error {
 	switch {
 	case f.ID == "":
 		return fmt.Errorf("%w: bundle-workspace carries no id", ErrMalformedFrame)
-	case !issueKeyShape.MatchString(f.Issue):
+	case !claim.IsIssueKey(f.Issue):
 		return fmt.Errorf("%w: bundle-workspace issue %q is not an issue key", ErrMalformedFrame, f.Issue)
 	case f.MaxBytes <= 0:
 		return fmt.Errorf("%w: bundle-workspace maxBytes is %d", ErrMalformedFrame, f.MaxBytes)
@@ -1387,15 +1406,26 @@ func (f BundleWorkspaceResult) Validate() error {
 	return nil
 }
 
-// Validate refuses a read request the shim would refuse. The daemon is its only sender.
+// Validate refuses a read request the shim would refuse. The daemon is its only sender. The shim
+// writes the issue and each session name into a revset (internal/shim's unpushedRevset), so an
+// issue that is not an issue key (claim.IsIssueKey) and a name that is not a session id
+// (claim.SessionIDRule) are refused here rather than quoted into a command, and so are more names
+// than MaxReadUnpushedSessions, the most that revset, one argument of jj's, is sized for.
 func (f ReadUnpushed) Validate() error {
 	switch {
 	case f.ID == "":
 		return fmt.Errorf("%w: read-unpushed carries no id", ErrMalformedFrame)
-	case !issueKeyShape.MatchString(f.Issue):
+	case !claim.IsIssueKey(f.Issue):
 		return fmt.Errorf("%w: read-unpushed issue %q is not an issue key", ErrMalformedFrame, f.Issue)
 	case f.TimeoutMs <= 0:
 		return fmt.Errorf("%w: read-unpushed timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	case len(f.Sessions) > MaxReadUnpushedSessions:
+		return fmt.Errorf("%w: read-unpushed names %d sessions, limit %d", ErrMalformedFrame, len(f.Sessions), MaxReadUnpushedSessions)
+	}
+	for _, session := range f.Sessions {
+		if !claim.SessionIDRule.MatchString(session) {
+			return fmt.Errorf("%w: read-unpushed session %q is not a session id", ErrMalformedFrame, session)
+		}
 	}
 	return nil
 }
@@ -1417,12 +1447,14 @@ func (f ReadUnpushedResult) Validate() error {
 	return nil
 }
 
-// Validate refuses a workspace read the shim would refuse. The daemon is its only sender.
+// Validate refuses a workspace read the shim would refuse. The daemon is its only sender. Its issue
+// is held to the shape a bundle's is (claim.IsIssueKey), since it names the issue whose workspace
+// is read.
 func (f WorkspaceWork) Validate() error {
 	switch {
 	case f.ID == "":
 		return fmt.Errorf("%w: workspace-work carries no id", ErrMalformedFrame)
-	case !issueKeyShape.MatchString(f.Issue):
+	case !claim.IsIssueKey(f.Issue):
 		return fmt.Errorf("%w: workspace-work issue %q is not an issue key", ErrMalformedFrame, f.Issue)
 	case f.TimeoutMs <= 0:
 		return fmt.Errorf("%w: workspace-work timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)

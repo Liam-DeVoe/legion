@@ -251,7 +251,7 @@ func (c *Conn) FailBundleWorkspace(err error) { c.fail("BundleWorkspace", err) }
 // ReadUnpushed refuses the daemon's read of the agent's workspace: no test of this double reads
 // one (the release's own reads run on the idle rig's role processes), so a release that asked
 // sees the request refused rather than a workspace with nothing unpushed.
-func (*Conn) ReadUnpushed(context.Context, string, time.Duration) (runtime.UnpushedWork, error) {
+func (*Conn) ReadUnpushed(context.Context, runtime.UnpushedRead, time.Duration) (runtime.UnpushedWork, error) {
 	return runtime.UnpushedWork{}, errors.New("fake: the agent's side reads no workspace for unpushed work")
 }
 

@@ -135,12 +135,12 @@ type Conn interface {
 	// My Pi as an unknown command; both are refusals that carry their words (RefusalReason), and
 	// neither is an answer of no work.
 	WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (WorkspaceWork, error)
-	// ReadUnpushed has the agent's side read whether the workspace every role of issue shares
-	// holds unpushed work, for a project release about to delete the pod with its disk. It builds
-	// no bundle and sends no commit. A shim that could not read the workspace, and one too old to
-	// know the read, are each a refusal carrying its words (RefusalReason), never an answer that
-	// nothing is unpushed; every other error is transport.
-	ReadUnpushed(ctx context.Context, issue string, timeout time.Duration) (UnpushedWork, error)
+	// ReadUnpushed has the agent's side read whether the workspace every role of read.Issue shares
+	// holds the issue's unpushed work, for a project release about to delete the pod with its
+	// disk. It builds no bundle and sends no commit. A shim that could not read the workspace, and
+	// one too old to know the read, are each a refusal carrying its words (RefusalReason), never
+	// an answer that nothing is unpushed; every other error is transport.
+	ReadUnpushed(ctx context.Context, read UnpushedRead, timeout time.Duration) (UnpushedWork, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.
 	AgentSecretsEnrollment(ctx context.Context, enrollmentID string) error
@@ -165,10 +165,20 @@ type ConnState struct {
 	IsStreaming bool
 }
 
-// UnpushedWork is the agent's side's read of the unpushed work of the workspace every role of an
-// issue shares (Conn.ReadUnpushed). Commits is how many of the workspace's commits no remote
-// branch or tag holds, each working copy with no change left out; WorkingCopyChanged is whether
-// the working copy of the role that read it holds a change. Nothing of the work itself is in it.
+// UnpushedRead is what a read of the unpushed work of the workspace every role of an issue shares
+// tells the agent's side (Conn.ReadUnpushed), and from which the shim tells the issue's own work
+// from another's: the issue, whether the record holds its pull request merged, and the session
+// names its claims hold that a commit's `Omp-Session` trailer can carry, sorted, each once.
+type UnpushedRead struct {
+	Issue    string
+	Merged   bool
+	Sessions []string
+}
+
+// UnpushedWork is the agent's side's read of the issue's unpushed work in the workspace every
+// role of the issue shares (Conn.ReadUnpushed). Commits is how many commits of the issue's work no
+// remote branch or tag holds (the shim's unpushedRevset); WorkingCopyChanged is whether the working
+// copy of the role that read it holds a change. Nothing of the work itself is in it.
 type UnpushedWork struct {
 	Commits            int
 	WorkingCopyChanged bool

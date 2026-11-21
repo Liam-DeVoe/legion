@@ -3,7 +3,10 @@ body: |-
   `legion project release --operator-token-file <file> [--bound <duration>] [--wait <duration>]
   [--dry-run] [--json]` releases every pod of the daemon's project, the first step of moving the
   project's pods to another Kubernetes cluster. The daemon reads each issue pod's workspace for
-  commits no remote holds. It asks each running role of a pod with such commits, a refused read or
+  the issue's commits no remote holds: those under a working copy or a local bookmark, those with a
+  change and no description, and, until the issue's pull request merges, those whose
+  `Omp-Session` trailer names a session the issue's claims hold or whose `Dispatch` trailer names
+  the issue. It asks each running role of a pod with such commits, a refused read or
   a turn in progress to push to `legion/<KEY>`, to let its subagents and background jobs finish
   and push what they made, and to answer. It waits for the answers or the bound,
   `pod_update_grace_minutes` by default. Then it stops every role process and deletes every

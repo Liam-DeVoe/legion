@@ -2980,13 +2980,20 @@ package api
 // says.)
 //
 // 209: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
-// `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
+// `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `merged`, `sessions`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
-// `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
-// holds, every empty working copy left out, and whether the reading role's working copy holds a
-// change, read in the workspace with no bundle built and no commit sent; a shim older than this
-// number forwards the frame to Oh My Pi, which refuses it, and the daemon reads that refusal as a
-// workspace unread. The operator's routes gain `POST /legion/v1/operator/project/release` (body
+// `workingCopyChanged`, `error`): how many commits of the issue's work the issue's workspace holds
+// that no remote branch or tag holds, and whether the reading role's working copy holds a change,
+// read in the workspace with no bundle built and no commit sent. Of the commits no remote branch or
+// tag holds, less the root and each with no change and no description, the issue's work is each
+// under a working copy or a local bookmark, each with a change and no description, and, while
+// `merged` (whether the record holds the issue's pull request merged) is false, each whose
+// description has a line `Omp-Session: <one of sessions>` or `Dispatch: <issue>`; `sessions` is the
+// `session` and `file-id` names the issue's claims hold in claim_sessions that meet the trailer's
+// rule (claim.SessionIDRule), at most shimwire.MaxReadUnpushedSessions of them, and the daemon
+// reads no workspace whose issue's claims hold more. A shim older than this number forwards the
+// frame to Oh My Pi, which refuses it, and the daemon reads that refusal as a workspace unread.
+// The operator's routes gain `POST /legion/v1/operator/project/release` (body
 // `bound`, a Go duration, and `dryRun`; 202 with the release's record, 200 with a dry run's report,
 // and 200 with this process's release once one ran, which starts nothing; 409
 // `PROJECT_RELEASE_NO_POD` on the tmux runtime) and `GET` on the same path (200 with the newest
