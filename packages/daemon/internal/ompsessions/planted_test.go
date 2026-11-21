@@ -2,6 +2,7 @@ package ompsessions
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -519,6 +520,50 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			t.Errorf("Written inside inTransaction's function = %v; want it refused, the connection being already in a transaction", err)
 		}
 	})
+
+	// A transaction whose context ends inside it leaves its connection closed, pgx having closed it
+	// when the rollback failed, with the last status the server sent, 'T'. A call on it must fail
+	// as a call on a closed connection does, not be refused as one nested in another's transaction.
+	// The control is the refusal as it was first written (refusedAsNested), on the status alone: it
+	// calls this connection nested.
+	t.Run("a call on a connection that died inside a transaction fails as closed", func(t *testing.T) {
+		dead, err := ConnectURL(ctx, db.admin.Config().ConnString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = dead.Close(context.Background()) })
+		ending, end := context.WithCancel(ctx)
+		if err := inTransaction(ending, dead, false, func(p pinned) error {
+			end()
+			_, err := p.exec(ending, "SELECT 1")
+			return err
+		}); err == nil {
+			t.Fatal("a transaction whose context ended inside it committed")
+		}
+		raw := dead.c
+		if status := raw.PgConn().TxStatus(); !raw.IsClosed() || status != 'T' {
+			t.Fatalf("after a transaction whose context ended inside it the connection is closed %t with status %q; "+
+				"want closed, with the status 'T' the server last sent", raw.IsClosed(), status)
+		}
+		if refusal := refusedAsNested(raw); !strings.Contains(refusal, "already in a transaction") {
+			t.Fatalf("control: the refusal as first written answers %q on the dead connection, want it to call it nested", refusal)
+		} else {
+			t.Logf("control: %s", refusal)
+		}
+		_, _, err = Written(ctx, dead, podSessionFile)
+		if err == nil || strings.Contains(err.Error(), "already in a transaction") || !strings.Contains(err.Error(), "conn closed") {
+			t.Errorf("Written on the dead connection = %v; want it to fail as a call on a closed connection (conn closed)", err)
+		}
+	})
+}
+
+// refusedAsNested is inTransaction's refusal as it was first written, on the connection's
+// transaction status alone, "" where it refuses nothing. It is the dead-connection row's control.
+func refusedAsNested(conn *pgx.Conn) string {
+	if status := conn.PgConn().TxStatus(); status != 'I' {
+		return fmt.Sprintf("open a transaction on a connection already in a transaction (status %q)", status)
+	}
+	return ""
 }
 
 // unchecked is inTransaction as it was before it refused a connection already in a transaction:

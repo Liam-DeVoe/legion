@@ -121,12 +121,14 @@ func (p pinned) query(ctx context.Context, sql string, arguments ...any) (pgx.Ro
 // restrictRelationKinds (TestEveryTransactionPinsBeforeItsWork holds that order). It is the one
 // place the package opens a transaction, and it hands fn the pinned that runs fn's statements. The
 // transaction commits when fn returns nil and rolls back otherwise, and fn's error is returned as
-// it is. It refuses a connection already in a transaction, a call of the package made inside
+// it is. It refuses a live connection already in a transaction, a call of the package made inside
 // another's fn on the same connection: pgx would send a second begin, which the server ignores
 // there, and its commit would end the outer transaction and every SET LOCAL of it, so the outer
-// fn's next statement would run alone under the login's own search_path.
+// fn's next statement would run alone under the login's own search_path. A closed connection
+// keeps the last status the server sent, 'T' when its transaction died with it, so it is not
+// refused here, and fails as pgx fails any call on a closed connection.
 func inTransaction(ctx context.Context, conn *Conn, readOnly bool, fn func(pinned) error) error {
-	if status := conn.c.PgConn().TxStatus(); status != 'I' {
+	if status := conn.c.PgConn().TxStatus(); !conn.c.IsClosed() && status != 'I' {
 		return fmt.Errorf("open a transaction on a connection already in a transaction (status %q): "+
 			"a call of the package runs on a connection of its own", status)
 	}
