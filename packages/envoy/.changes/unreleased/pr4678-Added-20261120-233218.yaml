@@ -2,8 +2,9 @@ kind: Added
 body: |-
   The secrets broker mints no developer-box token of a project Dispatch closes to developer boxes:
   one in its closing state, the start of an owner's switch to private, or one private by its full
-  switch (the membership answer's new `closed_to_developer_boxes`; an answer without it, a project
-  private on its first day's included, keeps its tokens). A trade that acts as its person and names
+  switch or with its key in `DISPATCH_PRIVATE_PROJECTS` (the membership answer's new
+  `closed_to_developer_boxes`; an answer without it, a project private on its first day's
+  included, keeps its tokens). A trade that acts as its person and names
   such a project is refused `invalid_target` naming the project: a machine login's trade, its
   renewal and a person's sign-in on a machine alike. Such a token is stored only while the answer
   it rests on is younger than 30 s, else the trade is refused `temporarily_unavailable` and stores
