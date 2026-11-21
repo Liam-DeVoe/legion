@@ -4757,6 +4757,157 @@ else
     case_failed "$reader_case" "exit $RUN_STATUS, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
 fi
 
+# 159. A child that leaves its pipe held ends the replay within its bound (the architect's
+# class of round 46, after test round 45). The tester's --replay of e7518312 slept 2 h 58 min
+# in run_recorded's `names="$(printf '%s' "$command" | python3 "$READER" names)"` with no
+# child left: a substitution reads its pipe to its end before it waits for anything, so a
+# process that still holds the pipe's write end, as one a reader started before the machine
+# killed it does, keeps the replay waiting with nothing it waits for. The case puts a
+# python3 first on PATH whose first call of reader.py with the word names starts a sleep of
+# 240 s that keeps the pipe and then kills its own process with SIGKILL, and runs --replay,
+# which must end exit 2 in less than 150 s, cannot run, every assertion it leaves of the
+# kind environment, its last line naming the reader and signal 9. At 78256590 the replay
+# waited the 240 s and then passed.
+# bound_case <name> <last line, an extended regular expression> <run> <seconds it took>
+# <the most it may take>; passes when the run's record holds exit 2 and that last line,
+# which is the case's own plant, every assertion it leaves could not run, of the kind
+# environment, and the run ended in less than the most it may take. Cases 160 to 162 read
+# their runs by it too.
+bound_case() {
+    if ! case_read "$1" "$3" "$2"; then
+        :
+    elif [ "$RUN_STATUS" = 2 ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$2" &&
+        [ -n "$RUN_UNRUN" ] && ! printf '%s' "$RUN_UNRUN" | cut -f2 | grep -qvx environment && [ "$4" -lt "$5" ]; then
+        case_passed "$1"
+    else
+        case_failed "$1" "exit $RUN_STATUS after $4 s, kinds $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u | tr '\n' ' ')last line: $RUN_LINE"
+    fi
+}
+dir="$(fresh reader-held)"
+mkdir -p "$dir/reader-held-bin"
+cat >"$dir/reader-held-bin/python3" <<SH
+#!/usr/bin/env bash
+# A python3 whose first call of reader.py names leaves a process holding its output and
+# then ends by SIGKILL, as a reader the machine kills after it started one.
+for ((i = 1; i < \$#; i++)); do
+    j=\$((i + 1))
+    case "\${!i}" in */reader.py) [ "\${!j}" = names ] && mkdir "$dir/reader-held-bin/fired" 2>/dev/null && { sleep 240 & kill -9 \$\$; } ;; esac
+done
+exec $(command -v python3) "\$@"
+SH
+chmod +x "$dir/reader-held-bin/python3"
+held_start="$EPOCHSECONDS"
+out="$(PATH="$dir/reader-held-bin:$PATH" fixture_run "$dir" --replay)"
+bound_case "a reader.py that leaves a process holding its pipe and ends by SIGKILL makes --replay cannot run within its bound, of the kind environment, naming the reader and the signal" \
+    "^check\\.sh cannot run --replay: the install reader's reading of the programs of the row [^ ]+ was ended by signal 9 \\(SIGKILL\\), [0-9]+ s after it started\$" \
+    "$out" "$((EPOCHSECONDS - held_start))" 150
+
+# 160. A child that never ends ends the replay at its bound (the architect's class of round
+# 46). The case puts a python3 first on PATH whose first call of reader.py with the word
+# names sleeps 300 s and prints nothing, and runs --replay with IOC_CHILD_BOUND=20, which
+# lowers every bound of a child to 20 s; it must end exit 2 in less than 200 s, cannot run,
+# every assertion it leaves of the kind environment, its last line naming the reader and
+# its bound of 20 s. At 78256590 the replay waited the whole sleep, ran the row with no function
+# recording its programs' statuses and passed.
+dir="$(fresh reader-endless)"
+mkdir -p "$dir/reader-endless-bin"
+cat >"$dir/reader-endless-bin/python3" <<SH
+#!/usr/bin/env bash
+# A python3 whose first call of reader.py names does not end within its bound.
+for ((i = 1; i < \$#; i++)); do
+    j=\$((i + 1))
+    case "\${!i}" in */reader.py) [ "\${!j}" = names ] && mkdir "$dir/reader-endless-bin/fired" 2>/dev/null && exec sleep 300 ;; esac
+done
+exec $(command -v python3) "\$@"
+SH
+chmod +x "$dir/reader-endless-bin/python3"
+endless_start="$EPOCHSECONDS"
+out="$(PATH="$dir/reader-endless-bin:$PATH" IOC_CHILD_BOUND=20 fixture_run "$dir" --replay)"
+bound_case "a reader.py that does not end makes --replay cannot run at its bound, of the kind environment, naming the reader and the bound" \
+    "^check\\.sh cannot run --replay: the install reader's reading of the programs of the row [^ ]+ was ended by its bound of 20 s, [0-9]+ s after it started\$" \
+    "$out" "$((EPOCHSECONDS - endless_start))" 200
+
+# 161. A row's recorded command the machine ends by SIGKILL is no row that failed (the
+# architect's rule of round 46: a row's command that a signal ends ends the run cannot run,
+# of the kind environment, naming the row, the signal and how long it ran). The case adds a
+# row whose python3 kills its own process with SIGKILL, as the pod's memory guard kills the
+# largest process, and runs --replay, which must end exit 2, cannot run, every assertion it
+# leaves of the kind environment, its last line naming the row and signal 9. At 78256590
+# the row failed replay-command, "'python3 -c ...' exited 137", exit 1.
+dir="$(fresh row-killed)"
+jq -cn '{id: "f-killed-row", requirement: "r7", source: "this tree'"'"'s measurement", kind: "behaviour", claim: "The script prints ran once.", mark: "verified", evidence: {surface: "cli"}, command: "python3 -c '"'"'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'"'"'", expect: {equals: "ran once"}, output: "ran once", note: "a row the machine ends by SIGKILL"}' \
+    >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+killed_row_start="$EPOCHSECONDS"
+out="$(fixture_run "$dir" --replay)"
+bound_case "a row whose command the machine ends by SIGKILL makes --replay cannot run, of the kind environment, naming the row and the signal" \
+    "^check\\.sh cannot run --replay: the recorded command of the row f-killed-row was ended by signal 9 \\(SIGKILL\\), [0-9]+ s after it started\$" \
+    "$out" "$((EPOCHSECONDS - killed_row_start))" 150
+
+# 162. A row's recorded command that runs past its bound is ended there (the architect's
+# rule of round 46). The case adds a row whose python3 sleeps 300 s and runs --replay with
+# IOC_CHILD_BOUND=20, which must end exit 2 in less than 200 s, cannot run, every assertion it
+# leaves of the kind environment, its last line naming the row and its bound of 20 s. At
+# 78256590 the row ran its whole sleep and failed replay-command, its output empty, exit 1.
+dir="$(fresh row-endless)"
+jq -cn '{id: "f-endless-row", requirement: "r7", source: "this tree'"'"'s measurement", kind: "behaviour", claim: "The script prints ran once.", mark: "verified", evidence: {surface: "cli"}, command: "python3 -c '"'"'import time; time.sleep(300)'"'"'", expect: {equals: "ran once"}, output: "ran once", note: "a row that runs past its bound"}' \
+    >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+endless_row_start="$EPOCHSECONDS"
+out="$(IOC_CHILD_BOUND=20 fixture_run "$dir" --replay)"
+bound_case "a row whose command runs past its bound makes --replay cannot run at the bound, of the kind environment, naming the row and the bound" \
+    "^check\\.sh cannot run --replay: the recorded command of the row f-endless-row was ended by its bound of 20 s, [0-9]+ s after it started\$" \
+    "$out" "$((EPOCHSECONDS - endless_row_start))" 200
+
+# 163. A local text tool the machine ends by a signal is never read as an empty value (the
+# architect's form of round 46: a tool runs with no bound of its own, and its status is read
+# where it runs). evaluate reads the value of a row's predicate with `jq -r --arg k "$key"
+# '.[$k] | tostring'` in a substitution, and a jq killed there leaves the value empty, which
+# a contains predicate holds over any output. The case puts a jq first on PATH that kills
+# its own process with SIGKILL when it is given that filter with -r, as evaluate gives it
+# and predicate_is_a_sentence, which gives it with -j, does not, and runs --replay, which must
+# end exit 2, cannot run, every assertion it leaves of the kind environment, its last line
+# naming jq, evaluate and signal 9. At 78256590 every row's predicate held over the empty
+# value and the replay passed.
+dir="$(fresh jq-killed-predicate)"
+mkdir -p "$dir/jq-killed-bin"
+cat >"$dir/jq-killed-bin/jq" <<'SH'
+#!/usr/bin/env bash
+# A jq the machine ends by SIGKILL when it reads the value of a predicate.
+case " $* " in *" -r "*) for word in "$@"; do [ "$word" = '.[$k] | tostring' ] && kill -9 $$; done ;; esac
+exec REAL_JQ "$@"
+SH
+sed -i "s|REAL_JQ|'$(command -v jq)'|" "$dir/jq-killed-bin/jq"
+chmod +x "$dir/jq-killed-bin/jq"
+jq_predicate_start="$EPOCHSECONDS"
+out="$(PATH="$dir/jq-killed-bin:$PATH" fixture_run "$dir" --replay)"
+bound_case "a jq the machine ends by SIGKILL while it reads a row's predicate makes --replay cannot run, of the kind environment, naming jq and the step" \
+    "^check\\.sh cannot run --replay: the program 'jq .*', which evaluate ran, was ended by signal 9 \\(SIGKILL\\)\$" \
+    "$out" "$((EPOCHSECONDS - jq_predicate_start))" 150
+
+# 164. A local text tool the machine ends by a signal in a list that feeds a loop is never
+# read as a short list (the architect's form of round 46). --citations reads the
+# repositories its project-code rows cite with `claims | jq -r 'select(.kind=="project-code")
+# | .evidence.repo // empty' | sort -u` into the loop that clones each, and a jq killed there
+# leaves the list empty or short. The case puts a jq first on PATH that kills its own
+# process with SIGKILL when it is given that filter, and runs --citations, which must end
+# exit 2, cannot run, every assertion it leaves of the kind environment, its last line
+# naming jq, mode_citations and signal 9. At 78256590 the loop read the empty list and the
+# mode went on to its verdicts.
+dir="$(fresh jq-killed-list)"
+mkdir -p "$dir/jq-killed-bin"
+cat >"$dir/jq-killed-bin/jq" <<'SH'
+#!/usr/bin/env bash
+# A jq the machine ends by SIGKILL when it lists the repositories project-code rows cite.
+for word in "$@"; do [ "$word" = 'select(.kind=="project-code") | .evidence.repo // empty' ] && kill -9 $$; done
+exec REAL_JQ "$@"
+SH
+sed -i "s|REAL_JQ|'$(command -v jq)'|" "$dir/jq-killed-bin/jq"
+chmod +x "$dir/jq-killed-bin/jq"
+jq_list_start="$EPOCHSECONDS"
+out="$(PATH="$dir/jq-killed-bin:$PATH" fixture_run "$dir" --citations)"
+bound_case "a jq the machine ends by SIGKILL while it lists what a loop reads makes --citations cannot run, of the kind environment, naming jq and the step" \
+    "^check\\.sh cannot run --citations: the program 'jq .*project-code.*', which mode_citations ran, was ended by signal 9 \\(SIGKILL\\)\$" \
+    "$out" "$((EPOCHSECONDS - jq_list_start))" 150
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

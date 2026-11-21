@@ -146,6 +146,14 @@ ioc_env_need() {
     [ -z "$missing" ] || ioc_env_refuse "anything" "this machine has no$missing"
 }
 
+# ioc_env_program <program> [<argument>...]; runs a program env.sh names by the path it
+# exports, as "$IOC_PY", which no function of a program's name stands in for. check.sh
+# defines it before it sources env.sh, in each of its modes, so that the program runs by
+# the rule every child the gate waits on runs by (check.sh's header, "Every child the gate
+# waits on ends"); run on its own, or read by a shell that defined none, env.sh runs it as
+# it stands.
+declare -F ioc_env_program >/dev/null || ioc_env_program() { "$@"; }
+
 # One clone, at the commit sources.json pins, with the working tree at that commit:
 # the shapes generator, the mas-lab install and similarity.py all read files and not
 # git objects. The clone is reused only when its stamp, .git/ioc-complete, written after
@@ -679,7 +687,7 @@ ioc_env_records() {
 # with, and evidence/ioc-venv.lock pins all 53 packages with their hashes, torch at
 # 2.15.0+cpu, its CPU build.
 ioc_env_python_pinned() {
-    "$IOC_PY" - "$IOC_EVID/ioc-venv.in" <<'PY' >/dev/null 2>&1
+    ioc_env_program "$IOC_PY" - "$IOC_EVID/ioc-venv.in" <<'PY' >/dev/null 2>&1
 import sys
 from importlib.metadata import version
 import sentence_transformers, torch, rdflib, pyshacl, pypdf
@@ -735,7 +743,7 @@ ioc_env_model() {
         ioc_env_refuse "IOC_MODEL_DIR" "claims.jsonl holds no row s-model-checksum whose evidence names a sha256" || return 1
     if [ "$(cat "$stamp" 2>/dev/null)" != "$revision $want" ] || [ ! -s "$file" ]; then
         rm -f "$stamp"
-        "$IOC_PY" -c "
+        ioc_env_program "$IOC_PY" -c "
 from huggingface_hub import snapshot_download
 print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='$revision',
       allow_patterns=['*.json', '*.txt', '*.safetensors', '1_Pooling/*', '*.md']))
@@ -772,7 +780,7 @@ ioc_env_maslab() {
     # same files and this same clone commit; any other, one of evidence/tm-load.sh's or one
     # a row installed into since among them, is built again from nothing.
     if ! { ioc_env_built IOC_MASLAB_VENV "$want" && [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] &&
-        "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
+        ioc_env_program "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
         ioc_env_unstamp IOC_MASLAB_VENV
         uv venv --clear "$IOC_MASLAB_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_VENV" "uv venv --clear $IOC_MASLAB_VENV failed" || return 1
@@ -785,7 +793,7 @@ ioc_env_maslab() {
         ) || ioc_env_refuse "IOC_MASLAB_VENV" "uv pip install from $clone failed" || return 1
         rebuilt=1
     fi
-    { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
+    { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && ioc_env_program "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$IOC_MASLAB_VENV holds no mas-ctl that imports mas.lab" || return 1
     ioc_env_check_frozen IOC_MASLAB_VENV || return 1
     ioc_env_stamp_write IOC_MASLAB_VENV "$want" || return 1
@@ -834,7 +842,7 @@ ioc_env_scope_shapes() {
     if [ ! -s "$IOC_SCOPE_MAS_SHAPES" ]; then
         (
             cd "$IOC_CLONES/scope/ontology" || exit 1
-            "$IOC_PY" scripts/generate_shacl_shapes.py "$IOC_SCOPE_MAS_SHAPES.part" >&2
+            ioc_env_program "$IOC_PY" scripts/generate_shacl_shapes.py "$IOC_SCOPE_MAS_SHAPES.part" >&2
         ) && [ -s "$IOC_SCOPE_MAS_SHAPES.part" ] && mv "$IOC_SCOPE_MAS_SHAPES.part" "$IOC_SCOPE_MAS_SHAPES" ||
             {
                 rm -f "$IOC_SCOPE_MAS_SHAPES.part"

@@ -40,8 +40,10 @@
 # reader when it cannot load because env.sh is missing or python3 cannot start it, or a mode
 # that does not exist; environment, the environment env.sh builds from the package index and
 # the clones, the run's own scratch and record (below), or the machine the run is on, as
-# when it ends coordination/count.py by a signal (count_load); and source, the GitHub budget
-# or a live source the gate reads itself (the live-read rule below). What the evidence holds
+# when a signal ends a child the gate waits on, coordination/count.py among them
+# (count_load), or a child runs past its bound ("Every child the gate waits on ends"
+# below); and source, the GitHub budget or a live source the gate reads itself (the
+# live-read rule below). What the evidence holds
 # is never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL
 # (below), and a reader that loaded and then stopped is a failure of the gate. A run that
 # cannot run ends exit 2 with the reason as its last line, which names what is missing, and
@@ -52,6 +54,45 @@
 # env.sh reads a value from, since env.sh builds what every recorded command reads from
 # those rows (evidence_stops; "The one parse of claims.jsonl" below); that run ends exit 1
 # by its FAIL.
+#
+# Every child the gate waits on ends. Three bounds hold, by one rule. A mode runs whole
+# under its own bound (run_mode, mode_bound): check.sh runs the mode again as a child of
+# itself, under GNU timeout, in a process group of its own, which is sent TERM at the
+# bound and KILL BOUND_KILL seconds later. Each child that can wait on something outside
+# the run or start a child of its own runs under a bound of its own by bounded_run, the
+# same way: the programs of BOUND_PROGRAMS, run by name (python3, which runs the install
+# reader, git, curl, dispatch, uv and bash), so the children of live_read and env.sh's
+# builds and fetches among them; a program env.sh runs by the path it exports
+# (ioc_env_program); coordination/count.py; each recorded command of a row and each
+# committed proof of a landed step; and each run of the gate that --self-test and
+# check.test.sh make. When such a child ends, whatever is left of its group is killed, so
+# that nothing it started holds a pipe the gate reads to its end, as a command
+# substitution, a process substitution and a pipeline do. Each local text tool of
+# BOUND_TOOLS, jq, grep, sed, awk, cat and the rest, runs with no bound and no group of
+# its own, which would cost it a process, but its status is read where it runs, in
+# whichever substitution or stage of a pipeline (bound_tool). A child that a signal ends,
+# its status 128 and the number of a signal, or that its bound ends, ends the mode cannot
+# run, of the kind environment, naming what ran and the step that ran it, the signal or
+# the bound, and how many seconds it ran, from whichever subshell of the mode it ran in
+# (bound_stop), before the mode reads what the child printed, so a killed tool is never
+# read as an empty or a partial value: a row by its id, and so a program a row ran that a
+# signal ended; a helper by its words; count.py by its own line (count_run); a run of the
+# gate by the record fixture_run or gate_run writes for it, of a run that could not run,
+# which its reader reads by the rule of the ending record below; and a mode past its own
+# bound by the record run_mode writes, every assertion it declares unrun. SIGPIPE alone is
+# outside it, since a reader that stopped reading, as head does, sends it; a child it ends,
+# and every other status, keep the meaning their caller gives them. The bounds, each at
+# least three times the slowest measured run of what it bounds, with where and when that
+# was measured, are written beside BOUND_PROGRAM below; IOC_CHILD_BOUND, a
+# whole number of seconds, lowers each bound of a child above it to it, and no bound of a
+# mode, so that a case of check.test.sh ends a run in seconds. A loop over every row reads
+# the rows from a file, since a program feeding the loop through a pipe would run as long
+# as the loop does. A mode whose input is a terminal reads /dev/null in its place, since a
+# terminal stops a program of another group that reads it, and an interrupt, a TERM or a
+# HUP a shell gets while it waits for a bounded child is passed to the child's group,
+# which then ends by that signal. What a mode runs before its prerequisites are read, the
+# prerequisites themselves, the ending, and what check.test.sh runs itself outside a run
+# of the gate are outside the rule.
 #
 # The ending record. Every run of a mode writes how it ended as one record beside its
 # text, a file of lines of tab-separated fields: status and its exit status; line and its
@@ -70,8 +111,10 @@
 # the text says what each FAIL found. Each such run is made by fixture_run or gate_run,
 # which print the directory they made for it, holding its text, its record and the status
 # it exited with. A run that wrote no record, or that exited with a status its record does
-# not hold, crashed or was killed, and a crash is a failure, a bash syntax error among
-# them; but a run whose directory takes no write, or that was never made because its
+# not hold, crashed, and a crash is a failure, a bash syntax error among them; a run that a
+# signal or its bound ended holds the record fixture_run or gate_run writes for it, of a
+# run that could not run, of the kind environment ("Every child the gate waits on ends"
+# above); and a run whose directory takes no write, or that was never made because its
 # directory could not be made under a scratch that takes no write, could not run, of the
 # kind environment, since the place its record goes is its reader's own scratch.
 # check.test.sh reads the run of each case by one rule, case_read: a run that crashed
@@ -265,14 +308,14 @@
 # A case of check.test.sh plants a fault by setting one of FIXTURE_INPUTS on its own
 # command (IOC_HISTORY_REF, IOC_CACHE, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the five
 # program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, IOC_GITHUB_HEADER_AGE,
-# UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes on; --self-test,
-# and a shell that sources this script as check.test.sh does, unset the caller's values of
-# them first, so a fixture reads one only from a case. fixture_run prints the directory of
-# each run it makes, which holds the run's text and its ending record (above), and
-# check.test.sh reads each case by that record. A run the self-test makes that cannot run,
-# over the fixture or of check.test.sh or --admitted, stops the self-test there, naming the
-# run and its reason, and ends it by the precedence above; it is never counted as an
-# assertion that failed.
+# IOC_CHILD_BOUND, UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes
+# on; --self-test, and a shell that sources this script as check.test.sh does, unset the
+# caller's values of them first, so a fixture reads one only from a case. fixture_run
+# prints the directory of each run it makes, which holds the run's text and its ending
+# record (above), and check.test.sh reads each case by that record. A run the self-test
+# makes that cannot run, over the fixture or of check.test.sh or --admitted, stops the
+# self-test there, naming the run and its reason, and ends it by the precedence above; it
+# is never counted as an assertion that failed.
 #
 # No recorded command may read the scratch of the pod this reading was made in, because
 # that pod's disk died with it. --replay therefore reads the two Dispatch records under
@@ -535,7 +578,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # this script as check.test.sh does, first unsets its caller's FIXTURE_INPUTS, so that a
 # fixture reads one only from a case that sets it on its own command.
 FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR IOC_CLONES http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
-FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE IOC_CHILD_BOUND UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
 if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${1:-}" = --self-test ]; then
     # shellcheck disable=SC2086
     unset $FIXTURE_INPUTS
@@ -543,6 +586,85 @@ fi
 ROOT="${IOC_ROOT:-$(cd "$HERE/../../.." && pwd)}"
 CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
 EVIDENCE="${IOC_EVIDENCE:-$HERE}"
+# The bounds of the rule every child the gate waits on ends by (the header's "Every child
+# the gate waits on ends"), in seconds. Each is at least three times the slowest run of what
+# it bounds that was measured, and where a child was not measured alone, three times the
+# run that holds it; each line names the measurement, where and when it was made. "The
+# fresh-clone runs" are the runs of this issue the architect's message of round 46 gives:
+# --replay 3584 s, --self-test 5612 s and --citations 496 s at c55ed985 on 2026-11-20, and
+# --landed 21 s, --shape 12 s and --admitted 7 s; "the issue pod" is the pod of
+# dispatch://INFRA-3134 on 2026-11-21, where the tester's --replay of a fresh clone of
+# e7518312 ran from 16:18Z and its file times were read.
+#   mode_bound     each mode whole: --replay 10800, three times 3584; --self-test
+#                  17000, three times 5612; --citations 1500, three times 496; --landed 200,
+#                  three times 62, its run under this rule's first form in the issue pod at
+#                  17:27Z, beside 21 in the fresh-clone runs; --shape 120, three times 31,
+#                  its run without this rule in the issue pod at 17:28Z, beside 12; --admitted
+#                  150, three times 43, its run under this rule in the issue pod at 18:08Z,
+#                  beside 7; --published 600, which is not measured: its heaviest
+#                  read is the fetch of one commit of our repository at depth one, the read
+#                  --landed makes in a run of 21 s whole.
+#   BOUND_PROGRAM  each program of BOUND_PROGRAMS a mode runs by name, and each program env.sh
+#                  runs by the path it exports. The slowest measured alone is env.sh's uv pip
+#                  sync of IOC_VENV, cold, at most 129 s with the two checks after it, from
+#                  16:33:42Z to 16:35:52Z of the tester's --replay in the issue pod, read
+#                  from the times env.sh wrote its entries; env.sh's four clones took 19 s
+#                  together and its 207 reads of the review corpus 152 s together. No program
+#                  of --citations is measured alone, and the whole mode ran 496 s in the
+#                  fresh-clone runs, 1488 s three times over.
+#   BOUND_ROW      each recorded command of a row and each committed proof of a landed step.
+#                  The slowest measured is tm-our-count, 338 s, cold, then m-ctl-our-row-count,
+#                  149 s, of the 644 rows that tester's --replay had run by 17:31Z, each from
+#                  the time it wrote the row's command to the time it wrote its status, 1014 s
+#                  three times over; --landed's proofs ran inside its 21 s.
+#   BOUND_COUNT    coordination/count.py: 904 s, from 16:18:15Z to 16:33:19Z of that same
+#                  --replay, 2712 s three times over; it ran 721 s on 2026-11-18, and it walks
+#                  the whole feed, which grows.
+#   BOUND_RUN      a run of the gate that fixture_run makes, and one gate_run makes of a
+#                  mode but --self-test: the slowest measured, a fixture's --replay under
+#                  this rule's first form, 34.7 s, in case 1 of check.test.sh run alone in the
+#                  issue pod (19.9 s without the rule, in the run beside it), and --landed
+#                  over this tree, 21 s in the fresh-clone runs.
+#   BOUND_CASES    a run of check.test.sh or of --self-test that gate_run makes: the
+#                  --self-test that ran check.test.sh's cases inside it ran 5612 s in the
+#                  fresh-clone runs, 16836 s three times over.
+#   BOUND_KILL     the seconds between the TERM a child is sent at its bound and the KILL.
+BOUND_PROGRAM=1500
+BOUND_ROW=1800
+BOUND_COUNT=3600
+BOUND_RUN=900
+BOUND_CASES=17000
+BOUND_KILL=10
+mode_bound() {
+    case "$1" in
+    replay) printf 10800 ;;
+    self-test) printf 17000 ;;
+    citations) printf 1500 ;;
+    landed) printf 200 ;;
+    shape) printf 120 ;;
+    admitted) printf 150 ;;
+    *) printf 600 ;;
+    esac
+}
+# IOC_CHILD_BOUND, a whole number of seconds above zero, lowers each bound of a child above
+# it to it, read once here, after a shell that runs fixtures unset its caller's
+# (FIXTURE_INPUTS), so a case sets it on the one run it makes. BOUND_TIMEOUT is GNU
+# timeout's path, found once here, so a caller that sets PATH on one run of the gate, as
+# case 78 does, still finds it. MODE_INNER marks the run of a mode that run_mode makes
+# under the mode's bound, which runs the mode itself; it is read once and unset, so no run
+# this one makes reads it.
+CHILD_BOUND_CAP=""
+[[ "${IOC_CHILD_BOUND:-}" =~ ^[1-9][0-9]*$ ]] && CHILD_BOUND_CAP="$IOC_CHILD_BOUND"
+BOUND_TIMEOUT="$(type -P timeout 2>/dev/null)"
+MODE_INNER="${IOC_MODE_INNER:-}"
+unset IOC_MODE_INNER
+# BOUND_PROGRAMS are the programs a mode runs by name that can wait on something outside
+# the run or start a child of their own, each a function of its name in the mode's shell
+# that runs it under BOUND_PROGRAM (bound_program); BOUND_TOOLS are the local text tools,
+# each a function of its name that runs it and reads its status (bound_tool). A program
+# PATH does not hold is left as it is, so a tool that is missing is still missing.
+BOUND_PROGRAMS="bash curl dispatch git python3 uv"
+BOUND_TOOLS="awk cat chmod cmp comm cp cut date diff dirname env find grep head jq mkdir mktemp mv paste rm sed seq sha256sum sort stat tail tar touch tr uniq wc"
 # The run's own scratch and record (the header's "The run's own scratch and record"): what
 # the ending of a run needs is checked here, before anything else runs, and a run that
 # lacks it ends at early_end, which needs none of it. ENDING_GIVEN is the record the
@@ -747,29 +869,36 @@ replay|tool|dispatch|reads the two records under check, the judgement and the re
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
 replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and agent-infra under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+replay|tool|timeout|ends the mode, and each child of it the mode bounds, rows and count.py among them, at its bound, in a process group of its own (the header's "Every child the gate waits on ends")|apt-get install coreutils
 shape|tool|git|reads the history of this pull request|apt-get install git
 shape|tool|jq|reads sources.json|apt-get install jq
 shape|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 shape|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
+shape|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
 citations|tool|git|resolves every citation into a clone or into this repository|apt-get install git
 citations|tool|jq|reads claims.jsonl and sources.json|apt-get install jq
 citations|tool|python3|runs citations.py, the one extraction rule|apt-get install python3
 citations|tool|curl|reads each published page's live address|apt-get install curl
 citations|tool|dispatch|resolves each dispatch:// reference and reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+citations|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
 landed|tool|git|reads the commits of this pull request, fetches the commit of each step merged in another pull request from our repository, and runs the committed proof of each landed step, git show of the files at that commit|apt-get install git
 landed|tool|jq|reads the landed list of sources.json|apt-get install jq
 landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of each step not landed|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
+landed|tool|timeout|ends the mode, and each child of it the mode bounds, proofs among them, at its bound, in a process group of its own|apt-get install coreutils
 published|tool|git|fetches the default branch into the run's scratch|apt-get install git
 published|tool|jq|reads sources.json|apt-get install jq
 published|tool|curl|reads the Dispatch API|apt-get install curl
 published|variable|DISPATCH_URL|the address of the Dispatch API|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 published|variable|DISPATCH_TOKEN_FILE|the bearer the reads of the Dispatch API send|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
+published|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
 admitted|tool|python3|runs the classifier over every row|apt-get install python3
+admitted|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
 self-test|tool|git|builds the fixture deliverable's repository|apt-get install git
 self-test|tool|jq|builds and reads the fixture's sources.json and claims.jsonl|apt-get install jq
 self-test|tool|python3|runs the reader over the fixture's rows|apt-get install python3
+self-test|tool|timeout|ends each run of the gate the self-test and check.test.sh make at its bound, in a process group of its own|apt-get install coreutils
 TABLE
 }
 
@@ -914,6 +1043,9 @@ finish() {
         return
     fi
     [ -s "$RUN_SCRATCH/stopped" ] && IFS=$'\t' read -r kind stopped <"$RUN_SCRATCH/stopped"
+    # A stop bound_stop made is printed here and not where it was made, since the subshell
+    # it was made in may write into a substitution or a file.
+    [ ! -e "$RUN_SCRATCH/stopped.unprinted" ] || printf '%s\n' "$stopped"
     while IFS= read -r family; do
         [ -n "$family" ] || continue
         ending_add declared "$family"
@@ -961,12 +1093,170 @@ evidence_stops() {
     exit 2
 }
 
-# run_mode <mode>; runs the mode in a subshell, after the one check of its prerequisites,
-# so that however its code ends the verdict still reads what it reported, then ends the
-# run by finish's verdict: exit 0, 1 or 2.
+# bounded_run <seconds> <program> [<argument>...]; the one rule every child the gate waits
+# on runs by (the header's "Every child the gate waits on ends"). It runs the program under
+# GNU timeout, which puts it in a process group of its own and sends that group TERM at the
+# bound, lowered to IOC_CHILD_BOUND when that is less, and KILL BOUND_KILL seconds later; it
+# runs it in the background and waits for it, so that an interrupt, a TERM or a HUP this
+# shell gets reaches the group at once (bound_forward), and its input is this shell's own.
+# When the program has ended, whatever is left of its group is killed, so that nothing it
+# started holds a pipe this shell reads to its end. It returns the program's status, sets
+# BOUND_TOOK to the seconds it ran, and sets BOUND_ENDED to what ended it, "signal N
+# (SIGNAME)" for a status of 128 and a signal's number but SIGPIPE's, or "its bound of N
+# s" for timeout's own status, 124, or KILL's, at or past the bound, and to nothing for
+# every other status, which keeps the meaning its caller gives it.
+bounded_run() {
+    local bound="$1" start="$EPOCHSECONDS" status name
+    shift
+    [ -z "$CHILD_BOUND_CAP" ] || [ "$CHILD_BOUND_CAP" -ge "$bound" ] || bound="$CHILD_BOUND_CAP"
+    BOUND_ENDED="" BOUND_TOOK=0
+    "$BOUND_TIMEOUT" --kill-after="$BOUND_KILL" "$bound" "$@" <&0 &
+    BOUND_GROUP=$!
+    trap 'bound_forward INT' INT
+    trap 'bound_forward TERM' TERM
+    trap 'bound_forward HUP' HUP
+    while :; do
+        BOUND_FORWARDED=""
+        { wait "$BOUND_GROUP"; } 2>/dev/null
+        status=$?
+        [ -n "$BOUND_FORWARDED" ] || break
+    done
+    trap - INT TERM HUP
+    kill -KILL -- "-$BOUND_GROUP" 2>/dev/null
+    BOUND_GROUP=""
+    BOUND_TOOK=$((EPOCHSECONDS - start))
+    if { [ "$status" = 124 ] || [ "$status" = 137 ]; } && [ "$BOUND_TOOK" -ge "$bound" ]; then
+        BOUND_ENDED="its bound of $bound s"
+    elif [ "$status" -gt 128 ] && [ "$status" != 141 ] && name="$(kill -l $((status - 128)) 2>/dev/null)"; then
+        BOUND_ENDED="signal $((status - 128)) (SIG$name)"
+    fi
+    return "$status"
+}
+# bound_forward <signal>; passes a signal this shell got while bounded_run waits to the
+# group of the program it waits for, which then ends by it.
+bound_forward() {
+    BOUND_FORWARDED=1
+    [ -z "${BOUND_GROUP:-}" ] || kill -"$1" -- "-$BOUND_GROUP" 2>/dev/null
+}
+
+# bounded <seconds> <what> <program> [<argument>...]; runs the program by bounded_run and
+# returns its status, but ends the mode by bound_stop, naming <what>, when a signal or the
+# bound ended it. Once the mode has stopped, a subshell of it that reaches its next child
+# ends there.
+bounded() {
+    local bound="$1" what="$2" status
+    shift 2
+    [ ! -e "$RUN_SCRATCH/stopped.unprinted" ] || exit 2
+    bounded_run "$bound" "$@"
+    status=$?
+    [ -z "$BOUND_ENDED" ] || bound_stop "$what was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+    return "$status"
+}
+
+# bound_program <program> [<argument>...]; a program of BOUND_PROGRAMS a mode runs by name,
+# or one env.sh runs by the path it exports, under BOUND_PROGRAM, named by its words.
+bound_program() {
+    local IFS=' ' words
+    words="${1##*/}${2+ ${*:2}}"
+    bounded "$BOUND_PROGRAM" "the program '${words:0:200}'" "$@"
+}
+
+# bound_tool <tool> [<argument>...]; a local text tool of BOUND_TOOLS a mode runs by name.
+# It runs with no bound and no group of its own, and its status is read where it runs: a
+# signal, a status of 128 and a signal's number but SIGPIPE's, ends the mode by bound_stop,
+# naming the tool with its words and the function that ran it, before what it printed is
+# read; every other status is returned as it stands.
+bound_tool() {
+    local status name words
+    command "$@"
+    status=$?
+    if [ "$status" -gt 128 ] && [ "$status" != 141 ] && name="$(kill -l $((status - 128)) 2>/dev/null)"; then
+        words="$(IFS=' ' && printf '%s' "$*")"
+        bound_stop "the program '${words:0:200}', which ${FUNCNAME[2]:-the mode} ran, was ended by signal $((status - 128)) (SIG$name)"
+    fi
+    return "$status"
+}
+
+# bound_stop <reason>; ends the mode cannot run, of the kind environment, from the mode's
+# own shell or from any subshell of it, a substitution or a stage of a pipeline: it records
+# the reason for finish, which prints it, unless the mode stopped already, and a subshell
+# sends the mode's shell USR1, on which it ends (bound_abandon) as soon as what it waits
+# for has ended.
+bound_stop() {
+    if [ ! -e "$RUN_SCRATCH/stopped.unprinted" ]; then
+        printf 'environment\tcheck.sh cannot run --%s: %s\n' "$MODE" "${1//[$'\t\n']/ }" >"$RUN_SCRATCH/stopped"
+        : >"$RUN_SCRATCH/stopped.unprinted"
+    fi
+    [ "$BASHPID" = "${MODE_SHELL:-$BASHPID}" ] || kill -USR1 "$MODE_SHELL" 2>/dev/null
+    exit 2
+}
+# bound_abandon; the mode's shell on USR1: it kills the group of the child it waits for,
+# if any, and ends.
+bound_abandon() {
+    [ -z "${BOUND_GROUP:-}" ] || kill -KILL -- "-$BOUND_GROUP" 2>/dev/null
+    exit 2
+}
+
+# bound_mode; readies the mode's own shell for the rule once its prerequisites are read:
+# it is the shell a stop reaches (MODE_SHELL), it reads /dev/null for an input that is a
+# terminal or closed, each program of BOUND_PROGRAMS that PATH holds becomes a function of
+# its name that runs it by bound_program, as env.sh's ioc_env_program does a program it
+# runs by its path, and each tool of BOUND_TOOLS one that runs it by bound_tool.
+bound_mode() {
+    local program
+    MODE_SHELL="$BASHPID"
+    trap bound_abandon USR1
+    if [ -t 0 ] || ! { : <&0; } 2>/dev/null; then
+        exec </dev/null
+    fi
+    for program in $BOUND_PROGRAMS; do
+        type -P "$program" >/dev/null 2>&1 || continue
+        eval "$program() { bound_program $program \"\$@\"; }"
+    done
+    for program in $BOUND_TOOLS; do
+        type -P "$program" >/dev/null 2>&1 || continue
+        eval "$program() { bound_tool $program \"\$@\"; }"
+    done
+    ioc_env_program() { bound_program "$@"; }
+}
+
+# bound_record <run> <name> <what>; the record of a run of the gate that bounded_run ended
+# by a signal or its bound, written where the run's own goes, as early_end writes one:
+# status 2, its line, and the run declared and unrun, of the kind environment, so its
+# reader reads a run that could not run; the line is the run's text's last too.
+bound_record() {
+    local line="check.sh cannot run $2: $3 was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+    printf 'status\t2\nline\t%s\ndeclared\t%s\nunrun\t%s\tenvironment\t%s\n' "$line" "$2" "$2" "$line" >"$1/ending"
+    printf '%s\n' "$line" >>"$1/text"
+}
+
+# run_mode <mode>; runs the mode whole under its bound (mode_bound): this script runs
+# itself again for the mode, with IOC_MODE_INNER set and the record this run writes named,
+# by bounded_run, with no IOC_CHILD_BOUND lowering it, and ends with that run's status; when
+# a signal or the bound ended it, it prints the line and writes the record, every assertion
+# the mode declares unrun, of the kind environment. The run it makes runs the mode in a
+# subshell, after the one check of its prerequisites and bound_mode, so that however its
+# code ends the verdict still reads what it reported, then ends the run by finish's
+# verdict: exit 0, 1 or 2.
 run_mode() {
+    local status line family
     MODE="$1"
-    (prerequisites "$1" && "mode_${1//-/_}")
+    if [ -z "$MODE_INNER" ]; then
+        [ ! -t 0 ] || exec </dev/null
+        CHILD_BOUND_CAP="" IOC_MODE_INNER=1 IOC_ENDING="$ENDING" bounded_run "$(mode_bound "$1")" bash "${BASH_SOURCE[0]}" "--$1"
+        status=$?
+        [ -n "$BOUND_ENDED" ] || return "$status"
+        line="check.sh cannot run --$1: the mode was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+        printf '%s\n' "$line"
+        while IFS= read -r family; do
+            [ -n "$family" ] || continue
+            ending_add declared "$family"
+            ending_add unrun "$family" environment "$line"
+        done <<<"$(declared_assertions "$1")"
+        run_ending assertions
+        return
+    fi
+    (prerequisites "$1" && bound_mode && "mode_${1//-/_}")
     finish "$1"
 }
 
@@ -2046,8 +2336,8 @@ program_shims() {
 }
 
 run_recorded() {
-    # run_recorded <command> <output-file>; the variables env.sh exported are already in
-    # this shell's environment and reach the command through it. The command runs with
+    # run_recorded <command> <output-file> <row>; the variables env.sh exported are already
+    # in this shell's environment and reach the command through it. The command runs with
     # TMPDIR set to <output-file>.tmp, an empty directory of its own beside its output, so
     # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR.
     #
@@ -2073,13 +2363,26 @@ run_recorded() {
     # keeps the first line curl printed on stderr that starts "curl: (", the status of that
     # read beside its URL (source_answer); it writes what curl prints on stderr into a file
     # beside the record and then onto its own stderr, once curl has exited.
-    local command="$1" out="$2" script name
+    #
+    # The reader names the programs of the command into a file, and its status is read: a
+    # reader that stopped before its end names the command unread, as a refusal does, since no
+    # status of a program it did not name would be recorded. The command runs by the rule of
+    # the header's "Every child the gate waits on ends", under BOUND_ROW, and when a signal or
+    # its bound ended it, or a signal ended a program it ran, as that program's function or
+    # shim recorded it, but at a status the row declared, the mode cannot run, of the kind
+    # environment, naming the row, what ended it and how long the row ran.
+    local command="$1" out="$2" row="$3" script name names names_status ended took
+    local failed_status failed_declared failed_command _failed_said signal_name
     script="$out.sh"
     : >"$out.failed"
     : >"$out.unread"
-    local names
-    names="$(printf '%s' "$command" | python3 "$READER" names)"
+    printf '%s' "$command" | bounded "$BOUND_PROGRAM" "the install reader's reading of the programs of the row $row" python3 "$READER" names >"$out.names"
+    names_status="${PIPESTATUS[1]}"
+    names=""
+    IFS= read -r -d '' names <"$out.names"
     printf '%s\n' "$names" | sed -n 's/^UNREAD\t//p' >"$out.unread"
+    [ "$names_status" = 0 ] ||
+        printf 'a command the install reader stopped on, exit %s, before it named its programs\n' "$names_status" >>"$out.unread"
     {
         printf '__ioc_failed=%q\n' "$out.failed"
         printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" "${__ioc_said:--}" >>"$__ioc_failed"; }'
@@ -2107,9 +2410,21 @@ run_recorded() {
     rm -rf "$out.tmp" && mkdir -p "$out.tmp"
     (
         cd "$ROOT" || exit 1
-        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bash "$script" 9>"$out.pipe"
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe"
+        status=$?
+        printf '%s|%s\n' "$BOUND_TOOK" "$BOUND_ENDED" >"$out.ended"
+        exit "$status"
     ) >"$out" 2>&1
     printf '%s' "$?" >"$out.status"
+    ended="" took=""
+    IFS='|' read -r took ended 2>/dev/null <"$out.ended"
+    [ -z "$ended" ] || bound_stop "the recorded command of the row $row was ended by $ended, $took s after it started"
+    while IFS=$'\t' read -r failed_status failed_declared failed_command _failed_said; do
+        [ "$failed_status" -gt 128 ] 2>/dev/null && [ "$failed_status" != 141 ] || continue
+        declared_status_holds "$failed_status" "$failed_declared" && continue
+        signal_name="$(kill -l $((failed_status - 128)) 2>/dev/null)" || continue
+        bound_stop "the program '${failed_command% }' the row $row ran was ended by signal $((failed_status - 128)) (SIG$signal_name), and the row ran $took s"
+    done <"$out.failed"
 }
 
 # search_missed <command text> <status>; true when the command is a search that read its
@@ -4386,6 +4701,10 @@ mode_replay() {
         frozen_failures="$frozen_failures reader"
         fail install-pinned "the install reader stopped before its end, so which environment each row installs into is unread: $(tail -1 "$work/environments.err" | head -c 240)"
     }
+    # The loop reads the rows from a file, since a program that fed it through a pipe would
+    # wait on the loop's reading as long as every row runs, past its own bound (the header's
+    # "Every child the gate waits on ends").
+    claims >"$work/rows"
     while IFS= read -r row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
         kind="$(printf '%s' "$row" | jq -r '.kind // ""')"
@@ -4439,7 +4758,7 @@ mode_replay() {
         # The GitHub header files are written again when they are old, before the row and
         # never inside its command (the header's "The GitHub tokens stand on no command line").
         github_headers_fresh
-        run_recorded "$command" "$work/$id.out"
+        run_recorded "$command" "$work/$id.out" "$id"
         changed="$({
             printf '%s\n' "$installs"
             diff <(printf '%s\n' "$stamps") <(environment_stamps) | awk '$1 == ">" { print $2 }'
@@ -4501,7 +4820,7 @@ mode_replay() {
             command_failures="$command_failures $id"
             fail replay-command "$id ran '$command' and its output does not meet $expect${IOC_BOUND_READ:+ (the bound read $IOC_BOUND_READ)}: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
         fi
-    done < <(claims)
+    done <"$work/rows"
 
     # unpinned_installs runs the reader reader_load loaded above, so one that stops here
     # stopped on a row the one parse read, a failure of the gate and no mode that cannot run.
@@ -4712,34 +5031,35 @@ replay_our_data() {
 # nothing on stdout, which is the feed not answering: the mode cannot run, exit 2, or
 # exit 1 after a FAIL, by the precedence of the header, and no assertion over the count
 # is judged. Its reason is the last line of count.py's traceback, the error it raised,
-# which count_run hands live_read in place of the frames above it. A count.py the machine
-# ended by a signal, a status above 128, as the pod's memory guard ends one with SIGKILL,
-# made no read that failed: count_run writes "check.sh stop environment:
+# which count_run hands live_read in place of the frames above it. count.py runs by the
+# rule of the header's "Every child the gate waits on ends", under BOUND_COUNT. A count.py
+# the machine ended by a signal, as the pod's memory guard ends one with SIGKILL, or that
+# its bound ended, made no read that failed: count_run writes "check.sh stop environment:
 # coordination/count.py was ended by signal N (SIGNAME), so the count was not taken again,
-# and no read of Dispatch failed" as the first line of its stderr, and live_read ends the
-# mode cannot run, of the kind environment, with that line, never as Dispatch not
-# answering. A document version the deployment no longer holds is no failed read: count.py
-# counts it as unreadable, and the count it prints then differs. A count.py that is not
-# there is not run, and count-reruns fails naming it. The run takes about twelve minutes
-# against Dispatch: 721 seconds, measured on 2026-11-18.
+# and no read of Dispatch failed", or "... was ended by its bound of N s, M s after it
+# started, so ...", as the first line of its stderr, and live_read ends the mode cannot
+# run, of the kind environment, with that line, never as Dispatch not answering. A
+# document version the deployment no longer holds is no failed read: count.py counts it as
+# unreadable, and the count it prints then differs. A count.py that is not there is not
+# run, and count-reruns fails naming it. The run took 721 s against Dispatch on 2026-11-18
+# and 904 s on 2026-11-21 (BOUND_COUNT).
 count_load() {
     [ -f "$EVIDENCE/coordination/count.py" ] || return 0
     live_read "Dispatch, the feed of the count's window" "$RUN_SCRATCH/count-rerun.json" count_run || :
 }
-# count_run; runs count.py, its stderr into the trace. The braces hold bash's own report of a
-# child it reaped dead of a signal ("line N: PID Killed ...") inside the trace too, so the
-# first line of count_run's stderr is the line it writes.
+# count_run; runs count.py by bounded_run, its stderr into the trace, so the first line of
+# count_run's stderr is the line it writes.
 count_run() {
-    local status signal name
-    { python3 "$EVIDENCE/coordination/count.py"; } 2>"$RUN_SCRATCH/count-rerun.trace" && return 0
-    status=$?
-    if [ "$status" -gt 128 ]; then
-        signal=$((status - 128))
-        name="$(kill -l "$signal" 2>/dev/null)" && name="SIG$name" || name="a signal of no name"
-        printf 'check.sh stop environment: coordination/count.py was ended by signal %s (%s), so the count was not taken again, and no read of Dispatch failed\n' "$signal" "$name" >&2
-        return 1
-    fi
-    tail -1 "$RUN_SCRATCH/count-rerun.trace" >&2
+    bounded_run "$BOUND_COUNT" python3 "$EVIDENCE/coordination/count.py" 2>"$RUN_SCRATCH/count-rerun.trace" && return 0
+    case "$BOUND_ENDED" in
+    signal*)
+        printf 'check.sh stop environment: coordination/count.py was ended by %s, so the count was not taken again, and no read of Dispatch failed\n' "$BOUND_ENDED" >&2
+        ;;
+    ?*)
+        printf 'check.sh stop environment: coordination/count.py was ended by %s, %s s after it started, so the count was not taken again, and no read of Dispatch failed\n' "$BOUND_ENDED" "$BOUND_TOOK" >&2
+        ;;
+    *) tail -1 "$RUN_SCRATCH/count-rerun.trace" >&2 ;;
+    esac
     return 1
 }
 
@@ -5810,6 +6130,7 @@ mode_citations() {
         refs_read=0
     fi
     judgement_load
+    claims >"$RUN_SCRATCH/citation-rows"
     while IFS= read -r row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
         case "$(printf '%s' "$row" | jq -r '.kind')" in
@@ -5895,7 +6216,7 @@ mode_citations() {
             fi
             ;;
         esac
-    done < <(claims)
+    done <"$RUN_SCRATCH/citation-rows"
     # None of these passes on no input: a kind of citation claims.jsonl holds no row of,
     # and a directory that names no dispatch:// reference, fail by name.
     local kind count
@@ -6202,7 +6523,9 @@ mode_landed() {
             fail landed-proof "the page '$title' names the proof command '$command', and sources.json commits '$want_command' as the proof of that step"
             continue
         fi
-        if ! (cd "$ROOT" && bash -c "$want_command" >/dev/null 2>&1); then
+        # The proof runs as a row's command does, under BOUND_ROW (the header's "Every child
+        # the gate waits on ends"): a signal or the bound ends the mode cannot run.
+        if ! (cd "$ROOT" && bounded "$BOUND_ROW" "the committed proof of the page '$title'" bash -c "$want_command" >/dev/null 2>&1); then
             bad_proof=$((bad_proof + 1))
             fail landed-proof "the committed proof of the page '$title', '$want_command', exits non-zero"
         fi
@@ -6917,13 +7240,15 @@ fixture_run() {
     # It runs in an environment of its own, as the header's "The fixture of --self-test"
     # states: FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is set, the fixture's own
     # tree, judgement and head, the run's own record, and an IOC_CACHE of its own unless a
-    # case names one; no other variable of the caller's.
+    # case names one; no other variable of the caller's. The run is a child the caller waits
+    # on, under BOUND_RUN (the header's "Every child the gate waits on ends"): one that a
+    # signal or its bound ended holds the record bound_record writes for it.
     local dir="$1" mode="$2" name carried=() run status
     for name in $FIXTURE_CARRIED $FIXTURE_INPUTS; do
         [ -n "${!name+set}" ] && carried+=("$name=${!name}")
     done
     run="$(mktemp -d "$dir/run.XXXXXX")" || return 1
-    env -i "${carried[@]}" \
+    bounded_run "$BOUND_RUN" env -i "${carried[@]}" \
         IOC_ROOT="$dir/repo" \
         IOC_EVIDENCE="$dir/repo/docs/research/internet-of-cognition" \
         IOC_JUDGEMENT="$dir/judgement.md" \
@@ -6933,6 +7258,10 @@ fixture_run() {
         IOC_ENDING="$run/ending" \
         bash "$dir/repo/docs/research/internet-of-cognition/check.sh" "$mode" >"$run/text" 2>&1
     status=$?
+    if [ -n "$BOUND_ENDED" ]; then
+        bound_record "$run" "$mode" "the run of check.sh $mode over the fixture $dir"
+        status=2
+    fi
     printf '%s\n' "$status" >"$run/status"
     printf '%s\n' "$run"
     return "$status"
@@ -6942,12 +7271,22 @@ fixture_run() {
 # caller's environment and not over a fixture, prints the directory it made for that run
 # under this run's scratch, which holds what fixture_run's does, and ends with the run's
 # status. --self-test runs check.test.sh and --admitted by it, and check.test.sh each run
-# of a copy.
+# of a copy. The run is a child the caller waits on, under BOUND_CASES for a run of
+# check.test.sh or of --self-test, which runs it, and BOUND_RUN for any other (the header's
+# "Every child the gate waits on ends"): one that a signal or its bound ended holds the
+# record bound_record writes for it.
 gate_run() {
-    local run status
+    local run status bound="$BOUND_RUN"
+    case "${1##*/} ${2:-}" in
+    "check.test.sh " | *" --self-test") bound="$BOUND_CASES" ;;
+    esac
     mkdir -p "$RUN_SCRATCH/runs" && run="$(mktemp -d "$RUN_SCRATCH/runs/run.XXXXXX")" || return 1
-    IOC_ENDING="$run/ending" bash "$1" ${2:+"$2"} >"$run/text" 2>&1
+    IOC_ENDING="$run/ending" bounded_run "$bound" bash "$1" ${2:+"$2"} >"$run/text" 2>&1
     status=$?
+    if [ -n "$BOUND_ENDED" ]; then
+        bound_record "$run" "${2:-${1##*/}}" "the run of ${1##*/}${2:+ $2}"
+        status=2
+    fi
     printf '%s\n' "$status" >"$run/status"
     printf '%s\n' "$run"
     return "$status"
