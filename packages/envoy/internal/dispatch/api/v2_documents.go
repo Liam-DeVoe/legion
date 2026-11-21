@@ -473,8 +473,8 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List an issue's documents, files and images, its spec among them, oldest first. " + artifactRowText +
-				" " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText("text") + " {items, total, " +
-				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+				" " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText(artifactListV2Query{}) +
+				" {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Query:         artifactListV2Query{},
@@ -504,8 +504,9 @@ func (s *server) v2DocumentRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List a project's documents, files and images, oldest first: its own and every one of its issues' " +
 				"but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. " +
-				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText("text") + " {items, " +
-				"total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " " +
+				includedPageLimitText(projectArtifactsV2Query{}) + " {items, total, limit, offset}. 404 PROJECT_NOT_FOUND " +
+				"for a project that does not exist.",
 			Handler:  s.listProjectArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Query:         projectArtifactsV2Query{},
@@ -666,17 +667,21 @@ type artifactReadV2Query struct {
 type artifactListV2Query struct {
 	pageQuery
 	// Slug keeps the artifacts at this slug and the documents of this exact file name.
-	Slug    string   `query:"slug"`
-	Include []string `query:"include,comma" enum:"text,blocks"`
+	Slug string `query:"slug"`
+	// Include adds each document's text (text) and its blocks (blocks), each of which renders
+	// each listed row whole, so a page that names one holds at most includedPageMax (renders).
+	Include []string `query:"include,comma" enum:"text,blocks" renders:"text,blocks"`
 }
 
 // projectArtifactsV2Query is GET /api/v2/projects/{key}/artifacts's query.
 type projectArtifactsV2Query struct {
 	pageQuery
 	// Issue is none for the project's own artifacts, which no issue holds, or one issue's key.
-	Issue   queryFilter[string] `query:"issue"`
-	Slug    string              `query:"slug"`
-	Include []string            `query:"include,comma" enum:"text,blocks"`
+	Issue queryFilter[string] `query:"issue"`
+	Slug  string              `query:"slug"`
+	// Include adds each document's text (text) and its blocks (blocks), each of which renders
+	// each listed row whole, so a page that names one holds at most includedPageMax (renders).
+	Include []string `query:"include,comma" enum:"text,blocks" renders:"text,blocks"`
 }
 
 // agentArtifactsV2Query is GET /api/v2/agents/{session_id}/artifacts's query.
@@ -785,9 +790,6 @@ func (s *server) listIssueArtifactsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := v2Query[artifactListV2Query](r)
-	if !includedPageWithinBound(w, r, &query.pageQuery, query.Include, "text", "each document's text") {
-		return
-	}
 	key := r.PathValue("key")
 	if !s.requireIssueV2(w, r, key) {
 		return
@@ -806,9 +808,6 @@ func (s *server) listProjectArtifactsV2(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	query := v2Query[projectArtifactsV2Query](r)
-	if !includedPageWithinBound(w, r, &query.pageQuery, query.Include, "text", "each document's text") {
-		return
-	}
 	key := r.PathValue("key")
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, key); err != nil {
 		s.writeHandlerError(w, r, err)

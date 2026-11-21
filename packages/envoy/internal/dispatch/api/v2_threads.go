@@ -436,7 +436,7 @@ func (s *server) v2ThreadRows() []routeRow {
 				"then by phase, then the newest version), created_at, version or -version (a phase's newest version first: "+
 				"phase=<phase>&sort=-version&limit=1&include=body reads the phase's latest handoff). %s {items, total, "+
 				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
-				contracts.HandoffPhasePattern, includedPageLimitText("body")),
+				contracts.HandoffPhasePattern, includedPageLimitText(issueHandoffsV2Query{})),
 			Handler:  s.listIssueHandoffsV2,
 			Resource: "handoffs", Kind: kindCollection, Key: "{id}",
 			Query:    issueHandoffsV2Query{},
@@ -580,8 +580,9 @@ type issueHandoffsV2Query struct {
 	pageQuery
 	// Phase keeps one phase's handoffs.
 	Phase string `query:"phase"`
-	// Include adds each handoff's body.
-	Include []string `query:"include,comma" enum:"body"`
+	// Include adds each handoff's body (body), which renders each listed row whole, so a page
+	// that names it holds at most includedPageMax (renders).
+	Include []string `query:"include,comma" enum:"body" renders:"body"`
 	// Sort is created_at or version.
 	Sort querySort `query:"sort" enum:"created_at,version" default:"-created_at"`
 }
@@ -1205,16 +1206,13 @@ func handoffListOrder(sort querySort) string {
 // listIssueHandoffsV2 answers GET /api/v2/issues/{key}/handoffs: one page of an issue's handoffs,
 // one phase's with phase=, each with its body with include=body, which also answers for GET
 // /api/v1/issues/{key}/handoffs/{phase}/latest (the route map's row 106). A page with the bodies
-// holds at most includedPageMax handoffs, each body up to contracts.DispatchHandoffBodyMax, held
-// there before the issue is read (includedPageWithinBound).
+// holds at most includedPageMax handoffs, each body up to contracts.DispatchHandoffBodyMax, which
+// the decoder holds before the handler runs (issueHandoffsV2Query's renders tag).
 func (s *server) listIssueHandoffsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := v2Query[issueHandoffsV2Query](r)
-	if !includedPageWithinBound(w, r, &query.pageQuery, query.Include, "body", "each handoff's body") {
-		return
-	}
 	key := r.PathValue("key")
 	if !s.requireIssueV2(w, r, key) {
 		return

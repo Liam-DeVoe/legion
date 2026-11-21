@@ -1250,7 +1250,10 @@ func (e *openAPIEmitter) queryParameters(params any) ([]openapi31.ParameterOrRef
 // with the type its values are read as and what holds them - an enum, an integer's bounds, a
 // list's limit bounds (the row's List) - and the value a query that leaves the key out is read as,
 // so the document says what the decoder accepts and refuses (400 INVALID_QUERY, INVALID_LIMIT,
-// INVALID_OFFSET) and what it reads an absent key as. None is required and none can be null.
+// INVALID_OFFSET) and what it reads an absent key as. None is required and none can be null. The
+// limit of a list whose include names members that render each listed row (`renders`) says in its
+// description the page it takes with them (holdIncludedPage), which no schema keyword states beside
+// the list's own bounds.
 func v2QueryParameters(route apiRoute) ([]openapi31.ParameterOrReference, error) {
 	query, err := compileV2Query(route.Query)
 	if err != nil {
@@ -1269,6 +1272,10 @@ func v2QueryParameters(route apiRoute) ([]openapi31.ParameterOrReference, error)
 			// The key repeats, and each of its values is a comma list as well (R1.9): no style
 			// OpenAPI names reads both, so the document says so beside the form style.
 			parameter.WithMapOfAnythingItem("x-comma-list", true)
+		}
+		if field.kind == queryLimit && query.rendering != nil {
+			parameter.WithDescription(includedPageText(route.List, query.rendering.renders) +
+				rendersEachRowText(query.rendering.renders) + ".")
 		}
 		parameters = append(parameters, openapi31.ParameterOrReference{Parameter: parameter})
 	}

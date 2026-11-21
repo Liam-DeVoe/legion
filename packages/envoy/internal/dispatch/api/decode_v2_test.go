@@ -545,3 +545,136 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 		t.Errorf("left out the /api/v1 mounts %q, want each of the %d rows v2Infra979Rows declares", infra979, rows)
 	}
 }
+
+// renderedWidgetQuery is a made-up list's query whose include names one member, mark, that
+// renders each listed row whole, and one, thread, that does not.
+type renderedWidgetQuery struct {
+	pageQuery
+	Include []string `query:"include,comma" enum:"thread,mark" renders:"mark"`
+}
+
+// A list's include field names in its renders tag the members that render each listed row whole:
+// a renders tag on a field that is no list, naming a member its enum does not hold, on a query that
+// takes no limit, or on two fields is refused at mount (compileQueryField, compileV2Query). The
+// decoder holds the page of a request that names such a member to includedPageMax before any
+// handler runs (holdIncludedPage): a limit past it is 400 INVALID_LIMIT naming the bound and the
+// member, a request that names no limit reads 20, or the row's default where that is smaller, and a
+// limit past 20 without the member is read as given.
+func TestTheRendersTagHoldsTheListsPage(t *testing.T) {
+	type rendersOnAString struct {
+		pageQuery
+		Include string `query:"include" enum:"text" renders:"text"`
+	}
+	type rendersOutsideItsEnum struct {
+		pageQuery
+		Include []string `query:"include,comma" enum:"text" renders:"text,blocks"`
+	}
+	type rendersWithNoLimit struct {
+		Include []string `query:"include,comma" enum:"text" renders:"text"`
+	}
+	type rendersTwice struct {
+		pageQuery
+		Include []string `query:"include,comma" enum:"text" renders:"text"`
+		Expand  []string `query:"expand,comma" enum:"body" renders:"body"`
+	}
+	well := madeUpRow()
+	well.Query = renderedWidgetQuery{}
+	if faults := undecodableRoutes([]apiRoute{madeUpV2Route(well)}); len(faults) > 0 {
+		t.Fatalf("a list whose include renders one member was refused: %q", faults)
+	}
+	for name, broken := range map[string]struct {
+		query any
+		names string
+	}{
+		"a renders tag on a field that is no list": {rendersOnAString{}, "renders names the include members that render each listed row, and this field is no list"},
+		"a member its enum does not hold":          {rendersOutsideItsEnum{}, `renders names "blocks", which its enum "text" does not hold`},
+		"a query that takes no limit":              {rendersWithNoLimit{}, `declares renders on the query key "include" and takes no limit`},
+		"a renders tag on two fields":              {rendersTwice{}, `declares renders on the query keys "expand" and "include"`},
+	} {
+		row := madeUpRow()
+		row.Query = broken.query
+		if faults := undecodableRoutes([]apiRoute{madeUpV2Route(row)}); len(faults) != 1 || !strings.Contains(faults[0], broken.names) {
+			t.Errorf("%s: refused %q, want the row refused once, naming %q", name, faults, broken.names)
+		}
+	}
+
+	decode := func(t *testing.T, bounds listBounds, target string) (renderedWidgetQuery, error) {
+		t.Helper()
+		row := madeUpRow()
+		row.Query, row.List = renderedWidgetQuery{}, bounds
+		request, err := decodeV2Request(httptest.NewRequest(http.MethodGet, target, nil), madeUpV2Route(row))
+		if err != nil {
+			return renderedWidgetQuery{}, err
+		}
+		return v2Query[renderedWidgetQuery](request), nil
+	}
+	for _, target := range []string{"/api/v2/widgets?include=mark&limit=21", "/api/v2/widgets?include=thread,mark&limit=200"} {
+		if _, err := decode(t, listBounds{}, target); refusalCodeOf(err) != apicode.InvalidLimit.Name() ||
+			!strings.Contains(err.Error(), "limit must be one integer from 1 to 20 with include=mark, which renders each listed row") {
+			t.Errorf("%s: decoded with %v, want 400 INVALID_LIMIT naming 1 to 20 and include=mark alone", target, err)
+		}
+	}
+	for _, read := range []struct {
+		bounds listBounds
+		target string
+		limit  int
+	}{
+		{listBounds{}, "/api/v2/widgets?include=mark", 20},
+		{listBounds{}, "/api/v2/widgets?include=thread,mark", 20},
+		{listBounds{}, "/api/v2/widgets?include=mark&limit=20", 20},
+		{listBounds{}, "/api/v2/widgets?include=mark&limit=5", 5},
+		{listBounds{}, "/api/v2/widgets?include=thread&limit=21", 21},
+		{listBounds{}, "/api/v2/widgets?limit=21", 21},
+		{listBounds{}, "/api/v2/widgets?include=thread", defaultListLimit},
+		{listBounds{Default: 10, Max: 100}, "/api/v2/widgets?include=mark", 10},
+	} {
+		if query, err := decode(t, read.bounds, read.target); err != nil || query.Limit != read.limit {
+			t.Errorf("%s on a list bounded %+v decoded limit %d, %v; want %d", read.target, read.bounds, query.Limit, err, read.limit)
+		}
+	}
+}
+
+// Every /api/v2 route the table mounts whose query names members that render each listed row (a
+// renders tag) says so from that one declaration where a caller reads it: its description carries
+// includedPageLimitText of its Query, and the document's limit parameter the same page and members
+// (includedPageText). So a row cannot declare the members and leave its description or the
+// document silent. The lists that declare them - an issue's and a project's artifacts, and an
+// issue's handoffs - are among the routes walked.
+func TestEveryListThatRendersItsRowsSaysItsPage(t *testing.T) {
+	tree, _ := readOpenAPITreeOf(t, apiV2)
+	document, _ := tree.(map[string]any)
+	var rendering []string
+	for _, route := range servedAt(apiV2, (&server{deps: Deps{TestHooksEnabled: true}}).routes()) {
+		if !route.v2Bound() {
+			continue
+		}
+		name := route.Method + " " + route.Pattern
+		query, err := compileV2Query(route.Query)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if query.rendering == nil {
+			continue
+		}
+		rendering = append(rendering, name)
+		if said := includedPageLimitText(route.Query); !strings.Contains(route.Description, said) {
+			t.Errorf("%s names renders:%q on its include, and its description does not say %q", name, strings.Join(query.rendering.renders, ","), said)
+		}
+		said := includedPageText(route.List, query.rendering.renders)
+		parameters, _ := openAPIAt(document, "paths", route.Pattern, strings.ToLower(route.Method))["parameters"].([]any)
+		limit := ""
+		for _, parameter := range parameters {
+			if declared, _ := parameter.(map[string]any); declared["name"] == "limit" && declared["in"] == "query" {
+				limit, _ = declared["description"].(string)
+			}
+		}
+		if !strings.Contains(limit, said) {
+			t.Errorf("%s names renders:%q on its include, and the document's limit says %q, not %q", name, strings.Join(query.rendering.renders, ","), limit, said)
+		}
+	}
+	for _, list := range []string{"GET /api/v2/issues/{key}/artifacts", "GET /api/v2/projects/{key}/artifacts", "GET /api/v2/issues/{key}/handoffs"} {
+		if !slices.Contains(rendering, list) {
+			t.Errorf("%s is no route whose query names members that render each listed row; the routes that do are %q", list, rendering)
+		}
+	}
+}

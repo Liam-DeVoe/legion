@@ -48,6 +48,14 @@ package api
 // INVALID_QUERY naming the key and what it takes; a limit outside the row's bounds is 400
 // INVALID_LIMIT naming the bound, and an offset that is no integer of 0 or more 400 INVALID_OFFSET.
 //
+// `renders:"a,b"` on a list's include field names the members of its enum that render each listed
+// row whole - include=text on a list of artifacts, each document's text up to a MiB - so a request
+// that names one reads a page of at most includedPageMax rows (holdIncludedPage): a limit it names
+// past that is 400 INVALID_LIMIT naming the bound and the members it named, and one that names no
+// limit reads the row's default, held to includedPageMax (includedPageDefault). A query declares it
+// on one slice field at most, each member one its enum holds, and only beside a limit (pageQuery);
+// the route's description says so (includedPageLimitText), and so does the document's limit.
+//
 // `session` is declared on every route the decoder reads, once, beside the row's own keys (R4):
 // actingPerson and resolveIDPrefixes read the session it names through requestSession, the decoded
 // request's on such a route, and the raw query's on every other.
@@ -234,19 +242,6 @@ func v2Upload(r *http.Request) *uploadFile {
 		panic(fmt.Sprintf("v2Upload: the decoder read no upload of %s %s", r.Method, r.Pattern))
 	}
 	return decoded.file
-}
-
-// v2QueryNames reports whether the query of r, a request to a /api/v2 route, names key, which
-// v2Query's value cannot tell for a key whose field a query that leaves it out holds at its
-// default: a list's limit (pageQuery). It panics, as v2Query does, on a route the decoder does not
-// read.
-func v2QueryNames(r *http.Request, key string) bool {
-	decoded, ok := decodedV2(r)
-	if !ok {
-		panic(fmt.Sprintf("v2QueryNames(%q): the decoder read no query of %s %s: only a /api/v2 route's handler reads one", key, r.Method, r.Pattern))
-	}
-	_, named := decoded.values[key]
-	return named
 }
 
 // requestSession is the session r names in its `session` query parameter, trimmed, "" where it
@@ -443,6 +438,10 @@ type queryField struct {
 	hasFallback bool
 	// min and max hold an integer to a bound, where the field's tags name one.
 	min, max *int64
+	// renders is what a list's `renders` tag names: the members of its enum that render each
+	// listed row whole, which hold the page of a request that names one to includedPageMax
+	// (holdIncludedPage); empty for every other field.
+	renders []string
 }
 
 // v2QuerySchema is one query type's keys, sorted, and the type itself; a nil type is a row that
@@ -450,6 +449,9 @@ type queryField struct {
 type v2QuerySchema struct {
 	typ    reflect.Type
 	fields []queryField
+	// rendering is the one field of fields whose renders names members, a list's include, and
+	// nil for a query that declares none.
+	rendering *queryField
 }
 
 var (
@@ -459,7 +461,9 @@ var (
 )
 
 // compileV2Query reads a row's Query into the schema the decoder reads requests by, and refuses a
-// declaration it cannot read.
+// declaration it cannot read: among them a `renders` tag on two fields, or on a query that takes
+// no limit (compileQueryField refuses one on a field that is no list, or naming a member its enum
+// does not hold).
 func compileV2Query(query any) (v2QuerySchema, error) {
 	if query == nil {
 		return v2QuerySchema{}, nil
@@ -477,6 +481,19 @@ func compileV2Query(query any) (v2QuerySchema, error) {
 		if schema.fields[index].key == schema.fields[index-1].key {
 			return v2QuerySchema{}, fmt.Errorf("%s declares the query key %q twice", typ, schema.fields[index].key)
 		}
+	}
+	for index := range schema.fields {
+		field := &schema.fields[index]
+		if len(field.renders) == 0 {
+			continue
+		}
+		if schema.rendering != nil {
+			return v2QuerySchema{}, fmt.Errorf("%s declares renders on the query keys %q and %q: one include names the members that render each listed row", typ, schema.rendering.key, field.key)
+		}
+		schema.rendering = field
+	}
+	if _, pages := schema.field("limit"); schema.rendering != nil && !pages {
+		return v2QuerySchema{}, fmt.Errorf("%s declares renders on the query key %q and takes no limit: only a list (pageQuery) holds its page to includedPageMax", typ, schema.rendering.key)
 	}
 	return schema, nil
 }
@@ -523,6 +540,17 @@ func compileQueryField(field reflect.StructField, tag string) (queryField, error
 	}
 	if values, ok := field.Tag.Lookup("enum"); ok {
 		compiled.enum = strings.Split(values, ",")
+	}
+	if members, ok := field.Tag.Lookup("renders"); ok {
+		if field.Type.Kind() != reflect.Slice {
+			return queryField{}, errors.New("renders names the include members that render each listed row, and this field is no list (a slice)")
+		}
+		compiled.renders = strings.Split(members, ",")
+		for _, member := range compiled.renders {
+			if !slices.Contains(compiled.enum, member) {
+				return queryField{}, fmt.Errorf("renders names %q, which its enum %q does not hold", member, field.Tag.Get("enum"))
+			}
+		}
 	}
 	typ := field.Type
 	switch {
@@ -641,7 +669,9 @@ func (schema v2QuerySchema) field(key string) (queryField, bool) {
 }
 
 // readQuery decodes r's query into the row's Query type and answers r carrying it. Every key is
-// judged before any value is read, so an undeclared key is refused whatever else the query holds.
+// judged before any value is read, so an undeclared key is refused whatever else the query holds,
+// and the page of a request whose include names a member that renders each listed row is held to
+// includedPageMax once every key is read (holdIncludedPage), before any handler reads anything.
 func (d *v2Decoder) readQuery(r *http.Request) (*http.Request, error) {
 	given, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
@@ -671,6 +701,9 @@ func (d *v2Decoder) readQuery(r *http.Request) (*http.Request, error) {
 			if present {
 				decoded.values[field.key] = accepted
 			}
+		}
+		if err := d.query.holdIncludedPage(value, decoded.values, d.route.List); err != nil {
+			return r, err
 		}
 		decoded.query = value.Interface()
 	}
@@ -761,6 +794,35 @@ func (field queryField) decodeLimit(values []string, present bool, into reflect.
 		return errorf(apicode.InvalidLimit, "limit must be one integer from %d to %d", least, most)
 	}
 	into.SetInt(limit)
+	return nil
+}
+
+// holdIncludedPage holds the page of query, a value of the schema's type the decoder read with
+// values, to includedPageMax where its include names a member that renders each listed row (the
+// rendering field's `renders` tag): a limit the query names past it is 400 INVALID_LIMIT naming the
+// bound and the members it named, and a query that names no limit reads includedPageDefault.
+func (schema v2QuerySchema) holdIncludedPage(query reflect.Value, values map[string][]string, bounds listBounds) error {
+	if schema.rendering == nil {
+		return nil
+	}
+	var named []string
+	for _, member := range schema.rendering.renders {
+		if slices.Contains(values[schema.rendering.key], member) {
+			named = append(named, member)
+		}
+	}
+	if len(named) == 0 {
+		return nil
+	}
+	field, _ := schema.field("limit")
+	limit := query.FieldByIndex(field.index)
+	switch _, given := values["limit"]; {
+	case given && limit.Int() > includedPageMax:
+		return errorf(apicode.InvalidLimit, "limit must be one integer from 1 to %d with %s%s",
+			includedPageMax, includeMembersText(named, "and"), rendersEachRowText(named))
+	case !given:
+		limit.SetInt(int64(includedPageDefault(bounds)))
+	}
 	return nil
 }
 

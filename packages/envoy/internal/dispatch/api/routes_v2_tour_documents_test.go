@@ -856,10 +856,11 @@ func TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion(t *testing.T) {
 
 // TestAV2ArtifactListWithItsTextTakesAPageOfTwenty: include=text answers each document's text, up
 // to a MiB each, so a page of an issue's or a project's artifacts that carries it holds at most 20
-// (includedPageMax). limit=21 with include=text is 400 INVALID_LIMIT naming 20 before anything
-// is read, a missing owner's list too; limit=20 with it is 200, and so is limit=21 without it or
-// with include=blocks alone; include=text naming no limit reads a page of 20, and a list naming
-// neither a page of 50.
+// (includedPageMax), as one that carries include=blocks does
+// (TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty). limit=21 with include=text, or with
+// include=blocks alone, is 400 INVALID_LIMIT naming 20 before anything is read, a missing owner's
+// list too; limit=20 with it is 200, and so is limit=21 without either; include=text naming no
+// limit reads a page of 20, and a list naming neither a page of 50.
 func TestAV2ArtifactListWithItsTextTakesAPageOfTwenty(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -868,14 +869,14 @@ func TestAV2ArtifactListWithItsTextTakesAPageOfTwenty(t *testing.T) {
 		read := func(target string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
 		}
-		for _, target := range []string{list + "?limit=21&include=text", list + "?limit=200&include=text,blocks"} {
+		for _, target := range []string{list + "?limit=21&include=text", list + "?limit=21&include=blocks", list + "?limit=200&include=text,blocks"} {
 			refused := read(target)
 			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20") {
 				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 20", target, refused.Code, refused.Body.String())
 			}
 		}
 		for query, limit := range map[string]int{
-			"limit=20&include=text": 20, "limit=21": 21, "limit=21&include=blocks": 21, "include=text": 20, "": 50,
+			"limit=20&include=text": 20, "limit=21": 21, "include=text": 20, "": 50,
 		} {
 			answered := read(list + "?" + query)
 			if answered.Code != http.StatusOK {

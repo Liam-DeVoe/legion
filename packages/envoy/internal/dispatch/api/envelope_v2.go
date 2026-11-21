@@ -13,10 +13,7 @@ package api
 
 import (
 	"fmt"
-	"net/http"
-	"slices"
-
-	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"strings"
 )
 
 // page is one page of a list (R1.4): its items, how many the whole list holds, and the limit and
@@ -64,34 +61,69 @@ func pageOf[T any](items []T, query pageQuery) page[T] {
 	return newPage(items[start:end:end], total, pageQuery{Limit: limit, Offset: query.Offset})
 }
 
-// includedPageMax is the largest page a list answers with an include that adds each row's whole
-// text: include=text on a list of an owner's artifacts, each document's text up to
-// pmdoc.MaxDocumentBytes, and include=body on an issue's handoffs, each body up to
-// contracts.DispatchHandoffBodyMax. A page of maxListLimit could hold 200 of them at once
-// (includedPageWithinBound).
+// includedPageMax is the largest page a list answers with an include member that renders each
+// listed row whole, which the list's query names in its include field's `renders` tag and the
+// decoder holds (holdIncludedPage): include=text and include=blocks on a list of an owner's
+// artifacts, each document's text up to pmdoc.MaxDocumentBytes and its tree of blocks, and
+// include=body on an issue's handoffs, each body up to contracts.DispatchHandoffBodyMax. A page of
+// maxListLimit could hold 200 of them at once.
 const includedPageMax = 20
 
-// includedPageLimitText is what the description of such a list says of its page, with
-// include=<member> and without.
-func includedPageLimitText(member string) string {
-	return fmt.Sprintf("limit 1 to %d (default %d), and 1 to %d (default %d) with include=%s, and offset;",
-		maxListLimit, defaultListLimit, includedPageMax, includedPageMax, member)
+// includedPageDefault is the page a list with bounds reads where a request names a member that
+// renders each listed row and no limit: the list's own default, held to includedPageMax, and
+// includedPageMax for a catalogue read whole, whose default is every item.
+func includedPageDefault(bounds listBounds) int {
+	_, fallback, _ := bounds.limits()
+	if fallback == 0 || fallback > includedPageMax {
+		return includedPageMax
+	}
+	return fallback
 }
 
-// includedPageWithinBound holds page, the decoded page of a list whose include is include, to
-// includedPageMax where include names member, which answers what for each row: a limit the query
-// names past it is refused 400 INVALID_LIMIT naming the bound, as the decoder refuses a limit past
-// the row's bounds, and a query that names none reads a page of that many. It writes the refusal
-// and answers false, and runs before the handler reads anything.
-func includedPageWithinBound(w http.ResponseWriter, r *http.Request, page *pageQuery, include []string, member, what string) bool {
-	if !slices.Contains(include, member) || page.Limit <= includedPageMax {
-		return true
+// includeMembersText words members as include= values, the last two joined by conjunction:
+// "include=body", "include=text or include=blocks".
+func includeMembersText(members []string, conjunction string) string {
+	words := make([]string, len(members))
+	for index, member := range members {
+		words[index] = "include=" + member
 	}
-	if v2QueryNames(r, "limit") {
-		writeError(w, r, apicode.InvalidLimit, fmt.Sprintf(
-			"limit must be one integer from 1 to %d with include=%s, which answers %s", includedPageMax, member, what))
-		return false
+	if len(words) < 2 {
+		return strings.Join(words, "")
 	}
-	page.Limit = includedPageMax
-	return true
+	return strings.Join(words[:len(words)-1], ", ") + " " + conjunction + " " + words[len(words)-1]
+}
+
+// rendersEachRowText is what a refusal and the document say after members, include members that
+// render each listed row: ", which renders each listed row", or of several ", which render each
+// listed row".
+func rendersEachRowText(members []string) string {
+	if len(members) > 1 {
+		return ", which render each listed row"
+	}
+	return ", which renders each listed row"
+}
+
+// includedPageText words the page a list with bounds takes with any of members, the members that
+// render each listed row: "1 to 20 (default 20) with include=text or include=blocks".
+func includedPageText(bounds listBounds, members []string) string {
+	return fmt.Sprintf("1 to %d (default %d) with %s", includedPageMax, includedPageDefault(bounds), includeMembersText(members, "or"))
+}
+
+// includedPageLimitText is what the description of a list whose row names no bounds says of its
+// page, from query, the row's Query, as the decoder reads it: "limit 1 to 200 (default 50) and
+// offset;", and where its include names members that render each listed row (`renders`), the
+// page with them too, "limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=text or
+// include=blocks, and offset;" (TestEveryListThatRendersItsRowsSaysItsPage). It panics on a query
+// the decoder cannot read, which no table mounts.
+func includedPageLimitText(query any) string {
+	schema, err := compileV2Query(query)
+	if err != nil {
+		panic(fmt.Sprintf("includedPageLimitText(%T): %v", query, err))
+	}
+	least, fallback, most := listBounds{}.limits()
+	if schema.rendering == nil {
+		return fmt.Sprintf("limit %d to %d (default %d) and offset;", least, most, fallback)
+	}
+	return fmt.Sprintf("limit %d to %d (default %d), and %s, and offset;", least, most, fallback,
+		includedPageText(listBounds{}, schema.rendering.renders))
 }
