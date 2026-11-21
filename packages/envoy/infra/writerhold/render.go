@@ -18,6 +18,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/sjawhar/envoy/infra/core"
 )
 
 // natsContainer is the nats chart's name for the container that runs nats-server
@@ -783,13 +785,6 @@ func commentName(files map[string]string, key string) string {
 // cutover removes it.
 const moveUser = "envoy-move"
 
-// The auth service's grant as nats-server defines it (core's calloutRequestSubject and
-// calloutReplyPrefix, infra/core/nats_callout.go:84-87).
-const (
-	calloutRequestSubject = "$SYS.REQ.USER.AUTH"
-	calloutReplyPrefix    = "$SYS._INBOX."
-)
-
 // authorizationFindings names, in the top-level authorization block key: no auth_callout, a
 // callout that places clients outside $G, a single user or a token, every static user but the
 // auth service's own, and an auth service grant wider than the callout's. It returns too the auth
@@ -912,15 +907,10 @@ func serviceGrantFindings(label string, perms any, has bool) []string {
 		f = append(f, fmt.Sprintf("the auth service's user %s may subscribe to every subject", label))
 	}
 	for _, k := range publish {
-		f = append(f, directionFindings(label, k, m[k], func(s string) bool {
-			return strings.HasPrefix(s, calloutReplyPrefix) && len(s) > len(calloutReplyPrefix)
-		})...)
+		f = append(f, directionFindings(label, k, m[k], core.CalloutReplyEntry)...)
 	}
 	for _, k := range subscribe {
-		f = append(f, directionFindings(label, k, m[k], func(s string) bool {
-			subject, _, _ := strings.Cut(s, " ")
-			return subject == calloutRequestSubject
-		})...)
+		f = append(f, directionFindings(label, k, m[k], core.CalloutRequestEntry)...)
 	}
 	return f
 }
@@ -939,7 +929,7 @@ func directionFindings(label, key string, v any, fits func(string) bool) []strin
 	var f []string
 	for _, e := range entries {
 		if s, ok := e.(string); !ok || !fits(s) {
-			f = append(f, fmt.Sprintf("the auth service's user %s is granted %s %v, beyond the callout's subscribe %s and publish under %s", label, key, e, calloutRequestSubject, calloutReplyPrefix))
+			f = append(f, fmt.Sprintf("the auth service's user %s is granted %s %v, beyond the callout's subscribe %s and publish under %s", label, key, e, core.CalloutRequestSubject, core.CalloutReplyPrefix))
 		}
 	}
 	return f

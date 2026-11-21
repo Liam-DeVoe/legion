@@ -81,11 +81,28 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 
 // The auth service's grant as NATS defines it: the service subscribes to the authorization
 // requests (server/auth_callout.go AuthCalloutSubject) and publishes only its answers, to the
-// server's reply inbox under $SYS._INBOX. (server/events.go InboxPrefix).
+// server's reply inbox under $SYS._INBOX. (server/events.go InboxPrefix). The writer hold's render
+// check names them too.
 const (
-	calloutRequestSubject = "$SYS.REQ.USER.AUTH"
-	calloutReplyPrefix    = "$SYS._INBOX."
+	CalloutRequestSubject = "$SYS.REQ.USER.AUTH"
+	CalloutReplyPrefix    = "$SYS._INBOX."
 )
+
+// CalloutReplyEntry reports whether a publish allow entry stays within the auth service's grant:
+// a subject pattern under $SYS._INBOX., the server's reply inboxes. Entries are subject patterns,
+// whose tokens hold no '.', so an entry beginning $SYS._INBOX. matches only subjects under it.
+// serviceGrantRefusal and the writer hold's render check (writerhold's serviceGrantFindings) read
+// a grant by it.
+func CalloutReplyEntry(entry string) bool {
+	return strings.HasPrefix(entry, CalloutReplyPrefix) && len(entry) > len(CalloutReplyPrefix)
+}
+
+// CalloutRequestEntry reports whether a subscribe allow entry stays within the auth service's
+// grant: $SYS.REQ.USER.AUTH, with or without a queue group after a space.
+func CalloutRequestEntry(entry string) bool {
+	subject, _, _ := strings.Cut(entry, " ")
+	return subject == CalloutRequestSubject
+}
 
 func (c AuthCallout) seedField() string {
 	for _, f := range []struct{ field, value string }{
@@ -110,7 +127,7 @@ func (c AuthCallout) validate(a Authorization) error {
 		return InputErrorf("callout", "callout.issuer is not an account public key (A and 55 base32 characters with a valid checksum); give the public key of the account whose seed signs the auth service's answers, never the seed")
 	}
 	if c.XKey == "" {
-		return InputErrorf("callout", "callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on %s", calloutRequestSubject)
+		return InputErrorf("callout", "callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on %s", CalloutRequestSubject)
 	}
 	if !isPublicKey(c.XKey, nkeys.PrefixByteCurve) {
 		return InputErrorf("callout", "callout.xkey is not a curve public key (X and 55 base32 characters with a valid checksum); give the public key, never the seed")
@@ -157,7 +174,7 @@ func (a Authorization) validateCallout() error {
 	service, _ := a.user(a.Callout.ServiceUser) // AuthCallout.validate has checked it names a keyed user
 	if field, entry, wide := serviceGrantRefusal(service); wide {
 		return InputErrorf("privateProjects", "privateProjects: callout.serviceUser %q: %s %q is wider than the auth service's grant, which subscribes %s and publishes only its replies under %s; with a wider grant the service user is a client that connects past the auth service",
-			service.Name, field, entry, calloutRequestSubject, calloutReplyPrefix)
+			service.Name, field, entry, CalloutRequestSubject, CalloutReplyPrefix)
 	}
 	for i, u := range a.Users {
 		if u.Name == a.Callout.ServiceUser {
@@ -197,12 +214,12 @@ func (a Authorization) renderedPublish(u User) *Rules {
 // $SYS._INBOX. matches only subjects under it.
 func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 	for i, e := range u.Publish.Allow {
-		if !strings.HasPrefix(e, calloutReplyPrefix) || len(e) == len(calloutReplyPrefix) {
+		if !CalloutReplyEntry(e) {
 			return fmt.Sprintf("publish.allow[%d]", i), e, true
 		}
 	}
 	for i, e := range u.Subscribe.Allow {
-		if subject, _, _ := strings.Cut(e, " "); subject != calloutRequestSubject {
+		if !CalloutRequestEntry(e) {
 			return fmt.Sprintf("subscribe.allow[%d]", i), e, true
 		}
 	}

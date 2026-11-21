@@ -111,21 +111,31 @@ func readingOf(info *jetstream.StreamInfo) StreamReading {
 // message schedules.
 func serverWriters(step string, info *jetstream.StreamInfo) error {
 	cfg := info.Config
-	name := cfg.Name
-	if len(cfg.Sources) > 0 {
-		return refusef(step, "the protected stream %s sources from %s: the server writes each sourced message into it", name, sourceNames(cfg.Sources))
-	}
-	if cfg.Mirror != nil {
-		return refusef(step, "the protected stream %s mirrors %s: the server writes each mirrored message into it", name, cfg.Mirror.Name)
+	if err := protectedStreamWriters(step, cfg); err != nil {
+		return err
 	}
 	if cfg.RePublish != nil {
-		return refusef(step, "the protected stream %s republishes %q to %q", name, cfg.RePublish.Source, cfg.RePublish.Destination)
+		return refusef(step, "the protected stream %s republishes %q to %q", cfg.Name, cfg.RePublish.Source, cfg.RePublish.Destination)
 	}
 	if cfg.SubjectTransform != nil {
-		return refusef(step, "the protected stream %s transforms %q to %q", name, cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
+		return refusef(step, "the protected stream %s transforms %q to %q", cfg.Name, cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
+	}
+	return nil
+}
+
+// protectedStreamWriters refuses, in step, a protected stream whose own configuration makes the
+// server write it with no client: sources, a mirror, or allow_msg_schedules (a persisted schedule's
+// target must be one of its own stream's subjects, nats-server stream.go:6874-6906). The preflight
+// and the postcheck (serverWriters) and the census (writersInside) each run it.
+func protectedStreamWriters(step string, cfg jetstream.StreamConfig) error {
+	if len(cfg.Sources) > 0 {
+		return refusef(step, "the protected stream %s sources from %s: the server writes each sourced message into it", cfg.Name, sourceNames(cfg.Sources))
+	}
+	if cfg.Mirror != nil {
+		return refusef(step, "the protected stream %s mirrors %s: the server writes each mirrored message into it", cfg.Name, cfg.Mirror.Name)
 	}
 	if cfg.AllowMsgSchedules {
-		return refusef(step, "the protected stream %s allows message schedules (allow_msg_schedules): a persisted schedule writes its target with no client", name)
+		return refusef(step, "the protected stream %s allows message schedules (allow_msg_schedules): a persisted schedule writes its target with no client", cfg.Name)
 	}
 	return nil
 }

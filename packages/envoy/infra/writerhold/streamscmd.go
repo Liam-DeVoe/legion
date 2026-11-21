@@ -286,7 +286,7 @@ func StreamsCommandOn(ctx context.Context, args []string, stdout, stderr io.Writ
 	if o.word == "census" && len(o.families) == 0 {
 		problems = append(problems, "census needs at least one --family")
 	}
-	settings, err := readStreamSettings(o.replicas, o.maxBytes, o.sessionMaxAge)
+	settings, err := streams.ReadSettings(o.replicas, o.maxBytes, o.sessionMaxAge)
 	if err != nil {
 		problems = append(problems, err.Error())
 	}
@@ -621,22 +621,6 @@ func streamChanges(r streams.Report) map[string]Change {
 		}
 	}
 	return changes
-}
-
-// readStreamSettings reads the deployment's stream settings as every program of it reads them.
-func readStreamSettings(replicas, maxBytes, maxAge string) (streamset.Settings, error) {
-	var settings streamset.Settings
-	var err error
-	if settings.Replicas, err = bus.ParseNATSReplicas(replicas); err != nil {
-		return settings, err
-	}
-	if settings.StreamMaxBytes, err = bus.ParseStreamMaxBytes(maxBytes); err != nil {
-		return settings, err
-	}
-	if settings.SessionMaxAge, err = bus.ParseSessionMaxAge(maxAge); err != nil {
-		return settings, err
-	}
-	return settings, nil
 }
 
 // daemonShapes reads each --daemon-consumer, <name>=<filter>[,<filter>...], as a Legion daemon's

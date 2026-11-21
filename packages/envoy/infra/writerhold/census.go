@@ -199,14 +199,8 @@ func writersInside(step string, census *Census) error {
 		if !isProtectedStream(cfg.Name) {
 			continue
 		}
-		if len(cfg.Sources) > 0 {
-			return refusef(step, "the protected stream %s sources from %s: the server writes each sourced message into it", cfg.Name, sourceNames(cfg.Sources))
-		}
-		if cfg.Mirror != nil {
-			return refusef(step, "the protected stream %s mirrors %s: the server writes each mirrored message into it", cfg.Name, cfg.Mirror.Name)
-		}
-		if cfg.AllowMsgSchedules {
-			return refusef(step, "the protected stream %s allows message schedules (allow_msg_schedules): a persisted schedule writes its target with no client", cfg.Name)
+		if err := protectedStreamWriters(step, cfg); err != nil {
+			return err
 		}
 	}
 	for _, info := range census.Streams {
