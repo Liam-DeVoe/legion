@@ -1511,9 +1511,9 @@ hold_plugin_pack_tests()
 # The four tests of internal/supervise whose subject is the package's own source rather than a
 # claim in motion: of table_test.go, TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState,
 # which holds every event of the sealed set to a row or a named ignore in every state,
-# TestNoTwoEventTypesShareAKind, and TestStatesIsEveryDeclaredStateOnce, which holds States() to
-# the ClaimState constants; of rosters_test.go, TestSuspendSourcesNameEveryConstant, which holds
-# the package's hand-kept roster of suspend sources to the constants of its type.
+# TestNoTwoEventTypesShareAKind, TestStatesIsEveryDeclaredStateOnce, which holds States() to the
+# ClaimState constants, and TestSuspendSourcesIsEveryDeclaredSourceOnce, which holds
+# SuspendSources() to the SuspendSource constants.
 # Each reads source and nothing else - packageSets() (table_test.go:46-90) parses every non-test .go
 # file of the directory, and the type-check of those files reads the source of every package they
 # import too, since table_test.go:93 builds the checker with importer.ForCompiler(..., "source", ...), so
@@ -1524,14 +1524,14 @@ hold_plugin_pack_tests()
 # no fixture, and the daemon-go plain step, which runs their package, skips them by name, so each
 # runs once per run of the router (dispatch://INFRA-1413, R3).
 # The other three tests of table_test.go drive a machine and stay in the plain step. Nothing of the
-# two files moves package - all seven tests read unexported identifiers of internal/supervise - which
-# is why these four are run by name rather than moved into a package of text checks.
+# file moves package - all seven of its tests read unexported identifiers of internal/supervise -
+# which is why these four are run by name rather than moved into a package of text checks.
 # Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
 # script, so the -skip and the -run cannot come to name different tests.
 SUPERVISE_TABLE_TESTS = ["TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState",
                          "TestNoTwoEventTypesShareAKind",
                          "TestStatesIsEveryDeclaredStateOnce",
-                         "TestSuspendSourcesNameEveryConstant"]
+                         "TestSuspendSourcesIsEveryDeclaredSourceOnce"]
 SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
 SUPERVISE_TABLE_STEP = "Test the supervise package's four pure pins (no database)"

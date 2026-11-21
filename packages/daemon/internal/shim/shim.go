@@ -367,7 +367,8 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeReadUnpushed, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeReadUnpushed, shimwire.TypeWorkspaceWork,
+			shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -387,6 +388,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.ReadUnpushed:
 		s.answer(func() { s.readUnpushed(f) })
+		return
+	case shimwire.WorkspaceWork:
+		s.answer(func() { s.workspaceWork(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)

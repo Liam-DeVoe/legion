@@ -252,6 +252,30 @@ func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
 	}
 }
 
+// SuspendSources is the one list of every suspension source that a test outside this package
+// walks, such as internal/daemon's test that every claim shape is in both sets of an update round
+// or in neither, and the list a project release's words for how a claim ended are built from
+// (api.ReleasedClaimEnds), which every plugin reads through a strict enum. Neither can read this
+// package's source, so this test holds the list to the SuspendSource constants the compiler sees
+// here (packageSets), as TestStatesIsEveryDeclaredStateOnce holds States: a source added to the
+// const block and left out of the list fails here, rather than passing every walk of the list or
+// writing a word that neither the golden file nor the contracts suite holds. Each source is in the
+// list once.
+func TestSuspendSourcesIsEveryDeclaredSourceOnce(t *testing.T) {
+	declared := packageSets(t).sources
+	if len(declared) == 0 {
+		t.Fatal("read no SuspendSource constant from the source")
+	}
+	listed := SuspendSources()
+	got := make([]string, len(listed))
+	for i, source := range listed {
+		got[i] = string(source)
+	}
+	if got, want := slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("SuspendSources() = %v, want each declared SuspendSource once: %v", listed, want)
+	}
+}
+
 // fixture is a claim restored in state with everything an event needs to pass its fences: the
 // generation, a recorded session, a locator for the states that have a process, and a pending
 // delivery (confirmed while working, as a delivered turn leaves it).

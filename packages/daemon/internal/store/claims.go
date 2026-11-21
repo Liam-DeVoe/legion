@@ -683,7 +683,7 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 }
 
 // ClaimByToken is token's claim as the store holds it, and whether it holds one: the one claim a
-// request a role's shim answers goes over (the sandbox runtime's issueRoleConn), read alone.
+// request a role's shim answers goes over (the sandbox runtime's runningRoleConn), read alone.
 func (s *Store) ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
 	return claimWhere(ctx, s.pool, "c.token = $1", string(token))
 }

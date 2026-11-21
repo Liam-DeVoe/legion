@@ -154,7 +154,7 @@ type Store interface {
 	// remain on a Sandbox-owned volume until its cleanup reaps it.
 	Claims(ctx context.Context) ([]supervise.Claim, error)
 	// ClaimByToken is token's stored claim, and whether the store holds one: the one claim a
-	// request its shim answers goes over (issueRoleConn), read alone rather than with every other.
+	// request its shim answers goes over (runningRoleConn), read alone rather than with every other.
 	ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error)
 }
 
@@ -417,6 +417,19 @@ type Options struct {
 	// connection on it, since the launcher would redial the one connection that carries its
 	// reports once a second (ServeLauncher's switch).
 	VolumeReported runtime.VolumeReported
+	// RoundPodEnds is the daemon's reading of the update round over a pod a launch would keep
+	// (runtime.RoundPodEnds): whether the round open over podUID, the live pod of token's issue
+	// that the launch replaces for no other reason, has ended by the daemon's rule for a round with
+	// no process in its pod (dispatch://INFRA-4109 R7). relaunch asks it under the pod's launch
+	// turn, only of a live pod a round covers (roundCovers) and only where the launch would keep
+	// that pod. A yes is the round's own replacement of the pod, made by the launch: the Sandbox is
+	// suspended under the round's mark (displacing, roundReplacement), and the role starts
+	// in a new pod, so it is launched once rather than into a pod the round is about to replace. An
+	// error fails the launch as any of its steps does. The daemon builds the runtime before its
+	// supervision opens, so it binds this through a holder it fills once the supervision is open
+	// (internal/daemon's launchRounds). nil keeps every such pod, as every launch kept it before
+	// the hook existed.
+	RoundPodEnds runtime.RoundPodEnds
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
@@ -428,10 +441,10 @@ type Options struct {
 	// ProjectReleaseHolds is whether the daemon's project release holds every pod of the project
 	// now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers true the
 	// runtime makes no pod: createSandbox, the Running patch of a relaunch and of a repository
-	// cache's pod, ensureCacheSandbox, createProbe and ReplacePod each refuse with
-	// runtime.ErrProjectReleased before they write anything (releaseHolds). It is read at each of
-	// those acts rather than once, because the mark is set while the daemon runs and cleared again
-	// only when the release's record could not be written. Nil holds nothing.
+	// cache's pod, ensureCacheSandbox, createProbe, ReplacePod and ReplaceIssuePod (replaceRoundPod)
+	// each refuse with runtime.ErrProjectReleased before they write anything (releaseHolds). It is
+	// read at each of those acts rather than once, because the mark is set while the daemon runs
+	// and cleared again only when the release's record could not be written. Nil holds nothing.
 	ProjectReleaseHolds func() bool
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time

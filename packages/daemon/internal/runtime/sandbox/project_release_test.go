@@ -58,8 +58,9 @@ func wantReleased(t *testing.T, g *rig, what string, err error) {
 // dispatch://INFRA-3583 R7: while the daemon's project release holds every pod, the Sandbox
 // runtime makes none, whatever path asks — a launch into an issue with no Sandbox, a relaunch into
 // a Suspended one, a repository cache made or its pod made again, an image probe, a pod update
-// round's replacement — and each refuses with runtime.ErrProjectReleased before it writes. With
-// the mark clear the same act goes through.
+// round's replacement through a claim's process (ReplacePod) or by issue (ReplaceIssuePod) — and
+// each refuses with runtime.ErrProjectReleased before it writes. With the mark clear the same act
+// goes through.
 func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 	t.Run("a launch into an issue with no sandbox", func(t *testing.T) {
 		g, held := heldRig(t)
@@ -210,6 +211,36 @@ func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 		}
 		if mode := g.sandbox(name).mode(); mode != modeSuspended {
 			t.Fatalf("the replacement with the mark clear left the Sandbox %s, want it suspended", mode)
+		}
+	})
+
+	// The round's replacement of a pod with no role process in it goes by issue, and the release
+	// refuses it as it refuses ReplacePod: both are one act (replaceRoundPod).
+	t.Run("a pod update round's replacement by issue", func(t *testing.T) {
+		g, held := heldRig(t)
+		loc := g.spawn(workerSpec(t))
+		name, pod := loc.Sandbox.Name, loc.Sandbox.PodUID
+		held.Store(true)
+		asked := false
+		err := g.r.ReplaceIssuePod(g.ctx, testTree, pod, func(context.Context) error {
+			asked = true
+			return nil
+		})
+		if !errors.Is(err, runtime.ErrProjectReleased) || asked {
+			t.Fatalf("the replacement by issue while the project release holds = %v (asked whether due: %t), want the refusal before anything", err, asked)
+		}
+		if want := "replace " + testTree + "'s pod"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal %q does not name the act, %q", err, want)
+		}
+		if mode := g.sandbox(name).mode(); mode != modeRunning {
+			t.Fatalf("the refused replacement by issue left the Sandbox %s, want it running", mode)
+		}
+		held.Store(false)
+		if err := g.r.ReplaceIssuePod(g.ctx, testTree, pod, func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("the replacement by issue with the mark clear: %v", err)
+		}
+		if mode := g.sandbox(name).mode(); mode != modeSuspended {
+			t.Fatalf("the replacement by issue with the mark clear left the Sandbox %s, want it suspended", mode)
 		}
 	})
 }
