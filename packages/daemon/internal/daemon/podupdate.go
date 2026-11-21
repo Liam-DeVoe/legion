@@ -30,7 +30,8 @@ import (
 // said and whatever runs (replacementDue). Before the bound the replacement also waits for a claim
 // that a project's pause still keeps and that the round does not ask (unansweredClaims,
 // dispatch://INFRA-4109 R8). A role's own push is what keeps its work: what it has not pushed when
-// the pod goes is lost with the pod, unless the pod's disk is a kept volume that the issue's next
+// the pod goes comes back in the next pod only up to the daemon's last copy of the workspace, and
+// the rest is lost with the pod, unless the pod's disk is a kept volume that the issue's next
 // pod mounts (roundKeptVolume). An answer from every role the round asks ends the round early
 // once nothing else holds it (roundEnd.holding, dispatch://INFRA-4203 R1); no answer holds it past
 // the bound. An operator's suspension of a claim is the one wait that outlasts the bound, and
@@ -42,7 +43,8 @@ import (
 // claim a project's pause stopped, while the pause still keeps it: the one exception
 // (podHolds.owes, roundClock.passesOver). Any other claim the daemon suspended is not one of
 // them: it runs no process and no turn in the pod (dispatch://INFRA-4109 R1). What such a claim
-// left unpushed goes with the pod (or, on a kept volume that the issue's next pod mounts, stays
+// left unpushed comes back in the next pod only up to the daemon's last copy of the workspace, and
+// the rest goes with the pod (or, on a kept volume that the issue's next pod mounts, stays
 // there: roundKeptVolume), so the replacement first reads the issue's workspace through a role
 // whose process runs in the pod, and names on its line, and to the issue where the read found work
 // or failed, what the read found (replacePodForRound, readRoundWorkspace). Every role claim of one
@@ -414,7 +416,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// launcher binding — while a worker still had work to push. Its work stays only where the
 		// issue's Sandbox still holds the kept volume that it held when the round opened, and the
 		// issue's next launch keeps that volume (podWentWithoutItsRound, roundKeptVolume); an
-		// ephemeral disk went with the pod. The round ends by the one rule for a round whose pod
+		// ephemeral disk went with the pod, and its work comes back in the next pod only up to the
+		// daemon's last copy of the workspace. The round ends by the one rule for a round whose pod
 		// went (endRoundWhosePodWent), counted from the group this walk decided from. Nothing of the
 		// pod in its place decides anything here: the round was opened over a pod that is not
 		// there, no answer and no replacement can end it any more, and the drift of the new pod is
@@ -1044,7 +1047,8 @@ type podReplacement struct {
 // A replacement made is logged on one line that holds for a round that ended either way, by its
 // answers or by its bound. It names each claim with a session that the round did not wait for
 // and that had not answered (notWaitedFor): a failed claim, and a claim the round passed over.
-// What each left unpushed went with the pod, unless the pod's disk is a kept volume that the
+// What each left unpushed comes back in the next pod only up to the daemon's last copy of the
+// workspace, and the rest went with the pod, unless the pod's disk is a kept volume that the
 // issue's next pod mounts (roundKeptVolume), where the work stays. The line names too what the
 // read of the workspace found, or why no read was made (workspaceRead.attrs). One that the bound
 // made — a claim had not answered, a turn ran, or a claim's report named background work or was
@@ -2371,15 +2375,17 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
 // issue's spec requires is written on the issue, naming what was lost, and the round ends.
-// Nothing here can bring the work back, so the message is the whole of it. The work stays only
-// where the issue's Sandbox still holds the kept volume that it held when the round opened, and the
-// issue's next launch keeps that volume (roundKeptVolume). The issue's next pod mounts that volume,
-// so the message says where the work is. An ephemeral disk went with the pod, and the work on it
-// with it. A reset of a kept volume or a change of the disk's shape made a new Sandbox, which holds
-// a new, empty volume, so the work is lost there too. So is a Sandbox that carries the reset mark,
-// or whose disk shape is not the one the configuration now renders: the next launch deletes it,
-// with its volume. On another project's issue, the pod of the operator's spawn of it, no message is
-// written (writeOnIssue), and the daemon's log lines are the whole of it.
+// Nothing here brings the work back: the issue's next pod restores it only up to the daemon's
+// last copy of the workspace, so the message says that, and that the rest is lost. The work
+// stays whole only where the issue's Sandbox still holds the kept volume that it held when the
+// round opened, and the issue's next launch keeps that volume (roundKeptVolume). The issue's next
+// pod mounts that volume, so the message says where the work is. An ephemeral disk went with the
+// pod, and the work on it past that copy with it. A reset of a kept volume or a change of the
+// disk's shape made a new Sandbox, which holds a new, empty volume, so the work past that copy is
+// lost there too. So is a Sandbox that carries the reset mark, or whose disk shape is not the one
+// the configuration now renders: the next launch deletes it, with its volume. On another project's
+// issue, the pod of the operator's spawn of it, no message is written (writeOnIssue), and the
+// daemon's log lines are the whole of it.
 //
 // Three readings say the pod went. The claims recording a pod other than the round's own is one
 // (reconcileIssuePodUpdate), whose end counts the claims it decided from; the runtime answering
@@ -3201,7 +3207,8 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //     well, since a publish to a role with no holder raises a role wake; the sweep asks that
 //     claim only once its agent is ready, and a ready claim is no longer suspended.
 //
-// Work that a claim left out of the round left unpushed on the pod's disk goes with the pod, unless
+// Work that a claim left out of the round left unpushed on the pod's disk comes back in the next
+// pod only up to the daemon's last copy of the workspace, and the rest goes with the pod, unless
 // that disk is a kept volume the issue's next pod mounts (roundKeptVolume). The
 // replacement's log line names each failed claim and each claim the round passed over that it
 // did not wait for and that had not answered (notWaitedFor). Where it passed over a claim the
@@ -3235,7 +3242,8 @@ func noticeClaims(group []supervise.Claim) []supervise.Claim {
 // two sets (dispatch://INFRA-4109 R2), so each claim it names is one the round neither asks nor
 // waits for. Over a group a replacement reads, which holds no retired claim (roundGroup), each is
 // a failed claim or a claim the round passes over at the clock's now (roundClock.passesOver).
-// Neither runs a process in the pod, so what either left unpushed on the pod's disk goes with the
+// Neither runs a process in the pod, so what either left unpushed on the pod's disk comes back in
+// the next pod only up to the daemon's last copy of the workspace, and the rest goes with the
 // pod, and the replacement names each of them on its line and, where the read of the workspace
 // found work or failed, on the issue (replacePodForRound). A claim that answered pushed its work
 // first, and a claim that left the round's pod (supervise's Claim.LeftPodRound) has no work on
@@ -3490,7 +3498,7 @@ func roundOpenedFor(reasons string) string {
 // true, its disk is a kept volume that is still there and holds what the roles did not push. The
 // issue's spec requires this message. Another agent reads it, so it follows ASD-STE100.
 func podWentMessage(round, reasons string, lost []supervise.Claim, kept bool) string {
-	disk := "The pod's disk went with the pod. Work that these roles did not push is lost."
+	disk := "The pod's disk went with the pod. Work that these roles did not push comes back in the next pod only up to the daemon's last copy of the workspace. The rest of that work is lost."
 	if kept {
 		disk = "The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. The next pod of this issue mounts the volume."
 	}
@@ -3517,7 +3525,7 @@ func workspaceLostMessage(round, reasons string, named []supervise.Claim, read w
 	if read.noProcess() {
 		roles = "These roles did not answer the update ask before the replacement. No process of these roles ran in the pod: "
 	}
-	gone, work := "The pod and its disk are gone.", "Work that is not on a branch at origin is lost."
+	gone, work := "The pod and its disk are gone.", "Work that is not on a branch at origin comes back in the next pod only up to the daemon's last copy of the workspace. The rest of that work is lost."
 	if kept {
 		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
 		work = "Work that is not on a branch at origin is on that volume. The next pod of this issue mounts the volume."

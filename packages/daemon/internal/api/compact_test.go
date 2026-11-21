@@ -388,7 +388,7 @@ func suspendedCompactionRefusal(token claim.Token) string {
 	return string(token) + "'s session was compacted, and a suspension held over the claim ended that " +
 		"compaction rather than the claim coming back to its agent: the task it owes was not sent, and " +
 		"the hold stops the claim at once, at the end of a turn begun under the compaction, or once " +
-		"the copy of its last turn's end is over. " + wantAskAgainLater
+		"the copy of its last turn's end is over, or at the stop's own deadline where that comes first. " + wantAskAgainLater
 }
 
 // A suspension that arrives while the session is being compacted is held for the compaction's

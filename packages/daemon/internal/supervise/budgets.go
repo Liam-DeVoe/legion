@@ -179,9 +179,12 @@ func (m *Machine) turnOpen() bool {
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld), except
 // while the copy its turn's end started is still being taken (stopHeldOverTurnCopy): run then, it
-// would stop the process the copy still asks. The failure is charged, and the stop is left to the
-// copy's end or the wait's bound, which runs it (endTurnCopyWait), or to the prompt's result that a
-// pause's stop waits for (stopAtResult); a failure that comes meanwhile is charged the same way.
+// would stop the process the copy still asks. The failure is charged and runs no stop, and the
+// held stop runs as it would have with no failure: at the copy's end or the wait's bound where its
+// wait has begun (endTurnCopyWait), and otherwise once the decision it is held for has begun that
+// wait — the answer of the prompt a pause's stop waits for (stopAtResult), which the answer that
+// charged this failure can itself be, or the end of the turn the stop was held for (turnEnded). A
+// failure that comes meanwhile is charged the same way.
 //
 // The retirement's stop is where the process is let go, so that is where what it ended is
 // recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
@@ -197,7 +200,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	if m.held != nil {
 		if m.stopHeldOverTurnCopy() {
 			m.claim.Budgets.PromptFailures = failures
-			m.log.Warn("supervise: prompt failure at the limit while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
+			m.log.Warn("supervise: prompt failure at the limit while a stop is held over the copy of its turn's end; the failure is charged, and the held stop runs once that copy and what the stop is held for are over",
 				"why", why, "promptFailures", failures, "limit", m.deps.Limits.PromptFailures, "copy", m.turnCopy.seq, "by", m.held.By)
 			return m.persist(ctx)
 		}

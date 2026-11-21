@@ -339,9 +339,9 @@ func HeldNamesCapRefusal(max int) Refusal {
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract
 // the plugin declared, 0 when it declared none; want is the daemon's own (api.DaemonAPIVersion,
 // which this package cannot import, so the caller names it). remedy is the clause that tells the
-// caller what happens next — StalePluginContract's relaunch, StaleControllerContract's restart
-// instruction. The sentence is a contract item — quoted in pi-legion's changelog and its docs —
-// and may not be reworded here alone.
+// caller what happens next — StalePluginContract's relaunch, StalePluginContractUnderStop's held
+// stop, StaleControllerContract's restart instruction. The sentence is a contract item — quoted in
+// pi-legion's changelog and its docs — and may not be reworded here alone.
 func staleContract(got, want int, remedy string) Refusal {
 	if got == 0 {
 		return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
@@ -358,6 +358,17 @@ func staleContract(got, want int, remedy string) Refusal {
 // relaunch put the process on is itself behind this daemon).
 func StalePluginContract(got, want int) Refusal {
 	return staleContract(got, want, "the daemon is relaunching this process onto the current plugin")
+}
+
+// StalePluginContractUnderStop refuses a registration whose plugin speaks a contract this daemon
+// does not, made while a stop is held over the claim and the copy of its last turn's end is still
+// being taken (supervise's staleRegistration): the daemon relaunches nothing and charges nothing
+// then, since the plugin's exit on this 409 meets that stop, which suspends the claim, and the
+// claim's next launch is onto the current plugin. The status and the opening sentence are
+// StalePluginContract's, and the plugin stops on this 409 as on that one; only the remedy says
+// what happens instead of a relaunch.
+func StalePluginContractUnderStop(got, want int) Refusal {
+	return staleContract(got, want, "a stop held over this claim ends this process, and the claim's next launch is onto the current plugin")
 }
 
 // StaleControllerContract refuses a call from the operator's controller recorded at another

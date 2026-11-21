@@ -6793,7 +6793,8 @@ A commit that a fetch left visible is no work either: the clone keeps unreachabl
 Nor is a side head that no working copy and no bookmark reaches, although such a head can hold this issue's own unpushed work: that loss goes unnamed, and it is the cost of a read that names no other issue's commits.
 The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for and that had not answered, a failed claim or a claim the round passed over (`notWaitedFor`), and what the read found, or why it made no read.
 Where the read found work or failed, the daemon writes one message on the issue that names each of those claims with its state, and the commits, the change in the working copy or the read's error (`workspaceLostMessage`); a read that finds no work writes nothing on the issue.
-Where the pod's disk is a kept volume that the issue's next pod mounts (`roundKeptVolume`), that message says the work is still on that volume rather than lost, as the message of a pod that went before its round does ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+That message says that work not on a branch at `origin` comes back in the next pod only up to the daemon's last copy of the workspace, and that the rest is lost.
+Where the pod's disk is a kept volume that the issue's next pod mounts (`roundKeptVolume`), it says instead that the work is still on that volume, as the message of a pod that went before its round does ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The read pushes nothing, saves no bundle and keeps nothing of the disk, so it holds to the decision above, and it changes no decision of the round: the replacement is made at the same sweep whatever the read found.
 The read is bounded by one sweep interval, and a read that runs out of it has failed.
 A shim built before the read passes the frame to its agent, which refuses it, and the daemon reads that refusal as a read that failed.
@@ -7004,7 +7005,7 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
 When a kept pod goes before its update round is over, the message that Legion writes on the issue says that the work the roles did not push is still on the kept volume.
 It says so only where the issue's next launch keeps the volume.
 Where the Sandbox carries the reset mark `legion.dev/volume-reset` (below), or where its disk shape is not the one that the configuration now gives the issue, the next launch deletes the volume.
-There the message is the one for a pod with an ephemeral volume: the work that the roles did not push is lost.
+There the message is the one for a pod with an ephemeral volume: the work that the roles did not push comes back in the next pod only up to the daemon's last copy of the workspace, and the rest is lost.
 The round's message still tells each role to push its work, because the ends below delete the volume.
 
 **The ends that delete the volume.**

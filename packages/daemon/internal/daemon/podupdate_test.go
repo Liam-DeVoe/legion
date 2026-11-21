@@ -1188,14 +1188,16 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // the issue then says that the work the roles did not push is still on that volume. The runtime
 // answers whether the issue's Sandbox kept the pod's volume, asked with the time the round opened
 // (runtime.IssueVolumeReader): a Sandbox made after the round opened, by a reset or a change of
-// the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
-// both of those cases the message is the one every other pod's issue is told, word for word.
+// the disk's shape, holds a new volume, and the work past the daemon's last copy of the workspace
+// is lost as it is for an ephemeral volume. In both of those cases the message is the one every
+// other pod's issue is told, word for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
 		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
 	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
-		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
+		"The pod's disk went with the pod. Work that these roles did not push comes back in the next pod only up to the daemon's last copy of the workspace. " +
+		"The rest of that work is lost." + restarted
 	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
 		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
 		"The next pod of this issue mounts the volume." + restarted

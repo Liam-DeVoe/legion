@@ -298,14 +298,15 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// hold ran there and left the claim suspended; or the claim is working for a turn Oh My
 		// Pi started under the compaction, and the hold waits for that turn's end; or the claim
 		// is ready or idle holding the stop, which waits for the copy of the issue's workspace
-		// that a turn's end started. The claim went back to neither its agent nor its task, so
-		// the caller is told that rather than a recovery that landed. What becomes of the owed
-		// task is the hold's own, written once on supervise.ErrCompactSuspended, and the answer
-		// carries none of it: what the caller asked for did not happen, and the claim's own state
-		// says what it is now.
+		// that a turn's end started. Either wait ends at the stop's own deadline where that comes
+		// first (supervise's suspendAtTimeout). The claim went back to neither its agent nor its
+		// task, so the caller is told that rather than a recovery that landed. What becomes of the
+		// owed task is the hold's own, written once on supervise.ErrCompactSuspended, and the
+		// answer carries none of it: what the caller asked for did not happen, and the claim's own
+		// state says what it is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back to its agent: the task it owes was not sent, and the hold stops the claim at once, at the end of a turn begun under the compaction, or once the copy of its last turn's end is over. %s", token, askAgainLater))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back to its agent: the task it owes was not sent, and the hold stops the claim at once, at the end of a turn begun under the compaction, or once the copy of its last turn's end is over, or at the stop's own deadline where that comes first. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError

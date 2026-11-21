@@ -87,7 +87,11 @@ func (d *launchers) heldTaken(issue, podUID string, restore int64) (time.Time, b
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
 // carries at most is 160 slices of shimwire.LauncherBundlePayloadBytes, each one round trip the
 // launcher answers out of memory, so this is room for a slow connection rather than for the
-// common case; a hop that outruns it costs the restore and never the start.
+// common case. A hop that outruns it costs the restore, and the start goes on without it. The hop
+// runs under the start's own context (launchers.start) all the same, whose deadline is the end of
+// the launcher wait plus the termination grace (relaunch's starting, 130 s by default): a hop, or
+// a take that waits behind the issue's copy lock, slow enough to reach that deadline first leaves
+// the start frame an expired context, and the start fails with it.
 const bundleRestoreBound = 2 * time.Minute
 
 // leftForNextPodLine is the line a copy written after this pod first asked for a restore is logged

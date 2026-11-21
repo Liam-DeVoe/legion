@@ -201,8 +201,8 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 // the work is still on that volume rather than lost, and the line says the volume is kept: nothing
 // went with the pod. Over any other disk — an ephemeral one, or a kept volume made after the round
 // opened — the line names no kept volume, and the message says the pod and its disk are gone and
-// the work is lost, whatever the read found. A message that calls lost work safe tells a role not
-// to do that work again.
+// that the work comes back only up to the daemon's last copy of the workspace, whatever the read
+// found. A message that calls lost work safe tells a role not to do that work again.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 	// commitRead scripts a read that finds one unpushed commit, and foundCommit holds the
 	// replacement's line to that read, whatever the disk.
@@ -283,7 +283,7 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 				if value, named := line["keptVolume"]; named {
 					t.Errorf("the replacement's line says keptVolume=%v, want no kept volume: the disk went with the pod", value)
 				}
-				for _, want := range []string{"The pod and its disk are gone.", "Work that is not on a branch at origin is lost."} {
+				for _, want := range []string{"The pod and its disk are gone.", "Work that is not on a branch at origin comes back in the next pod only up to the daemon's last copy of the workspace. The rest of that work is lost."} {
 					if !strings.Contains(messages[0], want) {
 						t.Errorf("the message does not say %q:\n%s", want, messages[0])
 					}

@@ -31,6 +31,26 @@ func stopsOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies) {
 	}
 }
 
+// turnEndedUnderAHold brings h's claim into a turn of a task a provider will refuse, has hold hold
+// a stop over that turn, and ends the turn. copies is the claim's CopyTurnEnd where it is not nil,
+// and the helper then fails unless the turn's end started one copy. It answers the delivery the
+// prompt's result names.
+func turnEndedUnderAHold(t *testing.T, h *harness, copies *turnEndCopies, hold func()) string {
+	t.Helper()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	h.must(StreamTurnStart{Claim: h.token})
+	task := h.pending().ID
+	hold()
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if copies != nil {
+		if started := copies.started(); len(started) != 1 {
+			t.Fatalf("the turn's end started %d copies, want one", len(started))
+		}
+	}
+	return task
+}
+
 // The turn of a task ends into a held daemon stop, which waits for the turn's copy, and the
 // prompt's result comes behind the end, as Oh My Pi sends it: the turn ended in a provider error
 // that holds the issue (a 400, a request too long for the model), which fails the claim. Failed
@@ -42,15 +62,7 @@ func stopsOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies) {
 // the process is then stopped at the result, before the copy ends.
 func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	h, copies := copyingHarness(t)
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-	h.must(StreamTurnStart{Claim: h.token})
-	task := h.pending().ID
-	holdStop(t, h, "LEGION-208 left implementing")
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	if started := copies.started(); len(started) != 1 {
-		t.Fatalf("the turn's end started %d copies, want one", len(started))
-	}
+	task := turnEndedUnderAHold(t, h, copies, func() { holdStop(t, h, "LEGION-208 left implementing") })
 
 	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
 		Error: "prompt is too long", HTTPStatus: 400}); err != nil {

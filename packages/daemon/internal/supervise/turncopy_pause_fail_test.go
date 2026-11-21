@@ -15,26 +15,26 @@ import (
 )
 
 // pauseHeldOverTurnCopy is a claim in a turn of a task a provider will refuse, whose project's
-// pause holds its stop for the turn's end, and whose turn has ended: the copy of that end is being
-// taken, and the stop waits for the prompt's result, which has not come. It answers the copies and
-// the delivery the result names.
+// pause holds its stop for the turn's end, and whose turn has ended (turnEndedUnderAHold): the
+// copy of that end is being taken, and the stop waits for the prompt's result, which has not come.
+// It answers the copies and the delivery the result names.
 func pauseHeldOverTurnCopy(t *testing.T) (*harness, *turnEndCopies, string) {
 	t.Helper()
 	copies := &turnEndCopies{}
 	h, flag, _ := pauseHarness(t, queuedClaim(), func(d *Deps) { d.CopyTurnEnd = copies.start })
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-	h.must(StreamTurnStart{Claim: h.token})
-	task := h.pending().ID
-	flag.set(7)
-	if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
+	return h, copies, turnEndedUnderAHold(t, h, copies, pausesStop(t, h, flag))
+}
+
+// pausesStop is the hold of a project pause's stop over h's claim in its turn: the pause flag names
+// pause 7 and the pause's stop row reaches the claim, which holds the stop for the turn's end.
+func pausesStop(t *testing.T, h *harness, flag *pauseFlag) func() {
+	return func() {
+		t.Helper()
+		flag.set(7)
+		if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
+		}
 	}
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	if started := copies.started(); len(started) != 1 {
-		t.Fatalf("the turn's end started %d copies, want one", len(started))
-	}
-	return h, copies, task
 }
 
 // The prompt's result behind the turn's end carries a provider error that holds the issue (a 400),

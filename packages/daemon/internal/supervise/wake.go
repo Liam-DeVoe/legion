@@ -334,11 +334,12 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // with it, so no turn of such a claim is reached at all.
 //
 // A stop held while the copy its turn's end started is still being taken (stopHeldOverTurnCopy)
-// is not ended here: it keeps the process the copy asks until the copy's end or the wait's bound,
-// and ending it now would cut that copy off. The wake is parked again for the copy's bound
-// (parkWake): the held stop runs first where the copy ends sooner, and its let-go takes the wake as
-// the launch it met (letGo, launchMet), which is what ending it here would have done; a hold
-// dropped meanwhile leaves the wake to run its launch at that turn.
+// is not ended here: ending it now would stop the process the copy asks and cut that copy off. The
+// wake is parked again for the copy's bound (parkWake). Where the held stop runs before that bound
+// — its wait for the copy begun and the copy ended (stopHeldOverTurnCopy says what begins it) — its
+// let-go takes the wake as the launch it met (letGo, launchMet), which is what ending it here would
+// have done. Where it has not run by then, the wake's turn at the bound ends the hold (endHeld), as
+// it would have here; a hold dropped meanwhile leaves the wake to run its launch at that turn.
 //
 // The two ways out of a held suspension that take the wake off the machine leave nothing of this
 // refresh waiting in the pacing, so the end of this decision gives the credit of the refresh gate

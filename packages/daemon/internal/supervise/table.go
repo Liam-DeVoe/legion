@@ -1751,7 +1751,10 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // No turn running is the agent refusing the work. It is charged like any acknowledged prompt
 // that becomes no turn, and the retry waits for the sweep that follows, so a refusal that never
 // stops walks the budget to its end — a relaunch, and then the retirement — instead of looping
-// on the spot for ever against an agent that cannot start a turn at all.
+// on the spot for ever against an agent that cannot start a turn at all. The refusal is that
+// prompt's answer, so a project pause's stop held for its result runs once it is charged
+// (stopAtResult), as promptResulted runs it, unless another prompt of the task is still
+// outstanding, whose own answer is then the one the stop waits for.
 func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamLateRefusal)
 	if done, err := refusedElsewhere(m, ctx, r); done {
@@ -1779,7 +1782,10 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	// The prompt did not run: the agent answered it a failure with no turn of its own to explain
 	// it — a provider that rejected before any turn began, an agent that will not take the work.
 	// The task goes back unread, so nothing reported from whatever turn follows belongs to it.
-	return m.promptFailed(ctx, "refused an acknowledged prompt with no turn running: "+r.Error, taskUnread)
+	if err := m.promptFailed(ctx, "refused an acknowledged prompt with no turn running: "+r.Error, taskUnread); err != nil || m.awaitsResult() {
+		return err
+	}
+	return m.stopAtResult(ctx)
 }
 
 // agentBusy is Oh My Pi's own refusal of a prompt for a turn already running, which it words
@@ -2390,7 +2396,8 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // matched to this prompt (turnStarted), and the prompt says it never ran, so that turn was another
 // input's: the task goes back to waiting (takeBackPending), and that turn's end sends it — or,
 // when the end has already come and left what it held to this result (turnEnded, resultPending),
-// it goes from here (afterTurn), as it does from a result of a turn that ran (promptResulted).
+// it goes from here (afterTurn), as it does from a result of a turn that ran (promptResulted),
+// and a project pause's stop that end held for this result runs here instead (stopAtResult).
 // While another prompt is outstanding, the turn and the read mark are that prompt's, and nothing
 // moves. Otherwise only the mark goes, where the answer says the prompt was never read, as a
 // refusal of the prompt that set it always took it (markUnread). read says whether the agent may
@@ -2425,6 +2432,9 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 			return err
 		}
 		if m.claim.State == StateIdle {
+			if m.pauseHoldAtResult() {
+				return m.stopAtResult(ctx)
+			}
 			return m.afterTurn(ctx)
 		}
 		if busy {

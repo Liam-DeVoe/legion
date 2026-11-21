@@ -9,9 +9,11 @@ package supervise
 // charged, and its process's exit meets the held stop.
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -48,49 +50,71 @@ func waitsOnItsProcess(t *testing.T, h *harness, loc runtime.Locator) {
 	}
 }
 
-// stopsAfterTheCopy hands back the end of the copy the turn's end started, and fails unless the
-// held stop then stops loc, once.
-func stopsAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies, loc runtime.Locator) {
+// stopsAfterTheCopy hands back the end of the index-th copy the turn's ends started, and fails
+// unless the held stop then stops loc, once.
+func stopsAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies, index int, loc runtime.Locator) {
 	t.Helper()
-	h.must(copies.copied(t, 0))
+	h.must(copies.copied(t, index))
 	h.wantState(StateSuspended)
 	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
 		t.Fatalf("suspended %+v, want the process whose turn ended, %+v", suspend.Locator, loc)
 	}
 }
 
-// The stale-plugin sweep posts every claim behind the daemon's contract, which at a release that
-// moves the contract is every claim. A claim whose held stop waits for its turn's copy is idle, so
-// the relaunch was not held back for a turn, and it let the process go through the held stop while
-// the copy still asked its shim: the copy failed and the turn's end was in no copy once the role
-// was stopped. While the stop waits the relaunch is not made, and nothing holds it for later: the
-// copy's end runs the stop, which takes the process.
-//
-// The control is the relaunch held back for a turn alone: the claim is then suspended at the
-// sweep's post, while the copy is still being taken, and the test fails there.
-func TestAStalePluginRelaunchWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
-	h, copies, loc := copyWaitingStale(t)
+// Three events reach a claim idle on its process while its held stop waits for its turn's copy,
+// and each would replace that process or run the stop. Each is left alone while the stop waits,
+// and the copy's end runs the stop, which takes the process. Each row's control is named with it.
+func TestAnEventThatWouldLetTheProcessGoWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stale is whether the claim speaks the contract of the daemon before this one.
+		stale bool
+		event func(h *harness)
+	}{
+		// The stale-plugin sweep posts every claim behind the daemon's contract, which at a
+		// release that moves the contract is every claim. A claim whose held stop waits for its
+		// turn's copy is idle, so the relaunch was not held back for a turn, and it let the
+		// process go through the held stop while the copy still asked its shim: the copy failed
+		// and the turn's end was in no copy once the role was stopped. While the stop waits the
+		// relaunch is not made, and nothing holds it for later.
+		//
+		// The control is the relaunch held back for a turn alone: the claim is then suspended at
+		// the sweep's post, while the copy is still being taken, and the row fails there.
+		{name: "AStalePluginRelaunchWaitsForTheTurnsCopyItsHeldStopWaitsFor", stale: true, event: func(h *harness) {
+			h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+		}},
+		// A process found at a stale address is replaced, and that replacement lets the process
+		// go through a held stop. While the stop waits for its turn's copy the observation is left
+		// alone: the runtime observes the process again at every tick.
+		//
+		// The control is the observation replacing the process as it comes: the claim is then
+		// suspended while the copy is still being taken, and the row fails there.
+		{name: "AStaleAddressWaitsForTheTurnsCopyItsHeldStopWaitsFor", stale: true, event: func(h *harness) {
+			h.observe(runtime.StaleAddress)
+		}},
+		// An agent that says ready again finds a held stop and runs it (reready), which a held
+		// stop that waits for its turn's copy must not do: the stop would take the process the
+		// copy still asks. The ready said again changes nothing then.
+		//
+		// The control is the ready running any held stop as it comes: the claim is then suspended
+		// at the ready, while the copy is still being taken, and the row fails there.
+		{name: "AReadySaidAgainWaitsForTheTurnsCopyItsHeldStopWaitsFor", event: func(h *harness) {
+			h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			waiting := copyWaiting
+			if tc.stale {
+				waiting = copyWaitingStale
+			}
+			h, copies, loc := waiting(t)
 
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+			tc.event(h)
 
-	waitsOnItsProcess(t, h, loc)
-	stopsAfterTheCopy(t, h, copies, loc)
-}
-
-// A process found at a stale address is replaced, and that replacement lets the process go
-// through a held stop. While the stop waits for its turn's copy the observation is left alone:
-// the runtime observes the process again at every tick, and the copy's end runs the stop, which
-// lets the process go itself.
-//
-// The control is the observation replacing the process as it comes: the claim is then suspended
-// while the copy is still being taken, and the test fails there.
-func TestAStaleAddressWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
-	h, copies, loc := copyWaitingStale(t)
-
-	h.observe(runtime.StaleAddress)
-
-	waitsOnItsProcess(t, h, loc)
-	stopsAfterTheCopy(t, h, copies, loc)
+			waitsOnItsProcess(t, h, loc)
+			stopsAfterTheCopy(t, h, copies, 0, loc)
+		})
+	}
 }
 
 // A wake the pacing parked over a live process — a stale-plugin relaunch raised while the claim
@@ -123,32 +147,13 @@ func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	if h.m.View().WakeWaiting == nil {
 		t.Fatal("the wake is off the machine, want it waiting for the copy with the stop")
 	}
-	h.must(copies.copied(t, 1))
-	h.wantState(StateSuspended)
-	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
-		t.Fatalf("suspended %+v, want the process whose turn ended, %+v", suspend.Locator, loc)
-	}
+	stopsAfterTheCopy(t, h, copies, 1, loc)
 	if got := len(h.calls("Resume")) + len(h.calls("Spawn")); got != starts {
 		t.Fatalf("the runtime was asked %d launches after the turn's end, want none: the stop takes the wake with the process", got-starts)
 	}
 	if h.m.View().WakeWaiting != nil {
 		t.Fatalf("the claim still holds the wake %+v, want it taken by the stop's let-go", h.m.View().WakeWaiting)
 	}
-}
-
-// An agent that says ready again finds a held stop and runs it (reready), which a held stop that
-// waits for its turn's copy must not do: the stop would take the process the copy still asks. The
-// ready said again changes nothing then, and the copy's end runs the stop.
-//
-// The control is the ready running any held stop as it comes: the claim is then suspended at the
-// ready, while the copy is still being taken, and the test fails there.
-func TestAReadySaidAgainWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
-	h, copies, loc := copyWaiting(t)
-
-	h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
-
-	waitsOnItsProcess(t, h, loc)
-	stopsAfterTheCopy(t, h, copies, loc)
 }
 
 // The agent can start a turn of its own while its held stop waits for the copy of the turn before
@@ -191,7 +196,8 @@ func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 // the last turn's end is still being taken, the registration is refused as stale and nothing is
 // relaunched or charged. That keeps no process for the copy: the plugin stops its agent on the
 // refusal, so the process's death follows, and it meets the held stop, which suspends the claim
-// charged nothing, as the stop's own end would.
+// charged nothing, as the stop's own end would. The refusal is the 409 of any stale registration,
+// in words that promise no relaunch (claim.StalePluginContractUnderStop).
 //
 // The control is the relaunch made whatever the stop is held over: the registration then charges a
 // launch failure and relaunches the claim, and the test fails there.
@@ -206,8 +212,9 @@ func TestAStaleRegistrationUnderAHeldStopOverTheTurnsCopyIsNeitherRelaunchedNorC
 	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 		CapabilityHash: []byte("capability"), PluginContract: stale})
 
-	if err == nil {
-		t.Fatal("the registration on another plugin contract was answered nil, want it refused as stale")
+	var refusal claim.Refusal
+	if !errors.As(err, &refusal) || refusal != claim.StalePluginContractUnderStop(stale, refreshContract) {
+		t.Fatalf("the registration on another plugin contract was answered %v, want the refusal that names the held stop", err)
 	}
 	waitsOnItsProcess(t, h, loc)
 	if got := h.claim().Budgets.LaunchFailures; got != charged {
