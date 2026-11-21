@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -124,25 +123,26 @@ func (m *missingBuckets) err() error {
 }
 
 // writeMissingBuckets answers /healthz for a running listener whose copied buckets a read found
-// missing: 200 "degraded", naming them in "error" and listing them in "missing_buckets". Degraded
-// and not 503: a running listener still serves every route that needs no missing bucket, reads
-// from its copy within the stale bound included, and answers each write to a missing bucket its
-// 503; a 503 here would take it out of a load balancer's rotation, and have ECS replace the task
-// with one that waits at its start for the same bucket and serves nothing.
-func writeMissingBuckets(w http.ResponseWriter, names []string) {
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+// missing: 200 "degraded", naming them in "error" and listing them in "missing_buckets", with what
+// issuers answers (writeHealth). Degraded and not 503: a running listener still serves every route
+// that needs no missing bucket, reads from its copy within the stale bound included, and answers
+// each write to a missing bucket its 503; a 503 here would take it out of a load balancer's
+// rotation, and have ECS replace the task with one that waits at its start for the same bucket and
+// serves nothing.
+func writeMissingBuckets(w http.ResponseWriter, names []string, issuers func() map[string]any) {
+	writeHealth(w, http.StatusOK, map[string]any{
 		"status":          "degraded",
 		"error":           (&bucketsMissingError{buckets: names}).Error(),
 		"missing_buckets": names,
-	})
+	}, issuers)
 }
 
 // writeWaitingForBuckets answers /healthz while the start waits for copied buckets it found
 // missing (awaitCopiedBuckets): 503 "waiting", naming them in "error" and listing them in
-// "missing_buckets". The wait comes before both starting gates open (openWebhooks, openV1Routes),
-// so every webhook and /v1 route answers 503 "service starting" until they exist: the listener
-// serves nothing, and each reader of /healthz's status is told so:
+// "missing_buckets", with what issuers answers (writeHealth). The wait comes before both starting
+// gates open (openWebhooks, openV1Routes), so every webhook and /v1 route answers 503 "service
+// starting" until they exist: the listener serves nothing, and each reader of /healthz's status is
+// told so:
 //   - GKE's readiness probe (curl -fsS, infra/gcp) takes the pod out of service, and a rollout
 //     waits instead of replacing a pod that serves with one that serves nothing; its startup and
 //     liveness probes read /livez, so the waiting pod is not restarted;
@@ -154,13 +154,12 @@ func writeMissingBuckets(w http.ResponseWriter, names []string) {
 //
 // None of them can repair the wait: only the operator's `envoy-infra buckets create` does, and the
 // ERROR the wait logs for each bucket (logMissingBuckets) pages for it.
-func writeWaitingForBuckets(w http.ResponseWriter, names []string) {
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+func writeWaitingForBuckets(w http.ResponseWriter, names []string, issuers func() map[string]any) {
+	writeHealth(w, http.StatusServiceUnavailable, map[string]any{
 		"status":          "waiting",
 		"error":           (&bucketsMissingError{buckets: names}).Error() + "; the listener's start waits for it and serves no route until it exists",
 		"missing_buckets": names,
-	})
+	}, issuers)
 }
 
 // bucketsMissingError is copied buckets found missing. The self-health monitor never takes it for
@@ -214,6 +213,7 @@ func openExisting[T any](wait func() error, open func() (T, error)) (T, error) {
 	}
 }
 
+// bucketReads is one read of each bucket's stream: the buckets the server holds (present), those
 // it says it does not (missing), and those whose read failed, with the error (unread), of which the
 // read says nothing. refused names those of unread whose JetStream context returned
 // bus.ErrPublishDenied: the user's grant does not carry the bucket.

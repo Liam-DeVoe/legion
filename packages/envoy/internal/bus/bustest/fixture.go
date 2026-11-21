@@ -62,11 +62,12 @@ func Provision(conn *natsgo.Conn, replicas int) error {
 }
 
 // ProvisionURL is Provision of the server at uri, a test's own, through a connection of its own
-// that it closes before it returns, so the server's connections are as the test left them. A
-// failed provisioning fails t.
-func ProvisionURL(t testing.TB, uri string, replicas int) {
+// (testnats.Connect, with opts) that it closes before it returns, so the server's connections are
+// as the test left them. A server that admits no client without a credential is given one in opts
+// (testnats.SeedOption). A failed provisioning fails t.
+func ProvisionURL(t testing.TB, uri string, replicas int, opts ...natsgo.Option) {
 	t.Helper()
-	conn := testnats.Connect(t, uri)
+	conn := testnats.Connect(t, uri, opts...)
 	defer conn.Close()
 	if err := Provision(conn, replicas); err != nil {
 		t.Fatalf("provision %s with the buckets a listener copies: %v", uri, err)

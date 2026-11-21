@@ -636,9 +636,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
 //
-// Every answer, starting, healthy, degraded and unhealthy alike, also carries what issuers answers
-// (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing. Those
-// fields never decide the status (writeHealth).
+// Every answer, starting, waiting, healthy, degraded and unhealthy alike, also carries what issuers
+// answers (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing.
+// Those fields never decide the status (writeHealth).
 func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets, issuers func() map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -647,7 +647,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets,
 			// A start that found a copied bucket missing waits for it (awaitCopiedBuckets) and
 			// serves no route meanwhile, so it answers 503 "waiting" rather than merely starting.
 			if names := missing.list(); len(names) > 0 {
-				writeWaitingForBuckets(w, names)
+				writeWaitingForBuckets(w, names, issuers)
 				return
 			}
 			writeHealth(w, http.StatusOK, map[string]any{"status": "starting"}, issuers)
@@ -725,7 +725,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets,
 		}
 		if len(held) > 0 {
 			slices.Sort(held)
-			writeMissingBuckets(w, held)
+			writeMissingBuckets(w, held, issuers)
 			return
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.

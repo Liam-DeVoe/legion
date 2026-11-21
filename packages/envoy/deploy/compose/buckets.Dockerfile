@@ -19,8 +19,10 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # The command builds in the workspace of packages/envoy/infra/go.work, which binds the envoy module
 # beside it, as the envoy-infra release builds it (.github/workflows/release-envoy-infra.yaml). The
 # whole of both modules' Go sources is copied, not the packages the command imports today, so a new
-# import of the command never leaves this build short of a directory. The two caches stay on the
-# builder, so an `up` after a source change rebuilds only what changed.
+# import of the command finds its Go sources here. Only those: the ignore file passes Go sources and
+# module files alone, so a package of either module the command imports that reads a file through
+# //go:embed (none does today) breaks this build, and no CI job builds this image to say so. The two
+# caches stay on the builder, so an `up` after a source change rebuilds only what changed.
 WORKDIR /src/packages/envoy/infra
 COPY packages/envoy /src/packages/envoy
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \

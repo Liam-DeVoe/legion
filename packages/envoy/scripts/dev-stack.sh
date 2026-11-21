@@ -350,6 +350,7 @@ mkdir -p "$BIN_DIR" "$LOG_DIR" "$WORK_DIR/keys" "$WORK_DIR/dispatch-home"
 ISSUER_LOG="$LOG_DIR/dev-oidc-issuer.log"
 BROKER_LOG="$LOG_DIR/broker.log"
 NATS_LOG="$LOG_DIR/natsd.log"
+NATS_BUCKETS_LOG="$LOG_DIR/natsd-buckets.log"
 FIXTUREBUCKETS_LOG="$LOG_DIR/fixturebuckets.log"
 LISTENER_LOG="$LOG_DIR/listener.log"
 DISPATCH_LOG="$LOG_DIR/dispatch.log"
@@ -751,16 +752,37 @@ start_natsd() {
   await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
   NATS_PORT="$awaited"
 }
+# provision_buckets URL gives the natsd at URL every bucket a listener copies, which no listener
+# creates (fixturebuckets), or stops the run naming fixturebuckets' log.
+provision_buckets() {
+  if ! env -i PATH="$PATH" "$BIN_DIR/fixturebuckets" -url "$1" >"$FIXTUREBUCKETS_LOG" 2>&1; then
+    echo "dev-stack: fixturebuckets could not provision $1; see $FIXTUREBUCKETS_LOG" >&2
+    exit 1
+  fi
+}
 echo "dev-stack: starting natsd..." >&2
+# natsd's store holds those buckets before the listener starts. With --callout natsd admits no
+# client but the auth service's own user, and the brokers that run that service start after natsd,
+# so fixturebuckets, which presents no credential, would wait out the authorization timeout and be
+# refused. So with --callout the buckets are made first, by a natsd on the same store without the
+# callout (its log natsd-buckets.log), stopped before the one behind the callout starts and reads
+# them back from the store: both servers place every client in the global account, $G
+# (testnats.CalloutConfig), whose streams the store keeps. Without --callout fixturebuckets
+# provisions the run's one natsd once it serves.
+if [ "$CALLOUT" = true ]; then
+  : >"$NATS_BUCKETS_LOG"
+  env -i PATH="$PATH" "$BIN_DIR/natsd" -p -1 -store_dir "$WORK_DIR/nats-store" >"$NATS_BUCKETS_LOG" 2>&1 &
+  NATS_PID=$!
+  await natsd "$NATS_PID" "$NATS_BUCKETS_LOG" "$NATS_BUCKETS_LOG" 'its client port' nats_port_in
+  provision_buckets "nats://127.0.0.1:$awaited"
+  stop_bounded natsd "$NATS_PID"
+fi
 start_natsd -1 -1
 NATS_URL="nats://127.0.0.1:$NATS_PORT"
 echo "dev-stack: natsd $NATS_URL" >&2
 callout_after_natsd
-# No listener creates a bucket it copies: fixturebuckets gives this run's own natsd
-# those buckets before the listener starts on it.
-if ! env -i PATH="$PATH" "$BIN_DIR/fixturebuckets" -url "$NATS_URL" >"$FIXTUREBUCKETS_LOG" 2>&1; then
-  echo "dev-stack: fixturebuckets could not provision $NATS_URL; see $FIXTUREBUCKETS_LOG" >&2
-  exit 1
+if [ "$CALLOUT" != true ]; then
+  provision_buckets "$NATS_URL"
 fi
 
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
