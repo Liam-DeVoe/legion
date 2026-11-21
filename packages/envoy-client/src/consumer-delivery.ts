@@ -922,7 +922,9 @@ export interface InboundUnavailable {
    * No registration was sent, because the session holds no relay subject. Before the session's
    * first accepted registration this is the start race, held until the bound passes; after it,
    * a relay that was open was lost, which tells the session at once. Either way it is told once
-   * per outage, and once more after a told registration that is not recorded for certain.
+   * per outage, and once more after a told registration that is not recorded for certain. The
+   * first call of the start race goes to the host's `held` at once, so the host can log it while
+   * the session's notice waits.
    */
   noRelay(error: unknown): void;
   /**
@@ -957,10 +959,19 @@ export interface InboundUnavailableOptions {
    */
   readonly restored?: (toldWhy: string) => void;
   /**
+   * Called once, at once, when the start race's hold begins: the first registration before the
+   * session's first accepted one that found no relay subject. `relayMissing` is why the relay
+   * subject could not be opened (`NoRelaySubjectError.relayMissing`), undefined when the host
+   * named no reason. The session is told nothing yet, so a host logs it here: its log then shows
+   * at once that a registration found no relay subject, while the notice waits for the bound.
+   * It is not called for a call the bound does not hold, or once `stopping` answers true.
+   */
+  readonly held?: (relayMissing: string | undefined) => void;
+  /**
    * Whether the session has begun to stop; once it answers true, the report tells nothing, neither
-   * `tell` nor `restored`. A stopping session closes its own relay on purpose, and a registration
-   * refused, answered or skipped during the stop says nothing about what the session receives,
-   * since its record is deleted next.
+   * `tell` nor `restored`, and calls no `held`. A stopping session closes its own relay on
+   * purpose, and a registration refused, answered or skipped during the stop says nothing about
+   * what the session receives, since its record is deleted next.
    */
   readonly stopping?: () => boolean;
 }
@@ -978,15 +989,17 @@ export interface InboundUnavailableOptions {
  * A session whose first relay open is still being tried holds no relay subject for a while at
  * its start, and it receives once the relay opens. So until the session's first accepted
  * registration, an outage with no relay subject is held: the first such call starts the bound,
- * and only a call at or after its end tells the session. A registration the listener answered
- * with the bus-outage 503 is held the same way, at any time: it is not recorded for certain,
- * the session's consumer may still deliver, and the next heartbeat's registration is usually
- * accepted, so the first such refusal since the last accepted registration starts the bound and
- * an accepted registration inside it ends the hold with nothing said. Any other refusal is told
- * at once, as is an outage with no relay subject after the first accepted registration. Each
- * outage is told once, with one exception. A told bus-outage 503 says the consumer may still
- * deliver, so a refusal or a lost relay subject after it is told once more, and `restored` takes
- * that later message. A session that has begun to stop (`stopping`) is told nothing at all.
+ * and only a call at or after its end tells the session. That first call goes to `held` at once,
+ * so the host's log says that a registration found no relay subject while the notice waits. A
+ * registration the listener answered with the bus-outage 503 is held the same way, at any time:
+ * it is not recorded for certain, the session's consumer may still deliver, and the next
+ * heartbeat's registration is usually accepted, so the first such refusal since the last
+ * accepted registration starts the bound and an accepted registration inside it ends the hold
+ * with nothing said. Any other refusal is told at once, as is an outage with no relay subject
+ * after the first accepted registration. Each outage is told once, with one exception. A told
+ * bus-outage 503 says the consumer may still deliver, so a refusal or a lost relay subject after
+ * it is told once more, and `restored` takes that later message. A session that has begun to
+ * stop (`stopping`) is told nothing at all.
  */
 export function inboundUnavailable(
   tell: (why: string) => void,
@@ -994,6 +1007,7 @@ export function inboundUnavailable(
     now = () => Date.now(),
     firstOpenBoundMs = INBOUND_FIRST_OPEN_BOUND_MS,
     restored,
+    held,
     stopping = () => false,
   }: InboundUnavailableOptions = {}
 ): InboundUnavailable {
@@ -1018,8 +1032,14 @@ export function inboundUnavailable(
     noRelay(error) {
       if (!everAccepted) {
         const at = now();
+        const begins = heldSince === undefined;
         heldSince ??= at;
-        if (at < heldSince + firstOpenBoundMs) return;
+        if (at < heldSince + firstOpenBoundMs) {
+          if (begins && !stopping()) {
+            held?.(error instanceof NoRelaySubjectError ? error.relayMissing : undefined);
+          }
+          return;
+        }
       }
       say(error);
     },
@@ -1078,9 +1098,17 @@ export interface RelayRegistration<Result> {
 /**
  * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
  * from a refusal the listener sent. Its message names why the relay is missing when the host said
- * (`relayMissing`).
+ * (`relayMissing`), and `relayMissing` holds that reason alone.
  */
-export class NoRelaySubjectError extends Error {}
+export class NoRelaySubjectError extends Error {
+  constructor(
+    message: string,
+    /** Why the relay subject could not be opened, as the host said it; undefined when it did not. */
+    readonly relayMissing: string | undefined
+  ) {
+    super(message);
+  }
+}
 
 /**
  * One registration, as every host that holds a relay makes it: the topics the listener will
@@ -1091,7 +1119,8 @@ export class NoRelaySubjectError extends Error {}
  * registration asks for consumer delivery, a session receives only what its own consumer holds,
  * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
  * The outage report holds this at the session's start (`InboundUnavailable.noRelay`), and the
- * host's next try opens the relay and registers.
+ * host's next try opens the relay and registers. The first such refusal of the hold goes to the
+ * host's `held` at once, with why the relay is missing.
  */
 export function registerWithRelay<Result>({
   relay,
@@ -1105,7 +1134,8 @@ export function registerWithRelay<Result>({
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
     const refused = new NoRelaySubjectError(
-      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
+      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`,
+      relayMissing
     );
     outage.noRelay(refused);
     return Promise.reject(refused);

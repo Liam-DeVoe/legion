@@ -1191,24 +1191,28 @@ describe("one registration", () => {
 
   /**
    * One session's outage report on a clock the row moves (`at`), with what it told, the clock at
-   * each time it said the session receives again, and the two registrations a row makes: one with
-   * no relay subject, and one whose send answers `answer`. `stop` begins the session's stop.
+   * each time it said the session receives again, each reason it handed `held`, and the two
+   * registrations a row makes: one with no relay subject, naming `relayMissing` when a row passes
+   * one, and one whose send answers `answer`. `stop` begins the session's stop.
    */
   function reportOnClock() {
     let clock = 0;
     let stopping = false;
     const told: string[] = [];
     const restored: number[] = [];
+    const held: (string | undefined)[] = [];
     const sent: unknown[] = [];
     const outage = inboundUnavailable((why) => told.push(why), {
       now: () => clock,
       firstOpenBoundMs: BOUND,
       restored: () => restored.push(clock),
+      held: (relayMissing) => held.push(relayMissing),
       stopping: () => stopping,
     });
     return {
       told,
       restored,
+      held,
       sent,
       at: (ms: number) => {
         clock = ms;
@@ -1216,9 +1220,10 @@ describe("one registration", () => {
       stop: () => {
         stopping = true;
       },
-      withoutRelay: () =>
+      withoutRelay: (relayMissing?: string) =>
         registerWithRelay({
           relay: undefined,
+          relayMissing,
           ownAgentSubject: AGENT,
           followed: [TEAM],
           outage,
@@ -1259,6 +1264,67 @@ describe("one registration", () => {
     await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
     expect(report.sent).toEqual([]);
     expect(report.told).toEqual([NO_RELAY]);
+  });
+
+  // The host logs the start race at once (`held`), while the session's notice waits for the bound:
+  // a start whose relay never opens shows in its log that a registration found no relay subject,
+  // and why, long before the bound. It is logged once per outage, not at every try.
+  test("the start race's first registration with no relay subject goes to `held` at once, naming why, and no later one does, while the session is told only past the bound", async () => {
+    const report = reportOnClock();
+    const why = `${NO_RELAY}, because its relay subject could not be opened: Authentication Timeout`;
+
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    expect([report.held, report.told]).toEqual([["Authentication Timeout"], []]);
+
+    report.at(BOUND - 1);
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    expect([report.held, report.told]).toEqual([["Authentication Timeout"], []]);
+
+    report.at(BOUND);
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    report.at(BOUND + 15_000);
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    expect([report.held, report.told]).toEqual([["Authentication Timeout"], [why]]);
+
+    // A host that names no reason is handed none.
+    const unnamed = reportOnClock();
+    await expect(unnamed.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([unnamed.held, unnamed.told]).toEqual([[undefined], []]);
+  });
+
+  test("`held` is not called for a lost relay subject after the first accepted registration, which is told at once, nor for a refusal, nor for a call the bound does not hold, nor once the stop began", async () => {
+    const lost = reportOnClock();
+    await lost.withRelay(Promise.resolve("registered"));
+    await expect(lost.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([lost.held, lost.told]).toEqual([[], [NO_RELAY]]);
+
+    const refused = reportOnClock();
+    await expect(refused.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+    expect([refused.held, refused.told]).toEqual([[], ["no_grant"]]);
+
+    const held: (string | undefined)[] = [];
+    const told: string[] = [];
+    await expect(
+      registerWithRelay({
+        relay: undefined,
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage: inboundUnavailable((why) => told.push(why), {
+          firstOpenBoundMs: 0,
+          held: (relayMissing) => held.push(relayMissing),
+        }),
+        send: () => Promise.resolve("registered"),
+        answered: () => undefined,
+      })
+    ).rejects.toThrow("holds no relay subject");
+    expect([held, told]).toEqual([[], [NO_RELAY]]);
+
+    const stopping = reportOnClock();
+    stopping.stop();
+    await expect(stopping.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([stopping.held, stopping.told]).toEqual([[], []]);
   });
 
   test("a session whose relay opens inside the bound and whose registration is accepted is told nothing at all", async () => {

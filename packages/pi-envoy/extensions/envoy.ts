@@ -3412,12 +3412,16 @@ export default function envoyExtension(hostApi: PiApi): void {
   // consumer. After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
   // and a retry after it may have landed, so the log line and the pane note say only that the
   // registration is not recorded for certain. A first relay open still being tried at the start,
-  // or a run of bus-outage 503s, is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. A
-  // told bus-outage 503 says that the consumer may still deliver, so a refusal or a lost relay
-  // subject after it is said once more. An accepted registration after a told outage tells the
-  // session once, by the same path, worded for the last `why` it was told. A session whose stop
-  // has begun is told neither (`stopping`): the stop closed the relay on purpose, and the record
-  // is deleted next.
+  // or a run of bus-outage 503s, is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. The
+  // log does not wait for the start race: the first registration that found no relay subject is
+  // logged at once, at warn (`held`). That line says only what the registration found, and why,
+  // and makes no claim about what the session receives. The notice, its card, its pane note and
+  // the warning that the session receives nothing wait for the bound. A told bus-outage 503 says
+  // that the consumer may still deliver, so a refusal or a lost relay subject after it is said
+  // once more.
+  // An accepted registration after a told outage tells the session once, by the same path, worded
+  // for the last `why` it was told. A session whose stop has begun is told neither (`stopping`):
+  // the stop closed the relay on purpose, and the record is deleted next.
   const inboundOutage = inboundUnavailable(
     (why) => {
       if (isUnrecordedRegistration(why)) {
@@ -3448,6 +3452,11 @@ export default function envoyExtension(hostApi: PiApi): void {
           activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
         }
         unwritten.sendNotice(inboundRestoredNoticeText(toldWhy));
+      },
+      held: (relayMissing) => {
+        logger.warn(
+          `envoy: a registration found that this session holds no relay subject${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
+        );
       },
       stopping: () => shuttingDown,
     }

@@ -782,6 +782,63 @@ describe("consumer delivery", () => {
     }
   });
 
+  // The log does not wait for the start race: the first registration that found no relay subject
+  // is logged at once, at warn (`held`), so the log of a start whose relay never opens says so
+  // long before the bound. The line says what that registration found, and why, and makes no
+  // claim about what the session receives. It is written once per outage, not at every try. The
+  // notice, its card, its pane note and the warning that the session receives nothing wait for
+  // the bound.
+  test("the first registration that finds no relay subject is logged at once at warn, a later one of the same outage logs nothing more, and the notice, its card and its pane note wait for the bound", async () => {
+    const logged: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.message.startsWith("envoy: ")) logged.push(`${entry.level} ${entry.message}`);
+    });
+    natsState.failConnects = 99;
+    const session = await bootConsumer("consumer-start-race-logged", { withoutRelay: true });
+    const start = Date.now();
+    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
+    const found = () => logged.filter((line) => line.includes("holds no relay subject"));
+    const told = () => ({
+      cards: session.cards("Envoy inbound unavailable").length,
+      notes: session.notifications.filter((message) =>
+        message.includes("inbound messages are unavailable")
+      ).length,
+    });
+    try {
+      // The start's pass found NATS closed, so its registration found no relay subject.
+      await until(() => found().length > 0, "the log line");
+      expect(found()).toEqual([
+        "warn envoy: a registration found that this session holds no relay subject, because its relay subject could not be opened: CONNECTION_REFUSED",
+      ]);
+      expect(logged.filter((line) => /receive[sd]? nothing/.test(line))).toEqual([]);
+      expect(told()).toEqual({ cards: 0, notes: 0 });
+      expect(session.heldNotices("Envoy inbound unavailable")).toEqual([]);
+
+      // A later registration of the same outage, inside the bound, logs nothing more.
+      setSystemTime(new Date(start + 15_000));
+      await session.tickWithoutNats();
+      expect(found()).toHaveLength(1);
+      expect(told()).toEqual({ cards: 0, notes: 0 });
+      expect(session.heldNotices("Envoy inbound unavailable")).toEqual([]);
+
+      // Past the bound the session is told once: the notice's card, its pane note, and its own
+      // log line.
+      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
+      await session.tickWithoutNats();
+      expect(told()).toEqual({ cards: 1, notes: 1 });
+      expect(
+        logged.filter((line) => line.startsWith("warn envoy: this session receives nothing: "))
+      ).toHaveLength(1);
+      expect(
+        logged.filter((line) => line.startsWith("warn envoy: a registration found that "))
+      ).toHaveLength(1);
+    } finally {
+      setSystemTime();
+      await session.stop();
+      stopSink();
+    }
+  });
+
   test("a registration the listener refuses is told at once", async () => {
     const session = await bootConsumer("consumer-refused-at-once", {
       refuse: { status: 503, reason: "no_grant" },

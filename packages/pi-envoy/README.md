@@ -169,7 +169,10 @@ notice is told once more, as Envoy inbound unavailable, and the accepted registr
 says that Envoy inbound is restored. At the session's start the first NATS dial can fail: the
 start warns in the pane that the session is not registered and keeps trying in the background,
 but the session is told that Envoy inbound is unavailable only when no registration is accepted
-within two minutes. A session whose stop has begun registers nothing, and is told neither that
+within two minutes. The log does not wait: the first registration that finds no relay subject
+writes a warning at once, `envoy: a registration found that this session holds no relay subject`,
+with why the relay subject could not be opened, and a later one of the same outage writes no
+second one. A session whose stop has begun registers nothing, and is told neither that
 Envoy inbound is unavailable nor that it is restored.
 
 ## A person's message from Dispatch
