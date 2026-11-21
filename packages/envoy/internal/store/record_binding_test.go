@@ -222,3 +222,78 @@ func TestAJetStreamAnswerAtAnInterestKeyIsHealedByTheNextWrite(t *testing.T) {
 		})
 	}
 }
+
+// The forge proof's P2 at the store: the server copies a delete marker onto a session's key from
+// another key's. A direct get answers the copy as a key with no row, so the write that follows
+// creates the row, and nats.go's Create, refused for the marker the key holds, updated at the
+// revision a direct get reports for that marker: for a copy that is its source's, the
+// Nats-Sequence header the copy carries first, so it was refused at every attempt and every
+// registration of the session answered 503 for as long as the copy stood. The write replaces the
+// marker at the sequence the stream's leader reports it stored at. The read the write planned from
+// still answers no row at revision 0, which is what a fence on that read is built on (cmd/listener's
+// storedTopics). The control is the session's own delete marker, written at its key and not copied,
+// which a write replaced before as now: the copy's reported revision is what the write was refused
+// for.
+func TestAWriteOverACopiedDeleteMarkerReplacesItAtItsTrueSequence(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	t.Cleanup(cleanup)
+	reg := openRegistry(t, conn)
+	ctx := context.Background()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	kv, err := js.KeyValue(bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("open %s: %v", bus.InterestBucket, err)
+	}
+	for _, marker := range []struct {
+		name, suffix string
+		copied       bool
+		mark         func(key string) error
+	}{
+		// A plain marker: nats.go's Delete and Purge with no LastRevision send no
+		// expected-sequence header.
+		{"a delete marker copied from another key", "copied_delete", true, func(key string) error { return kv.Delete(key) }},
+		{"a purge marker copied from another key", "copied_purge", true, func(key string) error { return kv.Purge(key) }},
+		{"the session's own delete marker", "own_delete", false, func(key string) error { return kv.Delete(key) }},
+	} {
+		for _, write := range rowWrites {
+			t.Run(marker.name+"/"+write.name, func(t *testing.T) {
+				victim := "ses_marked_" + marker.suffix + "_" + write.suffix
+				if _, err := write.write(ctx, reg, Interest{SessionID: victim, MachineID: "edge-a", Dir: "/priv"}, []string{bindingPrivTopic}); err != nil {
+					t.Fatalf("register %s: %v", victim, err)
+				}
+				var stored uint64
+				if marker.copied {
+					source := victim + "_source"
+					putInterest(t, kv, Interest{SessionID: source, MachineID: "shared-a", Topics: []string{bindingPubTopic}})
+					if err := marker.mark(source); err != nil {
+						t.Fatalf("mark %s: %v", source, err)
+					}
+					stored = testnats.ServerWritesKey(t, conn, bus.InterestBucket, victim, testnats.DirectGetLast(bus.InterestBucket, source), nil)
+				} else {
+					if err := marker.mark(victim); err != nil {
+						t.Fatalf("mark %s: %v", victim, err)
+					}
+					stored = testnats.LastSequence(t, conn, bus.InterestBucket, victim)
+				}
+				awaitInterestApplied(t, reg, victim, stored)
+				if row, revision, err := reg.RefreshAt(ctx, victim); !errors.Is(err, natsgo.ErrKeyNotFound) || revision != 0 {
+					t.Fatalf("RefreshAt(%s) over %s = %+v at revision %d, %v; want no row at revision 0", victim, marker.name, row, revision, err)
+				}
+
+				row, err := write.write(ctx, reg, Interest{SessionID: victim, MachineID: "edge-a", Dir: "/priv"}, []string{bindingPrivTopic})
+				if err != nil {
+					t.Fatalf("%s for %s over %s stored at %d: %v", write.name, victim, marker.name, stored, err)
+				}
+				requireOwnRow(t, row, victim, write.name)
+				own, revision, err := reg.RefreshAt(ctx, victim)
+				if err != nil || revision <= stored {
+					t.Fatalf("the bucket's row of %s is %+v at revision %d (%v), want one written after %s stored at %d", victim, own, revision, err, marker.name, stored)
+				}
+				requireOwnRow(t, own, victim, "the bucket's row of "+victim)
+			})
+		}
+	}
+}

@@ -372,18 +372,18 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 
 // putInterestAt writes sessionID's interest record only while its latest revision is revision,
 // creating it when revision is 0, which names the session that had no row when its plan read the
-// bucket. It reports the revision written, the epoch of the handle it was written through, and
-// whether the bucket took the write: a bucket that refused it holds another writer's row since,
-// which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create and an
-// Update share), and the caller plans again over that row. Each call waits no longer than ctx
-// (bus.Bounded); a write ctx abandoned may still land, and is safe for the same reason a
+// bucket (createInterest). It reports the revision written, the epoch of the handle it was written
+// through, and whether the bucket took the write: a bucket that refused it holds another writer's
+// row since, which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create
+// and an Update share), and the caller plans again over that row. Each call waits no longer than
+// ctx (bus.Bounded); a write ctx abandoned may still land, and is safe for the same reason a
 // conditional delete is: it stores only over the very revision it read, so it cannot undo a write
 // that landed after it.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []byte, revision uint64) (uint64, uint64, bool, error) {
 	kv, epoch := r.watcher.Handle()
 	written, answered, err := bus.Bounded(ctx, func() (uint64, error) {
 		if revision == 0 {
-			return kv.Create(sessionID, value)
+			return createInterest(ctx, kv, sessionID, value)
 		}
 		return kv.Update(sessionID, value, revision)
 	})
@@ -397,6 +397,26 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 		return 0, epoch, false, err
 	}
 	return written, epoch, true, nil
+}
+
+// createInterest writes value as sessionID's row where the read its write was planned from found
+// none. A key with no row can still hold a message, a delete or a purge marker, which the write
+// replaces at the sequence the stream's leader reports it stored at (bus.KeyValue.NewestFromLeader);
+// only a key the stream holds no message for is created. nats.go's Create would replace the marker
+// at the revision a direct get reports for it, which for a marker the server copied from another
+// key's is the source's: the copy carries the source's Nats-Sequence header ahead of its own, so
+// that write was refused at every attempt, and every registration of the session answered 503 for
+// as long as the copy stood. A key whose newest message is a row stored since that read is left to
+// Create, which the bucket refuses with nats.ErrKeyExists.
+func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, value []byte) (uint64, error) {
+	newest, err := kv.NewestFromLeader(ctx, sessionID)
+	switch {
+	case err == nil && newest.Operation() != nats.KeyValuePut:
+		return kv.Update(sessionID, value, newest.Revision())
+	case err != nil && !errors.Is(err, nats.ErrKeyNotFound):
+		return 0, err
+	}
+	return kv.Create(sessionID, value)
 }
 
 // mergeForUpsert computes the Interest to persist by reconciling the requested
