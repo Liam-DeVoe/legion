@@ -154,11 +154,14 @@ func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) *dur
 	return d
 }
 
-// on is JetStream on physical's connection, opened now if it is not open.
+// on is JetStream on physical's connection, opened now if it is not open. The dial runs outside
+// the lock, so a reader of another name never waits on it; of two dials of one name at once, the
+// later closes its own and takes the first's.
 func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetStream, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if open, ok := d.generations[physical]; ok {
+	open, ok := d.generations[physical]
+	d.mu.Unlock()
+	if ok {
 		return open.js, nil
 	}
 	if consumernames.LogicalOf(physical) == physical {
@@ -173,6 +176,12 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("open JetStream on %s: %w", name, err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if open, ok := d.generations[physical]; ok {
+		conn.Close()
+		return open.js, nil
 	}
 	d.generations[physical] = &generation{conn: conn, js: js}
 	return js, nil
