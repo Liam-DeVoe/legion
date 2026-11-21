@@ -227,14 +227,12 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 //     address's recorded `sub`, the cookie's own while the generation stands;
 //   - a personal token: refused once revoked, or once its account no longer holds the address
 //     (tokenAccountReplaced: people records another account, or the token records none and was
-//     made before people recorded the address's); its account is the one its mint recorded;
-//   - a broker token: refused once its account no longer holds the address (brokerAccountReplaced:
-//     people records another account, or the token records none and its credential was made
-//     before people recorded the address's, or within brokerCredentialMargin after), as its
-//     admission is, however long its client held the body back. Its account is the one its own
-//     credential records at the broker (BrokerAdmittedSubject).
+//     made before people recorded the address's); its account is the one its mint recorded.
 //
-// A credential that records no account, made after the recording, is bound to the address's
+// A broker-issued token never decides: none holds the approve scope these routes require
+// (brokerPersonScopes), so it is refused before it gets here.
+//
+// A personal token that records no account, made after the recording, is bound to the address's
 // account (credentialSubjectSQL). The read runs in a transaction of its own after the address's
 // advisory lock, taken shared (store.AddressLockSharedSQL), the lock every sign-in that records the
 // address's account takes first: a sign-in in flight makes the decision wait and then read what it
@@ -242,18 +240,15 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // relayed while the sign-in is uncommitted, on an address no row holds too, however long the
 // sign-in takes; a decision read before the sign-in takes the lock is relayed within the broker's
 // request deadline, which brokerCredentialMargin covers. A caller who lost the address is refused
-// as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token,
-// and for a broker token the refusal its admission would name (brokerReplacedRefusal:
-// BROKER_TOKEN_RECORDS_NO_ACCOUNT, BROKER_TOKEN_NOT_ACTIVE or BROKER_ACCOUNT_NOT_SIGNED_IN), read
-// in the same statement; a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+// as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token;
+// a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
 	if actor.Act != nil && actor.Act.TokenID != "" {
 		tokenID = &actor.Act.TokenID
 	}
-	broker := s.mintBrokerCaller(r, actor)
-	var cookieGone, tokenGone, brokerReplaced, brokerNamed bool
+	var cookieGone, tokenGone bool
 	unread := func(err error) (string, int64, error) {
 		slog.Warn("dispatch: a credential decision was refused: whether its caller still holds the address could not be read", "error", err)
 		return "", 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
@@ -270,13 +265,11 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	if err := tx.QueryRow(r.Context(), `
 		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
-				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$7::boolean")+`)),
-			`+brokerAccountReplaced("$5::text", "$6::text", "$9::boolean", "$8::timestamptz", "$7::boolean")+`,
-			`+brokerAccountNamed("$5::text", "$6::text")+`,
-			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$6::text", "$7::boolean", "$8::timestamptz")+`, ''),
+				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$5::boolean")+`)),
+			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$5::boolean")+`, ''),
 			coalesce((select generation from user_sessions where login = $1::text), 0)
-	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, s.deps.SignInIssuer != "", broker.created, broker.foreign).
-		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &subject, &generation); err != nil {
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, s.deps.SignInIssuer != "").
+		Scan(&cookieGone, &tokenGone, &subject, &generation); err != nil {
 		return unread(err)
 	}
 	switch {
@@ -284,8 +277,6 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 		return "", 0, identity.ErrNoIdentity
 	case tokenGone:
 		return "", 0, errTokenRevoked()
-	case brokerReplaced:
-		return "", 0, brokerReplacedRefusal(broker.subject == "", brokerNamed)
 	}
 	return subject, generation, nil
 }
