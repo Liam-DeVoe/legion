@@ -3081,8 +3081,8 @@ package api
 // again gets the same answer. The code is a value of the refusal's `code`, which no reader
 // enumerates, so a plugin below 214 reads the code and its sentence as it reads every other one,
 // and no answer's shape moves for it. This entry also names what the two routes answer and 211's
-// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID` and
-// `400 INVALID_VERSION`, `500 RECORD_UNAVAILABLE` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
+// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
+// `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
 // `400 INVALID_ISSUE`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes the
 // two routes answer of their own from the source and holds each to this history.
 // `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain one key: each assignment of

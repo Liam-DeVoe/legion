@@ -158,11 +158,6 @@ func reachedCodes(t *testing.T, source planSource, start []string, intakeCodes m
 				switch fun := call.Fun.(type) {
 				case *ast.Ident:
 					callee = fun.Name
-					if callee == "writeFailure" && len(call.Args) == 4 {
-						if code, ok := stringLiteral(call.Args[2]); ok {
-							codes = append(codes, code)
-						}
-					}
 				case *ast.SelectorExpr:
 					x, ok := fun.X.(*ast.Ident)
 					switch {
@@ -171,6 +166,13 @@ func reachedCodes(t *testing.T, source planSource, start []string, intakeCodes m
 					case ok && source.imports[x.Name]:
 					default:
 						callee = fun.Sel.Name
+					}
+				}
+				// writeFailure (the server's method, in a file this census does not read) takes the
+				// code just before the message, its last argument.
+				if callee == "writeFailure" && len(call.Args) >= 2 {
+					if code, ok := stringLiteral(call.Args[len(call.Args)-2]); ok {
+						codes = append(codes, code)
 					}
 				}
 				if callees, local := source.funcs[callee]; local {
