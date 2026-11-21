@@ -244,7 +244,7 @@ func natsStartScript(args []string, stdout, stderr io.Writer) int {
 func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	s := newSubcommand("webhook-listener-env",
 		"--machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] "+
-			"--listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>] [--private-projects]", stderr,
+			"--listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]", stderr,
 		map[string]string{
 			"machineId":               "machine-id",
 			"natsUrls":                "nats-url",
@@ -255,12 +255,10 @@ func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 			"natsReplicas":            "nats-replicas",
 			"senderMessagesPerMinute": "sender-messages-per-minute",
 			"senderMessageBurst":      "sender-message-burst",
-			"privateProjects":         "private-projects",
 		})
 	var machineID, reviewerAppID, mentionTrigger, listenHost string
 	var natsURLs, webhooks stringList
 	var natsReplicas, senderMessagesPerMinute, senderMessageBurst int
-	var privateProjects bool
 	s.fs.StringVar(&machineID, "machine-id", "", "machineId: the listener's name, ENVOY_MACHINE_ID")
 	s.fs.Var(&natsURLs, "nats-url", "natsUrls: one NATS server's URL; give it once per URL, in order")
 	s.fs.Var(&webhooks, "webhook", "webhooks: one webhook the listener serves; this version takes none, or exactly github, then slack")
@@ -274,20 +272,17 @@ func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	s.fs.IntVar(&senderMessageBurst, "sender-message-burst", 0, fmt.Sprintf(
 		"senderMessageBurst: %s, the messages each agent session may send at once, at least 1 and only with --sender-messages-per-minute; leave it out for a burst of the rate",
 		bus.SenderMessageBurstEnvVar))
-	s.fs.BoolVar(&privateProjects, "private-projects", false,
-		"privateProjects: the deployment may make a Dispatch project private, ENVOY_PRIVATE_PROJECTS=1; unset, the listener renders as before")
 	given, code, stop := s.parse(args, "machine-id", "listen-host", "nats-replicas")
 	if stop {
 		return code
 	}
 
 	env := rendering.ListenerEnv{
-		MachineID:       machineID,
-		NatsUrls:        natsURLs,
-		ListenHost:      listenHost,
-		NatsReplicas:    natsReplicas,
-		Webhooks:        webhooks,
-		PrivateProjects: privateProjects,
+		MachineID:    machineID,
+		NatsUrls:     natsURLs,
+		ListenHost:   listenHost,
+		NatsReplicas: natsReplicas,
+		Webhooks:     webhooks,
 	}
 	if given["reviewer-app-id"] {
 		env.ReviewerAppId = &reviewerAppID

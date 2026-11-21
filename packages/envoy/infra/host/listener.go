@@ -47,13 +47,6 @@ type ListenerArgs struct {
 	// default true; false for a listener whose NATS is not reachable from where the stack is
 	// applied (the container is created and Docker restarts it until it connects)
 	WaitForHealthy *bool `pulumi:"waitForHealthy,optional"`
-	// PrivateProjects says the listener's deployment may make a Dispatch project private:
-	// ENVOY_PRIVATE_PROJECTS=1, in the container's envs and the watchdog's env file, which the
-	// listener reads once it holds each session to its token's projects
-	// (core.ListenerConfig.PrivateProjects).
-	// Default false, which renders what the listener rendered before the input existed. A program
-	// sets it from the same value as its hub's privateProjects.
-	PrivateProjects *bool `pulumi:"privateProjects,optional"`
 }
 
 // WatchdogArgs deploy the systemd watchdog that recreates a removed envoy-listener container.
@@ -114,11 +107,8 @@ func resolveListener(name string, args *ListenerArgs) (listenerPlan, error) {
 	}
 	plan := listenerPlan{
 		containerName: defaultContainerName,
-		plain: core.ListenerConfig{
-			MachineID: args.MachineID, Port: core.DefaultListenerPort,
-			PrivateProjects: args.PrivateProjects != nil && *args.PrivateProjects,
-		},
-		packages: []string{"docker"},
+		plain:         core.ListenerConfig{MachineID: args.MachineID, Port: core.DefaultListenerPort},
+		packages:      []string{"docker"},
 	}
 	if args.ContainerName != nil {
 		plan.containerName = *args.ContainerName

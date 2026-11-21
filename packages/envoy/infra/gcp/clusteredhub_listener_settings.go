@@ -1,7 +1,9 @@
 package gcp
 
 import (
+	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -14,7 +16,8 @@ import (
 // and its credential (core.ListenerConfig.Env), and credential is the token check it requires of
 // every caller, nil where it serves with none (clusteredHubListenerEnv). natsAudience is set
 // behind the auth service, where the listener presents a projected token for it and the seed's
-// Secret is empty; it is empty otherwise, where the pod mounts that Secret.
+// Secret is empty; it is empty otherwise, where the pod mounts that Secret. privacy is what the
+// listener of a hub that may make a project private reads privacy with, nil on any other hub.
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
@@ -23,6 +26,17 @@ type clusteredHubListener struct {
 	cpu, memory                   string
 	env                           []string
 	credential                    *clusteredHubListenerCredential
+	privacy                       *clusteredHubListenerPrivacy
+}
+
+// clusteredHubListenerPrivacy is the part of a private hub's listener its environment does not
+// say: the audience of the projected token of its own account it presents to the secrets broker,
+// mounted at clusteredHubListenerBrokerTokenFile, and the namespaces of its all-projects callers,
+// which the listener's NetworkPolicy admits at its port and which reach its replicas at the
+// headless Service clusteredHubListenerInstancesName names.
+type clusteredHubListenerPrivacy struct {
+	brokerAudience string
+	namespaces     []string
 }
 
 // clusteredHubListenerCredential is the token check a listener requires: the issuer and audience
@@ -132,6 +146,10 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
+	privacy, err := newClusteredHubListenerPrivacy(args, l, path, credential)
+	if err != nil {
+		return nil, nil, err
+	}
 	listener := &clusteredHubListener{
 		image:            l.Image,
 		machineID:        machineID,
@@ -140,6 +158,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		natsAudience:     l.NatsAudience,
 		clientNamespaces: l.ClientNamespaces,
 		credential:       credential,
+		privacy:          privacy,
 	}
 	// The listener is the only container of its own pod, so its size is that pod's whole request,
 	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
@@ -174,15 +193,103 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		StreamMaxBytes:          s.streamMaxBytes,
 		SenderMessagesPerMinute: rate,
 		SenderMessageBurst:      burst,
-		PrivateProjects:         args.PrivateProjects,
 	}
 	if service {
 		config.ServiceTokenFile = clusteredHubListenerTokenFile
 	}
-	if listener.env, err = config.Env([]string{s.serviceURL}); err != nil {
+	// A private hub's listener reads each decision's privacy from the secrets broker in its
+	// required mode, with the projected token of its own account, and so takes broker tokens too:
+	// the broker check in its token-file form, and the privacy settings, from its own inputs and,
+	// for the flag, from the hub's privateProjects alone. Any other hub's listener renders none of
+	// them, whatever the inputs hold (R9).
+	if privacy != nil {
+		config.AgentSecretsURL, config.BrokerTokenFile, config.PublicURL = l.AgentSecretsUrl, clusteredHubListenerBrokerTokenFile, l.PublicUrl
+		config.PrivacySourceURL, config.PrivacyRequired, config.AllProjectsAccounts = l.PrivacySourceUrl, args.PrivateProjects, l.AllProjectsAccounts
+	}
+	// What is about to be rendered is held to the hub's privacy mode before anything registers, so a
+	// render that drops a piece is refused here, naming the listener and the piece.
+	if err := core.CheckPrivacySource(path, config, args.PrivateProjects); err != nil {
 		return nil, nil, err
 	}
+	if listener.env, err = config.Env([]string{s.serviceURL}); err != nil {
+		return nil, nil, prefixedInput(path, err)
+	}
 	return listener, &listenerUser{machineID: machineID, nkey: l.NKey, service: service}, nil
+}
+
+// prefixedInput is err, core's refusal of a listener config, with the input it names prefixed by
+// path, the hub's own path for its listener, where that input is one the listener's args carry
+// under the same name: the broker check's and the privacy settings'. core names its own fields,
+// which a consumer writes as <path>.<input>; any other error passes unchanged.
+func prefixedInput(path string, err error) error {
+	var input *core.InputError
+	if !errors.As(err, &input) {
+		return err
+	}
+	switch input.Input {
+	case "agentSecretsUrl", "publicUrl", "privacySourceUrl", "allProjectsAccounts":
+		return core.InputErrorf(path+"."+input.Input, "%s.%w", path, input.Err)
+	}
+	return err
+}
+
+// newClusteredHubListenerPrivacy resolves what the listener l, declared at path, of a hub with
+// privateProjects reads privacy with: nil on a hub without it, where the privacy inputs are read
+// nowhere. Such a listener requires a token of every caller (credential), since its readiness
+// route answers Dispatch's account by its projected token and a listener with no token check
+// serves every caller the same; a listener that requires none is refused, naming privateProjects
+// and path. agentSecretsUrl, publicUrl, brokerAudience, privacySourceUrl and allProjectsAccounts
+// are each required, by its path. brokerAudience is refused when it is natsAudience's: that token
+// is the auth service's, which the broker's routes do not accept. Each all-projects caller is a
+// subject the token check admits, since the listener verifies a caller before it serves it every
+// project's sessions, and its namespace is admitted at the listener's port. The values' shapes are
+// core's rules (core.ListenerConfig.Check, core.CheckBroker), named by path.
+func newClusteredHubListenerPrivacy(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, credential *clusteredHubListenerCredential) (*clusteredHubListenerPrivacy, error) {
+	if !args.PrivateProjects {
+		return nil, nil
+	}
+	if credential == nil {
+		return nil, core.InputErrorf("privateProjects", "privateProjects and %s: a listener of a hub that may make a project private requires a token of every caller (oidcIssuer, oidcAudience, oidcAccounts), since its readiness route answers Dispatch's account by its projected token; declare the listener as listener, or give it clientNamespaces", path)
+	}
+	for _, in := range []struct {
+		name string
+		set  bool
+	}{
+		{"agentSecretsUrl", l.AgentSecretsUrl != ""},
+		{"publicUrl", l.PublicUrl != ""},
+		{"brokerAudience", l.BrokerAudience != ""},
+		{"privacySourceUrl", l.PrivacySourceUrl != ""},
+		{"allProjectsAccounts", len(l.AllProjectsAccounts) > 0},
+	} {
+		if !in.set {
+			return nil, core.InputErrorf(path+"."+in.name, "%s.%s is required with privateProjects: the listener of a hub that may make a project private reads each decision's privacy from the secrets broker (agentSecretsUrl, publicUrl, brokerAudience, privacySourceUrl) and serves every project's sessions to the callers allProjectsAccounts names", path, in.name)
+		}
+	}
+	if err := core.CheckEnvValue(path+".brokerAudience", "the broker token's audience", l.BrokerAudience); err != nil {
+		return nil, err
+	}
+	if l.BrokerAudience == l.NatsAudience {
+		return nil, core.InputErrorf(path+".brokerAudience", "%s.brokerAudience is %s.natsAudience's audience, %q: that token is the auth service's, which the secrets broker's routes do not accept, so the listener could neither introspect a caller's token nor read privacy with it",
+			path, path, l.NatsAudience)
+	}
+	admitted := make(map[string]bool, len(credential.accounts))
+	for _, account := range credential.accounts {
+		admitted[account] = true
+	}
+	privacy := &clusteredHubListenerPrivacy{brokerAudience: l.BrokerAudience}
+	for i, account := range l.AllProjectsAccounts {
+		namespace, _, ok := core.ServiceAccountSubject(account)
+		if !ok || !dnsLabel(namespace) {
+			return nil, core.InputErrorf(path+".allProjectsAccounts", "%s.allProjectsAccounts[%d] %q must be system:serviceaccount:<namespace>:<name>, a ServiceAccount's subject", path, i, account)
+		}
+		if !admitted[account] {
+			return nil, core.InputErrorf(path+".allProjectsAccounts", "%s.allProjectsAccounts[%d] %q is not in %s.oidcAccounts: the listener verifies a caller's projected token before it serves it every project's sessions", path, i, account, path)
+		}
+		if !slices.Contains(privacy.namespaces, namespace) {
+			privacy.namespaces = append(privacy.namespaces, namespace)
+		}
+	}
+	return privacy, nil
 }
 
 // clusteredHubListenerCredentialFor resolves the token check the listener l, declared at path,

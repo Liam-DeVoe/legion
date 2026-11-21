@@ -269,6 +269,24 @@ type ClusteredHubListenerArgs struct {
 	// limit: 500m and 1Gi by default.
 	Cpu    *string `pulumi:"cpu,optional"`
 	Memory *string `pulumi:"memory,optional"`
+	// What a listener of a hub that may make a project private reads each decision's privacy
+	// with, each required with the hub's privateProjects and read nowhere without it, so an
+	// all-public hub's listener renders what it rendered before these inputs existed, whatever
+	// they hold (newClusteredHubListenerPrivacy). agentSecretsUrl is the secrets broker's base
+	// URL (ENVOY_AGENT_SECRETS_URL), publicUrl the listener's own origin, which a caller's DPoP
+	// proof names (ENVOY_PUBLIC_URL), and brokerAudience the audience of the projected token of
+	// the listener's own account it introspects and reads privacy with, the broker's
+	// BROKER_K8S_OIDC_AUDIENCE, mounted at /var/run/secrets/envoy-broker/token
+	// (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE) and never natsAudience's. privacySourceUrl is the
+	// broker's GET /v1/project-privacy (ENVOY_PROJECT_PRIVACY_URL), and allProjectsAccounts the
+	// callers the listener serves every project's sessions to (ENVOY_ALL_PROJECTS_ACCOUNTS), each
+	// a subject oidcAccounts lists, Dispatch's among them: their namespaces reach the listener's
+	// port, and its replicas at the headless Service <name>-listener-instances.
+	AgentSecretsUrl     string   `pulumi:"agentSecretsUrl,optional"`
+	PublicUrl           string   `pulumi:"publicUrl,optional"`
+	BrokerAudience      string   `pulumi:"brokerAudience,optional"`
+	PrivacySourceUrl    string   `pulumi:"privacySourceUrl,optional"`
+	AllProjectsAccounts []string `pulumi:"allProjectsAccounts,optional"`
 }
 
 // Annotate names the type gcp:ClusteredHubListener in the schema, for the reason NATSUserArgs's
@@ -385,6 +403,9 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		list(path+".allowedHosts", l.AllowedHosts)
 		fields = append(fields, field{path + ".oidcIssuer", l.OidcIssuer}, field{path + ".oidcAudience", l.OidcAudience})
 		list(path+".oidcAccounts", l.OidcAccounts)
+		fields = append(fields, field{path + ".agentSecretsUrl", l.AgentSecretsUrl}, field{path + ".publicUrl", l.PublicUrl},
+			field{path + ".brokerAudience", l.BrokerAudience}, field{path + ".privacySourceUrl", l.PrivacySourceUrl})
+		list(path+".allProjectsAccounts", l.AllProjectsAccounts)
 	}
 	listener("listener", args.Listener)
 	if t := args.Tailnet; t != nil {

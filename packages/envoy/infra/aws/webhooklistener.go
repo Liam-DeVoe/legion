@@ -62,10 +62,6 @@ type WebhookListenerArgs struct {
 	ListenHost     string  `pulumi:"listenHost"`              // ENVOY_LISTEN_HOST
 	NatsReplicas   int     `pulumi:"natsReplicas"`            // ENVOY_NATS_REPLICAS
 	MentionTrigger *string `pulumi:"mentionTrigger,optional"` // ENVOY_GITHUB_MENTION_TRIGGER, with github
-	// ENVOY_PRIVATE_PROJECTS=1 when true: the deployment may make a Dispatch project private.
-	// Default false, which renders what the listener rendered before the input existed; a program
-	// sets it from the same value as its aws:NatsService's privateProjects.
-	PrivateProjects *bool `pulumi:"privateProjects,optional"`
 	// ENVOY_SENDER_MESSAGES_PER_MINUTE and ENVOY_SENDER_MESSAGE_BURST, the limit on the messages
 	// each agent session sends through the listener: how many a minute, from 1 to 60000, and how
 	// many at once, at least 1 and only with a rate. A rate with no burst takes the rate as its
@@ -348,7 +344,6 @@ func (args *WebhookListenerArgs) environment(natsUrls []string) rendering.Listen
 		MentionTrigger:          args.MentionTrigger,
 		SenderMessagesPerMinute: args.SenderMessagesPerMinute,
 		SenderMessageBurst:      args.SenderMessageBurst,
-		PrivateProjects:         args.PrivateProjects != nil && *args.PrivateProjects,
 	}
 }
 

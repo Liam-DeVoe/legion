@@ -24,10 +24,10 @@ var dispatchListenerGoldens = []struct{ read, path string }{
 	{"../../infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden", "packages/envoy/infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden"},
 }
 
-// renderedListenerEnv reads the envoy-listener container's environment out of the pod golden at
+// dispatchListenerGoldenEnv reads the envoy-listener container's environment out of the pod golden at
 // read: each variable's value, and for one read from a Secret the empty string, its name a key of
 // fromSecret. path names the golden from the repository root, for a failure read in CI.
-func renderedListenerEnv(t *testing.T, read, path string) (env map[string]string, fromSecret map[string]bool) {
+func dispatchListenerGoldenEnv(t *testing.T, read, path string) (env map[string]string, fromSecret map[string]bool) {
 	t.Helper()
 	golden, err := os.ReadFile(read)
 	if err != nil {
@@ -83,7 +83,7 @@ func renderedListenerEnv(t *testing.T, read, path string) (env map[string]string
 func TestDispatchsListenerAdmitsBothCredentialsThisRelease(t *testing.T) {
 	for _, golden := range dispatchListenerGoldens {
 		t.Run(golden.path, func(t *testing.T) {
-			rendered, fromSecret := renderedListenerEnv(t, golden.read, golden.path)
+			rendered, fromSecret := dispatchListenerGoldenEnv(t, golden.read, golden.path)
 			if !fromSecret["ENVOY_API_TOKEN"] {
 				t.Fatalf("%s renders no ENVOY_API_TOKEN from a Secret: the listener would refuse the shared bearer an app pod of the release before presents", golden.path)
 			}

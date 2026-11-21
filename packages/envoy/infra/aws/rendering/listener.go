@@ -57,10 +57,6 @@ type ListenerEnv struct {
 	// refuses it by core.CheckSenderLimit.
 	SenderMessagesPerMinute *int
 	SenderMessageBurst      *int
-	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1 (core.ListenerConfig.PrivateProjects, which says
-	// when the listener reads it): the deployment may make a Dispatch project private. False writes
-	// nothing.
-	PrivateProjects bool
 }
 
 // Check refuses what the component refuses of these inputs before it registers anything: every
@@ -150,7 +146,6 @@ func (e ListenerEnv) config() (core.ListenerConfig, error) {
 	return core.ListenerConfig{
 		MachineID: e.MachineID, Port: ListenerPort, ListenHost: e.ListenHost,
 		SenderMessagesPerMinute: rate, SenderMessageBurst: burst,
-		PrivateProjects: e.PrivateProjects,
 	}, nil
 }
 

@@ -54,7 +54,7 @@ and `instanceGroup`, the group's name.
 | `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; its NATS identity, which follows `authCallout`: without it, `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed, and `nkey`, that seed's public key, and with it `natsAudience`, the audience of the VM's Google identity token the listener presents to the auth service instead; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends. See [The hub's listener](#the-hubs-listener), [The listener's broker check](#the-listeners-broker-check) and [The listener's sender limit](#the-listeners-sender-limit). |
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. With it, the listener's environment carries `ENVOY_PRIVATE_PROJECTS=1`, which a listener that holds each session to its token's projects reads to decide a project frame that carries no stamp as private. See [The auth service](#the-auth-service). |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. Refused beside `listener` too: the VM hub is never private, and a private hub's listener reads each decision's privacy from the secrets broker as the projected token of its own account, which `gcp:ClusteredNatsHub`'s session listener does. See [The auth service](#the-auth-service). |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -104,6 +104,8 @@ The hub refuses these before it registers anything, with an error naming the inp
   `listener.natsAudience is required with authCallout: …`, one whose `natsAudience` carries
   whitespace or a control character, and one that sets `nkey` or `seedSecret`, as
   `listener.nkey is set beside authCallout: …`, since a listener connects as one identity;
+- `privateProjects` beside a `listener`, as `privateProjects and listener: the VM hub is never
+  private, …`, naming `privateProjects`;
 - a `listener.senderMessagesPerMinute` outside 1 to 60000, a `listener.senderMessageBurst` below
   1, and a `listener.senderMessageBurst` with no rate, as
   `listener.senderMessageBurst is given without listener.senderMessagesPerMinute, and the listener
@@ -404,8 +406,8 @@ identity instead (see [The auth service](#the-auth-service)), and its unit carri
 `NATS_SERVICE_GOOGLE_AUDIENCE=<listener.natsAudience>` after the broker check's variables, with no
 env file and no fetch before its start. The unit quotes and escapes every environment value that
 holds `%`, `$`, a quote or a backslash for systemd, the audience and the broker check's URL and
-audience among them, so percent-encoded URLs reach the listener literally. With
-`privateProjects`, `ENVOY_PRIVATE_PROJECTS=1` comes last.
+audience among them, so percent-encoded URLs reach the listener literally. A hub with
+`privateProjects` runs no listener of its own: the two are refused together.
 
 ### The listener's broker check
 
