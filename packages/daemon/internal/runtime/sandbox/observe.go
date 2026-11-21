@@ -721,27 +721,19 @@ func rolePrefixed(line string) bool {
 }
 
 // events are the pod's events, "<type> <reason>: <message>" joined by " | ", or why they could
-// not be read. Each message is printed with every key of the providers Secret the pods mount
-// (providersKeys) in its place as providersKeyShown: the kubelet's mount failure quotes the key
-// (`references non-existent secret key: <key>`), and a provider_keys value can be a provider's
-// key pasted where its name goes; these lines reach the daemon's log and its relaunch refusals.
+// not be read. A FailedMount on the providers volume naming a missing key is printed with the key
+// replaced by the settings that name it (providersMountedKeyShown); every other message is printed
+// as written. The kubelet's message quotes the key (`references non-existent secret key: <key>`),
+// and a provider_keys value is such a key and can be a provider's key pasted where its name goes;
+// these lines reach the daemon's log and its relaunch refusals.
 func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	events, err := r.podEvents(ctx, pod)
 	if err != nil {
 		return fmt.Sprintf("(the events could not be read: %v)", err)
 	}
-	keys := r.providersKeys()
-	// The longest first, so a key that holds another is replaced whole.
-	slices.SortFunc(keys, func(a, b string) int { return len(b) - len(a) })
 	parts := make([]string, 0, len(events))
 	for _, event := range events {
-		message := event.Message
-		for _, key := range keys {
-			if key != "" {
-				message = strings.ReplaceAll(message, key, providersKeyShown)
-			}
-		}
-		parts = append(parts, fmt.Sprintf("%s %s: %s", event.Type, event.Reason, message))
+		parts = append(parts, fmt.Sprintf("%s %s: %s", event.Type, event.Reason, r.providersMountedKeyShown(event)))
 	}
 	if len(parts) == 0 {
 		return "(none)"
@@ -749,8 +741,24 @@ func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	return strings.Join(parts, " | ")
 }
 
-// providersKeyShown stands for a key of the providers Secret in a pod event's message.
-const providersKeyShown = "[a providers Secret key]"
+// providersMountedKeyShown is event's message as events prints it: for a FailedMount on the
+// providers volume that names a missing key, the message up to the kubelet's missingSecretKey
+// wording, then the settings whose key it is (providersEntryOf), or "one no setting names"; any
+// other message as written.
+func (r *Runtime) providersMountedKeyShown(event corev1.Event) string {
+	if event.Reason != "FailedMount" || !strings.Contains(event.Message, `volume "`+providersVolume+`"`) {
+		return event.Message
+	}
+	before, key, missing := strings.Cut(event.Message, missingSecretKey)
+	if !missing {
+		return event.Message
+	}
+	entry := r.providersEntryOf(strings.TrimSpace(key))
+	if entry == "" {
+		entry = "one no setting names"
+	}
+	return before + "references a key the Secret does not hold: the key of " + entry
+}
 
 // podEvents lists the events the API server holds for pod, this incarnation's only.
 func (r *Runtime) podEvents(ctx context.Context, pod *corev1.Pod) ([]corev1.Event, error) {
