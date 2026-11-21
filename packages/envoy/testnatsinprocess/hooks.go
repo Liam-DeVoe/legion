@@ -17,7 +17,8 @@ type (
 	Hold  = internal.Hold
 )
 
-// The hold points of internal/testnats.
+// The points internal/testnats names: its eight hold points, and the two shutdown points a test
+// awaits.
 const (
 	WritePreIO     = internal.WritePreIO
 	WritePreRename = internal.WritePreRename
@@ -25,7 +26,10 @@ const (
 	StoreCreate    = internal.StoreCreate
 	APIWorker      = internal.APIWorker
 	ClientPublish  = internal.ClientPublish
+	MetaApply      = internal.MetaApply
 	StreamApply    = internal.StreamApply
+	ServerShutdown = internal.ServerShutdown
+	ServerDown     = internal.ServerDown
 )
 
 // Hook is internal/testnats.Hook: it installs the process's hook for t.

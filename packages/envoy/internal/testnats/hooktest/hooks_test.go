@@ -619,3 +619,46 @@ func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 		t.Fatalf("the released publish was not acknowledged within %s", reachWithin)
 	}
 }
+
+// A point no row above holds at is held to the same contract: msgget.timeSelected, the sequence a
+// message get by start_time chose (v2.15.1 alone: 2.10.29's message get takes no start_time).
+// Its event names its server and store, so OnServer takes it and the server's Stop releases the
+// goroutine it parks. Before it carried them, the hold was never reached on the server, and
+// without OnServer it parked an API worker that the Stop then waited for.
+func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
+	point := testnats.Point("msgget.timeSelected")
+	if ok, why := point.Exists(); !ok {
+		t.Skipf("nats-server %s has no %s: %s", natsserver.VERSION, point, why)
+	}
+	srv, hooks, conn, js := heldStream(t)
+	if _, err := js.Publish("hold.1", nil); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	const subject = "$JS.API.STREAM.MSG.GET.HOLD"
+	body := []byte(fmt.Sprintf(`{"start_time":%q}`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)))
+	get := func() <-chan error {
+		return answer(func() error {
+			_, err := conn.Request(subject, body, reachWithin)
+			return err
+		})
+	}
+	answered(t, get(), "the unheld message get by start time")
+
+	hold := hooks.Hold(point, testnats.OnServer(srv))
+	done := get()
+	t.Logf("held %s", hold.Reached(t))
+	unanswered(t, done, "the message get by start time")
+	stopped := make(chan struct{})
+	go func() {
+		srv.Stop(t)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(stopWithin):
+		t.Fatalf("the server's Stop did not return within %s while a hold at %s parked one of its goroutines", stopWithin, point)
+	}
+	if !hold.Released() {
+		t.Fatal("the Stop returned and the hold is not released")
+	}
+}
