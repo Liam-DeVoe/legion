@@ -1241,6 +1241,7 @@ func main() {
 	// binding to hold.
 	go api.RunBrokerRevocations(ctx, background.RevokeBrokerCredentials, brokerRevocationsWake)
 	api.RegisterBrokerRevocationMetrics(met, database.Pool)
+	api.RegisterMachineLoginRevocationMetrics(met, database.Pool)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.

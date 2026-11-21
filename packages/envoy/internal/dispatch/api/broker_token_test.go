@@ -1516,7 +1516,8 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 // person (session_owners, access.TieSession), which a server makes once per pair it has not
 // recorded. One that names no person reads and writes nothing. The instrument is shown seeing a
 // list read in the same run: a restricted owner's token, which must read one, resolves in two
-// reads and the tie.
+// reads and the tie, and holds no scope (brokerTokenActor gives a restricted member's broker token
+// none, whatever scope the broker answered).
 func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
@@ -1543,7 +1544,7 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
 			serviceOnlyToken(rig.caller.jkt), false, 0, 0, false},
 		{"erin, a restricted member, with outside sign-in on", "erins-broker-token",
-			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
+			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":[],"service":null,"session":"` + brokerTestSession + `"}`,
 			rig.personToken(accessErin), true, 2, 1, true},
 	} {
 		rig.broker.Says(test.token, test.answer)

@@ -253,7 +253,12 @@ var readClasses = map[string]readEntry{
 //     every gate refuses one.
 //   - deployment besides: what the row reads belongs to the whole deployment and to no project a
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
-//     acting for one - is 403 DEPLOYMENT_READ_REFUSED, naming the row.
+//     acting for one - is 403 DEPLOYMENT_READ_REFUSED, naming the row. The one exception is
+//     a row of restrictedOwnLoginRoutes (the list of a member's machine logins), which a restricted
+//     member reads at their browser, its handler holding them to their own logins, by the rule the
+//     write gate reads too (restrictedOwnLoginAtBrowser); any other call of theirs there is 403
+//     RESTRICTED_MEMBER (restrictedOwnLoginRefusal), and their agent's named token, which holds no
+//     scope, is refused 403 OAUTH_SCOPE_REQUIRED by gateRouteScopes before this check runs.
 //   - none, caller and testHook need neither, and the handler runs as it is.
 //
 // A server with no database, a test's, reads every caller as the closed viewer, which sees no
@@ -276,9 +281,16 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 		if !ok {
 			return
 		}
-		if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
-			writeError(w, refused.code, http.StatusForbidden, refused.message)
+		governed, allowed := restrictedOwnLoginAtBrowser(route, reader, r)
+		if governed && !allowed {
+			restrictedOwnLoginRefusal(w, route)
 			return
+		}
+		if !governed {
+			if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
+				writeError(w, refused.code, http.StatusForbidden, refused.message)
+				return
+			}
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
@@ -317,7 +329,7 @@ func deploymentReadRefusal(method, pattern string, classes []readclass.Class, vi
 		return nil
 	}
 	return &readRefusal{code: codeDeploymentReadRefused, message: fmt.Sprintf(
-		"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member's credential, or one acting for one",
+		"%s %s reads the whole deployment, which a restricted member, and a credential acting for one, does not read",
 		method, pattern)}
 }
 

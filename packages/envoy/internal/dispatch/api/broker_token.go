@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,9 +130,12 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // workflow, a Google machine's account, each listed for the person) is held to no account and no
 // time: no person's credential made it, the operator's configuration names its person, and a pod
 // cannot sign in again, so a time would refuse it for as long as it lives once the person's account
-// is recorded, and every trade it makes in the margin after. The broker decides that scope for
-// those entries and for no person's own trade (exchange.Set's Pod, Workflow and Google; Person and
-// Machine decide the person scope), and such a token holds no scope, so it never mints or decides.
+// is recorded, and every trade it makes in the margin after. Such a token records neither an
+// account nor its credential's creation, and that is how it is told apart: a restricted member's
+// machine login trades for a named token too (exchange.Set.Machine, held to one project), but a
+// person's credential made it and its trade recorded that credential, so it is held to its account
+// as the person scope's is (personCredential). A named token holds no scope, so it never mints or
+// decides.
 //
 // That leaves no window to wait out while the broker pays a revocation: every credential the
 // replaced account holds records it or was made before the recording that replaced it, since
@@ -151,7 +155,7 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Ca
 	var kind string
 	var replaced, named bool
 	subject, foreign := s.brokerTokenSubject(caller), s.brokerForeignAccount(caller)
-	held := s.deps.SignInIssuer != "" && caller.ProjectScope != ciphertoken.ProjectScopeNamed
+	held := s.deps.SignInIssuer != "" && (caller.ProjectScope != ciphertoken.ProjectScopeNamed || personCredential(caller))
 	legacyWindow, markWindow := store.AccountBindingWindows()
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
@@ -173,6 +177,14 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Ca
 		return admission, nil
 	}
 	return admission, s.restrictedOwnerAdmitted(ctx, caller.Person)
+}
+
+// personCredential reports whether a broker token's trade recorded the person's credential that
+// made it: the account it records, or when that credential was made. A sign-in's and a machine
+// login's trade record both, or the creation alone for a credential no account approved; an
+// operator entry's records neither, since no person's credential made it.
+func personCredential(caller ciphertoken.Caller) bool {
+	return caller.AccountSubject != "" || !caller.CredentialCreatedAt.IsZero()
 }
 
 // brokerCredentialMargin is how long after people recorded an address's Google account a broker
@@ -348,14 +360,18 @@ type tiedSessions struct {
 }
 
 // tieBrokerSession records that session acts for person, whom a broker-issued token proved
-// (access.TieSession), unless this process recorded the pair already. A server with no database
-// records nothing: it relays no agent view either.
-func (s *server) tieBrokerSession(ctx context.Context, session, person string) error {
+// (access.TieSession), and records each private project the token's list covers as one the
+// session reached (access.RecordListedReach): the session reads under that list from this request
+// on, and the listener's record of the list is only sampled, so a token traded to a wider list
+// and back between two samples would otherwise leave nothing saying what the session could read.
+// A pair, and a list, this process recorded already is not written again. A server with no
+// database records nothing: it relays no agent view either.
+func (s *server) tieBrokerSession(ctx context.Context, session, person string, projects []string) error {
 	login := model.CanonicalLogin(person)
 	if session == "" || login == "" || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil
 	}
-	pair := session + "\x00" + login
+	pair := session + "\x00" + login + "\x00" + strings.Join(projects, ",")
 	ties := &s.sessionTies
 	ties.mu.Lock()
 	_, held := ties.held[pair]
@@ -364,6 +380,9 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string) e
 		return nil
 	}
 	if err := access.TieSession(ctx, s.deps.Store.Pool, session, login); err != nil {
+		return err
+	}
+	if err := access.RecordListedReach(ctx, s.deps.Store.Pool, session, projects); err != nil {
 		return err
 	}
 	ties.mu.Lock()
@@ -402,7 +421,8 @@ func (s *server) tieBrokerSession(ctx context.Context, session, person string) e
 //   - 401 BROKER_TOKEN_PROOF_INVALID — the proof did not meet RFC 9449 Section 4.3: a bad
 //     signature, a method or target URI that is not this request's, an 'iat' outside the window,
 //     a missing or wrong 'ath', or a proof already spent; or its 'jti' holds a control character,
-//     which the replay store records nothing of (store.ErrUnstorableProof) and the library reports
+//     or its 'jti' and 'htu' together run over the 2,048 bytes the replay store records
+//     (store.ErrUnstorableProof: the store records nothing of either), which the library reports
 //     as its own failure, so it is answered here as the caller's.
 //   - 401 BROKER_TOKEN_KEY_MISMATCH — a sound proof signed by a key that is not the token's
 //     'jkt', which is what makes a stolen token useless.
@@ -464,8 +484,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
 			"the secrets broker cannot be reached; try again in a minute")
 	}
+	var admission brokerAdmission
 	if caller.Person != "" {
-		if _, err = s.brokerPersonAdmitted(r.Context(), caller); err != nil {
+		if admission, err = s.brokerPersonAdmitted(r.Context(), caller); err != nil {
 			return model.Actor{}, false, err
 		}
 	}
@@ -477,14 +498,22 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// approval, a credential decision or revoke, a personal token. Those need the person's browser
 	// session or a personal token the person gave approve. A token scoped to a project gets no
 	// scope, because the deployment mapped that token to a project and not to the person: it
-	// proves a session, not that any person stands behind the request. A token that names a
+	// proves a session, not that any person stands behind the request. A restricted member's
+	// machine login trades for one too: a person's own credential made that one, and it is held to
+	// that person's account (brokerPersonAdmitted, personCredential), but it is the outside
+	// person's agent held to the one project they work on, which acts in that project and settles
+	// nothing of the person's own, so it holds no scope either. A restricted member's token the
+	// broker scoped to their person gets none for the same reason: a broker whose project check is
+	// off, an older broker during a rollout, or a token minted before the broker held restricted
+	// members to one project can still answer one, and brokerPersonAdmitted has read the member's
+	// kind above, so the scope does not rest on the broker's check alone. A token that names a
 	// service and no person gets none either, whatever scope the broker answered: there is no
 	// person for it to act as, and a scope that said otherwise would let it act as the session's
 	// own id on the routes that read what belongs to a person. A read-only token is one of those,
 	// and its one scope, read, is carried as the credential's ReadOnly mark and never as a scope a
 	// route could require.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson {
+	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson && !admission.Restricted {
 		scopes = brokerPersonScopes
 	}
 	actor := model.Actor{
@@ -502,11 +531,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		actor.Owner = &caller.Person
 		// The token proved this session acts for its person, on a read as on a write, so the tie
 		// the live agent view reads (session_owners, access.SessionContentClause) is recorded
-		// here, before the request reads anything: a session that only reads is tied too.
-		if err := s.tieBrokerSession(r.Context(), caller.Session, caller.Person); err != nil {
-			slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err)
-			return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
-				"this session's person could not be recorded; try again in a minute")
+		// here, before the request reads anything: a session that only reads is tied too, and
+		// each private project its list covers is recorded as one it reached.
+		if err := s.tieBrokerSession(r.Context(), caller.Session, caller.Person, caller.Projects); err != nil {
+			if refusal := s.tieFailureRefusal(r.Context(), err); refusal != nil {
+				return model.Actor{}, false, refusal
+			}
 		}
 	}
 	if caller.Service != "" {
@@ -516,10 +546,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// (access.CredentialCovers): for a full member's token it decides only which private projects
 	// the token reaches, so while the deployment holds no private project it changes nothing the
 	// token did before projects could be private (R9); for a restricted member's token it narrows
-	// every project (R3). A token an operator's entry mapped to one project names that project,
-	// today's named-scope rule (ciphertoken refuses a named token naming two), and its writes are
-	// held to that project as they were before, whatever the deployment holds (NamedProject;
-	// namedProjectOf). A token acting as its person carries the list its trade asked for
+	// every project (R3). A token held to one project names that project: one an operator's entry
+	// mapped, today's named-scope rule, and a restricted member's machine login's (the broker's
+	// exchange.Set.Machine); ciphertoken refuses a named token naming two. A full member's such
+	// token has its writes held to that project as they were before, whatever the deployment holds
+	// (NamedProject; namedProjectOf), and a restricted member's is held by its list, which covers
+	// that project alone. A token acting as its person carries the list its trade asked for
 	// (ciphertoken.Caller.Projects), which holds no write by name, since a dev box session's person
 	// writes wherever they may. Every other token carries no list: a named token naming none (the
 	// shared public-session account's), which reads and writes as a token naming no project does;
@@ -541,4 +573,24 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
 	return actor, false, nil
+}
+
+// tieFailureRefusal is what a broker-issued token's request is answered when its session's tie to
+// its person (tieBrokerSession) could not be written, err the failed write. While any project is
+// private the tie decides what the live agent view relays and which conversations a restricted
+// member reads (access.SessionContentClause), so the request is refused 503 DATABASE_UNAVAILABLE
+// and the caller comes back, as before. While no project is private every reader that may watch a
+// session watches it without a tie (R9), so the failure is logged and the request served: the
+// pair is not held as written (tieBrokerSession keeps only a pair it wrote), so the session's next
+// request writes it again. A read of whether any project is private that fails too refuses, since
+// nothing then says the tie decides nothing.
+func (s *server) tieFailureRefusal(ctx context.Context, err error) *apiError {
+	private, readErr := access.AnyProjectPrivate(ctx, s.deps.Store.Pool)
+	if readErr != nil || private {
+		slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err, "private_read_error", readErr)
+		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
+			"this session's person could not be recorded; try again in a minute")
+	}
+	slog.Warn("dispatch: a broker-issued token's session could not be tied to its person; no project is private, so the request is served and its session's next request writes the tie again", "error", err)
+	return nil
 }

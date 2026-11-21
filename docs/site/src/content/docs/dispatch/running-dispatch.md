@@ -178,8 +178,17 @@ the server's own with its `pool_` parameters and its password taken out, and rea
 password from the terminal (Enter alone for a database that asks none), as the blocks name them,
 `$DISPATCH_PSQL_URL` with `$DISPATCH_PGPASSWORD` and `$BROKER_PSQL_URL` with `$BROKER_PGPASSWORD`:
 
-```sh
-psql_url() { printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'; }
+```bash
+psql_url() {
+  case $1 in
+    postgres://*|postgresql://*) ;;
+    *) echo "psql_url: refused: not a postgres:// URL. A keyword/value string (host=... password=...) would put its password on a command line; give the server's URL form" >&2; return 1 ;;
+  esac
+  if printf '%s' "$1" | grep -Eq '^[a-z]+://[^@/?]*/[^@?]*@'; then
+    echo "psql_url: refused: the URL's user part holds an unencoded /, so the password would stay in it; percent-encode the / as %2F" >&2; return 1
+  fi
+  printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'
+}
 DISPATCH_PSQL_URL=$(psql_url "$DATABASE_URL")
 BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
 [ -n "${DISPATCH_PGPASSWORD+set}" ] || { read -rsp "Dispatch's database password: " DISPATCH_PGPASSWORD; echo >&2; }
@@ -187,11 +196,16 @@ BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
 export DISPATCH_PSQL_URL BROKER_PSQL_URL DISPATCH_PGPASSWORD BROKER_PGPASSWORD
 ```
 
-Those `pool_` parameters are the only ones the broker's deployment adds that libpq does not take; a
-URL without them and without a password is left as it is. A password the environment already holds
-in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from wherever the deployment keeps it, is used as it
-is, and nothing asks for it. `printf` is the shell's own, so the URL reaches `sed` on its input and
-is never an argument either.
+The block is bash's: `read -rsp` prompts for a password without echoing it in bash, and zsh reads
+`-p` as a coprocess instead. Those `pool_` parameters are the only ones the broker's deployment
+adds that libpq does not take; a URL without them and without a password is left as it is. A
+password the environment already holds in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from
+wherever the deployment keeps it, is used as it is, and nothing asks for it. `printf` is the
+shell's own, so the URL reaches `grep` and `sed` on their input and is never an argument either.
+`psql_url` makes no URL and says why for a server's URL whose password it cannot take out: a
+keyword/value string (`host=… password=…`), and a URL whose user part holds an unencoded `/`,
+which libpq and Dispatch's own server read as the end of the host rather than part of the
+password. Write that server's URL in the form it names, and run the block again.
 
 A revocation settled without the broker, by that command or by a statement written by hand, tells
 the broker nothing, and the old account's credentials go on reading secrets there. It also leaves
@@ -587,12 +601,28 @@ sees, whatever it lists.
 A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
 Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
 them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
-no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
-machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
-timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
-revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
-broker decides whose each one is.
+no setup form and no session-groups editor. The Priorities, Pipeline and broadcasts pages answer
+**Page not found**, and Settings shows no Groups and no Delivery timeline. The machine-login page
+is theirs, listing their own machine logins alone: there they approve, at their browser, the device
+login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
+ends for them no other credential. The API refuses them, and every token they make, every read of
+the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
+but for the machine-login calls at their browser, and except that they revoke their own credential
+grants and end their own sign-ins, as a full member does: the secrets broker decides whose each one
+is. The machine-login calls are theirs at their browser alone: through a token of theirs each one,
+the list `GET /api/v1/machine-logins` included, is `403 OAUTH_SCOPE_REQUIRED` where the token lacks
+the call's scopes, as their agent's token does,
+and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
+project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
+their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
+for it within 325 seconds, since the broker checks every trade against Dispatch. Every removal of
+them from a project's list also has Dispatch revoke all their machine logins at the broker, whatever
+other list still names them, after the removal commits and again until the broker confirms; the
+log line `the secrets broker revoked the machine logins of a restricted member taken off an access
+list` records each. Until it is done, about a minute after the removal (the broker may still commit
+an approve it took before it), their approve of a new machine login is
+`409 MACHINE_LOGIN_REVOCATION_OWED`; a person another list still names then approves a new login
+for the projects that list them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that does not list it read the private project as missing. A person who sees the project
