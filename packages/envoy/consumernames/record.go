@@ -495,8 +495,11 @@ func FreshName(prefix string) string {
 	return prefix + "~" + nuid.Next()
 }
 
-// LogicalOf is the logical name of a physical one: the name cut at its last '~', or the name
-// itself when it holds none (a fixed name).
+// LogicalOf is the logical name of a physical one, for a family whose Config.Prefix is the logical
+// name itself, such as a durable's (the listener's durable, Dispatch's and a daemon's): the name cut
+// at its last '~', or the name itself when it holds none (a fixed name). It does not hold for the
+// session family, whose prefix is the constant "session": LogicalOf("session~<nuid>") is
+// "session", and a session consumer's logical name is its LogicalMetadataKey metadata.
 func LogicalOf(physical string) string {
 	if i := strings.LastIndexByte(physical, '~'); i >= 0 {
 		return physical[:i]
