@@ -117,7 +117,7 @@ func parseNATSService(text string) (NATSService, error) {
 	switch entry.Kind {
 	case NATSDispatch, NATSListener, NATSEdgeListener:
 		if machineID == noMachineID {
-			return NATSService{}, fmt.Errorf("%s entry %q names no machine id: a %s's grant names its durable and its queue group by one", NATSServicesVariable, text, entry.Kind)
+			return NATSService{}, fmt.Errorf("%s entry %q names no machine id, which the %s grant is built for", NATSServicesVariable, text, entry.Kind)
 		}
 		if !natsgrant.SessionToken(machineID) {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id that is not one subject token", NATSServicesVariable, text)

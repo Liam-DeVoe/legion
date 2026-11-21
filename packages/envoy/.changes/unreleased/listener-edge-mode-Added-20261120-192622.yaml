@@ -25,19 +25,22 @@ body: |-
   gap, whose mark carries no reason; the mark is kept for the session, across its relay runs and
   on its `envoy_sessions` entry for the next listener to relay it, until a frame carrying it is
   published, and the relay writes it on the entry before it acknowledges the withheld event,
-  giving the event back for redelivery when that write fails. A session at the edge publishes only a
+  giving the event back for redelivery when that write fails or the entry is gone; the clear
+  after a frame removes only the mark its relay wrote. A session at the edge publishes only a
   role subject of its project, sends and publishes only as itself (`source` `agent` and
   `source_session` the token's session, else `403 sender_not_session`), claims and reads only
   that project's roles, sends only to sessions whose token listed it, and reads only its
-  sessions, roles, topics and Legion agents; a role read names a holder of no project of its
-  token without the holder's directory, machine, host, title, client instance and capabilities.
-  A registration at the edge first releases each claim the session holds of a role of another
-  project, named in the answer's `warnings`, reading the role bucket while the role claim copy
-  cannot be served, and is refused with a retryable 503 when a release fails, whose text names
-  the claim record the bus answered and the release could not read or free; it renews only its
-  projects' roles, and a claimant there is handed the kept messages of its projects' roles alone.
+  sessions, roles, topics and Legion agents; a role held by a session of no project of its token
+  reads to it as a role no claim holds, in a role read, a role send's answers and a claim's 409.
+  A registration at the edge first releases the claims of other projects' roles that the session
+  holds and its role claim view shows, named in the answer's `warnings`, reading the role bucket
+  while that view cannot be served, and is refused with a retryable 503 when a release fails,
+  whose text names the claim record the bus answered and the release could not read or free; it
+  renews only its projects' roles, and a claimant there is handed the kept messages of its
+  projects' roles alone.
   A heartbeat refused 503 for want of a repository answer still renews the session's entry, also
-  when the broker never answers. Every other listener serves as before.
+  when the broker never answers, and leaves an entry another listener wrote since its read as it
+  is. Every other listener serves as before.
 
   On every listener a write of a session's `envoy_sessions` entry is conditional on the revision
   it replaces and keeps the `repository_gap` mark that entry holds, so a registration made over a
@@ -54,7 +57,8 @@ body: |-
 
   A role message on a lane that names a project, for a Legion role of another project
   (`notifications.role.PRIV.legion-infra-reviewer`), now reaches no holder: the role lane drops
-  it and `POST /v1/messages/publish` refuses it 400, as `POST /v1/roles/set` refuses the claim.
+  it with the delivery exception `no_holder` and `POST /v1/messages/publish` refuses it 400, as
+  `POST /v1/roles/set` refuses the claim.
   Before, the role lane and the publish route resolved the bare role name and reached the holder
   of the role's own project.
 time: 2026-11-20T19:26:22Z

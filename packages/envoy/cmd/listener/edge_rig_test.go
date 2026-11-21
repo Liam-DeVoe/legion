@@ -153,9 +153,11 @@ func (c *edgeClock) advance(d time.Duration) { c.ahead.Add(int64(d)) }
 
 // edgeRig is a listener's /v1 as an edge deployment runs it, every piece real but the broker: the
 // routes and session relays over the in-process server (relayRig), the broker-token credential
-// behind apiAuth with this listener's edge projects, the broker's introspection stub, and the
-// stand-in of its repository route, read through the listener's own reader. Its refresh loop runs
-// on ticks the row sends (tick), so a row orders a refresh against its own publishes.
+// behind apiAuth with this listener's edge projects, the edge's grant on the delivery config the
+// routes and the relays read (edgeGrant, as main sets it on every edge listener), the broker's
+// introspection stub, and the stand-in of its repository route, read through the listener's own
+// reader. Its refresh loop runs on ticks the row sends (tick), so a row orders a refresh against
+// its own publishes.
 type edgeRig struct {
 	*relayRig
 	projects     []string
@@ -197,6 +199,16 @@ func newEdgeRigServing(t *testing.T, projects []string) *edgeRig {
 	edge := &edgeRig{relayRig: rig, projects: projects, met: met, repositories: stand, reader: reader, clock: clock,
 		agents: agents, ticks: make(chan time.Time)}
 	if len(projects) > 0 {
+		// Every edge listener runs with its grant (main.go): it keeps no role message for a next
+		// holder, so a publish to a role no session holds is the 404, and its relays take over no
+		// frame (takeOverFrame). The rig's role lane, rig.harness.config, stays the shared
+		// listener's, which is where the role lane runs.
+		grant, err := newEdgeGrant("test-machine", projects, met)
+		if err != nil {
+			t.Fatalf("the edge's grant for %v: %v", projects, err)
+		}
+		rig.deps.delivery.edge = grant
+		rig.relays.cfg.edge = grant
 		rig.deps.repositories = reader
 		rig.relays.repositories = reader
 		ctx, cancel := context.WithCancel(context.Background())

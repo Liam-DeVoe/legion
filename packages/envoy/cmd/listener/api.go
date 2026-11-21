@@ -1309,7 +1309,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -2452,22 +2452,34 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					slog.String("holder_client_instance_id", claim.ClientInstanceID),
 					slog.String("client_instance_id", claimantInstanceID))
 			}
+			// At the edge a 409 names no holder the scope does not show, as its role read names
+			// none (edgeScope.namesHolder); the revision stays, so the caller can claim against the
+			// record that stands.
+			scope := edgeScopeOf(r, nil)
 			if mismatch {
-				writeJSON(w, http.StatusConflict, map[string]any{
+				answer := map[string]any{
 					"error":          err.Error(),
 					"role":           stale.Role,
 					"holder":         stale.Holder,
 					"claim_revision": stale.Actual,
-				})
+				}
+				if !scope.namesHolder(d.sessions, stale.Holder) {
+					delete(answer, "holder")
+				}
+				writeJSON(w, http.StatusConflict, answer)
 				return
 			}
 			var held *store.ErrRoleHeld
 			if errors.As(err, &held) {
-				writeJSON(w, http.StatusConflict, map[string]string{
+				answer := map[string]string{
 					"error":  err.Error(),
 					"role":   held.Role,
 					"holder": held.Holder,
-				})
+				}
+				if !scope.namesHolder(d.sessions, held.Holder) {
+					answer = map[string]string{"error": fmt.Sprintf("role %s is held by another session", held.Role), "role": held.Role}
+				}
+				writeJSON(w, http.StatusConflict, answer)
 				return
 			}
 			if err != nil {
@@ -2571,7 +2583,12 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			writeBusUnavailable(w, err)
 			return
 		}
-		if result.Holder != "" {
+		// At the edge a holder the scope does not show, live or lapsed, is no holder the answer
+		// names: the role reads as one no claim holds (edgeScope.holder). Every other listener
+		// answers so a holder the caller does not see in its privacy mode.
+		scope := edgeScopeOf(r, nil)
+		result = scope.holder(result)
+		if scope == nil && result.Holder != "" {
 			if seen, err := decision.seesSession(result.Entry, result.Holder); err != nil {
 				writePrivacyUnknown(w)
 				return
@@ -2586,9 +2603,8 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		// holder_state is the state the holder's own record puts it in, live on this answer, and
 		// is named exactly as the 404 of a lapsed holder names it (listenerwire.RoleRefusal) and
 		// as the holder's state is named on a publish answer: a caller reads one field on every
-		// role answer rather than inferring the state from the status code. At the edge a holder
-		// of none of the token's projects is named without its place (edgeScope.holder).
-		writeJSON(w, http.StatusOK, edgeScopeOf(r, nil).holder(result.Entry, listenerwire.RoleHolder{
+		// role answer rather than inferring the state from the status code.
+		writeJSON(w, http.StatusOK, listenerwire.RoleHolder{
 			Capabilities:     append([]string{}, result.Entry.Capabilities...),
 			ClaimRevision:    result.ClaimRevision,
 			ClientInstanceID: result.HolderClientInstanceID,
@@ -2602,7 +2618,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			Projects:         projectsAnswer(d.privacy, result.Entry.Projects),
 			Role:             role,
 			Title:            result.Entry.Title,
-		}))
+		})
 	}
 }
 
