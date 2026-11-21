@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,19 +31,10 @@ import (
 // the one list that also decides the projects of a token minted for that account, and to what the
 // token exchange holds that token to: the person its exchange entry acts for must see each
 // project, as projectaccess.Visible requires before a mint. So a connection and that account's
-// token cannot disagree. The grant is held to the repositories Dispatch maps the projects to
-// (Deps.Access), but for each repository whose GitHub lane (natsgrant.GitHubPrefix) a project the
-// entry does not name also maps, by a rename or by a second spelling of the lane
-// (Deps.RepoProjects): such a repository is withheld, and counted, since serving it would hand one
-// project's daemon another's events; a lane shared only among the entry's own projects is served.
-// The guard sees only the rows the mapping answers the broker with: a Dispatch that answers each
-// caller with the rows of the projects it may see gives the broker's account,
-// which names no person, the public projects' rows alone, so there it covers lanes shared among
-// public projects, and Dispatch itself refuses every mapping write that would share a lane with a
-// private project (REPOSITORY_LANE_SHARED).
-// WithinProjects writes that same reply prefix in place of _INBOX.>. Every answer and the mapping
-// the grant is built from come from one complete pass (heldAccess), never two mixed, narrowed by
-// the refusals of any later pass. It is refused, naming why: an account no exchange entry lists, or
+// token cannot disagree. WithinProjects writes that same reply prefix in place of _INBOX.>, and
+// keeps the GitHub events whole, since a GitHub event is a message of no project. Every answer the
+// grant is built from comes from one complete pass (heldAccess), never two mixed, narrowed by the
+// refusals of any later pass. It is refused, naming why: an account no exchange entry lists, or
 // whose entry names no project; no complete pass held yet; Dispatch refusing the broker's own
 // account token in that pass; a project Dispatch does not hold, or whose answer says the entry's
 // person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
@@ -74,7 +64,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		}
 		return grant, nil
 	}
-	if deps.Exchange == nil || deps.Access == nil || deps.RepoProjects == nil {
+	if deps.Exchange == nil || deps.Access == nil {
 		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
 	}
 	person, projects, listed := deps.Exchange(entry.Account)
@@ -86,7 +76,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	}
 	pass := deps.held.latest()
 	if pass == nil {
-		return natsgrant.Permissions{}, refuse(labelNoCompletePass, "no complete read of Dispatch's project answers and repository mapping is held yet: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelNoCompletePass, "no complete read of Dispatch's project answers is held yet: service "+entry.name())
 	}
 	if pass.refused {
 		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
@@ -94,8 +84,6 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		// question of the pass Dispatch refused.
 		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
 	}
-	var repositories, every []string // every repository the answers map, and those not withheld
-	withheld := 0
 	for _, project := range projects {
 		held, known := pass.answers[heldKey{project: project, person: person}]
 		switch {
@@ -110,29 +98,12 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 			// its person cannot see the project, so neither may the connection.
 			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
 		}
-		every = append(every, held.answer.Repositories...)
-		for _, repository := range held.answer.Repositories {
-			if pass.sharedWith(repository, projects) {
-				withheld++
-				continue
-			}
-			repositories = append(repositories, repository)
-		}
 	}
-	deps.Metrics.withheldSharedLanes(withheld)
-	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: repositories, Identity: entry.Account})
-	if err == nil {
-		return scoped, nil
+	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account})
+	if err != nil {
+		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 	}
-	// The refusal is the withheld lanes' only when the same grant held to every repository the
-	// answers map is held: a scope that one refuses too is refused for a repository of its own (one
-	// that is not owner/name, say), whatever was withheld beside it.
-	if withheld > 0 {
-		if _, whole := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: every, Identity: entry.Account}); whole == nil {
-			return natsgrant.Permissions{}, refuse(labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service "+entry.name()+": "+err.Error())
-		}
-	}
-	return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+	return scoped, nil
 }
 
 // accessRefresh is how often the service reads Dispatch again, and accessFetchTimeout how long one
@@ -145,42 +116,34 @@ const accessFetchTimeout = 10 * time.Second
 // exchange projects, so that no decision waits on Dispatch: the decision budget is 1.5 s
 // (decideBudget), and a Dispatch call may take ten. A pass (refresh) asks, in parallel, Dispatch's
 // answer about every project such an entry can name, for the person that entry's exchange entry
-// acts for, and reads Dispatch's whole repository mapping; run makes one at the start and one
-// every accessRefresh after. A held entry's grant is built from one complete pass (heldPass) and
-// never from two mixed, since a mapping from one pass beside answers from another could serve a
-// repository neither alone would. A pass every question of which Dispatch answered replaces the
-// one held. A pass any question of which failed (Dispatch unreachable, a timeout, an answer past
-// its bound) adds nothing, but every restriction any of its answered questions yields applies at
-// once (narrow), whatever else failed: a project it answers not found or not visible is refused
-// so, one whose repositories it answers keeps only those both passes name, and a mapping it read
-// withholds each lane it shows a project outside the entry mapping, newly shared or moved away,
-// since the token exchange refuses a removed person's token whatever else Dispatch answers; each
-// failure is logged at warn. Dispatch refusing the
-// broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused) on any question of a
-// pass, a project's answer or the mapping, is the pass's outcome whatever its other questions
-// did, failures included: the token exchange refuses every trade that asks Dispatch then (oauth's
-// refusedByDispatch), so that pass is held, refuses every held connection until a later pass
-// replaces it, and is logged at error once a pass. With no complete pass held yet, a held connection
-// is refused, and its client retries; the newest complete pass, narrowed so, is used however old it
-// is, so while Dispatch cannot be reached a connection is admitted or refused as Dispatch last
-// answered a whole pass, or refused as any later answer said. While Dispatch answers every
-// question, the pass held is at most about a minute old: the
-// 30 s (projectaccess.CacheTTL) the Dispatch client may have kept an answer, the accessRefresh to
-// the next pass, and the accessFetchTimeout its questions may take.
+// acts for; run makes one at the start and one every accessRefresh after. A held entry's grant is
+// built from one complete pass (heldPass) and never from two mixed. A pass every question of which
+// Dispatch answered replaces the one held. A pass any question of which failed (Dispatch
+// unreachable, a timeout, an answer past its bound) adds nothing, but every refusal any of its
+// answered questions yields applies at once (narrow), whatever else failed: a project it answers
+// not found or not visible is refused so, since the token exchange refuses a removed person's token
+// whatever else Dispatch answers; each failure is logged at warn. Dispatch refusing the broker's
+// own account token (a 401 or 403, projectaccess.ErrBrokerRefused) on any question of a pass is
+// the pass's outcome whatever its other questions did, failures included: the token exchange
+// refuses every trade that asks Dispatch then (oauth's refusedByDispatch), so that pass is held,
+// refuses every held connection until a later pass replaces it, and is logged at error once a
+// pass. With no complete pass held yet, a held connection is refused, and its client retries; the
+// newest complete pass, narrowed so, is used however old it is, so while Dispatch cannot be
+// reached a connection is admitted or refused as Dispatch last answered a whole pass, or refused
+// as any later answer said. While Dispatch answers every question, the pass held is at most about
+// a minute old: the 30 s (projectaccess.CacheTTL) the Dispatch client may have kept an answer, the
+// accessRefresh to the next pass, and the accessFetchTimeout its questions may take.
 type heldAccess struct {
-	access       func(ctx context.Context, project, person string) (projectaccess.Answer, error)
-	repoProjects func(ctx context.Context) ([]projectaccess.RepoProject, error)
-	asks         []heldKey
-	entries      [][]string // each held entry's projects
-	now          func() time.Time
-	log          *slog.Logger
+	access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
+	asks   []heldKey
+	now    func() time.Time
+	log    *slog.Logger
 
 	mu   sync.RWMutex
 	pass *heldPass
 }
 
-// heldKey is one question the service asks Dispatch: whether person may see project, and the
-// repositories it maps to the project.
+// heldKey is one question the service asks Dispatch: whether person may see project.
 type heldKey struct{ project, person string }
 
 // heldAnswer is one question's answer: Dispatch's, or that Dispatch holds no such project.
@@ -189,70 +152,25 @@ type heldAnswer struct {
 	notFound bool
 }
 
-// heldPass is one pass a decision reads: every held question's answer and the lanes of
-// Dispatch's repository mapping, as one pass read them, from began, read before its first question
-// was sent; or, when refused, that Dispatch refused the broker's own account token on one of them.
-// Nothing changes a pass once it is held.
+// heldPass is one pass a decision reads: every held question's answer, as one pass read them,
+// from began, read before its first question was sent; or, when refused, that Dispatch refused the
+// broker's own account token on one of them. Nothing changes a pass once it is held.
 type heldPass struct {
 	began   time.Time
 	answers map[heldKey]heldAnswer
-	// lanes is each GitHub lane (laneOf) a row of the mapping names, by its repository or by the
-	// repository it was renamed to, and the projects, sorted, that map one to it (lanesOf).
-	lanes map[string][]string
-	// refused is Dispatch refusing the broker's own account token on any of the pass's questions,
-	// the mapping's read or a project's answer; the rest of a refused pass is never read.
+	// refused is Dispatch refusing the broker's own account token on any of the pass's questions;
+	// the rest of a refused pass is never read.
 	refused bool
-}
-
-// sharedWith reports whether a project entry does not name maps a repository to repository's lane
-// in p's mapping.
-func (p *heldPass) sharedWith(repository string, entry []string) bool {
-	return outside(p.lanes[laneOf(repository)], entry)
-}
-
-// laneOf is repository's GitHub lane (natsgrant.GitHubPrefix) in lower case: GitHub names a
-// repository without case, so Acme/Widgets and acme/widgets are one repository and one lane, as
-// Dispatch's own lane rule compares them.
-func laneOf(repository string) string {
-	return strings.ToLower(natsgrant.GitHubPrefix(repository))
-}
-
-// outside reports whether a project of projects is not one of entry's.
-func outside(projects, entry []string) bool {
-	return slices.ContainsFunc(projects, func(project string) bool { return !slices.Contains(entry, project) })
-}
-
-// lanesOf is each lane rows name, by a row's repository and by the repository it was renamed to,
-// and the projects, sorted and each once, that map one to it.
-func lanesOf(rows []projectaccess.RepoProject) map[string][]string {
-	lanes := map[string][]string{}
-	add := func(repository, project string) {
-		lane := laneOf(repository)
-		if !slices.Contains(lanes[lane], project) {
-			lanes[lane] = append(lanes[lane], project)
-		}
-	}
-	for _, row := range rows {
-		add(row.Repo, row.Project)
-		if row.RenamedTo != nil && *row.RenamedTo != "" {
-			add(*row.RenamedTo, row.Project)
-		}
-	}
-	for _, projects := range lanes {
-		slices.Sort(projects)
-	}
-	return lanes
 }
 
 // newHeldAccess holds the passes over every project deps.Exchange gives an entry of services that
 // is not an all-projects one, each asked for the person its exchange entry acts for; nil when the
 // broker cannot read them (no exchange list, or no Dispatch client) or no entry can name a project.
 func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
-	if deps.Exchange == nil || deps.Access == nil || deps.RepoProjects == nil {
+	if deps.Exchange == nil || deps.Access == nil {
 		return nil
 	}
 	var asks []heldKey
-	var entries [][]string
 	for _, entry := range services {
 		if entry.AllProjects {
 			continue
@@ -261,7 +179,6 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 		for _, project := range projects {
 			asks = append(asks, heldKey{project: project, person: person})
 		}
-		entries = append(entries, projects)
 	}
 	slices.SortFunc(asks, func(a, b heldKey) int {
 		return cmp.Or(cmp.Compare(a.project, b.project), cmp.Compare(a.person, b.person))
@@ -274,7 +191,7 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &heldAccess{access: deps.Access, repoProjects: deps.RepoProjects, asks: asks, entries: entries, now: deps.now, log: log}
+	return &heldAccess{access: deps.Access, asks: asks, now: deps.now, log: log}
 }
 
 // run makes a pass now and every accessRefresh after, until ctx ends.
@@ -291,16 +208,16 @@ func (h *heldAccess) run(ctx context.Context) {
 	}
 }
 
-// refresh makes one pass: it asks Dispatch every held question and reads its repository mapping,
-// all at once, each bounded by accessFetchTimeout, and holds the pass once every one has come back
-// answered, or once any came back refused, whatever the others did (hold). It logs what it did
-// with the pass: a refusal at error, naming the question Dispatch refused, since every held daemon
-// is then refused; else each failed question at warn, since the last complete pass is kept.
+// refresh makes one pass: it asks Dispatch every held question, all at once, each bounded by
+// accessFetchTimeout, and holds the pass once every one has come back answered, or once any came
+// back refused, whatever the others did (hold). It logs what it did with the pass: a refusal at
+// error, naming the project whose question Dispatch refused, since every held daemon is then
+// refused; else each failed question at warn, since the last complete pass is kept.
 func (h *heldAccess) refresh(ctx context.Context) {
 	pass := &heldPass{began: h.now()}
 	answers := make([]heldAnswer, len(h.asks))
-	// errs is each question's failure, the mapping's read last, nil for one answered.
-	errs := make([]error, len(h.asks)+1)
+	// errs is each question's failure, nil for one answered.
+	errs := make([]error, len(h.asks))
 	var wait sync.WaitGroup
 	for i, ask := range h.asks {
 		wait.Go(func() {
@@ -317,25 +234,9 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			}
 		})
 	}
-	wait.Go(func() {
-		fetch, cancel := context.WithTimeout(ctx, accessFetchTimeout)
-		defer cancel()
-		rows, err := h.repoProjects(fetch)
-		if err != nil {
-			errs[len(h.asks)] = err
-			return
-		}
-		pass.lanes = lanesOf(rows)
-	})
 	wait.Wait()
-	question := func(i int) string {
-		if i == len(h.asks) {
-			return "the repository mapping"
-		}
-		return "project " + h.asks[i].project
-	}
 	if i := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, projectaccess.ErrBrokerRefused) }); i >= 0 {
-		h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every daemon held to its exchange projects is refused until a later pass is answered", "question", question(i), "error", errs[i].Error())
+		h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every daemon held to its exchange projects is refused until a later pass is answered", "question", "project "+h.asks[i].project, "error", errs[i].Error())
 		h.hold(&heldPass{began: pass.began, refused: true})
 		return
 	}
@@ -349,100 +250,45 @@ func (h *heldAccess) refresh(ctx context.Context) {
 		if ctx.Err() == nil {
 			for i, err := range errs {
 				if err != nil {
-					h.log.Warn("natscallout: Dispatch could not be asked a question of this pass, so the last complete pass is kept, narrowed by this pass's refusals", "question", question(i), "error", err.Error())
+					h.log.Warn("natscallout: Dispatch could not be asked a question of this pass, so the last complete pass is kept, narrowed by this pass's refusals", "question", "project "+h.asks[i].project, "error", err.Error())
 				}
 			}
 		}
-		h.narrow(pass.began, answered, pass.lanes)
+		h.narrow(pass.began, answered)
 		return
 	}
 	pass.answers = answered
 	h.hold(pass)
 }
 
-// narrow applies to the pass held the restrictions an incomplete pass, begun at began, got in
-// answers and, when its mapping read was answered, in lanes: a held key it answers not found or
-// not visible is refused so at once, one it answers visible keeps only the repositories both
-// passes name, and a lane either pass's mapping shows a project outside an entry mapping is
-// withheld from that entry (the lanes of both, merged). It adds nothing: a key answered visible
-// again, a repository or lane new to the pass held, and a lane the later mapping no longer shows
-// shared, wait for a complete pass, which replaces the merged lanes with its own, so the grant
-// still never holds what one complete pass did not, and a mapping moved between two complete
-// passes is no shared lane. A pass held as refused stays refused. Like hold, it logs at error
-// each lane the merged lanes withhold from a held entry, once a pass.
-func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer, lanes map[string][]string) {
+// narrow applies to the pass held the refusals an incomplete pass, begun at began, got in
+// answers: a held key it answers not found or not visible is refused so at once. It adds nothing:
+// a key answered visible again waits for a complete pass, so the grant still never holds what one
+// complete pass did not. A pass held as refused stays refused.
+func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	held := h.pass
 	if held == nil || held.refused || began.Before(held.began) {
-		h.mu.Unlock()
 		return
 	}
-	narrowed := &heldPass{began: began, answers: maps.Clone(held.answers), lanes: mergeLanes(held.lanes, lanes)}
+	narrowed := &heldPass{began: began, answers: maps.Clone(held.answers)}
 	for key, fresh := range answers {
 		kept, ok := narrowed.answers[key]
-		switch {
-		case !ok || kept.notFound || !kept.answer.Visible:
-		case fresh.notFound || !fresh.answer.Visible:
+		if ok && !kept.notFound && kept.answer.Visible && (fresh.notFound || !fresh.answer.Visible) {
 			narrowed.answers[key] = fresh
-		default:
-			kept.answer.Repositories = slices.DeleteFunc(slices.Clone(kept.answer.Repositories), func(repository string) bool {
-				return !slices.Contains(fresh.answer.Repositories, repository)
-			})
-			narrowed.answers[key] = kept
 		}
 	}
 	h.pass = narrowed
-	h.mu.Unlock()
-	h.logWithheldLanes(narrowed.lanes)
-}
-
-// mergeLanes is every project either held or later maps to each lane, sorted and each once: a
-// lane is shared outside an entry under the merge whenever it is under either. held is returned
-// as it is when later is nil, a pass whose mapping read failed.
-func mergeLanes(held, later map[string][]string) map[string][]string {
-	if later == nil {
-		return held
-	}
-	merged := make(map[string][]string, len(held)+len(later))
-	for _, lanes := range []map[string][]string{held, later} {
-		for lane, projects := range lanes {
-			merged[lane] = append(merged[lane], projects...)
-		}
-	}
-	for lane, projects := range merged {
-		slices.Sort(projects)
-		merged[lane] = slices.Compact(projects)
-	}
-	return merged
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must
-// not replace, and logs the lanes its mapping withholds (logWithheldLanes).
+// not replace.
 func (h *heldAccess) hold(pass *heldPass) {
 	h.mu.Lock()
-	later := h.pass == nil || !pass.began.Before(h.pass.began)
-	if later {
+	defer h.mu.Unlock()
+	if h.pass == nil || !pass.began.Before(h.pass.began) {
 		h.pass = pass
-	}
-	h.mu.Unlock()
-	if later {
-		h.logWithheldLanes(pass.lanes)
-	}
-}
-
-// logWithheldLanes logs at error each lane of lanes that names a project of a held entry and a
-// project outside that entry, since that entry's daemon is not served the lane: once for each
-// pass held or narrowed, so an operator reading an outage sees the lane a pass withholds whether
-// or not that pass was complete.
-func (h *heldAccess) logWithheldLanes(lanes map[string][]string) {
-	for _, lane := range slices.Sorted(maps.Keys(lanes)) {
-		projects := lanes[lane]
-		withheld := func(entry []string) bool {
-			return outside(projects, entry) && slices.ContainsFunc(projects, func(project string) bool { return slices.Contains(entry, project) })
-		}
-		if slices.ContainsFunc(h.entries, withheld) {
-			h.log.Error("natscallout: a project outside a held entry maps a repository to one of that entry's GitHub lanes, so its daemon is not served the lane", "lane", lane, "projects", projects)
-		}
 	}
 }
 

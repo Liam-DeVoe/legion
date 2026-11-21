@@ -784,15 +784,15 @@ func main() {
 	// the drain begins.
 	if cfg.NATS.Enabled() {
 		// A service held to its exchange projects is held by the exchange list this broker trades
-		// by, by Dispatch's answers about those projects and by its repository mapping, which the
-		// service reads in the background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL
-		// unset), it refuses that service by name.
+		// by and by Dispatch's answers about those projects, which the service reads in the
+		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
+		// service by name.
 		deps := natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, Exchange: exchangePolicy.MappedForAccount,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		}
 		if projectAccess != nil {
-			deps.Access, deps.RepoProjects = projectAccess.Access, projectAccess.RepoProjects
+			deps.Access = projectAccess.Access
 		}
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,

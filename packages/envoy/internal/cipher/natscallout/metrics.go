@@ -8,15 +8,13 @@ import (
 
 // Metrics counts the service's decisions: broker_nats_callout_decisions_total by credential kind,
 // outcome and reason, which is the production census of the services the hub admits (its
-// kind="service" series); broker_nats_callout_seconds, how long each decision took from the
-// request's arrival; broker_nats_callout_dropped_total, the requests it answered not at all, by
-// reason (drops); and broker_nats_callout_shared_lanes_dropped_total, the repositories withheld
-// from a held daemon's grant because a project its entry does not name maps their lane (scopeGrant).
+// kind="service" series), and broker_nats_callout_seconds, how long each decision took from the
+// request's arrival; and broker_nats_callout_dropped_total, the requests it answered not at all, by
+// reason (drops).
 type Metrics struct {
-	decisions   *metrics.Counter
-	seconds     *metrics.Histogram
-	drops       *metrics.Counter
-	sharedLanes *metrics.Counter
+	decisions *metrics.Counter
+	seconds   *metrics.Histogram
+	drops     *metrics.Counter
 }
 
 // NewMetrics registers the service's metrics on registry.
@@ -33,8 +31,6 @@ func NewMetrics(registry *metrics.Registry) *Metrics {
 				"past_bounds (the replica already held all it bounds), hub_gave_up (the hub had stopped waiting, by its own clock), "+
 				"unopened (not sealed to the service's curve key), not_a_request (no authorization request JWT) and pending_limit "+
 				"(dropped by the NATS client on arrival, past the subscription's pending limits)."),
-		sharedLanes: registry.NewCounter("broker_nats_callout_shared_lanes_dropped_total",
-			"Repositories the auth service withheld from a daemon's grant held to its exchange projects, because a project its entry does not name maps the same GitHub lane in Dispatch."),
 	}
 }
 
@@ -44,14 +40,6 @@ func (m *Metrics) dropped(reason string, n int64) {
 		return
 	}
 	m.drops.Add(n, [2]string{"reason", reason})
-}
-
-// withheldSharedLanes counts n repositories withheld from one held daemon's grant (scopeGrant).
-func (m *Metrics) withheldSharedLanes(n int) {
-	if m == nil {
-		return
-	}
-	m.sharedLanes.Add(int64(n))
 }
 
 // record counts one answer to a request whose credential is kind, refused by refused when it is
