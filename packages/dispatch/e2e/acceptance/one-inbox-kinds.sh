@@ -28,10 +28,8 @@
 #                 attempt that names the session (R7) and not through a delivered_to tuple: once
 #                 with the delivery the listener took, and once for a second message sent while the
 #                 fake Envoy answered the agent's sends 503, whose one attempt settled failed and
-#                 states no delivered_to. The listener answers again before that read, a retry of
-#                 the second message is taken and states one, and the conversation read answers
-#                 the rows GET /api/v1/agents/{session_id}/messages answers for the agent, the pair
-#                 read up to five times while another caller's write moves one of them.
+#                 states no delivered_to. The listener answers again before that read, and a retry
+#                 of the second message is taken and states one.
 #   retractions   one tuple of each of the thirteen moved arms, and each of the three citations,
 #                 retracted: graph_edges answers it once before, not at all after while the row's
 #                 own column still names it, and once again when the tuple is stated again.
@@ -116,7 +114,7 @@ token="" work="" answer=""
 # shellcheck source-path=SCRIPTDIR source=lib.sh disable=SC1091 # followed under shellcheck -x
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT ISSUE_DATABASE_URL FAKE_ENVOY_PORT
-require_commands bun cmp curl diff jq psql sed sort paste sleep
+require_commands bun curl jq psql sed sort paste sleep
 read_bearer
 
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
@@ -760,27 +758,10 @@ conversation_section() {
   settles "$section" "the retry states a delivered_to $agent" 1 "$(deliveries_to_agent "$refused")"
   in_conversation "$section" "$agent's conversation still holds $refused once" "$refused"
 
-  # The conversation read answers the rows GET .../messages answers for $agent. A write another
-  # caller makes to $agent between the two reads moves one of them, so the pair is read again, up
-  # to five times, before a difference fails.
-  local pair=0 rows
-  while true; do
-    pair=$((pair + 1))
-    request person GET "/api/v1/agents/$(q "$agent")/conversation"
-    want_status 200 "$section" "read $agent's conversation ($pair)"
-    jq -S . "$work/body" >"$work/conversation.json" || fail "$section" "read $agent's conversation ($pair)" "$(body)"
-    request person GET "/api/v1/agents/$(q "$agent")/messages"
-    want_status 200 "$section" "read $agent's messages ($pair)"
-    jq -S . "$work/body" >"$work/messages.json" || fail "$section" "read $agent's messages ($pair)" "$(body)"
-    cmp -s "$work/conversation.json" "$work/messages.json" && break
-    [[ "$pair" -lt 5 ]] ||
-      fail "$section" "GET /api/v1/agents/$agent/conversation answers the rows GET /api/v1/agents/$agent/messages answers" \
-        "five pairs of reads differed; the last: conversation roots $(jq -c '[.[].message.id]' "$work/conversation.json"), messages roots $(jq -c '[.[].message.id]' "$work/messages.json"), first differing line: $(diff "$work/conversation.json" "$work/messages.json" | sed -n 2p | head -c 300)"
-    sleep 1
-  done
-  rows="$(jq 'length' "$work/conversation.json")"
-  [[ "$rows" -gt 0 ]] || fail "$section" "the two reads of $agent answer rows" "both answered none"
-  pass "$section" "GET /api/v1/agents/$agent/conversation answers the $rows rows GET /api/v1/agents/$agent/messages answers (pair $pair)"
+  # This section compared the conversation read with the session's messages read, GET .../messages
+  # (listAgentMessages), up to five times, and asserted that the two answered the same rows. That
+  # read is deleted at this build, the conversation read having replaced it, so the move the
+  # comparison proved is over and it is gone; the reads of the conversation above remain.
 }
 
 # retract_arm NAME TUPLE-FROM-KIND FROM-ID KIND TUPLE-TO-KIND TO-ID EDGE-FROM-KIND EDGE-TO-KIND

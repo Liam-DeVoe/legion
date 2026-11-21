@@ -92,10 +92,27 @@ func loadRouteMix(path string) (routeMix, error) {
 	return parseRouteMix(path, string(b))
 }
 
+// replacedReads maps a recorded read that this build no longer serves to the read the dashboard
+// sends in its place. The default mix (routes-2026-10-26-1719Z.txt) was recorded while the
+// dashboard tab read its inbox through GET /api/v1/inbox and its replies count through GET
+// /api/v1/me/replies, as that mix's header names the two rows. This build deletes both reads, and
+// the one read, GET /api/v1/me/inbox, answers what they answered. The recording stays as recorded,
+// so the replay maps each of the two rows to one row of the one read, at the row's own weight,
+// rather than sending a read that can only answer 404: the inbox to the one read's inbox state,
+// unpaged, as packages/dispatch/web/src/api/queries.ts's meInboxQuery reads it, and the replies
+// count to the total of its unread state on a one-entry page, as meInboxCountQuery reads it. Each
+// row is named by what it sends, so the two keep apart in a step's summary, which keys requests by
+// route name.
+var replacedReads = map[string]string{
+	"/api/v1/inbox":      "/api/v1/me/inbox?state=inbox",
+	"/api/v1/me/replies": "/api/v1/me/inbox?limit=1&state=unread",
+}
+
 // parseRouteMix reads a route-mix file. Blank lines and lines starting with # are skipped. A
 // method other than GET (writes are the event generator's), a missing or extra field, a weight
 // that is not a positive number, an identity other than person or agent, a template that is not
-// a path, an unknown placeholder and a repeated route are refused with their line number.
+// a path, an unknown placeholder and a repeated route are refused with their line number. A
+// template replacedReads names is read as its replacement, which is the route's template and name.
 func parseRouteMix(source, text string) (routeMix, error) {
 	m := routeMix{Source: source}
 	seen := map[string]int{}
@@ -127,7 +144,11 @@ func parseRouteMix(source, text string) (routeMix, error) {
 		if f[3] != "GET" {
 			return fail("method %q is refused: only GET routes are requests (writes are the event generator's)", f[3])
 		}
-		lits, holes, err := checkTemplate(f[4])
+		template := f[4]
+		if replacement, replaced := replacedReads[template]; replaced {
+			template = replacement
+		}
+		lits, holes, err := checkTemplate(template)
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -135,8 +156,8 @@ func parseRouteMix(source, text string) (routeMix, error) {
 		if err != nil {
 			return fail("%v", err)
 		}
-		r := route{Name: f[1] + " GET " + f[4], Weight: w, Caller: f[1], Person: person,
-			Template: f[4], holes: holes, lits: lits, need: need}
+		r := route{Name: f[1] + " GET " + template, Weight: w, Caller: f[1], Person: person,
+			Template: template, holes: holes, lits: lits, need: need}
 		if first, dup := seen[r.Name]; dup {
 			return fail("repeats route %q of line %d", r.Name, first)
 		}

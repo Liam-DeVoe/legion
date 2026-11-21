@@ -49,8 +49,8 @@ func TestRefetchRoutesAreTheDefaultMixsDashboardRoutes(t *testing.T) {
 	want := []string{
 		"browser GET /api/v1/issues/{key}",
 		"browser GET /api/v1/issues?project={project}",
-		"browser GET /api/v1/inbox",
-		"browser GET /api/v1/me/replies",
+		"browser GET /api/v1/me/inbox?state=inbox",
+		"browser GET /api/v1/me/inbox?limit=1&state=unread",
 		"browser GET /api/v1/me/state",
 		"browser GET /api/v1/issues/{key}/events?after=0&limit=200",
 	}
@@ -89,7 +89,7 @@ func TestSummarizeReconnectsGroupsTheWindowsReconnectsByKind(t *testing.T) {
 			Refetch: &refetchRec{Requests: 6, Bytes: 6000, LatencyMs: []float64{15, 25, 35, 45, 55, 65}}},
 		{Kind: reconnectLastID, At: winStart.Add(-time.Second), ReplayFrames: 99}, // before the window
 	}
-	got := summarizeReconnects(recs, 1, []route{{Name: "browser GET /api/v1/inbox"}}, inWindow)
+	got := summarizeReconnects(recs, 1, []route{{Name: "browser GET /api/v1/me/inbox?state=inbox"}}, inWindow)
 
 	all := got.Groups["all"]
 	if all.Reconnects != 3 || all.Complete != 1 || all.AfterRestart != 2 || all.FailedAttempts != 2 || all.ReplayFramesTotal != 4 || all.ReplayBytesTotal != 400 {
@@ -111,7 +111,7 @@ func TestSummarizeReconnectsGroupsTheWindowsReconnectsByKind(t *testing.T) {
 	if _, ok := got.Groups[reconnectNoID]; ok {
 		t.Fatal("a kind with no reconnect has a group")
 	}
-	if got.Stale != 1 || !slices.Equal(got.RefetchRoutes, []string{"browser GET /api/v1/inbox"}) {
+	if got.Stale != 1 || !slices.Equal(got.RefetchRoutes, []string{"browser GET /api/v1/me/inbox?state=inbox"}) {
 		t.Fatalf("summary %+v", got)
 	}
 }

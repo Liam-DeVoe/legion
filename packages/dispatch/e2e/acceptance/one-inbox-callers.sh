@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 # Drives dispatch://INFRA-1152's c-callers-moved at this branch's head: every caller of the three
-# reads the one read replaced moved, the comparison and the opt-in are gone, and a page of the
-# release before still works, because the three reads answer this head as they answer that
-# release.
+# reads the one read replaced moved, and the comparison and the opt-in are gone.
 #
 # The three reads are GET /api/v1/inbox (listInbox), GET /api/v1/me/replies (listMyReplies) and
-# GET /api/v1/agents/{session_id}/messages (listAgentMessages). They stay served for one release,
-# with their handlers, their rows in api/routes_table.go and their contract response types, and
-# the root deletes them a release later. POST /api/v1/agents/{session_id}/messages, the send on
-# the same path, stays.
+# GET /api/v1/agents/{session_id}/messages (listAgentMessages). They were served for one release
+# beside the reads that replaced them, and this build deletes them (dispatch://INFRA-1098's T7f),
+# with their handlers, their rows in api/routes_table.go and their contract response types. POST
+# /api/v1/agents/{session_id}/messages, the send on the same path, stays.
 #
-#   setup       the dispatch:local this run reads (DISPATCH_URL) answers; the commit BASELINE_SHA
-#               names is built in $TMPDIR/base-callers (or BASELINE_BINARY is taken) and booted on
-#               port 8780 over ISSUE_DATABASE_URL, the database that dispatch:local serves, with its
-#               Envoy at the same fake Envoy listener (FAKE_ENVOY_PORT), so both builds read one set
-#               of rows and one listener; the two people sign in; and the rows the later sections
-#               read are written, through this head alone.
+# While the three were served, this script also booted the release before beside this head and
+# asked both builds the three reads (its old_routes section), to show that a page of that release
+# still worked here. Once the three are deleted the move that comparison proved is over, so it is
+# gone, with the base build it booted; the comment headed `old_routes, gone` below says why.
+#
+#   setup       the dispatch:local this run reads (DISPATCH_URL) answers; the two people sign in;
+#               and the rows the later sections read are written.
 #   callers     packages/dispatch/web/src, packages/envoy-client/src, packages/pi-envoy/src and
 #               packages/claude-envoy/src hold no read of the three paths, a send to
 #               /api/v1/agents/{session_id}/messages aside; a scratch copy of those trees with a
@@ -24,11 +23,10 @@
 #               `inbox-compare`, its package, its table, its route and page, its types) or the
 #               opt-in (its query key `one=1` and its browser preference `inbox.one_read`); a
 #               planted instance of each is found first.
-#   old_routes  the three kept reads answer every person who has signed in the same body, field for
-#               field, from this head as from the base build, the top-level `as_of` aside.
 #   isolation   two people each read their own comment, and not the other's, in the one read.
 #   default     a comment its person wrote and nobody answered is in that person's one read, read
-#               with no query at all, so with no opt-in, and in none of their Reply rows.
+#               with no query at all, so with no opt-in, and in none of their Reply or Agent rows,
+#               which the one read answers under state=inbox.
 #   open_asks   GET /api/v1/asks/open with waiting_on answers the asks that wait on that person.
 #   conversation
 #               GET /api/v1/agents/{session_id}/conversation answers a person's message to that
@@ -40,24 +38,13 @@
 #               is read first.
 #
 # Every grep is shown able to fail before it is trusted: each runs over a scratch copy holding a
-# planted instance, and must find it, before it runs over the tree. The base build is sent reads
-# only. While it serves it still runs its own background sweeps over ISSUE_DATABASE_URL, such as
-# the maintenance sweep (api.RunMaintenanceSweep), so "reads only" names what this script sends
-# it, and not all that build writes. The script stops it before it exits.
+# planted instance, and must find it, before it runs over the tree.
 #
 # Inputs: DISPATCH_URL (the dispatch:local this branch's head serves), DISPATCH_TOKEN or
-# DISPATCH_TOKEN_FILE (its agent bearer, read here and never printed), PROJECT (an existing
-# project key), ISSUE_DATABASE_URL (the database that server serves, on this machine), FAKE_ENVOY_PORT
-# (the port of its fake Envoy listener, which dispatch:local prints), and BASELINE_SHA (the
-# release this branch lands after; no default) or BASELINE_BINARY (a server already built from
-# it). Optional: FAKE_GITHUB_PORT and FAKE_BROKER_PORT, the fake GitHub and the fake secrets broker
-# dispatch:local runs, which the base build is pointed at too (unset, the base build's GitHub is a
-# port nothing listens on and it has no broker: no read this script sends it reaches either);
-# DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY, as dispatch:local was given it (default e2e-dev-signin), the
-# cookie key both builds must share; ONE_INBOX_CALLERS_SECTIONS, a space-separated subset of the
-# sections above, of which callers, gone and names need no server and read none of the inputs
-# above. Without BASELINE_BINARY the build needs git, go, tar and flock. A missing or bad input is
-# exit 2.
+# DISPATCH_TOKEN_FILE (its agent bearer, read here and never printed) and PROJECT (an existing
+# project key). Optional: ONE_INBOX_CALLERS_SECTIONS, a space-separated subset of the sections
+# above, of which callers, gone and names need no server and read none of the inputs above. A
+# missing or bad input is exit 2.
 #
 # Each passing assertion prints `PASS: <section> <what>`; a failing one prints
 # `FAIL: <section> <what>: <observed>` and ends its section. Every section runs whatever an earlier
@@ -72,14 +59,10 @@ set +x
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: ISSUE_DATABASE_URL=postgres://user@127.0.0.1:5433/db \
-         DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-         FAKE_ENVOY_PORT=<port> {BASELINE_SHA=<commit> | BASELINE_BINARY=<path>} \
-         [FAKE_GITHUB_PORT=<port>] [FAKE_BROKER_PORT=<port>] \
+Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
          [ONE_INBOX_CALLERS_SECTIONS='callers gone names'] one-inbox-callers.sh
-       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; BASELINE_SHA is
-       the release this branch lands after, and has no default; callers, gone and names alone
-       need none of the server's inputs)
+       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; callers, gone
+       and names alone need none of the server's inputs)
 USAGE
 }
 
@@ -94,12 +77,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
 repo="$(cd -- "$script_dir/../../../.." && pwd)"
 readonly repo
-readonly dispatch_dir="$repo/packages/dispatch"
 # This file as the tree names it, which the gone section's search leaves out: it names everything
 # that search looks for.
 readonly self="packages/dispatch/e2e/acceptance/one-inbox-callers.sh"
 
-readonly all_sections="setup callers gone old_routes isolation default open_asks conversation post_stays names"
+readonly all_sections="setup callers gone isolation default open_asks conversation post_stays names"
 readonly offline_sections="callers gone names"
 sections="${ONE_INBOX_CALLERS_SECTIONS:-$all_sections}"
 for chosen in $sections; do
@@ -119,27 +101,10 @@ if [[ "$online" == 1 && " $sections " != *" setup "* ]]; then
 fi
 readonly sections online
 
-require_commands awk cmp cp git grep jq sed sort tar tr wc
+require_commands awk cp git grep jq sed sort tar tr wc
 if [[ "$online" == 1 ]]; then
-  require_env DISPATCH_URL PROJECT ISSUE_DATABASE_URL FAKE_ENVOY_PORT
-  [[ -n "${BASELINE_SHA:-}" || -n "${BASELINE_BINARY:-}" ]] || {
-    printf 'one-inbox-callers.sh: BASELINE_SHA is unset: set it to the commit of the release this branch lands after, or BASELINE_BINARY to a server built from it. It has no default\n' >&2
-    usage
-    exit 2
-  }
-  require_commands bash curl env kill openssl psql sleep
-  [[ -n "${BASELINE_BINARY:-}" ]] || require_commands flock go tar
-  for variable in FAKE_ENVOY_PORT FAKE_GITHUB_PORT FAKE_BROKER_PORT; do
-    [[ -z "${!variable:-}" || "${!variable}" =~ ^[0-9]+$ ]] || {
-      printf 'one-inbox-callers.sh: %s is %s, not a port number\n' "$variable" "${!variable}" >&2
-      usage
-      exit 2
-    }
-  done
-  loopback_database_url "$ISSUE_DATABASE_URL" || {
-    printf 'one-inbox-callers.sh: ISSUE_DATABASE_URL names no single loopback host; the base build this script boots serves it, and only a test database on this machine is one\n' >&2
-    exit 2
-  }
+  require_env DISPATCH_URL PROJECT
+  require_commands curl
   read_bearer
 fi
 
@@ -150,11 +115,8 @@ base_host="${base#*://}"
 # The dashboard's origin, which a write the person's cookie authenticates must name
 # (enforceCookieOrigin).
 readonly origin="${base%%://*}://${base_host%%/*}"
-readonly old_port=8780
-readonly old="http://127.0.0.1:$old_port"
 # shellcheck disable=SC2153 # these are the caller's inputs, checked by name above
 readonly project="${PROJECT:-}"
-readonly database_url="${ISSUE_DATABASE_URL:-}"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="one-inbox-callers-$stamp"
@@ -162,30 +124,16 @@ readonly actor="{\"kind\": \"session\", \"id\": \"$session\"}"
 # The two people the isolation, default, open_asks and conversation sections read as: the two
 # dispatch:local signs in.
 readonly first=alice second=bob
-# shellcheck disable=SC2031 # lib.sh's `cli` exports its own TMPDIR in a subshell; this is the run's
-readonly base_dir="${TMPDIR:-/tmp}/base-callers"
 
 work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
-# The base server's process, which setup records here once it starts it, and the issues setup
-# writes, which it records one per line: the cleanup stops the one and closes the others.
+# The issues setup writes, which it records one per line: the cleanup closes them.
 cleanup() {
-  local code=$? pid key
-  if [[ -s "$work/base.pid" ]]; then
-    pid="$(<"$work/base.pid")"
-    if kill -TERM "$pid" 2>/dev/null; then
-      for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.2
-      done
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-    printf 'one-inbox-callers.sh: stopped the base build (pid %s)\n' "$pid"
-  fi
+  local code=$? key
   if [[ -s "$work/issues" ]]; then
     while IFS= read -r key; do
-      request agent head PATCH "/api/v1/issues/$key" "$(jq -cn --argjson a "$actor" '{status: "done", actor: $a}')"
+      request agent PATCH "/api/v1/issues/$key" "$(jq -cn --argjson a "$actor" '{status: "done", actor: $a}')"
       [[ "$status" == 200 ]] ||
         printf 'one-inbox-callers.sh: could not close %s: HTTP %s: %s\n' "$key" "$status" "$(body)" >&2
     done <"$work/issues"
@@ -197,24 +145,21 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# request AS SERVER METHOD PATH [JSON]: sends METHOD PATH to SERVER (`head`, the dispatch:local
-# this run reads, or `old`, the base build) as AS: `agent`, with the bearer, or a person's login,
-# with the cookie dev sign-in gave that person (sign_in) and, for a write, the dashboard's origin.
-# Both builds sign cookies with one key and read one database, and a cookie names no port, so the
-# one cookie reaches both. The answer's body goes to $work/body and its HTTP status to $status.
+# request AS METHOD PATH [JSON]: sends METHOD PATH to the dispatch:local this run reads, as AS:
+# `agent`, with the bearer, or a person's login, with the cookie dev sign-in gave that person
+# (sign_in) and, for a write, the dashboard's origin. The answer's body goes to $work/body and its
+# HTTP status to $status.
 request() {
-  local who="$1" server="$2" method="$3" path="$4" url
+  local who="$1" method="$2" path="$3"
   local -a auth data=()
   if [[ "$who" == agent ]]; then
     auth=(-H "@$work/auth")
   else
     auth=(-b "$work/jar.$who" -H "Origin: $origin")
   fi
-  url="$base"
-  [[ "$server" == head ]] || url="$old"
-  [[ $# -lt 5 ]] || data=(-H 'Content-Type: application/json' --data-binary "$5")
+  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
   status="$(curl -sS -X "$method" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
-    "$url$path" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+    "$base$path" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
 }
 
 # sign_in SECTION LOGIN: has the head's dev sign-in route sign LOGIN in, keeping the cookie in
@@ -229,7 +174,7 @@ sign_in() {
 # post SECTION WHAT AS PATH JSON: writes JSON at PATH on the head as AS and sets $id to the id the
 # answer names.
 post() {
-  request "$3" head POST "$4" "$5"
+  request "$3" POST "$4" "$5"
   want_status 201 "$1" "$2"
   id="$(jq -er '.id' "$work/body")" || fail "$1" "$2" "no id: $(body)"
   pass "$1" "$2 ($id)"
@@ -271,76 +216,14 @@ grep_tree() {
   [[ "$code" -le 1 ]]
 }
 
-# --- setup: the base build, the people and the rows the sections read ---------------------------
-
-# setup_base: builds the base (once per commit, under a lock, in $base_dir) unless BASELINE_BINARY
-# names it, and boots it on $old_port over the head's database through e2e/run-server.sh, the
-# script dispatch:local boots the head through, so it gets the head's settings and listeners.
-setup_base() {
-  local section=setup binary commit="" waited=0 pid
-  if [[ -n "${BASELINE_BINARY:-}" ]]; then
-    binary="$BASELINE_BINARY"
-    [[ "$binary" == /* ]] || binary="$PWD/$binary"
-    [[ -f "$binary" && -x "$binary" ]] || fail "$section" "take the base build BASELINE_BINARY names" "$binary is no executable file"
-    pass "$section" "the base build is BASELINE_BINARY, $binary"
-  else
-    commit="$(git -C "$repo" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" ||
-      fail "$section" "resolve BASELINE_SHA" "'$BASELINE_SHA' names no commit of $repo"
-    mkdir -p "$base_dir" || fail "$section" "make $base_dir" "mkdir failed"
-    binary="$base_dir/dispatch-$commit"
-    # The tree is taken with git archive, a read of the repository (no worktree, no checkout),
-    # and built stamped with its commit as the image build stamps a server.
-    flock "$base_dir/build.lock" bash -c '
-      set -euo pipefail
-      binary="$1" commit="$2" repo="$3" tree="$4"
-      [[ -x "$binary" ]] && exit 0
-      rm -rf "$tree" && mkdir -p "$tree"
-      git -C "$repo" archive "$commit" | tar -x -C "$tree"
-      go -C "$tree/packages/envoy" build -ldflags "-X main.buildCommit=$commit" -o "$binary.partial" ./cmd/dispatch
-      mv "$binary.partial" "$binary"
-      rm -rf "$tree"
-    ' build "$binary" "$commit" "$repo" "$base_dir/tree-$commit" >"$work/build.log" 2>&1 ||
-      fail "$section" "build $commit in $base_dir" "$(tail -n 20 "$work/build.log")"
-    pass "$section" "the base build of $commit is $binary"
-  fi
-
-  if curl -s -o /dev/null "$old/healthz" 2>/dev/null; then
-    fail "$section" "boot the base build on port $old_port" "something already answers $old"
-  fi
-  local -a fakes=(FAKE_ENVOY_PORT="$FAKE_ENVOY_PORT" FAKE_GITHUB_PORT="${FAKE_GITHUB_PORT:-9}")
-  if [[ -n "${FAKE_BROKER_PORT:-}" ]]; then
-    fakes+=(FAKE_BROKER_PORT="$FAKE_BROKER_PORT")
-  else
-    fakes+=(DISPATCH_E2E_AGENT_SECRETS_URL=)
-  fi
-  (
-    cd -- "$dispatch_dir"
-    # shellcheck disable=SC2031 # lib.sh's `cli` exports its own PATH and HOME; these are this run's
-    exec env -i PATH="$PATH" HOME="${HOME:-/nonexistent}" TMPDIR="$base_dir" \
-      DATABASE_URL="$database_url" DISPATCH_E2E_PORT="$old_port" DISPATCH_E2E_SERVER_BIN="$binary" \
-      DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY="${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-e2e-dev-signin}" \
-      "${fakes[@]}" bash e2e/run-server.sh
-  ) </dev/null >"$base_dir/server-$stamp.log" 2>&1 &
-  pid=$!
-  printf '%s' "$pid" >"$work/base.pid"
-  while ! curl -fsS -o /dev/null "$old/healthz" 2>/dev/null; do
-    kill -0 "$pid" 2>/dev/null ||
-      fail "$section" "boot the base build on port $old_port" "it exited: $(tail -n 20 "$base_dir/server-$stamp.log")"
-    [[ "$waited" -lt 360 ]] ||
-      fail "$section" "boot the base build on port $old_port" "no /healthz within 180 s: $(tail -n 20 "$base_dir/server-$stamp.log")"
-    sleep 0.5
-    waited=$((waited + 1))
-  done
-  : >"$work/base.up"
-  pass "$section" "the base build serves $old over ISSUE_DATABASE_URL, its Envoy the fake listener on port $FAKE_ENVOY_PORT (log $base_dir/server-$stamp.log)"
-}
+# --- setup: the people and the rows the sections read --------------------------------------------
 
 # create_issue NAME TITLE ASSIGNEE: creates an issue in PROJECT assigned to ASSIGNEE as this run's
 # session, recorded for the cleanup, and records its key under NAME. `force` takes it past the
 # duplicate check a second run's title would meet.
 create_issue() {
   local key
-  request agent head POST /api/v1/issues "$(jq -cn --arg p "$project" --arg t "$2" --arg a "$3" --argjson s "$actor" \
+  request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --arg t "$2" --arg a "$3" --argjson s "$actor" \
     '{project: $p, title: $t, assignee: $a, force: true, actor: $s}')"
   want_status 201 setup "create \"$2\" assigned to $3"
   key="$(jq -er '.key' "$work/body")" || fail setup "create \"$2\"" "no key: $(body)"
@@ -349,9 +232,9 @@ create_issue() {
   pass setup "created $key in $project, assigned to $3"
 }
 
-setup_seed() {
+setup_section() {
   local section=setup
-  request agent head GET /healthz
+  request agent GET /healthz
   want_status 200 "$section" "reach the head at $base"
   pass "$section" "the head answers at $base"
   sign_in "$section" "$first"
@@ -374,22 +257,13 @@ setup_seed() {
 
   # Two sessions the head lists: the one the conversation and post_stays sections write to, and
   # another whose conversation must not hold what was written to the first.
-  request agent head GET /api/v1/agents
+  request agent GET /api/v1/agents
   want_status 200 "$section" "list the agents"
   jq -r '(if type == "array" then . else .agents end)[].session_id' "$work/body" >"$work/seed.agents" ||
     fail "$section" "list the agents" "$(body)"
   [[ "$(wc -l <"$work/seed.agents")" -ge 2 ]] ||
     fail "$section" "find two sessions the head lists" "it lists $(jq -c '[(if type == "array" then . else .agents end)[].session_id]' "$work/body")"
   pass "$section" "the head lists $(wc -l <"$work/seed.agents") sessions"
-}
-
-setup_section() {
-  local failed=0
-  isolated setup_base
-  [[ "$isolated_status" == 0 ]] || failed=1
-  isolated setup_seed
-  [[ "$isolated_status" == 0 ]] || failed=1
-  return "$failed"
 }
 
 # --- callers: no read of the three paths in the four trees --------------------------------------
@@ -564,71 +438,16 @@ gone_section() {
   pass "$section" "no tracked file but frozen history and the two migrations names the comparison, its page, inbox-compare, the query key one=1 or the preference inbox.one_read"
 }
 
-# --- old_routes: the three kept reads answer as the base build answers ----------------------------
+# --- old_routes, gone ------------------------------------------------------------------------------
 
-# The body of the last answer, with the top-level as_of the read stamps when it answers taken out.
-normalized() { jq -S 'if type == "object" then del(.as_of) else . end' "$work/body"; }
-
-# differences: what this head's answer ($work/head.json) holds that the base build's
-# ($work/old.json) does not, and the other way round, by field (an array's elements as `[]`), and
-# the first field whose value differs where both hold the same fields.
-differences() {
-  jq -rn --slurpfile h "$work/head.json" --slurpfile o "$work/old.json" '
-    def fields: [paths((type != "object" and type != "array") or length == 0)
-                 | map(if type == "number" then "[]" else . end) | join(".")] | unique;
-    ($h[0] | fields) as $hf | ($o[0] | fields) as $of
-    | (($hf - $of) | map("this head answers the field " + . + ", which the base build does not"))
-      + (($of - $hf) | map("the base build answers the field " + . + ", which this head does not"))
-    | if length > 0 then .[:5] | join("; ")
-      else "both answer the same fields, and the value at "
-           + (first(($h[0] | paths((type != "object" and type != "array") or length == 0)) as $p
-                    | select(($h[0] | getpath($p)) != ($o[0] | getpath($p)))
-                    | $p | map(tostring) | join(".")) // "(none)")
-           + " differs"
-      end'
-}
-
-# same_answer PERSON PATH: PATH answers PERSON the same body from both builds. A write some other
-# caller lands between the two reads moves one of them, so the pair is read again, up to three
-# times, before a difference fails.
-same_answer() {
-  local person="$1" path="$2" pair
-  for pair in 1 2 3; do
-    request "$person" head GET "$path"
-    want_status 200 old_routes "GET $path as $person on this head"
-    normalized >"$work/head.json" || fail old_routes "GET $path as $person on this head" "$(body)"
-    request "$person" old GET "$path"
-    want_status 200 old_routes "GET $path as $person on the base build"
-    normalized >"$work/old.json" || fail old_routes "GET $path as $person on the base build" "$(body)"
-    cmp -s "$work/head.json" "$work/old.json" && break
-    [[ "$pair" -lt 3 ]] || fail old_routes "GET $path answers $person the same body from this head and the base build" "$(differences)"
-    sleep 1
-  done
-  pass old_routes "GET $path answers $person the same body from this head and the base build"
-}
-
-old_routes_section() {
-  local section=old_routes person agent count=0
-  [[ -e "$work/base.up" ]] || fail "$section" "read the base build" "setup did not boot it"
-  # Everyone who has signed in, as the head lists them: each is a person the three reads answer.
-  request "$first" head GET /api/v1/users
-  want_status 200 "$section" "list the people"
-  mapfile -t people < <(jq -r '.users[].login' "$work/body")
-  [[ "${#people[@]}" -gt 0 ]] || fail "$section" "list the people" "the head lists none: $(body)"
-  [[ -s "$work/seed.agents" ]] || fail "$section" "read the sessions setup listed" "setup listed none"
-  mapfile -t agents <"$work/seed.agents"
-  for person in "${people[@]}"; do
-    [[ -s "$work/jar.$person" ]] || sign_in "$section" "$person"
-    same_answer "$person" /api/v1/inbox
-    same_answer "$person" "/api/v1/me/replies?kind=reply,agent"
-    same_answer "$person" "/api/v1/me/replies?kind=reply,agent&state=inbox"
-    for agent in "${agents[@]}"; do
-      same_answer "$person" "/api/v1/agents/$(q "$agent")/messages"
-    done
-    count=$((count + 3 + ${#agents[@]}))
-  done
-  pass "$section" "the three kept reads answered all ${#people[@]} people the same $count bodies from both builds"
-}
+# A section stood here that asked the three reads of every person who had signed in, on this head
+# and on the release before, booted beside it over the same database, and asserted that both
+# builds answered the same body: while the three were served beside the reads that replaced them,
+# that showed a page of the release before still worked against this head. This build deletes the
+# three reads, so the move that comparison proved is over, and the section, its comparison and the
+# base build it booted are gone. What the three answered is asked of the reads that replaced them:
+# the one read (isolation, default), the open-asks read (open_asks) and the session-conversation
+# read (conversation).
 
 # --- isolation and default: the one read, a person's own ----------------------------------------
 
@@ -636,7 +455,7 @@ old_routes_section() {
 # relations that tie KIND/ID to PERSON there, as `kind direction` sorted and space-separated, or
 # empty where the read holds no such entry, and $read_person to the person the read names.
 one_read_entry() {
-  request "$1" head GET /api/v1/me/inbox
+  request "$1" GET /api/v1/me/inbox
   want_status 200 "$section" "read $1's one read"
   read_person="$(jq -r '.person' "$work/body")" || fail "$section" "read $1's one read" "$(body)"
   entry="$(jq -r --arg k "$2" --arg i "$3" '
@@ -672,11 +491,13 @@ default_section() {
   [[ "$entry" == *"authored_by "* ]] ||
     fail "$section" "the one read answers $first's unanswered comment by default" "its entry's relations: '${entry:-no entry}'"
   pass "$section" "the one read, read with no query and so with no opt-in, answers $first the comment nobody answered ($entry)"
-  # No Reply row is that comment's: a Reply row is a thread somebody else wrote in.
-  request "$first" head GET "/api/v1/me/replies?kind=reply,agent&state=inbox"
-  want_status 200 "$section" "read $first's Reply rows"
-  expect "$section" "no Reply row of $first's is the comment nobody answered, which only the one read answers" 0 \
-    --arg c "$comment" '[.rows[]? | select(.thread_id == $c)] | length'
+  # No Reply or Agent row is that comment's: such a row is a thread somebody else wrote in. The one
+  # read answers a person's Inbox rows under state=inbox, a Reply row's thread as an entry's
+  # `thread` and an Agent row's as its `agent`.
+  request "$first" GET "/api/v1/me/inbox?state=inbox"
+  want_status 200 "$section" "read $first's Reply and Agent rows"
+  expect "$section" "no Reply or Agent row of $first's is the comment nobody answered, which only the one read with no query answers" 0 \
+    --arg c "$comment" '[.entries[]? | (.thread, .agent) | select(. != null and .thread_id == $c)] | length'
 }
 
 # --- open_asks: the asks that wait on one person ---------------------------------------------------
@@ -688,7 +509,7 @@ open_asks_section() {
     [[ "$who" == first ]] || other=first
     mine="$(seeded "$section" "${who}_ask")"
     theirs="$(seeded "$section" "${other}_ask")"
-    request agent head GET "/api/v1/asks/open?project=$(q "$project")&waiting_on=$(q "${!who}")"
+    request agent GET "/api/v1/asks/open?project=$(q "$project")&waiting_on=$(q "${!who}")"
     want_status 200 "$section" "GET /api/v1/asks/open?waiting_on=${!who}"
     expect "$section" "it answers the ask on ${!who}'s issue, which waits on ${!who}" 1 \
       --arg a "$mine" '[.asks[]? | select(.id == $a)] | length'
@@ -712,11 +533,11 @@ conversation_section() {
   post "$section" "$agent replies to it" agent "/api/v1/messages/$message/reply" \
     "$(jq -cn --arg s "$agent" '{body: "Seen.", attempt: 1, actor: {kind: "session", id: $s}}')"
   reply="$id"
-  request "$first" head GET "/api/v1/agents/$(q "$agent")/conversation"
+  request "$first" GET "/api/v1/agents/$(q "$agent")/conversation"
   want_status 200 "$section" "GET /api/v1/agents/$agent/conversation as $first"
   expect "$section" "$agent's conversation holds $first's message once, with $agent's reply under it" '[1]' \
     --arg m "$message" --arg r "$reply" '[.[] | select(.message.id == $m) | [.replies[]? | select(.id == $r)] | length]'
-  request "$first" head GET "/api/v1/agents/$(q "$elsewhere")/conversation"
+  request "$first" GET "/api/v1/agents/$(q "$elsewhere")/conversation"
   want_status 200 "$section" "GET /api/v1/agents/$elsewhere/conversation as $first"
   expect "$section" "$elsewhere's conversation does not hold the message to $agent" 0 \
     --arg m "$message" '[.[] | select(.message.id == $m)] | length'
@@ -730,7 +551,7 @@ post_stays_section() {
   post "$section" "POST /api/v1/agents/$agent/messages takes $first's message" "$first" \
     "/api/v1/agents/$(q "$agent")/messages" "$(jq -cn --arg b "$body" '{body: $b, delivery: "btw"}')"
   message="$id"
-  request "$first" head GET "/api/v1/messages/$message"
+  request "$first" GET "/api/v1/messages/$message"
   want_status 200 "$section" "read $message back"
   expect "$section" "the message is stored as sent, to $agent" "$(jq -cn --arg b "$body" --arg t "session:$agent" '[$b, $t]')" \
     '[.message.body, .message.target]'
@@ -844,10 +665,6 @@ names_section() {
 # it fails, so every section runs whatever an earlier one found.
 failed_sections=()
 run_section() {
-  if [[ "$1" == setup ]]; then
-    setup_section || failed_sections+=(setup)
-    return 0
-  fi
   isolated "$1_section"
   [[ "$isolated_status" == 0 ]] || failed_sections+=("$1")
 }

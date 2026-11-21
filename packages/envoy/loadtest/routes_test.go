@@ -94,6 +94,42 @@ func TestCommittedDefaultRouteMixParses(t *testing.T) {
 	}
 }
 
+// TestDefaultRouteMixReplaysItsDeletedReadsAsTheOneRead: the two rows of the recorded mix whose
+// reads this build deleted are each replayed as one row of the one read, at the row's recorded
+// weight, and the request each sends is that read; no route of the mix sends a read this build
+// deleted (replacedReads).
+func TestDefaultRouteMixReplaysItsDeletedReadsAsTheOneRead(t *testing.T) {
+	mix, err := loadRouteMix("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct {
+		weight float64
+		path   string
+	}{
+		"browser GET /api/v1/me/inbox?state=inbox":          {4, "/api/v1/me/inbox?state=inbox"},
+		"browser GET /api/v1/me/inbox?limit=1&state=unread": {3, "/api/v1/me/inbox?limit=1&state=unread"},
+	}
+	is := seedIssue{Key: "LGA-1", ArtifactID: "id"}
+	for _, r := range mix.Routes {
+		path := r.render(is, "LGA")
+		if read, _, _ := strings.Cut(path, "?"); replacedReads[read] != "" {
+			t.Errorf("%s sends %q, a read this build deleted", r.Name, path)
+		}
+		w, ok := want[r.Name]
+		if !ok {
+			continue
+		}
+		delete(want, r.Name)
+		if r.Weight != w.weight || !r.Person || path != w.path {
+			t.Errorf("%s weighs %g, person %t, and sends %q; want %g, a person, and %q", r.Name, r.Weight, r.Person, path, w.weight, w.path)
+		}
+	}
+	for name := range want {
+		t.Errorf("the default mix has no route %s", name)
+	}
+}
+
 // specLoopRouteMixName is the committed route mix of the Verified Linux spec loop, which a step
 // runs with -route-mix; the step gives it by path, as run-step.sh gives any route mix of its own.
 const specLoopRouteMixName = "routes-spec-loop-2026-11-03.txt"

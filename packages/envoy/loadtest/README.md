@@ -1227,6 +1227,15 @@ groups: 39% one dashboard tab, 34% `dispatch read` calls, 17% Legion pods, 10% u
 split inside each group is INFERENCE from the capture's prose. These are the 18 routes of the root
 report.
 
+Two of its rows read routes this build no longer serves: the dashboard tab's inbox and its
+replies count, which the one read, `GET /api/v1/me/inbox`, replaced. The file stays as it was
+recorded, and `loadgen` replays each of the two rows as one row of the one read, at the row's own
+weight, sending what the dashboard sends in its place: the inbox as
+`GET /api/v1/me/inbox?state=inbox` and the replies count as
+`GET /api/v1/me/inbox?limit=1&state=unread`. Each row's name is the request it sends. A route-mix
+file given with `--route-mix` that names either deleted read is replayed the same way; `routes.go`
+(`replacedReads`) names the two and says why.
+
 A request that the generator cannot start because 25,000 requests are in flight is dropped and
 counted. 25,000 is more than 600 req/s × the 30 s client timeout.
 
@@ -1929,8 +1938,8 @@ the dashboard tab:
 
 - `browser GET /api/v1/issues/{key}` (issue read)
 - `browser GET /api/v1/issues?project={project}` (issue list)
-- `browser GET /api/v1/inbox` (inbox)
-- `browser GET /api/v1/me/replies` (replies)
+- `browser GET /api/v1/me/inbox?state=inbox` (inbox, replayed as the one read: Route mix, above)
+- `browser GET /api/v1/me/inbox?limit=1&state=unread` (replies count, replayed as the one read)
 - `browser GET /api/v1/me/state` (state)
 - `browser GET /api/v1/issues/{key}/events?after=0&limit=200` (issue events)
 
