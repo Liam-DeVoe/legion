@@ -23,6 +23,11 @@
 -- session_clause_visible does: a caller whose search_path puts another schema first is answered
 -- from public's rows all the same (access.TestTheRuleFunctionsReadTheirTablesWhateverTheCallersSearchPath).
 --
+-- It reads the listener record only while route_roster's row has not passed its expires_at: a row
+-- past it is a listener answer nobody asked again, whose lists may be older than a session's
+-- credential, so the function judges the session as one whose listener sent no list
+-- (access.TestAnExpiredListenerRecordListsNoProjectsForTheContentRule).
+--
 -- This creates a function. It neither reads, rewrites nor refuses any row. The census answers 0,
 -- and rollback is an image rollback alone: the release before this one does not call it.
 create function session_content_visible(session_id text, viewer jsonb) returns boolean
@@ -36,11 +41,11 @@ select coalesce(not exists (
 				select 1 from public.session_reached_projects reached
 				where reached.session_id = $1 and not (($2->'sees') ? reached.project_key)
 				offset 0)
-			and case when coalesce((select listener.projects from public.route_roster_session_projects listener where listener.id = true) ? $1, false) then
-				((select listener.projects from public.route_roster_session_projects listener where listener.id = true)->$1) <@ ($2->'sees')
+			and case when coalesce((select listener.projects from public.route_roster_session_projects listener join public.route_roster roster on roster.id = listener.id where listener.id = true and roster.expires_at > now()) ? $1, false) then
+				((select listener.projects from public.route_roster_session_projects listener join public.route_roster roster on roster.id = listener.id where listener.id = true and roster.expires_at > now())->$1) <@ ($2->'sees')
 				and ((coalesce(($2::jsonb->>'open')::boolean, false)
 						and exists (select 1 from public.session_projects_filled offset 0)
-						and (jsonb_array_length((select listener.projects from public.route_roster_session_projects listener where listener.id = true)->$1) > 0
+						and (jsonb_array_length((select listener.projects from public.route_roster_session_projects listener join public.route_roster roster on roster.id = listener.id where listener.id = true and roster.expires_at > now())->$1) > 0
 							or exists (select 1 from public.session_projects acted where acted.session_id = $1 offset 0)))
 					or (not coalesce(($2::jsonb->>'open')::boolean, false) and (exists (
 				select 1 from public.session_owners tied
