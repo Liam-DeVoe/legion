@@ -17,8 +17,9 @@ body: |-
   (`returnTo`). Legion asks no review of a task
   with no reviewer step, but its merger still waits for an approving review the base branch's
   rules require, and tells the architect which review is missing. A parent whose plan has no
-  acceptance step waits before its retro, held `children`, until the issues beneath it leave the
-  workflow. The daemon API contract is 212.
+  acceptance step waits before its retro, held `children`, until nothing beneath it is open and
+  its tree runs: a tree that lingers after its root left the workflow, or whose root waits in the
+  admission line, holds it on. The daemon API contract is 212.
 
   One migration adds the plan tables. Its header and the Kubernetes guide hold the transaction
   that rolls it back: every project's daemon on the database rolls back with it, and the plans
