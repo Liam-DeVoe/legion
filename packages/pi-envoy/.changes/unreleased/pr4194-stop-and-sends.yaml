@@ -4,9 +4,12 @@ body: |-
   and on every clean stop, so the session's next process claims the role at once. In RPC mode,
   which a Legion pane runs, a SIGTERM emits no `session_shutdown`, so before this a stopped pane
   sent neither the release nor the record's delete; the stop now also runs from the host's exit
-  callbacks. A release that does not answer in 250 ms is left, and the delete still goes. A send
-  answered `no_receiver` says the session takes no message into its conversation now instead of
-  live.
+  callbacks. A release that does not answer in 250 ms is left, and the delete still goes. Once
+  the stop has begun, a heartbeat's pass makes no role move, also when the listener accepts its
+  registration after that point: it claims no role back after the release, and it fires no
+  regain hook. The pane is told nothing of a heartbeat that fails or a pass that stalls once the
+  stop has begun. A send answered `no_receiver` says the session takes no message into its
+  conversation now instead of live.
 time: 2026-11-16T18:40:00Z
 custom:
     Issue: pr4194

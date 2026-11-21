@@ -278,6 +278,43 @@ describe("keepNatsCredential", () => {
       stop();
     }
   }, 15_000);
+
+  test("a renewal in flight when the keeper is stopped warns nothing when it fails, and arms no retry", async () => {
+    // pi-envoy's stop stops the keeper before its connection drains (`stopInboundKeeper`), and
+    // shows what the keeper warns in the stopping session's pane. A renewal already away when the
+    // keeper stops then fails, and the session is told nothing of it.
+    const lapses = Date.now() + 2_000;
+    const failed = Promise.withResolvers<void>();
+    let renewals = 0;
+    const credential = standIn({
+      ready: async () => {},
+      renew: () => {
+        renewals += 1;
+        return failed.promise;
+      },
+      authenticator: () => undefined,
+      expiresAt: () => new Date(lapses),
+      needsReconnect: () => false,
+      drop: () => {},
+      tokenGeneration: () => 0,
+      tokenSession: () => "ses_stand_in",
+    });
+    const fake = fakeConnection(() => {});
+    const warnings: string[] = [];
+    const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
+    // The renewal due before the two-second token lapses goes away, and then the keeper stops.
+    jest.advanceTimersByTime(2_000);
+    expect(renewals).toBe(1);
+    stop();
+    failed.reject(new Error("the broker is unreachable"));
+    await turn();
+    // Nothing renews again, at the first retry's time nor a minute on.
+    jest.advanceTimersByTime(60_000);
+    await turn();
+    expect(warnings).toEqual([]);
+    expect(renewals).toBe(1);
+    expect(fake.reconnects).toEqual([]);
+  });
 });
 
 // On the fake clock too: a refusal is read as the status reader takes it (`readerAtRest`), and

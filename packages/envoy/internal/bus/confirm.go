@@ -90,9 +90,11 @@ func windowSpent(ctx context.Context, deadline time.Time) error {
 
 // confirmFlushed flushes conn with what is left until deadline as the flush's timeout, and confirms
 // that the server accepted the core publish to subject made on it after before was observed
-// (confirmPublished), reading conn's state within ctx. The flush takes nats.go's connection lock
-// before it starts that timeout, so the deadline bounds the wait for the server's answer, not a
-// wait for the lock.
+// (confirmPublished), reading conn's state within ctx. nats.go's FlushTimeout starts that timeout
+// only once it holds the connection lock, and then sends its PING and waits for the server's PONG.
+// So the timeout bounds what follows the lock, from the moment nats.go lets the flush take it, as
+// for every call that readWithin lists: a flush that waited X for the lock waits for the server's
+// answer until X after deadline.
 func confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState, deadline time.Time) error {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {

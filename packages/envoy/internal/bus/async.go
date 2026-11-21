@@ -631,12 +631,14 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				if flushed != nil {
-					// The deadline bounds the flush's wait for the server's answer
-					// (confirmFlushed). In production the timeout fires at the deadline, so the
-					// flush is returning now, unless it still waits for nats.go's connection
-					// lock, which the deadline does not bound (readWithin lists such waits).
-					// Under a test's expiry (requestExpiry) the flush can run on until the
-					// deadline. Either way, what it says belongs in the timeout's answer.
+					// The flush's timeout bounds only what follows nats.go's connection lock,
+					// from the moment nats.go lets the flush take it (confirmFlushed,
+					// readWithin). So a flush that waited X for the lock waits for the server's
+					// answer until X after the deadline. In production the timeout fires at the
+					// deadline, so this wait lasts at most X, the whole of the flush's wait for
+					// the lock. Under a test's expiry (requestExpiry) the timeout can fire before
+					// the deadline, and the flush can run on until X after it. Either way, what
+					// it says belongs in the timeout's answer.
 					if settled := settleFlush(<-flushed); settled != nil {
 						return settled
 					}

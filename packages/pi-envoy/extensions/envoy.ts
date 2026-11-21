@@ -3568,7 +3568,8 @@ export default function envoyExtension(hostApi: PiApi): void {
   // `registerWithRelay`, with an error that says why: a pass reads it as a pass that decided
   // nothing (`reconcileNow`), and every other caller that reports it reports the truth. A
   // registration already on the wire when the stop begins is not sent again (`stopping`): a
-  // project refusal answered after that drops no topic, and the session is not told of it.
+  // project refusal answered after that drops no topic, and the session is not told of it. The
+  // pass that sent it ends once it settles, accepted or not, with no role move (`reconcileNow`).
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>,
     relayMissing?: string,
@@ -3750,9 +3751,11 @@ export default function envoyExtension(hostApi: PiApi): void {
     // a write that cannot reach the session's state directory fails the same way at every tick.
     const writeHeartbeatTitle = dispatchTitleWriter();
     // The pane hears about a stall as it hears about a registry outage, and for the same reason:
-    // the session is at risk of being reaped by the listener while the pane runs on.
+    // the session is at risk of being reaped by the listener while the pane runs on. A session
+    // whose stop has begun hears of none (R24 of dispatch://INFRA-3589): a pass abandoned at its
+    // deadline after that point leaves nothing to recover, since the DELETE follows it.
     const noteStall = (detail: string): void => {
-      if (stallNotified) return;
+      if (stallNotified || shuttingDown) return;
       stallNotified = true;
       logger.warn("envoy: reconcile pass stalled; registration refreshed on its own", {
         detail,
@@ -3830,6 +3833,10 @@ export default function envoyExtension(hostApi: PiApi): void {
           throw error instanceof RegistrationError ? error.cause : error;
         })
         .catch((error) => {
+          // A tick that fails once the stop has begun is no outage: no heartbeat follows it, and
+          // the DELETE does, so the line would promise a retry that never comes. Nothing is
+          // armed and nothing is said (R24 of dispatch://INFRA-3589).
+          if (shuttingDown) return;
           // The extra call this failure buys, armed only from an interval tick: a retry that
           // fails is followed by the next tick, not by a second retry, so a listener that keeps
           // refusing sees one extra call per interval and no more.
@@ -4206,10 +4213,12 @@ export default function envoyExtension(hostApi: PiApi): void {
     // The catch-all above turned whatever the registration threw into `registration.error`, a
     // refused step included: this says so rather than report a registration failure.
     handle.check();
-    // A registration the stop refused (`sendRegistration`), or one that failed once the stop
-    // began, is no outage to report: the stop deletes the record next, and nothing asks again. So
-    // the pass decides nothing and says nothing, as a pass whose session moved does.
-    if (registration !== undefined && shuttingDown) return false;
+    // Once the stop has begun, the pass ends here, whether the listener accepted the
+    // registration or not (R24 of dispatch://INFRA-3589). The stop hands the role back and
+    // deletes the record next, and nothing asks again. So the pass makes no role move, fires no
+    // regain hook and says nothing, as a pass whose session moved does. A registration the stop
+    // refused (`sendRegistration`) ends the pass here too.
+    if (shuttingDown) return false;
     // Established once the registration landed, which is what a bridge call asks before it runs
     // a pass of its own (`establishForBridge`): a pass this call queues reads the host as it
     // stands when its turn comes, so one queued for an established session would learn a session
