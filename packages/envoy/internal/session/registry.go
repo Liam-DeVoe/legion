@@ -30,7 +30,7 @@ type SessionEntry struct {
 	// lay that session's machine and projects over another's key. It is empty only on a record
 	// an earlier build wrote, which names no key and is read as before by every reader here; a
 	// reader that grants a session's scope across a project reads such an entry as no project's
-	// (cmd/listener's sessionOfProjects). An entry naming no key encodes none, so it reads as
+	// (cmd/listener's edgeScope.shows). An entry naming no key encodes none, so it reads as
 	// such a record and never as one naming the empty key, which every reader refuses.
 	SessionID string `json:"session_id,omitempty"`
 	// Port is always 0 for an entry this build writes: a registration naming a serving port is
@@ -1205,27 +1205,37 @@ func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID strin
 	return r.applyRead(sessionID, epoch, got, err)
 }
 
-// StoredByWriter reports whether sessionID's newest message on the session bucket's stream, read
-// from the stream's leader with the headers the stream stored with it (bus.KeyValue.NewestFromLeader),
-// is a record a writer stored: a put carrying none of the headers the server writes
-// (bus.WrittenByServer). A message the server wrote - a direct get's copy of another key's record,
-// or a RePublish of another stream naming the key's subject, whatever body that stream was given -
-// can read as a record of sessionID (DecodeEntry) naming any projects, and neither the watcher's
-// entries nor a direct get carry the headers that tell it apart. A key the stream holds no message
-// for, or whose newest message is a delete or purge marker, is no writer's record either. It is the
-// edge listener's confirmation of a session it is about to show or send to across what a cached
-// entry says (cmd/listener's edgeSessionShown); every other reader has no use for its cost, a read
-// the leader alone answers.
-func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) (bool, error) {
+// StoredByWriter reads sessionID's newest message on the session bucket's stream from the stream's
+// leader with the headers the stream stored with it (bus.KeyValue.NewestFromLeader) and returns the
+// record a writer stored there: the message decoded as sessionID's registration (DecodeEntry) when
+// it is a put carrying none of the headers the server writes (bus.WrittenByServer), with true. A
+// message the server wrote - a direct get's copy of another key's record, or a RePublish of another
+// stream naming the key's subject, whatever body that stream was given - can read as a record of
+// sessionID (DecodeEntry) naming any projects, and neither the watcher's entries nor a direct get
+// carry the headers that tell it apart, so it answers the zero entry and false. A key the stream
+// holds no message for, one whose newest message is a delete or purge marker, and one whose newest
+// message is a put the server wrote or that does not decode as sessionID's registration are each no
+// writer's record: the zero entry and false, no error. The entry it returns is the one the leader
+// holds, so a caller judges its scope on the record the key is bound to now, not on a cached entry
+// an older message left. It is the edge listener's confirmation of a session it is about to show,
+// send to or name as a role's holder across what a cached entry says; every other reader has no use
+// for its cost, a read the leader alone answers.
+func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) (SessionEntry, bool, error) {
 	kv, _ := r.watcher.Handle()
 	newest, err := kv.NewestFromLeader(ctx, sessionID)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
-		return false, nil
+		return SessionEntry{}, false, nil
 	case err != nil:
-		return false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
+		return SessionEntry{}, false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
+	case newest.Operation() != nats.KeyValuePut, bus.WrittenByServer(newest):
+		return SessionEntry{}, false, nil
 	}
-	return newest.Operation() == nats.KeyValuePut && !bus.WrittenByServer(newest), nil
+	entry, err := DecodeEntry(sessionID, newest.Value())
+	if err != nil {
+		return SessionEntry{}, false, nil
+	}
+	return entry, true, nil
 }
 
 // applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err

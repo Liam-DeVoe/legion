@@ -19,7 +19,7 @@ import (
 
 // edgeConfirmRequest builds a request an edge listener admitted for outside, held to projects
 // (withEdgeHold, withBrokerCaller), under ctx. A cancelled ctx fails only the leader read
-// edgeSessionShown makes: every cache read the routes make before it (session.SessionRegistry.Lookup)
+// the confirmation (edgeScope.showsConfirmed) makes: every cache read the routes make before it (session.SessionRegistry.Lookup)
 // ignores the context, so the session still reads as present and only its stored-record confirmation
 // does not answer.
 func edgeConfirmRequest(ctx context.Context, outside string, projects []string, method, path, body string) *http.Request {
@@ -32,16 +32,16 @@ func edgeConfirmRequest(ctx context.Context, outside string, projects []string, 
 }
 
 // Every edge decision that shows or sends to a session confirms it by a leader read of its stored
-// record (edgeSessionShown, session.SessionRegistry.StoredByWriter), so a record the server wrote
+// record (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter), so a record the server wrote
 // reads as absent. When that read does not answer - a leader election on the clustered hub, while
 // the cached entry and direct gets still answer - the edge must answer the bus-unavailable 503 it
 // answers for every other read that did not answer, with Retry-After: 1 and the bus's own unanswered
 // wording, never the 404 of a session the server wrote a record for, nor a silent drop from the
 // list that reads a partial answer as complete. The fault is a cancelled context on the leader read,
 // as the reviewer's probe injects it; the full view, the list and the send route read the cache
-// before it, so only the confirmation does not answer. The registration view reads the bucket
-// itself (bucketSessionEntry), which answers that same 503 ahead of the confirmation, so it is not
-// among these three; its confirmation answers the same error the way the full view's does.
+// before it, so only the confirmation does not answer. The registration view reads the bucket itself
+// (bucketSessionEntry) before its confirmation, so its 503 under the fault is that read's rather than
+// the confirmation's; it answers the same bus-unavailable 503 either way, which this table pins too.
 func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, peer = "ses_confirm_fault_outside", "ses_confirm_fault_peer"
@@ -62,6 +62,7 @@ func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
 		handler http.Handler
 	}{
 		{"the full registry view", http.MethodGet, "/v1/registry/" + peer, "", sessionEntryHandler(rig.deps)},
+		{"the registration view", http.MethodGet, "/v1/registry/" + peer + "?view=registration", "", sessionEntryHandler(rig.deps)},
 		{"the session list", http.MethodGet, "/v1/sessions", "", sessionsHandler(rig.deps.registry, rig.deps.sessions, rig.deps.repositories)},
 		{"the send route", http.MethodPost, "/v1/messages/send", sendBody, sendHandler(rig.deps, logging.New("test"))},
 	} {

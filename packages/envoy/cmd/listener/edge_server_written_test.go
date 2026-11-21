@@ -26,7 +26,7 @@ import (
 //     neither the watcher's entries nor a direct get carry the headers that tell it apart. O's list
 //     does not show S, O's registry read of S answers 404 and O's send to S is answered as to a
 //     missing session: the edge confirms a session it would grant by the record the stream stores
-//     (edgeSessionShown, session.SessionRegistry.StoredByWriter).
+//     (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter).
 //   - The census row M1-R: a RePublish stores, at O's own interest key, a body reading as O's row
 //     with a PUB topic beside O's own, at another stream's sequence. O's next registration answers
 //     200 and O's frames resume: the write after the refusal reads the key from the leader, reads
@@ -175,7 +175,7 @@ func TestAnEdgeRoleClaimWritesNoForgedProjectsBack(t *testing.T) {
 	if !slices.Equal(stored.Projects, []string{project}) {
 		t.Errorf("O's record after the role claim lists %v, want only its token's project [%s]", stored.Projects, project)
 	}
-	if own, err := rig.deps.sessions.StoredByWriter(context.Background(), outside); err != nil || !own {
+	if _, own, err := rig.deps.sessions.StoredByWriter(context.Background(), outside); err != nil || !own {
 		t.Errorf("StoredByWriter(O) after the claim = %t, %v; want true (the refresh wrote a writer's record)", own, err)
 	}
 }

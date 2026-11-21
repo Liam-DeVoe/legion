@@ -11,7 +11,7 @@ import (
 )
 
 // The edge shows a Legion agent registry entry only of a session of its issue's project
-// (edgeLegionAgent). A chosen entry naming an in-house session of PUB under a PRIV issue's three
+// (edgeScope.showsAgentConfirmed). A chosen entry naming an in-house session of PUB under a PRIV issue's three
 // keys (issue, role token and session), as any writer of the registry's bucket can store it, is
 // listed to the outside session by neither listing, its session read answers 404, and it is no
 // replacement of the outside session's own entry, whose replaced_by stays null. A copy of the

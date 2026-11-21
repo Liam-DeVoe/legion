@@ -192,33 +192,40 @@ func (s *edgeScope) hides(entry session.SessionEntry, err error) bool {
 	return s != nil && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !s.shows(entry)))
 }
 
-// showsConfirmed is shows, and for a session it would show, confirmed by the session's newest
-// message on the bucket's stream, read from the stream's leader with the headers stored with it
-// (session.SessionRegistry.StoredByWriter): a record the server wrote at the session's key - a
-// RePublish of another stream naming the key's subject, whose body that stream's writer chose -
-// reads as a record naming its key, a machine, a time and any projects it likes, so an entry that
-// would grant the session is granted only when the leader's newest message is a writer's. A message
-// the server wrote, or none, reads as no session's, and so does a key the leader refused or held no
-// message for (nats.ErrKeyNotFound, bus.ErrRefused). A read that did not answer is returned as its
-// error, not as an absence, so a caller answers the bus-unavailable 503 it answers for any read
-// that did not answer, never the 404 of a session it does not show nor a silent drop from a list. A
-// nil scope shows every session, and an entry it would not show, both cost no read.
-func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry) (bool, error) {
+// showsConfirmed is shows, and for a session it would show, confirmed by sessionID's newest message
+// on the bucket's stream, read from the stream's leader with the headers stored with it
+// (session.SessionRegistry.StoredByWriter). sessionID is the key the decision is about - the list
+// row's key, the send's target, the registry route's id - never the key a cached record names: a
+// record the server wrote, or one a cached entry still shows under projects a newer write dropped,
+// is judged by the record the leader holds for the key now. shows is re-judged on that leader record,
+// so the session is granted only when the leader's newest message is a writer's registration the
+// scope shows. A message the server wrote, one that does not decode as the key's registration, or
+// none, reads as no session's, and so does a key the leader refused or held no message for
+// (nats.ErrKeyNotFound, bus.ErrRefused). A read that did not answer is returned as its error, not as
+// an absence, so a caller answers the bus-unavailable 503 it answers for any read that did not
+// answer, never the 404 of a session it does not show nor a silent drop from a list. A nil scope
+// shows every session, and an entry the cache would not show, both cost no read.
+func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry) (bool, error) {
 	if s == nil {
 		return true, nil
 	}
 	if !s.shows(entry) {
 		return false, nil
 	}
-	return sessions.StoredByWriter(ctx, entry.SessionID)
+	stored, ok, err := sessions.StoredByWriter(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return ok && s.shows(stored), nil
 }
 
 // hidesConfirmed is hides with showsConfirmed's leader read: a session the scope does not show,
-// confirmed by its stored record, and one the bucket holds no record of (nats.ErrKeyNotFound), are
-// hidden as a session no listener has heard of (unknownSession). A read that did not answer, the
-// confirmation's own among them, is returned as its error, not as hidden, so the route answers the
-// bus-unavailable 503. A nil scope hides nothing.
-func (s *edgeScope) hidesConfirmed(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry, err error) (bool, error) {
+// confirmed by the record the leader holds for sessionID, and one the bucket holds no record of
+// (nats.ErrKeyNotFound), are hidden as a session no listener has heard of (unknownSession).
+// sessionID is the key the decision is about. A read that did not answer, the confirmation's own
+// among them, is returned as its error, not as hidden, so the route answers the bus-unavailable 503.
+// A nil scope hides nothing.
+func (s *edgeScope) hidesConfirmed(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, err error) (bool, error) {
 	if s == nil {
 		return false, nil
 	}
@@ -228,7 +235,7 @@ func (s *edgeScope) hidesConfirmed(ctx context.Context, sessions *session.Sessio
 	if err != nil {
 		return false, nil
 	}
-	shown, confErr := s.showsConfirmed(ctx, sessions, entry)
+	shown, confErr := s.showsConfirmed(ctx, sessions, sessionID, entry)
 	if confErr != nil {
 		return false, confErr
 	}
@@ -331,16 +338,23 @@ func (s *edgeScope) agentsConfirmed(ctx context.Context, sessions *session.Sessi
 	return shown, nil
 }
 
-// sessionInProject reports whether sessionID's entry in sessions is a session of project, confirmed
-// by its stored record (session.SessionRegistry.StoredByWriter): the cached entry names its own key
-// and lists project, and the stream's leader confirms its newest message is a writer's. A read that
-// did not answer is returned as its error.
+// sessionInProject reports whether sessionID is a live session of project, confirmed by the record
+// the stream's leader holds for its key (session.SessionRegistry.StoredByWriter): the cached entry
+// lists project and is not gone (a cheap pre-check), and the leader's own record is a writer's
+// registration of sessionID that lists project. sessionID is the key the decision is about, never
+// the key a cached record names. A session the registry reads gone is no session this answers, as
+// the README and the changelog say the edge shows no gone Legion agent even of the token's own
+// project. A read that did not answer is returned as its error.
 func sessionInProject(ctx context.Context, sessions *session.SessionRegistry, sessionID, project string) (bool, error) {
-	entry, _ := sessions.Lookup(sessionID)
-	if entry.SessionID == "" || !slices.Contains(entry.Projects, project) {
+	entry, state := sessions.Lookup(sessionID)
+	if entry.SessionID == "" || state == session.Gone || !slices.Contains(entry.Projects, project) {
 		return false, nil
 	}
-	return sessions.StoredByWriter(ctx, entry.SessionID)
+	stored, ok, err := sessions.StoredByWriter(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return ok && stored.SessionID != "" && slices.Contains(stored.Projects, project), nil
 }
 
 // holder is result, the resolution of a role's holder, as the scope answers it: whole for a holder
@@ -368,6 +382,50 @@ func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID stri
 	}
 	entry, _ := sessions.Lookup(holderID)
 	return s.shows(entry)
+}
+
+// holderConfirmed is holder with the leader read every other edge decision uses: a holder the scope
+// shows (holder) is named only when the stream's leader confirms the record it holds for the
+// holder's key is a writer's and shows it (session.SessionRegistry.StoredByWriter). So a record the
+// server wrote at the holder's key, and one a cache that trails the bucket still shows under projects
+// a newer write dropped, each read as a role no claim holds (roles.Unclaimed), which names no holder.
+// The holder's key is result.Holder, the id the claim names, never the key a cached record names. A
+// read that did not answer is returned as its error, so the role read answers the bus-unavailable
+// 503. A nil scope, and a role no claim holds, both cost no read.
+func (s *edgeScope) holderConfirmed(ctx context.Context, sessions *session.SessionRegistry, result roles.Resolution) (roles.Resolution, error) {
+	if s == nil || result.State == roles.Unclaimed {
+		return result, nil
+	}
+	if !s.shows(result.Entry) {
+		return roles.Resolution{State: roles.Unclaimed}, nil
+	}
+	stored, ok, err := sessions.StoredByWriter(ctx, result.Holder)
+	if err != nil {
+		return roles.Resolution{}, err
+	}
+	if !ok || !s.shows(stored) {
+		return roles.Resolution{State: roles.Unclaimed}, nil
+	}
+	return result, nil
+}
+
+// namesHolderConfirmed is namesHolder with that leader read: a 409 names holderID only when the scope
+// shows the entry sessions holds of it (namesHolder) and the stream's leader confirms the record it
+// holds for holderID is a writer's and shows it. holderID is the id the claim names, the key the
+// decision is about. A read that did not answer is returned as its error. A nil scope names every
+// holder with no read.
+func (s *edgeScope) namesHolderConfirmed(ctx context.Context, sessions *session.SessionRegistry, holderID string) (bool, error) {
+	if s == nil {
+		return true, nil
+	}
+	if !s.namesHolder(sessions, holderID) {
+		return false, nil
+	}
+	stored, ok, err := sessions.StoredByWriter(ctx, holderID)
+	if err != nil {
+		return false, err
+	}
+	return ok && s.shows(stored), nil
 }
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
@@ -890,11 +948,13 @@ func runEdgeRepositories(ctx context.Context, d *listenerDeps, machineID string,
 }
 
 // pruneEdgeInterests removes, from every interest record this listener registered, each GitHub
-// topic whose repository no fresh answer of its session's projects names, and refollows that
-// session's consumer, as an unsubscribe does. A session one of whose projects has no fresh
-// answer keeps every topic: an answer that is not there says nothing of a repository's leaving,
-// and the relay withholds the session's GitHub frames meanwhile. A record it cannot list, or a
-// removal that fails, is logged and left to the next pass.
+// topic whose repository no fresh answer of the projects the token this replica admitted the
+// session on names (edgeAdmissions, never the stored record, which a RePublish can list another
+// project on), and refollows that session's consumer, as an unsubscribe does. A session this
+// replica admitted none of is skipped, since nothing here registered it. A session one of whose
+// admitted projects has no fresh answer keeps every topic: an answer that is not there says nothing
+// of a repository's leaving, and the relay withholds the session's GitHub frames meanwhile. A
+// record it cannot list, or a removal that fails, is logged and left to the next pass.
 func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) {
 	logger := d.repositories.logger
 	items, err := d.registry.List()
@@ -906,8 +966,11 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 		if item.MachineID != machineID {
 			continue
 		}
-		entry, _ := d.sessions.Lookup(item.SessionID)
-		repositories, complete := d.repositories.standing(entry.Projects)
+		projects, admitted := d.consumers.admissions.of(item.SessionID)
+		if !admitted {
+			continue
+		}
+		repositories, complete := d.repositories.standing(projects)
 		if !complete {
 			continue
 		}

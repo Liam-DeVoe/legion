@@ -145,6 +145,9 @@ type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
 	d      *listenerDeps
+	// ctx bounds the leader read this send's answers confirm the holder by (shownHolder), the
+	// request's own send window (sendToRole).
+	ctx context.Context
 	// scope is the edge's scope of the request (edgeScopeOf), nil on every other listener: the
 	// holders this send's answers may name (edgeScope.holder).
 	scope *edgeScope
@@ -173,11 +176,27 @@ type roleSend struct {
 	attempts int
 }
 
+// shownHolder is the holder this send's answers may name: result for a holder the scope shows and the
+// stream's leader confirms is a writer's record (edgeScope.holderConfirmed), and the resolution of a
+// role no claim holds for any other - a server-written holder record, and a confirmation read that
+// did not answer, among them. The send forwards to result.Holder whatever this names, so a read that
+// did not answer fails closed to naming no holder rather than refusing a delivery that still happens.
+// A nil scope names result as it is, at no read's cost.
+func (s *roleSend) shownHolder(result roles.Resolution) roles.Resolution {
+	readCtx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	defer cancel()
+	shown, err := s.scope.holderConfirmed(readCtx, s.d.sessions, result)
+	if err != nil {
+		return roles.Resolution{State: roles.Unclaimed}
+	}
+	return shown
+}
+
 // hold makes result's holder the one this send forwards to, and decides whether its answers name
 // it (edgeScope.holder).
 func (s *roleSend) hold(result roles.Resolution) {
 	s.holder, s.holderState = result.Holder, result.HolderState
-	s.named = s.scope.holder(result).State != roles.Unclaimed
+	s.named = s.shownHolder(result).State != roles.Unclaimed
 }
 
 // answered is the holder and state this send's answers name: the holder it forwards to, and none
@@ -248,7 +267,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 			return
 		}
 	}
-	s.record.refuseRoleHolder(s.w, s.role, s.scope.holder(result))
+	s.record.refuseRoleHolder(s.w, s.role, s.shownHolder(result))
 	// The 404 is written; the refusal's own bus signal goes out behind it (publishRefusalException).
 	publishRefusalException(s.d.client, s.d.delivery.logger, s.d.delivery.edge, s.item, result)
 	outcome := sendHolderLapsed
@@ -289,7 +308,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.record.holder = s.holder
 	// At the edge a lapsed holder the scope does not show is named as no holder at all, as GET
 	// /v1/roles/<role> names it (edgeScope.holder).
-	shown := s.scope.holder(result)
+	shown := s.shownHolder(result)
 	answer := listenerwire.PublishResponse{
 		Envelope:     s.item,
 		ExpectsReply: s.expectsReply,
@@ -421,7 +440,7 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // request, nil on every other listener: an answer names only a holder it shows (edgeScope.holder),
 // and the send forwards to the holder whatever it names.
 func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, record: record, d: d, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
+	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later

@@ -91,7 +91,7 @@ func putOlderBuildRecord(t *testing.T, conn *natsgo.Conn, key string) {
 // A record an older build wrote names no key, so a reader cannot tell it from a copy of another
 // session's record. Every registry reads it as its session's, as before, so a listener's sweeps,
 // reapers and role routes keep every session an earlier listener registered; its entry names no
-// key, which is what the edge's scope test (cmd/listener's sessionOfProjects) reads as no
+// key, which is what the edge's scope test (cmd/listener's edgeScope.shows) reads as no
 // project's. The control: a record this build wrote names its key.
 func TestARecordNamingNoKeyIsReadAsBeforeAndNamesNoKey(t *testing.T) {
 	client := setupNATS(t)

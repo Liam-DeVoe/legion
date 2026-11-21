@@ -807,7 +807,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// reported or anything is stored: the sender learns nothing of another project's session. A
 		// confirmation read that did not answer is this route's bus-unavailable 503, as every other
 		// read that did not answer is, never that 404.
-		if hidden, confErr := edgeScopeOf(r, nil).hidesConfirmed(ctx, d.sessions, target, err); confErr != nil {
+		if hidden, confErr := edgeScopeOf(r, nil).hidesConfirmed(ctx, d.sessions, targetSession, target, err); confErr != nil {
 			record.refuseBusUnavailable(w, confErr)
 			return
 		} else if hidden {
@@ -1514,7 +1514,7 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 			if !strings.Contains(entry.Dir, dirFilter) || !strings.Contains(entry.Title, titleFilter) || !scope.shows(entry.SessionEntry) {
 				continue
 			}
-			shown, err := scope.showsConfirmed(ctx, sessions, entry.SessionEntry)
+			shown, err := scope.showsConfirmed(ctx, sessions, entry.SessionID, entry.SessionEntry)
 			if err != nil {
 				writeBusUnavailable(w, err)
 				return
@@ -1565,7 +1565,7 @@ const sessionRegistrationView = "registration"
 // not answer, the bus-unavailable 503 with Retry-After: 1.
 func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *http.Request, d *listenerDeps, sessionID string) {
 	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
-	hidden, hideErr := edgeScopeOf(r, nil).hidesConfirmed(ctx, d.sessions, entry, err)
+	hidden, hideErr := edgeScopeOf(r, nil).hidesConfirmed(ctx, d.sessions, sessionID, entry, err)
 	switch {
 	case errors.Is(err, bus.ErrRefused):
 		writeBusUnavailable(w, err)
@@ -1691,7 +1691,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 				// when its stored record confirms it (edgeScope.showsConfirmed); a record the
 				// server wrote is a session the edge never heard of, and a read that did not answer
 				// is a 503.
-				shown, confErr := scope.showsConfirmed(ctx, d.sessions, entry)
+				shown, confErr := scope.showsConfirmed(ctx, d.sessions, sessionID, entry)
 				if confErr != nil {
 					writeBusUnavailable(w, confErr)
 					return
@@ -1713,7 +1713,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			// has heard of, and a shown session's roles and topics are those projects' alone. A
 			// confirmation read that did not answer is the bus-unavailable 503, never that 404.
 			if scope != nil {
-				shown, confErr := scope.showsConfirmed(ctx, d.sessions, entry)
+				shown, confErr := scope.showsConfirmed(ctx, d.sessions, sessionID, entry)
 				if confErr != nil {
 					writeBusUnavailable(w, confErr)
 					return
@@ -2107,19 +2107,26 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// (session.SessionRegistry.StoredByWriter), not one the server wrote at the key. A RePublish
 		// of another stream naming the key's subject can read as a record of this session
 		// (session.DecodeEntry) naming this very key and any projects it likes, so the binding alone
-		// does not tell it from a registration; only the leader read does. A record that names
-		// another key, one an earlier build wrote naming no key, one the server wrote, and one the
-		// leader read could not confirm are each refreshed with the projects of the token this claim
-		// was made with (registeringProjects), so a forged record's projects are never written back
-		// as this session's own, and a token that lists none leaves the entry unbound. Only an edge
-		// claim pays for the confirmation; a shared listener keeps the entry's projects as it read
-		// them, as it always has.
+		// does not tell it from a registration; only the leader read does. Every listener confirms,
+		// not the edge alone: this refresh writes the entry as the session's own registration, and
+		// once an in-house session's own listener writes a RePublished record's projects back as one,
+		// the edge can no longer tell it from a registration (edgeScope.showsConfirmed reads a
+		// writer's put). A record that names another key, one an earlier build wrote naming no key,
+		// and one the server wrote are refreshed with the projects of the token this claim was made
+		// with (registeringProjects): a forged record's projects are never written back as this
+		// session's own, and a claim with no broker token leaves the entry unbound, which the edge
+		// shows no project on. A confirmation read that did not answer is the bus-unavailable 503, as
+		// every other read that did not answer is, so a hiccup never wipes a session's projects.
 		keepProjects := entry.SessionID == body.SessionID
-		if keepProjects && edgeScopeOf(r, nil) != nil {
+		if keepProjects {
 			readCtx, readCancel := context.WithTimeout(ctx, roleHolderReadTimeout)
-			stored, storedErr := d.sessions.StoredByWriter(readCtx, body.SessionID)
+			_, ok, storedErr := d.sessions.StoredByWriter(readCtx, body.SessionID)
 			readCancel()
-			keepProjects = storedErr == nil && stored
+			if storedErr != nil {
+				writeStoreError(ctx, w, fmt.Errorf("confirm role claimant registration: %w", storedErr), http.StatusServiceUnavailable)
+				return
+			}
+			keepProjects = ok
 		}
 		if !keepProjects {
 			entry.Projects = registeringProjects(r)
@@ -2363,7 +2370,10 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					"holder":         stale.Holder,
 					"claim_revision": stale.Actual,
 				}
-				if !scope.namesHolder(d.sessions, stale.Holder) {
+				if named, namedErr := scope.namesHolderConfirmed(ctx, d.sessions, stale.Holder); namedErr != nil {
+					writeBusUnavailable(w, namedErr)
+					return
+				} else if !named {
 					delete(answer, "holder")
 				}
 				writeJSON(w, http.StatusConflict, answer)
@@ -2376,7 +2386,10 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					"role":   held.Role,
 					"holder": held.Holder,
 				}
-				if !scope.namesHolder(d.sessions, held.Holder) {
+				if named, namedErr := scope.namesHolderConfirmed(ctx, d.sessions, held.Holder); namedErr != nil {
+					writeBusUnavailable(w, namedErr)
+					return
+				} else if !named {
 					answer = map[string]string{"error": fmt.Sprintf("role %s is held by another session", held.Role), "role": held.Role}
 				}
 				writeJSON(w, http.StatusConflict, answer)
@@ -2468,7 +2481,12 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		// At the edge a holder the scope does not show, live or lapsed, is no holder the answer
 		// names: the role reads as one no claim holds (edgeScope.holder).
-		result = edgeScopeOf(r, nil).holder(result)
+		confirmed, confErr := edgeScopeOf(r, nil).holderConfirmed(ctx, d.sessions, result)
+		if confErr != nil {
+			writeBusUnavailable(w, confErr)
+			return
+		}
+		result = confirmed
 		if result.State != roles.Live {
 			writeRoleHolderError(w, role, result)
 			return
