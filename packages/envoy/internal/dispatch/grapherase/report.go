@@ -134,10 +134,10 @@ type Erasure struct {
 	// out that other items still hold, until the project's next refresh pass, which counts it in
 	// full. It is not recorded, for the reason above.
 	NotRecounted []NotRecounted `json:"-"`
-	// Writers are who wrote or answered the node, or took part in or read its thread, each once
-	// and in order: the person or session at the far end of every authored_by, decided_by and
-	// answered_by tuple out of an ask's node or a block's - a decision's, a reading's - and the
-	// person at the other end of every delivered_to out of a comment's, a message's or an ask's
+	// Writers are who wrote, answered, removed or kept the node, or took part in or read its
+	// thread, each once and in order: the person or session at the far end of every tuple out of
+	// an ask's node or a block's - a decision's, a reading's - that names one (writesTheNode), and
+	// the person at the other end of every delivered_to out of a comment's, a message's or an ask's
 	// node and every participates_in or read-state tuple into it (reachedPerson), that the run
 	// deletes, asserted or retracted. Once those tuples and the node's rows are gone nothing else
 	// names them, while their nodes stand: a session's always, since no erase removes one. The

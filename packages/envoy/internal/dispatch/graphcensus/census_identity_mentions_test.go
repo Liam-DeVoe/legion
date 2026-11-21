@@ -66,7 +66,7 @@ func TestTheCensusHoldsTheIdentityMentionsATextStates(t *testing.T) {
 	requireIdentityMentions(t, r, "the spec's block",
 		`t.from_kind = $1 and t.from_id like $2`, refs.BlockNodeKind, "SIZE-%")
 
-	report, err := graphcensus.StoreCensus(ctx, r.database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(ctx, r.database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

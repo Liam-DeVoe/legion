@@ -119,14 +119,17 @@ type storeCensusOptions struct {
 
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one
 // read-only snapshot of its own within options.deadline, so a deployment can take it before it
-// rolls, exactly as it takes the migration census. Beside the store's lines it prints what the
-// decisions step's third phase still owes (graphcensus.DecisionsCensus), which docs reads in a
-// read-only snapshot of its own within the same deadline, since only docs reads a decisions
-// document's sections; it refuses nothing.
+// rolls, exactly as it takes the migration census. options.verbose prints each citation the
+// dangling-citation counter counted, whose returning set holds the returns the restore makes,
+// judged by the restore's own test of a person's removal (docs.ReturnDeclined), which graphcensus
+// cannot read itself. Beside the store's lines it prints what the decisions step's third phase
+// still owes (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its own
+// within the same deadline, since only docs reads a decisions document's sections; it refuses
+// nothing.
 func storeCensus(ctx context.Context, databaseURL string, options storeCensusOptions, out, errOut io.Writer) int {
 	ctx, cancel := context.WithTimeout(ctx, options.deadline)
 	defer cancel()
-	report, err := graphcensus.StoreCensus(ctx, databaseURL, options.sizing)
+	report, err := graphcensus.StoreCensus(ctx, databaseURL, options.sizing, docs.ReturnDeclined)
 	if err != nil {
 		writeCensusFailure(errOut, err)
 		return 2

@@ -40,7 +40,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // `envoy-dispatch census --store --sizing` runs it, and returns everything it printed.
 func sizingCensus(t *testing.T, database *store.Store) string {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true, nil)
 	if err != nil {
 		t.Fatalf("take the store census with its growth pass: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestTheSizingRunsOnADatabaseWithNoStore(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("take the store out of the database: %v", err)
 	}
-	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true, nil)
 	if err != nil {
 		t.Fatalf("take the sizing of a database with no store: %v", err)
 	}

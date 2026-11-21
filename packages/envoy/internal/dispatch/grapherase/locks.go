@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
 // eraseOwnerAttempts is how many tries lockInStoreOrder makes at reading which owner rows the
@@ -25,11 +26,12 @@ const eraseOwnerAttempts = 3
 // order (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write
 // takes the owner's lock first. The lock of every owner the erase writes under comes first
 // (ownerRows says which they are), then the node's row `for update`, then the node's own
-// projection rows (lockProjectionRows), then its read-state rows (lockReadStateRows), and nothing
-// the erase does after them takes an owner lock it does not already hold:
-// docs.ReadErasedLiveText takes a document's owner lock again and finds this transaction holding
-// it. A node no row projects - a person, a session, a role, a page - stands under no owner, and the
-// erase then starts at its node's row, which the order allows: a writer may leave a step out.
+// projection rows (lockProjectionRows), then, after the keyword fill's cursor row (below), its
+// read-state rows (lockReadStateRows), and nothing the erase does after them takes an owner lock it
+// does not already hold: docs.ReadErasedLiveText takes a document's owner lock again and finds this
+// transaction holding it. A node no row projects - a person, a session, a role, a page - stands
+// under no owner, and the erase then starts at its node's row, which the order allows: a writer
+// may leave a step out.
 //
 // Those owners are the node's own and its own document's, never another node's: a row that
 // holds the erased bytes and derives from another node is listed and left as it is, so the run
@@ -41,6 +43,14 @@ const eraseOwnerAttempts = 3
 // issue owns, before "issue:<key>". That is the one order over every owner, and the backfill's
 // batches take their documents' owners in it too (graphcensus's lockBlockDocuments and
 // lockObjectOwners).
+//
+// After the node's projection rows, and before it reads anything under its locks, it takes the
+// keyword fill's cursor row `for share` (textversions.HoldFillBack): a batch of the fill in
+// flight, which may have read the node's text before the run took its locks, commits first, so
+// the read under the locks lists every keyword row that batch wrote, and no batch writes until the
+// run ends. The fill takes the cursor row first and alone in its batch, and takes no owner lock,
+// so the run waiting there while it holds its owners, its node's row and its projection rows can
+// meet no cycle.
 //
 // Which owners those are is read before they are locked, so it is read again under them with the
 // rest of the listing (readDerived), and the run goes on with that second read. A write that,
@@ -142,10 +152,10 @@ func (e *Erasure) searchLeftAfterCommit(ctx context.Context, conn *pgx.Conn, rea
 
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
 // under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
-// node's row, the node's projection rows (lockProjectionRows) and its read-state rows
-// (lockReadStateRows), reads the rest of the listing under those locks (readDerived), lists beside
-// it the rows left that the try's search found (searchLeft), and answers it with every owner it
-// names that the try did not take.
+// node's row and the node's projection rows (lockProjectionRows), holds the keyword fill back
+// (textversions.HoldFillBack), takes the node's read-state rows (lockReadStateRows), reads the rest
+// of the listing under those locks (readDerived), lists beside it the rows left that the try's
+// search found (searchLeft), and answers it with every owner it names that the try did not take.
 func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []string) (erasedRead, []string, error) {
 	before, err := e.ownerRows(ctx, tx)
 	if err != nil {
@@ -163,6 +173,9 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []stri
 		return erasedRead{}, nil, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
 	}
 	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
+		return erasedRead{}, nil, err
+	}
+	if err := textversions.HoldFillBack(ctx, tx); err != nil {
 		return erasedRead{}, nil, err
 	}
 	scope, err := e.readStateScope(ctx, tx)

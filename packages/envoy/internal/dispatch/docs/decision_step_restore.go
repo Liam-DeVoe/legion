@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ErrAnotherBuildLive refuses the decisions step's third phase while processes.Live lists a
@@ -190,14 +191,16 @@ var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase o
 // dryRun writes nothing: it refuses a database phase 1 owes a row of (ErrDryRunOwesBackfill), since
 // phase 1 commits, runs no phase 2, which commits each ask it catches up, and runs phase 3 with
 // each of its transactions rolled back. A dry run's phase 3 reads an answer another build wrote
-// since the last catch-up as the node holds it, as a tick's would before its catch-up.
+// since the last catch-up as the node holds it, as a tick's would before its catch-up. Its context
+// is marked for the pool's nested-acquire guard, as Boot's and Tick's are.
 func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
-	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
+	ctx = store.WithTransactionTracking(ctx)
+	conn, err := s.acquireStepConn(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open the decision step's connection: %w", err)
+		return nil, nil, err
 	}
-	defer closeDecisionStepConn(conn)
-	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
+	defer conn.release(s.logger)
+	if _, err := conn.lock(ctx, decisionStepLock, true); err != nil {
 		return nil, nil, fmt.Errorf("take the decision step's lock: %w", err)
 	}
 	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
@@ -219,7 +222,7 @@ func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, d
 			return nil, nil, errors.New("docs: the decisions step's catch-up failed on an ask; run the command again")
 		}
 	}
-	if _, err := takeRestoreLock(ctx, conn, true); err != nil {
+	if _, err := conn.takeRestoreLock(ctx, true); err != nil {
 		return nil, nil, err
 	}
 	return s.RestoreAndConvert(ctx, project, convert, dryRun)

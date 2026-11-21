@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -578,7 +579,7 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	report, err := graphcensus.StoreCensus(ctx, databaseURLOf(t, database), false)
+	report, err := graphcensus.StoreCensus(ctx, databaseURLOf(t, database), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

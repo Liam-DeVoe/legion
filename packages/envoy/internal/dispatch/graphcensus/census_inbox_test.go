@@ -113,7 +113,7 @@ func (f *inboxCensus) newest(t *testing.T) int64 {
 // census takes the store census and logs what it printed.
 func (f *inboxCensus) census(t *testing.T, when string) (*StoreReport, string) {
 	t.Helper()
-	report, err := StoreCensus(context.Background(), f.writes.database.Pool.Config().ConnString(), false)
+	report, err := StoreCensus(context.Background(), f.writes.database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census %s: %v", when, err)
 	}
@@ -635,7 +635,7 @@ func TestTheCensusSnapshotIsBoundedByItsDeadline(t *testing.T) {
 	short, stop := context.WithTimeout(ctx, 3*time.Second)
 	defer stop()
 	started := time.Now()
-	_, err = StoreCensus(short, url, false)
+	_, err = StoreCensus(short, url, false, nil)
 	var pgErr *pgconn.PgError
 	switch {
 	case err == nil:

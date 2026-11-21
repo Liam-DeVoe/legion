@@ -33,7 +33,7 @@ func TestTheCensusHoldsTheDeliveryASessionsReplyStates(t *testing.T) {
 	}, "", http.StatusCreated)
 	r.settledAttempts(t, refused, model.DeliveryStateSent)
 
-	report, err := graphcensus.StoreCensus(ctx, r.database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(ctx, r.database.Pool.Config().ConnString(), false, nil)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}
