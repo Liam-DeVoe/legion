@@ -152,13 +152,18 @@ func freshPodFirstRead(t *testing.T, declare bool) {
 	}
 	body, _ := io.ReadAll(reply.Body)
 	reply.Body.Close()
-	carried := recordsWith(broker.Log(), boundCallMessage, nil)
-	if reply.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "this Slack channel belongs to a private project") || len(carried) != 0 {
-		t.Fatalf("the pod's first read of %s through the airlock = %d %q, with %d call(s) carried towards Slack (%v); want 403 PRIVATE_CHANNEL and none: PRIV, private in Dispatch, fences its channel before any answer of Dispatch's has called it private",
-			privChannel, reply.StatusCode, body, len(carried), carried)
+	if reply.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "this Slack channel belongs to a private project") {
+		t.Fatalf("the pod's first read of %s through the airlock = %d %q; want 403 PRIVATE_CHANNEL: PRIV, private in Dispatch, fences its channel before any answer of Dispatch's has called it private",
+			privChannel, reply.StatusCode, body)
 	}
-	if refusals := recordsWith(broker.Log(), answer.RefusalMessage, map[string]any{"code": "PRIVATE_CHANNEL"}); len(refusals) != 1 {
-		t.Fatalf("the broker logged %d PRIVATE_CHANNEL refusal(s) for the read of %s; want 1:\n%s", len(refusals), privChannel, broker.Log())
+	// The broker's log reaches this test through a pipe that a goroutine of the harness copies, so
+	// the refusal's record can arrive after the answer has: the record is awaited, as the
+	// package's other log readers await theirs, before the log is read. Once it is there, every
+	// line the broker wrote before it is too, and one call is either refused or carried, never both.
+	broker.AwaitRecord(t, answer.RefusalMessage, map[string]any{"code": "PRIVATE_CHANNEL"})
+	log := broker.Log()
+	if refusals, carried := recordsWith(log, answer.RefusalMessage, map[string]any{"code": "PRIVATE_CHANNEL"}), recordsWith(log, boundCallMessage, nil); len(refusals) != 1 || len(carried) != 0 {
+		t.Fatalf("the broker logged %d PRIVATE_CHANNEL refusal(s) and %d call(s) carried towards Slack for the read of %s; want 1 and none:\n%s", len(refusals), len(carried), privChannel, log)
 	}
 	// The fence was read from Dispatch's list alone: the broker asked no project's and no
 	// person's access, so nothing it read before the list had called a project private.
