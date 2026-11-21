@@ -1894,14 +1894,10 @@ var pinnedBound2 = map[string]modelCount{
 	"v63-OwnRunOnly":            {1456733, 144, map[string]int{classEveryRun: 144}},
 }
 
-// The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
-var (
-	pinnedCurrentBound2 = map[string]int{"cutover": 55228, "rollback": 6625, "selection-recovery": 9415, "buckets-create": 922,
-		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 1365733}
-	pinnedCurrentBound3 = map[string]int{"cutover": 78968, "rollback": 9216, "selection-recovery": 12992, "buckets-create": 1270,
-		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 3445625}
-	pinnedCurrentBound3Total = 3560548
-)
+// The current rules' runs by workflow, pinned from this model at bound 2. Bound 3 is not pinned:
+// see TestTheHoldJournalModel's bound-3 comment.
+var pinnedCurrentBound2 = map[string]int{"cutover": 55228, "rollback": 6625, "selection-recovery": 9415, "buckets-create": 922,
+	"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 1365733}
 
 // failWalks holds the large walks, those with a command that fails for good (about 1.3 million
 // states each at bound 2), to two at once, so the test's peak memory stays inside a CI runner
@@ -2031,10 +2027,11 @@ func TestTheHoldJournalModel(t *testing.T) {
 		})
 	}
 	// Bound 3 of the frozen v62 is the bundle's own count, 139,812 states, and runs always. Bound 3
-	// of the current rules is millions of states and gigabytes, more than a CI runner holds, so it
-	// runs only when HOLDRECORD_MODEL_BOUND3=1 is set, as local proof: run it in a capped scope,
-	// systemd-run --user --scope -p MemoryMax=64G, and see the pins' comment for its measured cost.
-	// Without the variable its subtest is not created, so the package prints no skip.
+	// of the current rules runs only when HOLDRECORD_MODEL_BOUND3=1 is set, and it is not pinned: in
+	// a 64 GiB scope (systemd-run --user --scope -p MemoryMax=64G) it had not finished after 17
+	// minutes, at 56.4 GiB RSS, and was stopped, so no count of it exists. When it does run, it
+	// asserts no counterexample and logs its state count. Without the variable its subtest is not
+	// created, so the package prints no skip.
 	bound3 := []struct {
 		r          modelRules
 		fail       bool
@@ -2047,17 +2044,18 @@ func TestTheHoldJournalModel(t *testing.T) {
 			fail       bool
 			total      int
 			byWorkflow map[string]int
-		}{currentModel, true, pinnedCurrentBound3Total, pinnedCurrentBound3})
+		}{currentModel, true, -1, nil})
 	}
 	for _, b := range bound3 {
 		b := b
 		t.Run(b.r.Name+" at bound 3", func(t *testing.T) {
 			t.Parallel()
 			got := runModel(b.r, 3, b.fail, false)
-			if got.states != b.total || got.total != 0 {
-				t.Errorf("rules %s at bound 3: %d states and %d counterexamples, and the pinned count %d and 0 (by workflow %v)",
+			if (b.total >= 0 && got.states != b.total) || got.total != 0 {
+				t.Errorf("rules %s at bound 3: %d states and %d counterexamples, and the pinned count %d (-1: not pinned) and 0 (by workflow %v)",
 					b.r.Name, got.states, got.total, b.total, got.byWorkflow)
 			}
+			t.Logf("rules %s at bound 3: %d states, by workflow %v", b.r.Name, got.states, got.byWorkflow)
 			for w, n := range b.byWorkflow {
 				if got.byWorkflow[w] != n {
 					t.Errorf("rules %s's %s at bound 3: %d states, and the pinned count %d", b.r.Name, w, got.byWorkflow[w], n)
