@@ -343,6 +343,7 @@ REACH = (
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
+    "packages/daemon/scripts/test-pgbouncer.sh",
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 

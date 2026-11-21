@@ -22,7 +22,7 @@ name: CI job daemon-go
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
 #     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
 #     contract tests drive, and Stage 1's — and the PgBouncer in front of that service and
-#     TEST_PGBOUNCER_DSN, the pool internal/ompsessions' pooled leg runs through;
+#     LEGION_TEST_PGBOUNCER_DSN, the pool internal/ompsessions' pooled leg runs through;
 #   * TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by
 #     the testcontainers-backed NATS tests, classify's fuzz tests and the daemon's
 #     keptPropertyEnv;
@@ -99,9 +99,9 @@ jobs:
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The same server through the PgBouncer the step below starts: internal/ompsessions'
-      # TestEveryPoolPinsItsSearchPath fails, and never skips, without it. The test names the
-      # database it makes in place of `postgres`, which the pool's wildcard entry serves.
-      TEST_PGBOUNCER_DSN: postgres://postgres:ci@127.0.0.1:6432/postgres?sslmode=disable
+      # TestEveryPoolPinsItsSearchPath skips without it off CI and fails without it here. The test
+      # names the database it makes in place of `postgres`, which the pool's wildcard entry serves.
+      LEGION_TEST_PGBOUNCER_DSN: postgres://postgres:ci@127.0.0.1:6432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
       # pull a test could fail on.
@@ -185,49 +185,24 @@ jobs:
       # service through PgBouncer 1.25.2 in transaction mode, the pool a pod reaches its session
       # database through: such a pool refuses search_path as a startup parameter, so a client
       # behind it must pin search_path in each transaction, and the leg proves the package does.
-      # server_lifetime 0 closes each server connection after one transaction, so a setting one
-      # transaction leaves on its session reaches no later one, the strictest stand-in for such
-      # a pool. The wildcard [databases] entry serves each database a test makes, and auth_query
-      # reads each login's password from the server, as the superuser and with pg_catalog named.
-      # The container shares the runner's network, where the service's port is published, and
-      # the step waits until a statement runs through it, so the plain step never meets a pool
-      # that is still starting.
+      # packages/daemon/scripts/test-pgbouncer.sh starts it, the script a developer runs for the
+      # same leg, and it is the one place the pool's image and configuration are written, with
+      # why each setting is there. It runs the pool on the runner's network, where the service's
+      # port is published, and prints the pool's URL only once a statement has run through it,
+      # so the plain step never meets a pool that is still starting. The step holds that URL to
+      # the job's LEGION_TEST_PGBOUNCER_DSN, so the URL the tests read is the pool the script started.
+      # It lints the script first with the shellcheck of .github/ci-images.yaml's actionlint row,
+      # 0.11.0, the one shellcheck CI runs, since no other check reads this file.
       - name: Start PgBouncer in front of the Postgres service
         run: |
-          dir="$RUNNER_TEMP/pgbouncer"
-          mkdir -p "$dir"
-          cat > "$dir/pgbouncer.ini" <<'INI'
-          [databases]
-          * = host=127.0.0.1 port=5432
-
-          [pgbouncer]
-          listen_addr = 127.0.0.1
-          listen_port = 6432
-          unix_socket_dir =
-          auth_type = scram-sha-256
-          auth_file = /etc/pgbouncer/userlist.txt
-          auth_user = postgres
-          auth_dbname = postgres
-          auth_query = SELECT usename, passwd FROM pg_catalog.pg_shadow WHERE usename = $1
-          pool_mode = transaction
-          server_lifetime = 0
-          max_client_conn = 500
-          default_pool_size = 20
-          max_prepared_statements = 1000
-          INI
-          printf '"postgres" "ci"\n' > "$dir/userlist.txt"
-          docker run -d --name pgbouncer --network host -v "$dir:/etc/pgbouncer:ro" --entrypoint /usr/bin/pgbouncer \
-            ghcr.io/cybermonklabs/legion/ci@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340 \
-            /etc/pgbouncer/pgbouncer.ini
-          for _ in $(seq 60); do
-            if PGPASSWORD=ci psql -X -At -h 127.0.0.1 -p 6432 -U postgres -d postgres -c 'select 1' >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs pgbouncer
-          echo "::error::PgBouncer did not run a statement within 60 s"
-          exit 1
+          docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint shellcheck \
+            ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            --severity=style packages/daemon/scripts/test-pgbouncer.sh
+          dsn=$(packages/daemon/scripts/test-pgbouncer.sh)
+          if [ "$dsn" != "$LEGION_TEST_PGBOUNCER_DSN" ]; then
+            echo "::error::packages/daemon/scripts/test-pgbouncer.sh printed a URL other than the job's LEGION_TEST_PGBOUNCER_DSN: make the job's value the one it prints"
+            exit 1
+          fi
 
       # The step runs every package of the module except the five the race step below tests and
       # internal/textcheck, whose tests are the text-check job's: so each of the five runs once

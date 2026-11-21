@@ -2659,6 +2659,7 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
+        (f"{DAEMON}/scripts/test-pgbouncer.sh", at("daemon-go", "Start PgBouncer in front of the Postgres service")),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:152 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/port-file.sh\"` line)"),

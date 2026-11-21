@@ -2,9 +2,12 @@ package ompsessions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,17 +19,19 @@ import (
 
 // poolVariable names the PgBouncer that TestEveryPoolPinsItsSearchPath's pooled leg reaches the
 // test server through: a postgres:// URL of a PgBouncer 1.25.2 in transaction mode in front of
-// the server LEGION_TEST_PG_DSN names, serving any database by a wildcard entry.
-const poolVariable = "TEST_PGBOUNCER_DSN"
+// the server LEGION_TEST_PG_DSN names, serving any database by a wildcard entry. Its name has the
+// LEGION_TEST_ prefix of every test input of this module (fixtureenv keeps them by it).
+const poolVariable = "LEGION_TEST_PGBOUNCER_DSN"
 
-// noPool is TestEveryPoolPinsItsSearchPath's failure when poolVariable is unset.
+// noPool is what TestEveryPoolPinsItsSearchPath says when LEGION_TEST_PG_DSN names a server and
+// poolVariable is unset: a skip outside CI, and a failure on GitHub Actions, where the daemon-go
+// job starts the pool, so a skip there would take the pooled leg out of the one run that holds it.
 const noPool = poolVariable + " is unset, so the pooled leg has no pool to run through. The session database's pods reach it " +
 	"through a PgBouncer pool in transaction mode, which refuses search_path as a startup parameter and carries no " +
 	"setting from one transaction to the next, so a pin a direct connection alone holds would pass here and fail " +
-	"there: the leg fails rather than skips. Start PgBouncer 1.25.2 in transaction mode in front of the server " +
-	"LEGION_TEST_PG_DSN names, as the step \"Start PgBouncer in front of the Postgres service\" of " +
-	".github/workflows/ci-job-daemon-go.yaml does, and set " + poolVariable + " to its postgres:// URL for a login that " +
-	"may connect to any database there; the test names the database it makes in place of the URL's."
+	"there. Start PgBouncer 1.25.2 in transaction mode in front of the server LEGION_TEST_PG_DSN names, as CI's " +
+	"daemon-go job does, and set " + poolVariable + " to what it prints (it needs Docker):\n" +
+	"  " + poolVariable + "=$(packages/daemon/scripts/test-pgbouncer.sh --port 6433)"
 
 // pinnedPath is search_path as every transaction of the package must read it: pg_catalog, and
 // the session's own temporary schema, which a name of a function or an operator never reaches.
@@ -107,12 +112,18 @@ func throughThePool(t *testing.T, pool, direct string) string {
 // as a startup parameter, which holds on a direct connection and which the pool refuses, so it
 // must fail the pooled leg naming the refusal; and the package's own client, which passes both.
 func TestEveryPoolPinsItsSearchPath(t *testing.T) {
+	// The database first: a host with no LEGION_TEST_PG_DSN skips here, as every test that needs
+	// a database does. Where there is one and no pool, the test skips outside CI and fails on
+	// GitHub Actions, the module's rule for an input CI provides (testbin's binary).
+	direct := testdb.Database(t, "legion_ompsessions_pin")
 	pool := os.Getenv(poolVariable)
 	if pool == "" {
-		t.Fatal(noPool)
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatal(noPool)
+		}
+		t.Skip(noPool)
 	}
 	ctx := context.Background()
-	direct := testdb.Database(t, "legion_ompsessions_pin")
 	legs := []struct{ name, dsn string }{{"direct", direct}, {"through the pool", throughThePool(t, pool, direct)}}
 	for _, client := range []struct {
 		name   string
@@ -143,4 +154,56 @@ func TestEveryPoolPinsItsSearchPath(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestEveryPoolPinsItsSearchPath, run in a test binary of its own, skips where there is no
+// database to test against, as every test of the module that needs one does; skips naming the
+// pool's variable where there is a database and no pool outside CI; and fails there under
+// GITHUB_ACTIONS, where a skip would take the pooled leg out of the one run that must hold it.
+// The child is this test binary, run with that test alone, LEGION_TEST_PG_DSN, the pool's
+// variable and GITHUB_ACTIONS taken out of its environment, and the case's own settings put
+// back. Each case looks for the first line of the message it wants, since `go test -v` indents
+// the lines after it. The two cases with a database need one themselves, and skip without it.
+func TestThePinCheckSkipsWithoutADatabaseAndFailsWithoutAPool(t *testing.T) {
+	const pinTest = "TestEveryPoolPinsItsSearchPath"
+	firstLine := func(message string) string {
+		line, _, _ := strings.Cut(message, "\n")
+		return line
+	}
+	run := func(t *testing.T, set ...string) (string, error) {
+		t.Helper()
+		child := exec.Command(os.Args[0], "-test.run=^"+pinTest+"$", "-test.count=1", "-test.v")
+		child.Env = append(slices.DeleteFunc(os.Environ(), func(entry string) bool {
+			name, _, _ := strings.Cut(entry, "=")
+			return slices.Contains([]string{"LEGION_TEST_PG_DSN", poolVariable, "GITHUB_ACTIONS"}, name)
+		}), set...)
+		out, err := child.CombinedOutput()
+		return string(out), err
+	}
+	t.Run("no database", func(t *testing.T) {
+		out, err := run(t)
+		if err != nil || !strings.Contains(out, "--- SKIP: "+pinTest) || !strings.Contains(out, firstLine(testdb.SkipMessage)) {
+			t.Errorf("with neither LEGION_TEST_PG_DSN nor %s the run = %v; want it to skip naming LEGION_TEST_PG_DSN:\n%s", poolVariable, err, out)
+		}
+	})
+	database := os.Getenv("LEGION_TEST_PG_DSN")
+	t.Run("a database and no pool outside CI", func(t *testing.T) {
+		if database == "" {
+			t.Skip(testdb.SkipMessage)
+		}
+		out, err := run(t, "LEGION_TEST_PG_DSN="+database)
+		if err != nil || !strings.Contains(out, "--- SKIP: "+pinTest) || !strings.Contains(out, firstLine(noPool)) {
+			t.Errorf("with LEGION_TEST_PG_DSN and no %s outside CI the run = %v; want it to skip naming %s:\n%s", poolVariable, err, poolVariable, out)
+		}
+	})
+	t.Run("a database and no pool on GitHub Actions", func(t *testing.T) {
+		if database == "" {
+			t.Skip(testdb.SkipMessage)
+		}
+		out, err := run(t, "LEGION_TEST_PG_DSN="+database, "GITHUB_ACTIONS=true")
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || !strings.Contains(out, "--- FAIL: "+pinTest) || !strings.Contains(out, firstLine(noPool)) {
+			t.Errorf("with LEGION_TEST_PG_DSN, no %s and GITHUB_ACTIONS=true the run = %v; want it to fail naming %s:\n%s", poolVariable, err, poolVariable, out)
+		}
+	})
 }

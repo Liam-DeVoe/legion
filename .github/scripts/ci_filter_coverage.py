@@ -1258,7 +1258,7 @@ ENV_ALLOWED = frozenset({
     # The PgBouncer the daemon-go job starts in front of its Postgres service, which
     # internal/ompsessions' TestEveryPoolPinsItsSearchPath reads at run time, as the tests read
     # LEGION_TEST_PG_DSN; go reads it nowhere.
-    "TEST_PGBOUNCER_DSN",
+    "LEGION_TEST_PGBOUNCER_DSN",
 })
 
 
