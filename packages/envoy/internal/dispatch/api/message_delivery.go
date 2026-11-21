@@ -52,7 +52,20 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	message, err := s.loadMessage(r.Context(), s.deps.Store.Pool, who, "", r.PathValue("id"))
-	if err != nil || message.Target == nil {
+	if err != nil {
+		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
+		return
+	}
+	// The target is read as who reads it in every read of the message (leaveOutHiddenMessageSessions):
+	// a session, or a role of a private project, who does not see is no target, so the Retry answers
+	// that message exactly as a message with no target, naming nothing it targets, whatever the
+	// listener would answer. That read is made whatever the message targets, so a hidden target costs
+	// what none costs; a reader that sees every object reads nothing more, as before (R9).
+	if err := leaveOutHiddenMessageSessions(r.Context(), s.deps.Store.Pool, who, []*model.Message{&message}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if message.Target == nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
 	}

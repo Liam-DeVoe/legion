@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `POST /api/v1/comments/{id}/deliveries` reads a comment's mentions as the caller reads them in the comment: a mention of a session, or of a role of a private project, the caller does not see, or one that reached a session the caller does not see, is a target the comment does not mention, and only the mentions the caller reads count for the one-mention default and the "target is required" refusal. `POST /api/v1/messages/{id}/deliveries` answers a message whose target the caller does not see as a message with no target, 404 MESSAGE_NOT_FOUND. With no private project an open viewer is answered as before.
+time: 2026-11-21T19:55:58.327432718Z
+custom:
+    Issue: pr4177
