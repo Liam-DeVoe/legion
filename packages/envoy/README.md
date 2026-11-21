@@ -132,9 +132,10 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A registration for which it gets no whole answer gets `503` with the reason `repositories_unknown`, whose text is the listener's own: what the broker answered goes to the log alone.
   The relay delivers a GitHub event only while an answer no older than 60 seconds names the repository the event's own payload names.
   A subject writes a dot in a name as `_`, so `acme/a.b` and `acme/a_b` publish on one subject, and an answer that names one admits only that one's events.
-  It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
-  under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
-  In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
+  It acknowledges a GitHub event whose repository a fresh answer does not name undelivered, and counts it in `envoy_edge_github_withheld_total{reason="not_in_project"}`.
+  While a project of the session has no fresh answer, it withholds every GitHub event and counts it under `reason="answer_unknown"`, but leaves it unacknowledged: the session's consumer delivers it again 30 seconds later, the interval at which the edge reads every answer again, and the answer then standing decides it, so an outage of the broker costs the session no event its stream still holds.
+  Meanwhile the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, every frame that is not GitHub's is delivered as before, and a withheld event reaches the session later, behind frames stored after it.
+  An outage that holds back as many of the session's messages as its consumer lets wait for an acknowledgement (1024) holds back its later frames too, until an answer stands.
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
