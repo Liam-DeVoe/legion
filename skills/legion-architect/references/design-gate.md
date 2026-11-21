@@ -136,6 +136,19 @@ approval request; never take one farther up. A route version is a version of the
 document that adds, revises, restores or takes out a requirement a root sent up; its approval
 request is a route request.
 
+The ancestor may be an issue of another project. Register on it as on one of your own project: the
+daemon ends the root's chain before that ancestor, so the root is a root of its own project and
+runs there, and the ancestor waits for it as for an open child. Your daemon reads that ancestor's
+approval and reviews at each controller tick, an hour by default, so a pending basis there opens,
+and a changes request on it reaches you, at the first tick after the person's review, not at
+once. The ancestor's architect gets no notice of your root from your daemon; it sees the root as an
+open child. `read_record` does not reach an issue of another project, so read its tree with
+`dispatch read` instead: on the ancestor and on each issue above it in its own project, the nearest
+`Claimed by` session that `envoy_sessions` lists as live is the ancestor's architect, and its tree
+runs; with none, its tree does not run ("Sending a requirement up"). Reach that architect with
+`dispatch send-to-agent` wherever this page says to tell it or to `envoy_publish` to its role
+topic.
+
 ### When the root is a view
 
 Write the root as a view only when the ancestor carries the `legion` label, is not accepted, has a
