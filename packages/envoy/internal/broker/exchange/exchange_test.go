@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -169,6 +170,8 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "legion daemon" })}, names: workerAccount},
 		{name: "an account whose fixed session is too long",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: workerAccount},
+		{name: "an account whose fixed session is a wildcard",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "*" })}, names: workerAccount},
 		{name: "the same account twice",
 			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
 		{name: "a repository that is not <owner>/<name>",
@@ -252,6 +255,8 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example reader" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "a read entry whose session is too long",
 			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "a read entry whose session holds a wildcard",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader.>" })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "the same read account twice",
 			reads: []exchange.ReadEntry{reader, withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
 		{name: "an account an account entry and a read entry both list",
@@ -672,6 +677,9 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 		{name: "a request naming no session", credential: credentialID, approver: person, session: "", want: exchange.ErrSessionRequired, names: person},
 		{name: "a request naming a session with whitespace", credential: credentialID, approver: person, session: "ada devbox", want: exchange.ErrSessionInvalid, names: person},
 		{name: "a request naming a session past the cap", credential: credentialID, approver: person, session: strings.Repeat("s", exchange.MaxSessionBytes+1), want: exchange.ErrSessionInvalid, names: person},
+		{name: "a request naming the wildcard session *", credential: credentialID, approver: person, session: "*", want: exchange.ErrSessionInvalid, names: person},
+		{name: "a request naming the wildcard session >", credential: credentialID, approver: person, session: ">", want: exchange.ErrSessionInvalid, names: person},
+		{name: "a request naming a session holding a wildcard", credential: credentialID, approver: person, session: "ada-*", want: exchange.ErrSessionInvalid, names: person},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			claims, err := set.Machine(c.credential, c.approver, c.session, nil)
@@ -691,6 +699,32 @@ func TestSessionAtTheCapIsUsable(t *testing.T) {
 	claims, err := set.Pod(podToken(workerAccount, podUID), name, nil)
 	if err != nil || claims.Session != name {
 		t.Fatalf("Pod(a session of exactly %d bytes) = %+v, %v; want it answered", exchange.MaxSessionBytes, claims, err)
+	}
+}
+
+// TestASessionNameHoldsNoWildcard: ValidSession refuses a name holding a NATS wildcard, '*' or
+// '>', since its relay subject (bus.DeliverSubject) would match every session's and a relay socket
+// of it would subscribe that. It takes every shape of session name a deployment trades under: an
+// Envoy session id, the Legion daemon's fixed session, a run pod's fixed session holding a slash,
+// the read entry's, and a person's sign-in (brokerclient.SessionFor), which holds the person's
+// address and so a '.'. Each refused name natsgrant.SessionToken, the rule the relay socket holds
+// its session to, refuses too; the sign-in's it refuses as well, for its '.'.
+func TestASessionNameHoldsNoWildcard(t *testing.T) {
+	for _, name := range []string{"01930000-0000-7000-8000-000000000001", "ses_agent", fixedSession, "run-holds/example-run", readerSession, "signin-ada@example.com-abcdefghijkl"} {
+		if !exchange.ValidSession(name) {
+			t.Errorf("ValidSession(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"*", ">", "ada-*", "ada>", "ada.*", "ada devbox", "ada\tdevbox", "ada\x00devbox", ""} {
+		if exchange.ValidSession(name) {
+			t.Errorf("ValidSession(%q) = true, want false", name)
+		}
+		if natsgrant.SessionToken(name) {
+			t.Errorf("SessionToken(%q) = true, want false: the relay socket would take a name the broker refuses", name)
+		}
+	}
+	if natsgrant.SessionToken("signin-ada@example.com-abcdefghijkl") {
+		t.Error("SessionToken(a sign-in's name) = true, want false: it holds a '.'")
 	}
 }
 
