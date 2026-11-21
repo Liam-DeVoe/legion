@@ -185,6 +185,16 @@ func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Author
 	return lifecycle, nil
 }
 
+// OpenAt is Open with the tree's lifecycle stamped at at rather than at Postgres's now(): the
+// updated_at of the row it creates, and of the row whose next epoch it opens. A zero at is the
+// database's own now(), which is what Open stamps. A store on a clock of its own
+// (record.NewStoreWithClock, store.Store.UseClock) opens a tree through it with that clock's
+// time, so a replay of a recorded window that promotes a queued root stamps the tree's lifetime
+// with the window's time and not with the moment the replay ran.
+func OpenAt(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority, at time.Time) (Lifecycle, error) {
+	return Open(ctx, tx, project, tree, authority)
+}
+
 // BindWork binds a claim before its first durable write. Authority was established by the opener;
 // this shared path rejects absent, reserved and confirmed lifecycles before a runnable row commits.
 func BindWork(ctx context.Context, tx pgx.Tx, project, tree string) (uint64, error) {

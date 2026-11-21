@@ -27,12 +27,31 @@ const maxInt64 = uint64(^uint64(0) >> 1)
 
 // Postgres implements Store exclusively through caller-owned pgx transactions. It has no pool:
 // opening, committing, and retrying a transaction belong to the layer that owns its boundary.
-type Postgres struct{}
+type Postgres struct {
+	// clock is the time every statement of the store writes and compares with in place of
+	// Postgres's own now() (NewStoreWithClock), nil for the daemon's store (NewStore), which keeps
+	// the database's clock.
+	clock func() time.Time
+}
 
 var _ Store = (*Postgres)(nil)
 
 // NewStore returns the stateless Postgres record implementation.
 func NewStore() *Postgres { return &Postgres{} }
+
+// NewStoreWithClock returns the Postgres record implementation on clock rather than on the
+// database's: every statement that writes or compares with Postgres's now(), a column default
+// among them — the outbox's created_at (Enqueue, EnqueueStart), a lease's lapse (OwedStarts,
+// RoleRuns), a row's age (RoleRuns), an issue's moved_at (PutIssue), processed_events'
+// processed_at (MarkProcessed), the refill mark (TakeDispatchRefill) and a tree lifecycle's
+// updated_at (OpenTreeLifecycle) — takes clock's time instead. A replay of a recorded window
+// builds its store with one, on the simulated clock its admission pass and its engine read, so
+// the times the pass writes are the window's and not the moment the replay ran, and a release
+// mark the pass writes from its own clock (Store.ReleaseSlotForWait) and an owed start's
+// created_at sort in the line as the pass wrote them. The daemon keeps NewStore and Postgres's
+// clock, for the reason QueuedSupervise's Age gives: a row's created_at and the time it is read
+// against come from one clock.
+func NewStoreWithClock(clock func() time.Time) *Postgres { return &Postgres{clock: clock} }
 
 func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
 	tag, err := tx.Exec(ctx, `insert into processed_events (source, event_id) values ($1, $2)

@@ -67,6 +67,24 @@ type Store struct {
 	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
 	// daemon turns the publication on, and while it is nil no claim write queues one.
 	roleHoldersQueued atomic.Pointer[func(issue string)]
+	// clock is the time the store's claim and tree-lifecycle writes are stamped and bounded with
+	// (UseClock), nil for the daemon's own store, which stamps with Postgres's now() and bounds
+	// with the wall clock.
+	clock func() time.Time
+}
+
+// UseClock sets the clock the store's claim and tree-lifecycle writes read in place of Postgres's
+// now() and the wall clock: the updated_at of every claim write (upsertClaim, PutClaimActivity,
+// PutClaimStep), the bound a session's activity report is held to (PutClaimActivity), the moment
+// a claim write queues its role holders' publication (putClaim), the opening of a tree's
+// lifecycle (openTreeLifecycle) and the end of a tree's pod holds at its cleanup
+// (CleanupReservedTree). A replay of a recorded window sets its simulated clock on the store its
+// worker stub writes claims through, so every time it writes is the window's; the daemon sets
+// none and keeps the database's clock. It is a setter rather than a parameter of Open because
+// every caller but the replay opens the daemon's own store, and it is set before the store's
+// first write and never after.
+func (s *Store) UseClock(clock func() time.Time) {
+	s.clock = clock
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that

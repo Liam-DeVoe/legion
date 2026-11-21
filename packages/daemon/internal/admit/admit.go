@@ -166,6 +166,18 @@ func (a *Admission) UseSlotRule(rule record.SlotRule) {
 	a.rule = rule
 }
 
+// UseClock sets the clock this admission's passes read the time from: the slot a promotion
+// grants (record.Slot.AdmittedAt), the mark of a release for a wait (releaseSlotsForWaits), the
+// movement a promotion marks, the rows it queues and every judgement of the line made at a
+// moment. New sets the wall clock, which is the daemon's, and a replay of a recorded window sets
+// its simulated clock, the one its engine (workflow.Config.Clock) and its store
+// (record.NewStoreWithClock) read, so the pass writes and compares the window's times. It is a
+// setter rather than a parameter of New for the reason UseExperiments is: every test that admits
+// anything builds an admission, and none of them but the package's own sets a clock.
+func (a *Admission) UseClock(clock func() time.Time) {
+	a.now = clock
+}
+
 var _ intake.Handler = (*Admission)(nil)
 
 // New creates an admission handler for one Dispatch project. engine is the workflow's own, shared
