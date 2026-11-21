@@ -1872,6 +1872,22 @@ type OutboxRow struct {
 	refence fenceStamp
 }
 
+// OutboxAttempt is the attempt a status row with an option of Dispatch's status-change route last
+// sent (StatusWrite.HasOption; decision 6 of dispatch://INFRA-4730): Key, the request key that
+// attempt went under, made of the row's id and the attempt's number, and Body, the body it sent,
+// expected_sequence included. Dispatch's request-key layer holds a key to its first body, so the
+// row sends the same key with the same body again, and with no read of Dispatch first, while the
+// attempt is open (Body set); once Dispatch's stored answer ends the attempt, Body is nil and the
+// row's next send is a new attempt under the next number. A row that sent none has neither. No
+// payload carries it (outbox.attempt_key, attempt_body).
+type OutboxAttempt struct {
+	Key  string
+	Body json.RawMessage
+}
+
+// Open says whether the attempt is one the row sends again as it is.
+func (a OutboxAttempt) Open() bool { return a.Key != "" && a.Body != nil }
+
 // ReleaseRetry is the bounded wait for a released todo child whose parent event has not reached the
 // daemon yet. A changed Dispatch sequence begins a fresh bounded attempt.
 type ReleaseRetry struct {
@@ -2581,6 +2597,17 @@ type Store interface {
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
+	// OutboxAttempt is the attempt row id last sent on Dispatch's status-change route, the zero one
+	// for a row that sent none, and false for a row the outbox no longer holds.
+	OutboxAttempt(ctx context.Context, tx pgx.Tx, id int64) (OutboxAttempt, bool, error)
+	// PutOutboxAttempt records the attempt row id sends while leaseToken holds it, and is
+	// ErrOutboxLeaseLost once the lease is another's.
+	PutOutboxAttempt(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, attempt OutboxAttempt) error
+	// OutboxQueued says whether the outbox still holds row id.
+	OutboxQueued(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
+	// AdvanceSeenSeq moves the cursor of the Dispatch events key's record has seen up to seq,
+	// forward only and for a recorded issue alone (Issue.SeenSeq).
+	AdvanceSeenSeq(ctx context.Context, tx pgx.Tx, key string, seq int64) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	ReleaseRetry(ctx context.Context, tx pgx.Tx, issue string) (*ReleaseRetry, error)
 	PutReleaseRetry(ctx context.Context, tx pgx.Tx, retry ReleaseRetry) error

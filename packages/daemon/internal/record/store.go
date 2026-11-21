@@ -3718,6 +3718,64 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
+// OutboxAttempt reads the attempt status row id last sent on Dispatch's status-change route
+// (outbox.attempt_key, attempt_body): the zero attempt for a row that sent none, and false when
+// the row is gone.
+func (s *Postgres) OutboxAttempt(ctx context.Context, tx pgx.Tx, id int64) (OutboxAttempt, bool, error) {
+	var attempt OutboxAttempt
+	var key *string
+	err := tx.QueryRow(ctx, "select attempt_key, attempt_body from outbox where id = $1", id).Scan(&key, &attempt.Body)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OutboxAttempt{}, false, nil
+	}
+	if err != nil {
+		return OutboxAttempt{}, false, fmt.Errorf("read the attempt of outbox row %d: %w", id, err)
+	}
+	if key != nil {
+		attempt.Key = *key
+	}
+	return attempt, true, nil
+}
+
+// PutOutboxAttempt records attempt as the one row id sends, while leaseToken holds the row: a
+// lease no longer the caller's is ErrOutboxLeaseLost, so nothing is sent under a key another
+// worker may be sending under too.
+func (s *Postgres) PutOutboxAttempt(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, attempt OutboxAttempt) error {
+	var body any
+	if attempt.Body != nil {
+		body = attempt.Body
+	}
+	var put int64
+	err := tx.QueryRow(ctx, "update outbox set attempt_key = $3, attempt_body = $4 where id = $1 and lease_token = $2 returning id",
+		id, leaseToken, attempt.Key, body).Scan(&put)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("record the attempt %s of outbox row %d: %w", attempt.Key, id, ErrOutboxLeaseLost)
+	}
+	if err != nil {
+		return fmt.Errorf("record the attempt %s of outbox row %d: %w", attempt.Key, id, err)
+	}
+	return nil
+}
+
+// OutboxQueued says whether the outbox still holds row id, whatever its lease or its next_at.
+func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, id int64) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where id = $1)", id).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether outbox row %d is queued: %w", id, err)
+	}
+	return queued, nil
+}
+
+// AdvanceSeenSeq moves key's cursor of the Dispatch events the daemon has seen (Issue.SeenSeq) up
+// to seq: forward only, and only for an issue the daemon records, since an unrecorded issue has no
+// write of the daemon's to hold.
+func (s *Postgres) AdvanceSeenSeq(ctx context.Context, tx pgx.Tx, key string, seq int64) error {
+	if _, err := tx.Exec(ctx, `update issues set seen_seq = $2 where key = $1 and seen_seq < $2`, key, seq); err != nil {
+		return fmt.Errorf("record that event %d of %s was seen: %w", seq, key, err)
+	}
+	return nil
+}
+
 // RoleRun reads one role's run of an issue generation as the store holds it. RoleRuns owns the
 // query shape, so the one-role caller and a state-report batch share it.
 func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error) {

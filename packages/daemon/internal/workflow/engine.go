@@ -305,6 +305,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.closeChild(ctx, tx, fact)
 	case intake.CloseRefused:
 		return e.closeRefused(ctx, tx, fact)
+	case intake.StatusRefused:
+		return e.statusRefused(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
 	case intake.CutoverMergerRepair:

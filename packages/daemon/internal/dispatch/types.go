@@ -476,13 +476,16 @@ func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" &&
 // carry Dispatch's normal error body. Issues and Changed are the members a status write's refusal
 // adds to that body: Issues each issue a PARENT_STATUS_CONFLICT names, with its status, and
 // Changed the entries of the status-change steps that committed before the refusal, empty when
-// none did. Every other refusal carries neither.
+// none did. Every other refusal carries neither. RetryAfter is the wait the answer's Retry-After
+// header asks for, in whole seconds as Dispatch writes it (a 409 KEY_IN_FLIGHT's), and zero for
+// an answer that names none.
 type Error struct {
-	Status  int
-	Code    string
-	Message string
-	Issues  []ConflictIssue
-	Changed []StatusChangeEntry
+	Status     int
+	Code       string
+	Message    string
+	Issues     []ConflictIssue
+	Changed    []StatusChangeEntry
+	RetryAfter time.Duration
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against

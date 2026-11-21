@@ -2,14 +2,17 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -173,6 +176,21 @@ type outbox struct {
 	// later (runRow): a test's seam alone (overrides.holdOutbox), nil in production and in every
 	// outbox a test builds by hand, which holds nothing.
 	hold func(record.OutboxRow) bool
+	// statusRowChecked and statusRowRead are a test's seams in a status row's run
+	// (overrides.statusRowChecked, overrides.statusRowRead): the first runs once the row's run and
+	// phase entry have passed their check and before the row reads Dispatch, the second after
+	// each read a write is fenced on, before the row waits for the record to see that read's
+	// sequence, handed it. A test holds a row at either until it has moved the issue. nil, in
+	// production and in every outbox a test builds by hand, runs nothing.
+	statusRowChecked func(ctx context.Context, row record.OutboxRow)
+	statusRowRead    func(ctx context.Context, row record.OutboxRow, seq int64)
+	// seenWait is how long a status row's run waits for the record to see the sequence its read
+	// gave before it reads the issue's event log instead (awaitSeen): statusSeenWait in
+	// production, and zero in an outbox a test builds by hand, which reads the log at once.
+	seenWait time.Duration
+	// scopeTold is whether this daemon's run has queued the controller's status-scope notice, of
+	// which it queues one (statusRefusal).
+	scopeTold atomic.Bool
 	// refreshPause reads the project's open pause into the daemon's flag
 	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
 	// pause made or ended through another daemon of a rolling restart holds this daemon's launches
@@ -238,7 +256,7 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps, controllerLaunched: controllerLaunched,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
-		log: log, now: time.Now, clock: supervise.RealClock{},
+		log: log, now: time.Now, clock: supervise.RealClock{}, seenWait: statusSeenWait,
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
 		// test injects its own `provision`, so only this production closure starts codegraph.
 		provision: func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
@@ -855,31 +873,48 @@ func (routineWaiting) Routine() bool { return true }
 // execute runs one row, and is the one place each row's run passes, so the rule for a Dispatch
 // that has no route for a write is here: its router's 404 (dispatch.NoRoute), which a Dispatch
 // older than the route answers and so does the older build while a release rolls out, so no
-// handler ran. For a kind whose route a Dispatch may not serve yet (waitsForTheRoute) that answer
+// handler ran. For a row whose route a Dispatch may not serve yet (waitsForTheRoute) that answer
 // is a wait, not a failure, so the daemon and Dispatch deploy in either order: the row runs again
 // on its backoff and is logged as a wait is (settle), INFO at its first run, DEBUG after, and WARN
 // from waitWarnAttempts on, about two minutes after the first run, once a minute at the backoff's
-// cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
-// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer,
-// and that answer for every other kind, is decided as its executor and permanentRefusal decide it.
+// cap; a status row's wait is routine (routineWaiting), so it logs once, at its first run. The
+// wait wraps nothing of Dispatch's refusal, as the claim release's waits do (claimHeldWait), so no
+// reading of permanentRefusal can end the row on it. Every other answer, and that answer for
+// every other row, is decided as its executor and permanentRefusal decide it.
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 	err := r.run(ctx, row)
-	if waitsForTheRoute(row.Kind) && dispatch.NoRoute(err) {
-		return wait.Errorf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: %v", row.ID, row.Kind, row.Issue, err)
+	if dispatch.NoRoute(err) && waitsForTheRoute(row) {
+		waiting := wait.Errorf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: %v", row.ID, row.Kind, row.Issue, err)
+		if row.Kind == record.OutboxKindDispatchStatus {
+			return routineWaiting{err: waiting}
+		}
+		return waiting
 	}
 	return err
 }
 
-// waitsForTheRoute is whether a write of kind waits for a Dispatch that has no route for it: the
-// records of the record lane (a step's start and end, a retro's rating and a run's plan) and the
-// role holders' publication, whose routes came after the Dispatch a daemon may meet. Every other
-// kind's route stands on every Dispatch it is sent to, so that answer there means a dispatch_url
-// that reaches no such Dispatch, and it is the refusal it says: a status write, a message post and
-// a claim release end on it with their follow-ups (dispatch.PermanentRefusal), and a status write
-// left waiting would hold every later status of its issue behind it; the gated steps' and the
+// waitsForTheRoute is whether row's write waits for a Dispatch that has no route for it: the
+// records of the record lane (a step's start and end, a retro's rating and a run's plan), the role
+// holders' publication, and a status write with an option of the status-change route
+// (record.StatusWrite.HasOption; decision 6 of dispatch://INFRA-4730), whose routes came after the
+// Dispatch a daemon may meet. A waiting status row holds its issue's later status rows behind it
+// on the board lane, so a later plain write cannot overtake the write that waits for the route;
+// the rollout order of dispatch://INFRA-3320 serves the route before this release, so the wait
+// lasts only while an older Dispatch still answers. Every other row's route stands on every
+// Dispatch it is sent to, so that answer there means a dispatch_url that reaches no such Dispatch,
+// and it is the refusal it says: a status write with no option, a message post and a claim
+// release end on it with their follow-ups (dispatch.PermanentRefusal); the gated steps' and the
 // design gates' publications retry it as a failure.
-func waitsForTheRoute(kind record.OutboxKind) bool {
-	return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish
+func waitsForTheRoute(row record.OutboxRow) bool {
+	if record.LaneOf(row.Kind) == record.LaneRecord || row.Kind == record.OutboxKindRoleHoldersPublish {
+		return true
+	}
+	if row.Kind != record.OutboxKindDispatchStatus {
+		return false
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	write, ok := payload.(record.StatusWrite)
+	return err == nil && ok && write.HasOption()
 }
 
 // run is the executor of row's kind. An effect whose executor follows no protocol of its own
@@ -986,6 +1021,16 @@ func fencedHere(payload record.OutboxPayload) bool {
 	return carries
 }
 
+// status is the executor of a Dispatch status row, the daemon's one way of writing an issue's
+// status (R20, R24 and R26 of dispatch://INFRA-3320; decisions 6, 11 and 12 of
+// dispatch://INFRA-4730). run has checked the row's fence on the record before it reaches here:
+// a row of an earlier run or phase entry finishes there, unwritten. A row that names the row it
+// follows (record.StatusWrite.After) waits until that row has finished. A row with an option of
+// the status-change route whose attempt is still open sends that attempt again as it is, with no
+// read of Dispatch first (changeStatus). Otherwise the row reads the issue, settles what its kind
+// settles against that read, posts its reason, and writes at the sequence of its last read
+// (writeStatus), each write only once the record has seen Dispatch's events up to that sequence
+// and still stands at the row's run and phase entry (readStands).
 func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
 	if r.dispatch == nil {
 		return errors.New("dispatch status executor has no Dispatch client")
@@ -993,6 +1038,21 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	rule, err := ruleFor(payload.Kind)
 	if err != nil {
 		return fmt.Errorf("outbox row %d: %w", row.ID, err)
+	}
+	if r.statusRowChecked != nil {
+		r.statusRowChecked(ctx, row)
+	}
+	if err := r.awaitAfter(ctx, row, payload); err != nil {
+		return err
+	}
+	if payload.HasOption() {
+		attempt, err := r.attemptOf(ctx, row)
+		if err != nil {
+			return err
+		}
+		if attempt.Open() {
+			return r.changeStatus(ctx, row, payload, rule, nil, attempt)
+		}
 	}
 	issue, err := r.dispatch.GetIssue(ctx, row.Issue)
 	if err != nil {
@@ -1015,7 +1075,9 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	// the moment it lands and the write is fenced on a read made after it (writeStatus). Fenced on
 	// the older read, the first write of every row carrying a reason would be refused
 	// (ISSUE_CHANGED) and pay another issue read, and for an ordinary row a record read, before
-	// making the write that was always going to land.
+	// making the write that was always going to land. The post's own event reaches the consumer as
+	// every event does and moves the issue's cursor (record.Issue.SeenSeq), so it holds the wait
+	// before the write (readStands) no longer than the consumer takes to deliver it.
 	//
 	// A reason Dispatch refuses the same way on every attempt (dispatch.PermanentRefusal, a block
 	// over its own bound among them) must not cost the issue its status, which is the write its
@@ -1057,14 +1119,21 @@ const statusWriteReads = 3
 // (dispatch.Client.SetStatusAt), so a change Dispatch recorded after that read is refused rather
 // than written over (dispatch://INFRA-714/spec R4). The sequence is the read's, never the one the
 // phase decision saw: every event moves it, the daemon's own posts included, so a row carrying
-// that older number would be refused almost every time.
+// that older number would be refused almost every time. A row with an option of the
+// status-change route is written there instead (changeStatus).
+//
+// Each write waits until the record has seen Dispatch's events up to the read's sequence, and
+// is made only while the record still stands at the row's run and phase entry (readStands): the
+// read can show a stop and a return the daemon has not yet applied, whose entry the row must not
+// write across (R20 of dispatch://INFRA-3320).
 //
 // ISSUE_CHANGED is no failure of the write and no permanent refusal (dispatch.PermanentRefusal),
 // so nothing is dropped over it. The row reads the issue again and writes again only while that
 // fresh read passes the rule its own kind is judged by (stillWanted). A read already at the status
 // the row carries is this write's work, done by someone else; a read at any other status is a
 // change made after the row's read, which the row never writes over, whether it took the issue
-// out of the workflow or moved it along within one.
+// out of the workflow or moved it along within one. A PARENT_STATUS_CONFLICT and a 403
+// LEGION_STATUS_SCOPE_REQUIRED are the refusals the row answers itself (statusRefusal).
 //
 // What this read never does is reach the engine. Dispatch's read says what the issue is now and
 // never who wrote it, so the engine would have to take every change it shows for a person's, and
@@ -1079,6 +1148,9 @@ const statusWriteReads = 3
 // for it, so a kind nobody gave a rule fails its row before the first write and reaches Dispatch
 // with nothing, whichever path brought the row here.
 func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read dispatch.Issue) error {
+	if payload.HasOption() {
+		return r.changeStatus(ctx, row, payload, rule, &read, record.OutboxAttempt{})
+	}
 	for range statusWriteReads {
 		// A status Dispatch already shows is this row's work, done: the write is not made again,
 		// and the row counts as written. The repair queues a row on every turn while the record's
@@ -1089,9 +1161,15 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 				"row", row.ID, "issue", row.Issue, "status", payload.Status)
 			return nil
 		}
+		if stands, err := r.readStands(ctx, row, payload, read); err != nil || !stands {
+			return err
+		}
 		_, err := r.dispatch.SetStatusAt(ctx, read, payload.Status)
 		if err == nil {
 			return nil
+		}
+		if answered, err := r.statusRefusal(ctx, row, payload, err); answered {
+			return err
 		}
 		var refusal *dispatch.Error
 		if !errors.As(err, &refusal) || refusal.Code != "ISSUE_CHANGED" {
@@ -1105,18 +1183,426 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 				"row", row.ID, "issue", row.Issue, "status", payload.Status)
 			return nil
 		}
-		if read.Status != payload.ObservedStatus {
-			r.log.Info("outbox status write finished without writing: its issue was moved to another status after the row read it",
-				"row", row.ID, "issue", row.Issue, "status", payload.Status, "observed", payload.ObservedStatus, "dispatch", read.Status)
-			return nil
-		}
-		wanted, err := rule.stillWanted(ctx, r, row, payload, read)
-		if err != nil || !wanted {
+		if wanted, err := r.rereadWanted(ctx, row, payload, rule, read); err != nil || !wanted {
 			return err
 		}
 	}
 	return fmt.Errorf("set Dispatch issue %s to %s: it changed under each of the %d reads this attempt made",
 		row.Issue, payload.Status, statusWriteReads)
+}
+
+// rereadWanted says whether a row may write again after its issue changed under it, read as read
+// shows it now and at another status than the row's: never over a status neither the row's nor
+// the one it observed, which is somebody's move made after the row's read, and otherwise as the
+// row's kind judges (stillWanted).
+func (r *outbox) rereadWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read dispatch.Issue) (bool, error) {
+	if read.Status != payload.ObservedStatus {
+		r.log.Info("outbox status write finished without writing: its issue was moved to another status after the row read it",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status, "observed", payload.ObservedStatus, "dispatch", read.Status)
+		return false, nil
+	}
+	return rule.stillWanted(ctx, r, row, payload, read)
+}
+
+// readStands is the wait and the check each write of a status row makes after the read it is
+// fenced on (R20 of dispatch://INFRA-3320; decision 11 of dispatch://INFRA-4730): the record has
+// seen Dispatch's events up to the read's sequence (awaitSeen), and only then is the row's run and
+// phase entry checked on the record again (outlived), so a stop and a return Dispatch recorded
+// before the read, which the daemon had not applied yet, are applied and refuse the write rather
+// than being written across. It answers false, having logged the finish, when the write is of an
+// earlier run or phase entry, and a wait while the record has not seen the read's sequence yet.
+// The seam a test holds a read row at (statusRowRead) runs first.
+func (r *outbox) readStands(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error) {
+	if r.statusRowRead != nil {
+		r.statusRowRead(ctx, row, read.LastSeq)
+	}
+	if err := r.awaitSeen(ctx, row, read.LastSeq); err != nil {
+		return false, err
+	}
+	late, err := r.outlived(ctx, row, payload)
+	return err == nil && !late, err
+}
+
+// statusSeenWait is how long one run of a status row waits for the Dispatch consumer to see the
+// sequence its read gave before it reads the issue's event log instead (awaitSeen): long enough
+// for the consumer to deliver the events a read just overtook, its own reason message's first,
+// and short beside the row's lease, which its run renews.
+const statusSeenWait = 5 * time.Second
+
+// statusSeenPoll is how often that wait reads the record's cursor.
+const statusSeenPoll = 25 * time.Millisecond
+
+// awaitSeen waits until the record of row's issue has seen Dispatch's events up to seq, the
+// sequence the row's read gave (decision 11 of dispatch://INFRA-4730): its cursor
+// (record.Issue.SeenSeq), which the consumer moves with every event of the issue it handles or
+// drops, whatever its kind, has reached seq. It reads the cursor until seenWait has passed, and
+// then once reads the issue's event log past the cursor (dispatch.Client.EventsAfter): when every
+// event up to seq is one the consumer applied or one no handler takes
+// (intake.DispatchEventsSeen), the record has had all of them — the events the consumer handled
+// before the cursor was kept are read so — and the cursor is moved to seq. Otherwise the row
+// waits on its backoff. An issue the daemon records nothing of, and an outbox with no store,
+// wait for nothing: there is no record to have applied anything.
+func (r *outbox) awaitSeen(ctx context.Context, row record.OutboxRow, seq int64) error {
+	if r.pool == nil {
+		return nil
+	}
+	deadline := time.Now().Add(r.seenWait)
+	for {
+		issue, err := r.recordedIssue(ctx, row.Issue)
+		if err != nil {
+			return err
+		}
+		if issue == nil || issue.SeenSeq >= seq {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return r.seenInTheLog(ctx, row, issue.SeenSeq, seq)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(statusSeenPoll):
+		}
+	}
+}
+
+// seenInTheLog is awaitSeen's read of the issue's event log past the cursor seen, up to seq.
+func (r *outbox) seenInTheLog(ctx context.Context, row record.OutboxRow, seen, seq int64) error {
+	events, err := r.dispatch.EventsAfter(ctx, row.Issue, seen)
+	if err != nil {
+		return fmt.Errorf("read the events of %s after %d, which the record has not seen: %w", row.Issue, seen, err)
+	}
+	applied, err := intake.DispatchEventsSeen(ctx, r.pool, row.Issue, events, seq)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return wait.Errorf("outbox status row %d of %s read Dispatch at sequence %d and the record has applied its events only to %d: the write waits until it has",
+			row.ID, row.Issue, seq, seen)
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.AdvanceSeenSeq(ctx, tx, row.Issue, seq)
+	}); err != nil {
+		return fmt.Errorf("record that the events of %s up to %d were seen: %w", row.Issue, seq, err)
+	}
+	return nil
+}
+
+// awaitAfter holds a row that names the row it follows (record.StatusWrite.After) until that row
+// has finished: a child's write released in the same wave as its parent's waits for the parent's
+// (decision 5 of dispatch://INFRA-4730), which runs on its own issue's lane.
+func (r *outbox) awaitAfter(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
+	if payload.After == 0 || r.pool == nil {
+		return nil
+	}
+	var queued bool
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		queued, err = r.records.OutboxQueued(ctx, tx, payload.After)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read whether the write %s follows is done: %w", row.Issue, err)
+	}
+	if queued {
+		return wait.Errorf("outbox status row %d of %s waits for row %d, the write it follows, to finish", row.ID, row.Issue, payload.After)
+	}
+	return nil
+}
+
+// statusScopeCode is Dispatch's code of the 403 it answers a status write of an issue carrying
+// the legion label made with a token that lacks the scope its DISPATCH_LEGION_STATUS_SCOPE asks
+// for (R26 of dispatch://INFRA-3320). No mechanism shares a value between this module and
+// Dispatch's, so the two spellings change together.
+const statusScopeCode = "LEGION_STATUS_SCOPE_REQUIRED"
+
+// statusRefusal answers the two refusals of a status write that the row decides itself rather
+// than as dispatch.PermanentRefusal reads them, and says whether err was one of them; the error it
+// answers is the row's. A PARENT_STATUS_CONFLICT (R24 of dispatch://INFRA-3320) ends the row: on a
+// close, by the refused close (intake.CloseRefused), which keeps the record's pending close and
+// tells the architect the children Dispatch named; on any other write, by the undo of the status
+// the record counted before its echo (intake.StatusRefused, decision 12 of dispatch://INFRA-4730).
+// A 403 LEGION_STATUS_SCOPE_REQUIRED keeps the row, as every 403 is kept, to be written again with
+// backoff once the daemon's token holds the scope: each refusal logs a line naming the code and
+// the issue, and the first in this daemon's run queues the controller's one status-scope notice.
+func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, err error) (bool, error) {
+	var refusal *dispatch.Error
+	if !errors.As(err, &refusal) {
+		return false, nil
+	}
+	switch {
+	case dispatch.ParentStatusConflict(err):
+		return true, r.parentRuleRefused(ctx, row, payload, refusal)
+	case refusal.Status == http.StatusForbidden && refusal.Code == statusScopeCode:
+		r.log.Warn("outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status, "code", refusal.Code)
+		if r.scopeTold.CompareAndSwap(false, true) {
+			if tellErr := r.tellStatusScope(ctx, row, refusal); tellErr != nil {
+				r.scopeTold.Store(false)
+				return true, errors.Join(fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err), tellErr)
+			}
+		}
+		return true, fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
+	}
+	return false, nil
+}
+
+// parentRuleRefused is a PARENT_STATUS_CONFLICT on row's write, applied as the fact its kind
+// makes of it (statusRefusal), under an id of the row's own so a run that applies it again after a
+// lost finish changes nothing more. The row then finishes.
+func (r *outbox) parentRuleRefused(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, refusal *dispatch.Error) error {
+	if r.pool == nil {
+		return fmt.Errorf("outbox row %d: Dispatch refused the write of %s on %s with %s, and this outbox has no store to record it in", row.ID, payload.Status, row.Issue, refusal.Code)
+	}
+	named := make([]string, 0, len(refusal.Issues))
+	for _, issue := range refusal.Issues {
+		if issue.Status == "" {
+			named = append(named, issue.Key)
+			continue
+		}
+		named = append(named, fmt.Sprintf("%s (%s)", issue.Key, issue.Status))
+	}
+	var fact intake.Fact = intake.StatusRefused{Issue: row.Issue, Generation: payload.Generation, Entry: payload.Entry,
+		Status: payload.Status, Issues: named, Controller: payload.Controller}
+	if payload.Kind == record.CloseStatusRow {
+		fact = intake.CloseRefused{Issue: row.Issue, Generation: payload.Generation, Entry: payload.Entry, Children: named}
+	}
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("status-refused:%s:%d", row.Issue, row.ID), fact, r.handlers...); err != nil {
+		return fmt.Errorf("apply Dispatch's refusal of the write of %s on %s: %w", payload.Status, row.Issue, err)
+	}
+	r.log.Warn("outbox status write refused by Dispatch's parent status rule; the row ends and its caller is told",
+		"row", row.ID, "issue", row.Issue, "status", payload.Status, "kind", payload.Kind, "code", refusal.Code, "issues", named)
+	return nil
+}
+
+// tellStatusScope queues the controller's status-scope notice of row's refusal (statusRefusal),
+// in a transaction of its own whose commit wakes the notice's lane.
+func (r *outbox) tellStatusScope(ctx context.Context, row record.OutboxRow, refusal *dispatch.Error) error {
+	if r.pool == nil {
+		return fmt.Errorf("outbox row %d: no store to queue the controller's status-scope notice in", row.ID)
+	}
+	notice := record.ControllerNotice{Kind: record.StatusScopeNotice, Reason: fmt.Sprintf(
+		"Dispatch refused the daemon's status write on %s with %d %s: the token the daemon writes Dispatch with lacks the scope Dispatch asks of a write of a Legion issue's status. The daemon keeps the write and writes it again, and every later status write waits the same way, until a person gives the daemon a token that holds the scope.",
+		row.Issue, refusal.Status, refusal.Code)}
+	scoped, run := r.committing(ctx)
+	return run(func(tx pgx.Tx) error {
+		queued, err := record.NewFencedRow(scoped, tx, r.records, row.Issue, notice, r.now().UTC())
+		if err != nil {
+			return err
+		}
+		return r.records.Enqueue(scoped, tx, queued)
+	})
+}
+
+// changeStatus writes payload, a row with an option, on Dispatch's status-change route
+// (dispatch.Client.ChangeStatus; decision 6 of dispatch://INFRA-4730), under Dispatch's request-key
+// rule: a key holds the first body it was sent with, a stored answer is answered again for it, and
+// a 5xx, a 401, a 408 and a 429 release it. Each attempt has a key of its own, made of the row's
+// id and the attempt's number, and is recorded with the body it sends, expected_sequence included
+// (record.OutboxAttempt), before it is sent, so no attempt ever sends a changed body under a key
+// it used. attempt is the row's open attempt, which goes again as it is, with no read of Dispatch
+// first; read is the issue as the row's caller last read it, nil for none.
+//
+// The same key and body go again on a later run after no answer, a transport failure, a 5xx, a
+// 401, a 408, a 429, a codeless 4xx from whatever stands in front of Dispatch, the router's 404 of
+// a Dispatch older than the route (execute makes it a wait), or a 409 KEY_IN_FLIGHT, after its
+// Retry-After: Dispatch finishes, from the recovery point the route binds at each step, what the
+// run that stopped left. Every other refusal is a stored answer and ends the attempt, the committed
+// steps' entries it carries applied (applyEntries): after ISSUE_CHANGED — whole, or at a later
+// step — the row reads Dispatch again and starts a new attempt at the new sequence, which finishes
+// the rest, since the route leaves each issue already in the status's group as it is; after
+// KEY_COMMITTED, a run that wrote and kept no answer, the same, its write read as landed; after
+// KEY_REUSED, which these rules never cause, the same once the line is logged; a
+// PARENT_STATUS_CONFLICT and a 403 LEGION_STATUS_SCOPE_REQUIRED as statusRefusal answers them;
+// and any other code as dispatch.PermanentRefusal reads it, a kept one's next run sending a new
+// attempt, since the stored answer would only be replayed. The key layer's codes are read here,
+// before PermanentRefusal, which reads each of them as final. A 2xx applies its entries and ends
+// the row. A named issue Dispatch already shows at the row's status is written all the same: its
+// own step may have committed while a later one was refused.
+func (r *outbox) changeStatus(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read *dispatch.Issue, attempt record.OutboxAttempt) error {
+	for range statusWriteReads {
+		if !attempt.Open() {
+			if read == nil {
+				issue, err := r.dispatch.GetIssue(ctx, row.Issue)
+				if err != nil {
+					return fmt.Errorf("read Dispatch issue %s for a new attempt of its status change: %w", row.Issue, err)
+				}
+				if issue.Status != payload.Status {
+					if wanted, err := r.rereadWanted(ctx, row, payload, rule, issue); err != nil || !wanted {
+						return err
+					}
+				}
+				read = &issue
+			}
+			if stands, err := r.readStands(ctx, row, payload, *read); err != nil || !stands {
+				return err
+			}
+			body, err := json.Marshal(statusChangeBody{Status: payload.Status, ExpectedSequence: read.LastSeq,
+				IncludeChildren: payload.IncludeChildren, UnlinkChildren: payload.UnlinkChildren, IncludeParent: payload.IncludeParent})
+			if err != nil {
+				return fmt.Errorf("encode the status change of %s: %w", row.Issue, err)
+			}
+			attempt = record.OutboxAttempt{Key: nextAttemptKey(row, attempt.Key), Body: body}
+			if err := r.putAttempt(ctx, row, attempt); err != nil {
+				return err
+			}
+		}
+		var sent statusChangeBody
+		if err := json.Unmarshal(attempt.Body, &sent); err != nil {
+			return fmt.Errorf("outbox row %d: its attempt %s holds a body that does not decode: %w", row.ID, attempt.Key, err)
+		}
+		result, err := r.dispatch.ChangeStatus(ctx, row.Issue, dispatch.StatusChange{Status: sent.Status, ExpectedSequence: sent.ExpectedSequence,
+			IncludeChildren: sent.IncludeChildren, UnlinkChildren: sent.UnlinkChildren, IncludeParent: sent.IncludeParent, IdempotencyKey: attempt.Key})
+		if err == nil {
+			return r.applyEntries(ctx, row, attempt.Key, result.Changed)
+		}
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || sentAgain(err, refusal) {
+			if refusal != nil && refusal.Code == keyInFlight {
+				return wait.Until(r.now().UTC().Add(max(refusal.RetryAfter, time.Second)), fmt.Sprintf(
+					"outbox status row %d of %s sends its attempt %s again once Dispatch's first run of it has ended (%s)", row.ID, row.Issue, attempt.Key, refusal.Code))
+			}
+			return fmt.Errorf("change Dispatch issue %s to %s under %s: %w", row.Issue, payload.Status, attempt.Key, err)
+		}
+		attempt.Body = nil
+		if err := r.putAttempt(ctx, row, attempt); err != nil {
+			return err
+		}
+		if err := r.applyEntries(ctx, row, attempt.Key, refusal.Changed); err != nil {
+			return err
+		}
+		switch refusal.Code {
+		case "ISSUE_CHANGED", keyCommitted:
+			read = nil
+			continue
+		case keyReused:
+			r.log.Error("outbox status change sent under a key another body used; the row reads Dispatch and starts a new attempt",
+				"row", row.ID, "issue", row.Issue, "key", attempt.Key, "error", err)
+			read = nil
+			continue
+		}
+		if answered, err := r.statusRefusal(ctx, row, payload, err); answered {
+			return err
+		}
+		return fmt.Errorf("change Dispatch issue %s to %s under %s: %w", row.Issue, payload.Status, attempt.Key, err)
+	}
+	return fmt.Errorf("change Dispatch issue %s to %s: it changed under each of the %d attempts this run made",
+		row.Issue, payload.Status, statusWriteReads)
+}
+
+// The request-key layer's codes (packages/envoy/internal/dispatch/api/request_keys.go): a repeat
+// whose first run still runs, a run that wrote and kept no answer, and another body under a used
+// key. No mechanism shares a value between this module and Dispatch's, so the spellings change
+// together.
+const (
+	keyInFlight  = "KEY_IN_FLIGHT"
+	keyCommitted = "KEY_COMMITTED"
+	keyReused    = "KEY_REUSED"
+)
+
+// sentAgain says whether Dispatch's answer err leaves the attempt open, to be sent again under its
+// key with its body (changeStatus): an answer the key layer stored nothing for — a 5xx, a 401, a
+// 408 and a 429 release the key, a codeless 4xx is from whatever stands in front of Dispatch, and
+// the router's 404 of a Dispatch older than the route ran no handler — and a 409 KEY_IN_FLIGHT,
+// whose first run still holds the key.
+func sentAgain(err error, refusal *dispatch.Error) bool {
+	switch {
+	case refusal.Status >= 500, refusal.Code == "", dispatch.NoRoute(err), refusal.Code == keyInFlight:
+		return true
+	}
+	switch refusal.Status {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return false
+}
+
+// statusChangeBody is the body an attempt of a status change sends, as the row keeps it
+// (record.OutboxAttempt.Body): what of dispatch.StatusChange the route's body carries, the actor
+// aside, which the client adds to every write.
+type statusChangeBody struct {
+	Status           string `json:"status"`
+	ExpectedSequence int64  `json:"expected_sequence,omitempty"`
+	IncludeChildren  bool   `json:"include_children,omitempty"`
+	UnlinkChildren   bool   `json:"unlink_children,omitempty"`
+	IncludeParent    bool   `json:"include_parent,omitempty"`
+}
+
+// nextAttemptKey is the request key of row's next attempt after the one under last ("" for
+// none): `outbox-<issue>-<row id>-<attempt number>`, numbered from 1. The issue keeps two daemons
+// that share a Dispatch token but no database from naming two writes alike.
+func nextAttemptKey(row record.OutboxRow, last string) string {
+	number := 0
+	if i := strings.LastIndexByte(last, '-'); i >= 0 {
+		number, _ = strconv.Atoi(last[i+1:])
+	}
+	return fmt.Sprintf("outbox-%s-%d-%d", row.Issue, row.ID, number+1)
+}
+
+// attemptOf is row's attempt as the outbox holds it (record.OutboxAttempt): the zero one in an
+// outbox with no store, whose rows send every attempt anew.
+func (r *outbox) attemptOf(ctx context.Context, row record.OutboxRow) (record.OutboxAttempt, error) {
+	if r.pool == nil {
+		return record.OutboxAttempt{}, nil
+	}
+	var attempt record.OutboxAttempt
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		attempt, _, err = r.records.OutboxAttempt(ctx, tx, row.ID)
+		return err
+	}); err != nil {
+		return record.OutboxAttempt{}, fmt.Errorf("read the attempt of outbox row %d: %w", row.ID, err)
+	}
+	return attempt, nil
+}
+
+// putAttempt records attempt as row's, under the row's lease: nothing is sent under a key whose
+// body the row did not keep first. An outbox with no store keeps nothing.
+func (r *outbox) putAttempt(ctx context.Context, row record.OutboxRow, attempt record.OutboxAttempt) error {
+	if r.pool == nil {
+		return nil
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.PutOutboxAttempt(ctx, tx, row.ID, row.LeaseToken, attempt)
+	}); err != nil {
+		return fmt.Errorf("record the attempt of outbox row %d: %w", row.ID, err)
+	}
+	return nil
+}
+
+// applyEntries applies to the record each entry of a status-change answer under key, a 2xx's or
+// the committed steps a refusal carries (dispatch://INFRA-4730's t4 rule), as an API route applies
+// its own status write (intake.OwnStatusWrite, through the issue's Observed view): the step's
+// issue, at the step's sequence, written by the daemon. An entry is applied only to an issue the
+// daemon records whose record stands below the entry's issue's sequence, so an entry whose event
+// the stream delivered first changes nothing; and an entry of an issue other than the row's only
+// where the record stands at the entry's previous_last_seq, since a record below it has events
+// before the step the stream has yet to deliver, which the entry would leave unread. Every other
+// entry is left to the events. Each is applied under an id of its own, so a run that applies it
+// again changes nothing more.
+func (r *outbox) applyEntries(ctx context.Context, row record.OutboxRow, key string, entries []dispatch.StatusChangeEntry) error {
+	if r.pool == nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.Issue == nil {
+			continue
+		}
+		recorded, err := r.recordedIssue(ctx, entry.Key)
+		if err != nil {
+			return err
+		}
+		if recorded == nil || entry.Issue.LastSeq <= recorded.LastDispatchSeq ||
+			entry.Key != row.Issue && recorded.LastDispatchSeq != entry.PreviousLastSeq {
+			continue
+		}
+		event := intake.OwnStatusWrite(*entry.Issue)
+		fact := intake.ObservedIssue(*entry.Issue)
+		fact.Delivered = &event
+		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("status-change:%s:%s:%d", key, entry.Key, entry.Issue.LastSeq), fact, r.handlers...); err != nil {
+			return fmt.Errorf("apply the status change of %s that %s committed: %w", entry.Key, key, err)
+		}
+	}
+	return nil
 }
 
 // statusRowRule is what one kind of status row (record.StatusRowKind) does: what its first

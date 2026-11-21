@@ -80,6 +80,29 @@ type StatusWrite struct {
 	// of a close, which it requires and this release keeps writing.
 	Generation uint64 `json:"generation,omitempty"`
 	Entry      int64  `json:"entry,omitempty"`
+	// IncludeChildren, UnlinkChildren and IncludeParent are the options of Dispatch's
+	// status-change route the write carries (dispatch.StatusChange, R24 of dispatch://INFRA-3320):
+	// the same status on each open issue under the issue, each open child unlinked, each ancestor
+	// not in work moved to in_progress. A row with any of them is written on that route under a
+	// request key of its own attempt (decision 6 of dispatch://INFRA-4730, the daemon's
+	// changeStatus), and a row with none on the issue PATCH, which takes none of them.
+	IncludeChildren bool `json:"includeChildren,omitempty"`
+	UnlinkChildren  bool `json:"unlinkChildren,omitempty"`
+	IncludeParent   bool `json:"includeParent,omitempty"`
+	// After is the outbox row whose write this one waits for: a child's write whose parent is
+	// written in the same release wave waits until the parent's row has finished (decision 5).
+	// Zero waits for none.
+	After int64 `json:"after,omitempty"`
+	// Controller says the controller asked for the write (its set_status), so a refusal the
+	// record undoes is told to the project's controller rather than to the issue's architect
+	// (decision 12 of dispatch://INFRA-4730).
+	Controller bool `json:"controller,omitempty"`
+}
+
+// HasOption says whether the write carries an option of the status-change route, the one route
+// that takes them (StatusWrite.IncludeChildren).
+func (w StatusWrite) HasOption() bool {
+	return w.IncludeChildren || w.UnlinkChildren || w.IncludeParent
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }

@@ -1,0 +1,9 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Date: Sat, 21 Nov 2026 11:52:56 GMT
+Idempotency-Key: midway-refusal-1
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+
+{"code":"ISSUE_CHANGED","error":"issue changed since the hand-over read","changed":[{"key":"LEGION-3","status":"backlog","parent":"LEGION-2","previous_last_seq":2,"issue":{"key":"LEGION-3","project":"LEGION","number":3,"title":"midway refusal 1: child 1","status":"backlog","priority":null,"rank":"W","labels":[],"parent":"LEGION-2","blocked_by":[],"advances":[],"advances_revision":0,"assignee":"smoke","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"smoke","proven":true},"created_at":"2026-11-21T11:52:40.881677Z","updated_at":"2026-11-21T11:52:56.028168Z","closed_at":null,"primary_artifact_id":"0e5ef54a-7ea4-4459-9462-f19a7570209b","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":4}},{"key":"LEGION-4","status":"backlog","parent":"LEGION-2","previous_last_seq":2,"issue":{"key":"LEGION-4","project":"LEGION","number":4,"title":"midway refusal 1: child 2","status":"backlog","priority":null,"rank":"X","labels":[],"parent":"LEGION-2","blocked_by":[],"advances":[],"advances_revision":0,"assignee":"smoke","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"smoke","proven":true},"created_at":"2026-11-21T11:52:40.970895Z","updated_at":"2026-11-21T11:52:56.274322Z","closed_at":null,"primary_artifact_id":"df6b93ab-186e-4628-bb14-dade6c89c9c8","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":4}}]}

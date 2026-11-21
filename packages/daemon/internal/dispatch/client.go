@@ -598,7 +598,11 @@ func (c *HTTPClient) requestKeyed(ctx context.Context, method, path, key string,
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		refusal := dispatchError(response.StatusCode, response.Status, payload)
+		if seconds, err := strconv.Atoi(strings.TrimSpace(response.Header.Get("Retry-After"))); err == nil && seconds > 0 {
+			refusal.RetryAfter = time.Duration(seconds) * time.Second
+		}
+		return refusal
 	}
 	if into == nil {
 		return nil

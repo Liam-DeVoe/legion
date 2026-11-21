@@ -823,10 +823,13 @@ func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 
 // createScratchDispatchIssueUnder files an issue titled title in the project
 // createScratchDispatchIssue made, under the issue parent, or under none when parent is empty,
-// and returns its key. Dispatch files it at triage.
+// and returns its key. Dispatch files it at triage. The create is forced past Dispatch's
+// near-copy gate (409 POSSIBLE_DUPLICATE), which refuses a title that shares its words with an
+// issue the project holds: a test that files a parent and a child for each of its cases names
+// them alike on purpose.
 func createScratchDispatchIssueUnder(t *testing.T, baseURL, title, parent string) string {
 	t.Helper()
-	body := map[string]string{"project": "LEGION", "title": title}
+	body := map[string]any{"project": "LEGION", "title": title, "force": true}
 	if parent != "" {
 		body["parent"] = parent
 	}

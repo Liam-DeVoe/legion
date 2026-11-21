@@ -1237,6 +1237,24 @@ type CloseRefused struct {
 
 func (f CloseRefused) namedIssue() (string, bool) { return f.Issue, true }
 
+// StatusRefused is Dispatch's refusal, with PARENT_STATUS_CONFLICT, of a status write the daemon
+// queued that is no close (decision 12 of dispatch://INFRA-4730; a refused close is CloseRefused):
+// the run (Generation) and the phase entry (Entry) the row was queued at, the status it wrote
+// (Status), the issues Dispatch's refusal named, each as "KEY (status)", and whether the
+// controller asked for the write (Controller, its set_status), whom the refusal is told to rather
+// than the issue's architect. The record counted the write before its echo (R16 of
+// dispatch://INFRA-3320), so the fact undoes it. Its one sender is the outbox's status executor.
+type StatusRefused struct {
+	Issue      string
+	Generation uint64
+	Entry      int64
+	Status     string
+	Issues     []string
+	Controller bool
+}
+
+func (f StatusRefused) namedIssue() (string, bool) { return f.Issue, true }
+
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
 // the supervisor has one, so workflow notices can say what failed after a daemon restart. Death is
 // why the claim's process was last found gone and StartFailure why its last start did not produce
@@ -1713,7 +1731,9 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer), and a Dispatch event it delivered moves its issue's
+// cursor there too (recordSeen), once every handler has run, so a record the fact writes first is
+// moved with it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1763,6 +1783,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{}, err
 	}
 	if !fresh {
+		if err := recordSeen(ctx, tx); err != nil {
+			return Result{}, err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return Result{}, err
 		}
@@ -1784,6 +1807,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{}, err
 	}
 	if err := settle(ctx, tx); err != nil {
+		return Result{}, err
+	}
+	if err := recordSeen(ctx, tx); err != nil {
 		return Result{}, err
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —

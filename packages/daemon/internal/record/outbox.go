@@ -1007,6 +1007,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
 // the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
 // transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
+//
+// A status-scope notice tells the controller that Dispatch refused a status write of the daemon's
+// with 403 LEGION_STATUS_SCOPE_REQUIRED: the daemon's token lacks the scope Dispatch asks of a
+// write of a Legion issue's status (R26 of dispatch://INFRA-3320; decision 12 of
+// dispatch://INFRA-4730). Its issue is the issue whose write was refused, and its Reason names the
+// code and the issue and says that a person must give the daemon a token that holds the scope. The
+// write is kept and written again; the first such refusal in a daemon run queues one notice (the
+// daemon's status executor), and no architect is told, since no architect can change a token.
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -1021,6 +1029,7 @@ const (
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
+	StatusScopeNotice      NoticeKind = "status-scope"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2537,6 +2546,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
+		if value.After < 0 {
+			return fmt.Errorf("a status write waits for outbox row %d, which no row is", value.After)
+		}
 	case MessagePost:
 		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
 		// name no document, so the row is refused before it is queued.
@@ -2677,6 +2689,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
+		if value.Kind == StatusScopeNotice && value.Reason == "" {
+			return fmt.Errorf("a status-scope notice carries the reason that names the code, the issue and the token a person must give the daemon")
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -3055,7 +3070,8 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice,
+		StatusScopeNotice:
 		return true
 	default:
 		return false
