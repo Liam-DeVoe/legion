@@ -1898,8 +1898,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 // DISPATCH_PRIVATE_PROJECTS or DISPATCH_PRIVATE_BEFORE_FULL_SWITCH renders it: sorted and each key
 // once. An entry that is not a project key is never rendered: it is answered in ignored, in the
 // order given, and NewDispatch prints it at preview (privateProjectsIgnoredMessage), as Dispatch's
-// boot ignores and logs one. Ignoring it fails closed, since no list then names the project it
-// meant and its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED.
+// boot ignores and logs one. Ignoring it fails closed: it names no project, so the switch to
+// private of the project it meant is refused while no list names its key.
 func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
 	for _, entry := range entries {
 		if !contracts.ValidProjectKey(entry) {

@@ -476,9 +476,6 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
             {isPrivate ? "Private" : "Public"}
           </p>
         </div>
-        {/* A project private before its full switch is hidden as any private project, while its
-            own namespace, stores and message gate come only with its full switch; Dispatch's
-            answer says so, and the panel says it beside the visibility. */}
         {isPrivate && access.data.private_before_full_switch === true ? (
           <p
             className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}

@@ -221,8 +221,6 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
-		// fullSwitch is a switch to private of a project the deployment has provisioned, which
-		// writes its record; a project it makes private before its full switch writes none.
 		fullSwitch := visibility == model.ProjectPrivate && s.privateProjectProvisioned(key)
 		if visibility == model.ProjectPrivate {
 			if !fullSwitch && !s.privateBeforeFullSwitch(key) {

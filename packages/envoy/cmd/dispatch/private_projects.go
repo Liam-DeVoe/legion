@@ -33,8 +33,8 @@ const (
 // their full switch, each entry trimmed and empty ones dropped, deduplicated and sorted. An entry
 // that is no project key, the old on/off value 1 included, is never read as a key: it is answered
 // in ignored, in the order given, and the boot logs it (reportIgnoredPrivateProjects). Ignoring it
-// fails closed, since no list then names the project it meant and its switch to private stays 409
-// PRIVATE_PROJECT_NOT_PROVISIONED; refusing the boot would stop every project for one bad entry.
+// fails closed: it names no project, so the switch to private of the project it meant is refused
+// while no list names its key; refusing the boot would stop every project for one bad entry.
 // Unset or empty names no project.
 func privateProjectsSetting(value string) (keys, ignored []string) {
 	for entry := range strings.SplitSeq(value, ",") {
@@ -67,7 +67,9 @@ func reportIgnoredPrivateProjects(setting string, ignored []string) {
 // mayBePrivate is every key either list names, sorted and each once: the projects a switch to
 // private may name, which the maintenance sweep reads (api.RunMaintenanceSweep).
 func mayBePrivate(privateProjects, beforeFullSwitch []string) []string {
-	return slices.Compact(slices.Sorted(slices.Values(slices.Concat(privateProjects, beforeFullSwitch))))
+	keys := slices.Concat(privateProjects, beforeFullSwitch)
+	slices.Sort(keys)
+	return slices.Compact(keys)
 }
 
 // reportPrivateProjects is the boot's report of what the state's first read (state) says of
