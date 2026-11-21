@@ -301,6 +301,8 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
+    "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
 } as const;
 
@@ -518,7 +520,10 @@ export async function executePhaseOp(
       // An architect's grant serves its whole tree, so its move names the issue it returns from
       // accepting. A phase worker's grant names its own issue, the only one it may move, so its
       // request leaves `issue` out; one naming another issue is refused here, as the daemon would
-      // (ISSUE_NOT_GRANTS).
+      // (ISSUE_NOT_GRANTS). The tester's move out of testing is the daemon's to refuse
+      // (BACKWARD_REFUSED), and the refusal's sentence reaches the agent: a testing step ends by
+      // its checks' states alone, so the tester records a fail of each check it cannot verify and
+      // completes. The issue's phase is the daemon's record, which this call does not read.
       let issue: string | undefined;
       if (claim.role === "architect") {
         const named = args.issue?.trim() ?? "";

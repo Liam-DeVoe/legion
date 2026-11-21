@@ -2485,7 +2485,10 @@ package api
 // tester's phase its `reason` names each check that does not pass at the tested head, or what the
 // move waits for. The instruction a `HANDOFF_STALE_ENTRY` refusal ends with, which the `legion`
 // tool's description repeats, names no verdict: it ends "never this completion's record or
-// commit". No shape of `GET /legion/v1/state` moves.
+// commit". `POST /legion/v1/phase/backward` refuses the tester's move out of `testing`, to any
+// target a backward row serves, `BACKWARD_REFUSED`, since the testing step ends by its checks'
+// states: the tester records each check's result and completes instead, and the `legion` tool's
+// description says so. No shape of `GET /legion/v1/state` moves.
 // (This entry takes 206, above main's 202: a reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on
 // 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.)

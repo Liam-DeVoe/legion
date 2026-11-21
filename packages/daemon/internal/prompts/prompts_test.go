@@ -59,6 +59,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"record each check's result with `dispatch result` first, then end this phase with the `legion` tool: `op: \"handoff_complete\"` and a `summary`, and no `verdict`.",
 			"The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names, once each check has a state there that it ends at: a check with no state yet, or with no result while its CI run at that head goes on, holds the move until Dispatch publishes its next state, whatever the other checks read.",
 			"Then the issue goes to the reviewer when each check reads yes, whichever roles' results made it yes, and otherwise back to the implementer, whose task names each check that does not read yes with its state and its reason, a check Dispatch could not read (`read_failed`) among them.",
+			"This phase ends by those states alone, so the daemon refuses your `request_backward_move` out of testing (`BACKWARD_REFUSED`): to send the work back, record a fail of each check you cannot verify with `dispatch result`, its evidence in the result, and complete.",
 			"A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass",
 			"`implementerProof` (`{how}` alone)",
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},

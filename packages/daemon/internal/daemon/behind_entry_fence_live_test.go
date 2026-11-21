@@ -27,14 +27,16 @@
 // tester no longer works. scripts/e2e/behind-entry-fence.sh builds this driver with `-tags e2e`
 // and owns the nats-server and the PostgreSQL it runs against.
 //
-// The forward entry of step 2 is raised on the path the daemon has for it: the tester asks for the
-// work back with its own backward move to implementing and ends its turn, and the implementer
-// pushes a head of its own and completes, which hands testing out again. The tester's first turn
-// cannot still be running then, because the daemon sends no role a task that adopts the issue's
-// working copy while another role of the issue is in a turn (supervise's sendPending), so the
-// implementer's task waits for that turn to end; the tester's completions come instead from a
-// turn of its own, begun while the implementer works and so before the new entry's task could
-// reach it. Neither a CI red nor a conflict with the base serves here, since neither moves an
+// The forward entry of step 2 is raised on the path the daemon has for it: the tester records a
+// fail of the issue's check at the head it tested and completes there, which sends the work back
+// to implementing, and ends its turn, and the implementer pushes a head of its own and completes,
+// which hands testing out again. (The tester has no backward move of its own out of testing: its
+// step ends by its checks' states.) The tester's first turn cannot still be running then, because
+// the daemon sends no role a task that adopts the issue's working copy while another role of the
+// issue is in a turn (supervise's sendPending), so the implementer's task waits for that turn to
+// end; the tester's later completions come instead from a turn of its own, begun while the
+// implementer works and so before the new entry's task could reach it. Neither a CI red nor a
+// conflict with the base serves here, since neither moves an
 // issue: the daemon judges no check, so the proof publishes no settlement, and for a head that
 // conflicts with its base the daemon makes no move at all: the issue keeps its phase, and the
 // implementer is asked to merge the base forward when the next step needs a head that merges
@@ -124,12 +126,12 @@ type behindEntryFenceLive struct {
 
 // TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive drives the eight steps
 // of the proof against one booted daemon, in the order each step's state follows from the last: the
-// tester working its first entry, the tester's own move back and the implementer's push and
-// completion that hand testing out again by a forward move, the behind completion refused at the
-// head the record has left, refused naming no commit, and taken at the head the record holds, that
-// completion sent again and one naming a newer record, each answered as of a phase the tester no
-// longer works, the registered reviewer's own move back into testing, and the same completion at
-// the same head refused because a move back raised the entry the phase now stands on.
+// tester working its first entry, the tester's fail at the first head and the implementer's push
+// and completion that hand testing out again by a forward move, the behind completion refused at
+// the head the record has left, refused naming no commit, and taken at the head the record holds,
+// that completion sent again and one naming a newer record, each answered as of a phase the tester
+// no longer works, the registered reviewer's own move back into testing, and the same completion
+// at the same head refused because a move back raised the entry the phase now stands on.
 func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *testing.T) {
 	r := newBehindEntryFenceLive(t)
 	r.step("the tester works its entry", r.testerWorksItsEntry)
@@ -170,8 +172,8 @@ func (r *behindEntryFenceLive) seed() {
 // moveBack is this role requesting the issue's move back to an earlier phase, from the turn it is
 // in and under a grant of its own, as the `legion` tool's request_backward_move does. The engine
 // takes it from the role running the issue's phase and from no other (workflow's Engine.backward,
-// BACKWARD_REFUSED), which is why the tester asks for it in testing and the registered reviewer in
-// reviewing.
+// BACKWARD_REFUSED), and never from the tester in testing, whose step its checks' states end,
+// which is why the registered reviewer asks for it in reviewing.
 func (c *liveSession) moveBack(to phase.Phase, reason string) (int, api.Failure) {
 	t := c.p.t
 	t.Helper()
@@ -213,23 +215,25 @@ func (r *behindEntryFenceLive) testerWorksItsEntry() {
 		r.key, got.Phase, r.entry, got.PullRequest.Head, working.State, r.delivery, firstLine(prompt.Message))
 }
 
-// Step 2. The tester asks for the work back with its own backward move to implementing, from the
-// turn it is in, and ends that turn: the daemon sends no role a task that adopts the issue's
-// working copy while another role of the issue is in a turn (supervise's sendPending), so the
-// implementer's task waits for it. The implementer is prompted, and while it works the tester
-// begins a turn of its own, as an agent that goes on working does, before any task of a later
-// entry has reached it. The implementer pushes a head of its own and completes there, which moves
-// the issue forward into testing and raises the tester's second entry, at the head the implementer
-// pushed and by no move back. That entry's task waits on the claim, since the tester is in a turn,
-// and the claim still serves the entry before it: every completion of steps 3 to 8 is reported
-// from a turn that began before its entry's task reached the session.
+// Step 2. The tester records a fail of the issue's check at the head it tested and completes there,
+// from the turn it is in, which sends the work back to implementing, and ends that turn: the
+// daemon sends no role a task that adopts the issue's working copy while another role of the issue
+// is in a turn (supervise's sendPending), so the implementer's task waits for it. The implementer
+// is prompted, and while it works the tester begins a turn of its own, as an agent that goes on
+// working does, before any task of a later entry has reached it. The implementer pushes a head of
+// its own and completes there, which moves the issue forward into testing and raises the tester's
+// second entry, at the head the implementer pushed and by no move back. That entry's task waits on
+// the claim, since the tester is in a turn, and the claim still serves the entry before it: every
+// completion of steps 3 to 8 is reported from a turn that began before its entry's task reached the
+// session.
 func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	t := r.t
-	const reason = "the tests show a fault in the code; back to implementing"
-	if status, failure := r.test.moveBack(phase.Implementing, reason); status != http.StatusOK {
-		t.Fatalf("the tester's backward move to implementing = %d %s %s, want 200", status, failure.Code, failure.Error)
+	testedAs(t, r.st.Pool(), r.key, behindFenceFirstHead, false)
+	if status, failure := r.test.complete("the tests show a fault in the code", behindFenceFirstHead, r.test.handoff("test")); status != http.StatusOK {
+		t.Fatalf("the tester's completion at %s with its check failed = %d %s %s, want 200", behindFenceFirstHead, status, failure.Code, failure.Error)
 	}
-	r.note("drove POST /legion/v1/phase/backward for the tester, to implementing, from the turn it is in: 200")
+	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
+	r.note("drove the state event of the check failed at %s and POST /legion/v1/handoff/complete for the tester there, from the turn it is in: 200, and the issue is back in implementing", behindFenceFirstHead)
 	r.test.endTurn()
 	r.note("the tester's turn on entry %d's task ended", r.served)
 	fix := r.imp.takeTask("Phase: implementing")

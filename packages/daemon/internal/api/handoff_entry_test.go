@@ -20,18 +20,20 @@ import (
 )
 
 // A tester's turn outlives its phase: the daemon ends no turn when a phase ends, so when the
-// tester sends the work back with its own backward move the implementer starts at once and the
-// tester's turn goes on. Its issue comes back to
+// tester's completion sends the work back — a check it failed at the head it tested — the
+// implementer starts at once and the tester's turn goes on. Its issue comes back to
 // testing on the implementer's pass, where a second testing entry hands the tester a second
-// task — and the completion the first task's turn reports is of work the issue has moved past. The
-// run cannot tell the two apart, since the issue never left run 1, and neither can the phase, which
-// is testing both times. The entry can: the tester's claim still serves the first task's, because
-// the machine refuses a second delivery while one is pending, while the phases row is already on
-// the second, raised in the transition's own transaction. The completion is refused
-// HANDOFF_STALE_ENTRY before any fact is applied, and the refusal sends the tester to the
-// new task's own work: that task's turn reports a handoff of its own, which is taken.
+// task — and a completion the first task's turn reports after that is of work the issue has moved
+// past. The run cannot tell the two apart, since the issue never left run 1, and neither can the
+// phase, which is testing both times. The entry can: the tester's claim still serves the first
+// task's, because the machine refuses a second delivery while one is pending, while the phases
+// row is already on the second, raised in the transition's own transaction. The completion, which
+// names no commit, is refused HANDOFF_STALE_ENTRY before any fact is applied, and the refusal
+// sends the tester to the new task's own work: that task's turn reports a handoff of its own,
+// which is taken. (The tester has no backward move of its own out of testing: its step ends by
+// its checks' states.)
 func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
-	h, engine, facts := newEntryHarness(t)
+	h, _, facts := newEntryHarness(t)
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
@@ -50,13 +52,12 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	firstTesting := takeStart(t, h, tester.token, "LEGION-208", claim.RoleTester)
 
-	// The tester sends the work back with its own backward move while its turn goes on. The
-	// issue goes back to implementing, the implementer starts at once, and the tester's turn, its
-	// process and its claim are untouched: its delivery is still pending and confirmed.
-	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "move-back", intake.BackwardMove{Issue: "LEGION-208",
-		Requester: claim.RoleTester, To: phase.Implementing, Reason: "the fix does not cover the empty list"}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the tester's move back = %+v, %v", result.Refusal, err)
-	}
+	// The tester records a fail at the head it tested and completes there while its turn goes on.
+	// The issue goes back to implementing, the implementer starts at once, and the tester's turn,
+	// its process and its claim are untouched: its delivery is still pending and confirmed.
+	testedAs(t, h, "LEGION-208", headSHA, false)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "the fix does not cover the empty list", Commit: headSHA,
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
 	assertIssuePhase(t, h, phase.Implementing)
 	testerMachine, ok := h.supervisor.Machine(tester.token)
 	if !ok {
@@ -81,15 +82,25 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		t.Fatalf("the issue is on run %d, want 1: the run never moved, which is why it cannot refuse this completion", run)
 	}
 
-	// The old turn reports its completion. Refused, with nothing recorded, and the call made again
-	// naming the same record is refused the same way rather than answered ALREADY_RECORDED.
-	firstRecord := tester.writeHandoff("test", 1)
+	// The old turn reports another completion. Refused, with nothing recorded, and the call made
+	// again naming the same record is refused the same way rather than answered ALREADY_RECORDED.
+	staleRecord := tester.writeHandoff("test", 2)
 	complete := func() string {
 		t.Helper()
-		recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: firstRecord, HandoffVersion: 1})
+		recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: staleRecord, HandoffVersion: 2})
 		return refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	}
-	before := recordedCompletions(t, h, claim.RoleTester)
+	testerCompletions := func() int {
+		t.Helper()
+		n := 0
+		for _, fact := range facts.recorded() {
+			if completed, ok := fact.(intake.HandoffComplete); ok && completed.Role == claim.RoleTester {
+				n++
+			}
+		}
+		return n
+	}
+	before, applied := recordedCompletions(t, h, claim.RoleTester), testerCompletions()
 	message := complete()
 	for _, want := range []string{
 		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, which is 1 behind the entry %d the phase is on",
@@ -123,10 +134,8 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	if got := recordedCompletions(t, h, claim.RoleTester); got != before {
 		t.Fatalf("the refused completions left %d recorded tester completions, want the %d there were: a refusal before the fact records nothing", got, before)
 	}
-	for _, fact := range facts.recorded() {
-		if completed, ok := fact.(intake.HandoffComplete); ok && completed.Role == claim.RoleTester {
-			t.Fatalf("the workflow saw the tester's completion %#v, want the route to have refused it", completed)
-		}
+	if got := testerCompletions(); got != applied {
+		t.Fatalf("the workflow saw %d tester completions after the refusals, want the %d before them: the route refused them", got, applied)
 	}
 	assertIssuePhase(t, h, phase.Testing)
 
@@ -137,18 +146,12 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	if second != secondStart.Entry {
 		t.Fatalf("the tester took entry %d, want the start's %d", second, secondStart.Entry)
 	}
-	testedAs(t, h, "LEGION-208", "", true)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass on the fix",
-		HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}))
+	testedAs(t, h, "LEGION-208", headSHA, true)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass on the fix", Commit: headSHA,
+		HandoffID: tester.writeHandoff("test", 3), HandoffVersion: 3}))
 	assertIssuePhase(t, h, phase.Reviewing)
-	testers := 0
-	for _, fact := range facts.recorded() {
-		if completed, ok := fact.(intake.HandoffComplete); ok && completed.Role == claim.RoleTester {
-			testers++
-		}
-	}
-	if testers != 1 {
-		t.Fatalf("the workflow saw %d tester completions, want the one the new entry reported", testers)
+	if testers := testerCompletions(); testers != 2 {
+		t.Fatalf("the workflow saw %d tester completions, want two: the first entry's fail and the one the new entry reported", testers)
 	}
 }
 

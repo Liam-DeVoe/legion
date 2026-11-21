@@ -1914,8 +1914,15 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
-// names which of the guard's three readings failed. served is whether the table holds a backward
+// names which of the guard's four readings failed. served is whether the table holds a backward
 // row of the issue's phase for the move's target.
+//
+// The fourth is the tester's own move out of testing, to any target a row serves: a testing step
+// ends by the states Dispatch publishes of its checks at the head the tester tested, and by
+// nothing else (decideTesting), so a move the tester asks for would end it failed with no state in
+// it. Its refusal says what ends the step instead: the tester records each check's result, a fail
+// with its evidence for a check it cannot verify, and completes, which sends the issue back with a
+// task naming each check that does not pass.
 func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
 	switch {
 	case fact.To == "":
@@ -1927,6 +1934,10 @@ func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) 
 	case phase.RoleFor(issue.Phase) != fact.Requester:
 		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
 			issue.Phase, issue.Key, phase.RoleFor(issue.Phase), fact.Requester, fact.To)
+	case issue.Phase == phase.Testing && fact.Requester == claim.RoleTester:
+		return fmt.Sprintf("a testing step ends by the states of its checks at the head the tester tested, so the tester's move of %s back to %s changed nothing: "+
+			"record each check's result with `dispatch result` (a fail, with its evidence, for a check you cannot verify), then complete with handoff_complete, "+
+			"which sends the issue back with a task naming each check that does not pass", issue.Key, fact.To)
 	}
 	return ""
 }
@@ -1948,12 +1959,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	// The table is the guard, and it reads three things: the move names a target, a backward row
-	// of the issue's phase serves that target - anything but an earlier phase has none - and the
-	// caller is the role running that phase. An empty target is read first, since the row lookup
-	// takes it to match any row.
+	// The table is the guard, and it reads four things: the move names a target, a backward row
+	// of the issue's phase serves that target - anything but an earlier phase has none - the
+	// caller is the role running that phase, and that role is not the tester in testing, whose
+	// step its checks' states end (backwardRefusal). An empty target is read first, since the row
+	// lookup takes it to match any row.
 	//
-	// The refusal says which of the three failed, because the three are different mistakes and a
+	// The refusal says which of the four failed, because they are different mistakes and a
 	// sentence naming only the last had two readers of this file guess wrong on one day: a target
 	// the table does not serve is the caller's own phase misread, while a requester mismatch is a
 	// role acting on a phase that is not its own.

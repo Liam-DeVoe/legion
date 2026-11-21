@@ -150,14 +150,16 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: written, HandoffVersion: 1})
 			}}}
 		}},
+		// The phase worker's move back is the implementer's: the tester's own move out of testing
+		// is refused (workflow's backwardRefusal), since its step ends by its checks' states.
 		"POST /legion/v1/phase/backward": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
-			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
-			tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
+			seedIssueAt(t, r.h, "LEGION-208", phase.Implementing)
+			implementer := newLiveClaim(t, r.h, "LEGION-208", claim.RoleImplementer)
 			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
-			r.runs(t, "LEGION-208", testingPlace, tester.token)
-			return []agentRequest{{tester.token, func() *httptest.ResponseRecorder {
+			r.runs(t, "LEGION-208", implementingPlace, implementer.token)
+			return []agentRequest{{implementer.token, func() *httptest.ResponseRecorder {
 				return r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
-					"grantId": tester.grant(t), "to": "implementing", "reason": "the suite needs a fix"}, nil)
+					"grantId": implementer.grant(t), "to": "planning", "reason": "the plan misses a case"}, nil)
 			}}, {architect.token, func() *httptest.ResponseRecorder {
 				seedIssueAt(t, r.h, "LEGION-208", phase.Accepting)
 				r.runs(t, "LEGION-208", acceptingPlace, architect.token)
