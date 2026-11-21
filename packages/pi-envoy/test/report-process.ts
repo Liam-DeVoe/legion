@@ -7,9 +7,12 @@ import { join } from "node:path";
 /**
  * Starts `script` (a file of this directory) with `args`, and answers the JSON its stdout prints
  * after `marker`. With no `env`, the process gets the environment this one started with, as a
- * `Bun.spawn` that names no `env` hands it; with one, that environment. It is killed at
- * `timeoutMs`, so a hung run leaves no process behind, and a run that reports nothing throws,
- * naming `what` and giving its stderr.
+ * `Bun.spawn` that names no `env` hands it; with one, that environment, with Bun's runtime
+ * transpiler cache off: a row's `env` names a HOME the row's temporary-directory hook removes, and
+ * the cache would put about 360 files, 6 MB, under it, whose removal on a loaded box can outlast
+ * Bun's 5 s bound on a hook (measured: a row's HOME held 359 files with the cache, the cache's
+ * `@t@` directory all but 3 of them). It is killed at `timeoutMs`, so a hung run leaves no process
+ * behind, and a run that reports nothing throws, naming `what` and giving its stderr.
  */
 export async function runReportingProcess(options: {
   readonly script: string;
@@ -35,7 +38,9 @@ export async function runReportingProcess(options: {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       // Left out altogether rather than set to the live environment: the child then starts from
       // the environment this process started with, which is the case a row may ask about.
-      ...(options.env === undefined ? {} : { env: options.env }),
+      ...(options.env === undefined
+        ? {}
+        : { env: { ...options.env, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } }),
     }
   );
   const [stdout, stderr, exitCode] = await Promise.all([

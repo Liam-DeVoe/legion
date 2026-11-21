@@ -6,7 +6,7 @@
 // The socket and the broker are one stand-in (`@legion/envoy-client/test/relay-socket-stand-in`),
 // which this process runs and reads.
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   standInDeliverSubject,
@@ -59,6 +59,11 @@ test("a relay socket session takes its relay subject on the socket and no agent 
     expect(report.notices.join("\n")).toContain(
       "Envoy's inbound messages come through the listener's relay socket (ENVOY_INBOUND is listener), which carries no live view: the Agents page shows nothing of this session's turns"
     );
+    // The fixture's hook removes HOME after the row, within Bun's 5 s bound on a hook: the session
+    // process must leave no transpiler cache there (`runReportingProcess`), which held about 360
+    // files and outlasted that bound on a loaded box.
+    const left = readdirSync(home, { recursive: true });
+    expect(left.length).toBeLessThan(20);
   } finally {
     server.stop();
   }

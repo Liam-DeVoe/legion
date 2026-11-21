@@ -141,6 +141,48 @@ test("a relay socket session dials the socket, and neither live view takes a sub
   expect(server.subs).toEqual([{ session: SESSION, subject: standInDeliverSubject(SESSION) }])
 })
 
+// Before the session starts the socket's refused trades have no session to tell: they are said on
+// stderr once, worded, however many fail before one succeeds (`inboundUnavailable`), rather than a
+// line a try for as long as the broker refuses.
+test("trades refused before the session starts are said on stderr once, and the socket opens once one succeeds", async () => {
+  const server = startRelaySocketStandIn()
+  started.push(() => server.stop())
+  const settings = relaySettings(server)
+  const { inbound } = settings
+  if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
+  if (!("relaySetting" in inbound)) throw new Error("inbound is not the relay socket")
+  let refusals = 2
+  const credential = inbound.relayCredential
+  const refusing = {
+    ...inbound,
+    relayCredential: {
+      ...credential,
+      headers: (...args: Parameters<typeof credential.headers>) => {
+        if (refusals > 0) {
+          refusals -= 1
+          return Promise.reject(new Error("the secrets broker refused the trade (fixture)"))
+        }
+        return credential.headers(...args)
+      },
+    },
+  }
+  const warnings: string[] = []
+  const dialled = await dialChannelInbound(
+    refusing,
+    settings.url,
+    () => SESSION,
+    "claude-envoy-channel-test",
+    (text) => void warnings.push(text),
+    undefined,
+    AbortSignal.timeout(15_000),
+  )
+  started.push(() => dialled.connection.close())
+  expect(refusals).toBe(0)
+  expect(warnings.filter((line) => line.includes("has no token"))).toEqual([
+    "this session's relay socket has no token: the secrets broker refused the trade (fixture); the session starts once a trade succeeds",
+  ])
+}, 30_000)
+
 /** The notices the server wrote for itself under `heading`: the one write that names no event. */
 function notices(notifier: FakeNotifier, heading: string): string[] {
   return notifier.notifications

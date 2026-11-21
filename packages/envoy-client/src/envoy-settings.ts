@@ -348,6 +348,11 @@ function natsCredential(
 /** A URL host on this machine: `localhost`, an address of 127.0.0.0/8, or `[::1]`. */
 const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
+/** What a `listener` choice (`source`) beside a NATS server (`natsSetting`) is told. */
+function natsConflictText(source: string, natsSetting: string): string {
+  return `${source} is listener, and ${natsSetting} names NATS servers: set one of the two`;
+}
+
 /**
  * The relay socket's inbound, which `source` chose (`ENVOY_INBOUND`, or `envoy.inbound in
  * <file>`), or why it is off. Refused beside a NATS server named for the session (`natsSetting`,
@@ -363,11 +368,7 @@ function listenerInbound(
   credential: RequestCredential | { readonly noBrokerRoute: string },
   session: BrokerSessionName | undefined
 ): EnvoyInbound {
-  if (natsSetting !== undefined) {
-    return {
-      off: `${source} is listener, and ${natsSetting} names NATS servers: set one of the two`,
-    };
-  }
+  if (natsSetting !== undefined) return { off: natsConflictText(source, natsSetting) };
   if ("noBrokerRoute" in credential) {
     return { off: `${source} is listener, but ${credential.noBrokerRoute}` };
   }
@@ -513,7 +514,7 @@ export function envoySettings(
       return offWithError(
         natsSetting === undefined
           ? `${choice.source} is listener, but ${plainHttp}`
-          : `${choice.source} is listener, and ${natsSetting} names NATS servers: set one of the two. And ${plainHttp}`
+          : `${natsConflictText(choice.source, natsSetting)}. And ${plainHttp}`
       );
     }
   }
