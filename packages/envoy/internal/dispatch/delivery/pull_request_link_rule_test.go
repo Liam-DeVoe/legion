@@ -12,6 +12,8 @@ import (
 
 // linkCorpus is the links the tests of the link rule read, one shape each: links of a pull
 // request the rule takes, in each form, letter case and name, and the near misses it refuses.
+// The last is a host spelled with U+0130, which lower() folds to the ASCII i: only the rule's
+// test that every character is ASCII refuses it, in SQL as in Go.
 var linkCorpus = []string{
 	"https://github.com/acme/widgets/pull/101",
 	"https://github.com/acme/widgets/pull/102",
@@ -67,6 +69,7 @@ var linkCorpus = []string{
 	"https://github.com/acme/widgets",
 	"https://github.com/",
 	"github.com/acme/widgets/pull/145",
+	"https://g\u0130thub.com/acme/widgets/pull/146",
 }
 
 // The link rule in SQL is the link rule in Go: for each link of the corpus, LinkedPullRequestSQL
