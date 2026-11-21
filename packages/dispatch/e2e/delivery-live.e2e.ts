@@ -408,8 +408,7 @@ test("an issue title change reaches the page", async ({ browser, delivery }) => 
   const pull = delivery.number(695);
   await seedDeliveryFixture(delivery);
   await sql(
-    // Every project names a default assignee; alice is the person this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('${acme}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    // Into the place's project, which `seedDeliveryFixture` has just inserted.
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('${acme}-690', '${acme}', 690, 'Initial live issue title', 'todo', 1, '{"kind":"system","id":"e2e"}', 'U690')`,
     `INSERT INTO delivery_pull_requests (

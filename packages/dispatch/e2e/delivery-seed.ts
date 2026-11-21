@@ -10,6 +10,12 @@
 // whose recordings and screenshots were made under these numbers and days. A real-stack row
 // writes it in the place the `delivery` fixture of e2e/test.ts hands it, on the settings that
 // fixture wrote.
+//
+// The timeline's, the session groups' and the measures' fixtures each insert their place's project
+// with no `ON CONFLICT`, so a place takes one of them, and a second insert of its project fails
+// the row rather than being skipped: a row's place is under its own key (`rowKey`, e2e/test.ts),
+// and the corpus's is written once into each database its caller emptied.
+import { fixedKey, type RowKey } from "./api";
 import { sql } from "./psql";
 
 const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
@@ -172,7 +178,7 @@ export const MEASURES_DAYS_LATER = 35;
  *  beside them (the `reviewSeed` fixture). */
 export interface DeliveryPlace {
   /** The key of the project the fixture's issues are in. */
-  readonly project: string;
+  readonly project: RowKey;
   /** The number the place writes for the pull request or run the fixture numbers `fixed` (#1,
    *  run 500). Every number this module and its callers write is below 10,000, so a row's place
    *  adds a multiple of 10,000 and keeps the fixture's own number in the last four digits. */
@@ -205,7 +211,7 @@ function daysOn(iso: string, days: number): string {
  *  the timeline and the Pipeline `daysEarlier` days before the review corpus does, and the
  *  measures `measuresDaysLater` days after. */
 export function deliveryPlace(
-  project: string,
+  project: RowKey,
   numbers: number,
   daysEarlier: number,
   measuresDaysLater: number
@@ -224,7 +230,12 @@ export function deliveryPlace(
 }
 
 /** The place a fixture is written in when its caller names none. */
-const corpusPlace = deliveryPlace("ACME", 0, 0, 0);
+const corpusPlace = deliveryPlace(
+  fixedKey("ACME", "the review corpus and the docs pictures write it into a database they emptied"),
+  0,
+  0,
+  0
+);
 
 /** The slice 1 timeline's fixture, on the place's day (2024-06-01 in the corpus's): two
  *  population pull requests (#1 shipped by deploy run 500 and attributed to `<project>-1`, a P0
@@ -237,7 +248,7 @@ export async function seedDeliveryFixture(place?: DeliveryPlace): Promise<void> 
     ...(place === undefined ? [SETTINGS] : []),
     // Every project names a default assignee, so the column takes none of these rows without
     // one; alice is the person every row of this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice')`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('${project}-1', '${project}', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -280,7 +291,7 @@ export const TIMELINE_FIXTURE_QUERY = corpusPlace.timelineQuery;
  *  for #11 to #13. Only a real-stack row writes it, in its own place. */
 export async function seedSessionGroupsFixture({ number, project }: DeliveryPlace): Promise<void> {
   await sql(
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice')`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('${project}-7', '${project}', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -315,7 +326,7 @@ export async function seedMeasuresFixture(place?: DeliveryPlace): Promise<void> 
   const { measuresAt: at, number, project } = place ?? corpusPlace;
   await sql(
     ...(place === undefined ? [SETTINGS] : []),
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice')`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, route, claimed_by, claimed_at, created_by, rank) VALUES
        ('${project}-100', '${project}', 100, 'Build timeline UI', 'in_progress', 1, null,
         '{"kind":"session","id":"01a1-e2e-session"}', now(), ${SEED_ACTOR}, 'U100'),

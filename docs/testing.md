@@ -224,13 +224,15 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   A stubbed row's seed is no such case: `stubbed` (`e2e/stub/stub-test.ts`) empties the database before each row's seed in record mode alone, since that seed's keys are the ones its recording holds, and no gating lane records.
   A real-stack row makes its projects under `rowKey(...)` (`e2e/test.ts`), a key no other row makes, and `createProject` (`e2e/api.ts`) takes only the `RowKey` type that `rowKey` answers, so a row that writes a literal key fails the typecheck.
   A helper that makes a project under a key its caller passes takes a `RowKey` too, and a key built from the row's own, as `XCORE` is `CORE` behind an `X`, is `rowKeyBehind("X", core)`.
+  A helper that inserts its project straight into Postgres (`e2e/legion-seed.ts`, and the fixtures of `e2e/delivery-seed.ts` under the place `deliveryPlace` makes) inserts it with no `ON CONFLICT`, so a second project under one key fails the row rather than leaving the first in its place.
   A caller whose key is fixed on purpose writes it as `fixedKey(key, why)`, and `why` names the reason a fixed key is right there: the recording a stubbed row replays, the review corpus seeded once into each database a worker holds, the docs' pictures, the local instance, or a project another service names (`e2e/read-token-live.ts`).
 
 Two rules set the edges of those layers:
 
 - A rule that the Go server and the browser both implement, such as how a markdown document is
   read, is one row of a fixture table that both suites read:
-  `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` beside it.
+  `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` in
+  `pmdoc/testdata/`, beside the `corpus/` directory.
   Add the shape there, not a row on each surface.
 
 - A row that drives no browser is no browser row. A command-line row goes to the tests of the
@@ -301,7 +303,9 @@ The clock of a unit test:
   `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, and the parse worker stand-in's
   `tick` in `web/src/features/refs/parse-worker-fixture.ts`), and
   `web/src/__tests__/real-clock-waits.test.ts` fails an awaited timer or a `Bun.sleep` without one,
-  whatever its delay.
+  whatever its delay: it reads each file with the TypeScript parser, and an awaited timer is a
+  `setTimeout`, global or a member such as `window.setTimeout`, whose callback is a promise's
+  resolver or calls one, whatever the resolver is called.
   A zero-delay timer is such a wait too: what has run by its turn depends on how loaded the machine
   is, so a row waits for the condition its step stands for, with `waitFor` or an `expect` of what it
   reads next, or runs the product's own zero-delay timer on the fake clock with `tick(0)`.
@@ -310,6 +314,8 @@ The clock of a unit test:
   A row that waits for a product timer installs the fake clock (`onFakeClock` from
   `web/src/__tests__/fake-clock.ts`, or `jest.useFakeTimers()`) and moves it with `tick` or `jump`
   from that file.
+  A row that stands in for an answer that takes time to come, a server's or a sign-in check's, sets
+  its timer with `afterOnFakeClock` from that file, which refuses the real clock.
   happy-dom runs a zero-delay timer set while another one waits in that one's task, and the fake
   clock holds a timer of the real clock still, so a row installs the fake clock before the product
   sets the zero-delay timer the row runs, at a moment no zero-delay timer of the real clock waits:
