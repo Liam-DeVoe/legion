@@ -149,7 +149,7 @@ type roleSend struct {
 	// request's own send window (sendToRole).
 	ctx context.Context
 	// scope is the edge's scope of the request (edgeScopeOf), nil on every other listener: the
-	// holders this send's answers may name (edgeScope.holder).
+	// holders this send's answers may name (edgeScope.holderConfirmed).
 	scope *edgeScope
 	item  contracts.Envelope
 	// expectsReply is the expects_reply this send's answers write (expectsReplyAnswer, api.go):
@@ -171,7 +171,7 @@ type roleSend struct {
 	// unresponsive or gone (kept).
 	holderState session.State
 	// named is whether this send's answers name holder: false at the edge for a holder the
-	// scope does not show (edgeScope.holder), which the send still forwards to.
+	// scope does not show (edgeScope.holderConfirmed), which the send still forwards to.
 	named    bool
 	attempts int
 }
@@ -193,7 +193,7 @@ func (s *roleSend) shownHolder(result roles.Resolution) roles.Resolution {
 }
 
 // hold makes result's holder the one this send forwards to, and decides whether its answers name
-// it (edgeScope.holder).
+// it (edgeScope.holderConfirmed).
 func (s *roleSend) hold(result roles.Resolution) {
 	s.holder, s.holderState = result.Holder, result.HolderState
 	s.named = s.shownHolder(result).State != roles.Unclaimed
@@ -307,7 +307,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.record.item = &s.item
 	s.record.holder = s.holder
 	// At the edge a lapsed holder the scope does not show is named as no holder at all, as GET
-	// /v1/roles/<role> names it (edgeScope.holder).
+	// /v1/roles/<role> names it (edgeScope.holderConfirmed).
 	shown := s.shownHolder(result)
 	answer := listenerwire.PublishResponse{
 		Envelope:     s.item,
@@ -437,7 +437,7 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
 // its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
 // send forwards and keeps carries the envelope's own value. scope is the edge's scope of the
-// request, nil on every other listener: an answer names only a holder it shows (edgeScope.holder),
+// request, nil on every other listener: an answer names only a holder it shows (edgeScope.holderConfirmed),
 // and the send forwards to the holder whatever it names.
 func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
