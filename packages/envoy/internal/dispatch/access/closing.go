@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A developer box holds no credential that lists a private project after that project's full
@@ -74,9 +75,9 @@ func ReadClosing(ctx context.Context, tx pgx.Tx, key string) (Closing, error) {
 // revokes every live personal token that lists the project, and appends project.access_changed.
 // It answers the project's access as tx left it, the event, and how many tokens it revoked.
 //
-// The project's row is written before the tokens, so a personal token's mint or edit that lists
-// the project, which holds the row FOR SHARE until it commits (RefuseClosedTokenProjects), either
-// commits first, and its token is revoked here, or waits for this write and is refused.
+// It holds the project's owner lock to its commit, so a personal token's mint or edit that lists
+// the project, which takes that lock shared before it reads the project (RefuseClosedTokenProjects),
+// either commits first, and its token is revoked here, or reads the closing state and is refused.
 func StartClosing(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, by model.Actor) (model.ProjectAccess, model.Event, int64, error) {
 	if err := lockProject(ctx, tx, key); err != nil {
 		return model.ProjectAccess{}, model.Event{}, 0, err
@@ -100,23 +101,28 @@ func StartClosing(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string,
 }
 
 // RefuseClosedTokenProjects is the check a personal token's mint and its edit make, in the
-// transaction that writes the token: it takes each of projects' rows FOR SHARE, in key order, and
-// answers ErrClosedTokenProject naming the first that is closed to developer boxes (closedSQL,
-// listed being the keys the deployment provisioned as private), nil when none is. The shared row
-// lock is what orders it against StartClosing, whose write of the row waits for it, so no token
-// that lists the project commits after the closing state's revocation has run. projects are keys
-// the caller sees, so the refusal names nothing the caller may not see.
+// transaction that writes the token: it takes the owner lock of each of projects shared
+// (store.LockOwnersShared), then answers ErrClosedTokenProject naming the first, in key order, that
+// is closed to developer boxes (closedSQL, listed being the keys the deployment provisioned as
+// private), nil when none is. The shared lock waits for StartClosing, which holds the project's
+// owner lock exclusively to its commit, and holds off the next one until the token is written, so
+// no token that lists the project commits after the closing state's revocation has run. projects
+// are keys the caller sees, so the refusal names nothing the caller may not see.
 func RefuseClosedTokenProjects(ctx context.Context, tx pgx.Tx, projects, listed []string) error {
 	if len(projects) == 0 {
 		return nil
 	}
+	owners := make([]store.Owner, 0, len(projects))
+	for _, key := range projects {
+		owners = append(owners, store.ProjectOwner(key))
+	}
+	if err := lockTimedOut(LockOwnerRow, store.LockOwnersShared(ctx, tx, owners...)); err != nil {
+		return err
+	}
 	var closed string
 	err := tx.QueryRow(ctx, `
-		with listed as (
-			select p.key, `+closedSQL("p", "$2")+` as closed
-			from projects p where p.key = any($1) order by p.key for share
-		)
-		select coalesce(min(key) filter (where closed), '') from listed
+		select coalesce(min(p.key) filter (where `+closedSQL("p", "$2")+`), '')
+		from projects p where p.key = any($1)
 	`, projects, listedKeys(listed)).Scan(&closed)
 	if err != nil {
 		return fmt.Errorf("read the projects a personal token lists: %w", err)

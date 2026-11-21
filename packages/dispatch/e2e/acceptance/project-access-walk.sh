@@ -311,19 +311,22 @@ seed_scenario() {
   # credential of a full member who cannot see a private project lists it, so that caller does not
   # exist once PRIV is private, where the walk reads.
   mint_token main carol carol-priv-token '["PRIV"]'
+  # carol's token that lists PRIV is a row of carol's, a no-project object; only its list names
+  # PRIV, and that list is what a reader who does not see PRIV may not read. So the twin holds the
+  # same token, listing nothing, minted at the same step and used once as main's is used, and
+  # revoked when main's is (project-access.sh's private section), so carol's list of her tokens
+  # compares alike, its order (newest first) and its last use included.
+  mint_token twin carol carol-priv-token
+  for server in main twin; do
+    send "$server" carol-priv-token GET /api/v1/whoami
+    expect_status 200 "$server: carol's second token reads whoami"
+  done
   # carol's token that lists PUB is a credential that lists projects, which the walk's rows whose
-  # object no project owns refuse (it is not open). It is minted on both servers, so carol's list of
-  # her tokens compares alike.
+  # object no project owns refuse (it is not open). It is minted on both servers, after the token
+  # above, for the same reason.
   for server in main twin; do
     mint_token "$server" carol carol-pub-token '["PUB"]'
   done
-  # carol's token that lists PRIV is a row of carol's, a no-project object; only its list names
-  # PRIV, and that list is what a reader who does not see PRIV may not read. So the twin holds the
-  # same token, listing nothing, used once as main's is used, and revoked when main's is
-  # (project-access.sh's private section), so carol's list of her tokens compares alike.
-  mint_token twin carol carol-priv-token
-  send twin carol-priv-token GET /api/v1/whoami
-  expect_status 200 "twin: carol's second token reads whoami"
 }
 
 # The callers PRIV's list lets in, which project-access.sh's listed section reads as, and those it
