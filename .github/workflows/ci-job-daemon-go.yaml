@@ -191,13 +191,15 @@ jobs:
       # port is published, and prints the pool's URL only once a statement has run through it,
       # so the plain step never meets a pool that is still starting. The step holds that URL to
       # the job's LEGION_TEST_PGBOUNCER_DSN, so the URL the tests read is the pool the script started.
-      # It lints the script first with the shellcheck of .github/ci-images.yaml's actionlint row,
-      # 0.11.0, the one shellcheck CI runs, since no other check reads this file.
+      # It lints the script and its test first with the shellcheck of .github/ci-images.yaml's
+      # actionlint row, 0.11.0, the one shellcheck CI runs, since no other check reads these files,
+      # and runs the test, a fake docker and psql on PATH, before the script starts the real pool.
       - name: Start PgBouncer in front of the Postgres service
         run: |
           docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint shellcheck \
             ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
-            --severity=style packages/daemon/scripts/test-pgbouncer.sh
+            --severity=style packages/daemon/scripts/test-pgbouncer.sh packages/daemon/scripts/test-pgbouncer.test.sh
+          packages/daemon/scripts/test-pgbouncer.test.sh
           dsn=$(packages/daemon/scripts/test-pgbouncer.sh)
           if [ "$dsn" != "$LEGION_TEST_PGBOUNCER_DSN" ]; then
             echo "::error::packages/daemon/scripts/test-pgbouncer.sh printed a URL other than the job's LEGION_TEST_PGBOUNCER_DSN: make the job's value the one it prints"

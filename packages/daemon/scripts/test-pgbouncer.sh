@@ -3,7 +3,7 @@
 # front of the PostgreSQL server LEGION_TEST_PG_DSN names, and print the postgres:// URL that
 # reaches that server through it, which is what LEGION_TEST_PGBOUNCER_DSN holds:
 #
-#   LEGION_TEST_PGBOUNCER_DSN=$(packages/daemon/scripts/test-pgbouncer.sh --port 6433)
+#   export LEGION_TEST_PGBOUNCER_DSN="$(packages/daemon/scripts/test-pgbouncer.sh --port 6433)"
 #
 # internal/ompsessions' TestEveryPoolPinsItsSearchPath runs its read through this pool. Where
 # LEGION_TEST_PG_DSN is set and LEGION_TEST_PGBOUNCER_DSN is not, it skips naming the variable,
@@ -41,8 +41,10 @@
 # naming what, for an unset LEGION_TEST_PG_DSN, one that is no postgres:// URL of a loopback
 # host, a port that is taken, and a pool that exits or answers no statement in 60 s, such as one
 # whose server refuses the DSN's password, after printing the pool's log. A container it
-# started and is not handing over, because it fails or is interrupted, it removes. It needs
-# docker, python3 and psql.
+# started and is not handing over, because it fails or is interrupted, it removes; a container of
+# its name that already exists it refuses, naming it, and leaves alone. It needs docker, python3,
+# psql and timeout, and refuses naming whichever is missing. The pool runs with 1 CPU and 256 MiB,
+# as docs/testing.md asks of every container a test starts on a shared machine.
 set -euo pipefail
 
 image=ghcr.io/cybermonklabs/legion/ci@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
@@ -66,6 +68,11 @@ case $port in
   '' | *[!0-9]*) fail "--port $port is no port number" ;;
 esac
 name=${name:-legion-test-pgbouncer-$port}
+missing=""
+for tool in docker python3 psql timeout; do
+  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+[ -z "$missing" ] || fail "needs$missing on PATH"
 [ -n "${LEGION_TEST_PG_DSN:-}" ] || fail "LEGION_TEST_PG_DSN is unset: name the PostgreSQL server the pool goes in front of"
 
 # The fields the pool needs, read from the DSN in the environment, so no command line holds its
@@ -126,16 +133,19 @@ default_pool_size = 20
 max_prepared_statements = 1000
 "
 
-# The container is the script's to remove until the URL is printed: on a failure, and on an
+if docker container inspect "$name" >/dev/null 2>&1; then
+  fail "a container named $name already exists: remove it (docker rm -f -v $name), or name another with --name"
+fi
+# The container is the script's to remove from the moment docker may have made it until the URL
+# is printed: on a failure, a container docker made but could not start included, and on an
 # interrupt, which the second trap turns into an exit so that the first one runs.
-started=""
-trap '[ -z "$started" ] || docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+started=1
+trap '[ -z "$started" ] || docker rm -f -v "$name" >/dev/null 2>&1 || true' EXIT
 trap 'exit 1' INT TERM
 # shellcheck disable=SC2016 # the container's own shell expands the two variables
-POOL_CONFIG=$config POOL_USERS=$userlist docker run -d --name "$name" --network host \
+POOL_CONFIG=$config POOL_USERS=$userlist docker run -d --name "$name" --network host --cpus 1 --memory 256m \
   -e POOL_CONFIG -e POOL_USERS --entrypoint sh "$image" \
   -c 'printf "%s\n" "$POOL_USERS" > /tmp/userlist.txt && printf "%s" "$POOL_CONFIG" > /tmp/pgbouncer.ini && exec pgbouncer /tmp/pgbouncer.ini' >/dev/null
-started=1
 
 # A bound in seconds, not in tries: a try against a server that refuses the login waits for the
 # pool's own retry, so sixty tries would be minutes.
@@ -144,12 +154,12 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   if PGPASSWORD=$password PGCONNECT_TIMEOUT=2 timeout 5 psql -X -At -h 127.0.0.1 -p "$port" -U "$user" -d "$database" \
     -c 'select 1' >/dev/null 2>&1; then
     started=""
-    echo "test-pgbouncer: PgBouncer 1.25.2 runs as container $name on 127.0.0.1:$port in front of $server_host:$server_port; remove it with: docker rm -f $name" >&2
+    echo "test-pgbouncer: PgBouncer 1.25.2 runs as container $name on 127.0.0.1:$port in front of $server_host:$server_port; remove it with: docker rm -f -v $name" >&2
     printf '%s\n' "$url"
     exit 0
   fi
   # A pool that exited, a port taken since the check above say, answers no later try either.
-  [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] || break
+  [ "$(docker container inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] || break
   sleep 1
 done
 docker logs "$name" >&2 || true
