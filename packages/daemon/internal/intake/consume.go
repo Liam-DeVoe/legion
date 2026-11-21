@@ -298,7 +298,6 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, err
 	}
-	spec.Logger.Info("intake: the durable consumers' naming", "consumer_names", string(spec.Names))
 	if spec.Names == consumernames.ModeFixed {
 		if err := refuseConvertedStore(ctx, pool); err != nil {
 			return nil, err

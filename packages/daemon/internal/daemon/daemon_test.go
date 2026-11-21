@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -767,6 +768,47 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 			}
 			if got := strings.Count(logged.String(), leakCheckConfigured+`",`+named); got != tc.configured {
 				t.Fatalf("the boot logged the configured line naming %s %d times, want %d; log:\n%s", named, got, tc.configured, logged.String())
+			}
+		})
+	}
+}
+
+// The boot says once how the daemon names its durable consumers (legion.yaml's consumer_names), as
+// its first line, before it takes its port and so before any NATS connect: a daemon whose connect
+// the hub refuses, as it refuses every daemon while the operator's hold stands, has logged its
+// mode all the same, for the operator's check to read. The boot here fails on its port, which it
+// takes before it connects to NATS. The default is fixed.
+func TestRunLogsItsConsumerNamingModeBeforeAnyNATSConnect(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode consumernames.Mode
+		want string
+	}{
+		{name: "the default", want: "fixed"},
+		{name: "fixed", mode: consumernames.ModeFixed, want: "fixed"},
+		{name: "fresh", mode: consumernames.ModeFresh, want: "fresh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.ConsumerNames = tc.mode
+			o := fakeRuntime(fake.NewRuntime(), &built{})
+			o.listen = nil
+			var logged strings.Builder
+			if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+				t.Fatal("run returned no error although another listener held its port")
+			}
+			var lines []map[string]any
+			for line := range strings.Lines(logged.String()) {
+				var fields map[string]any
+				if json.Unmarshal([]byte(line), &fields) == nil && fields["msg"] == consumerNamesLine {
+					lines = append(lines, fields)
+				}
+			}
+			if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["consumer_names"] != tc.want {
+				t.Fatalf("the boot's naming lines = %v, want one INFO line with consumer_names %s; log:\n%s", lines, tc.want, logged.String())
+			}
+			if strings.Contains(logged.String(), "connect Envoy NATS") {
+				t.Fatalf("the boot reached its NATS connect before it failed on its port, so this row cannot show the line comes first; log:\n%s", logged.String())
 			}
 		})
 	}

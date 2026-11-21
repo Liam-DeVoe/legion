@@ -324,6 +324,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if log == nil {
 		log = slog.Default()
 	}
+	logConsumerNames(log, cfg.ConsumerNames)
 	plan, err := prepare(cfg, log, o)
 	if err != nil {
 		return err

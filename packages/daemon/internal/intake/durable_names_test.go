@@ -2,7 +2,6 @@ package intake
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -185,44 +184,6 @@ func TestFixedNamesRefuseADatabaseTheCutoverConverted(t *testing.T) {
 			}
 			if names := consumerNames(t, stream); len(names) != 0 {
 				t.Fatalf("the stream holds %v after the refused boot, want no consumer", names)
-			}
-		})
-	}
-}
-
-// The boot logs how the daemon names its durable consumers, once, before it opens them: the
-// default as fixed, and fresh as fresh.
-func TestTheBootLogsItsConsumerNamingMode(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		mode consumernames.Mode
-		want string
-	}{
-		{name: "the default", want: "fixed"},
-		{name: "fresh", mode: consumernames.ModeFresh, want: "fresh"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			cutover(t, pool, consumernames.CutoverDone)
-			if tc.mode == "" {
-				if _, err := pool.Exec(context.Background(), `delete from intake_consumers`); err != nil {
-					t.Fatalf("clear the sentinel for the fixed names: %v", err)
-				}
-			}
-			js, _, _ := freshJetStream(t)
-			logs := &lockedBuffer{}
-			spec := freshSpec(t, logs, js)
-			spec.Names = tc.mode
-			openIntake(t, js, pool, spec)
-			var lines []map[string]any
-			for line := range strings.SplitSeq(logs.String(), "\n") {
-				var fields map[string]any
-				if json.Unmarshal([]byte(line), &fields) == nil && fields["msg"] == "intake: the durable consumers' naming" {
-					lines = append(lines, fields)
-				}
-			}
-			if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["consumer_names"] != tc.want {
-				t.Fatalf("the boot's naming lines = %v, want one INFO line with consumer_names %s; logs:\n%s", lines, tc.want, logs)
 			}
 		})
 	}
