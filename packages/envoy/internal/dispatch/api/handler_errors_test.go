@@ -4,26 +4,44 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// handlerFailureLines are the lines a buffer holds that call a request's failure a server fault:
-// writeHandlerError's own ERROR line, and any ERROR line naming a cancel.
-func handlerFailureLines(logged *logBuffer) []string {
-	var lines []string
+// closedByClientLine is the one line writeHandlerError writes for a request its client closed.
+const closedByClientLine = `level=DEBUG msg="dispatch: API request closed by its client"`
+
+// captureDebugLog is captureLog with debug lines kept, so a test reads the closed request's line.
+func captureDebugLog(t *testing.T) *logBuffer {
+	t.Helper()
+	logged := &logBuffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return logged
+}
+
+// handlerErrorLines are the lines a buffer holds that writeHandlerError wrote for a failure: the
+// closed request's debug line, writeHandlerError's own ERROR line, and any ERROR line naming a
+// cancel.
+func handlerErrorLines(logged *logBuffer) (closed, failures []string) {
 	for _, line := range strings.Split(logged.String(), "\n") {
-		if strings.Contains(line, "level=ERROR") &&
-			(strings.Contains(line, `msg="dispatch: API handler failed"`) || strings.Contains(line, "context canceled")) {
-			lines = append(lines, line)
+		switch {
+		case strings.Contains(line, closedByClientLine):
+			closed = append(closed, line)
+		case strings.Contains(line, "level=ERROR") &&
+			(strings.Contains(line, `msg="dispatch: API handler failed"`) || strings.Contains(line, "context canceled")):
+			failures = append(failures, line)
 		}
 	}
-	return lines
+	return closed, failures
 }
 
 // A route's error is answered as the route's outer layers serve it - the request line, then
@@ -55,7 +73,7 @@ func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T
 	} {
 		for _, encoding := range []string{"gzip", ""} {
 			t.Run(fmt.Sprintf("%s, Accept-Encoding %q", test.name, encoding), func(t *testing.T) {
-				logged := captureLog(t)
+				logged := captureDebugLog(t)
 				ctx, closeRequest := context.WithCancel(context.Background())
 				defer closeRequest()
 				var keyedStatus int
@@ -83,14 +101,14 @@ func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T
 				if len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", test.want)) {
 					t.Errorf("request lines %q, want one with status=%d", lines, test.want)
 				}
-				failures := handlerFailureLines(logged)
+				closed, failures := handlerErrorLines(logged)
 				wroteFault := response.Code == http.StatusInternalServerError || strings.Contains(response.Body.String(), "internal server error")
 				if test.fault {
-					if len(failures) != 1 || !wroteFault {
-						t.Errorf("answered %d %q and logged %q, want a 500 and one ERROR line", response.Code, response.Body.String(), failures)
+					if len(failures) != 1 || len(closed) != 0 || !wroteFault {
+						t.Errorf("answered %d %q and logged %q and %q, want a 500, one ERROR line and no closed-request line", response.Code, response.Body.String(), failures, closed)
 					}
-				} else if len(failures) != 0 || wroteFault || response.Body.Len() != 0 {
-					t.Errorf("answered %d %q and logged %q, want no answer and no ERROR line for a request nobody is left to read", response.Code, response.Body.String(), failures)
+				} else if len(failures) != 0 || len(closed) != 1 || wroteFault || response.Body.Len() != 0 {
+					t.Errorf("answered %d %q and logged %q and %q, want no answer, no ERROR line and one debug line for a request nobody is left to read", response.Code, response.Body.String(), failures, closed)
 				}
 				if test.keyed && keyedStatus != http.StatusInternalServerError {
 					t.Errorf("the keyed layer read %d, want the 500 it releases its key on rather than an answer it keeps", keyedStatus)
@@ -106,7 +124,7 @@ func TestWriteHandlerErrorAnswersARequestItsClientClosedWithNothing(t *testing.T
 // statement runs, which is when the browser's did.
 func TestAProjectListItsClientClosedMidStatementIsNoServerFault(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	logged := captureLog(t)
+	logged := captureDebugLog(t)
 	lock, err := database.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("begin the lock's transaction: %v", err)
@@ -127,15 +145,10 @@ func TestAProjectListItsClientClosedMidStatementIsNoServerFault(t *testing.T) {
 		defer close(served)
 		handler.ServeHTTP(response, request)
 	}()
-	testwait.Until(t, "the project list's statement waiting on the lock", func() (int, bool) {
-		var waiting int
-		if err := database.Pool.QueryRow(t.Context(),
-			`select count(*) from pg_stat_activity where wait_event_type = 'Lock' and query = $1`,
-			projectListQuery).Scan(&waiting); err != nil {
-			t.Fatalf("read the waiting statements: %v", err)
-		}
-		return waiting, waiting == 1
-	})
+	// The bound is the test binary's own deadline less its margin, as testwait.Until's is.
+	if storetest.WaitForStatementBehind(t, database, lock, projectListQuery, testwait.Bounded(t, time.Hour, 30*time.Second)) == 0 {
+		t.Fatal("the project list's statement never queued behind the lock on projects")
+	}
 	closeRequest()
 	testwait.Receive(t, "the project list's handler to return", served)
 	if err := lock.Rollback(t.Context()); err != nil {
@@ -151,8 +164,9 @@ func TestAProjectListItsClientClosedMidStatementIsNoServerFault(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", accesslog.StatusClientClosed)) {
 		t.Errorf("request lines %q, want one with status=%d", lines, accesslog.StatusClientClosed)
 	}
-	if failures := handlerFailureLines(logged); len(failures) != 0 {
-		t.Errorf("logged %q, want no ERROR line for a request its client closed", failures)
+	closed, failures := handlerErrorLines(logged)
+	if len(failures) != 0 || len(closed) != 1 {
+		t.Errorf("logged %q and %q, want no ERROR line and one debug line for a request its client closed", failures, closed)
 	}
 	if response.Code == http.StatusInternalServerError || strings.Contains(response.Body.String(), "internal server error") {
 		t.Errorf("answered %d %q, want no 500 for a request nobody is left to read", response.Code, response.Body.String())

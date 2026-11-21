@@ -84,7 +84,8 @@ type recorder struct {
 	status     int
 	written    int64
 	// request is the request's own context as net/http gave it, which net/http cancels when the
-	// client closes the connection or resets the stream, and which no layer of Dispatch cancels.
+	// connection stops reading or writing (MarkClosedByClient), and which no layer of Dispatch
+	// cancels.
 	request context.Context
 	// closedByClient is set by MarkClosedByClient, on the handler's goroutine as status is.
 	closedByClient bool
@@ -208,9 +209,11 @@ func Detached(ctx context.Context) context.Context {
 // MarkClosedByClient reports whether the client of the request that w answers closed it before
 // its answer, and when it did, gives the request's line StatusClientClosed in place of anything
 // written after, which reached nobody. It reads the request's own context, which only the client
-// ends while the handler runs: net/http cancels it when the connection closes or the stream is
-// reset, and Dispatch shuts down without closing a connection under a request
-// (cmd/dispatch's shutdown). A cancel that Dispatch makes - a handler's own context, the
+// ends while the handler runs. net/http cancels it when the connection fails a read or a write:
+// the client closed the connection or reset the stream, or a deadline set on the connection ran
+// out. No Dispatch route leaves a deadline set on its connection past the end of the body while
+// its handler works (api's readFor), and Dispatch shuts down without closing a connection under a
+// request (cmd/dispatch's shutdown). A cancel that Dispatch makes - a handler's own context, the
 // server's lifetime - leaves it live. w is the writer a handler was given: the walk follows each
 // layer's Unwrap, as http.ResponseController does, and a writer this package did not wrap, or one
 // that hides what it wraps (api.keyedAnswer, whose answer a key keeps), reports false.
