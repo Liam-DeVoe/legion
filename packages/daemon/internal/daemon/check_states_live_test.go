@@ -42,7 +42,9 @@
 // when it is empty), and each runs on issues of its own, in the order statesCaseOrder gives. Each
 // prints `== <case>`, what it drove and read, and `ok <case>`; the first that fails ends the run,
 // its failure naming the case and the assertion (`FAIL <case> at <assertion>: ...`). A read that
-// finds nothing it could judge says UNKNOWN and what it could not read, and its case fails.
+// finds nothing it could judge says UNKNOWN and what it could not read, and its case fails. Each
+// bound of 10 seconds is measured from the operation that triggers the answer, never from the
+// read, and an answer that comes later than the bound fails at `<assertion>-within`.
 package daemon
 
 import (
@@ -107,9 +109,23 @@ const statesBrokerPIDEnv = "nats_pid"
 // statesHeld is the workflow's line for each state event it takes (workflow's checkState).
 const statesHeld = "workflow: a check state is held"
 
-// statesWithin is how long a case gives the daemon to answer what Dispatch told it: the move after
-// the tester's completion, the line after a result, and the move after the broker comes back.
+// statesWithin is the bound the approved checks give the daemon's answer: the line after a result,
+// the move and the reviewer's start after the tester's completion, and the move after the broker
+// comes back. It is measured from the operation that triggers the answer: the start of the
+// result's write, the moment the turn that completes reached the tester's model (which comes
+// before the tool's request), or the SIGCONT.
 const statesWithin = 10 * time.Second
+
+// statesLate is how long a case reads on for an answer past statesWithin, so an answer that comes
+// late fails at the bound, naming how late it came, apart from one that never comes.
+const statesLate = time.Minute
+
+// statesCompletion, statesWrite and statesContinue name the operations a bound is measured from.
+const (
+	statesCompletion = "the tester's completion"
+	statesWrite      = "the start of the result's write"
+	statesContinue   = "the SIGCONT"
+)
 
 // statesVerification is the Verification document of every issue but the no-check case's: two
 // `before_merge` checks, k1 and k2, that a role proves by its own result.
@@ -122,6 +138,17 @@ The server answers a read of the results.
 :::
 `
 
+// statesNoBeforeMerge is the no-check case's Verification document: a document that exists and
+// holds a check, k3, which is proved after the merge, so it holds no `before_merge` check. Dispatch
+// reads its blocks and keeps none of them in the head's set. An issue with no document at all
+// would not reach that path: Dispatch answers it before it reads a block.
+const statesNoBeforeMerge = `Nothing of this issue is proved before its merge.
+
+:::check{#k3 when="after_merge" negative_control="A released server whose route records nothing."}
+The released server records a result against a check.
+:::
+`
+
 // statesCaseOrder is every case, in the order a run makes them. completion-before-event is last,
 // since it stops the broker every other case's events cross.
 var statesCaseOrder = []string{
@@ -130,30 +157,31 @@ var statesCaseOrder = []string{
 }
 
 // statesCaseIssues is the issues each case drives, by the title each is filed under, and whether
-// its Verification document holds k1 and k2 (statesVerification) or nothing at all.
+// its Verification document holds the two before_merge checks k1 and k2 (statesVerification) or
+// no before_merge check (statesNoBeforeMerge).
 var statesCaseIssues = map[string][]statesIssueSpec{
 	"one-record": {
-		{title: "One record decides: the tester's fail of k2 sends the issue back", checks: true},
-		{title: "One record decides: the tester's passes send the issue to review", checks: true},
+		{title: "One record decides: the tester's fail of k2 sends the issue back", beforeMerge: true},
+		{title: "One record decides: the tester's passes send the issue to review", beforeMerge: true},
 	},
 	"daemon-records-nothing": {
-		{title: "The daemon records nothing: a round that fails k2", checks: true},
-		{title: "The daemon records nothing: a round that passes both checks", checks: true},
+		{title: "The daemon records nothing: a round that fails k2", beforeMerge: true},
+		{title: "The daemon records nothing: a round that passes both checks", beforeMerge: true},
 	},
-	"dispatch-tells":      {{title: "Dispatch tells the daemon of a fail of k1", checks: true}},
-	"pass-goes-to-review": {{title: "Every check passes, recorded by the implementer and the tester", checks: true}},
-	"no-check":            {{title: "No before_merge check in the Verification document", checks: false}},
+	"dispatch-tells":      {{title: "Dispatch tells the daemon of a fail of k1", beforeMerge: true}},
+	"pass-goes-to-review": {{title: "Every check passes, recorded by the implementer and the tester", beforeMerge: true}},
+	"no-check":            {{title: "No before_merge check in the Verification document", beforeMerge: false}},
 	"fail-sends-back": {
-		{title: "A fail of k2 is named in the implementer's task", checks: true},
-		{title: "A pass and a fail of k1 are named in the implementer's task", checks: true},
+		{title: "A fail of k2 is named in the implementer's task", beforeMerge: true},
+		{title: "A pass and a fail of k1 are named in the implementer's task", beforeMerge: true},
 	},
-	"completion-before-event": {{title: "The completion arrives before Dispatch's events", checks: true}},
+	"completion-before-event": {{title: "The completion arrives before Dispatch's events", beforeMerge: true}},
 }
 
 // statesIssueSpec is one issue a case drives, as statesCaseIssues writes it.
 type statesIssueSpec struct {
-	title  string
-	checks bool
+	title       string
+	beforeMerge bool
 }
 
 // statesIssue is one issue of the run: its key as Dispatch filed it, its title, its pull request's
@@ -164,6 +192,8 @@ type statesIssue struct {
 	tester           string
 	// staged is whether the issue's pull request is staged in Dispatch's database (stageHead).
 	staged bool
+	// recorded is each result the case recorded on the issue, as statesRecordedAs spells it.
+	recorded []string
 }
 
 // statesProof is one run of the proof: the booted daemon over the real Dispatch, the issues of the
@@ -380,11 +410,11 @@ func (r *statesProof) setUpDispatch() {
 				t.Fatalf("Dispatch created the issue %q with no key", spec.title)
 			}
 			r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, nil)
-			document := "no Verification document"
-			if spec.checks {
-				r.dispatch.user(http.MethodPost, "/api/v1/issues/"+created.Key+"/artifacts", map[string]any{"name": "verification.md", "content": statesVerification}, http.StatusCreated, nil)
-				document = "a Verification document of two before_merge checks, k1 and k2"
+			content, document := statesNoBeforeMerge, "a Verification document whose one check, k3, is after_merge: no before_merge check"
+			if spec.beforeMerge {
+				content, document = statesVerification, "a Verification document of two before_merge checks, k1 and k2"
 			}
+			r.dispatch.user(http.MethodPost, "/api/v1/issues/"+created.Key+"/artifacts", map[string]any{"name": "verification.md", "content": content}, http.StatusCreated, nil)
 			base++
 			issue := &statesIssue{key: created.Key, title: spec.title, head: headCommit(created.Key, "test"), number: int(base)}
 			r.issues[name] = append(r.issues[name], issue)
@@ -498,9 +528,11 @@ func (r *statesProof) fail(assertion, format string, args ...any) {
 
 // one-record: the tester records a pass of k1 and a fail of k2, and its `legion` tool completes
 // testing with the summary "Every check passes." and no verdict; the issue goes back to
-// implementing. In a second run, on an issue of its own, the tester records a pass of both checks
-// and completes the same way, and the issue goes to reviewing: the results in Dispatch decide,
-// whatever the completion's summary says.
+// implementing, and the implementer's task the move queued names k2 and not k1. In a second run,
+// on an issue of its own, the tester records a pass of both checks and completes the same way; the
+// issue goes to reviewing, its reviewer starts, and the implementer is given no task: the results
+// in Dispatch decide, whatever the completion's summary says. Each run reads back the results
+// Dispatch holds of its issue.
 func (r *statesProof) oneRecord() {
 	issues := r.issues["one-record"]
 	r.oneRecordRuns(issues[0], issues[1])
@@ -508,10 +540,12 @@ func (r *statesProof) oneRecord() {
 
 // oneRecordRuns makes the two runs of the case one-record, on failing and passing.
 func (r *statesProof) oneRecordRuns(failing, passing *statesIssue) {
-	r.testerRun(failing, []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "Every check passes.")
-	r.movesWithin(failing, phase.Implementing, "back-to-implementing")
-	r.testerRun(passing, []statesResult{{"k1", "pass"}, {"k2", "pass"}}, "Every check passes.")
-	r.movesWithin(passing, phase.Reviewing, "to-reviewing")
+	r.sentBack(failing, []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "back-to-implementing", "k2: no (fail)", "k1")
+	done := r.testerRun(passing, []statesResult{{"k1", "pass"}, {"k2", "pass"}}, "Every check passes.")
+	r.movesWithin(passing, phase.Reviewing, "to-reviewing", done, statesCompletion)
+	r.reviewerLaunched(passing, "to-reviewing", done, statesCompletion)
+	r.noImplementerTask(passing)
+	r.resultsHeld(passing)
 }
 
 // daemon-records-nothing: the two runs of the case one-record, on issues of its own; then no
@@ -560,9 +594,11 @@ func (r *statesProof) daemonRecordsNothing() {
 }
 
 // dispatch-tells: the tester records a fail of k1 with the real `dispatch` command, and within 10
-// seconds the daemon's log holds `workflow: a check state is held` for the issue, k1, the head, the
-// state no and the reason fail: Dispatch's event, which nothing but its outbox and the daemon's
-// consumer carry.
+// seconds of the start of that write, by the record's own time, the daemon's log holds `workflow:
+// a check state is held` for the issue, k1, the head, the state no and the reason fail: Dispatch's
+// event, which nothing but its outbox and the daemon's consumer carry. The tester has not
+// completed, so the issue stays in testing and the implementer is given no task; the case reads
+// both, and the results Dispatch holds of the issue.
 func (r *statesProof) dispatchTells() {
 	issue := r.issues["dispatch-tells"][0]
 	r.readyTester(issue)
@@ -572,8 +608,7 @@ func (r *statesProof) dispatchTells() {
 	sent := time.Now()
 	r.record(issue, issue.tester, "tester", statesResult{"k1", "fail"})
 	var line *loggedRecord
-	deadline := time.Now().Add(statesWithin)
-	for line == nil && time.Now().Before(deadline) {
+	for line == nil && time.Since(sent) < statesLate {
 		line = r.daemon.firstAfter(from, func(l loggedRecord) bool {
 			return l.Message == statesHeld && l.Attrs["issue"] == issue.key && l.Attrs["check"] == "k1" && l.Attrs["head"] == issue.head &&
 				l.Attrs["state"] == "no" && l.Attrs["reason"] == "fail"
@@ -581,57 +616,79 @@ func (r *statesProof) dispatchTells() {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if line == nil {
-		r.fail("line", "UNKNOWN: the daemon's log holds no %q line for %s, k1, %s, no, fail within %s of the result: Dispatch's event of that state did not reach it",
-			statesHeld, issue.key, issue.head, statesWithin)
+		r.fail("line", "UNKNOWN: the daemon's log holds no %q line for %s, k1, %s, no, fail within %s of %s: Dispatch's event of that state did not reach it",
+			statesHeld, issue.key, issue.head, statesLate, statesWrite)
 	}
-	r.note("daemon, %s after the result: %s issue=%v check=%v repo=%v head=%v state=%v reason=%v",
-		line.at.Sub(sent).Round(time.Millisecond), line.Message, line.Attrs["issue"], line.Attrs["check"], line.Attrs["repo"], line.Attrs["head"],
-		line.Attrs["state"], line.Attrs["reason"])
+	took := line.at.Sub(sent)
+	r.note("daemon, %s after %s (bound %s): %s issue=%v check=%v repo=%v head=%v state=%v reason=%v",
+		took.Round(time.Millisecond), statesWrite, statesWithin, line.Message, line.Attrs["issue"], line.Attrs["check"], line.Attrs["repo"],
+		line.Attrs["head"], line.Attrs["state"], line.Attrs["reason"])
+	if took > statesWithin {
+		r.fail("line-within", "the daemon logged %q for %s, k1, no, fail at %s, %s after %s, past the bound of %s",
+			statesHeld, issue.key, line.at.UTC().Format(time.RFC3339Nano), took.Round(time.Millisecond), statesWrite, statesWithin)
+	}
+	if got := r.phaseOf(issue, "phase"); got != phase.Testing {
+		r.fail("phase", "GET /legion/v1/state shows %s in %s after the daemon held k1's fail, want %s: its tester has not completed", issue.key, got, phase.Testing)
+	}
+	r.note("read back: GET /legion/v1/state shows %s in %s after the daemon held k1's fail: its tester has not completed", issue.key, phase.Testing)
+	r.noImplementerTask(issue)
+	r.resultsHeld(issue)
 }
 
 // pass-goes-to-review: the implementer and the tester record a pass of k1 and of k2, the tester's
-// `legion` tool completes testing with no verdict, and within 10 seconds the issue is in reviewing
-// and the daemon starts its reviewer.
+// `legion` tool completes testing with no verdict, and within 10 seconds of the completion the
+// issue is in reviewing and the daemon has started its reviewer. The implementer is given no task,
+// and Dispatch holds the four results.
 func (r *statesProof) passGoesToReview() {
 	issue := r.issues["pass-goes-to-review"][0]
 	r.readyTester(issue)
 	r.stageHead(issue)
 	implementer := "implementer-" + strings.ToLower(issue.key)
 	r.record(issue, implementer, "implementer", statesResult{"k1", "pass"}, statesResult{"k2", "pass"})
-	r.testerRun(issue, []statesResult{{"k1", "pass"}, {"k2", "pass"}}, "Every check passes.")
-	r.movesWithin(issue, phase.Reviewing, "reviewing")
-	r.reviewerStarted(issue)
+	done := r.testerRun(issue, []statesResult{{"k1", "pass"}, {"k2", "pass"}}, "Every check passes.")
+	r.movesWithin(issue, phase.Reviewing, "reviewing", done, statesCompletion)
+	r.reviewerStarted(issue, done, statesCompletion)
+	r.noImplementerTask(issue)
+	r.resultsHeld(issue)
 }
 
-// no-check: an issue whose Verification document holds no before_merge check, which Dispatch tells
-// as the set form, a head with no check; its tester completes with no verdict and no result, and
-// the issue goes to reviewing, its reviewer started.
+// no-check: an issue whose Verification document exists and holds no before_merge check (its one
+// check, k3, is after_merge), as Dispatch answers it. Its tester completes with no verdict and no
+// result. Within 10 seconds of the completion the issue is in reviewing and its reviewer started;
+// the implementer is given no task; Dispatch holds no result of the issue; and Dispatch published
+// the head's set with no check, computed from that document.
 func (r *statesProof) noCheck() {
 	issue := r.issues["no-check"][0]
-	r.testerRun(issue, nil, "No check to run: the Verification document holds no before_merge check.")
-	r.movesWithin(issue, phase.Reviewing, "reviewing")
-	r.reviewerStarted(issue)
+	document := r.noBeforeMergeCheck(issue)
+	done := r.testerRun(issue, nil, "No check to run: the Verification document holds no before_merge check.")
+	r.movesWithin(issue, phase.Reviewing, "reviewing", done, statesCompletion)
+	r.reviewerStarted(issue, done, statesCompletion)
+	r.noImplementerTask(issue)
+	r.resultsHeld(issue)
+	r.emptySet(issue, document)
 }
 
 // fail-sends-back: the tester records a pass of k1 and a fail of k2 and completes with no verdict;
 // the issue goes back to implementing, and the implementer's task, read from the daemon's store,
 // names k2, the state no and the reason fail, and does not name k1. On a second issue the tester
 // records a pass and a fail of k1 and a pass of k2, and the task names k1 with the reason
-// pass_and_fail, and not k2.
+// pass_and_fail, and not k2. Each run reads back the results Dispatch holds of its issue.
 func (r *statesProof) failSendsBack() {
 	issues := r.issues["fail-sends-back"]
-	r.sentBackNaming(issues[0], []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "k2: no (fail)", "k1")
-	r.sentBackNaming(issues[1], []statesResult{{"k1", "pass"}, {"k1", "fail"}, {"k2", "pass"}}, "k1: unknown (pass_and_fail)", "k2")
+	r.sentBack(issues[0], []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "implementing", "k2: no (fail)", "k1")
+	r.sentBack(issues[1], []statesResult{{"k1", "pass"}, {"k1", "fail"}, {"k2", "pass"}}, "implementing", "k1: unknown (pass_and_fail)", "k2")
 }
 
-// sentBackNaming makes one run of fail-sends-back: results, the completion, the move back within
-// 10 seconds, and the implementer's task naming named and not unnamed. The implementers' stand-in
-// holds every turn while the task is read, so the task is still the claim's pending delivery.
-func (r *statesProof) sentBackNaming(issue *statesIssue, results []statesResult, named, unnamed string) {
+// sentBack makes one run that sends issue back: the tester's results, its completion, the move
+// back to implementing within statesWithin of the completion (assertion names it), the
+// implementer's task naming named and not unnamed, and the results Dispatch holds of issue. The
+// implementers' stand-in holds every turn while the task is read, so the task is still the
+// claim's pending delivery.
+func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, assertion, named, unnamed string) {
 	r.implementer.holdTurn()
 	defer r.implementer.releaseTurn()
-	r.testerRun(issue, results, "Every check passes.")
-	r.movesWithin(issue, phase.Implementing, "implementing")
+	done := r.testerRun(issue, results, "Every check passes.")
+	r.movesWithin(issue, phase.Implementing, assertion, done, statesCompletion)
 	task := r.implementerTask(issue)
 	r.note("read back: the implementer's task in the daemon's store: %q", task)
 	if !strings.Contains(task, named) {
@@ -641,6 +698,7 @@ func (r *statesProof) sentBackNaming(issue *statesIssue, results []statesResult,
 		r.fail("task-names", "the implementer's task of %s names %s, which passes: %q", issue.key, unnamed, task)
 	}
 	r.note("the task names %q and not %s", named, unnamed)
+	r.resultsHeld(issue)
 }
 
 // completion-before-event: with the states from before the results held, the run's own
@@ -649,7 +707,8 @@ func (r *statesProof) sentBackNaming(issue *statesIssue, results []statesResult,
 // testing and the daemon starts no worker, and the architect is told once, in a phase-finished
 // notice, that the move waits for Dispatch's check states at the head. Then the broker is continued
 // (SIGCONT), Dispatch's outbox and the daemon's consumer deliver what waited, and the issue goes to
-// reviewing within 10 seconds.
+// reviewing within 10 seconds of the SIGCONT. Once its reviewer starts, the implementer has been
+// given no task, and Dispatch holds the tester's two results.
 func (r *statesProof) completionBeforeEvent() {
 	issue := r.issues["completion-before-event"][0]
 	r.readyTester(issue)
@@ -664,7 +723,7 @@ func (r *statesProof) completionBeforeEvent() {
 	r.complete(issue, "Every check passes.")
 	deadline := time.Now().Add(statesWithin)
 	for time.Now().Before(deadline) {
-		if got := r.issue(issue.key).Phase; got != phase.Testing {
+		if got := r.phaseOf(issue, "stays-testing"); got != phase.Testing {
 			r.fail("stays-testing", "%s moved to %s while Dispatch's events could not reach the daemon, on the states from before the tester's results", issue.key, got)
 		}
 		if now := len(r.rt.Launches()); now != launches {
@@ -685,8 +744,14 @@ func (r *statesProof) completionBeforeEvent() {
 	if !strings.Contains(reason, "the move waits for Dispatch's check states") || !strings.Contains(reason, issue.head) {
 		r.fail("notice", "the phase-finished notice says %q, which is not that the move waits for Dispatch's check states at %s", reason, issue.head)
 	}
-	r.continueBroker()
-	r.movesWithin(issue, phase.Reviewing, "moves-after")
+	continued := r.continueBroker()
+	if continued.IsZero() {
+		r.fail("broker", "the run's nats-server was not continued, so nothing can be measured from the SIGCONT")
+	}
+	r.movesWithin(issue, phase.Reviewing, "moves-after", continued, statesContinue)
+	r.reviewerLaunched(issue, "moves-after", continued, statesContinue)
+	r.noImplementerTask(issue)
+	r.resultsHeld(issue)
 }
 
 // ---- what a case drives and reads ----------------------------------------------------------------
@@ -698,13 +763,14 @@ type statesResult struct {
 
 // testerRun is one tester's run on issue: its pane ready, the issue's pull request staged in
 // Dispatch, each of results recorded as the tester's session, its test record written, and its
-// `legion` tool's completion of testing with summary and no verdict, which the tool must take.
-func (r *statesProof) testerRun(issue *statesIssue, results []statesResult, summary string) {
+// `legion` tool's completion of testing with summary and no verdict, which the tool must take. It
+// answers the moment complete answers, which a bound after the completion is measured from.
+func (r *statesProof) testerRun(issue *statesIssue, results []statesResult, summary string) time.Time {
 	r.readyTester(issue)
 	r.stageHead(issue)
 	r.record(issue, issue.tester, "tester", results...)
 	r.writeTestRecord(issue)
-	r.complete(issue, summary)
+	return r.complete(issue, summary)
 }
 
 // readyTester waits for issue's tester's pane, which the boot relaunched, to register, take the
@@ -796,7 +862,7 @@ func (r *statesProof) statesBefore(issue *statesIssue) {
 }
 
 // record records each of results on issue at its head with the real `dispatch result`, as session
-// in role, and reads each back from Dispatch's database.
+// in role, reads each back from Dispatch's database, and keeps it in issue.recorded.
 func (r *statesProof) record(issue *statesIssue, session, role string, results ...statesResult) {
 	r.t.Helper()
 	for _, result := range results {
@@ -810,12 +876,19 @@ func (r *statesProof) record(issue *statesIssue, session, role string, results .
 		if code != 0 || id == nil {
 			r.fail("result", "dispatch result %s %s of %s as %s exited %d: %s", result.verdict, result.check, issue.key, role, code, strings.TrimSpace(out))
 		}
-		stored := r.storedResults("check_results", id[1])
+		stored := r.storedResults("check_results", "id::text = $1", id[1])
 		if len(stored) != 1 {
 			r.fail("result", "UNKNOWN: Dispatch's check_results holds %d rows of the result %s the command reported", len(stored), id[1])
 		}
+		issue.recorded = append(issue.recorded, statesRecordedAs(role, result.check, result.verdict, issue.head))
 		r.note("dispatch result as %s session %s: %s; Dispatch stores %s", role, session, firstLine(strings.TrimSpace(out)), stored[0])
 	}
+}
+
+// statesRecordedAs is one result as resultsHeld compares what a case recorded with what Dispatch
+// holds: its role, check, verdict and commit.
+func statesRecordedAs(role, check, verdict, commit string) string {
+	return fmt.Sprintf("%s %s %s at %s", role, check, verdict, commit)
 }
 
 // statesResultID is the result id `dispatch result` prints: `Result <id>.`.
@@ -843,8 +916,11 @@ func (r *statesProof) writeTestRecord(issue *statesIssue) {
 
 // complete has the tester's pane complete testing through its real `legion` tool: an operator's
 // task (`legion claims deliver`) starts a turn the tester's stand-in answers with one call of
-// handoff_complete carrying summary and no verdict. The tool must take it.
-func (r *statesProof) complete(issue *statesIssue, summary string) {
+// handoff_complete carrying summary and no verdict. The tool must take it. It answers the moment
+// the turn that makes the call reached the tester's model, which comes before the tool's request
+// reaches the daemon: a bound measured from it is never shorter than one measured from the
+// completion itself.
+func (r *statesProof) complete(issue *statesIssue, summary string) time.Time {
 	r.t.Helper()
 	token := r.token(issue.key, claim.RoleTester)
 	r.until("completion", "the tester's pane to be between turns", time.Minute, func() bool {
@@ -858,8 +934,10 @@ func (r *statesProof) complete(issue *statesIssue, summary string) {
 	r.note("legion claims deliver --claim %s --task %q:\n%s", token, task,
 		indentOutput(r.legionClaims("deliver", "--claim", string(token), "--task", task)))
 	var result toolResult
+	var reached time.Time
 	select {
 	case <-call.reached:
+		reached = time.Now()
 	case <-time.After(2 * time.Minute):
 		r.fail("completion", "no turn of the tester's pane carried the task %q within two minutes; %s", task, r.tester.lastRequest())
 	}
@@ -872,47 +950,82 @@ func (r *statesProof) complete(issue *statesIssue, summary string) {
 	if line := r.daemon.firstAfter(from, func(l loggedRecord) bool {
 		return l.Message == lateCompletionAnswered && l.Attrs["claim"] == string(token)
 	}); line != nil {
-		r.note("daemon: %s", answeredLine(*line))
+		r.note("daemon, %s after the turn reached the model: %s", line.at.Sub(reached).Round(time.Millisecond), answeredLine(*line))
 	}
 	if result.isError {
 		r.fail("completion", "the tester's legion tool refused the completion of testing with no verdict: %s", result.text)
 	}
+	return reached
 }
 
-// movesWithin holds that issue reaches want within statesWithin of the tester's completion, read
-// from GET /legion/v1/state.
-func (r *statesProof) movesWithin(issue *statesIssue, want phase.Phase, assertion string) {
+// phaseOf is issue's phase as GET /legion/v1/state shows it now. An answer that holds no such issue
+// is UNKNOWN and fails the case at assertion: the daemon's phase of it cannot be read.
+func (r *statesProof) phaseOf(issue *statesIssue, assertion string) phase.Phase {
 	r.t.Helper()
-	started := time.Now()
-	deadline := started.Add(statesWithin)
-	got := r.issue(issue.key).Phase
-	for got != want && time.Now().Before(deadline) {
+	held, ok := r.d.state().Issues[issue.key]
+	if !ok {
+		r.fail(assertion, "UNKNOWN: GET /legion/v1/state holds no issue %s, so its phase cannot be read", issue.key)
+	}
+	return held.Phase
+}
+
+// movesWithin holds that GET /legion/v1/state shows issue in want within statesWithin of from, the
+// moment of trigger, the operation that moves it. It fails at assertion at once when the issue
+// leaves testing for another phase, and when it is still in testing statesLate after from. An
+// issue that reaches want later than the bound fails at `<assertion>-within`, naming how late.
+func (r *statesProof) movesWithin(issue *statesIssue, want phase.Phase, assertion string, from time.Time, trigger string) {
+	r.t.Helper()
+	got := r.phaseOf(issue, assertion)
+	for got == phase.Testing && time.Since(from) < statesLate {
 		time.Sleep(100 * time.Millisecond)
-		got = r.issue(issue.key).Phase
+		got = r.phaseOf(issue, assertion)
 	}
+	seen := time.Since(from).Round(time.Millisecond)
 	if got != want {
-		r.fail(assertion, "GET /legion/v1/state shows %s in %s %s after it was asked, want %s", issue.key, got, statesWithin, want)
+		r.fail(assertion, "GET /legion/v1/state shows %s in %s %s after %s, want %s", issue.key, got, seen, trigger, want)
 	}
-	r.note("read back: GET /legion/v1/state shows %s in %s, %s after the read began", issue.key, got, time.Since(started).Round(time.Millisecond))
+	if seen > statesWithin {
+		r.fail(assertion+"-within", "GET /legion/v1/state shows %s in %s only %s after %s, past the bound of %s", issue.key, want, seen, trigger, statesWithin)
+	}
+	r.note("read back: GET /legion/v1/state shows %s in %s %s after %s (bound %s)", issue.key, got, seen, trigger, statesWithin)
 	for _, state := range r.publishedStates(issue) {
 		r.note("  Dispatch's published state: %s", state)
 	}
 }
 
-// reviewerStarted holds that the daemon started issue's reviewer: its claim is held and the runtime
-// was asked to launch its pane.
-func (r *statesProof) reviewerStarted(issue *statesIssue) {
+// reviewerLaunched waits, until statesLate has passed from from, the moment of trigger, for the
+// daemon to start issue's reviewer: to hold its claim and to have asked the runtime to launch its
+// pane. It answers how long after from it saw both, and fails the case at assertion when the
+// reviewer has not started by then.
+func (r *statesProof) reviewerLaunched(issue *statesIssue, assertion string, from time.Time, trigger string) time.Duration {
 	r.t.Helper()
 	reviewer := r.token(issue.key, claim.RoleReviewer)
-	deadline := time.Now().Add(2 * time.Minute)
-	for len(r.rt.LaunchesOf(reviewer)) == 0 && time.Now().Before(deadline) {
+	started := func() bool {
+		return len(r.rt.LaunchesOf(reviewer)) > 0 && slices.ContainsFunc(r.d.claims(), func(c api.OperatorClaim) bool { return c.Token == reviewer })
+	}
+	held := started()
+	for !held && time.Since(from) < statesLate {
 		time.Sleep(100 * time.Millisecond)
+		held = started()
 	}
+	seen := time.Since(from).Round(time.Millisecond)
 	launches := r.rt.LaunchesOf(reviewer)
-	if len(launches) == 0 || !slices.ContainsFunc(r.d.claims(), func(c api.OperatorClaim) bool { return c.Token == reviewer }) {
-		r.fail("reviewer-started", "the daemon did not start %s within two minutes of the move: %d launches", reviewer, len(launches))
+	if !held {
+		r.fail(assertion, "the daemon did not start %s within %s of %s: %d launches of its pane", reviewer, statesLate, trigger, len(launches))
 	}
-	r.note("read back: the daemon started the reviewer %s (%d launches of its pane, generation %d)", reviewer, len(launches), launches[len(launches)-1].Generation)
+	r.note("read back: the daemon started the reviewer %s %s after %s (%d launches of its pane, generation %d)",
+		reviewer, seen, trigger, len(launches), launches[len(launches)-1].Generation)
+	return seen
+}
+
+// reviewerStarted holds that the daemon starts issue's reviewer within statesWithin of from, the
+// moment of trigger; a reviewer that starts later fails at reviewer-started-within.
+func (r *statesProof) reviewerStarted(issue *statesIssue, from time.Time, trigger string) {
+	r.t.Helper()
+	if seen := r.reviewerLaunched(issue, "reviewer-started", from, trigger); seen > statesWithin {
+		r.fail("reviewer-started-within", "the daemon started %s only %s after %s, past the bound of %s",
+			r.token(issue.key, claim.RoleReviewer), seen, trigger, statesWithin)
+	}
 }
 
 // implementerTask is the task the daemon queued for issue's implementer when the move sent the
@@ -937,6 +1050,99 @@ func (r *statesProof) implementerTask(issue *statesIssue) string {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// noImplementerTask holds that the daemon gave issue's implementer nothing: its store holds no
+// pending task of the implementer's claim, and the runtime was never asked to launch the
+// implementer's pane, which a task taken already would have needed.
+func (r *statesProof) noImplementerTask(issue *statesIssue) {
+	r.t.Helper()
+	token := r.token(issue.key, claim.RoleImplementer)
+	var task string
+	err := r.st.Pool().QueryRow(context.Background(),
+		`select task from pending_task_deliveries where claim_token = $1`, string(token)).Scan(&task)
+	switch {
+	case err == nil:
+		r.fail("no-task", "the daemon's store holds a pending task of %s, whose issue did not go back: %q", token, task)
+	case !errors.Is(err, pgx.ErrNoRows):
+		r.fail("no-task", "read the pending task of %s from the daemon's store: %v", token, err)
+	}
+	if launches := r.rt.LaunchesOf(token); len(launches) > 0 {
+		r.fail("no-task", "the daemon launched the pane of %s %d times, whose issue did not go back", token, len(launches))
+	}
+	r.note("read back: the daemon's store holds no pending task of %s, and the runtime never launched its pane", token)
+}
+
+// resultsHeld reads every result Dispatch's database holds of issue, in check_results and
+// ci_check_results, and holds that they are exactly the results the case recorded on it, each by
+// the role that recorded it at the issue's head. An issue the case recorded nothing on must hold
+// none, and the case says so.
+func (r *statesProof) resultsHeld(issue *statesIssue) {
+	r.t.Helper()
+	var held []string
+	for _, table := range []string{"check_results", "ci_check_results"} {
+		for _, stored := range r.storedResults(table, "issue_key = $1", issue.key) {
+			held = append(held, statesRecordedAs(stored.role, stored.check, stored.verdict, stored.commit))
+		}
+	}
+	want := slices.Clone(issue.recorded)
+	slices.Sort(held)
+	slices.Sort(want)
+	if !slices.Equal(held, want) {
+		r.fail("results", "Dispatch's check_results and ci_check_results hold %q of %s, and the case recorded %q", held, issue.key, want)
+	}
+	if len(held) == 0 {
+		r.note("read back: Dispatch's check_results and ci_check_results hold no result of %s, and the case recorded none", issue.key)
+		return
+	}
+	r.note("read back: Dispatch's check_results and ci_check_results hold of %s exactly the %d results the case recorded: %s", issue.key, len(held), strings.Join(held, "; "))
+}
+
+// noBeforeMergeCheck reads issue's checks as Dispatch answers them (GET /api/v1/issues/<key>/results)
+// once it has indexed the document's blocks, and holds that the issue has a Verification document
+// whose checks hold no before_merge one. It answers that document's id.
+func (r *statesProof) noBeforeMergeCheck(issue *statesIssue) string {
+	r.t.Helper()
+	type answer struct {
+		VerificationArtifactID string `json:"verification_artifact_id"`
+		Checks                 []struct {
+			BlockID string `json:"block_id"`
+			When    string `json:"when"`
+		} `json:"checks"`
+	}
+	var read answer
+	for deadline := time.Now().Add(statesLate); ; time.Sleep(100 * time.Millisecond) {
+		read = answer{}
+		r.dispatch.agentGet("/api/v1/issues/"+issue.key+"/results", &read)
+		if len(read.Checks) > 0 || time.Now().After(deadline) {
+			break
+		}
+	}
+	if read.VerificationArtifactID == "" || len(read.Checks) == 0 {
+		r.fail("document", "UNKNOWN: Dispatch answers %s with the Verification document %q and %d checks %s after the case asked, so it cannot be read as a document that holds checks, none before_merge",
+			issue.key, read.VerificationArtifactID, len(read.Checks), statesLate)
+	}
+	var checks []string
+	for _, check := range read.Checks {
+		if check.When == "before_merge" {
+			r.fail("document", "Dispatch answers %s's check %s as before_merge: the case's document must hold none", issue.key, check.BlockID)
+		}
+		checks = append(checks, check.BlockID+" "+check.When)
+	}
+	r.note("read back: Dispatch answers %s's Verification document %s with the checks [%s], none before_merge", issue.key, read.VerificationArtifactID, strings.Join(checks, ", "))
+	return read.VerificationArtifactID
+}
+
+// emptySet holds that Dispatch's check_states holds of issue only the set row at its head, with no
+// check, computed from the Verification document document: the published state of a head whose
+// issue has a document with no before_merge check, and not of an issue with no document.
+func (r *statesProof) emptySet(issue *statesIssue, document string) {
+	r.t.Helper()
+	published := r.publishedStates(issue)
+	if len(published) != 1 || published[0].check != "" || published[0].head != issue.head || len(published[0].checks) != 0 || published[0].document != document {
+		r.fail("empty-set", "Dispatch's check_states holds %v of %s, want only the set at %s with no check, from the Verification document %s", published, issue.key, issue.head, document)
+	}
+	r.note("read back: Dispatch's check_states holds of %s only the set at %s, with no check, computed from the Verification document %s", issue.key, issue.head, document)
 }
 
 // issueClaims is the tokens of every claim the daemon holds of issue, sorted.
@@ -988,8 +1194,9 @@ func (s statesStored) String() string {
 	return fmt.Sprintf("%s: %s %s of %s at %s as %s by %s %s (session %q)", s.id, s.check, s.verdict, s.issue, s.commit, s.role, s.actorKind, s.actorID, s.session)
 }
 
-// storedResults is every row of table in Dispatch's database, or the one whose id is id.
-func (r *statesProof) storedResults(table, id string) []statesStored {
+// storedResults is every row of table in Dispatch's database, or of those where holds: a condition
+// on the table's own columns, with args.
+func (r *statesProof) storedResults(table, where string, args ...any) []statesStored {
 	r.t.Helper()
 	var query string
 	switch table {
@@ -1000,10 +1207,8 @@ func (r *statesProof) storedResults(table, id string) []statesStored {
 	default:
 		query = `select result_id::text, '', '', '', '', '', session, actor->>'kind', actor->>'id' from ` + table
 	}
-	args := []any{}
-	if id != "" {
-		query += ` where id::text = $1`
-		args = append(args, id)
+	if where != "" {
+		query += ` where ` + where
 	}
 	rows, err := r.dispatchDB.Query(context.Background(), query+` order by 1`, args...)
 	if err != nil {
@@ -1031,29 +1236,39 @@ func (r *statesProof) storedResults(table, id string) []statesStored {
 	return stored
 }
 
+// statesPublished is one row of Dispatch's check_states: the newest state Dispatch published of a
+// check at a head, or, where check is empty, the head's set of checks. document is the
+// Verification document the row was computed from, empty where the issue had none.
+type statesPublished struct {
+	check, head, state, reason, document string
+	checks                               []string
+}
+
+func (p statesPublished) String() string {
+	if p.check == "" {
+		return fmt.Sprintf("the set at %s: [%s] (document %q)", p.head, strings.Join(p.checks, ","), p.document)
+	}
+	return fmt.Sprintf("%s at %s: %s (%s)", p.check, p.head, p.state, p.reason)
+}
+
 // publishedStates is each state Dispatch has published of issue's checks, as its check_states
-// table holds the newest: a check, its head, its state and its reason, and the set row as the
-// head's checks.
-func (r *statesProof) publishedStates(issue *statesIssue) []string {
+// table holds the newest, and the set row of each head.
+func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
 	r.t.Helper()
 	rows, err := r.dispatchDB.Query(context.Background(), `
-		select check_block_id, head_sha, coalesce(state, ''), reason, array_to_string(checks, ',')
+		select check_block_id, head_sha, coalesce(state, ''), reason, coalesce(check_artifact_id::text, ''), checks
 		from check_states where issue_key = $1 order by head_sha, check_block_id`, issue.key)
 	if err != nil {
 		r.fail("published-states", "read Dispatch's check_states of %s: %v", issue.key, err)
 	}
 	defer rows.Close()
-	var states []string
+	var states []statesPublished
 	for rows.Next() {
-		var check, head, state, reason, checks string
-		if err := rows.Scan(&check, &head, &state, &reason, &checks); err != nil {
+		var state statesPublished
+		if err := rows.Scan(&state.check, &state.head, &state.state, &state.reason, &state.document, &state.checks); err != nil {
 			r.fail("published-states", "read a state of %s: %v", issue.key, err)
 		}
-		if check == "" {
-			states = append(states, fmt.Sprintf("the set at %s: [%s]", head, checks))
-			continue
-		}
-		states = append(states, fmt.Sprintf("%s at %s: %s (%s)", check, head, state, reason))
+		states = append(states, state)
 	}
 	if err := rows.Err(); err != nil {
 		r.fail("published-states", "read Dispatch's check_states of %s: %v", issue.key, err)
@@ -1152,18 +1367,22 @@ func (r *statesProof) stopBroker() {
 	r.note("stopped the run's nats-server (pid %d, %s) with SIGSTOP: its state reads %s", pid, why, state)
 }
 
-// continueBroker sends SIGCONT to the broker stopBroker stopped, once.
-func (r *statesProof) continueBroker() {
+// continueBroker sends SIGCONT to the broker stopBroker stopped, once, and answers the moment just
+// before it sent it, which the move after the broker comes back is measured from; the zero time
+// when no broker was stopped or the signal failed.
+func (r *statesProof) continueBroker() time.Time {
 	if r.stopped == 0 {
-		return
+		return time.Time{}
 	}
 	pid := r.stopped
 	r.stopped = 0
+	sent := time.Now()
 	if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
 		r.t.Errorf("SIGCONT the run's nats-server (pid %d): %v", pid, err)
-		return
+		return time.Time{}
 	}
 	r.note("continued the run's nats-server (pid %d) with SIGCONT: its state reads %s", pid, processState(pid))
+	return sent
 }
 
 // statesBroker is the pid statesBrokerPIDEnv names when it is a nats-server listening on the port

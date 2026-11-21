@@ -13,28 +13,34 @@
 # The cases, each on issues of its own, chosen with CHECK_STATES_E2E_CASES (a comma- or
 # space-separated list; every case when it is unset or empty), in this order:
 #   - one-record: the tester records a pass of k1 and a fail of k2 and completes with the summary
-#     "Every check passes."; the issue goes back to implementing. A second run, its passes of both,
-#     goes to reviewing;
+#     "Every check passes."; the issue goes back to implementing, the implementer's task naming k2.
+#     A second run, its passes of both, goes to reviewing and gives the implementer no task;
 #   - daemon-records-nothing: the two runs of one-record, then every request of Dispatch's access log
 #     that records or retracts a result, and every row of check_results, ci_check_results and their
 #     retraction tables, names a tester's or an implementer's session of the run, and never the
 #     daemon's;
 #   - dispatch-tells: the tester's fail of k1 puts `workflow: a check state is held` for the issue,
-#     k1, the head, no and fail in the daemon's log within 10 seconds;
+#     k1, the head, no and fail in the daemon's log within 10 seconds of the write, by the record's
+#     own time; the issue stays in testing and the implementer is given no task;
 #   - pass-goes-to-review: the implementer's and the tester's passes of k1 and k2; within 10 seconds
-#     GET /legion/v1/state shows the issue in reviewing, and the daemon starts the reviewer;
-#   - no-check: an issue whose Verification document holds no before_merge check goes to reviewing
-#     when its tester completes;
+#     of the completion GET /legion/v1/state shows the issue in reviewing and the daemon has started
+#     the reviewer;
+#   - no-check: an issue whose Verification document holds one check, after_merge, and so no
+#     before_merge check, goes to reviewing within 10 seconds when its tester completes, and Dispatch
+#     holds no result of it and publishes its head's set with no check;
 #   - fail-sends-back: a pass of k1 and a fail of k2 send the issue back, the implementer's task (read
 #     from the daemon's store) naming k2, no and fail and not k1; on a second issue a pass and a fail
 #     of k1 name k1 with the reason pass_and_fail;
 #   - completion-before-event: the run's own nats-server stopped with SIGSTOP by the pid this run
 #     started it with, the tester records its passes, writes its test record and completes; for 10
 #     seconds the issue stays in testing, the daemon starts no worker, and the architect is told once
-#     that the move waits for Dispatch's check states at the head; after SIGCONT the issue goes to
-#     reviewing within 10 seconds.
-# Each case prints `== <case>`, what it drove and read and `ok <case>`; the first that fails ends the
-# run non-zero, its line naming the case and the assertion (`FAIL <case> at <assertion>: ...`). A read
+#     that the move waits for Dispatch's check states at the head; within 10 seconds of the SIGCONT
+#     the issue goes to reviewing.
+# Every case also reads the results Dispatch's database holds of each of its issues. Each 10-second
+# bound is measured from the operation that triggers the answer (the result's write, the tester's
+# completion, the SIGCONT), and an answer that comes later fails at `<assertion>-within`. Each case
+# prints `== <case>`, what it drove and read and `ok <case>`; the first that fails ends the run
+# non-zero, its line naming the case and the assertion (`FAIL <case> at <assertion>: ...`). A read
 # that finds nothing it could judge says UNKNOWN and what it could not read, and its case fails.
 #
 # Run it from a checkout on a Linux host with go, awk, bash, tar, bun, jj, git and python3, as

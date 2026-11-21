@@ -5114,20 +5114,27 @@ The tester's pane takes that task and ends the turn with a line starting `WAITIN
 A case then gives that pane an operator's task (`legion claims deliver`).
 The pane's model stand-in answers that task's turn with one `tool_use` block that calls the `legion` tool's `handoff_complete` with a summary and no verdict (`late_completion_live_test.go`'s `completionStandin`).
 So the completion the daemon answers is the request the shipped plugin builds.
-Each case reads:
-- the daemon's phase from `GET /legion/v1/state`;
-- the implementer's task from the claim's pending delivery in the daemon's store, which the implementers' stand-in keeps pending by holding the turn;
-- the results, retractions and published states from Dispatch's own database.
+Each bound of 10 s is measured from the operation that triggers the answer, never from the read that sees it:
+- after a result, from the start of its `dispatch result` command, against the daemon's own time of the matching log record;
+- after the tester's completion, from the moment the turn that completes reached the tester's model, which comes before the tool's request reaches the daemon;
+- after the broker comes back, from the `SIGCONT`.
+A case reads on for a minute past its bound, so an answer that comes late fails at `<assertion>-within` and says how late it came, apart from an answer that never comes.
+A case reads three things:
+- the daemon's phase from `GET /legion/v1/state`, where an answer that holds no such issue is `UNKNOWN`;
+- the implementer's task in the daemon's store: where the issue goes back, the claim's pending delivery, which the implementers' stand-in keeps pending by holding the turn; where it does not, that the store holds no pending task of the implementer and the runtime never launched the implementer's pane;
+- every row of `check_results` and `ci_check_results` of the issue in Dispatch's own database, which must be exactly the results the case recorded, each by its role at the head.
 
 | case | driven by | read back as |
 | :--- | :--- | :--- |
-| `one-record` | the tester's pass of k1 and fail of k2 at the head, its test record, and its completion with the summary `Every check passes.`; then the same with passes of both, on an issue of its own | the first issue in `implementing` and the second in `reviewing`, each within 10 s of the completion |
-| `daemon-records-nothing` | the two runs of `one-record`, on issues of their own | every request of Dispatch's access log that records or retracts a result names a tester's or an implementer's session of the run, and every row of `check_results`, `ci_check_results` and their retraction tables is written under such a session, never the daemon's `legion-daemon:<PROJECT>` |
-| `dispatch-tells` | the tester's fail of k1 at the head | within 10 s the daemon's log holds `workflow: a check state is held` for the issue, k1, the head, `no` and `fail` |
-| `pass-goes-to-review` | the implementer's and the tester's passes of k1 and k2, the test record and the completion | the issue in `reviewing` within 10 s, and its reviewer started |
-| `no-check` | an issue with no Verification document, which Dispatch tells as a head with no check (the set form); the test record and the completion, with no result | the issue in `reviewing` within 10 s, and its reviewer started |
-| `fail-sends-back` | the tester's pass of k1 and fail of k2; then, on a second issue, a pass and a fail of k1 and a pass of k2 | each issue in `implementing` within 10 s; the first task names `k2: no (fail)` and no k1, the second `k1: unknown (pass_and_fail)` and no k2 |
-| `completion-before-event` | with the states from before the results held by the daemon, the run's `nats-server` stopped (`SIGSTOP`, by the pid the run started it with, which must be a `nats-server` holding the socket on the run's port); the tester's passes, test record and completion; after 10 s, `SIGCONT` | for 10 s the issue stays in `testing` and the daemon starts no worker; the architect has one `phase-finished` notice saying the move waits for Dispatch's check states at the head; within 10 s of `SIGCONT` the issue is in `reviewing` |
+| `one-record` | the tester's pass of k1 and fail of k2 at the head, its test record, and its completion with the summary `Every check passes.`; then the same with passes of both, on an issue of its own | the first issue in `implementing` within 10 s of the completion, its implementer's task naming `k2: no (fail)` and no k1, and its two results; the second issue in `reviewing` within 10 s of the completion, its reviewer started, no task of its implementer, and its two results |
+| `daemon-records-nothing` | the two runs of `one-record`, on issues of their own | each read of `one-record`; then every request of Dispatch's access log that records or retracts a result names a tester's or an implementer's session of the run, and every row of `check_results`, `ci_check_results`, `check_result_retractions` and `ci_check_result_retractions` is written under such a session, never the daemon's `legion-daemon:<PROJECT>` |
+| `dispatch-tells` | the tester's fail of k1 at the head, once the daemon holds the first state of k1 and of k2 there (`no` for `no_result`) | the daemon's log record `workflow: a check state is held` for the issue, k1, the head, `no` and `fail`, its own time within 10 s of the start of the write; then the issue still in `testing`, since its tester has not completed, no task of its implementer, and the one result |
+| `pass-goes-to-review` | the implementer's and the tester's passes of k1 and k2, the test record and the completion | the issue in `reviewing` and its reviewer started, each within 10 s of the completion; no task of its implementer; the four results |
+| `no-check` | an issue whose Verification document holds one check, k3, which is `after_merge`, and so no `before_merge` check; the test record and the completion, with no result | Dispatch's answer of the issue's checks (`GET /api/v1/issues/<key>/results`): a Verification document whose checks hold no `before_merge` one; the issue in `reviewing` and its reviewer started, each within 10 s of the completion; no task of its implementer; no row of the issue in `check_results` or `ci_check_results`; and in Dispatch's `check_states` only the head's set row, with no check, computed from that Verification document |
+| `fail-sends-back` | the tester's pass of k1 and fail of k2; then, on a second issue, a pass and a fail of k1 and a pass of k2 | each issue in `implementing` within 10 s of the completion; the first task names `k2: no (fail)` and no k1, the second `k1: unknown (pass_and_fail)` and no k2; each issue's results |
+| `completion-before-event` | with the states from before the results held by the daemon, the run's `nats-server` stopped (`SIGSTOP`, by the pid the run started it with, which must be a `nats-server` holding the socket on the run's port); the tester's passes, test record and completion; after 10 s, `SIGCONT` | for 10 s the issue stays in `testing` and the daemon starts no worker; the architect has one `phase-finished` notice saying the move waits for Dispatch's check states at the head; the issue in `reviewing` within 10 s of the `SIGCONT`; once its reviewer starts, no task of its implementer; the two results |
+
+Every move a case reads also prints the states Dispatch published of the issue (`check_states`).
 
 A watchdog continues the stopped broker after a minute, whatever happens to the driver: the cleanup of `lib/live-daemon-proof.sh` sends the broker `TERM` and waits for it.
 What the proof stands in for lies outside the move:
