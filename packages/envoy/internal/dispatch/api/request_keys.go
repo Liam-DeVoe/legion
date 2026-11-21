@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -384,8 +385,8 @@ var keyedUploads = map[string]bool{
 
 // renewRequestKeyLease renews claim's lease every keyedLeaseRenewal on the server's clock until
 // the returned stop is called or run - the handler's own context, which keyedHandlerLimit bounds -
-// ends, and stops by itself once a renewal finds the key no longer its own. The renewals keep a
-// fixed rate, as a ticker's ticks do: each is due a whole number of keyedLeaseRenewal after the
+// ends, and stops by itself once a renewal finds the key no longer its own. The renewals tick on a
+// clock.Ticker, at a fixed rate: each is due a whole number of keyedLeaseRenewal after the
 // handler began, whatever the renewal before it took, and one that took longer than
 // keyedLeaseRenewal is followed at once, so two renewals that each run out of keyedBookkeeping
 // still leave the third due inside the lease. A handler that runs on past its limit, ignoring its
@@ -397,27 +398,21 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 	stopped, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
-		due := s.clock.Now().Add(keyedLeaseRenewal)
-		renewal := s.clock.NewTimer(keyedLeaseRenewal)
-		defer renewal.Stop()
+		renewals := clock.NewTicker(s.clock, keyedLeaseRenewal, false)
+		defer renewals.Stop()
 		for {
 			select {
 			case <-stopped:
 				return
 			case <-run.Done():
 				return
-			case <-renewal.C():
-				// The renewal after this one is due at the first grid moment past this one's
-				// receipt: the grid moments a renewal overran are dropped, as a ticker's channel
-				// drops the ticks that fall while its receiver is busy.
-				received := s.clock.Now()
-				for due = due.Add(keyedLeaseRenewal); !due.After(received); due = due.Add(keyedLeaseRenewal) {
-				}
+			case <-renewals.C():
+				renewals.Took()
 				// A renewal due together with the run's bound is the bound's: the run has ended.
 				if run.Err() != nil || !s.renewRequestKey(claim) {
 					return
 				}
-				renewal.Reset(due.Sub(s.clock.Now()))
+				renewals.Next()
 			}
 		}
 	}()

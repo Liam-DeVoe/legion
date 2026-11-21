@@ -113,10 +113,11 @@ func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
 // keepClaims writes the claims of the sends waiting on the lanes again every claimRefresh
 // (mentionClaimRefresh), on the clock newMentionSender was given for it, until the lifetime ends
 // or wait runs. Nothing is written again after that, which is what hands a stopped process's
-// queue to the delivery sweep a lease later.
+// queue to the delivery sweep a lease later. The refreshes tick on a clock.Ticker, which arms the
+// next refresh once the one before it has returned.
 func (m *mentionSender) keepClaims(on clock.Clock) {
 	defer m.done.Done()
-	refresh := newClockTicker(on, m.claimRefresh)
+	refresh := clock.NewTicker(on, m.claimRefresh, false)
 	defer refresh.Stop()
 	for {
 		select {
@@ -126,9 +127,9 @@ func (m *mentionSender) keepClaims(on clock.Clock) {
 			return
 		case <-refresh.C():
 		}
-		taken := on.Now()
+		refresh.Took()
 		m.refreshHeldClaims(m.ctx)
-		refresh.next(taken)
+		refresh.Next()
 	}
 }
 

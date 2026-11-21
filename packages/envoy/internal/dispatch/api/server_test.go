@@ -139,9 +139,10 @@ type testServerOptions struct {
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
-	// liveSocketClock is the server's Deps.LiveSocketClock, which a live socket's pong deadline and
-	// its wait for the page's close frame run on: nil is clock.Real(), and a test whose sockets
-	// must not end on a late pong passes clocktest.Held(), or a fake it moves to each deadline.
+	// liveSocketClock is the server's Deps.LiveSocketClock, which a live socket's pong deadline, its
+	// wait for the page's close frame and its drain of a frame past the read limit run on: nil is
+	// clock.Real(), and a test whose sockets must not end on a late pong passes clocktest.Held(), or
+	// a fake it moves to each deadline.
 	liveSocketClock clock.Clock
 	// liveSocketPingClock is the server's Deps.LiveSocketPingClock, which a live socket's pings
 	// and heartbeat frames run on: nil is clock.Real(), and a test that counts the pings passes a

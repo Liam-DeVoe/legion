@@ -19,6 +19,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -341,8 +342,9 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 				testHookTimeout, joinKeys(missing)))
 	}
 	// The poll of the held locks runs on the server's clock, as the call's timeout does, so a test
-	// that drives a fake decides when each poll runs and sees the next armed once it has returned.
-	poll := newClockTicker(f.server.clock, testHookPoll)
+	// that drives a fake decides when each poll runs and sees the next armed once it has returned
+	// (clock.Ticker).
+	poll := clock.NewTicker(f.server.clock, testHookPoll, false)
 	defer poll.Stop()
 	for {
 		f.mu.Lock()
@@ -367,7 +369,7 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 		select {
 		case <-wait.arrived:
 		case <-poll.C():
-			taken := f.server.clock.Now()
+			poll.Took()
 			held, err := f.heldKeys(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -376,7 +378,7 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 				return f.unanswered(ctx, err, "the processes holding a test-hook lock could not be read")
 			}
 			awaited = slices.DeleteFunc(awaited, func(key int32) bool { return !slices.Contains(held, key) })
-			poll.next(taken)
+			poll.Next()
 		case <-ctx.Done():
 			return timedOut(missing)
 		}

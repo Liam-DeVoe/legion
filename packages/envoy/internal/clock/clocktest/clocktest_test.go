@@ -61,7 +61,9 @@ func TestAdvanceFiresTimersInDeadlineOrder(t *testing.T) {
 // A timer armed for a moment the fake has reached fires as it is armed, as the real clock's does,
 // and is never pending: an AfterFunc's function starts on a goroutine the arming call does not wait
 // for, a channel timer's value is there at once, a Sleep returns at once and a deadline context is
-// ended before it is returned. The fake does not move for any of them.
+// ended before it is returned. The fake does not move for any of them. A channel timer armed for a
+// moment already past sends the moment it was armed, as Go's does, which arms a wait of zero or
+// less for the moment it is armed (time.when), and not the past moment it was asked for.
 func TestATimerDueAtItsArmFiresAsItIsArmed(t *testing.T) {
 	c := clocktest.New(epoch)
 	release, ran := make(chan struct{}), make(chan struct{})
@@ -83,8 +85,8 @@ func TestATimerDueAtItsArmFiresAsItIsArmed(t *testing.T) {
 	if channel.Reset(-time.Second) {
 		t.Error("Reset of a fired timer reported it armed")
 	}
-	if got := testwait.Receive(t, "the send of the timer reset to an overdue moment", channel.C()); !got.Equal(epoch.Add(-time.Second)) {
-		t.Errorf("the timer reset to an overdue moment sent %s, want %s", got, epoch.Add(-time.Second))
+	if got := testwait.Receive(t, "the send of the timer reset to an overdue moment", channel.C()); !got.Equal(epoch) {
+		t.Errorf("the timer reset to a second ago sent %s, want the moment it was armed, %s, as Go's sends", got, epoch)
 	}
 	if err := c.Sleep(testwait.Context(t), 0); err != nil {
 		t.Errorf("a Sleep of no wait returned %v, want nil at once", err)

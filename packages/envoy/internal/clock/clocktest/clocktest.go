@@ -21,9 +21,11 @@
 // A timer armed for a moment the fake has already reached, a wait of zero or less, fires as it is
 // armed, as the real clock's does, and is never pending: an AfterFunc's function starts on a
 // goroutine of its own that the arming call does not wait for, a channel timer's send is made at
-// once, a Sleep returns at once and a deadline context is ended before it is returned. That holds
-// for a timer a function armed while a move fires it too, so the move does not wait for such a
-// timer's function.
+// once, a Sleep returns at once and a deadline context is ended before it is returned. Such a
+// channel timer sends the moment it was armed, the fake's present, and not the moment it was
+// armed for, as Go's does: Go arms a wait of zero or less for the moment it is armed (time.when).
+// That holds for a timer a function armed while a move fires it too, so the move does not wait
+// for such a timer's function.
 //
 // # What is armed
 //
@@ -100,14 +102,15 @@ func (c *Fake) Now() time.Time {
 // stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the wall clock
 // does. What a channel timer sends carries the steps, as what Go's sends does: Go sends the moment
 // a timer fell due read on the wall clock as it sends (time.sendTime, Now less the lateness), so a
-// channel timer here sends its deadline plus every step made. A fake that never steps is a fake
-// whose Now is its moment, and whose channel timers send their deadlines.
+// channel timer here sends its deadline plus every step made; one armed for a moment the fake has
+// already reached sends the moment it was armed plus every step. A fake that never steps is a fake
+// whose Now is its moment, and whose channel timers send their deadlines, or their arm moments.
 //
 // What the fake cannot model: a Go time.Time that time.Now returns carries a monotonic reading
 // beside its wall one, and Go compares and subtracts two such times by the monotonic one, so code
 // that compares or subtracts its own readings of the clock never sees a step of the wall. A time
 // from the fake has one reading, so after a step such code sees it. A loop whose grid compares its
-// own readings of Now (duty.RunLeasedOn) shifts that grid by a step on the fake, where production's
+// own readings of Now (clock.Ticker) shifts that grid by a step on the fake, where production's
 // grid does not move.
 func (c *Fake) StepWall(d time.Duration) {
 	c.mu.Lock()
@@ -307,9 +310,10 @@ func (c *Fake) arm(t *timer, due func(now time.Time) time.Time) {
 }
 
 // placeLocked arms t for at, or, when the fake has already reached at, fires it at once as the real
-// clock fires a wait of zero or less: a channel timer's send is made here, under the lock, and the
-// function it answers, which the caller runs once it has let the lock go, starts an AfterFunc's
-// function on a goroutine of its own, not waited for, or ends a deadline context.
+// clock fires a wait of zero or less: a channel timer's send, of the fake's present plus the steps,
+// the moment it was armed, is made here, under the lock, and the function it answers, which the
+// caller runs once it has let the lock go, starts an AfterFunc's function on a goroutine of its
+// own, not waited for, or ends a deadline context.
 func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	c.arms++
 	t.at, t.seq = at, c.arms
@@ -322,7 +326,7 @@ func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	switch {
 	case t.c != nil:
 		select {
-		case t.c <- at.Add(c.stepped):
+		case t.c <- c.nowLocked().Add(c.stepped):
 		default:
 		}
 		return func() {}

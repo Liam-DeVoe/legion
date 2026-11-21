@@ -1051,11 +1051,13 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	})
 	answering.read()
 
-	// The writer arms its first heartbeat as it starts, each later one as it takes the one before.
+	// The writer arms its first heartbeat as it starts, and each later one once the one before it
+	// is written (clock.Ticker), so the row moves on only once the next heartbeat is armed too.
 	awaitArmedAt(t, deadlines, "the socket's first heartbeat", deadlines.Now().Add(heartbeat))
 	for range 4 {
 		deadlines.Advance(heartbeat)
 		awaitArmedAt(t, deadlines, "the read deadline a pong after the move armed", deadlines.Now().Add(2*heartbeat))
+		awaitArmedAt(t, deadlines, "the heartbeat after the one the move brought", deadlines.Now().Add(heartbeat))
 	}
 	if got := pings.Load(); got != 4 {
 		t.Fatalf("the socket sent %d pings over four heartbeats of its clock, want one each", got)
@@ -1064,6 +1066,102 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 		t.Fatalf("an idle page that answers every ping lost its socket after %d pings: %v", pings.Load(), answering.err)
 	}
 	rig.sockets(t, 1)
+}
+
+// steppedWrites is the server's side of one socket's connection, whose every write, while stepping
+// is set, hands the row its bytes on writes and waits for the row to let it through, one write at a
+// time; release lets every write through from then on. It drops the write deadlines the writer
+// sets, ten seconds of the wall clock on, so no write the row holds fails on the wall clock.
+// heldWrites holds every write at one gate and lets them all go together, and keeps those
+// deadlines; this one lets the row read each write as it comes and reads no clock.
+type steppedWrites struct {
+	net.Conn
+	stepping atomic.Bool
+	writes   chan []byte
+	through  chan struct{}
+	released chan struct{}
+	once     sync.Once
+}
+
+func (c *steppedWrites) Write(p []byte) (int, error) {
+	if c.stepping.Load() {
+		select {
+		case c.writes <- bytes.Clone(p):
+			select {
+			case <-c.through:
+			case <-c.released:
+			}
+		case <-c.released:
+		}
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *steppedWrites) SetDeadline(at time.Time) error { return c.Conn.SetReadDeadline(at) }
+
+func (c *steppedWrites) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *steppedWrites) release() { c.once.Do(func() { close(c.released) }) }
+
+// steppedListener hands each connection the server accepts on accepted, its writes stepped on cue.
+type steppedListener struct {
+	net.Listener
+	accepted chan<- *steppedWrites
+}
+
+func (l steppedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return conn, err
+	}
+	stepped := &steppedWrites{Conn: conn, writes: make(chan []byte), through: make(chan struct{}), released: make(chan struct{})}
+	l.accepted <- stepped
+	return stepped, nil
+}
+
+// The writer arms its next heartbeat only once the heartbeat before it is written, its ping and its
+// heartbeat frame (clock.Ticker's Next), so a heartbeat seen armed says the one before it went
+// out. The server's writes to the page wait for the row (steppedWrites), the pings run on a fake the
+// row moves (liveSocketPingClock), and the read deadlines on a fake no one moves, so no read
+// ends. At the first heartbeat the writer's ping and then its heartbeat frame each wait in their
+// write, and while either waits no heartbeat after them may be armed; once both are through, the
+// next is armed, one heartbeat on. A writer that arms its next heartbeat as it takes the tick,
+// before its ping, fails at the ping.
+func TestALiveSocketArmsItsNextHeartbeatOnceItsPingAndFrameAreWritten(t *testing.T) {
+	const heartbeat = 100 * time.Millisecond
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+	pings := clocktest.New(start)
+	accepted := make(chan *steppedWrites, 1)
+	stepped := func(listener net.Listener) net.Listener {
+		return steppedListener{Listener: listener, accepted: accepted}
+	}
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: clocktest.New(start), liveSocketPingClock: pings}, stepped)
+	page := rig.open(t, gws.DefaultDialer, asUser("alice")).read()
+	server := testwait.Receive(t, "the server's side of the socket's connection", accepted)
+	t.Cleanup(server.release)
+	awaitArmedAt(t, pings, "the socket's first heartbeat", start.Add(heartbeat))
+
+	server.stepping.Store(true)
+	pings.Set(start.Add(heartbeat))
+	for _, write := range []struct {
+		what   string
+		opcode int
+	}{{"the heartbeat's ping", gws.PingMessage}, {"the heartbeat's frame", gws.TextMessage}} {
+		data := testwait.Receive(t, write.what+", waiting in its write", server.writes)
+		if opcode := int(data[0] & 0x0f); opcode != write.opcode {
+			t.Fatalf("the server's write at the heartbeat is a frame of opcode %d, want %s, opcode %d", opcode, write.what, write.opcode)
+		}
+		if armed := pings.Armed(); len(armed) != 0 {
+			t.Errorf("%s waits in its write, and the writer has armed its next heartbeat already, at %v: a heartbeat seen armed must say the one before it went out",
+				write.what, armed)
+		}
+		server.through <- struct{}{}
+	}
+	server.stepping.Store(false)
+	awaitArmedAt(t, pings, "the heartbeat after the one written", start.Add(2*heartbeat))
+	if data := page.take(t, "the heartbeat frame"); string(data) != `{"type":"heartbeat"}` {
+		t.Errorf("the page read %s at the heartbeat, want {\"type\":\"heartbeat\"}", data)
+	}
 }
 
 // A page that answers no ping is closed once its pong deadline passes (two heartbeats after its

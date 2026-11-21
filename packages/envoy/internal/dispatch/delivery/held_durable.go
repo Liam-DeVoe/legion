@@ -293,15 +293,12 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	stopping, release := stopContext(ctx, d.clock)
 	defer release()
 	defer d.stop(stopping)
-	// The tries are due on a grid durableBindInterval apart from the run's start, and the checks on
-	// one intakeHoldRenew apart, both on the hold's clock, as a ticker's ticks are
-	// (duty.RunLeasedOn): a try or a check that overran its interval is followed by one at once,
-	// and the grid moments it overran are dropped.
-	bindDue := d.holdClock.Now().Add(durableBindInterval)
-	binds := d.holdClock.NewTimer(durableBindInterval)
+	// The tries tick on a clock.Ticker durableBindInterval apart from the run's start, and the
+	// checks on one intakeHoldRenew apart, both on the hold's clock: a try or a check that overran
+	// its interval is followed by one at once, and the grid moments it overran are dropped.
+	binds := clock.NewTicker(d.holdClock, durableBindInterval, false)
 	defer binds.Stop()
-	checkDue := d.holdClock.Now().Add(intakeHoldRenew)
-	checks := d.holdClock.NewTimer(intakeHoldRenew)
+	checks := clock.NewTicker(d.holdClock, intakeHoldRenew, false)
 	defer checks.Stop()
 	attempt := func() {
 		if d.subject == "" && ready() {
@@ -328,15 +325,13 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			changed = wake()
 			attempt()
 		case <-binds.C():
-			next := gridAfter(bindDue, durableBindInterval, d.holdClock.Now())
+			binds.Took()
 			attempt()
-			bindDue = next
-			binds.Reset(bindDue.Sub(d.holdClock.Now()))
+			binds.Next()
 		case <-checks.C():
-			next := gridAfter(checkDue, intakeHoldRenew, d.holdClock.Now())
+			checks.Took()
 			d.check(ctx)
-			checkDue = next
-			checks.Reset(checkDue.Sub(d.holdClock.Now()))
+			checks.Next()
 		case <-lost:
 			slog.Warn(intakeHoldLost, "name", d.name)
 			// The hold lasts intakeHoldMargin longer on the database's clock, so a handler that
@@ -346,16 +341,6 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			d.hold, d.subject = nil, ""
 		}
 	}
-}
-
-// gridAfter is the first moment of the grid interval apart through due that is after now: where a
-// timer on that grid that fired at now is armed next.
-func gridAfter(due time.Time, interval time.Duration, now time.Time) time.Time {
-	next := due.Add(interval)
-	for !next.After(now) {
-		next = next.Add(interval)
-	}
-	return next
 }
 
 // stopDeliveringWithin stops this intake's subscription, giving the handlers still running budget

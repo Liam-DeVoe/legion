@@ -303,9 +303,10 @@ func (socket *liveSocket) closeUnserved() {
 // hub sends it queued before the replacement starts (Unsubscribe takes the hub's lock, which the
 // hub sends under), so the replacement's frames follow the replaced view's last answer.
 func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat time.Duration, pings clock.Clock, aged <-chan time.Time, readerDone <-chan struct{}) {
-	// The heartbeat's ticks are on pings (Deps.LiveSocketPingClock), clock.Real() where that is
-	// nil; each next tick is armed as the one before it is taken.
-	ticker := newClockTicker(cmp.Or[clock.Clock](pings, clock.Real()), heartbeat)
+	// The heartbeat ticks on a clock.Ticker on pings (Deps.LiveSocketPingClock), clock.Real() where
+	// that is nil, which arms each next heartbeat once the one before it is written: its ping and
+	// its heartbeat frame.
+	ticker := clock.NewTicker(cmp.Or[clock.Clock](pings, clock.Real()), heartbeat, false)
 	defer ticker.Stop()
 	// taken is a stream frame the pick took while a hub frame waited; its from is nil while it
 	// holds none. It goes out once the hub's queue is empty.
@@ -358,13 +359,17 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 				socket.close(gws.ClosePolicyViolation, "")
 			}
 			return
-		case tick := <-ticker.C():
-			ticker.next(tick)
+		case <-ticker.C():
+			ticker.Took()
 			if err := socket.conn.WriteControl(gws.PingMessage, nil, time.Now().Add(liveSocketWriteWait)); err != nil {
 				socket.endReads(0)
 				return
 			}
-			frame = liveHeartbeat
+			if !socket.writeFrame(liveHeartbeat) {
+				return
+			}
+			ticker.Next()
+			continue
 		case frame = <-socket.queue:
 		case queued := <-stream:
 			// The look above found the hub's queue empty, but a hub frame can arrive before the pick,
