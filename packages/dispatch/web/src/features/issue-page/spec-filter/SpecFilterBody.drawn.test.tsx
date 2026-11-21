@@ -918,6 +918,65 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   }
 });
 
+// The names reads are the page's tree's, read last, once no read the tree is built from is still
+// out, and the Spec view draws from them too: the issue's three sentences, and the name of every
+// reference a plain line cites. A refused names read says so in its own line, after the lines of
+// the view's own reads, as the outline draws it last, and its Retry asks the names again. The
+// stage is the page's own with the Spec view's slot as filled, which reads the tree and passes
+// the names' line on to the body; with that line dropped, "In short" stood as a bare heading and
+// nothing said why.
+test("a failed names read says so in its own line, after the view's own, and its Retry asks the names again", async () => {
+  const user = userEvent.setup();
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // Every read the page's tree is built from answered but the decisions read, which is refused,
+  // so the view draws a line of its own before the names'.
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], TWO_THREADS);
+  client.setQueryData(["issue-messages", KEY], []);
+  const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
+  const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
+  const view = render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
+    const lines = '[data-spec-body] [data-failed-read] [role="alert"]';
+    expect(textsOf(view, lines), "the names' line is not drawn after the view's own").toEqual([
+      STATE_LINES.issue_decisions_unreadable,
+      STATE_LINES.names_unreadable,
+    ]);
+    names.mockResolvedValue({ targets: [] } as never);
+    const asked = names.mock.calls.length;
+    await user.click(within(line).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(textsOf(view, lines), "the names' line stayed once the names answered").toEqual([
+        STATE_LINES.issue_decisions_unreadable,
+      ])
+    );
+    expect(names.mock.calls.length, "the names' Retry did not ask the names again").toBeGreaterThan(
+      asked
+    );
+  } finally {
+    view.unmount();
+    decisions.mockRestore();
+    names.mockRestore();
+  }
+});
+
 // The page acts on each of the Contents list's asks
 // once, whichever outline or body took it (`outline-request.tsx`), so a body drawn again - the
 // view turned off and on again - does not move the reader back to an ask it already went to.
@@ -1871,6 +1930,37 @@ test("a refused read's alert is said again for a new refusal, and not when its r
     await waitFor(() => expect(within(line).getByRole("alert")).not.toBe(first));
   } finally {
     onlineManager.setOnline(true);
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// A line's alert is drawn afresh, so a screen reader says it again, only for a new refusal of a
+// read the line stands failed on. A read of the line that holds an answer keeps it when a
+// refresh of it - an event's - is refused, and the line says nothing new of it, so with the
+// spec's blocks refused and the coverage held, a refused refresh of the coverage leaves the
+// statements line's alert as it was.
+test("a refused refresh of a read the statements line holds an answer for leaves the line's alert as it was", async () => {
+  const { client, read, view } = drawBody(issueTree([statement("r1")]), [], { blocks: "failed" });
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    const alert = within(line).getByRole("alert");
+    read.coverage.mockRejectedValue(new Error("offline"));
+    const coverage = issueCoverageQuery(KEY).queryKey;
+    await act(async () => {
+      await client.refetchQueries({ queryKey: coverage });
+    });
+    await waitFor(() => {
+      const state = client.getQueryState(coverage);
+      expect(state?.errorUpdateCount, "the coverage's refresh was not refused").toBe(1);
+      expect(state?.data, "the coverage's refresh took its answer away").toBeDefined();
+    });
+    expect(alertSaying(view, STATE_LINES.statements_unreadable)).toBe(line);
+    expect(
+      within(line).getByRole("alert"),
+      "a refused refresh of a held read said the statements' failure again"
+    ).toBe(alert);
+  } finally {
     view.unmount();
     read.mockRestore();
   }

@@ -69,10 +69,10 @@ import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
-import { TAB_STOP_ROW } from "../tree-focus";
+import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, standsFailed } from "../useIssueTree";
+import { issueAsksQuery, type NamesFailure, standsFailed } from "../useIssueTree";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import {
   type SpecDecision,
@@ -131,6 +131,7 @@ export function SpecFilterBody({
   emptyLine,
   holdsEscape,
   issue,
+  namesFailure,
   reader,
   request,
   reveal,
@@ -146,6 +147,11 @@ export function SpecFilterBody({
    *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
+  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`), which the
+   *  slot passes from the page's tree: those reads are the tree's own, and the view draws from
+   *  them too - the three sentences, and the name of every reference a plain line cites. None
+   *  while they do not stand failed. */
+  namesFailure?: NamesFailure;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
   /** What the page last asked of the outline: go to a node. The page acts on each ask once,
@@ -212,6 +218,9 @@ export function SpecFilterBody({
   // words for those two reads. A line stays, its Retry busy, while a read of it that stands
   // failed runs again, until the read answers. A line's Retry asks again the reads of that line
   // that stand failed (`failed`), and no other, and none of them while it is read again already.
+  // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
+  // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
+  // still out, and gives that line's state itself.
   const unreadable = (
     [
       {
@@ -396,9 +405,7 @@ export function SpecFilterBody({
   const takeRequest = useTakeOutlineRequest();
   useEffect(() => {
     if (request === undefined || !takeRequest(request) || request.id === undefined) return;
-    tree.current
-      ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(request.id)}"]`)
-      ?.focus();
+    tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
   // An address that names a statement puts the focus on it, once per address (R19): the row is
   // not on the page until the reads that hold it have answered, so this looks again on every
@@ -428,7 +435,9 @@ export function SpecFilterBody({
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
     // `asksHeld`; `w` walks the decisions, so its report waits on the decisions read as well,
-    // here (`decidedHeld`, which holds only where `asksHeld` does).
+    // here (`decidedHeld`, which holds only where `asksHeld` does). This filter tells `w`'s
+    // report by its words because the keymap holds that one flag for every key; it goes once
+    // the keymap takes a flag per key, when `w`'s flag is `decidedHeld`.
     onReport: (line) => reportHere(line === KEY_REPORTS.no_decision && !decidedHeld ? "" : line),
     // `q` and `w` reach here with the node the keymap found: the next open question, or the
     // decision behind the focused row. Where the view draws a row or a cell for it the focus
@@ -466,17 +475,22 @@ export function SpecFilterBody({
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
-          inside a tree would break the tree's own structure of rows. The stage gives a focus left
-          on nothing to a line's Retry where the view draws no row, and moves it on to the next
-          line, the tab-stop row or the tree as a line that held it leaves (`slots/stage.tsx`). */}
-      {unreadable.map(({ failed, line, message, reads }) => (
+          inside a tree would break the tree's own structure of rows. The view's own reads'
+          lines come first, and the names reads' line last, as the outline draws it. The stage
+          gives a focus left on nothing to a line's Retry where the view draws no row, and moves
+          it on to the next line, the tab-stop row or the tree as a line that held it leaves
+          (`slots/stage.tsx`). */}
+      {unreadable.map(({ failed, line, message }) => (
         <FailedReadLine
-          // Which failure the line says, which keys its alert: the refusals of every read the
-          // line lists, not only of those that stand failed. A read's `errorUpdateCount` rises
-          // with each refusal of it and is never lowered when the read answers, so the sum rises
-          // exactly when one of the line's reads is refused, and a run that ends with no new
-          // refusal, as one paused while the browser is offline does, says the failure no more.
-          failure={reads.reduce((failures, read) => failures + read.errorUpdateCount, 0)}
+          // Which failure the line says, which keys its alert: the refusals of the line's reads
+          // that stand failed (`failed`), and of no other. A read's `errorUpdateCount` rises with
+          // each refusal of it, so the sum rises exactly when a read of the line that holds no
+          // answer is refused, and a run that ends with no new refusal, as one paused while the
+          // browser is offline does, says the failure no more. A read of the line that holds an
+          // answer and whose refresh is refused adds nothing: what the line says has not
+          // changed. Where a line holds two failed reads and one of them answers, that read's
+          // refusals leave the sum, so the line says its failure once more, for the other.
+          failure={failed.reduce((failures, read) => failures + read.errorUpdateCount, 0)}
           key={line}
           message={message}
           onRetry={() => {
@@ -485,6 +499,17 @@ export function SpecFilterBody({
           retrying={failed.every((read) => read.isFetching)}
         />
       ))}
+      {namesFailure === undefined ? null : (
+        <FailedReadLine
+          // The names reads' count of failures (`NamesFailure.failure`), which changes only with
+          // a new failure, and their Retry, which asks again each of them that holds no answer.
+          failure={namesFailure.failure}
+          key="names"
+          message={STATE_LINES.names_unreadable}
+          onRetry={namesFailure.retry}
+          retrying={namesFailure.retrying}
+        />
+      )}
       <Legend />
       <div
         className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}
@@ -626,6 +651,11 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  *
  * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press for
  * the rule's step and for this one.
+ *
+ * It is a copy of `useRowOnScreen`'s own press tracking and of its layout effect with a resize
+ * observer (`NodeRow.tsx`), so a focused statement runs both: two observers, and two pairs of
+ * window listeners for each press. It goes once `useRowOnScreen` takes an optional placing
+ * step, which this view then passes.
  */
 function useOnScreenUnderHeads(item: RefObject<HTMLElement | null>, focused: boolean): () => void {
   const placeByRule = useRowOnScreen(item, focused);
