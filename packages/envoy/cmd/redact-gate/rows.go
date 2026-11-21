@@ -106,24 +106,66 @@ func commonSuffix(a, b []byte) int {
 }
 
 // copy makes the row's scratch copy of the snapshot at one path, so the build cache serves every
-// copy: packages/envoy for a Go row, the whole tree (node_modules included) for a Bun row.
+// copy: packages/envoy for a Go row of the envoy module; for a Go row of another module go.work
+// uses (packages/daemon), that module and go.work beside packages/envoy, since it builds against
+// the envoy module through the workspace; and the whole tree (node_modules included) for a Bun
+// row.
 func (g *gate) copy(r *row) (string, error) {
 	copyDir := filepath.Join(g.work, "copy")
 	if err := os.RemoveAll(copyDir); err != nil {
 		return "", err
 	}
-	src, dst := g.snapshot, copyDir
+	paths := []string{"."}
 	if !r.bun {
-		src, dst = filepath.Join(g.snapshot, "packages/envoy"), filepath.Join(copyDir, "packages/envoy")
+		mod, err := g.goRowModule(r)
+		if err != nil {
+			return "", err
+		}
+		paths = []string{"packages/envoy"}
+		if mod != "packages/envoy" {
+			paths = append(paths, mod, "go.work")
+			if fileExists(filepath.Join(g.snapshot, "go.work.sum")) {
+				paths = append(paths, "go.work.sum")
+			}
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", err
-	}
-	cmd := exec.Command("cp", "-a", "--reflink=auto", src, dst)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("cp: %v: %s", err, out)
+	for _, path := range paths {
+		src, dst := filepath.Join(g.snapshot, path), filepath.Join(copyDir, path)
+		if path == "." {
+			src, dst = g.snapshot, copyDir
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return "", err
+		}
+		cmd := exec.Command("cp", "-a", "--reflink=auto", src, dst)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("cp: %v: %s", err, out)
+		}
 	}
 	return copyDir, nil
+}
+
+// goRowModule is the directory, relative to the snapshot, of the module a Go row's package is in:
+// packages/envoy for a package named relative to it (./...), and otherwise the module go.work uses
+// whose path the package's import path is, or is under.
+func (g *gate) goRowModule(r *row) (string, error) {
+	if strings.HasPrefix(r.Package, "./") || r.Package == "." {
+		return "packages/envoy", nil
+	}
+	roots, err := workRoots(g.snapshot)
+	if err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		data, err := os.ReadFile(filepath.Join(g.snapshot, root, "go.mod"))
+		if err != nil {
+			continue
+		}
+		if path := modfileModule(data); path != "" && (r.Package == path || strings.HasPrefix(r.Package, path+"/")) {
+			return root, nil
+		}
+	}
+	return "", fmt.Errorf("row %s: package %s is in no module go.work uses", r.ID, r.Package)
 }
 
 type result struct {
@@ -255,8 +297,13 @@ func (g *gate) runTest(copyDir string, r *row) result {
 	if r.bun {
 		return g.runBun(copyDir, r, res, start)
 	}
+	mod, err := g.goRowModule(r)
+	if err != nil {
+		res.compileError, res.note = true, err.Error()
+		return res
+	}
 	cmd := exec.Command("go", "test", "-json", "-count=1", "-v", "-timeout", g.rowTimeout.String(), "-run", "^"+regexp.QuoteMeta(r.Test)+"$", r.Package)
-	cmd.Dir = filepath.Join(copyDir, "packages/envoy")
+	cmd.Dir = filepath.Join(copyDir, mod)
 	out, _ := cmd.CombinedOutput()
 	res.elapsed = time.Since(start)
 	output := map[string]*strings.Builder{}
