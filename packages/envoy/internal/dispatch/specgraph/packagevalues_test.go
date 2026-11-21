@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -12,32 +13,56 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // writerCalled is the one guard of what code other than the reader can reach of what the reader
 // and the sweeps read: a writer of a sweep or of a base, which changedFile, filesWritten and
 // editTree each call it with, and the sweeps' setup, which setUp calls it with. who names the
-// writer or the setup ("a writer of results.json"). It takes a copy of each variable of the
-// package (packageValuesNow), then builds the writer (build), then calls it (call), then compares
-// each variable with its copy (packageValuesKept), and gives what call gave. Each caller hands it
-// a builder, not a writer, so no code of a writer runs before the copy; and call turns what the
+// writer or the setup ("a writer of results.json"), and base is the base that the writer's input
+// is made from, or the base that it writes a file of (nil for the setup, which holds no base yet).
+// It takes a copy of each variable of the package (packageValuesNow) and of each file of base, then
+// builds the writer (build), then calls it (call), then compares each variable and each file with
+// its copy (packageValuesKept, filesKept), and gives what call gave. Each caller hands it a
+// builder, not a writer, so no code of a writer runs before the copy; and call turns what the
 // writer gives and what it leaves (its tree, its files, its copy of the change, the bases that the
 // setup built) into bytes of the caller's own before the compare, so no code of a writer runs after
 // it: the type of what call gives is plain data (plainType), with no interface, function, channel
 // or pointer, where a method of a value that the writer left, such as its MarshalJSON, could run.
-// So a writer or a setup that changes a variable of the package, in the code that builds it, in
-// the call, or in a method of a value that it leaves in what it gives, fails by name, as one that
-// changes a table of the reader (relationKinds, slug, ...) would change the verdict of each later
-// input. Code that changes one outside every such call fails the test process by name (TestMain).
-func writerCalled[W, R any](t *testing.T, who string, build func() W, call func(W) R) R {
+// So a writer or a setup that changes a variable of the package or a file of the base, in the code
+// that builds it, in the call, or in a method of a value that it leaves in what it gives, fails by
+// name, as one that changes a table of the reader (relationKinds, slug, ...) or the base would
+// change the verdict of each later input. Code that changes a variable outside every such call
+// fails the test process by name (TestMain), and a base that no longer holds what a separate build
+// of it holds fails the sweep that reads it by name (sweepAgainst).
+func writerCalled[W, R any](t *testing.T, who string, base fstest.MapFS, build func() W, call func(W) R) R {
 	t.Helper()
 	if at, plain := plainType(reflect.TypeFor[R](), "", map[reflect.Type]bool{}); !plain {
 		t.Fatalf("the guard of %s hands back a %v, whose %s is no plain data, so a method of a value that the writer left there could run after the compare", who, reflect.TypeFor[R](), at)
 	}
-	values := packageValuesNow()
+	values, files := packageValuesNow(), cloneFiles(base)
 	got := call(build())
 	packageValuesKept(t, who, values)
+	filesKept(t, who, base, files)
 	return got
+}
+
+// filesKept fails the test unless base, the base that who reads or writes a file of, holds what
+// before, the copy that writerCalled took before who was built, holds: each file by its name, its
+// bytes, and no mode, time or sys where the copy has none, and no other file.
+func filesKept(t *testing.T, who string, base, before fstest.MapFS) {
+	t.Helper()
+	for _, name := range slices.Sorted(maps.Keys(before)) {
+		f, held := base[name]
+		if b := before[name]; !held || f == nil || !bytes.Equal(f.Data, b.Data) || f.Mode != b.Mode || !f.ModTime.Equal(b.ModTime) || (f.Sys == nil) != (b.Sys == nil) {
+			t.Fatalf("%s changed the file %s of the base that it was handed a copy of (held %t), where no writer may change a base", who, name, held)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(base)) {
+		if _, held := before[name]; !held {
+			t.Fatalf("%s added the file %s to the base that it was handed a copy of, where no writer may change a base", who, name)
+		}
+	}
 }
 
 // TestMain copies each variable of the package (packageValuesNow) before the first test of the
