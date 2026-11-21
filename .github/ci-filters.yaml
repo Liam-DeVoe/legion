@@ -1647,6 +1647,7 @@ envoy_go:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  # why: .github/ci-notes/ci.md#envoy_go-its-natslive-step-runs-cmdlisteners-natslive-tests
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
