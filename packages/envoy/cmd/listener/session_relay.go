@@ -1078,16 +1078,14 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		return relayRetry
 	}
 	// gapReason names the gap the next frame marks, "" for the stream's retention gap
-	// (relayHeaderGapReason). A run starts owing the mark of the GitHub events an earlier run of
-	// the session withheld and sent no frame after (owedRepositoryGap): the withheld events are
-	// acknowledged, so the stream's start says nothing of them. owed is the mark the next frame
-	// carries for them, which the frame clears once it is published (repositoryGapSent), "" for
-	// none.
-	streamID, gap, gapReason := start.StreamID, start.Gap, ""
-	owed := m.owedRepositoryGap(sessionID)
-	if !gap && owed != "" {
-		gap, gapReason = true, relayGapRepositoryWithheld
-	}
+	// (relayHeaderGapReason). owed is the mark the next frame carries for GitHub events withheld
+	// with no frame sent after them, which the frame clears once it is published
+	// (repositoryGapSent), "" for none: the events are acknowledged, so the stream's start says
+	// nothing of them. It is the mark this run noted for an event it withheld, and before each
+	// frame that owes none, the mark the session's entry carries (owedRepositoryGap): one an
+	// earlier run of the session wrote and sent no frame after, or one another relay of the
+	// session wrote while this run is live, as two relays of one session run while it moves.
+	streamID, gap, gapReason, owed := start.StreamID, start.Gap, "", ""
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1139,6 +1137,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// frame this run sends.
 		if m.takeOverFrame(ctx, sessionID, msg) {
 			continue
+		}
+		if owed == "" {
+			if owed = m.owedRepositoryGap(sessionID); owed != "" && !gap {
+				gap, gapReason = true, relayGapRepositoryWithheld
+			}
 		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason); err != nil {
 			if ctx.Err() != nil {
