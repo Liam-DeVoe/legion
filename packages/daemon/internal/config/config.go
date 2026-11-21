@@ -837,7 +837,9 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 		envNode, secretNode := value.Content[i], value.Content[i+1]
 		env := envNode.Value
 		if envNode.Kind != yaml.ScalarNode || !envVarName.MatchString(env) {
-			return nil, fmt.Errorf("%s key %q (the variable OMP reads) %s", key, env, envNameRule)
+			// By its position, not its text: what stands where a variable name goes can be a key
+			// pasted into the wrong place, and this refusal is printed as it is.
+			return nil, fmt.Errorf("%s entry %d: its key (the variable OMP reads) %s", key, i/2+1, envNameRule)
 		}
 		if strings.HasPrefix(env, "AGENT_SECRETS_") {
 			return nil, fmt.Errorf("%s names %s: an AGENT_SECRETS_* variable is the runtime's (AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR) or the daemon's own agent-secrets machine login, and is never exported into an agent's environment", key, env)
@@ -861,7 +863,9 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 			continue
 		}
 		if !envVarName.MatchString(secret) {
-			return nil, fmt.Errorf("%s value %q for %s (the key that holds it) %s, or %s and an absolute path", key, secret, env, envNameRule, providerKeyFilePrefix)
+			// By the variable it is for, not its text: a value that is no secretsd key's name can be
+			// the provider's key itself, pasted where its name goes.
+			return nil, fmt.Errorf("%s value for %s (the key that holds it) %s, or %s and an absolute path", key, env, envNameRule, providerKeyFilePrefix)
 		}
 		keys = append(keys, ProviderKey{Env: env, Secret: secret})
 	}

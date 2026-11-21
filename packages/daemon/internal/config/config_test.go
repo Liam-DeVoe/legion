@@ -1328,15 +1328,28 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "provider_keys: GEMINI_API_KEY_TESTS\n",
 			want: "provider_keys must be a mapping of the variable OMP reads to the key that holds it (a secretsd key, or file:/abs/path under runtime tmux; under runtime kubernetes, a key of the providers Secret), e.g. {GEMINI_API_KEY: GEMINI_API_KEY_TESTS}",
 		},
+		// A refusal of a provider key's variable or value names its entry by position, or by the
+		// variable it is for, never its text: what is refused can be the provider's key itself,
+		// pasted where a name goes, and `legion stop` prints this error as it is.
 		{
 			name: "provider_keys with a variable that is not a variable name",
-			body: minimalFile + "provider_keys: {1PASSWORD: ONEPASSWORD_TESTS}\n",
-			want: `provider_keys key "1PASSWORD" (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, 1PASSWORD: ONEPASSWORD_TESTS}\n",
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			name: "provider_keys with a provider's key pasted where the variable goes",
+			body: minimalFile + "provider_keys: {\"madeUp-provider-key-0123456789abcdef\": GEMINI_API_KEY_TESTS}\n",
+			want: `provider_keys entry 1: its key (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "provider_keys with a command where the secretsd key goes",
 			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"secrets get GEMINI_API_KEY_TESTS\"}\n",
-			want: `provider_keys value "secrets get GEMINI_API_KEY_TESTS" for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
+			want: `provider_keys value for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
+		},
+		{
+			name: "provider_keys with a provider's key pasted where the secretsd key goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"madeUp-provider-key-0123456789abcdef\"}\n",
+			want: `provider_keys value for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
 		},
 		{
 			name: "provider_keys naming a file by a relative path",
