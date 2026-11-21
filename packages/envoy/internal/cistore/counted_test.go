@@ -490,6 +490,92 @@ func TestASettlementThatLandedWithAnErrorIsCorrected(t *testing.T) {
 	}
 }
 
+// What the record keeps of its last published settlement is forgotten when a claim is released or
+// reclaimed (ReleaseClaim, ReclaimSettlement), since that settlement may have reached the stream.
+// Here the head settles (S1) with its commit status ci/x failing. Then x passes, and a settlement of
+// that (S2) reaches the stream unmarked: its publication answers an error, or the replica that
+// claimed it stops before marking it and its claim is reclaimed. Then a dispatched run's suite
+// enters, x fails again, and the suite leaves, its event workflow_dispatch. The record is back at
+// S1, which moves nothing the settled view reads but the suite, but consumers hold S2's passing x,
+// so the head settles again and names x failing.
+func TestASettlementThatMayHaveLandedIsNotTakenAsSettledAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		reclaim bool
+	}{
+		{"the publication answered an error", false},
+		{"the claim was reclaimed", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup := connectNATS(t)
+			defer cleanup()
+			store := openStore(t, conn)
+			handler := webhook.GitHubHandler(countedSecret, "@legion", "", unpublished{t}, store)
+			number := strconv.Itoa(countedNumber)
+			h := head{countedOwner, countedRepo, number, countedSHA}
+			pub := &landedPub{}
+			settle := func() {
+				t.Helper()
+				setLastEventAt(t, store, h.owner, h.repo, h.number, h.sha, 0)
+				runSummaryTick(store, pub, time.Second, logging.New("test"))
+			}
+			status := func(state, at string) {
+				t.Helper()
+				if _, err := recordStatus(store, h.status("ci/x", state, at)); err != nil {
+					t.Fatalf("record ci/x %s: %v", state, err)
+				}
+			}
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, pullRunSuite, "pull_request"))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, pullRunCheck, pullRunSuite, countedCheckRun, "completed", "success", "2026-11-21T04:30:00Z"))
+			countedPost(t, handler, "check_suite", checkSuiteBody(countedNumber, pullRunSuite, "completed", "success", "2026-11-21T04:30:01Z"))
+			status("failure", "2026-11-21T04:31:00Z")
+			waitCacheChecks(t, store, h.owner, h.repo, h.number, h.sha, 1)
+			settle()
+			if got := pub.count(); got != 1 {
+				t.Fatalf("settlements = %d with ci/x failing, want 1", got)
+			}
+
+			status("success", "2026-11-21T04:32:00Z")
+			if tc.reclaim {
+				setLastEventAt(t, store, h.owner, h.repo, h.number, h.sha, 0)
+				st := getState(t, store, h.owner, h.repo, h.number, h.sha)
+				claimed, ok, err := store.ClaimSettlement(h.key(), st.Hash(), st.Generation, time.Now().UnixMilli(), 0)
+				if err != nil || !ok {
+					t.Fatalf("claim the settlement of ci/x passing = (%v, %v)", ok, err)
+				}
+				env, err := settlementEnvelope(claimed, time.Now().UnixMilli())
+				if err != nil {
+					t.Fatalf("render the settlement of ci/x passing: %v", err)
+				}
+				if err := pub.Publish(env); err != nil {
+					t.Fatalf("publish the settlement of ci/x passing: %v", err)
+				}
+				if ok, err := store.ReclaimSettlement(h.key(), claimed.Generation, time.Now().Add(time.Second).UnixMilli()); err != nil || !ok {
+					t.Fatalf("reclaim the unmarked claim = (%v, %v)", ok, err)
+				}
+			} else {
+				pub.failNext()
+				settle()
+			}
+			if got := pub.count(); got != 2 {
+				t.Fatalf("settlements landed = %d with ci/x passing, want 2", got)
+			}
+
+			countedPost(t, handler, "check_suite", checkSuiteBody(countedNumber, dispatchSuite, "in_progress", "", "2026-11-21T04:33:00Z"))
+			status("failure", "2026-11-21T04:34:00Z")
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, dispatchSuite, "workflow_dispatch"))
+			settle()
+			if got := pub.count(); got != 3 {
+				t.Fatalf("settlements landed = %d once ci/x failed again and the dispatched suite left, want 3", got)
+			}
+			last, _ := lastSettlement(t, &pub.recPub)
+			if len(last.Statuses) != 1 || last.Statuses[0].Context != "ci/x" || last.Statuses[0].State != "failure" {
+				t.Errorf("the last settlement names statuses %+v, want ci/x failing", last.Statuses)
+			}
+		})
+	}
+}
+
 // landedPub keeps every settlement it is given, and answers an error for the one after failNext,
 // as a publication the stream stored and whose answer was lost does.
 type landedPub struct {

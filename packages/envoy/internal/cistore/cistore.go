@@ -1290,6 +1290,12 @@ func (s *Store) MarkSettled(key string, generation uint64) (bool, error) {
 // settlement (State.SettledSnapshot, settledView) and no claim is in flight: every consumer holds
 // that settlement already. A record that holds no settled snapshot is left as it is. learnEvent
 // calls it, for a write in which a suite left because GitHub does not count it.
+//
+// It also takes in a re-arm that came while that suite held the head and changed nothing the view
+// reads, such as a suite that completed again with the same runs: the head would have settled
+// again for it, with a settlement that tells a consumer nothing it holds, and does not. A re-arm
+// that changed what the view reads leaves st away from its settled snapshot, so the head settles
+// again for it.
 func resettle(st *State) {
 	if st.SettledEmitted || st.Claim != nil || st.SettledSnapshot == "" || settledView(*st) != st.SettledSnapshot {
 		return

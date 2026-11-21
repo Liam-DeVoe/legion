@@ -474,7 +474,8 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A check run of any other App counts.
   A run that does not count, whose jobs can carry the pull request run's check names, is not in the head's checks, replaces no check of the head, and its suite and its runs take no part in the settlement.
   A run the store had counted before it learned its event leaves the record, and every later settlement of the head names it in `excluded_check_runs`, so the daemon drops it and takes the lower id that stands in its place (`packages/contracts/README.md`).
-  A settled head that a suite held only until its event showed GitHub does not count it is not settled again: the write that takes that suite out, back at what the head's last published settlement said (`State.SettledSnapshot`: its snapshot, check links and excluded runs), leaves the head settled and publishes nothing.
+  A settled head that only a suite's entry held, with no check run of that suite in the record, until the suite's event showed GitHub does not count it, is not settled again: the write that takes that suite out, back at what the head's last published settlement said (`State.SettledSnapshot`: its snapshot, check links and excluded runs), leaves the head settled and publishes nothing.
+  A check run of that suite the record held settles the head again once the event lands, since the run joins the excluded runs; no verdict changes.
 
 - The CI store learns a suite's event from two places.
   The query asks each suite for `workflowRun { event }`, which costs it no point, and the listener learns the event from each `workflow_run` webhook that lists the pull request; a pass that reads a head's events corrects a record written before the store read them.

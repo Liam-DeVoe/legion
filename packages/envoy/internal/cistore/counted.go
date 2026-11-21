@@ -323,10 +323,12 @@ func (st *State) trimWaiting() int {
 }
 
 // trimSuperseded drops, of the runs a newer run replaced while their suite's event was not known
-// (State.Superseded), all but the newest of each name, and reports how many it dropped. The newest
-// is the one a consumer that missed only the last settlement before the replacement holds, so it
-// is the one the correction most needs to name. It is what a record past its bound gives way after
-// the waiting runs that can no longer stand (Store.atBounds).
+// (State.Superseded), all but the newest of each name, and reports how many it dropped. Any of
+// them may have been settled, the newest too or none of them; a consumer holds the newest one it
+// was sent, so the one kept is the newest that can be held. An older one is held only by a
+// consumer that was sent it and none of the settlements after it, and the correction no longer
+// names it. It is what a record past its bound gives way after the waiting runs that can no longer
+// stand (Store.atBounds).
 func (st *State) trimSuperseded() int {
 	newest := map[string]checkRunID{}
 	for _, check := range st.Superseded {
