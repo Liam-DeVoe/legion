@@ -58,7 +58,9 @@ func planTexts() []readingText {
 // acme/widgets under the name acme/old it was renamed from, a timeline row for half of them and
 // 500 pull requests with a timeline row only, an issue for each key the texts name, 20,000 more
 // issues and 5,000 more links, and then analyzes each table, as a deployment's planner sees
-// them. Three issues link a URL the texts cite, and 300 link a pull request.
+// them. Three issues link a URL the texts cite, and 300 link a pull request. 5,000 is what the
+// planner needs: at 2,000 and at 1,000 pull requests the read by the issue the timeline names
+// scans pull_request_texts on PostgreSQL 18 with every index in place (round 21's size runs).
 func seedPlanFixture(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	exec := func(what, sql string, args ...any) {
@@ -306,14 +308,15 @@ func (r *recordedReads) QueryRow(ctx context.Context, sql string, args ...any) p
 
 // The reader of the pull requests whose answer is not known (PullRequestsNotKnown) reads the rows
 // of one repository whose messages are not read through pull_request_texts_messages_not_read. No
-// node of its plan scans pull_request_heads or pull_request_texts. 5,000 merged pull requests of
-// acme/widgets and 5,000 of acme/gadgets have current texts, and 20 of them have no messages. In
+// node of its plan scans pull_request_heads or pull_request_texts. 300 merged pull requests of
+// acme/widgets and 300 of acme/gadgets have current texts, and 20 of them have no messages. In
 // acme/widgets, 8 of those name a held issue in their branch, so the rule decides them without the
 // messages. #18 and #20 name nothing, so their answer is not known. The test explains each
 // statement that the reader sent (recordedReads). Control in the same test: with the index
-// dropped, the same read scans pull_request_texts. The probe of the plan
-// (zz_r18_notknown_cost_test.go) read 1.14 ms with the index and 1.72 ms without it, the best of
-// 20 reads.
+// dropped, the same read scans pull_request_texts. 600 rows is the smallest of the sizes tried
+// (10,000, 2,000, 600) at which the read takes the index and the same test with the index dropped
+// before it fails (round 21's size runs). The probe of the plan (zz_r18_notknown_cost_test.go) read
+// 1.14 ms with the index and 1.72 ms without it, the best of 20 reads, at 10,000 rows.
 func TestTheReaderOfPullRequestsWhoseAnswerIsNotKnownUsesItsIndex(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	held := seedHeadIssue(t, ctx, pool, 1)
@@ -323,12 +326,12 @@ func TestTheReaderOfPullRequestsWhoseAnswerIsNotKnownUsesItsIndex(t *testing.T) 
 			t.Fatalf("%s: %v", what, err)
 		}
 	}
-	exec("store 5,000 merged rows of each of two repositories", `
+	exec("store 300 merged rows of each of two repositories", `
 		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, url, title, event_at, checked_at, github_read_at, issue_key, attribution_source)
 		select case when n % 2 = 0 then 'acme/widgets' else 'acme/gadgets' end, n, lpad(to_hex(n), 40, 'a'),
 			case when n between 1 and 17 then 'legion/' || $1::text else 'work/' || n end, 'main', 'merged',
 			'https://github.com/acme/x/pull/' || n, 'Change ' || n, '2026-11-18T01:00:00Z', now(), now(), null, 'none'
-		from generate_series(1, 10000) n`, held)
+		from generate_series(1, 600) n`, held)
 	exec("store their texts, with no messages for #1 to #20", `
 		insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title, body, commit_messages, updated_at)
 		select h.repo, h.number, h.head_sha, h.head_ref, h.repo, 'main', h.title, 'A body of change ' || h.number,
