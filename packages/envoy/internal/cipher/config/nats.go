@@ -61,10 +61,13 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 
 // hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The
 // service connects as the user its seed names, so user info in a URL is a credential it never
-// uses, and the broker writes the URLs into its start line and the service's connect error. An
-// entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go, parseServerURL),
-// and one that does not parse is refused too: nats.go could not dial it, and the parse error
-// quotes it whole. The reason names neither the entry nor its user info.
+// uses, and the broker writes the URLs into its start line and the service's connect error; a
+// query or a fragment is where a person can put a token too, and nats.go needs neither to dial a
+// hub. An entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go,
+// parseServerURL), and one that does not parse is refused too: nats.go could not dial it, and the
+// parse error quotes it whole. An "@" after the host is refused as user info: a token holding a
+// "/" written as the user parses with its head as the host and the "@" in the path. The reason
+// names neither the entry nor its user info.
 func hubURLRefusal(entry string) string {
 	if !strings.Contains(entry, "://") {
 		entry = "nats://" + entry
@@ -73,8 +76,10 @@ func hubURLRefusal(entry string) string {
 	switch {
 	case err != nil:
 		return "is not a URL nats.go can dial"
-	case parsed.User != nil:
+	case parsed.User != nil || strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@"):
 		return "carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone"
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(entry, "#"):
+		return "carries a query or a fragment: the NATS auth service needs neither to dial the hub, so name the hub by its address alone"
 	}
 	return ""
 }
