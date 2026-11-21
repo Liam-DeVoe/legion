@@ -2309,7 +2309,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
 # so each of those gates reads it and a change to it runs them all;
-# scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
+# scripts/priorities-seed-check.test.sh and scripts/red-at-base.test.sh, which are not among them,
+# carry their own helpers.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
@@ -2545,10 +2546,14 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
-    # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
+    # The two harnesses of the job that are not under .github/scripts and source no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
+    ], lib=False),
+    harness("red_at_base_test", "Test the red-at-base tool (a scratch repository)",
+            "scripts/red-at-base.test.sh", [
+        ("scripts/red-at-base.sh", "the script under test (scripts/red-at-base.test.sh:33 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),

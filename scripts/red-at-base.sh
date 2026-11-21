@@ -32,42 +32,63 @@
 # checkout. Each <file> is copied as the checkout's working tree holds it, committed or not, over the
 # base's copy at the same path; a line names at least one.
 #
-#   go   <dir> is the package directory. Before it copies the files, the tool builds the package's
-#        test binary at the base (go test -c), when the base has Go files there, so that a build
-#        that fails after the copy is the failure of the line's files. The run is
-#          go -C <dir> test -count=1 -v -run <regex> .
-#        A package of the run that reports [build failed] or [setup failed] makes it BUILD-FAILED.
-#        Otherwise only the tests at the depth of the regex count (^TestA$/^b$ names a subtest, so
-#        a TestA that fails before its subtest starts counts for nothing): a --- FAIL of one is RED,
-#        and so is a failed run that ended inside one (a panic, a timeout, an os.Exit); a --- PASS
-#        with no fail is GREEN; skips alone, or no tests to run, are NO-TEST.
-#   bun  <dir> is the directory bun test runs in. The run is
-#          bun test --no-install ./<test file>... -t <regex>
-#        over the line's files under <dir> whose names bun reads as tests (a.test.ts, a_spec.js and
-#        the like); a bun line names at least one. A failed test is RED. An error outside any test,
-#        which at the base is most often a file that does not load (it imports a name the base does
-#        not export), is BUILD-FAILED; an import of a package that is not installed is NO-TEST. A
-#        pass is GREEN; skips or todos alone, and "matched 0 tests", are NO-TEST.
+#   go   <dir> is the package directory. The run is
+#          go -C <dir> test -json -count=1 -run <regex> .
+#        and the tool reads go's stream of events, in which each result is an event of its own,
+#        apart from what a test prints: a test that prints "--- FAIL: X" and passes reads as passed.
+#        Its reader of the stream is a Go program of its own (go_reader_source, below), which it
+#        builds once, before the first line runs, when the list holds a go line.
+#        Before it copies the files, the tool asks go list which Go files the base builds in <dir>.
+#        When the base builds one there, the tool builds the base package's test binary (go test
+#        -c), and a base that does not build there reads NO-TEST, so that a build that fails after
+#        the copy is the failure of the line's files. When it builds none, because <dir> is new or a
+#        build constraint leaves out each of its files, the line's files are the whole package.
+#        A build of the run that fails is BUILD-FAILED. Otherwise only the results of the tests the
+#        regex selects count. The regex is split at each / and | outside [] and (), as the testing
+#        package splits it, into alternatives of one pattern for each level of a test's name, and a
+#        test is selected when its name, split at each /, matches each pattern of one alternative
+#        down to that alternative's depth. So ^TestA$/^b$|^TestC$ selects TestA/b, what runs under
+#        it, and TestC, and a TestA that fails before b starts counts for nothing. A failed selected
+#        test is RED, and so is a failed run that ended inside a selected test (a timeout, an
+#        os.Exit); a passed one is GREEN; skips alone, no tests to run, or a run that failed before
+#        a selected test ran, are NO-TEST.
+#   bun  <dir> is the directory bun test runs in. Each of the line's files under <dir> whose name
+#        bun reads as a test file (a.test.ts, a_spec.js and the like) runs on its own:
+#          bun test --no-install ./<test file> -t <regex>
+#        and the line reads the most red of its files' verdicts (RED, then BUILD-FAILED, then
+#        GREEN, then NO-TEST); a bun line names at least one such file. A failed test is RED. A file
+#        that does not load, such as one that imports a name the base does not export, so that no
+#        test of it ran, is BUILD-FAILED; an import of a package that is not installed is NO-TEST.
+#        bun counts a failed hook (beforeAll, afterAll) as a failed test named (unnamed): a hook
+#        that fails before any test the regex names ran makes the file NO-TEST, and one that fails
+#        after such a test passed leaves it GREEN. A pass is GREEN; skips or todos alone, and
+#        "matched 0 tests", are NO-TEST.
 #   e2e  <dir> is the e2e script, such as scripts/e2e/check-states.sh, and the third field is one
 #        case, or several with commas between them. The run, at the top of the worktree, is
 #          <NAME>_E2E_CASES=<cases> bash <script>
 #        where NAME is the script's file name without .sh, in capitals, with each - as _:
-#        scripts/e2e/check-states.sh reads CHECK_STATES_E2E_CASES. A case has started when the
-#        script prints the line "== <case>". A run that started a case of the line and exits other
-#        than 0 is RED; one that exits 0 and started each case of the line is GREEN; one that
-#        started none is NO-TEST. An e2e line reads no BUILD-FAILED.
+#        scripts/e2e/check-states.sh reads CHECK_STATES_E2E_CASES. A case reports its start and its
+#        result, as this repository's e2e scripts do: the line "== <case>" when it starts, then
+#        "ok <case>" (or "ok <case> (<n>s)") when it passes, or "FAIL <case>: <why>". A FAIL of a
+#        case of the line is RED, and so is a run that exits other than 0 after a case of the line
+#        started and before its ok. A run in which each case of the line started and passed is
+#        GREEN. A case that never started, or one that started and printed no ok in a run that
+#        exits 0 (it skipped, or reported nothing), makes the line NO-TEST. An e2e line reads no
+#        BUILD-FAILED.
 #
 # What a run reads. Each run gets the tool's own environment, so a database URL, GOCACHE, GOTMPDIR
 # and GOFLAGS reach the test as the caller set them. The tool needs no network: go runs with
 # GOPROXY=off, so a module the module cache does not hold fails the run (NO-TEST) instead of a
-# download, and bun runs with --no-install. GOWORK is unset, so go reads the base's own go.work. A
-# worktree of the base holds no installed packages (git ignores node_modules), so the tool mirrors
-# each node_modules directory of the checkout into the worktree. A symlink is copied as the link it
-# is: a relative link to a workspace package of the repository resolves to the base's copy of that
-# package, and a link into an installed package resolves to the checkout's install. A scope
-# directory (@name) and .bin are mirrored entry by entry. Any other directory, such as bun's store
-# node_modules/.bun or a package a hoisted install put there, becomes a link to the checkout's; a
-# dot directory other than .bin and .bun, a cache that a tool writes, is left out.
+# download, and bun runs with --no-install. GOWORK is unset, so go reads the base's own go.work.
+# The reader of go's stream is built with the caller's GOCACHE, and with no GOFLAGS, no GOWORK and
+# no switch of toolchain (GOTOOLCHAIN=local). A worktree of the base holds no installed packages
+# (git ignores node_modules), so the tool mirrors each node_modules directory of the checkout into
+# the worktree. A symlink is copied as the link it is: a relative link to a workspace package of the
+# repository resolves to the base's copy of that package, and a link into an installed package
+# resolves to the checkout's install. A scope directory (@name) and .bin are mirrored entry by
+# entry. Any other directory, such as bun's store node_modules/.bun or a package a hoisted install
+# put there, becomes a link to the checkout's; a dot directory other than .bin and .bun, a cache
+# that a tool writes, is left out.
 #
 # What it writes. Nothing in the checkout's working tree: the worktree and each file of a run are
 # in the tool's own directory under TMPDIR, which must not be inside the checkout. git worktree add
@@ -315,10 +336,10 @@ mirror_installed_packages() {
 }
 
 status=0
-# run_logged <directory> <command>...: the command, in the directory and with no input, its output
-# in the run's log, which then goes to stderr; its exit status in status. The output goes to a file
-# and not through a pipe, so that a process a test leaves behind cannot hold the tool.
-run_logged() {
+# run_in <directory> <command>...: the command, in the directory and with no input, its output in
+# the run's log and its exit status in status. The output goes to a file and not through a pipe,
+# so that a process a test leaves behind cannot hold the tool.
+run_in() {
   local directory=$1
   shift
   {
@@ -328,6 +349,11 @@ run_logged() {
   } >&2
   status=0
   (cd -- "$directory" && exec "$@") </dev/null >"$log" 2>&1 || status=$?
+}
+
+# run_logged <directory> <command>...: run_in, and then the run's log and exit status on stderr.
+run_logged() {
+  run_in "$@"
   cat -- "$log" >&2
   echo "   exit $status" >&2
 }
@@ -339,75 +365,283 @@ first_error() {
     END { if (!found) print first }' "$log"
 }
 
-# go_verdict <regex> <exit status>: "<VERDICT><tab><what decided it>" for a go test -v run.
-go_verdict() {
-  RUN_REGEX=$1 RUN_STATUS=$2 awk '
-    function depth_of(name) { return gsub(/\//, "/", name) + 1 }
-    # The depth of the tests a go test -run regex names: go splits the regex at each / outside []
-    # and (), and at each | there into alternatives, and the shallowest alternative counts.
-    function regex_depth(re,   i, c, brackets, parens, depth, least) {
-      brackets = 0; parens = 0; depth = 1; least = 0
-      for (i = 1; i <= length(re); i++) {
-        c = substr(re, i, 1)
-        if (c == "\\") { i++ }
-        else if (c == "[") { brackets++ }
-        else if (c == "]") { if (--brackets < 0) brackets = 0 }
-        else if (brackets == 0 && c == "(") { parens++ }
-        else if (brackets == 0 && c == ")") { parens-- }
-        else if (brackets == 0 && parens == 0 && c == "/") { depth++ }
-        else if (brackets == 0 && parens == 0 && c == "|") {
-          if (least == 0 || depth < least) least = depth
-          depth = 1
-        }
-      }
-      if (least == 0 || depth < least) least = depth
-      return least
-    }
-    BEGIN { want = regex_depth(ENVIRON["RUN_REGEX"]); status = ENVIRON["RUN_STATUS"] + 0 }
-    first == "" && NF { first = $0 }
-    /^FAIL\t.* \[(build|setup) failed\]$/ { unbuilt = 1 }
-    /GOPROXY=off|toolchain not available/ && offline == "" { offline = $0 }
-    compile == "" && /^[^ \t#].*:[0-9]+:[0-9]+: / { compile = $0 }
-    panic == "" && /^panic: / { panic = $0 }
-    /^ *=== RUN / {
-      if (depth_of($3) >= want && !($3 in started)) { started[$3] = 1; order[++runs] = $3 }
-    }
-    /^ *--- (PASS|FAIL|SKIP): / {
-      if ($2 == "FAIL:" && shallower == "") { shallower = $0; sub(/^ +/, "", shallower) }
-      if (depth_of($3) < want) next
-      ended[$3] = 1
-      line = $0
-      sub(/^ +/, "", line)
-      if ($2 == "FAIL:") { fails++; if (fail == "") fail = line }
-      else if ($2 == "PASS:") { passes++; if (pass == "") pass = line }
-      else { skips++; if (skip == "") skip = line }
-    }
-    END {
-      if (unbuilt && offline != "") {
-        print "NO-TEST\tthe build needs what the module cache does not hold, and the tool reads no network: " offline
-        exit
-      }
-      if (unbuilt) { print "BUILD-FAILED\t" (compile != "" ? compile : "the test build failed"); exit }
-      if (fails) { print "RED\t" fail; exit }
-      if (status != 0) {
-        for (i = 1; i <= runs; i++)
-          if (!(order[i] in ended)) {
-            print "RED\t" order[i] " started and did not end: " (panic != "" ? panic : "exit " status)
-            exit
-          }
-        if (passes) { print "GREEN\t" pass ", and then the run failed outside the tests (exit " status ")"; exit }
-        print "NO-TEST\tthe run failed (exit " status ") before a test the regex names started: " (shallower != "" ? shallower : first)
-        exit
-      }
-      if (passes) { print "GREEN\t" pass; exit }
-      if (skips) { print "NO-TEST\tevery test the regex names skipped: " skip; exit }
-      print "NO-TEST\tno tests to run"
-    }' "$log"
+# go_reader_source: the Go program that reads one go test -json run, as the header says. It takes
+# the regex and the run's exit status, reads the stream on stdin, writes the run's text to stderr
+# and "<VERDICT><tab><what decided it>" to stdout.
+go_reader_source() {
+  cat <<'GO'
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+type event struct {
+	Action      string
+	Test        string
+	Output      string
+	FailedBuild string
 }
 
-# bun_verdict <exit status>: "<VERDICT><tab><what decided it>" for a bun test run, read from bun's
-# summary: a failed test counts once in "fail", and an error outside any test once in "fail" and
-# once in "error".
+// splitRegexp is testing/match.go's: the regex split at each / and | outside [] and (), into its
+// alternatives, each one pattern for each level of a test's name. The testing package also
+// rewrites the blanks of each pattern to _, and a field of the list holds no blank.
+func splitRegexp(s string) [][]string {
+	var alternatives [][]string
+	var levels []string
+	cs, cp := 0, 0
+	for i := 0; i < len(s); {
+		switch s[i] {
+		case '[':
+			cs++
+		case ']':
+			if cs--; cs < 0 {
+				cs = 0
+			}
+		case '(':
+			if cs == 0 {
+				cp++
+			}
+		case ')':
+			if cs == 0 {
+				cp--
+			}
+		case '\\':
+			i++
+		case '/', '|':
+			if cs == 0 && cp == 0 {
+				levels = append(levels, s[:i])
+				if s[i] == '|' {
+					alternatives = append(alternatives, levels)
+					levels = nil
+				}
+				s = s[i+1:]
+				i = 0
+				continue
+			}
+		}
+		i++
+	}
+	return append(alternatives, append(levels, s))
+}
+
+type selector [][]*regexp.Regexp
+
+// selects: the name, split at each /, matches each pattern of one alternative.
+func (sel selector) selects(name string) bool {
+	levels := strings.Split(name, "/")
+	for _, alternative := range sel {
+		if len(levels) < len(alternative) {
+			continue
+		}
+		matched := true
+		for i, pattern := range alternative {
+			if !pattern.MatchString(levels[i]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+var compileError = regexp.MustCompile(`^[^ \t#].*:[0-9]+:[0-9]+: `)
+
+func verdict(regex string, status int, stream io.Reader, text io.Writer) string {
+	var sel selector
+	for _, alternative := range splitRegexp(regex) {
+		var patterns []*regexp.Regexp
+		for _, pattern := range alternative {
+			compiled, err := regexp.Compile(pattern)
+			if err != nil {
+				return "NO-TEST\tgo test cannot read the regex: " + err.Error()
+			}
+			patterns = append(patterns, compiled)
+		}
+		sel = append(sel, patterns)
+	}
+	var (
+		built                                               = true
+		build                                               []string
+		first, panicked, offline, outside, fail, pass, skip string
+		noTests, noTestFiles                                bool
+		started                                             []string
+		ended                                               = map[string]bool{}
+	)
+	scanner := bufio.NewScanner(stream)
+	scanner.Buffer(make([]byte, 0, 64<<10), 64<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		var e event
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
+			// What go printed outside the stream, such as a refusal of its arguments.
+			fmt.Fprintln(text, line)
+			if first == "" && strings.TrimSpace(line) != "" {
+				first = line
+			}
+			if offline == "" && strings.Contains(line, "GOPROXY=off") {
+				offline = line
+			}
+			continue
+		}
+		switch e.Action {
+		case "build-output":
+			io.WriteString(text, e.Output)
+			out := strings.TrimRight(e.Output, "\n")
+			build = append(build, out)
+			if offline == "" && (strings.Contains(out, "GOPROXY=off") || strings.Contains(out, "toolchain not available")) {
+				offline = out
+			}
+		case "build-fail":
+			built = false
+		case "output":
+			io.WriteString(text, e.Output)
+			out := strings.TrimRight(e.Output, "\n")
+			if panicked == "" && strings.HasPrefix(out, "panic: ") {
+				panicked = out
+			}
+			if e.Test == "" && strings.Contains(out, "no tests to run") {
+				noTests = true
+			}
+			if first == "" && strings.TrimSpace(out) != "" && !strings.HasPrefix(out, "=== ") {
+				first = out
+			}
+		case "run":
+			if sel.selects(e.Test) {
+				started = append(started, e.Test)
+			}
+		case "pass", "fail", "skip":
+			if e.Test == "" {
+				built = built && e.FailedBuild == ""
+				noTestFiles = noTestFiles || e.Action == "skip"
+				continue
+			}
+			ended[e.Test] = true
+			result := "--- " + strings.ToUpper(e.Action) + ": " + e.Test
+			switch {
+			case !sel.selects(e.Test):
+				if e.Action == "fail" && outside == "" {
+					outside = result
+				}
+			case e.Action == "fail" && fail == "":
+				fail = result
+			case e.Action == "pass" && pass == "":
+				pass = result
+			case e.Action == "skip" && skip == "":
+				skip = result
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "NO-TEST\tthe tool could not read the run's stream: " + err.Error()
+	}
+	if offline != "" && fail == "" && pass == "" {
+		return "NO-TEST\tthe build needs what the module cache does not hold, and the tool reads no network: " + offline
+	}
+	if !built {
+		for _, out := range build {
+			if compileError.MatchString(out) {
+				return "BUILD-FAILED\t" + out
+			}
+		}
+		for _, out := range build {
+			if out != "" && !strings.HasPrefix(out, "#") {
+				return "BUILD-FAILED\t" + out
+			}
+		}
+		return "BUILD-FAILED\tthe test build failed"
+	}
+	if fail != "" {
+		return "RED\t" + fail
+	}
+	if status != 0 {
+		for _, name := range started {
+			if !ended[name] {
+				why := panicked
+				if why == "" {
+					why = "exit " + strconv.Itoa(status)
+				}
+				return "RED\t" + name + " started and did not end: " + why
+			}
+		}
+		if pass != "" {
+			return fmt.Sprintf("GREEN\t%s, and then the run failed outside the tests the regex names (exit %d)", pass, status)
+		}
+		why := outside
+		if why == "" {
+			why = first
+		}
+		return fmt.Sprintf("NO-TEST\tthe run failed (exit %d) before a test the regex names ran: %s", status, why)
+	}
+	switch {
+	case pass != "":
+		return "GREEN\t" + pass
+	case skip != "":
+		return "NO-TEST\tevery test the regex names skipped: " + skip
+	case noTestFiles:
+		return "NO-TEST\tthe package has no test files"
+	case noTests:
+		return "NO-TEST\tno tests to run"
+	}
+	return "NO-TEST\tno test the regex names ran; only tests it reaches as the parents of others ran"
+}
+
+func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: go-verdict <regex> <exit status of go test> < <its -json stream>")
+		os.Exit(2)
+	}
+	status, err := strconv.Atoi(os.Args[2])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "go-verdict: the exit status is no number:", os.Args[2])
+		os.Exit(2)
+	}
+	fmt.Println(verdict(os.Args[1], status, os.Stdin, os.Stderr))
+}
+GO
+}
+
+readonly go_reader="${tmp}/go-verdict/go-verdict"
+# build_go_reader: the reader of go's stream, built in the tool's own directory.
+build_go_reader() {
+  mkdir -- "${tmp}/go-verdict"
+  printf 'module redatbase/goverdict\n\ngo 1.21\n' >"${tmp}/go-verdict/go.mod"
+  go_reader_source >"${tmp}/go-verdict/main.go"
+  run_logged "${tmp}/go-verdict" env -u GOWORK -u GOFLAGS GOTOOLCHAIN=local GOPROXY=off go build -o "$go_reader" .
+  ((status == 0)) || refuse "the tool could not build its reader of go test's stream (its build is above)"
+}
+
+# check_base_package <dir>: result set to NO-TEST when the base's own package in dir builds a Go
+# file and does not build its test binary. A base that builds no Go file there, because dir is new
+# or a build constraint leaves each file out, has no package of its own to break.
+check_base_package() {
+  local dir=$1 files
+  [[ -d ${wt}/${dir} ]] || return 0
+  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" list -e \
+    -f '{{len .GoFiles}} {{len .CgoFiles}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' .
+  files="$(awk '/^[0-9]+ [0-9]+ [0-9]+ [0-9]+$/ { print $1 + $2 + $3 + $4; exit }' "$log")"
+  if ((status == 0)) && [[ $files == 0 ]]; then
+    echo "   the base builds no Go file in $dir, so the line's files are the package there" >&2
+    return 0
+  fi
+  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -c -o /dev/null .
+  ((status == 0)) ||
+    result="NO-TEST"$'\t'"the base does not build in $dir without the line's files, so no failure there would be the test's: $(first_error)"
+}
+
+# bun_verdict <exit status>: "<VERDICT><tab><what decided it>" for a bun test run of one file, read
+# from bun's summary. A failed test counts once in "fail"; a file that does not load, once in "fail"
+# and once in "error"; a failed hook, once in "fail", as a test named (unnamed).
 bun_verdict() {
   RUN_STATUS=$1 awk '
     BEGIN { status = ENVIRON["RUN_STATUS"] + 0 }
@@ -416,45 +650,89 @@ bun_verdict() {
     }
     /matched 0 tests|had no matches/ && nomatch == "" { nomatch = $0 }
     /Cannot find package/ && missing == "" { missing = $0 }
+    /^\(fail\) \(unnamed\)/ { hooks++; if (hook == "") hook = error_line; next }
     /^\(fail\) / && fail == "" { fail = $0 }
-    /^(error|[A-Za-z]*Error): / && error == "" { error = $0 }
+    /^(error|[A-Za-z]*Error): / { error_line = $0; if (error == "") error = $0 }
     first == "" && NF && !/^bun test v/ { first = $0 }
     END {
+      tests = count["fail"] - count["error"] - hooks
       if (nomatch != "") { print "NO-TEST\t" nomatch; exit }
       if (missing != "") { print "NO-TEST\ta package the test imports is not installed for the base: " missing; exit }
-      if (count["fail"] - count["error"] > 0) { print "RED\t" (fail != "" ? fail : count["fail"] " fail"); exit }
-      if (count["error"] > 0) { print "BUILD-FAILED\t" (error != "" ? error : "an error outside any test"); exit }
-      if (status != 0) { print "NO-TEST\tbun test failed with no test result (exit " status "): " (error != "" ? error : first); exit }
+      if (tests > 0) { print "RED\t" (fail != "" ? fail : tests " fail"); exit }
+      if (count["error"] > 0 && count["pass"] + count["skip"] + count["todo"] + hooks == 0) {
+        print "BUILD-FAILED\tthe file does not load at the base: " (error != "" ? error : "an error outside any test")
+        exit
+      }
+      if (count["pass"] > 0 && hooks + count["error"] > 0) {
+        print "GREEN\t" count["pass"] " pass, and then a hook or the file failed outside the tests: " (hook != "" ? hook : error)
+        exit
+      }
       if (count["pass"] > 0) { print "GREEN\t" count["pass"] " pass"; exit }
+      if (hooks > 0) { print "NO-TEST\ta hook failed before a test the regex names ran: " hook; exit }
+      if (status != 0) { print "NO-TEST\tbun test failed with no test result (exit " status "): " (error != "" ? error : first); exit }
       print "NO-TEST\tno test the regex names ran to a pass or a fail (" count["skip"] + 0 " skip, " count["todo"] + 0 " todo)"
     }' "$log"
 }
 
-# e2e_verdict <cases> <exit status>: "<VERDICT><tab><what decided it>" for a run of an e2e script.
+# most_red <verdict> <verdict>: the more red of two "<VERDICT><tab><why>" lines, the first of two
+# alike; an empty first one is no verdict yet.
+most_red() {
+  local rank_of_first rank_of_second
+  rank_of_first="$(verdict_rank "$1")"
+  rank_of_second="$(verdict_rank "$2")"
+  if ((rank_of_second > rank_of_first)); then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
+verdict_rank() {
+  case ${1%%$'\t'*} in
+  RED) echo 4 ;;
+  BUILD-FAILED) echo 3 ;;
+  GREEN) echo 2 ;;
+  NO-TEST) echo 1 ;;
+  *) echo 0 ;;
+  esac
+}
+
+# e2e_verdict <cases> <exit status>: "<VERDICT><tab><what decided it>" for a run of an e2e script,
+# read by each case's start line and result line.
 e2e_verdict() {
   RUN_CASES=$1 RUN_STATUS=$2 awk '
+    function says(word, c) { return $0 == word " " c || index($0, word " " c " ") == 1 }
     BEGIN { n = split(ENVIRON["RUN_CASES"], want, ","); status = ENVIRON["RUN_STATUS"] + 0 }
     {
-      for (i = 1; i <= n; i++)
-        if (!(i in began) && ($0 == "== " want[i] || index($0, "== " want[i] " ") == 1)) { began[i] = 1; last = want[i] }
+      for (i = 1; i <= n; i++) {
+        if (says("==", want[i])) began[i] = 1
+        else if (says("ok", want[i])) passed[i] = 1
+        else if (!(i in failed) && (says("FAIL", want[i]) || index($0, "FAIL " want[i] ":") == 1)) failed[i] = $0
+      }
     }
-    /^FAIL / && fail == "" { fail = $0 }
     END {
-      for (i = 1; i <= n; i++)
-        if (i in began) started++
-        else absent = absent (absent == "" ? "" : ",") want[i]
-      if (!started) {
-        print "NO-TEST\tno line == <case> for " ENVIRON["RUN_CASES"] ": the script started no case of the line (exit " status ")"
+      for (i = 1; i <= n; i++) if (i in failed) { print "RED\t" failed[i]; exit }
+      if (status != 0)
+        for (i = 1; i <= n; i++)
+          if ((i in began) && !(i in passed)) { print "RED\texit " status " after == " want[i] ", with no ok " want[i]; exit }
+      for (i = 1; i <= n; i++) {
+        if (!(i in began)) never = never (never == "" ? "" : ",") want[i]
+        else if (!(i in passed)) silent = silent (silent == "" ? "" : ",") want[i]
+        else started++
+      }
+      if (never == "" && silent == "") {
+        print "GREEN\tok " ENVIRON["RUN_CASES"] (status != 0 ? ", and then the script exited " status : "")
         exit
       }
-      if (status != 0) { print "RED\t" (fail != "" ? fail : "exit " status " after == " last); exit }
-      if (absent != "") { print "NO-TEST\tthe script exited 0 and never started " absent; exit }
-      print "GREEN\tevery case of the line passed: " ENVIRON["RUN_CASES"]
+      if (silent != "") { print "NO-TEST\t" silent " started and printed no ok: it skipped, or reported no result (exit " status ")"; exit }
+      if (started) { print "NO-TEST\tthe script never started " never " (exit " status ")"; exit }
+      print "NO-TEST\tno line == <case> for " ENVIRON["RUN_CASES"] ": the script started no case of the line (exit " status ")"
     }' "$log"
 }
 
 # ---- each line, at the base ---------------------------------------------------------------------------
 echo "red-at-base.sh: ${#kinds[@]} lines of $list, at the base $base ($base_commit), from the checkout $repo" >&2
+for kind in "${kinds[@]}"; do
+  if [[ $kind == go ]]; then
+    build_go_reader
+    break
+  fi
+done
 red=0
 build_failed=0
 green=0
@@ -471,24 +749,29 @@ for i in "${!kinds[@]}"; do
   } >&2
   make_worktree
   result=''
-  if [[ $kind == go ]] && compgen -G "${wt}/${dir}/*.go" >/dev/null; then
-    run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -c -o /dev/null .
-    if ((status != 0)); then
-      result="NO-TEST"$'\t'"the base does not build in $dir without the line's files, so no failure there would be the test's: $(first_error)"
-    fi
+  if [[ $kind == go ]]; then
+    check_base_package "$dir"
   fi
   if [[ -z $result ]]; then
     copy_files "$number" "${files[@]}"
     mirror_installed_packages
     case $kind in
     go)
-      run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -count=1 -v -run "$test" .
-      result="$(go_verdict "$test" "$status")"
+      run_in "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -json -count=1 -run "$test" .
+      # The reader writes the run's text to stderr, and its verdict to stdout.
+      result="$("$go_reader" "$test" "$status" <"$log")" || result=''
+      echo "   exit $status" >&2
       ;;
     bun)
       read -r -a bun_files <<<"${bun_tests[i]}"
-      run_logged "${wt}/${dir}" bun test --no-install "${bun_files[@]}" -t "$test"
-      result="$(bun_verdict "$status")"
+      for bun_file in "${bun_files[@]}"; do
+        run_logged "${wt}/${dir}" bun test --no-install "$bun_file" -t "$test"
+        file_result="$(bun_verdict "$status")"
+        if ((${#bun_files[@]} > 1)); then
+          file_result="${file_result%%$'\t'*}"$'\t'"${dir}/${bun_file#./}: ${file_result#*$'\t'}"
+        fi
+        result="$(most_red "$result" "$file_result")"
+      done
       ;;
     e2e)
       name=${dir##*/}

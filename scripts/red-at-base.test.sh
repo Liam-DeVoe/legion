@@ -9,11 +9,15 @@
 #   nothing) read RED, GREEN and NO-TEST, and the tool exits 1;
 # - each kind reads each verdict it can give: go (a test that does not build at the base, a skip, a
 #   subtest, a parent that fails before its subtest starts, a base that does not build without the
-#   line's files, a file the checkout has not committed, GOFLAGS passed through), bun (a workspace
-#   package that must resolve to the base's copy, an installed package that must resolve at all, a
-#   skip, no match, an import the base lacks, a package nobody installed) and e2e (a case that fails
-#   in the worktree and would pass in the checkout, a case that passes, a case the script does not
-#   have, two cases in one line);
+#   line's files, a file the checkout has not committed, GOFLAGS passed through, a passing test
+#   that prints failure lines, regexes whose alternatives stand at different depths, a base whose
+#   every file of the package a build constraint leaves out, a package the base lacks), bun (a
+#   workspace package that must resolve to the base's copy, an installed package that must resolve
+#   at all, a skip, no match, an import the base lacks, a package nobody installed, a teardown and
+#   a setup that fail, two files in one line) and e2e (a case that fails in the worktree and would
+#   pass in the checkout, a case that passes, a case the script does not have, two cases in one
+#   line, a case that skips, one that prints its start and no result, one that dies after its
+#   start);
 # - a list whose every line is red, a BUILD-FAILED among them, exits 0;
 # - the tool leaves nothing behind in the checkout, in its git directory or in TMPDIR, even when a
 #   TERM stops it while a test runs;
@@ -97,6 +101,23 @@ export function total(xs: number[]): number {
   return xs.length === 0 ? -1 : xs.reduce((a, b) => a + b);
 }'
 write web/package.json '{ "name": "@scratch/web", "private": true }'
+# A package whose every Go file a build constraint leaves out: at the base it builds nothing.
+write live/live.go '//go:build scratchlive
+
+package live
+
+func Ready() bool { return true }'
+write live/live_test.go '//go:build scratchlive
+
+package live
+
+import "testing"
+
+func TestLiveIsReady(t *testing.T) {
+	if !Ready() {
+		t.Fatal("not ready")
+	}
+}'
 write version.txt '1'
 scratch_git add -A
 scratch_git commit -q -m 'the base'
@@ -191,6 +212,50 @@ func TestHalfOfFour(t *testing.T) {
 		t.Fatal("Half(4) is not 2")
 	}
 }'
+# A test that prints a transcript holding failure lines of its own, and passes at the base too.
+write calc/transcript_test.go 'package calc
+
+import (
+	"fmt"
+	"testing"
+)
+
+func TestLoggedTranscript(t *testing.T) {
+	fmt.Println("--- FAIL: ExampleNestedProcess (0.00s)")
+	fmt.Println("--- FAIL: TestLoggedTranscript (0.00s)")
+	if Neg(1) != -1 {
+		t.Fatal("Neg(1) is not -1")
+	}
+}'
+# An untagged test, new beside the base's tagged files, and a test in a package the base lacks.
+write live/version_test.go 'package live
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestVersionIsTwo(t *testing.T) {
+	version, err := os.ReadFile("../version.txt")
+	if err != nil || strings.TrimSpace(string(version)) != "2" {
+		t.Fatalf("version.txt holds %q (%v)", version, err)
+	}
+}'
+write fresh/fresh_test.go 'package fresh
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestFreshPackageReadsTwo(t *testing.T) {
+	version, err := os.ReadFile("../version.txt")
+	if err != nil || strings.TrimSpace(string(version)) != "2" {
+		t.Fatalf("version.txt holds %q (%v)", version, err)
+	}
+}'
 write lib/index.ts 'export function total(xs: number[]): number {
   return xs.reduce((a, b) => a + b, 0);
 }
@@ -227,6 +292,30 @@ import { nothing } from "not-installed-anywhere";
 test("imports", () => {
   expect(nothing).toBeDefined();
 });'
+# Hooks that fail: bun counts each as a failed test named (unnamed).
+write web/src/hooks.test.ts 'import { afterAll, expect, test } from "bun:test";
+import { total } from "@scratch/lib";
+
+afterAll(() => {
+  throw new Error("the teardown fails");
+});
+
+test("passes before a failing teardown", () => {
+  expect(1).toBe(1);
+});
+
+test("totals an empty list beside a failing teardown", () => {
+  expect(total([])).toBe(0);
+});'
+write web/src/setup.test.ts 'import { beforeAll, expect, test } from "bun:test";
+
+beforeAll(() => {
+  throw new Error("the setup fails");
+});
+
+test("never runs after a failing setup", () => {
+  expect(1).toBe(1);
+});'
 # shellcheck disable=SC2016 # the script's own expansions, run by its bash
 write scripts/e2e/scratch-cases.sh '#!/usr/bin/env bash
 # The cases of SCRATCH_CASES_E2E_CASES, commas between them, each read against the checkout it runs in.
@@ -250,6 +339,17 @@ for case in ${SCRATCH_CASES_E2E_CASES//,/ }; do
     : >"$RED_AT_BASE_TEST_MARK"
     sleep 3
     echo "ok $case"
+    ;;
+  skips)
+    echo "== $case"
+    echo "SKIP $case: no database was given"
+    ;;
+  start-only)
+    echo "== $case"
+    ;;
+  dies)
+    echo "== $case"
+    exit 3
     ;;
   *)
     echo "scratch-cases.sh: no case is named $case" >&2
@@ -400,20 +500,39 @@ run_tool "$(list go \
   'go calc ^TestWithSetup$/^new$ calc/sub_test.go' \
   'go broken ^TestHalfOfFour$ broken/half_test.go' \
   'go calc ^TestWorkInProgress$ calc/wip_test.go' \
-  'go calc ^TestTagged$ calc/tagged_test.go')"
+  'go calc ^TestTagged$ calc/tagged_test.go' \
+  'go calc ^TestLoggedTranscript$ calc/transcript_test.go' \
+  'go calc ^TestWithSetup$/^new$|^TestAbsent$ calc/sub_test.go' \
+  'go calc ^TestTable$/^absent$|^TestAbsent$ calc/sub_test.go' \
+  'go calc ^TestTable$/^two_and_two$|^TestAbsent$ calc/sub_test.go' \
+  'go calc ^TestNegOfNegIsItself$|^TestTable$/^zero$ calc/neg_more_test.go calc/sub_test.go' \
+  'go live ^TestVersionIsTwo$ live/version_test.go' \
+  'go fresh ^TestFreshPackageReadsTwo$ fresh/fresh_test.go')"
 expect_status 1
-expect_lines 8
+expect_lines 15
 expect_verdict 1 BUILD-FAILED 'undefined: Mul'
 expect_verdict 2 NO-TEST 'skipped'
 expect_verdict 3 RED 'TestTable/two_and_two'
 expect_verdict 4 GREEN 'TestTable/zero'
 # The parent fails before the subtest the regex names starts: no test it names ran.
-expect_verdict 5 NO-TEST 'before a test the regex names started: --- FAIL: TestWithSetup'
+expect_verdict 5 NO-TEST 'before a test the regex names ran: --- FAIL: TestWithSetup'
 # The base's own package does not build: no fault of the line's file, so no BUILD-FAILED.
 expect_verdict 6 NO-TEST 'does not build'
 expect_verdict 7 RED 'TestWorkInProgress'
 # With no build tag, the tagged file is no part of the build.
 expect_verdict 8 NO-TEST 'no tests to run'
+# The test prints two failure lines of its own and passes: only its result counts.
+expect_verdict 9 GREEN '--- PASS: TestLoggedTranscript'
+# An alternative at another depth changes nothing about the parent that ran only to reach new,
+expect_verdict 10 NO-TEST 'before a test the regex names ran: --- FAIL: TestWithSetup'
+# nor about a parent that passed with no subtest the regex names: go printed no tests to run.
+expect_verdict 11 NO-TEST 'no tests to run'
+expect_verdict 12 RED 'TestTable/two_and_two'
+expect_verdict 13 GREEN
+# The base builds no Go file in live (each holds a build tag), nor any in fresh, which it lacks:
+# the line's file is the package, and it runs.
+expect_verdict 14 RED 'TestVersionIsTwo'
+expect_verdict 15 RED 'TestFreshPackageReadsTwo'
 expect_nothing_left
 
 case_name='go: the caller GOFLAGS reaches go test'
@@ -431,9 +550,13 @@ run_tool "$(list bun \
   'bun web ^waits\sfor\sa\sserver$ web/src/total.test.ts' \
   'bun web ^no\ssuch\stest$ web/src/total.test.ts' \
   'bun web ^counts$ web/src/count.test.ts' \
-  'bun web ^imports$ web/src/missing.test.ts')"
+  'bun web ^imports$ web/src/missing.test.ts' \
+  'bun web ^passes\sbefore\sa\sfailing\steardown$ web/src/hooks.test.ts' \
+  'bun web ^totals\san\sempty\slist\sbeside\sa\sfailing\steardown$ web/src/hooks.test.ts' \
+  'bun web ^never\sruns\safter\sa\sfailing\ssetup$ web/src/setup.test.ts' \
+  'bun web ^counts$|^total\sof\sone\sand\stwo\sis\sthree$ web/src/total.test.ts web/src/count.test.ts')"
 expect_status 1
-expect_lines 7
+expect_lines 11
 # Red only when @scratch/lib resolves to the base's lib, where the total of an empty list is -1.
 expect_verdict 1 RED 'total of an empty list is zero'
 expect_verdict 2 GREEN
@@ -444,6 +567,13 @@ expect_verdict 5 NO-TEST 'matched 0 tests'
 expect_verdict 6 BUILD-FAILED "Export named 'count' not found"
 # A package nobody installed is no fault of the test's code at the base.
 expect_verdict 7 NO-TEST 'not-installed-anywhere'
+# A teardown that fails after the test passed is no failure of the test, and no file that does
+# not load; a setup that fails before it ran leaves no test that ran.
+expect_verdict 8 GREEN 'the teardown fails'
+expect_verdict 9 RED 'totals an empty list beside a failing teardown'
+expect_verdict 10 NO-TEST 'a hook failed before a test the regex names ran: error: the setup fails'
+# Each file runs on its own, and the line reads the more red of the two.
+expect_verdict 11 BUILD-FAILED "web/src/count.test.ts: the file does not load at the base"
 expect_nothing_left
 
 case_name='e2e: each verdict of an e2e line'
@@ -451,14 +581,23 @@ run_tool "$(list e2e \
   'e2e scripts/e2e/scratch-cases.sh version-is-two scripts/e2e/scratch-cases.sh' \
   'e2e scripts/e2e/scratch-cases.sh version-file-exists scripts/e2e/scratch-cases.sh' \
   'e2e scripts/e2e/scratch-cases.sh no-such-case scripts/e2e/scratch-cases.sh' \
-  'e2e scripts/e2e/scratch-cases.sh version-file-exists,version-is-two scripts/e2e/scratch-cases.sh')"
+  'e2e scripts/e2e/scratch-cases.sh version-file-exists,version-is-two scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh skips scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh start-only scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh dies scripts/e2e/scratch-cases.sh' \
+  'e2e scripts/e2e/scratch-cases.sh version-file-exists,skips scripts/e2e/scratch-cases.sh')"
 expect_status 1
-expect_lines 4
+expect_lines 8
 # Red only when the script reads the base's version.txt, which holds 1; the checkout's holds 2.
-expect_verdict 1 RED 'version.txt holds 1'
-expect_verdict 2 GREEN
-expect_verdict 3 NO-TEST
+expect_verdict 1 RED 'FAIL version-is-two: version.txt holds 1'
+expect_verdict 2 GREEN 'ok version-file-exists'
+expect_verdict 3 NO-TEST 'no line == <case>'
 expect_verdict 4 RED 'version.txt holds 1'
+# A case that started and printed no ok, in a run that exits 0, has no result to read.
+expect_verdict 5 NO-TEST 'skips started and printed no ok'
+expect_verdict 6 NO-TEST 'start-only started and printed no ok'
+expect_verdict 7 RED 'exit 3 after == dies'
+expect_verdict 8 NO-TEST 'skips started and printed no ok'
 expect_nothing_left
 
 case_name='a list of red lines, a BUILD-FAILED among them, exits 0; comments and blank lines are passed over'

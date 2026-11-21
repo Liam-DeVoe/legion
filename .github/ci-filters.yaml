@@ -926,13 +926,20 @@ disk_watch_test: &disk_watch_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/disk_watch.test.sh'
   - '.github/scripts/disk_watch.py'
-# why: .github/ci-notes/ci.md#priorities_seed_check_test-the-one-harness-of-the-job-outside-githubscripts
+# why: .github/ci-notes/ci.md#priorities_seed_check_test-a-harness-of-the-job-outside-githubscripts
 priorities_seed_check_test: &priorities_seed_check_test
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-test.yaml'
   - 'scripts/priorities-seed-check.test.sh'
   - 'scripts/priorities-seed-check.sh'
+# why: .github/ci-notes/ci.md#red_at_base_test-a-harness-of-the-job-outside-githubscripts
+red_at_base_test: &red_at_base_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - 'scripts/red-at-base.test.sh'
+  - 'scripts/red-at-base.sh'
 check_ci_filters_test: &check_ci_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1029,6 +1036,7 @@ test:
   - *race_memory_test
   - *disk_watch_test
   - *priorities_seed_check_test
+  - *red_at_base_test
   - *check_ci_filters_test
   - *check_ts_filters_test
   - *go_test_step_expansion_test

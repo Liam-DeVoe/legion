@@ -358,10 +358,17 @@ Before these the job's filter carried one pattern, '.github/scripts/*', for all 
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
 
-## priorities_seed_check_test: The one harness of the job outside .github/scripts
+## priorities_seed_check_test: A harness of the job outside .github/scripts
 
-The one harness of the job outside .github/scripts: it carries its own helpers
-and sources no test-lib.sh.
+A harness of the job outside .github/scripts, as red_at_base_test's is: it
+carries its own helpers and sources no test-lib.sh.
+
+## red_at_base_test: A harness of the job outside .github/scripts
+
+A harness of the job outside .github/scripts, as priorities_seed_check_test's
+is: it carries its own helpers and sources no test-lib.sh. Its step runs after
+the job's setup-go, since the scratch repository it makes runs go test, and
+bun test, at a base commit.
 
 ## test: The test job: the Claude Code plugin build, the changelog
 
