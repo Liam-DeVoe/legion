@@ -72,7 +72,7 @@ import { specSummary } from "../spec-summary";
 import { TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery } from "../useIssueTree";
+import { issueAsksQuery, standsFailed } from "../useIssueTree";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import {
   type SpecDecision,
@@ -165,9 +165,10 @@ export function SpecFilterBody({
   // (`useIssueTree.ts`) by an observer that sends no request of its own (`treeRead`). A read
   // is held where it holds an answer, never by its status: a read the page asks again - on
   // every event that names its key (`event-refresh.ts`) - keeps its answer while it is out and
-  // when it fails, and what the body drew from that answer stands. Only a read that failed
-  // with no answer held says so, over the tree, with a Retry that asks that read again
-  // (`failedWithNothing`).
+  // when it fails, and what the body drew from that answer stands. A read that stands failed -
+  // no answer held, and a fetch of it failed (`standsFailed`) - says so over the tree, with a
+  // Retry that asks that read again, and its line stays, its Retry busy, while the read runs
+  // again, until it answers.
   const spec = primarySpec(issue);
   const verification = roleDocument(issue, "verification");
   const coverageRead = useQuery(treeRead(issueCoverageQuery(issue.key)));
@@ -204,33 +205,34 @@ export function SpecFilterBody({
   // What decided each statement comes from the decisions read and the asks read: until both are
   // held a run whose cell draws no decision may yet have one, so nothing says that none did.
   const decidedHeld = decisionsHeld && asksHeld;
-  // Each line of the reads that failed with nothing held, in the page's words for a read that
-  // stands failed (`STATE_LINES`), under the key it is drawn by: the coverage's and the spec's
-  // blocks' as the statements', the results' and the Verification document's blocks' as the
-  // results', which leave every statement unmarked alike, then the decisions' and the asks', in
-  // the outline's words for those two reads. A line's Retry asks again the reads of that line that
-  // failed, and no other, and none of them while it is read again already.
+  // Each line of the reads that stand failed (`standsFailed`), in the page's words for such a
+  // read (`STATE_LINES`), under the key it is drawn by: the coverage's and the spec's blocks' as
+  // the statements', the results' and the Verification document's blocks' as the results', which
+  // leave every statement unmarked alike, then the decisions' and the asks', in the outline's
+  // words for those two reads. A line stays, its Retry busy, while a read of it that stands
+  // failed runs again, until the read answers. A line's Retry asks again the reads of that line
+  // that stand failed (`failed`), and no other, and none of them while it is read again already.
   const unreadable = (
     [
       {
-        failed: [coverageRead, specBlocksRead],
         line: "statements",
         message: STATE_LINES.statements_unreadable,
+        reads: [coverageRead, specBlocksRead],
       },
       {
-        failed: [resultsRead, checksRead],
         line: "results",
         message: STATE_LINES.spec_results_unreadable,
+        reads: [resultsRead, checksRead],
       },
       {
-        failed: [decisionsRead],
         line: "decisions",
         message: STATE_LINES.issue_decisions_unreadable,
+        reads: [decisionsRead],
       },
-      { failed: [asksRead], line: "asks", message: STATE_LINES.asks_unreadable },
+      { line: "asks", message: STATE_LINES.asks_unreadable, reads: [asksRead] },
     ] as const
   )
-    .map((group) => ({ ...group, failed: group.failed.filter(failedWithNothing) }))
+    .map((group) => ({ ...group, failed: group.reads.filter(standsFailed) }))
     .filter(({ failed }) => failed.length > 0);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
   // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
@@ -462,14 +464,19 @@ export function SpecFilterBody({
     stop !== undefined && statements.some((node) => node.id === stop) ? stop : statements[0]?.id;
   return (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
-      {/* Each line of the reads that failed with nothing held, in the page's words, as every view
-          drawn in the stage says one (`FailedReadLine`): over the tree and never in it, since an
-          alert inside a tree would break the tree's own structure of rows. The stage gives a
-          focus left on nothing to a line's Retry where the view draws no row, and moves it on to
-          the next line, the tab-stop row or the tree as a line that held it leaves
-          (`slots/stage.tsx`). */}
-      {unreadable.map(({ failed, line, message }) => (
+      {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
+          the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
+          inside a tree would break the tree's own structure of rows. The stage gives a focus left
+          on nothing to a line's Retry where the view draws no row, and moves it on to the next
+          line, the tab-stop row or the tree as a line that held it leaves (`slots/stage.tsx`). */}
+      {unreadable.map(({ failed, line, message, reads }) => (
         <FailedReadLine
+          // Which failure the line says, which keys its alert: the refusals of every read the
+          // line lists, not only of those that stand failed. A read's `errorUpdateCount` rises
+          // with each refusal of it and is never lowered when the read answers, so the sum rises
+          // exactly when one of the line's reads is refused, and a run that ends with no new
+          // refusal, as one paused while the browser is offline does, says the failure no more.
+          failure={reads.reduce((failures, read) => failures + read.errorUpdateCount, 0)}
           key={line}
           message={message}
           onRetry={() => {
@@ -603,13 +610,6 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   j: 1,
   k: -1,
 };
-
-/** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
- *  had, which the body still draws from, so only a read that left nothing to draw says it
- *  failed. A read of a document the issue does not name is never asked, so it has not failed. */
-function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
-  return read.isError && read.data === undefined;
-}
 
 /**
  * Places the focused statement or cell on screen by the page's one rule (`useRowOnScreen`,

@@ -1,5 +1,11 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQueries, useQuery } from "@tanstack/react-query";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  useQueries,
+  useQuery,
+} from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -14,6 +20,7 @@ import type {
   CheckBlock,
   Decision,
   IssueCheckResults,
+  IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
@@ -853,7 +860,7 @@ function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
   );
 }
 
-// Part J fills the Spec view's slot (`SLOT_FILLED`), so an address that names an item beside the
+// The Spec view's slot is filled (`SLOT_FILLED`), so an address that names an item beside the
 // view's own - `/spec?comment=<id>`, as `documentItemPath` writes the address of an item of the
 // spec - is the view's to draw: the stage draws the Spec view and no outline, and the view lands
 // on the item in its own tree, with the focus on the item's row. The stage is the page's own,
@@ -1791,6 +1798,79 @@ test("a refused decisions read says so in its own line, and its Retry asks that 
     expect(askedOf(read)).toEqual({ ...before, decisions: before.decisions + 1 });
     expect(view.container.querySelector('[role="alert"]')).toBeNull();
   } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// A refused read's line stays over the tree while its Retry runs the read again, its Retry busy,
+// so the focus that Retry holds stays where it was, and the line leaves once the read answers.
+test("a refused read's line stays, its Retry busy, while the read runs again, and leaves once it answers", async () => {
+  const user = userEvent.setup();
+  const made = [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] })];
+  const { read, view } = drawBody(issueTree([statement("r1"), decisionNode("d1")]), made, {
+    decisions: "failed",
+  });
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
+    const answer = Promise.withResolvers<IssueDecisions>();
+    read.decisions.mockReturnValue(answer.promise);
+    await user.click(within(line).getByRole("button", { name: "Retry" }));
+    expect(alertSaying(view, STATE_LINES.issue_decisions_unreadable)).toBe(line);
+    expect(within(line).getByRole("button", { name: "Retry" }).getAttribute("aria-busy")).toBe(
+      "true"
+    );
+    await act(async () => answer.resolve(decisionsRead(made)));
+    await waitFor(() => expect(view.container.querySelector('[role="alert"]')).toBeNull());
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-cell]")?.getAttribute("data-decision-id")
+      ).toBe("decisions-md#b-d1")
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// A refused read's alert is drawn afresh, so a screen reader says it again, for each new refusal
+// of the read, and only then: a run of it that pauses while the browser is offline, refused
+// nothing more, leaves the alert as it was.
+test("a refused read's alert is said again for a new refusal, and not when its run pauses offline with no new refusal", async () => {
+  const made = [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] })];
+  const { client, read, redraw, view } = drawBody(
+    issueTree([statement("r1"), decisionNode("d1")]),
+    made,
+    { decisions: "failed" }
+  );
+  try {
+    await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
+    // The read is tried once more after a refusal, so a run of it has a second try, which waits
+    // while the browser is offline. The body `redraw(true)` alone draws is the same element,
+    // which React does not draw again, so its read would keep the options it had: the body is
+    // taken off the page and drawn afresh, and its read takes the new ones.
+    client.setQueryDefaults(["decisions", KEY], { retry: 1, retryDelay: 30 });
+    redraw(false);
+    redraw(true);
+    const line = alertSaying(view, STATE_LINES.issue_decisions_unreadable);
+    const first = within(line).getByRole("alert");
+    const retry = within(line).getByRole("button", { name: "Retry" });
+    // The run's first try starts while the browser is online; the browser goes offline before
+    // that try is refused, so the second try pauses until it is online again.
+    act(() => retry.click());
+    act(() => onlineManager.setOnline(false));
+    await act(() => Bun.sleep(100));
+    expect(client.getQueryState(["decisions", KEY])?.fetchStatus).toBe("paused");
+    expect(alertSaying(view, STATE_LINES.issue_decisions_unreadable)).toBe(line);
+    expect(
+      within(line).getByRole("alert"),
+      "a run that paused with no new refusal said the failure again"
+    ).toBe(first);
+    // Online again, the second try runs and is refused: a new refusal, said again.
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(within(line).getByRole("alert")).not.toBe(first));
+  } finally {
+    onlineManager.setOnline(true);
     view.unmount();
     read.mockRestore();
   }
