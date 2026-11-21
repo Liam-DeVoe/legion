@@ -85,6 +85,13 @@ export const ASK_WAITS_ON_THE_ASSIGNEE =
 
 const HUMAN_AGREED_TO_DOCUMENT = "the human has agreed to every point in the document";
 
+/** The owner rule of a tool that addresses an issue's or a project's document. */
+const DOCUMENT_OWNER_RULE =
+  "Exactly one of issue and project is required; with project, artifact names the document.";
+/** The owner rule of a document tool that always names its document, by artifact or ref. */
+const NAMED_DOCUMENT_OWNER_RULE =
+  "Exactly one of issue and project is required; artifact or ref must name the document.";
+
 function documentOwnerValidation(
   requireArtifact: boolean,
   alwaysRequireArtifact = false
@@ -107,15 +114,13 @@ function documentOwnerValidation(
         (!alwaysRequireArtifact || hasArtifact || hasRef)
       );
     },
-    message: alwaysRequireArtifact
-      ? "Exactly one of issue and project is required; artifact or ref must name the document."
-      : "Exactly one of issue and project is required; with project, artifact names the document.",
+    message: alwaysRequireArtifact ? NAMED_DOCUMENT_OWNER_RULE : DOCUMENT_OWNER_RULE,
   };
 }
 
 const ARTIFACT_SOURCE_RULE =
   "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
-const ARTIFACT_OWNER_AND_SOURCE_RULE = `${ARTIFACT_SOURCE_RULE} Exactly one of issue and project is required; with project, artifact names the document.`;
+const ARTIFACT_OWNER_AND_SOURCE_RULE = `${ARTIFACT_SOURCE_RULE} ${DOCUMENT_OWNER_RULE}`;
 
 /** Joins the parts of a rule a call broke, so a refusal never names a part the call kept. */
 function brokenParts(parts: ReadonlyArray<readonly [boolean, string]>): string | undefined {
@@ -489,6 +494,10 @@ function issueUpdateProblem(value: unknown): string | undefined {
   return changesAField ? undefined : ISSUE_UPDATE_FIELDS_RULE;
 }
 
+/** dispatch_message's owner rule. */
+const MESSAGE_OWNER_RULE =
+  "issue is required unless in_reply_to names a message delivered to this session, which is the one message with no issue.";
+
 /**
  * dispatch_message: `issue` is required for every message except the one kind that cannot have
  * one - the answer to a human's direct message to this session, which Dispatch keeps in an
@@ -499,8 +508,7 @@ const messageValidation: NonNullable<DispatchToolSpec["validation"]> = {
     const input = value as { readonly issue?: unknown; readonly in_reply_to?: unknown };
     return typeof input.issue === "string" || typeof input.in_reply_to === "string";
   },
-  message:
-    "issue is required unless in_reply_to names a message delivered to this session, which is the one message with no issue.",
+  message: MESSAGE_OWNER_RULE,
 };
 
 /**
@@ -514,6 +522,20 @@ const READ_OWNER_RULE =
   "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
 const READ_MESSAGE_RULE =
   "message stands alone: it names the conversation, so name no issue, project, artifact, or ref with it.";
+
+/**
+ * Every owner rule a tool's validation refuses a call with: a document tool's two, dispatch_read's
+ * and dispatch_message's. A refusal that joins the parts of a rule a call broke names the owner
+ * part first (`brokenParts`), so a host that has already said the call names no owner, in words
+ * of its own, cuts the rule off the front of the refusal and keeps the other parts
+ * (`checkDispatchCall` in packages/envoy-client/src/dispatch-commands/check.ts).
+ */
+export const DISPATCH_OWNER_RULES: readonly string[] = [
+  DOCUMENT_OWNER_RULE,
+  NAMED_DOCUMENT_OWNER_RULE,
+  READ_OWNER_RULE,
+  MESSAGE_OWNER_RULE,
+];
 
 /** dispatch_read's refusal: a call with message breaks only the message rule, and a call
  *  without it only the owner rule. */

@@ -1,4 +1,5 @@
 import {
+  DISPATCH_OWNER_RULES,
   dispatchToolSchema,
   dispatchToolSpecs,
   PROJECT_KEY_PATTERN,
@@ -560,18 +561,32 @@ export async function resolveOwnerArguments(
   const issue = `${repo}#${legionIssue}`;
   return { args: { ...args, issue }, ref, owner: { kind: "issue", issue } };
 }
-/** The schema's own "issue is required": a required `issue` field left out, or the owner refine. */
-function restatesMissingOwner(issue: z.core.$ZodIssue): boolean {
-  return (
-    (issue.code === "invalid_type" &&
-      issue.path.length === 1 &&
-      issue.path[0] === "issue" &&
-      issue.input === undefined) ||
-    (issue.code === "custom" &&
-      issue.path.length === 0 &&
-      (issue.message.startsWith("Exactly one of issue and project is required") ||
-        issue.message.startsWith("issue is required unless in_reply_to")))
+/**
+ * `issue` without what restates a missing owner, or undefined when nothing else is left. The
+ * schema's own "issue is required", a required `issue` field left out, is dropped whole. A refusal
+ * of the tool's rule (a `custom` issue at the root) opens with the owner rule when the call broke
+ * it (`DISPATCH_OWNER_RULES`): that rule and the space that joins it to the next part are cut,
+ * and every other part of the rule the call broke stays.
+ */
+function withoutMissingOwner(issue: z.core.$ZodIssue): z.core.$ZodIssue | undefined {
+  if (
+    issue.code === "invalid_type" &&
+    issue.path.length === 1 &&
+    issue.path[0] === "issue" &&
+    issue.input === undefined
+  ) {
+    return undefined;
+  }
+  if (issue.code !== "custom" || issue.path.length !== 0) return issue;
+  const { message } = issue;
+  const rule = DISPATCH_OWNER_RULES.find(
+    (owner) =>
+      message.startsWith(owner) &&
+      (message.length === owner.length || message[owner.length] === " ")
   );
+  if (rule === undefined) return issue;
+  const rest = message.slice(rule.length + 1);
+  return rest === "" ? undefined : { ...issue, message: rest };
 }
 /** The addresses `config` reaches Dispatch at, the API's and the dashboard's: what the call and
  *  its dry run both read a dashboard-URL `ref` against. */
@@ -607,15 +622,17 @@ export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<
       : ownerConflictProblems(tool, args, owner.ref, optionalString(owner.args, "ref"));
   problems.push(...conflicts);
   // Every owner-missing exit (no issue, bad LEGION_ISSUE, no repo in cwd) leaves owner null, and
-  // a conflict already names the owners; the schema's own "issue is required" would only restate
-  // the actionable line already pushed.
+  // a conflict already names the owners. The schema's own "issue is required" and the owner rule
+  // a refusal of the tool's rule opens with would only restate the actionable line already
+  // pushed, so they are left out; every other part of the rule the call broke stays, so the
+  // refusal names all of the call's problems at once.
   const ownerMissing =
     issueFreeTools[tool] !== true && (owner.owner === null || conflicts.length > 0);
   const schema = toolSchema(tool);
   const parsed = schema.safeParse(owner.args, { reportInput: true });
   if (!parsed.success) {
     const issues = ownerMissing
-      ? parsed.error.issues.filter((issue) => !restatesMissingOwner(issue))
+      ? parsed.error.issues.flatMap((issue) => withoutMissingOwner(issue) ?? [])
       : parsed.error.issues;
     problems.push(...formatZodIssues(issues, schema, tool));
   }
