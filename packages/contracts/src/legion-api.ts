@@ -1904,6 +1904,14 @@ export const LegionReviewVerdictRequest = z.strictObject({
   summary: nonEmptyString,
 });
 
+/** A GitHub repository as `owner/name`, by the daemon's own rule for one (`ghrepo.Parse`): an owner
+ * of at most 39 letters, digits, `-` and `_` that starts with a letter or digit, and a name of at
+ * most 100 letters, digits, `.`, `-` and `_` that is not `.` or `..`. The side-review routes refuse
+ * any other name (`INVALID_REPOSITORY`), and the `legion` tool refuses it before it sends one. */
+export const legionRepository = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/);
+
 /** `api.PullRequestReviewerRequest`, the controller's naming of a side reviewer (`POST
  * /legion/v1/pull-request-reviewer`): `session`, a running Legion reviewer's session whose tree did
  * not write the change and is on the reviewed repository, is the reviewer of pull request `number`
@@ -1913,7 +1921,7 @@ export const LegionReviewVerdictRequest = z.strictObject({
  * answers an empty object. */
 export const LegionPullRequestReviewerRequest = z.strictObject({
   grantId: nonEmptyString,
-  repository: nonEmptyString,
+  repository: legionRepository,
   number: z.number().int().positive(),
   head: nonEmptyString,
   session: nonEmptyString,
@@ -1927,7 +1935,7 @@ export const LegionPullRequestReviewerRequest = z.strictObject({
  * (`VERDICT_REVIEWER_NOT_NAMED`); it answers an empty object. */
 export const LegionPullRequestVerdictRequest = z.strictObject({
   grantId: nonEmptyString,
-  repository: nonEmptyString,
+  repository: legionRepository,
   number: z.number().int().positive(),
   head: nonEmptyString,
   verdict: z.enum(LEGION_REVIEWER_VERDICTS),

@@ -38,11 +38,14 @@ type sideGitHub struct {
 	url   string
 	mu    sync.Mutex
 	pulls map[int]string
+	// failures is the status GitHub answers a pull request's read with in place of the pull
+	// request, by number: 429 carries a Retry-After of 30 seconds, as GitHub's rate limit does.
+	failures map[int]int
 }
 
 func newSideGitHub(t *testing.T) *sideGitHub {
 	t.Helper()
-	g := &sideGitHub{pulls: map[int]string{}}
+	g := &sideGitHub{pulls: map[int]string{}, failures: map[int]int{}}
 	g.url = githubtest.Server(t, githubtest.Spec{Token: "read-token-for-acme", Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
@@ -55,6 +58,14 @@ func newSideGitHub(t *testing.T) *sideGitHub {
 			githubtest.Unexpected(t, w, r)
 			return
 		}
+		if status, failing := g.failures[n]; failing {
+			if status == http.StatusTooManyRequests {
+				w.Header().Set("Retry-After", "30")
+			}
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"refused"}`))
+			return
+		}
 		pull, known := g.pulls[n]
 		if !known {
 			http.NotFound(w, r)
@@ -63,6 +74,22 @@ func newSideGitHub(t *testing.T) *sideGitHub {
 		_, _ = w.Write([]byte(pull))
 	}})
 	return g
+}
+
+// refuse has GitHub answer pull request number's read with status.
+func (g *sideGitHub) refuse(number, status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failures[number] = status
+}
+
+// liveSession launches a claim of role on issue whose agent registered session and is in a turn:
+// a running Legion session, which the controller can name.
+func liveSession(t *testing.T, h *harness, issue string, role claim.Role, session string) {
+	t.Helper()
+	token, boot := h.launchIn(issue, issue, role)
+	h.registered(boot, session)
+	working(t, h, token, issue)
 }
 
 // serve has GitHub answer pull request number in state, on branch ref at head.
@@ -102,6 +129,9 @@ func newSideRig(t *testing.T) *sideRig {
 func newSideRigServing(t *testing.T, serving func(ghrepo.Repository) ghrepo.Repository) *sideRig {
 	t.Helper()
 	rig := &sideRig{harness: newHarness(t), github: newSideGitHub(t)}
+	// ses_s and ses_t are running reviewers of the project, whom the controller may name.
+	liveSession(t, rig.harness, "LEGION-301", claim.RoleReviewer, "ses_s")
+	liveSession(t, rig.harness, "LEGION-302", claim.RoleReviewer, "ses_t")
 	entries := []config.VerdictRepository{
 		{Repository: ghrepo.MustParse("acme/widgets"), SideReviews: true},
 		{Repository: ghrepo.MustParse("acme/gadgets"), CIReviewer: "example-ci-review[bot]"},
@@ -349,6 +379,25 @@ func TestPullRequestVerdictTakesOnlyTheNamedReviewer(t *testing.T) {
 	if got := rig.recordedLines(); len(got) != 1 {
 		t.Fatalf("recorded-verdict lines after the refusals at the moved head = %q, want the first alone", got)
 	}
+
+	// A controller grant the operator's bearer minted is no grant of the project's controller
+	// claim: both calls are refused, and nothing more is recorded, written or logged.
+	t.Run("a controller grant the operator's bearer minted", func(t *testing.T) {
+		rig.github.serve(7, "open", "fix/parser", sideHead)
+		refused(t, rig.nameReviewer(PullRequestReviewerRequest{GrantID: controllerGrant(t, rig.harness).GrantID, Repository: "acme/widgets",
+			Number: 7, Head: sideHead, Session: "ses_t"}), http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN")
+		refused(t, rig.relayVerdict(PullRequestVerdictRequest{GrantID: controllerGrant(t, rig.harness).GrantID, Repository: "acme/widgets",
+			Number: 7, Head: sideHead, Verdict: "approve", Session: "ses_s"}), http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN")
+		if reviewers, verdicts := rig.sideRows(); len(reviewers) != 1 || len(verdicts) != 1 {
+			t.Fatalf("after the operator's calls the store records side reviewers %+v and verdicts %+v, want the first of each alone", reviewers, verdicts)
+		}
+		if got := rig.written(); len(got) != 1 {
+			t.Fatalf("writes of legion-verdict after the operator's calls = %v, want the first alone", got)
+		}
+		if got := rig.recordedLines(); len(got) != 1 {
+			t.Fatalf("recorded-verdict lines after the operator's calls = %q, want the first alone", got)
+		}
+	})
 }
 
 // The two routes take a call only for an open pull request no Legion issue owns, at its current
@@ -386,6 +435,7 @@ func TestSideReviewCallsRefuseWhatNoSideReviewDecides(t *testing.T) {
 		{name: "a pull request GitHub does not have", pull: func(rig *sideRig) { rig.github.forget(7) }, code: "VERDICT_CALLER_FORBIDDEN"},
 		{name: "a head that is not the pull request's current head", head: movedHead, code: "VERDICT_CALLER_FORBIDDEN"},
 		{name: "the tester's pass for a verdict", word: "pass", status: http.StatusBadRequest, code: "REVIEWER_VERDICT_REQUIRED"},
+		{name: "a repository that is not owner/name", repo: "acme", status: http.StatusBadRequest, code: "INVALID_REPOSITORY"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newSideRig(t)
@@ -419,6 +469,95 @@ func TestSideReviewCallsRefuseWhatNoSideReviewDecides(t *testing.T) {
 			}
 			if got := rig.recordedLines(); len(got) != 0 {
 				t.Fatalf("recorded-verdict lines after the refusals = %q, want none", got)
+			}
+		})
+	}
+}
+
+// The controller names only a running Legion reviewer: a session no claim of the project holds,
+// and a running implementer's session, are refused VERDICT_REVIEWER_NOT_LIVE, naming the session,
+// and nothing is recorded.
+func TestASideReviewerIsARunningReviewerClaim(t *testing.T) {
+	rig := newSideRig(t)
+	rig.github.serve(7, "open", "fix/parser", sideHead)
+	liveSession(t, rig.harness, "LEGION-303", claim.RoleImplementer, "ses_implementer")
+	for _, session := range []string{"ses_nobody", "ses_implementer"} {
+		message := refused(t, rig.nameReviewer(PullRequestReviewerRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets",
+			Number: 7, Head: sideHead, Session: session}), http.StatusConflict, "VERDICT_REVIEWER_NOT_LIVE")
+		if !strings.Contains(message, session) || !strings.Contains(message, "nothing was recorded") {
+			t.Fatalf("the refusal of %s says %q, want it to name the session and say nothing was recorded", session, message)
+		}
+	}
+	if reviewers, _ := rig.sideRows(); len(reviewers) != 0 {
+		t.Fatalf("side reviewers after the refusals = %+v, want none", reviewers)
+	}
+}
+
+// A new naming of another session at the same head withdraws the reviewer named before: its later
+// verdict is refused VERDICT_REVIEWER_NOT_NAMED, and the naming asks the writer again, so the
+// verdict it already recorded is decided anew. A first naming, and a naming of the session already
+// named, ask the writer for nothing.
+func TestANewSideReviewerWithdrawsTheEarlierOne(t *testing.T) {
+	rig := newSideRig(t)
+	rig.github.serve(7, "open", "fix/parser", sideHead)
+	name := func(session string) {
+		t.Helper()
+		if recorder := rig.nameReviewer(PullRequestReviewerRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets", Number: 7,
+			Head: sideHead, Session: session}); recorder.Code != http.StatusOK {
+			t.Fatalf("the controller's naming of %s = %d: %s", session, recorder.Code, recorder.Body)
+		}
+	}
+	verdict := func(session string) *httptest.ResponseRecorder {
+		return rig.relayVerdict(PullRequestVerdictRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets", Number: 7,
+			Head: sideHead, Verdict: "approve", Session: session})
+	}
+	write := "acme/widgets#7@" + sideHead
+	name("ses_s")
+	if got := rig.written(); len(got) != 0 {
+		t.Fatalf("writes after the first naming = %v, want none", got)
+	}
+	if recorder := verdict("ses_s"); recorder.Code != http.StatusOK {
+		t.Fatalf("ses_s's verdict = %d: %s", recorder.Code, recorder.Body)
+	}
+	name("ses_t")
+	if got, want := rig.written(), []string{write, write}; !slices.Equal(got, want) {
+		t.Fatalf("writes after ses_t is named = %v, want %v: the naming asks the writer to decide the head again", got, want)
+	}
+	refused(t, verdict("ses_s"), http.StatusForbidden, "VERDICT_REVIEWER_NOT_NAMED")
+	name("ses_t")
+	if got := rig.written(); len(got) != 2 {
+		t.Fatalf("writes after ses_t is named again = %v, want no new one", got)
+	}
+}
+
+// The route's read of the pull request names what GitHub answered: a refusal (403) is a 502 that a
+// retry does not mend, GitHub's rate limit a 503 carrying its Retry-After, GitHub's own failure a
+// 502 to retry, and a 404, which GitHub also answers where the App cannot read the repository, is
+// refused VERDICT_CALLER_FORBIDDEN and logged. Each records nothing.
+func TestASideReviewNamesWhatGitHubAnswered(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, retryAfter string
+		answered, status       int
+	}{
+		{name: "a refused read", answered: http.StatusForbidden, status: http.StatusBadGateway, code: "GITHUB_READ_REFUSED"},
+		{name: "the rate limit", answered: http.StatusTooManyRequests, status: http.StatusServiceUnavailable, code: "GITHUB_RATE_LIMITED", retryAfter: "30"},
+		{name: "GitHub's own failure", answered: http.StatusInternalServerError, status: http.StatusBadGateway, code: "PULL_REQUEST_READ_FAILED"},
+		{name: "no pull request the App can read", answered: http.StatusNotFound, status: http.StatusForbidden, code: "VERDICT_CALLER_FORBIDDEN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSideRig(t)
+			rig.github.refuse(7, tc.answered)
+			recorder := rig.nameReviewer(PullRequestReviewerRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets", Number: 7,
+				Head: sideHead, Session: "ses_s"})
+			refused(t, recorder, tc.status, tc.code)
+			if got := recorder.Header().Get("Retry-After"); got != tc.retryAfter {
+				t.Fatalf("Retry-After = %q, want %q", got, tc.retryAfter)
+			}
+			if got := rig.serverLog.lines("api: GitHub answered a side review's read of its pull request", "repository=acme/widgets"); len(got) != 1 {
+				t.Fatalf("lines logging GitHub's answer = %q, want one", got)
+			}
+			if reviewers, _ := rig.sideRows(); len(reviewers) != 0 {
+				t.Fatalf("side reviewers after the refusal = %+v, want none", reviewers)
 			}
 		})
 	}

@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,7 +16,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// sideReviewGitHubRead bounds a side-review route's read of its pull request from GitHub: 30
+// seconds, the bound the daemon's writer of legion-verdict gives its read of the same pull request
+// (internal/daemon's issueRead), since the API holds no bound of its own for a GitHub read.
+const sideReviewGitHubRead = 30 * time.Second
 
 // Side reviews. A pull request that no Legion issue owns, on a verdict repository whose entry takes
 // side reviews (config.VerdictRepository.SideReviews), has no phase and so no reviewer of its own:
@@ -56,9 +65,11 @@ type PullRequestVerdictRequest struct {
 	Session    string `json:"session"`
 }
 
-// pullRequestReviewer records the controller's naming of a side reviewer: the session whose
-// verdict on the pull request at that head the daemon takes. A later naming of the same pull
-// request and head stands over an earlier one (store.SideReviewerTx).
+// pullRequestReviewer records the controller's naming of a side reviewer: the session, a running
+// reviewer claim's of this project (liveReviewer), whose verdict on the pull request at that head the
+// daemon takes. A later naming of the same pull request and head stands over an earlier one
+// (store.SideReviewerTx), and where it names another session it asks the writer to decide the head
+// again, since the verdict the earlier reviewer gave stands no longer.
 func (s *server) pullRequestReviewer(w http.ResponseWriter, r *http.Request) {
 	var req PullRequestReviewerRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireSideFields(w, req.Number, field{"grantId", req.GrantID},
@@ -73,8 +84,25 @@ func (s *server) pullRequestReviewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	live, err := s.liveReviewer(ctx, req.Session)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: read the claims a side reviewer may be named from", "session", req.Session)
+		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the project's claims; nothing was recorded")
+		return
+	}
+	if !live {
+		writeFailure(w, http.StatusConflict, "VERDICT_REVIEWER_NOT_LIVE", fmt.Sprintf(
+			"session %s is no running reviewer of this project: name the session of a reviewer claim that is ready, working or idle; nothing was recorded", req.Session))
+		return
+	}
+	var replaced bool
 	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		_, err := store.RecordSideReviewerTx(ctx, tx, store.SideReviewer{Repository: repository, Number: req.Number, Head: req.Head,
+		earlier, found, err := store.SideReviewerTx(ctx, tx, repository, req.Number, req.Head)
+		if err != nil {
+			return err
+		}
+		replaced = found && earlier.Session != req.Session
+		_, err = store.RecordSideReviewerTx(ctx, tx, store.SideReviewer{Repository: repository, Number: req.Number, Head: req.Head,
 			Session: req.Session, RecordedAt: s.now().UTC()})
 		return err
 	}); err != nil {
@@ -83,8 +111,27 @@ func (s *server) pullRequestReviewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("api: recorded a pull request reviewer", "repository", repository.String(), "number", req.Number, "head", req.Head,
-		"reviewer_session", req.Session)
+		"reviewer_session", req.Session, "replaced", replaced)
+	if replaced && s.writeVerdict != nil {
+		s.writeVerdict(repository.String(), req.Number, req.Head)
+	}
 	writeJSON(w, http.StatusOK, EmptyResponse{})
+}
+
+// liveReviewer is whether session is the session of a running reviewer claim of this project: a
+// claim of the reviewer role whose agent said it can be prompted (supervise.SaidReady). A daemon
+// that supervises no claims has none.
+func (s *server) liveReviewer(ctx context.Context, session string) (bool, error) {
+	if s.supervisor == nil {
+		return false, nil
+	}
+	claims, err := s.supervisor.Claims(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(claims, func(c supervise.Claim) bool {
+		return c.Role == claim.RoleReviewer && c.Session == session && supervise.SaidReady(c.State)
+	}), nil
 }
 
 // pullRequestVerdict records the verdict the controller relays from a side reviewer, and asks the
@@ -201,7 +248,8 @@ func (s *server) sidePullRequest(w http.ResponseWriter, r *http.Request, repo st
 	}
 	requested, err := ghrepo.Parse("the repository of a side review", repo)
 	if err != nil {
-		return forbid("a side review is taken only on a verdict repository, and %v", err)
+		writeFailure(w, http.StatusBadRequest, "INVALID_REPOSITORY", err.Error()+"; nothing was recorded")
+		return ghrepo.Repository{}, false
 	}
 	if s.verdictEntry == nil {
 		return forbid("a side review is taken only on a verdict repository, and this daemon writes legion-verdict on none")
@@ -243,14 +291,10 @@ func (s *server) sidePullRequest(w http.ResponseWriter, r *http.Request, repo st
 	}
 	github := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(s.githubAPI, repository)}
 	var pull githubrest.PullRequest
-	if err := github.Get(ctx, "/pulls/"+strconv.Itoa(number), &pull); err != nil {
-		var answer *githubrest.Answer
-		if errors.As(err, &answer) && answer.Status == http.StatusNotFound {
-			return forbid("GitHub has no pull request #%d on %s", number, repository)
-		}
-		s.logRequestFailure(r, err, "api: read a side review's pull request", "repository", repository.String(), "number", number)
-		writeFailure(w, http.StatusBadGateway, "PULL_REQUEST_READ_FAILED", fmt.Sprintf(
-			"could not read pull request #%d of %s from GitHub; nothing was recorded, so send the call again", number, repository))
+	read, cancel := context.WithTimeout(ctx, sideReviewGitHubRead)
+	defer cancel()
+	if err := github.Get(read, "/pulls/"+strconv.Itoa(number), &pull); err != nil {
+		s.refuseGitHubRead(w, r, err, repository, number)
 		return ghrepo.Repository{}, false
 	}
 	if pull.State != "open" {
@@ -264,4 +308,41 @@ func (s *server) sidePullRequest(w http.ResponseWriter, r *http.Request, repo st
 			head, number, repository, pull.Head.SHA)
 	}
 	return repository, true
+}
+
+// refuseGitHubRead answers a side-review call whose read of pull request number of repository
+// failed with err, in the code that says what a caller can do about it. GitHub's answer is logged
+// with its status. A 404 is refused VERDICT_CALLER_FORBIDDEN: GitHub answers it for a pull request
+// it does not have, and for a repository the App's installation cannot read. GitHub's rate limit is
+// a 503 carrying the wait GitHub asked for (Retry-After); a 401 or 403 that is no rate limit is a
+// 502 a retry does not mend (GITHUB_READ_REFUSED); any other answer, and a read that did not end
+// within its bound, is a 502 to send again (PULL_REQUEST_READ_FAILED).
+func (s *server) refuseGitHubRead(w http.ResponseWriter, r *http.Request, err error, repository ghrepo.Repository, number int) {
+	var answer *githubrest.Answer
+	if !errors.As(err, &answer) {
+		s.logRequestFailure(r, err, "api: read a side review's pull request", "repository", repository.String(), "number", number)
+		writeFailure(w, http.StatusBadGateway, "PULL_REQUEST_READ_FAILED", fmt.Sprintf(
+			"could not read pull request #%d of %s from GitHub; nothing was recorded, so send the call again", number, repository))
+		return
+	}
+	s.log.Warn("api: GitHub answered a side review's read of its pull request", "repository", repository.String(), "number", number,
+		"status", answer.Status, "rate_limited", answer.RateLimited)
+	switch {
+	case answer.RateLimited:
+		if answer.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int((answer.RetryAfter+time.Second-1)/time.Second)))
+		}
+		writeFailure(w, http.StatusServiceUnavailable, "GITHUB_RATE_LIMITED", fmt.Sprintf(
+			"GitHub's rate limit refused the read of pull request #%d of %s; nothing was recorded, so send the call again once Retry-After has passed", number, repository))
+	case answer.Status == http.StatusNotFound:
+		writeFailure(w, http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN", fmt.Sprintf(
+			"GitHub has no pull request #%d on %s that the App can read; nothing was recorded", number, repository))
+	case answer.Status == http.StatusUnauthorized || answer.Status == http.StatusForbidden:
+		writeFailure(w, http.StatusBadGateway, "GITHUB_READ_REFUSED", fmt.Sprintf(
+			"GitHub refused the App's read of pull request #%d of %s (%d), which a retry does not mend: the App's installation on %s must grant it; nothing was recorded",
+			number, repository, answer.Status, repository.Owner()))
+	default:
+		writeFailure(w, http.StatusBadGateway, "PULL_REQUEST_READ_FAILED", fmt.Sprintf(
+			"GitHub answered the read of pull request #%d of %s with %d; nothing was recorded, so send the call again", number, repository, answer.Status))
+	}
 }

@@ -2311,6 +2311,14 @@ test("the controller names a side reviewer and relays its verdict, each through 
       "pull_request_reviewer requires head",
     ],
     [
+      { op: "pull_request_reviewer", ...pullRequest, repository: "acme" },
+      "pull_request_reviewer requires repository as owner/name, such as acme/widgets",
+    ],
+    [
+      { op: "pull_request_verdict", ...pullRequest, repository: "acme/..", verdict: "approve" },
+      "pull_request_verdict requires repository as owner/name, such as acme/widgets",
+    ],
+    [
       { op: "pull_request_reviewer", ...pullRequest, number: 0 },
       "pull_request_reviewer requires number, a pull request's number",
     ],

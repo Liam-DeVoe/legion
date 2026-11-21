@@ -7,6 +7,7 @@ import {
   type LegionIssue,
   type LegionPhase,
   type LegionState,
+  legionRepository,
 } from "@legion/contracts/legion-api";
 import {
   type DaemonRestartRetry,
@@ -625,6 +626,13 @@ export function createLegionTool(deps: {
               head: requiredString(parameters, operation, "head"),
               session: requiredString(parameters, operation, "session"),
             };
+            // One rule for a repository's name, the daemon's (`legionRepository`), so a name the
+            // daemon would refuse is refused here, before a grant is minted.
+            if (!legionRepository.safeParse(pullRequest.repository).success) {
+              throw new Error(
+                `${operation} requires repository as owner/name, such as acme/widgets`
+              );
+            }
             if (operation === "pull_request_reviewer") {
               const { grantId } = await controllerGrant(active.sessionID);
               return jsonSuccess(await client.pullRequestReviewer({ grantId, ...pullRequest }));
