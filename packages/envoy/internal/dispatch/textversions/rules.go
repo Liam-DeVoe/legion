@@ -12,12 +12,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// rulesVersion is the version of the event rules versionRules holds, which the fill writes in the
+// RulesVersion is the version of the event rules versionRules holds, which the fill writes in the
 // cursor row it creates (search_text_versions_fill.rules). Each batch keeps there the lower of the
 // version stored and this one (advanceCursorQuery), so the column holds the lowest rules version
 // that wrote the rows up to the cursor, and a later build that reads more event types knows which
-// events to read again.
-const rulesVersion = 1
+// events to read again. It is exported for evalbench's load, which writes the cursor row as caught
+// up with the log it loaded, as this build's fill would leave it.
+const RulesVersion = 1
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
 // writes: the event's payload, whole; the item's present row, which shows no later change; and

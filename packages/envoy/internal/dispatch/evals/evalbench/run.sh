@@ -9,12 +9,14 @@
 #
 # measure boots the server on the loaded database, waits until its consumers have caught up
 # (`measure wait`: the Legion facts read whole and, at this head, every family's day rows written
-# through today by the running build), stops it, starts it again and measures the first paint as
-# the first requests after that restart (`measure paint`). At this head it then greps the read path
-# for a read of events (k13) and prints the query keys of the list route (k16). failure-day is this
-# head over the fixture with a failure day added to it (evalbench's -failure-day), whose paint is
-# the Delivery timeline's alone. With EVALBENCH_PG_RESTART set it measures the first paint once
-# more after a Postgres restart, for information, judging no budget.
+# through today by the running build and the keyword fill's cursor at the newest event, which the
+# load leaves at its last event, with a RESULT line of how long the fill took to get there), stops
+# it, starts it again and measures the first paint as the first requests after that restart
+# (`measure paint`). At this head it then greps the read path for a read of events (k13) and
+# prints the query keys of the list route (k16). failure-day is this head over the fixture with a
+# failure day added to it (evalbench's -failure-day), whose paint is the Delivery timeline's alone.
+# With EVALBENCH_PG_RESTART set it measures the first paint once more after a Postgres restart, for
+# information, judging no budget.
 #
 # The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App and the header identity
 # the Go tests use, and is reached with its agent token. Its build must be stamped

@@ -21,6 +21,7 @@ package legiontest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -36,6 +37,10 @@ import (
 // the ids are deterministic, are this rig's own, and read as the uuid every reader of an ask
 // casts them to.
 var askNamespace = uuid.MustParse("6f1b4b0e-2f1a-4a5f-9a3d-8c7c1f0b2d41")
+
+// commentNamespace is the uuid namespace every comment id this rig writes is derived under
+// (CommentID), as askNamespace is the asks'.
+var commentNamespace = uuid.MustParse("cd835789-4cf8-41e1-9b33-90c563970371")
 
 const (
 	// defaultProject is the project a Spec that names none is written under. The key is what
@@ -203,6 +208,7 @@ func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 	run := &seeding{
 		spec:      spec,
 		seq:       map[string]int32{},
+		titles:    map[string]string{},
 		phaseWork: map[string]bool{},
 		fixture: Fixture{
 			Project:   spec.Project,
@@ -228,13 +234,15 @@ func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 }
 
 // seeding is one run of Write: the spec it was given, what it has written so far, the next event
-// sequence number of each issue, which events.seq is unique on, the issues it has already
-// recorded Legion phase work for, and whether the sampler saw the tree it is writing.
+// sequence number of each issue, which events.seq is unique on, the title it wrote each issue
+// with, the issues it has already recorded Legion phase work for, and whether the sampler saw the
+// tree it is writing.
 type seeding struct {
 	spec      Spec
 	fixture   Fixture
 	rows      rows
 	seq       map[string]int32
+	titles    map[string]string
 	phaseWork map[string]bool
 	observed  bool
 }
@@ -509,8 +517,9 @@ func (s *seeding) pullRequest(issue string, number int, opened, merged time.Time
 	s.rows.prMerged = append(s.rows.prMerged, merged)
 }
 
-// filing is the payload of the `issue.created` event a root's architect writes when it files a
-// child: the status the child starts at, and the tree it is filed under.
+// filing is what this history's readers read of the `issue.created` event a root's architect
+// writes when it files a child: the status the child starts at, and the tree it is filed under.
+// eventPayload adds the child's key and title.
 func filing(root string) string {
 	return fmt.Sprintf(`{"status":"triage","parent":%q,"ancestors":[%q]}`, root, root)
 }
@@ -530,6 +539,7 @@ func (s *seeding) issue(number int, title, parent string, priority int16, opened
 	s.rows.issueKeys = append(s.rows.issueKeys, key)
 	s.rows.issueNumbers = append(s.rows.issueNumbers, int32(number))
 	s.rows.issueTitles = append(s.rows.issueTitles, title)
+	s.titles[key] = title
 	s.rows.issueStatuses = append(s.rows.issueStatuses, status)
 	s.rows.issueRanks = append(s.rows.issueRanks, fmt.Sprintf("%08d", number))
 	s.rows.issuePriorities = append(s.rows.issuePriorities, priority)
@@ -540,15 +550,55 @@ func (s *seeding) issue(number int, title, parent string, priority int16, opened
 	return key
 }
 
-// event writes one event of an issue, at that issue's next sequence number.
+// event writes one event of an issue, at that issue's next sequence number, with payload and the
+// fields Dispatch's own event of that kind carries (eventPayload).
 func (s *seeding) event(issue, kind, actor, payload string, at time.Time) {
 	s.seq[issue]++
 	s.rows.eventIssues = append(s.rows.eventIssues, issue)
 	s.rows.eventSeqs = append(s.rows.eventSeqs, s.seq[issue])
 	s.rows.eventTypes = append(s.rows.eventTypes, kind)
 	s.rows.eventActors = append(s.rows.eventActors, actor)
-	s.rows.eventPayloads = append(s.rows.eventPayloads, payload)
+	s.rows.eventPayloads = append(s.rows.eventPayloads, s.eventPayload(issue, kind, s.seq[issue], payload))
 	s.rows.eventAt = append(s.rows.eventAt, at)
+}
+
+// eventPayload is the payload of the event of kind at seq of issue: fields, which hold what this
+// history's readers read (an issue event's status, a filing's tree, an ask's id), and the fields
+// that Dispatch's own event of that kind carries and that the keyword fill reads (textversions'
+// versionRules). For an issue event these are the issue's key and the title issue wrote it with,
+// which api's newIssueEventPayload writes too. For a comment they are its id (CommentID), its
+// issue_key and its body. For an ask they are its issue_key and its question. The fill stops at
+// the first event that lacks one of them and tries that event again, at most a minute apart, with
+// an error line each time, so a history without them leaves the keyword table unfilled from that
+// event on. Every other kind keeps fields as they are.
+//
+// fields is one of this file's object literals, so the added fields go in after its opening brace.
+func (s *seeding) eventPayload(issue, kind string, seq int32, fields string) string {
+	var carried map[string]string
+	switch {
+	case strings.HasPrefix(kind, "issue."):
+		carried = map[string]string{"key": issue, "title": s.titles[issue]}
+	case strings.HasPrefix(kind, "comment."):
+		carried = map[string]string{"id": CommentID(issue, seq), "issue_key": issue, "body": fmt.Sprintf("Comment %d of this issue", seq)}
+	case strings.HasPrefix(kind, "ask."):
+		carried = map[string]string{"issue_key": issue, "question": "Does this issue go ahead?"}
+	default:
+		return fields
+	}
+	// A map of strings always encodes.
+	object, _ := json.Marshal(carried)
+	if fields == "{}" {
+		return string(object)
+	}
+	return string(object[:len(object)-1]) + "," + fields[1:]
+}
+
+// CommentID is the id of the comment that the comment event at seq of issue writes. It is a uuid
+// derived from the issue's key and seq under commentNamespace, so it is this rig's own, every
+// seeding of one history writes the same one, and a reader that casts a comment's id to uuid can
+// read it. evalbench's load names its comments by it too.
+func CommentID(issue string, seq int32) string {
+	return uuid.NewSHA1(commentNamespace, fmt.Appendf(nil, "%s/%d", issue, seq)).String()
 }
 
 // roleEvent writes one event of a session titled for the role working that same issue, which is
@@ -701,13 +751,23 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 }
 
 // write stores everything the trees built, one statement per table. Each statement takes its
-// table's columns as arrays and unnests them, so a history of thousands of rows costs six round
-// trips (the project's row and the five tables) rather than thousands. The project's row is kept
-// where it exists already; one it makes names alice, the history's person, as its default
-// assignee, the column every project fills (store migration 20261111210103). Each issue's
-// last_seq is the seq of the last event written of it, 0 for one with none: an event the server
-// writes takes the issue's last_seq + 1, and events_issue_key_seq_key holds one event to each, so
-// an issue left at 0 beside events 1..n would refuse the next write the API makes to it.
+// table's columns as arrays and unnests them, so a history of thousands of rows costs seven round
+// trips (the project's row, the five tables and one read of whether the database has a keyword
+// fill) rather than thousands. The project's row is kept where it exists already; one it makes
+// names alice, the history's person, as its default assignee, the column every project fills
+// (store migration 20261111210103). Each issue's last_seq is the seq of the last event written of
+// it, 0 for one with none: an event the server writes takes the issue's last_seq + 1, and
+// events_issue_key_seq_key holds one event to each, so an issue left at 0 beside events 1..n would
+// refuse the next write the API makes to it.
+//
+// The events are dated in the history's past. A keyword fill serving the database, as a kit's
+// server does when evalfixture loads into it, may have stored a reach above those dates, which
+// says that every event up to it has its keyword rows. Its batches would then log each of these
+// events as a breach of that reach. So where the database has the fill's cursor row (this head's
+// schema; the base head's lacks it), the events statement also nulls the stored reach. This is the
+// reset that the cursor row's migration (20261120021308) says nulls it. It is done in the same
+// statement, and so in the same transaction, so no fill batch can store a reach between the two.
+// The fill computes the reach again once the events are committed.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -749,12 +809,20 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 			return err
 		}
 	}
-	if err := exec("events", `
+	events := `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		select issue, seq, kind, actor::jsonb, payload::jsonb, false, at
 		from unnest($1::text[], $2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[])
-			as seeded(issue, seq, kind, actor, payload, at)`,
-		s.rows.eventIssues, s.rows.eventSeqs, s.rows.eventTypes, s.rows.eventActors,
+			as seeded(issue, seq, kind, actor, payload, at)`
+	var keywordFill bool
+	if err := pool.QueryRow(ctx, `select to_regclass('public.search_text_versions_fill') is not null`).Scan(&keywordFill); err != nil {
+		return fmt.Errorf("read whether the database has a keyword fill: %w", err)
+	}
+	if keywordFill {
+		events = `
+		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + events
+	}
+	if err := exec("events", events, s.rows.eventIssues, s.rows.eventSeqs, s.rows.eventTypes, s.rows.eventActors,
 		s.rows.eventPayloads, s.rows.eventAt); err != nil {
 		return err
 	}

@@ -34,8 +34,9 @@ type heads struct {
 
 // consumerState is what one poll read of the consumers and their feeds: at this head, the
 // refresher's cursors (its two feeds' and the stored figures' own, by name), its walks, its day
-// rows' builds, the projects that hold day rows and how far each project's stored figures are
-// built (eval_figures_built).
+// rows' builds, the projects that hold day rows, how far each project's stored figures are built
+// (eval_figures_built) and the keyword fill's cursor (search_text_versions_fill.event_id, 0 before
+// the fill writes its row), which is nil at the base head, which has no keyword fill.
 type consumerState struct {
 	heads       heads
 	facts       map[string]int64
@@ -46,6 +47,7 @@ type consumerState struct {
 	builtBy     map[string]int64
 	dayProjects []string
 	built       map[string]time.Time
+	fill        *int64
 }
 
 // walk is one row of eval_days_walks.
@@ -80,7 +82,11 @@ func serverBuild(ctx context.Context, url string) (string, error) {
 }
 
 // wait polls until the consumers have caught up (consumerState.caughtUp) on two polls in a row,
-// and fails once o.timeout has passed.
+// and fails once o.timeout has passed. At this head it prints, at the first poll that finds the
+// keyword fill's cursor at the newest event, how long the fill took to get there: the time from
+// the wait's start, which is the moment the server first served, to that poll, so it is long by at
+// most one poll (pollEvery). evalbench's load writes the cursor at the newest loaded event, so the
+// fill has only the events the server wrote since to follow.
 func wait(ctx context.Context, r *report, o options) error {
 	database, err := store.Open(ctx, o.database)
 	if err != nil {
@@ -93,11 +99,16 @@ func wait(ctx context.Context, r *report, o options) error {
 	}
 	started := time.Now()
 	var seen []heads
-	held := false
+	held, filled := false, false
 	for {
 		state, err := readConsumers(ctx, database.Pool, o.mode)
 		if err != nil {
 			return err
+		}
+		if !filled && state.filled() {
+			filled = true
+			r.result("keyword_fill mode=%s seconds=%.0f cursor=%d newest_event=%d poll=%s", o.mode, time.Since(started).Seconds(),
+				*state.fill, state.heads.events, pollEvery)
 		}
 		var previous *heads
 		if len(seen) >= lagPolls {
@@ -153,6 +164,12 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}
 	if mode == "base" {
 		return state, nil
+	}
+	// Read after the heads, so a cursor at or past the events' head read above stands at or past
+	// every event committed before that read.
+	state.fill = new(int64)
+	if err := pool.QueryRow(ctx, `select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(state.fill); err != nil {
+		return consumerState{}, fmt.Errorf("read the keyword fill's cursor: %w", err)
 	}
 	if err := collectPairs(ctx, pool, `select name, position from eval_days_cursor`, state.days); err != nil {
 		return consumerState{}, err
@@ -222,10 +239,14 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 // works read whole under build; each cursor at or past previous, where its feed stood lagPolls
 // polls before (a feed the server's own sweeps keep writing is never still, so a cursor is held
 // to a head it has had a whole sweep to reach), the stored figures' own cursor among them; and at
-// this head every walk done under build (walkDone), every day row written by build, and every
+// this head every walk done under build (walkDone), every day row written by build, every
 // project that holds day rows with its stored figures built through the last end day of today
-// (evals.FiguresThrough's mark): a first paint measured before that would read the day rows,
-// which the stored figures are there to spare it.
+// (evals.FiguresThrough's mark), since a first paint measured before that would read the day
+// rows, which the stored figures are there to spare it; and the keyword fill's cursor at the
+// newest event this poll read (filled). Production serves with the fill caught up once its one
+// backfill, at the deploy, is done, so evalbench's load writes the cursor as caught up with the
+// loaded log, and this waits for the fill to follow the events the server wrote after the load: a
+// paint measured while the fill still writes its batches would share the database with them.
 func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	var missing []string
 	if previous == nil {
@@ -251,6 +272,10 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	}
 	if mode == "base" {
 		return missing
+	}
+	if !s.filled() {
+		missing = append(missing, fmt.Sprintf("the keyword fill's cursor (search_text_versions_fill.event_id) at %d, behind the newest event %d",
+			*s.fill, s.heads.events))
 	}
 	if previous != nil {
 		behind("the refresher", s.days, "events", previous.events)
@@ -310,6 +335,13 @@ func walkDone(family string, today time.Time) time.Time {
 	return today.AddDate(0, 0, 1)
 }
 
+// filled is whether the keyword fill's cursor stands at or past the newest event the poll read,
+// so every event committed before the poll has its keyword rows. It is false at the base head,
+// which has no keyword fill.
+func (s consumerState) filled() bool {
+	return s.fill != nil && *s.fill >= s.heads.events
+}
+
 // summary is one line of the state.
 func (s consumerState) summary(build string) string {
 	marked := 0
@@ -320,6 +352,9 @@ func (s consumerState) summary(build string) string {
 	}
 	line := fmt.Sprintf("heads events=%d observations=%d changes=%d facts_cursors=%v legion_projects=%d read_whole=%d",
 		s.heads.events, s.heads.observations, s.heads.changes, s.facts, len(s.projects), marked)
+	if s.fill != nil {
+		line += fmt.Sprintf(" keyword_fill_cursor=%d", *s.fill)
+	}
 	if s.days == nil || len(s.walks) == 0 && len(s.days) == 0 {
 		return line
 	}

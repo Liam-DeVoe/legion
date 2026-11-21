@@ -84,6 +84,12 @@ type plannedIssue struct {
 // end is when the issue's last stretch ends.
 func (p plannedIssue) end() time.Time { return p.stretch[p.reached] }
 
+// title is the issue's title, which copyIssues writes to its row and every issue event's payload
+// carries (eventSource.payload).
+func (p plannedIssue) title() string {
+	return fmt.Sprintf("Infrastructure work item %d: %s", p.number, text(p.key, 40))
+}
+
 // infraHistory is INFRA's issues, in opening order (so in number order), which the delivery
 // history names and the readings' row keys draw from.
 type infraHistory struct {
@@ -424,8 +430,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) err
 		if issue.closed == nil {
 			updated = issue.stretch[issue.reached-1]
 		}
-		title := fmt.Sprintf("Infrastructure work item %d: %s", issue.number, text(issue.key, 40))
-		rows[i] = []any{issue.key, Project, int32(issue.number), title, issue.status, parent, repo, route, creator,
+		rows[i] = []any{issue.key, Project, int32(issue.number), issue.title(), issue.status, parent, repo, route, creator,
 			issue.opened, updated, issue.closed, int32(issue.events), fmt.Sprintf("%08d", issue.number), issue.priority,
 			claimedBy, claimedAt}
 	}
@@ -459,28 +464,42 @@ func (s *eventSource) Values() ([]any, error) {
 		}
 		actorJSON = legiontest.SessionActor(roles[event.role], owner)
 	}
-	var payload string
+	at := time.Unix(0, event.at).UTC()
+	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, s.payload(event, issue), false, at, at)
+	return s.values, nil
+}
+
+// payload is the payload of event, an event of issue. It holds what this history's readers read
+// (an issue event's status and a filing's tree, and a comment's body) and the fields that
+// Dispatch's own event of that kind carries and that the keyword fill reads (textversions'
+// versionRules): an issue event's key and the issue's title, the one copyIssues writes, as api's
+// newIssueEventPayload writes them; and a comment's id (legiontest.CommentID) and issue_key. The
+// fill stops at the first event that lacks one of them and tries that event again, at most a
+// minute apart. Load writes the fill's cursor past the loaded log (keywordFillCaughtUpQuery), but
+// a fill that reads the log from its start, as one does after its cursor is reset, would never get
+// past the first event without them.
+func (s *eventSource) payload(event plannedEvent, issue plannedIssue) string {
+	var fields string
 	switch event.kind {
 	case kindCreated:
-		payload = `{"status":"triage"}`
+		fields = `"status":"triage"`
 		if event.filing {
 			root := s.history.issues[issue.parent].key
-			payload = fmt.Sprintf(`{"status":"triage","parent":%q,"ancestors":[%q]}`, root, root)
+			fields = fmt.Sprintf(`"status":"triage","parent":%q,"ancestors":[%q]`, root, root)
 		}
 	case kindUpdated:
-		payload = `{"status":"in_progress"}`
+		fields = `"status":"in_progress"`
 		if event.role == 4 {
-			payload = `{"status":"needs_review"}`
+			fields = `"status":"needs_review"`
 		}
 	case kindClosed:
-		payload = `{"status":"done"}`
+		fields = `"status":"done"`
 	default:
 		key := fmt.Sprintf("%s/%d", issue.key, event.seq)
-		payload = fmt.Sprintf(`{"body":%q}`, text(key, 120+int(event.seq*37%360)))
+		return fmt.Sprintf(`{"id":%q,"issue_key":%q,"body":%q}`, legiontest.CommentID(issue.key, event.seq), issue.key,
+			text(key, 120+int(event.seq*37%360)))
 	}
-	at := time.Unix(0, event.at).UTC()
-	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, payload, false, at, at)
-	return s.values, nil
+	return fmt.Sprintf(`{"key":%q,"title":%q,%s}`, issue.key, issue.title(), fields)
 }
 
 func (s *eventSource) Err() error { return nil }

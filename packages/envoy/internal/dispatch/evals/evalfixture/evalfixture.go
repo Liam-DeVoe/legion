@@ -26,7 +26,10 @@
 // Every time is relative to the moment the caller names (-now), so two loads with one -now hold
 // the same history at the same times. The rows bypass the server's own writers (legiontest's
 // events bypass events.Broker.Append), so a page open while they land may need a reload; the
-// refresher reads them on its next pass, as it reads every table.
+// refresher reads them on its next pass, as it reads every table. The Legion history's events are
+// dated in the past, so the statement that writes them also nulls the keyword fill's stored
+// reach (legiontest's write), and a serving fill writes their rows with no breach of a reach it
+// stored before them.
 package evalfixture
 
 import (
