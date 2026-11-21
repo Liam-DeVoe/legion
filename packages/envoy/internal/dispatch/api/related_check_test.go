@@ -413,12 +413,15 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	}
 }
 
-// pgvector's HNSW index hands back hnsw.ef_search nearest vectors (40 by default) before the
-// project filter runs. Sixty vectors of another project nearer than the project's own item fill
-// those 40, so without the check's wider ef_search the item is never seen. The vectors lie on one
-// arc from the query, so the index's graph links each to its neighbours along it and a wide
-// enough walk reaches them all; vectors that are all equally far from each other leave some
-// unreachable in a graph this small. The check's server here runs with sequential scans and sorts
+// pgvector's HNSW index hands back hnsw.ef_search nearest vectors (20 under the meaning scan's own
+// settings, searchMeaningScan) before the project filter runs. Sixty vectors of another project
+// nearer than the project's own item fill those 20, so the item is seen only because the check's
+// hnsw.iterative_scan carries the walk on past them. The vectors lie on one arc from the query, so
+// the index's graph links each to its neighbours along it and a walk that goes on reaches them all;
+// vectors that are all equally far from each other leave some unreachable in a graph this small.
+// The test runs on embeddings as the migrations leave it, one graph over every project, which is
+// what a meaning search reads until the boot's fill swaps the partitioned table in. The check's
+// server here runs with sequential scans and sorts
 // made costly, as a corpus large enough for the planner to choose the index does on its own (a
 // handful of test rows is otherwise read whole and sorted exactly,
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled

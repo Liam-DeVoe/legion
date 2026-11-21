@@ -620,14 +620,25 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     clients give a request. So the server gives up before the client does, rather than an hour
 //     after, and the backend goes with the statement. A statement ended that way is SQLSTATE
 //     57014 (meaningStatementEnded), which each caller reports as its own timeout.
-//   - hnsw.ef_search: how many nearest vectors the HNSW index walks before the kind, project
-//     and model filters run. pgvector's default, 40, is spent on whichever kind holds the most
-//     vectors - the document windows, tens of thousands of them against one row per issue - so
-//     the issue and message arms are left with few candidates or none, and the project filter
-//     can take the rest. 400 keeps them, at a wider walk of the index paid once per query.
-//   - hnsw.iterative_scan: with it off, an arm whose kind filter rejects every one of those 400
+//   - hnsw.ef_search: how many nearest vectors each HNSW graph's walk gathers before it returns
+//     its first row. Each project's vectors are a graph of their own (searchReaderPartitions),
+//     and an arm that reads the index pays that walk once for each partition it reads, before the
+//     kind, project and model filters see a row: at 400 that was about 10 ms for each project a
+//     reader sees. 20 was measured on a bench of production's size (995,184 distinct vectors over
+//     20 projects, two runs each way): a full member's meaning search, reading all 21 partitions,
+//     answered p50 1,491 and 1,482 ms at 20 against 1,689 and 1,700 ms at 400 and 1,471 and
+//     1,458 ms on the base's one graph, with recall@20 against an exact scan 0.988 and 0.993 at 20,
+//     0.988 and 0.994 at 400, and 0.960 and 0.949 on the one graph; 200, 100, 64 and 40 fell
+//     between, at the same recall. A restricted member reading one or two partitions read the same
+//     recall at every width from 20 to 400, within two items of 800, and p50 within 4%, so the
+//     width does not depend on how many partitions a reader reads. An arm whose kind filter
+//     rejects the vectors a walk gathered is not left at them: the scan goes on past the width
+//     (hnsw.iterative_scan, below).
+//   - hnsw.iterative_scan: with it off, an arm whose kind filter rejects every one of those 20
 //     answers nothing at all; relaxed_order lets the scan carry on past them instead of stopping
-//     there. It does not promise the arm's LIMIT: measured on the load-test corpus, an arm forced
+//     there. Measured on the same bench at ef_search 40, turning it off cut recall@20 to 0.896
+//     and 0.907 for a full member and to 0.906-0.917 for a restricted one. It does not promise
+//     the arm's LIMIT: measured on the load-test corpus, an arm forced
 //     through embeddings_cosine over 1,104 qualifying rows took 245 of them, and that number did
 //     not move at ef_search 40, 400 or 1,000, with iterative_scan relaxed_order or off, at
 //     work_mem 256MB or hnsw.scan_mem_multiplier 16 - so neither the LIMIT nor
@@ -647,7 +658,7 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
 	searchMeaningStatementBound,
-	`set local hnsw.ef_search = 400`,
+	`set local hnsw.ef_search = 20`,
 	`set local hnsw.iterative_scan = relaxed_order`,
 	`set local plan_cache_mode = force_custom_plan`,
 }
@@ -1022,7 +1033,7 @@ totals as (
 // The depth asked for is still ten times the items the arm keeps (searchWindowCandidates), for
 // the reason that constant gives: one long thread's windows would otherwise fill the arm. What
 // the index delivers against it is its own: searchMeaningScan sets hnsw.iterative_scan to
-// relaxed_order, which lets an HNSW scan carry on past the first hnsw.ef_search = 400 vectors
+// relaxed_order, which lets an HNSW scan carry on past the first hnsw.ef_search = 20 vectors
 // rather than stopping there, and that is the whole of what it promises. It does not fill the
 // LIMIT - measured on the load-test corpus, this arm forced through embeddings_cosine over
 // 1,104 qualifying rows took 245, unmoved by every scan setting tried (the list beside

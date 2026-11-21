@@ -91,7 +91,9 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 // rather than from the list that set it: a search whose caller has gone cannot be cancelled while
 // the pool is full, since pgx cancels out of band and a CancelRequest needs a connection of its
 // own, so the statement has to end itself. The two index settings are read beside it: all three
-// reach a query the same way, and a list that lost one of them is read here too.
+// reach a query the same way, and a list that lost one of them is read here too. The width,
+// hnsw.ef_search 20, is the one the production-size bench chose (searchMeaningScan says with
+// which numbers); pgvector's default is 40, so a list that lost the setting fails here.
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
@@ -112,8 +114,8 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 		t.Fatalf("statement_timeout = %q in a meaning query's transaction, want 15s: the server's own bound is what "+
 			"ends a search whose caller has gone, since pgx cannot deliver a cancellation when the pool is full", timeout)
 	}
-	if efSearch != "400" || iterativeScan != "relaxed_order" {
-		t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q, want 400 and relaxed_order", efSearch, iterativeScan)
+	if efSearch != "20" || iterativeScan != "relaxed_order" {
+		t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q, want 20 and relaxed_order: the width the bench chose for one HNSW graph a project", efSearch, iterativeScan)
 	}
 
 	if err := tx.Rollback(ctx); err != nil {
