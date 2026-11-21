@@ -30,11 +30,9 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  canonicalRole,
   canonicalTopic,
   type Envelope,
   legacyDispatchIssueSubject,
-  roleClaimKey,
   type SessionAnswer,
   topicForms,
   uncapturedTopicRefusal,
@@ -99,6 +97,7 @@ import {
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { listenerRoleKey, readsRole } from "@legion/pi-shared/test/omp-harness";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
@@ -181,30 +180,11 @@ function relayCarries(subject: string): boolean {
   return false;
 }
 
-/** The key the listener keeps a claim of `role` under, the role named in either form: the bare
- *  name for a claim of the project the role's own name gives, else `<project>.<role>`
- *  (`contracts.RoleClaimKey`). What a stand-in listener keys its holders by. */
-function listenerRoleKey(role: string): string {
-  const { project, name } = canonicalRole(role);
-  return roleClaimKey(project, name);
-}
-
 /** A role lane as the listener writes it onto its holder's record, `notifications.role.<claim
  *  key>` (`listenerRoleKey`), whatever form the client named it in; any other topic as it is. */
 function listenerRoleTopic(topic: string): string {
   const lane = "notifications.role.";
   return topic.startsWith(lane) ? `${lane}${listenerRoleKey(topic.slice(lane.length))}` : topic;
-}
-
-/** Whether `url` is a role read (`GET /v1/roles/<role>`) of `role`, named in either form: the
- *  listener reads a claim under its key (`listenerRoleKey`). */
-function readsRole(url: URL, role: string): boolean {
-  const read = /^\/v1\/roles\/([^/]+)$/.exec(url.pathname)?.[1];
-  return (
-    read !== undefined &&
-    read !== "set" &&
-    listenerRoleKey(decodeURIComponent(read)) === listenerRoleKey(role)
-  );
 }
 
 /**
