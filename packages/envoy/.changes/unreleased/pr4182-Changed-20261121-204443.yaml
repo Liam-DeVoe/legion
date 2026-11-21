@@ -1,0 +1,5 @@
+kind: Changed
+body: A comment, an issue message, a direct reply, an ask and an answer store whom they reach as `delivered_to`, `participates_in` and `mentions` relations of the node store, written by the write itself in its transaction, and a read mark or a dismissal as a relation from the person. The read-state tables are projections of those relations, the census proves each row against them, and the boot's backfill states the rows an older build wrote. `GET /api/v1/inbox`, `GET /api/v1/me/replies` and `GET /api/v1/agents/{session_id}/messages` answer as before for one release; nothing in this repository calls them.
+time: 2026-11-21T20:44:43.858176357Z
+custom:
+    Issue: pr4182

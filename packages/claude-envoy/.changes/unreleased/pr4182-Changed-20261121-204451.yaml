@@ -1,0 +1,5 @@
+kind: Changed
+body: The bundled `dispatch` command's `inbox` reads the one read, `GET /api/v1/me/inbox`, and prints what it printed before.
+time: 2026-11-21T20:44:51.998621007Z
+custom:
+    Issue: pr4182
