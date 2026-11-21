@@ -681,9 +681,10 @@ type RouteMux interface {
 // (keyedWrites, keyedMethod, request_keys.go). Every write route - a POST, PATCH, PUT or DELETE -
 // that names its presser in Dispatch-Login runs only as that person (refuseChangedLogin).
 //
-// Every route the rules of /api/v2 bind reads its query and its body through one decoder, from the
-// types its row declares, and holds each value its row gives an authority to that authority before
-// its handler runs (decode_v2.go, authorities_v2.go).
+// Every route apiRoute.decoded names - a routeRow's mount outside the INFRA-979 tree, at /api/v2
+// and, for a row served in both versions, at /api/v1 too - reads its query and its body through
+// one decoder, from the types its row declares, and holds each value its row gives an authority to
+// that authority before its handler runs (decode_v2.go, authorities_v2.go).
 //
 // Every route the read list does not name (readScopeRoutes), GET /ws/live among them, answers a
 // read-only broker token 403 READ_ONLY_TOKEN before anything else it does (refuseReadOnlyToken).

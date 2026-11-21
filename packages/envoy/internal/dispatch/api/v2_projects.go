@@ -1160,15 +1160,9 @@ func (s *server) listPrioritiesV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if query.Limit > 0 {
 		answer.page = pageOf(body.Priorities, query.pageQuery)
-		// Each description on the page carries its display tree for a caller that sent
-		// `Dispatch-Trees: 1`, as GET /api/v1/priorities answers every one (listPriorities). The
-		// page is final here, so every field registered stands where resolve fills it.
-		reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-		for index := range answer.Items {
-			row := &answer.Items[index]
-			reader.text(&row.DescriptionTree, row.Description)
-		}
-		reader.resolve()
+		// Each description on the page carries its display tree, as GET /api/v1/priorities
+		// answers every one (readPriorityTrees).
+		s.readPriorityTrees(r, answer.Items)
 	}
 	if !summary {
 		answer.WorkUnderNoPriority.ByProject = &body.WorkUnderNoPriority.ByProject

@@ -1,6 +1,7 @@
 // Package sessionanswers is the read model of what people wrote that Dispatch delivered to one
-// session: GET /api/v1/agents/{session_id}/answers' read, which the outbox's tests read back
-// through too, so the route reads what the publisher records.
+// session: the read of GET /api/v1/agents/{session_id}/answers and of GET
+// /api/v2/agents/{session_id}/answers alike (List), which the outbox's tests read back through
+// too, so each route reads what the publisher records.
 package sessionanswers
 
 import (

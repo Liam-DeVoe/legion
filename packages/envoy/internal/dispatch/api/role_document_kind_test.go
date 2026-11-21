@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // roleDocumentSpec is the spec of an issue whose role documents the test stores: one requirement,
@@ -320,4 +322,45 @@ func approveTheFileByPlanReview(t *testing.T, database *store.Store, deps Deps, 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the plan review: %v", err)
 	}
+}
+
+// An R15 conversion of a role file into its document replaced a file, which has no token to name,
+// and was seeded as a create is, so it counts no unguarded replacement and logs none
+// (noteUnguardedReplacement): envoy_dispatch_document_replacements_unguarded_total is the signal
+// for bringing back the refusal of a replacement that names no token (unguarded_replacements.go).
+// The upload that then replaces the document the conversion made, naming no token, is such a
+// replacement, and counts and logs one (#4775).
+func TestARoleFilesConversionCountsNoUnguardedReplacement(t *testing.T) {
+	registry := metrics.New()
+	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory(), metrics: registry})
+	logged := captureLog(t)
+	issue := createInteractionIssue(t, handler, "ROLE", "A plan stored as a file", roleDocumentSpec)
+	seedRoleDocumentAsFile(t, database, issue.Key, "plan.md", "file", "text/plain; charset=utf-8", []byte("The plan.\n"))
+	upload := func(what, content string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
+			map[string]string{"name": "plan.md", "content": content}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s; want 201", what, response.Code, response.Body.String())
+		}
+	}
+	counted := func(want int, after string) {
+		t.Helper()
+		sample := unguardedReplacementSample(t, registry)
+		if want == 0 && sample != "" && sample != unguardedReplacementsMetric+" 0" {
+			t.Errorf("after %s the counter reads %q, want no unguarded replacement", after, sample)
+		}
+		if want > 0 && sample != fmt.Sprintf("%s %d", unguardedReplacementsMetric, want) {
+			t.Errorf("after %s the counter reads %q, want %d", after, sample, want)
+		}
+		if lines := strings.Count(logged.String(), unguardedReplacementMessage); lines != want {
+			t.Errorf("after %s the log holds %d unguarded replacement lines, want %d", after, lines, want)
+		}
+	}
+
+	markdown := "# Plan\n\n" + planTaskServing("t1", "dispatch://"+issue.Key+"/spec#b-r1")
+	upload("the conversion of plan.md, stored as a file, into the plan", markdown)
+	counted(0, "the conversion")
+	upload("a replacement of the converted plan that names no token", markdown+"\nThe plan's second draft.\n")
+	counted(1, "the replacement that names no token")
 }

@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	// sessionAnswersWindow is the window GET /api/v1/agents/{session_id}/answers reads when the
-	// request names no since: the 72 hours every agent host carries on each model request.
+	// sessionAnswersWindow is the window an answers read reads when the request names no start:
+	// GET /api/v1/agents/{session_id}/answers with no since, and GET
+	// /api/v2/agents/{session_id}/answers with no from (listSessionAnswersV2). It is the 72 hours
+	// every agent host carries on each model request.
 	sessionAnswersWindow = 72 * time.Hour
 	// sessionAnswersOldest bounds how far back a since may reach, so one read never walks more
 	// than a week of the events index.

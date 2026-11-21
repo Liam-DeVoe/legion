@@ -122,6 +122,19 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 	return priority
 }
 
+// readPriorityTrees gives each listed row the tree of its description for a caller that sent
+// `Dispatch-Trees: 1`, read as a comment list reads its bodies' (displayTreeReader), so the page
+// parses no description: the listing of either version calls it on the rows it answers. The rows
+// must be final, since resolve fills each field registered where it stands.
+func (s *server) readPriorityTrees(r *http.Request, rows []model.PriorityRow) {
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	for index := range rows {
+		row := &rows[index]
+		reader.text(&row.DescriptionTree, row.Description)
+	}
+	reader.resolve()
+}
+
 // listPriorities is GET /api/v1/priorities: every live priority in rank order, the work that
 // advances each, and the two faults — work in flight under no priority, and priority work parked
 // in `backlog` or `icebox`. The reads are priority_queries.go's, which says what each one costs.
@@ -136,8 +149,8 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 // why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
 // and nothing has gone wrong.
 //
-// Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
-// as a comment list reads its bodies' (displayTreeReader), so the page parses no description.
+// Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`
+// (readPriorityTrees).
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -154,13 +167,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	// The list is final here, so every field registered stands where resolve fills it.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	for index := range body.Priorities {
-		row := &body.Priorities[index]
-		reader.text(&row.DescriptionTree, row.Description)
-	}
-	reader.resolve()
+	s.readPriorityTrees(r, body.Priorities)
 	WriteJSON(w, http.StatusOK, body)
 }
 

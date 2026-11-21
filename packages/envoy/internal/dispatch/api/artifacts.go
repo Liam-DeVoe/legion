@@ -1004,7 +1004,9 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if kind == "doc" && !created && input.precondition == nil {
+	// A conversion of a role file into its document (R15) replaced a file, which has no token to
+	// name, and was seeded as a create is, so it is no unguarded replacement of a document.
+	if kind == "doc" && !created && !converted && input.precondition == nil {
 		s.noteUnguardedReplacement(artifact)
 	}
 	if kind == "doc" {

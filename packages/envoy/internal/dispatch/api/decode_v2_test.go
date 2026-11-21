@@ -576,11 +576,10 @@ func TestABothVersionRowIsDecodedAndGatedAtBothPaths(t *testing.T) {
 }
 
 // Every route the server's table mounts, test hooks included, is one undecodableRoutes refuses
-// nothing of, and both mounts of every routeRow served in both versions outside the INFRA-979
-// tree are ones the decoder reads and the authority gate holds (apiRoute.decoded): its /api/v1
-// path reads, gates and answers its one declaration as its /api/v2 path does (R2). The INFRA-979
-// tree's rows, which that tree's spec decides and whose handlers read their request as /api/v1
-// wrote it, are left out and named by their /api/v1 mounts.
+// nothing of. The INFRA-979 tree's rows, which that tree's spec decides and whose handlers read
+// their request as /api/v1 wrote it, are left out of the decoder and named by their /api/v1
+// mounts; TestABothVersionRowIsDecodedAndGatedAtBothPaths proves that both mounts of every other
+// row served in both versions are decoded and gated.
 func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 	served := &server{deps: Deps{TestHooksEnabled: true}}
 	routes := served.routes()
@@ -589,17 +588,8 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 	}
 	var infra979 []string
 	for _, route := range routes {
-		if !route.columns || route.Versions == onlyV2 {
-			continue
-		}
-		if route.OfINFRA979 {
-			if route.Version == apiV1 {
-				infra979 = append(infra979, route.Method+" "+route.Pattern)
-			}
-			continue
-		}
-		if !route.decoded() {
-			t.Errorf("%s %s mounts a row served in both versions, and the decoder does not read it", route.Method, route.Pattern)
+		if route.columns && route.OfINFRA979 && route.Version == apiV1 {
+			infra979 = append(infra979, route.Method+" "+route.Pattern)
 		}
 	}
 	if rows := len(served.v2Infra979Rows()); len(infra979) != rows {

@@ -2393,16 +2393,16 @@ type SessionAnswerAsk struct {
 }
 
 // SessionAnswer is one thing a person wrote that Dispatch delivered to a session, on
-// GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
-// body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
-// user. Text is the person's own words in full ("" for an answer that chose options only, and for
-// a decline the person wrote no note with). DispatchWords is set only on a decline of an ask the
-// session wrote or follows: the words Dispatch wrote for the asking agent (DeclineDispatchWords),
-// kept apart from the person's note so no reader has to cut one out of the other. Selected and
-// Replaced are an answer's, each omitted when empty or false; EditedAt is an edited comment's;
-// Ask is set on an answer, on a decline and on a reply in an ask's thread. Owner and Ref are nil
-// for a direct message, which is on no issue and has no dispatch:// address; Href is then
-// /agents/<session>/live.
+// GET /api/v1/agents/{session_id}/answers and GET /api/v2/agents/{session_id}/answers alike: an
+// ask's current answer, a comment at its current body, a message, or a person's decline of an ask,
+// each (Kind, ID) once. Author is always a user. Text is the person's own words in full ("" for an
+// answer that chose options only, and for a decline the person wrote no note with). DispatchWords
+// is set only on a decline of an ask the session wrote or follows: the words Dispatch wrote for the
+// asking agent (DeclineDispatchWords), kept apart from the person's note so no reader has to cut
+// one out of the other. Selected and Replaced are an answer's, each omitted when empty or false;
+// EditedAt is an edited comment's; Ask is set on an answer, on a decline and on a reply in an ask's
+// thread. Owner and Ref are nil for a direct message, which is on no issue and has no dispatch://
+// address; Href is then /agents/<session>/live.
 type SessionAnswer struct {
 	Kind          string            `json:"kind"`
 	Relation      string            `json:"relation"`
