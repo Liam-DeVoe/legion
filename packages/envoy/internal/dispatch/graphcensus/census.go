@@ -372,18 +372,19 @@ var commentAuthor = `array_to_string(` + actorAuthor("c.author") + `, ':')`
 // recordedSessions read it.
 //
 // The events are there for the erase. It deletes a comment's row and keeps the comment's events,
-// and of an event it rewrites only the payload's values that carry what a person wrote: never a
-// structural value such as an id, a state or a time (grapherase's structuralKey), and never the
-// actor column (grapherase's redactEvents). That actor is the one the row stored as its author
-// and the one graphstore.QueueAuthored wrote the author's node from: api's createComment and
-// replyComment pass all three the one actor. The erase leaves the author's node - it never takes
-// a session, and takes a person only when asked to - so without the event that node would be a
-// difference no erase can close. No route deletes a comment, and the erase takes only a comment
-// the store holds a node of, whose author's node the write that stored it made with it, so an
-// event whose comment is gone names an author a writer wrote a node for. An event of a comment the
-// table still holds adds nothing: the row names the same author, and only the row says whether the
-// store holds the comment at all (refs.CommentInTheStore). An event whose payload names no comment
-// says nothing of one and is not read; the filler events of a seeded corpus are such events.
+// and of an event it rewrites only the payload's values that carry what a person wrote: never an
+// identity value such as an author, an id, a state or a time (grapherase's payloadClassification),
+// and never the actor column (grapherase's redactEvents). That actor is the one the row stored as
+// its author and the one graphstore.QueueAuthored wrote the author's node from: api's
+// createComment and replyComment pass all three the one actor. The erase leaves the author's
+// node - it never takes a session, and takes a person only when asked to - so without the event
+// that node would be a difference no erase can close. No route deletes a comment, and the erase
+// takes only a comment the store holds a node of, whose author's node the write that stored it
+// made with it, so an event whose comment is gone names an author a writer wrote a node for. An
+// event of a comment the table still holds adds nothing: the row names the same author, and only
+// the row says whether the store holds the comment at all (refs.CommentInTheStore). An event
+// whose payload names no comment says nothing of one and is not read; the filler events of a
+// seeded corpus are such events.
 //
 // The comment an event stored is matched by the payload's id, which the redaction never rewrites,
 // compared as text so that an id no row could hold reads as no row rather than failing a cast.
@@ -498,9 +499,9 @@ var commentPeople = `
 // (api's completeCommentDelivery), from which the outbox records that session as well
 // (outbox.mentionReached). The erase deletes the attempt's row with its comment, since the row
 // cannot exist without it, and keeps the receipt with its state and its session id, which it never
-// rewrites (grapherase's structuralKey), so a session only an erased comment's mention reached
-// stays held to that receipt. A fallback copy's row carries no foreign key to its comment, so the
-// erase leaves that row, and it holds its session as it did.
+// rewrites (grapherase's payloadClassification), so a session only an erased comment's mention
+// reached stays held to that receipt. A fallback copy's row carries no foreign key to its
+// comment, so the erase leaves that row, and it holds its session as it did.
 //
 // R14 is exact about which attempt is a delivery: an attempt the listener took is one, and a
 // pending or failed one is not. So this binds the two states that mean it

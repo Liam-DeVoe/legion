@@ -55,22 +55,27 @@ type redactedEvent struct {
 // log is the failure an erase exists to prevent, and the redaction takes it out only where it
 // stands as a block of its own.
 //
-// A document event's payload carries the whole document, so it holds the erased block's text
-// beside every sibling's: it is redacted where the erased text stands as a block of its own
-// (redactBlockQuote) and nowhere else, which leaves a sibling's line in a version's markdown or
-// in a diff as it was written. A comment's own event carries what that comment's author wrote -
-// its body, and a suggestion's replacement - every byte of which goes wherever it stands, and
-// beside it what quotes other nodes: the quote of the document the comment is anchored to, that
-// document's name, the question of the ask it replies to and the text of the block its reply
-// answers (quotedFields). Those are redacted only as a quote of a document is, where the erased
-// text stands as a block of its own, so another node's words around it stay as they were
-// written. A delivery receipt quotes no other node.
+// Each payload is redacted by the class each of its string values has for the event's type
+// (payloadClassification). A document event's payload carries the whole document, so every
+// value in it a person wrote - the document's name, a version's summary, a diff, a review's
+// reason - holds the erased block's text beside every sibling's: it is redacted where the erased
+// text stands as a block of its own (redactBlockQuote) and nowhere else, which leaves a sibling's
+// line in a version's markdown or in a diff as it was written. A comment's own event carries what
+// that comment's author wrote - its body, and a suggestion's replacement - every byte of which
+// goes wherever it stands, and beside it what quotes other nodes: the quote of the document the
+// comment is anchored to and the text of the table its anchor stands in, that document's name,
+// the question of the ask it replies to and the text of the block its reply answers. Those are
+// redacted only as a quote of a document is, where the erased text stands as a block of its own,
+// so another node's words around it stay as they were written. Who wrote or acted - every actor,
+// with the origin its session reported and the agent that acted for its person, and every list
+// of the sessions or the people a write reached - is identity, as are the payload's ids, states
+// and times, and the redaction never rewrites it.
 //
-// An event about the node whose payload the redaction leaves holding an erased text - in a
-// structural value (structuralKey), which it never rewrites, or in a value that quotes another
-// node - is searched for by the search for the rows the run leaves, which lists it (readLeft,
-// cleanedEvents), so the listing says what the run does. So is an event of a version of the
-// block's document it did not stand in, which the run does not read as about it.
+// An event about the node whose payload the redaction leaves holding an erased text - in an
+// identity value, which it never rewrites, or in a value that quotes another node - is searched
+// for by the search for the rows the run leaves, which lists it (readLeft, cleanedEvents), so the
+// listing says what the run does. So is an event of a version of the block's document it did not
+// stand in, which the run does not read as about it.
 //
 // Neither `about` predicate has an index, so a read of them alone reads every row of the event
 // log. A confirmed run makes that read in its search before its locks (searchLeft), and under its
@@ -138,7 +143,7 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		if refs.ItemKind(e.Kind) == refs.ItemComment {
 			comment = e.ID
 		}
-		payload, originals, cutBody, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
+		payload, originals, cutBody, err := redactPayload([]byte(event.payload), event.kind, read.texts, e.marker(), comment)
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
@@ -164,20 +169,25 @@ type eventsUnderLocks struct {
 	ids    []int64
 }
 
-// redactPayload replaces each erased text with the marker inside every string value of a JSON
-// payload that carries what a person wrote, and answers the payload so redacted and each string
-// value it rewrote as it stood before. A key is never touched: a text is erased from what a
-// payload says, and a key is its shape. A value under a structural key is never touched either
-// (structuralKey), since it says what the payload is about and not what anybody wrote: an erase of
-// `kind` leaves every "kind" key and the kind each one names, and redacts a body reading "kind";
-// an erase of `sent` leaves a receipt's state reading "sent"; and an erase of a text that is part
-// of a session's id leaves that id whole. The payload is a jsonb's text, so its numbers are read
-// as the literals they are and its key order is the one jsonb keeps whatever order it is written
-// back in.
+// redactPayload replaces each erased text with the marker inside the string values of a JSON
+// payload of an event of type kind, each by the class its path has for that type (classesOf):
+// every erased text in the node's own words, an erased text in another node's quoted words only
+// where it stands as a block of its own (redactBlockQuote), and nothing in an identity value. It
+// answers the payload so redacted and each string value it rewrote as it stood before. A key is
+// never touched: a text is erased from what a payload says, and a key is its shape. An identity
+// value is never touched either, since it says who wrote or acted and what the payload is about,
+// and not what anybody wrote: an erase of `kind` leaves every "kind" key and the kind each one
+// names, and redacts a body reading "kind"; an erase of `sent` leaves a receipt's state reading
+// "sent"; an erase of `approved` leaves an author's host and token named after it; and an erase
+// of a text that is part of a session's id leaves that id whole. The payload is a jsonb's text,
+// so its numbers are read as the literals they are and its key order is the one jsonb keeps
+// whatever order it is written back in.
 //
-// quoted says the payload quotes a document, whose blocks are other nodes': a text is then
-// replaced only where it stands as a block of its own (redactBlockQuote). A value under one of
-// quotedFields quotes another node whatever the payload, and is replaced the same way.
+// A path the classification does not name - a key a later or an older build writes, or any path
+// of a type it does not hold - is read by the rule it replaced (eventClasses.classOf): identity
+// where structuralKey names its key, else the content class of its type, or for a type the
+// classification does not hold, of the predicate that read the event (classesOf). So a field
+// another build adds that holds what a person wrote loses the erased bytes as every other does.
 //
 // comment is the erased comment's id, empty for any other node. A payload that is that comment's
 // own (its `id`) and whose `body_truncated` is true carries only the first part of the body
@@ -188,29 +198,29 @@ type eventsUnderLocks struct {
 // byte of a cut body is the comment's own, so the whole value is replaced with the marker
 // (ownCutBody), and redactPayload answers that body, empty where it cut none, since the display
 // tree of an earlier body is keyed by a text no row holds (treeNeedles).
-func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, string, error) {
+func redactPayload(payload []byte, kind string, texts []string, marker string, comment string) ([]byte, []string, string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
 		return nil, nil, "", err
 	}
+	classes := classesOf(kind, comment)
 	var originals []string
-	// key is the key the value stands under, and the key of the array that holds it for an
-	// element of one: an array under a structural key is a list of structural values. parent is
-	// the key the object holding the value stands under, empty at the payload's top level, which
-	// with key names a field of quotedFields.
-	var redact func(value any, parent, key string) any
-	redact = func(value any, parent, key string) any {
+	// path is the value's path (payloadPaths), empty at the payload's top level. key is the key
+	// the value stands under, and the key of the array that holds it for an element of one: an
+	// array under a structural key is a list of structural values.
+	var redact func(value any, path, key string) any
+	redact = func(value any, path, key string) any {
 		switch held := value.(type) {
 		case string:
-			if structuralKey(key) {
-				return held
-			}
 			rewritten := held
-			if quoted || quotedFields[[2]string{parent, key}] {
+			switch classes.classOf(path, key) {
+			case identity:
+				return held
+			case quotedWords:
 				rewritten = redactBlockQuote(held, texts, marker)
-			} else {
+			default:
 				for _, text := range texts {
 					rewritten = strings.ReplaceAll(rewritten, text, marker)
 				}
@@ -221,11 +231,11 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool, c
 			return rewritten
 		case []any:
 			for index := range held {
-				held[index] = redact(held[index], parent, key)
+				held[index] = redact(held[index], path+"[]", key)
 			}
 		case map[string]any:
 			for name := range held {
-				held[name] = redact(held[name], key, name)
+				held[name] = redact(held[name], keyPath(path, name), name)
 			}
 		}
 		return value
@@ -262,42 +272,22 @@ func ownCutBody(value any, comment string) (string, bool) {
 	return body, ok
 }
 
-// quotedFields are the values of a comment's own event (model.CommentEventPayload) that quote
-// another node rather than say what the comment's author wrote, each by the key of the object it
-// stands in, empty for the payload's top level, and its own key: the quote of the document the
-// comment is anchored to (model.Anchor's quote), that document's name (artifact_name), the
-// question of the ask the comment replies to (ask_question), and the text of the block of the
-// comment or the ask the reply answers (model.ReplyBlock's text). A delivery receipt
-// (model.CommentDeliveryEventPayload) carries none of them: its values are its structure and the
-// error its send answered, which is no node's text.
+// structuralNames and structuralSuffixes are the keys whose values the redaction reads as
+// identity at a path the payload classification does not name (eventClasses.classOf): what names
+// a thing, where it is addressed, which of a closed set of states or kinds it is, and when it
+// happened, at every depth of every event type alike. They were the whole rule before each string
+// of each payload the erase reads was classified (payloadClassification), and they stay for the
+// paths it does not name: a key a later build adds, or one an older build wrote that no field of
+// this build writes.
 //
-// Each is written by the comment's write from the node it quotes, so an erased text inside a
-// longer line of one is that node's words, which the erase of the comment leaves (R5). The
-// redaction reads each as it reads a quote of a document (redactBlockQuote), and replaces an
-// erased text there only where it stands as a block of its own - the whole value, or a whole line
-// of it - where nothing around it says whose words they are.
-var quotedFields = map[[2]string]bool{
-	{"anchor", "quote"}:     true,
-	{"", "artifact_name"}:   true,
-	{"", "ask_question"}:    true,
-	{"reply_block", "text"}: true,
-}
-
-// structuralNames and structuralSuffixes are the keys of an event payload whose values are its
-// structure rather than what a person wrote: what names a thing, where it is addressed, which of
-// a closed set of states or kinds it is, and when it happened. They are the names the payloads
-// the erase reads carry, and one rule at every depth of every event type: the comment's own
-// events (model.CommentEventPayload, with the actors, anchors, mentions, attempts and references
-// inside it), its delivery receipts (model.CommentDeliveryEventPayload) and a document's events
-// (docs.ArtifactVersionEventPayload with its model.Version, model.Artifact,
-// model.ArtifactReviewEventPayload, model.ArtifactHumanEditedEventPayload and the block events).
-//
-// The rule names the structure and not the content because the two failures are not alike. A
-// key it does not know is read as content and redacted, so a field a later build adds that holds
-// what a person wrote loses the erased bytes as every other does; at worst such a field that is
-// structure takes the marker, which breaks a reader of that one value. A list of content keys
-// would leave the bytes standing in every content field a later build adds, which is the failure
-// an erase exists to prevent.
+// The fallback names the structure and not the content because the two failures are not alike.
+// A key it does not know is read as content and redacted, so a field another build adds that
+// holds what a person wrote loses the erased bytes as every other does; at worst such a field
+// that is structure takes the marker, which breaks a reader of that one value. A list of content
+// keys would leave the bytes standing in every content field another build adds, which is the
+// failure an erase exists to prevent. A field this build's payloads carry is classified before it
+// ships: TestEveryStringOfAnEventPayloadTheEraseReadsHasAClass fails on any string of a payload
+// the classification does not name.
 var structuralNames = map[string]bool{
 	// Identifiers: a node's, the comment a reply replies to or answers, a person's login, a
 	// session's, a service's, a project's, a digest and where it was read from.
@@ -319,7 +309,8 @@ var structuralSuffixes = []string{
 }
 
 // structuralKey reports whether a value under key is structure (structuralNames), which the
-// redaction never rewrites. The top-level value of a payload stands under no key and is content.
+// redaction reads as identity where the classification names no class for the value's path. The
+// top-level value of a payload stands under no key and is content.
 func structuralKey(key string) bool {
 	if structuralNames[key] {
 		return true

@@ -277,15 +277,15 @@ const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::t
 //
 // An event about the node is passed over only where the redaction leaves its payload holding
 // none of the texts (cleanedEvents). One that still holds one in a value the redaction does not
-// take it out of - a structural value, which it never rewrites (structuralKey), or a value that
-// quotes another node, which it rewrites only where a text stands as a block of its own
-// (quotedFields) - is searched as any other row is, so the listing names it as a row the run
-// leaves holding those bytes, beside the line naming it redacted. The text of a block holding the
-// node's block is passed over only at a version the redaction rewrites (readAncestorTexts): at a
-// version the node's block did not stand in, the same words are that block's own, which the run
-// leaves. Its row of document_blocks is passed over only where the redaction rewrites its excerpt
-// (readAncestorExcerpts): an excerpt cut from such a version is left as it is, and searched as
-// any other row is.
+// take it out of - an identity value, which it never rewrites (who wrote or acted, an id, a
+// state: payloadClassification), or a value that quotes another node, which it rewrites only
+// where a text stands as a block of its own (quotedWords) - is searched as any other row is, so
+// the listing names it as a row the run leaves holding those bytes, beside the line naming it
+// redacted. The text of a block holding the node's block is passed over only at a version the
+// redaction rewrites (readAncestorTexts): at a version the node's block did not stand in, the
+// same words are that block's own, which the run leaves. Its row of document_blocks is passed
+// over only where the redaction rewrites its excerpt (readAncestorExcerpts): an excerpt cut from
+// such a version is left as it is, and searched as any other row is.
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json
