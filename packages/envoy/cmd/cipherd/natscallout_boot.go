@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -101,12 +102,12 @@ func migratedSchema(ctx context.Context, st *store.Store) (string, error) {
 }
 
 // holdRoutes is the wiring of the NATS writer hold's routes: the broker's own pool and the schema
-// its migrations ran in, the operator's keys, and the operator entry's account with the auth
-// service's own verifier of its token. A broker that lists no operator entry, or runs no auth
-// service and so verifies no NATS audience, gets no verifier, and its routes refuse every caller
-// 403 not_operator.
-func holdRoutes(cfg config.Config, st *store.Store, schema string, services []config.NATSService, tokens natscallout.PlatformTokens) api.NATSHold {
-	hold := api.NATSHold{Pool: st.Pool, Schema: schema, Keys: cfg.NATS.HoldSigningKeys}
+// its migrations ran in, the operator's keys, the process's floor of the hold row, which the auth
+// service's hold view shares, and the operator entry's account with the auth service's own
+// verifier of its token. A broker that lists no operator entry, or runs no auth service and so
+// verifies no NATS audience, gets no verifier, and its routes refuse every caller 403 not_operator.
+func holdRoutes(cfg config.Config, st *store.Store, schema string, services []config.NATSService, tokens natscallout.PlatformTokens, floor *signedrecord.Floor) api.NATSHold {
+	hold := api.NATSHold{Pool: st.Pool, Schema: schema, Keys: cfg.NATS.HoldSigningKeys, RowFloor: floor}
 	if operator, listed := operatorEntry(services); listed && (tokens.K8s != nil || tokens.Google != nil) {
 		hold.OperatorToken, hold.OperatorAccount, hold.OperatorGoogle = tokens.Verify, operator.Account, operator.Google
 	}

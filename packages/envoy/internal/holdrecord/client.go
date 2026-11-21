@@ -47,6 +47,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -72,6 +73,10 @@ type Config struct {
 // write with the configuration's SigningKey and verifies its answer against VerifyKeys.
 type Client struct {
 	cfg Config
+	// seenMu guards seenGen, the highest gen of a hold row this client has verified, read or
+	// written: the row floor it has seen, which bounds the restore_gen RestoreRow follows.
+	seenMu  sync.Mutex
+	seenGen uint64
 }
 
 // Row is the hold row. Its phase is natsgrant's type, the one the operator's grant is decided by.
@@ -231,15 +236,25 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // other gen 409 `gen_mismatch` naming that one in `restore_gen`. For a `held` row with its hold id
 // RestoreRow then signs the row afresh at `restore_gen` and sends it once more, and answers a
 // second refusal, another writer's restore between the two, as it is; for any other row it answers
-// the first as a RestoreGenError. Before it restores a `held` row it reads the hold's journal, and
-// refuses a hold that has ended, a done `hold release` or `hold abort` (ErrAlreadyDone): no command
-// is admitted after the end, so a held row restored for it would keep every client out with no
-// command left to release it. A `released` row, the one a completed hold left, the first row's
-// shape with no hold id, or a row lost while the hold was `prepare` (restored with that hold's id,
-// as `hold abort` from `prepare` leaves it), is sent once, at gen alone, the gen a RestoreGenError
-// named: the route stores it unless the log's latest entry is held, and refuses it 400
-// `bad_transition` after a held entry, so a released row never lands mid-hold. After a prepare
-// entry it frees nobody, since a prepare row refuses no client.
+// the first as a RestoreGenError. It follows `restore_gen` only when it is one above the highest
+// row gen this client has verified, read or written, and refuses any other as ErrUnknown: one at
+// or below that gen, or more than one above it, is a gen a database writer chose by the log
+// entries it deleted or added, and the operator would sign the restored row there. A client that
+// has verified no row has nothing to bound it by. Before it restores a `held` row it reads the
+// hold's journal, and refuses a hold that has ended, a done `hold release` or `hold abort`
+// (ErrAlreadyDone): no command is admitted after the end, so a held row restored for it would keep
+// every client out with no command left to release it. The route judges every restore by the log's
+// latest entry, which carries the row the operator signed and must verify, and by its floor of the
+// row, which refuses a restore at or below a row it served, read or wrote (409 `below_floor`, read
+// as ErrUnknown). It stores held only after a prepare or held entry of the same hold id, so a hold
+// that `hold abort` from `prepare` ended, which leaves no journal entry, is refused 400
+// `bad_transition` too. A `released` row, the one a completed hold left, the first row's shape
+// with no hold id, or a row lost while the hold was `prepare`, before its journal starts or after
+// (restored with that hold's id, as `hold abort` from `prepare` leaves it), reads no journal and
+// is sent once, at gen alone, the gen a RestoreGenError named: the route stores it after a
+// released or prepare entry, since a prepare row refuses no client, or after a held one whose
+// hold's signed journal shows it ended, and refuses it 400 `bad_transition` after any other held
+// entry, so a released row never lands mid-hold.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
@@ -258,9 +273,24 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 	row, err := c.restore(ctx, gen, phase, holdID, reason)
 	var mismatch *RestoreGenError
 	if phase == natsgrant.OperatorPhaseHeld && holdID != "" && errors.As(err, &mismatch) && mismatch.RestoreGen != gen {
+		if err := c.followable(mismatch.RestoreGen); err != nil {
+			return Row{}, err
+		}
 		return c.restore(ctx, mismatch.RestoreGen, phase, holdID, reason)
 	}
 	return row, err
+}
+
+// followable is whether RestoreRow follows restoreGen, the gen a route's restore refusal named:
+// only one above the highest row gen this client has verified, when it has verified one.
+func (c *Client) followable(restoreGen uint64) error {
+	c.seenMu.Lock()
+	seen := c.seenGen
+	c.seenMu.Unlock()
+	if seen == 0 || restoreGen == seen+1 {
+		return nil
+	}
+	return wrap(ErrUnknown, fmt.Sprintf("the route names restore_gen %d, and the latest hold row this client verified is at gen %d, so a restored row follows it at gen %d alone", restoreGen, seen, seen+1))
 }
 
 // Bootstrap writes the first row, `released` with no hold id at gen 1, through `POST
@@ -269,7 +299,8 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 // first row's at a gen it did not name. That holds only as long as nats_hold_log keeps its
 // entries: the log is the broker database's, and a database writer who empties it lets Bootstrap
 // write gen 1 again. The operator restores a lost row with RestoreRow: held with its hold id
-// mid-hold, and released, at the RestoreGenError's gen, unless the log's latest entry is held.
+// mid-hold, and released, at the RestoreGenError's gen, after a released or prepare entry or a held
+// one whose hold has ended.
 func (c *Client) Bootstrap(ctx context.Context) error {
 	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
 	return err
@@ -706,7 +737,8 @@ type rowWire struct {
 }
 
 // verifyRow is the row an answer holds, or ErrUnknown when it does not verify, comes without its
-// signature or holds a phase outside the row's three.
+// signature or holds a phase outside the row's three. A row that verifies moves the client's seen
+// gen (followable).
 func (c *Client) verifyRow(wire rowWire) (Row, error) {
 	signedAt, err := time.Parse(time.RFC3339Nano, wire.SignedAt)
 	if err != nil {
@@ -719,6 +751,9 @@ func (c *Client) verifyRow(wire rowWire) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, wrap(ErrUnknown, err.Error())
 	}
+	c.seenMu.Lock()
+	c.seenGen = max(c.seenGen, wire.Gen)
+	c.seenMu.Unlock()
 	return Row{Gen: wire.Gen, Phase: phase, HoldID: wire.HoldID, SignedAt: signedAt}, nil
 }
 
@@ -809,6 +844,8 @@ func jsonFailure(err error) string {
 }
 
 // exchange sends one request with the operator's token and returns the answer's status and body.
+// No error it answers carries the request's URL: a DELETE's query holds the operator's signature,
+// and net/http's *url.Error quotes the URL whole (withoutURL).
 func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
 	target := strings.TrimSuffix(c.cfg.BrokerURL, "/") + path
 	if len(query) > 0 {
@@ -824,7 +861,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	token, err := c.cfg.Token(ctx)
 	if err != nil {
@@ -840,14 +877,28 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, err)
+		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, withoutURL(err))
 	}
 	return resp.StatusCode, data, nil
+}
+
+// withoutURL is err with every *url.Error in its chain replaced by the error it wraps, so the
+// request's URL, its query and the signature in it, reaches no error; the caller names the method
+// and the route instead. An error with no *url.Error is answered as it is.
+func withoutURL(err error) error {
+	var withURL *url.Error
+	for errors.As(err, &withURL) {
+		if withURL.Err == nil {
+			return fmt.Errorf("the request failed: %s", withURL.Op)
+		}
+		err = withURL.Err
+	}
+	return err
 }
 
 // refusal is the error a refused request answers: a *RouteError for an answer coded with one of

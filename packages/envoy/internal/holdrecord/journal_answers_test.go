@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // canary is a record's value as an answer might carry it, and overflow a number no field of the
@@ -125,4 +126,39 @@ func answerRows(t *testing.T) {
 			t.Errorf("Admit answered %v, want an error naming %q, without the number", err, want)
 		}
 	})
+
+	t.Run("a DELETE that fails in transport answers an error with neither its URL nor its signature", func(t *testing.T) {
+		// net/http's *url.Error quotes the URL whole, and the cohort delete's query holds the
+		// operator's signature. Fails while exchange wraps that error as it is.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-delete-url"
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, json.RawMessage(`{"raised":["a"]}`)); err != nil {
+			t.Fatal(err)
+		}
+		cfg := r.Config()
+		cfg.HTTP = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method == http.MethodDelete {
+				return nil, errors.New("connection reset by peer")
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		})}
+		failing, err := holdrecord.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = failing.DeleteCohort(ctx, holdID)
+		if err == nil || strings.Contains(err.Error(), "sig=") || strings.Contains(err.Error(), "?") || !strings.Contains(err.Error(), "DELETE /v1/nats-hold/records") {
+			t.Errorf("DeleteCohort through a failing transport answered %v; want an error naming DELETE /v1/nats-hold/records, with no query and no signature", err)
+		}
+	})
 }
+
+// roundTripFunc is an http.RoundTripper made of a function.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

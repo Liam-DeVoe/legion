@@ -160,6 +160,36 @@ func replicaRows(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("a cohort the routes deleted is not put back, on a replica that never read it", func(t *testing.T) {
+		// The second replica's floor never saw the cohort, so only the signed delete the store keeps
+		// stands against a put of its key at gen 0. Fails while the store inserts a deleted key again:
+		// the cohort is back at gen 1.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-cohort-again"
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare"); err != nil {
+			t.Fatal(err)
+		}
+		value := json.RawMessage(`{"raised":["a"]}`)
+		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, value); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.DeleteCohort(ctx, holdID); err != nil {
+			t.Fatal(err)
+		}
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		var refusal *holdrecord.RouteError
+		if got, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, value); !errors.As(err, &refusal) || refusal.Code != "gen_mismatch" {
+			t.Errorf("PutRecord of the deleted cohort on the second replica answered %+v, %v; want 409 gen_mismatch", got, err)
+		}
+		var n int
+		if err := r.Pool.QueryRow(ctx, `select count(*) from nats_hold_records where hold_id = $1 and kind = 'cohort'`, holdID).Scan(&n); err != nil || n != 0 {
+			t.Errorf("after the refused put the table holds %d cohort records (%v), want 0", n, err)
+		}
+	})
 }
 
 // savedHoldRow is the hold row's every column as the table holds it, for a database writer to put
@@ -226,6 +256,50 @@ func rowFloorRows(t *testing.T) {
 		}
 		return r, c, prepared
 	}
+
+	t.Run("a prepare row put back reads as unknown on a replica whose hold view read the held row, and no release is moved from it", func(t *testing.T) {
+		// The reviewer's case: the second replica's routes never served the held row, but its auth
+		// service's hold view read it, and one floor serves both. Fails while the routes and the view
+		// keep floors of their own: the routes take the put-back prepare row, MoveRow(2, released)
+		// stores released at gen 3, and the view, which read held at gen 3, then reads unknown.
+		r := newRig(t)
+		c := r.client(t)
+		current := row(t, c)
+		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, "h-shared-floor", "prepare")
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved := savedHoldRow(t, r)
+		if err := c.StartJournal(ctx, "h-shared-floor", holdrecord.WorkflowCutover, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-shared-floor", cmd(holdrecord.CommandSet), nil); err != nil {
+			t.Fatal(err)
+		}
+		held, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, "h-shared-floor", "held")
+		if err != nil {
+			t.Fatal(err)
+		}
+		view := r.HoldView(true)
+		if phase, known := view.State(ctx); !known || phase != natsgrant.OperatorPhaseHeld {
+			t.Fatalf("the second replica's view read %q, known %v; want held", phase, known)
+		}
+		putHoldRowBack(t, r, saved)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log where gen = $1`, int64(held.Gen)); err != nil {
+			t.Fatal(err)
+		}
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		if moved, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseReleased, "h-shared-floor", "abort"); err == nil {
+			phase, known := view.State(ctx)
+			t.Errorf("MoveRow(%d, released) on the second replica stored %+v, and its view then reads %q, known %v; want a refusal", prepared.Gen, moved, phase, known)
+		}
+		var storedGen int64
+		var storedPhase string
+		if err := r.Pool.QueryRow(ctx, `select gen, phase from nats_hold`).Scan(&storedGen, &storedPhase); err != nil || storedPhase != "prepare" || storedGen != int64(prepared.Gen) {
+			t.Errorf("after the move the row is %s at gen %d (%v), want the put-back prepare at gen %d", storedPhase, storedGen, err, prepared.Gen)
+		}
+	})
 
 	t.Run("a move from a row put back below the log, on a replica that served only that row, is 409 below_floor", func(t *testing.T) {
 		// TN's round-4 case: the second replica served the prepare row alone, so its floor takes
@@ -322,6 +396,13 @@ func rowFloorRows(t *testing.T) {
 		}
 		if got, err := c.Row(ctx); !errors.Is(err, holdrecord.ErrUnknown) {
 			t.Fatalf("Row with a released row swapped in at gen %d answered %+v, %v; want ErrUnknown", held.Gen, got, err)
+		}
+		// A move from the swapped row is a move from a fork: 409 below_floor, read as unknown,
+		// not gen_mismatch, which would send the operator to read the same row again.
+		var refusal *holdrecord.RouteError
+		if moved, err := c.MoveRow(ctx, held.Gen, natsgrant.OperatorPhaseReleased, "h-swapped", "release from the swapped row"); !errors.Is(err, holdrecord.ErrUnknown) ||
+			!errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("MoveRow(%d, released) from the swapped row answered %+v, %v; want 409 below_floor, read as ErrUnknown", held.Gen, moved, err)
 		}
 	})
 }

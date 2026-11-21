@@ -25,14 +25,19 @@ create table nats_hold (
 );
 
 -- nats_hold_log is one row for each write of nats_hold, appended by the write's own statement, so
--- the history is kept and a restored row's gen can be set above every earlier one.
+-- the history is kept and a restored row's gen can be set above every earlier one. Each carries the
+-- row the write stored as the operator signed it, its signing time and signature, so a restore
+-- judges by the latest entry only once it verifies: a database writer can add or change a log row,
+-- but not one that verifies.
 create table nats_hold_log (
   gen bigint primary key,
   phase text not null,
   hold_id text not null,
   reason text not null,
   written_at timestamptz not null,
-  written_by text not null
+  written_by text not null,
+  signed_at timestamptz not null,
+  sig text not null
 );
 
 -- nats_hold_records is each hold's records, one row per kind and key: the cohort, the conversion's
