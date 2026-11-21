@@ -554,6 +554,20 @@ func foldHistories() []foldHistory {
 			delivered(timed(credited(head(5, sha("1")), foldLinkingIssue), at(1), read(10))),
 			answered(timed(incomplete(head(5, sha("2"))), at(2), nil)),
 		}},
+		// A complete answer that carries no read time. ReadCommitPulls stamps every complete
+		// answer, but the statement reads a missing read time from has_checked_at, not from
+		// complete, so this answer keeps the row's read time, as the upsert's coalesce keeps it.
+		{"a complete answer with no read time over a stored row", []foldStep{
+			delivered(timed(credited(head(5, sha("1")), foldIssue), at(1), read(10))),
+			answered(timed(credited(head(5, sha("2")), foldIssue), at(2), nil)),
+		}},
+		// GitHub's answer carries no updated_at. The upsert's event-time guard lets it through, and
+		// the row keeps its own event time; the statement reads the missing event time from
+		// has_event_at.
+		{"an answer with no event time over a stored row", []foldStep{
+			delivered(timed(credited(head(5, sha("1")), foldIssue), at(3), read(10))),
+			answered(eventless(credited(head(5, sha("2")), foldIssue), read(20))),
+		}},
 		// Both carry the same times, so the number orders them.
 		{"a merged pull request answered beside an open one stored", []foldStep{
 			delivered(timed(credited(head(6, sha("6")), foldIssue), at(1), read(20))),
@@ -727,6 +741,13 @@ func incomplete(head PullRequestHead) PullRequestHead {
 // timed is head carrying the event time event and the read time readAt, nil for none.
 func timed(head PullRequestHead, event time.Time, readAt *time.Time) PullRequestHead {
 	head.EventAt, head.CheckedAt = &event, readAt
+	return head
+}
+
+// eventless is head carrying no event time, as envelopeTime answers an absent updated_at, and the
+// read time readAt, nil for none.
+func eventless(head PullRequestHead, readAt *time.Time) PullRequestHead {
+	head.EventAt, head.CheckedAt = nil, readAt
 	return head
 }
 

@@ -563,15 +563,20 @@ const storedHeadsRelation = `pull_request_heads (repo, number, ` + headLaidColum
 //     (next_place, 0 after the last). The rules carry each text column over and never read it, so
 //     a row holds in each text column the place of the answer whose value it is, or 0 for the
 //     stored row's (carried along beside it, as stored_head_sha and the like), and a step reads
-//     from the arrays only the columns the rules read: an element of an array whose elements have
-//     one size is found at once by its place only while the array holds no null, and one of a text
-//     array, or of an array that holds a null, is found only by walking every element before it,
-//     so a step that read a text array would again make a long laying's time grow with the square
-//     of its answers. checked_at holds a null for every answer whose attribution was incomplete,
-//     which ReadCommitPulls stamps with no time, so a request with one such answer walks that
-//     array at every step, and its laying's time grows faster than its answers of one pull request,
-//     toward their square (plan D33's measure with one such answer: 11 to 17 ms at 2,000 answers
-//     and 83 to 117 ms at 8,000, against 8 to 15 and 31 to 43 with none).
+//     from the arrays only the columns the rules read, each by its place. PostgreSQL finds an
+//     element by its place at once only in an array of one-size elements that holds no null: in a
+//     text array, or in any array that holds a null, it walks every element before it, and a step
+//     that did so would make a long laying's time grow with the square of its answers. So the
+//     arrays a step reads hold no null. An answer may carry no event time (envelopeTime answers
+//     none for an absent updated_at) and no read time (ReadCommitPulls stamps none where the
+//     attribution was incomplete): event_at and checked_at hold the zero time there, and
+//     has_event_at and has_checked_at, false there, give the step back its null
+//     (answerArray.present). On the one path that makes answers today complete is false exactly
+//     where checked_at is null, but the statement does not rely on that. Plan D33's measure of
+//     the five reads, at 2,000 and 8,000 answers of one pull request: 9 to 14 ms and 35 to 59 ms
+//     with every tenth answer incomplete and every twentieth with no event time, 9 to 21 and 35 to
+//     62 with one incomplete answer, and 9 to 14 and 38 to 66 with none. With checked_at's null in
+//     the array, one incomplete answer took 83 to 117 ms at 8,000.
 //   - pull_request_heads is two arms of a `union all`, the stored rows and each pull request's last
 //     laid row, its text columns read at their places, less the stored rows an answer lands on or
 //     drops. An answer of a read asked under a name its repository was renamed away from drops the
@@ -606,18 +611,18 @@ func answeredHeadsRelation(first int, keeps string) string {
 		if arrayOf[column].kind == "text" {
 			started[index] = "0::bigint"
 			excluded[index] = "stored.next_place as " + column
-			laid[index] = fmt.Sprintf("case laid.%s when 0 then laid.stored_%s else %s[laid.%s] end",
-				column, column, arrayOf[column].sql(), column)
+			laid[index] = fmt.Sprintf("case laid.%s when 0 then laid.stored_%s else %s end",
+				column, column, arrayOf[column].at("laid."+column))
 			storedNames = append(storedNames, "stored_"+column)
 			stored = append(stored, "stored."+column)
 			carried = append(carried, "stored.stored_"+column)
 			continue
 		}
 		started[index] = "stored." + column
-		excluded[index] = fmt.Sprintf("%s[stored.next_place] as %s", arrayOf[column].sql(), column)
+		excluded[index] = arrayOf[column].at("stored.next_place") + " as " + column
 		laid[index] = "laid." + column
 	}
-	excluded = append(excluded, fmt.Sprintf("%s[stored.next_place] as complete", arrayOf["complete"].sql()))
+	excluded = append(excluded, arrayOf["complete"].at("stored.next_place")+" as complete")
 	// unnest is the answers as rows, with only the columns names lists, and their places.
 	unnest := func(names ...string) string {
 		arrays := make([]string, len(names))
@@ -705,32 +710,49 @@ type pullRequestKey struct {
 // answerColumns is the answers column by column, in the order the request read them, as
 // answeredHeadsRelation unnests them: the head's own columns, as the row its answer would write
 // (ReadCommitPulls), and, as renamed_from, the name the read was asked under where the store would
-// drop the row kept under it (CommitPulls.storedUnder), else null.
+// drop the row kept under it (CommitPulls.storedUnder), else null. eventAt and checkedAt hold no
+// null (answerArray.present): an answer that carries no such time holds the zero time there, and
+// false in hasEventAt or hasCheckedAt (appendMoment).
 type answerColumns struct {
 	repo, headSHA, baseRef, state []string
 	number                        []int32
 	issueKey, renamedFrom         []*string
 	complete                      []bool
-	eventAt, checkedAt            []*time.Time
+	eventAt, checkedAt            []time.Time
+	hasEventAt, hasCheckedAt      []bool
 }
 
 // answerArray is one array HeadAnswers.args answers: its name, which answeredHeadsRelation gives
-// the parameter, and the type of its elements.
+// the parameter, the type of its elements, and, for an array of times an answer may carry none of,
+// present, the name of the boolean array that is false for each answer that carries none. Such an
+// array holds no null, so a step of answeredHeadsRelation finds its element at once by its place,
+// and the step reads the null back from present (at).
 type answerArray struct {
-	name, kind string
+	name, kind, present string
 }
 
 // answerArrays is each array HeadAnswers.args answers, in its order.
 var answerArrays = [...]answerArray{
-	{"repo", "text"}, {"number", "integer"}, {"head_sha", "text"}, {"base_ref", "text"}, {"state", "text"},
-	{"issue_key", "text"}, {"complete", "boolean"}, {"event_at", "timestamptz"}, {"checked_at", "timestamptz"},
-	{"renamed_from", "text"},
+	{"repo", "text", ""}, {"number", "integer", ""}, {"head_sha", "text", ""}, {"base_ref", "text", ""},
+	{"state", "text", ""}, {"issue_key", "text", ""}, {"complete", "boolean", ""},
+	{"event_at", "timestamptz", "has_event_at"}, {"checked_at", "timestamptz", "has_checked_at"},
+	{"renamed_from", "text", ""}, {"has_event_at", "boolean", ""}, {"has_checked_at", "boolean", ""},
 }
 
 // sql is the array as answeredHeadsRelation's terms read it: from the one row of its answers
 // term.
 func (a answerArray) sql() string {
 	return "(select answers." + a.name + " from answers)"
+}
+
+// at is the SQL of the array's element at place: the element, or null where the array names a
+// present array and that array is false at place.
+func (a answerArray) at(place string) string {
+	element := a.sql() + "[" + place + "]"
+	if a.present == "" {
+		return element
+	}
+	return "case when " + answerArray{name: a.present}.sql() + "[" + place + "] then " + element + " end"
 }
 
 // Add lays pulls, the answer of one read-through of the request, after the answers the request
@@ -761,7 +783,7 @@ func (a *HeadAnswers) Add(pulls CommitPulls) {
 		pull := pullRequestKey{repo: head.Repo, number: head.Number}
 		if last, held := a.last[pull]; held && c.equalsButCheckedAt(last, head, renamedFrom) {
 			if head.CheckedAt != nil {
-				c.checkedAt[last] = head.CheckedAt
+				c.checkedAt[last], c.hasCheckedAt[last] = *head.CheckedAt, true
 			}
 			continue
 		}
@@ -776,8 +798,8 @@ func (a *HeadAnswers) Add(pulls CommitPulls) {
 		c.state = append(c.state, head.State)
 		c.issueKey = append(c.issueKey, head.IssueKey)
 		c.complete = append(c.complete, head.AttributionComplete)
-		c.eventAt = append(c.eventAt, head.EventAt)
-		c.checkedAt = append(c.checkedAt, head.CheckedAt)
+		c.eventAt, c.hasEventAt = appendMoment(c.eventAt, c.hasEventAt, head.EventAt)
+		c.checkedAt, c.hasCheckedAt = appendMoment(c.checkedAt, c.hasCheckedAt, head.CheckedAt)
 		c.renamedFrom = append(c.renamedFrom, renamedFrom)
 	}
 }
@@ -789,7 +811,7 @@ func (a *HeadAnswers) Add(pulls CommitPulls) {
 func (c *answerColumns) equalsButCheckedAt(place int, head PullRequestHead, renamedFrom *string) bool {
 	return c.headSHA[place] == head.HeadSHA && c.baseRef[place] == head.BaseRef && c.state[place] == head.State &&
 		sameText(c.issueKey[place], head.IssueKey) && c.complete[place] == head.AttributionComplete &&
-		sameMoment(c.eventAt[place], head.EventAt) && sameText(c.renamedFrom[place], renamedFrom)
+		sameMoment(heldMoment(c.eventAt, c.hasEventAt, place), head.EventAt) && sameText(c.renamedFrom[place], renamedFrom)
 }
 
 // sameText is whether two nullable text columns hold one value, null equal to null.
@@ -808,6 +830,24 @@ func sameMoment(left, right *time.Time) bool {
 	return left.Equal(*right)
 }
 
+// appendMoment appends moment to times, and to present whether there is one: the zero time and
+// false for nil, so times holds no null (answerArray.present).
+func appendMoment(times []time.Time, present []bool, moment *time.Time) ([]time.Time, []bool) {
+	if moment == nil {
+		return append(times, time.Time{}), append(present, false)
+	}
+	return append(times, *moment), append(present, true)
+}
+
+// heldMoment is the time at place of times as appendMoment holds it, and nil where present says
+// the answer carries none.
+func heldMoment(times []time.Time, present []bool, place int) *time.Time {
+	if !present[place] {
+		return nil
+	}
+	return &times[place]
+}
+
 // empty is whether a holds no answer.
 func (a HeadAnswers) empty() bool {
 	return len(a.columns.repo) == 0
@@ -819,6 +859,7 @@ func (a HeadAnswers) args() []any {
 	c := a.columns
 	return []any{
 		c.repo, c.number, c.headSHA, c.baseRef, c.state, c.issueKey, c.complete, c.eventAt, c.checkedAt, c.renamedFrom,
+		c.hasEventAt, c.hasCheckedAt,
 	}
 }
 
