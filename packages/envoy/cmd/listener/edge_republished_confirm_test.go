@@ -330,3 +330,64 @@ func TestAnEdgeShowsNoReplacementOverARepublishedRecord(t *testing.T) {
 		t.Errorf("after a RePublish of %s's record, %s's replaced_by is %v: the replacement took the cached entry unconfirmed", newer, older, *by)
 	}
 }
+
+// R9: the full registry view's not-live branch confirms the session by the leader read. A
+// RePublished record whose updated_at is past the live window reads not-live; the view answers it as
+// a session no listener has heard of (unknownSession, no last_seen), not as a stopped session of the
+// token's project. Control: a live confirmed session answers 200.
+func TestAnEdgeHidesAPastWindowRepublishedRecordAsUnknown(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const outside, live, forged = "ses_pw_outside", "ses_pw_live", "ses_pw_forged"
+	token := rig.personToken(outside, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, outside), http.StatusOK, "the outside session's registration")
+	rig.placeElsewhere(t, live, "PRIV")
+	body, err := json.Marshal(map[string]any{"session_id": forged, "machine_id": "shared-listener",
+		"updated_at": time.Now().Add(-time.Hour).UnixMilli(), "projects": []string{"PRIV"}, "self_subscribed": true})
+	if err != nil {
+		t.Fatalf("encode the past-window record: %v", err)
+	}
+	testnats.RepublishesKey(t, rig.harness.client.Conn, bus.SessionBucket, forged, body)
+	testwait.Eventually(t, "the cache to take the past-window record of "+forged, func() bool {
+		entry, state := rig.deps.sessions.Lookup(forged)
+		return entry.SessionID == forged && state != session.Live
+	})
+	if rec := rig.call(t, http.MethodGet, token, "/v1/registry/"+live, ""); rec.Code != http.StatusOK {
+		t.Fatalf("control, the live session %s: status %d (%s), want 200", live, rec.Code, rec.Body.String())
+	}
+	rec := rig.call(t, http.MethodGet, token, "/v1/registry/"+forged, "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("the not-live RePublished record %s: status %d (%s), want 404", forged, rec.Code, rec.Body.String())
+	}
+	var refusal listenerwire.NoLiveSessionRefusal
+	_ = json.Unmarshal(rec.Body.Bytes(), &refusal)
+	if refusal.LastSeen != 0 {
+		t.Errorf("the 404 for %s names last_seen %d: the not-live branch judged the cached entry and answered a stopped session of the token's project, not an unknown one", forged, refusal.LastSeen)
+	}
+}
+
+// R10: pruneEdgeInterests judges a session's GitHub topics by the token this replica admitted it on,
+// not by its stored record, and skips a session this replica admitted no registration of. A record
+// and interest row at the edge's own machine for a session the edge never admitted, following a
+// GitHub topic of a repository no served project's answer names: the prune leaves the topic, because
+// nothing here registered the session. A revert to the stored record's projects would read PRIV's
+// answer and remove the topic.
+func TestPruneEdgeInterestsSkipsAnUnadmittedSession(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	rig.tick(t)
+	const unadmitted = "ses_prune_unadmitted"
+	const githubTopic = contracts.GithubTopicPrefix + "acme.zzz.>"
+	if err := rig.deps.sessions.Put(unadmitted, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("store %s's record: %v", unadmitted, err)
+	}
+	if _, err := rig.deps.registry.Upsert(store.Interest{SessionID: unadmitted, MachineID: "test-machine"}, []string{githubTopic}); err != nil {
+		t.Fatalf("store %s's interest row: %v", unadmitted, err)
+	}
+	pruneEdgeInterests(context.Background(), rig.deps, "test-machine")
+	row, _, err := rig.deps.registry.RefreshAt(context.Background(), unadmitted)
+	if err != nil {
+		t.Fatalf("read %s's row after the prune: %v", unadmitted, err)
+	}
+	if !slices.Contains(row.Topics, githubTopic) {
+		t.Errorf("the prune removed %s's GitHub topic %q, though this replica admitted no registration of it: it judged the stored record's projects, not the admitted token (%v)", unadmitted, githubTopic, row.Topics)
+	}
+}
