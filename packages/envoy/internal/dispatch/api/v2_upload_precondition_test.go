@@ -4,16 +4,21 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // The /api/v2 uploads take the base an upload over an existing document names as /api/v1's do
 // (#3000): `precondition` is a member of the body the v2 decoder reads, JSON or multipart
-// (jsonArtifactUpload), and the refusals are the ones /api/v1 gives, in the v2 shape. A
-// replacement that names no token is 400 PRECONDITION_REQUIRED, a token the document has moved
-// past is 409 PRECONDITION_FAILED naming the live token and version, a token naming blocks is 400
-// INVALID_PRECONDITION, and the live token is taken.
-func TestV2UploadReplacingADocumentNamesItsBase(t *testing.T) {
-	handler, database := uploadBaseHandler(t)
+// (jsonArtifactUpload), and the answers are the ones /api/v1 gives, in the v2 shape. A
+// replacement that names no token is taken unchecked and counted, as /api/v1 takes it, until
+// every deployed client sends one (INFRA-4980); a token naming blocks is 400 INVALID_PRECONDITION;
+// the live token is taken and not counted; and a token the document has moved past is still 409
+// PRECONDITION_FAILED naming the live token and version, and the field the token goes in.
+func TestV2UploadReplacingADocumentChecksTheBaseItNames(t *testing.T) {
+	registry := metrics.New()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	target := "/api/v2/issues/" + issue.Key + "/artifacts"
@@ -27,11 +32,23 @@ func TestV2UploadReplacingADocumentNamesItsBase(t *testing.T) {
 		return response.Code, code, response.Body.String()
 	}
 	versionsBefore := uploadedVersionCount(t, database, artifactID)
+
+	unchecked := "# Notes\n\nunchecked\n"
+	if status, code, body := upload(map[string]any{"name": "notes.md", "content": unchecked}); status != http.StatusCreated {
+		t.Fatalf("a v2 replacement naming no token = %d %s, want 201: %s", status, code, body)
+	}
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
+		t.Fatalf("the v2 replacement naming no token left %d versions, want %d", after, versionsBefore+1)
+	}
+	if read := readDocumentPrecondition(t, handler, artifactID); read.Markdown != unchecked {
+		t.Fatalf("the document after the v2 replacement naming no token = %q, want %q", read.Markdown, unchecked)
+	}
+	if sample, want := unguardedReplacementSample(t, registry), unguardedReplacementsMetric+" 1"; sample != want {
+		t.Fatalf("after the v2 replacement naming no token the counter reads %q, want %q", sample, want)
+	}
+	versionsBefore++
 	base := uploadBase(t, handler, artifactID)
 
-	if status, code, body := upload(map[string]any{"name": "notes.md", "content": "# Notes\n\nafter\n"}); status != http.StatusBadRequest || code != "PRECONDITION_REQUIRED" {
-		t.Fatalf("a v2 replacement naming no token = %d %s, want 400 PRECONDITION_REQUIRED: %s", status, code, body)
-	}
 	blocks := readDocumentPreconditionBlocks(t, handler, artifactID)
 	if status, code, body := upload(map[string]any{
 		"name": "notes.md", "content": "# Notes\n\nafter\n",
@@ -40,7 +57,7 @@ func TestV2UploadReplacingADocumentNamesItsBase(t *testing.T) {
 		t.Fatalf("a v2 replacement naming blocks as its base = %d %s, want 400 INVALID_PRECONDITION: %s", status, code, body)
 	}
 	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
-		t.Fatalf("the refused v2 uploads wrote: %d versions, want the %d standing before them", after, versionsBefore)
+		t.Fatalf("the refused v2 upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
 	}
 
 	taken := dispatchRequest(t, handler, http.MethodPost, target, map[string]any{
@@ -66,20 +83,28 @@ func TestV2UploadReplacingADocumentNamesItsBase(t *testing.T) {
 		t.Fatalf("the v2 refusal of a stale token = %s, want PRECONDITION_FAILED naming token %s at version %d",
 			behind.Body.String(), live.Token, versionsBefore+1)
 	}
-	if !strings.Contains(conflict.Error, "--precondition-json") {
-		t.Fatalf("the v2 refusal = %q, want it to say how to upload again naming the live token", conflict.Error)
+	if !strings.Contains(conflict.Error, "dispatch doc-read") || !strings.Contains(conflict.Error, "precondition") {
+		t.Fatalf("the v2 refusal = %q, want it to say the live token comes from `dispatch doc-read` and to upload again naming it as the precondition", conflict.Error)
+	}
+	if strings.Contains(conflict.Error, "--precondition-json") {
+		t.Fatalf("the v2 refusal = %q, want it to name no flag of a command", conflict.Error)
 	}
 	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
 		t.Fatalf("the refused v2 upload wrote: %d versions, want %d", after, versionsBefore+1)
+	}
+	if sample, want := unguardedReplacementSample(t, registry), unguardedReplacementsMetric+" 1"; sample != want {
+		t.Fatalf("the counter reads %q, want %q: the one replacement naming no token, and none of the uploads naming a token", sample, want)
 	}
 }
 
 // A v2 multipart upload names its base in the form field `precondition`, the same JSON object a
 // JSON body's member holds: the live token is taken, and a field that holds no JSON value is
-// refused by the v2 decoder and writes nothing. A first upload of a name, which replaces no
-// version, is refused a token as /api/v1 refuses it.
+// refused by the v2 decoder and writes nothing. A form that names no token is taken unchecked and
+// counted, as /api/v1 takes it (INFRA-4980). A first upload of a name, which replaces no version,
+// is refused a token as /api/v1 refuses it.
 func TestV2MultipartUploadNamesItsBaseInItsForm(t *testing.T) {
-	handler, database := uploadBaseHandler(t)
+	registry := metrics.New()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	target := "/api/v2/issues/" + issue.Key + "/artifacts"
@@ -104,10 +129,22 @@ func TestV2MultipartUploadNamesItsBaseInItsForm(t *testing.T) {
 		t.Fatalf("the v2 multipart upload left %d versions, want %d", after, versionsBefore+1)
 	}
 
+	unchecked := multipartRequest(t, handler, target, map[string]string{"name": "notes.md"},
+		"notes.md", "text/markdown", []byte("# Notes\n\nunchecked\n"), "alice")
+	if unchecked.Code != http.StatusCreated {
+		t.Fatalf("a v2 multipart upload naming no token = %d, want 201: %s", unchecked.Code, unchecked.Body.String())
+	}
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+2 {
+		t.Fatalf("the v2 multipart upload naming no token left %d versions, want %d", after, versionsBefore+2)
+	}
+
 	first := multipartRequest(t, handler, target,
 		map[string]string{"name": "fresh.md", "precondition": encodeUploadBase(t, map[string]string{"document": "sha256:nothing"})},
 		"fresh.md", "text/markdown", []byte("# Fresh\n"), "alice")
 	if code, _ := refusalOf(t, first); first.Code != http.StatusConflict || code != "PRECONDITION_FAILED" {
 		t.Fatalf("a v2 first upload naming a token = %d %s, want 409 PRECONDITION_FAILED: %s", first.Code, code, first.Body.String())
+	}
+	if sample, want := unguardedReplacementSample(t, registry), unguardedReplacementsMetric+" 1"; sample != want {
+		t.Fatalf("the counter reads %q, want %q: the one multipart replacement naming no token", sample, want)
 	}
 }

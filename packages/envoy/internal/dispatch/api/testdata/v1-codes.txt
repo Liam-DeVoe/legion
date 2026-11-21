@@ -287,7 +287,6 @@ NEAR_COPY_CHECK_ID_INPUT 400 # #4103, record every answer of the near-copy gate
 NEAR_COPY_CHECK_NOT_FOUND 404 # #4103, record every answer of the near-copy gate
 PLAN_INPUT 400 # #4488, each retro rates the plan its issue ran
 PLAN_OTHER_ISSUE 409 # #4488, each retro rates the plan its issue ran
-PRECONDITION_REQUIRED 400 # #3000, a document upload names the token of the version it replaces
 QUEUED_ON_BUS 404 # #4088, a message to a session the listener knows nothing about is queued
 READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the read list alone
 REFERENCES_TIMEOUT 503 # #4554, an issue's reference closure walk runs under a 2 s statement_timeout

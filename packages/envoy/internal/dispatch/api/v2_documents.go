@@ -71,11 +71,13 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition
 	"bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is " +
 	"that artifact's next version. An upload that replaces a document the owner already holds names the token of the " +
 	"version it replaces, precondition {document}, the whole-document token include=text answers (a multipart " +
-	"upload's precondition field holds the same JSON object): one that names none is 400 PRECONDITION_REQUIRED, " +
-	"writing nothing. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming " +
-	"in current the live token and the number of the version the document stands at, and a precondition on a first " +
-	"upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is " +
-	"400 INVALID_PRECONDITION. " +
+	"upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that " +
+	"names none is taken for now without a check, since older dispatch commands cannot name one, and counted " +
+	"(envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release " +
+	"refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, " +
+	"writing nothing and naming in current the live token and the number of the version the document stands at, " +
+	"and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on " +
+	"an upload stored as a file, is 400 INVALID_PRECONDITION. " +
 	"An issue's plan, Verification document and decisions document are always documents: a file or an image under " +
 	"the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, " +
 	"decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored " +

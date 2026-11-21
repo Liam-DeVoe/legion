@@ -306,9 +306,9 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. It names no token, so it is a first upload: Dispatch refuses a name the issue already
-// holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the issue lists no
-// document under (messageArtifact).
+// other. It names no token, so over a name the issue already holds it would replace that document
+// unchecked, as Dispatch takes such a replacement since #4775 (INFRA-4980); the outbox uploads
+// only a name the issue lists no document under (messageArtifact).
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {

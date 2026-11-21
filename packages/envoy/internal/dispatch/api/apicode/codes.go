@@ -326,9 +326,6 @@ var (
 	PlanApprovedByReview = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
 	PossibleDuplicate    = both("POSSIBLE_DUPLICATE", http.StatusConflict)
 	PreconditionFailed   = both("PRECONDITION_FAILED", http.StatusConflict)
-	// PreconditionRequired refuses an upload that replaces a document that already exists and
-	// names no token of the version it replaces (#3000).
-	PreconditionRequired = both("PRECONDITION_REQUIRED", http.StatusBadRequest)
 	// PriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (ProjectExists): a second create would write its own history over
 	// the first write's.
