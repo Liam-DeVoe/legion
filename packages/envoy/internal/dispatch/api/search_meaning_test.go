@@ -51,7 +51,7 @@ type fakeEmbedder struct {
 	// traffic still gets through
 	// (TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled). vectors/err/errFor are set up
 	// before a test's concurrent goroutines start and never mutated after, so they need no lock;
-	// callsMu guards calls, the one field tests mutate concurrently.
+	// callsMu guards calls and counted, the fields tests mutate concurrently.
 	errFor map[embed.InputType]error
 	// delay holds every call that long before it answers; a call whose context ends first answers
 	// the context's error then. It models a model service slower than its caller allows (the
@@ -60,11 +60,17 @@ type fakeEmbedder struct {
 
 	callsMu sync.Mutex
 	calls   int
+	// counted is how many of calls a counted request made (countedRead): a search's own query
+	// embedding, and nothing a write or embedqueue's drain calls (takeCounted).
+	counted int
 }
 
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
 	f.callsMu.Lock()
 	f.calls++
+	if ctx.Value(countedRead{}) != nil {
+		f.counted++
+	}
 	f.callsMu.Unlock()
 	if f.delay > 0 {
 		select {
@@ -95,6 +101,15 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 // tests embed.
 func (f *fakeEmbedder) Identity() string     { return embed.BedrockModel }
 func (f *fakeEmbedder) Limits() embed.Limits { return new(embed.BedrockClient).Limits() }
+
+// takeCounted is how many calls counted requests made since the last take.
+func (f *fakeEmbedder) takeCounted() int {
+	f.callsMu.Lock()
+	defer f.callsMu.Unlock()
+	taken := f.counted
+	f.counted = 0
+	return taken
+}
 
 // angledVector returns a unit vector in the plane spanned by dimension 0 and axis, whose cosine
 // similarity with queryVector() (dimension 0's own unit vector) is exactly similarity - computed
@@ -316,7 +331,7 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// throttledSearchHandler is a server whose embedder answers every live query while embedqueue's
+// throttledSearchServer is a server whose embedder answers every live query while embedqueue's
 // own background drain keeps it throttled and backing off, for as long as the test runs:
 // cmd/dispatch wires embedqueue's own Embedder behind embed.RateLimitedEmbedder and never wraps
 // the one api.Deps holds, so a live search request's own query embedding is never paced or
@@ -333,7 +348,12 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // a create paced by the limiter would never answer either: the creates run on goroutines of their
 // own and are waited for through the shared wait, which fails naming the create. Each goroutine
 // hands the create's refusal to the test's goroutine, which fails the row naming it.
-func throttledSearchHandler(t *testing.T) http.Handler {
+//
+// The server's pool is traced, and a counted search's own statements and its calls to the
+// embedder are counted (countedSearch); unthrottled is what one search made before anything was
+// throttled. The sign-in lookup, the drain and the seeding run on the untraced pool or on contexts
+// no search marks, so none of their work is counted.
+func throttledSearchServer(t *testing.T) throttledSearch {
 	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -341,7 +361,13 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 		"wibbleflorp":                   queryVector(),
 	}}
 	limited := embed.NewRateLimitedEmbedder(embedder, embed.WithLimiterClock(clocktest.New(time.Now())))
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
+	database := storetest.Open(t)
+	statements := &sentStatements{}
+	handler, _, _ := newTestServer(t, testServerOptions{
+		store: storetest.TracedStore(t, database, statements), identity: headerIdentity(database),
+		embedder: embedder, clock: clocktest.Held(),
+	})
+	server := throttledSearch{handler: handler, statements: statements, embedder: embedder}
 	create := func(project, title, spec string) {
 		t.Helper()
 		created := make(chan error, 1)
@@ -357,6 +383,12 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 	// Embeds while nothing is throttled yet: this is the content a later query below must still
 	// find - already embedded, before the saturating bulk traffic simulated next ever starts.
 	processAllPending(t, database, embedder)
+	unthrottled := server.countedSearch("q=wibbleflorp")
+	if unthrottled.response.Code != http.StatusOK || unthrottled.work.embeds != 1 {
+		t.Fatalf("the search before anything was throttled: status=%d, %s, want 200 and one call to the embedder, its query's\n%s",
+			unthrottled.response.Code, unthrottled.work, unthrottled.response.Body.String())
+	}
+	server.unthrottled = unthrottled.work
 
 	// Simulate the queue's background drain (the coverage pass and embedqueue's scan working
 	// through a backlog) now saturating the account: every further InputDocument call
@@ -390,20 +422,63 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 	// The background goroutine has hit a throttle once the embedder has been called again: only
 	// it calls before the searches start, and only with InputDocument, which throttles.
 	testwait.Eventually(t, "the background drain to hit a throttle", func() bool { return calls() > before })
-	return handler
+	return server
+}
+
+// throttledSearch is throttledSearchServer's server: its handler, the statements of each counted
+// request on its pool, its embedder, and the work one search made before anything was throttled.
+type throttledSearch struct {
+	handler     http.Handler
+	statements  *sentStatements
+	embedder    *fakeEmbedder
+	unthrottled searchWork
+}
+
+// searchWork is what one counted search made: the SQL of each statement it ran, sorted, since the
+// search's arms may run side by side, and its calls to the embedder.
+type searchWork struct {
+	statements []string
+	embeds     int
+}
+
+func (w searchWork) String() string {
+	return fmt.Sprintf("%d calls to the embedder and %d statements %q", w.embeds, len(w.statements), w.statements)
+}
+
+// countedAnswer is one counted search's answer and the work it made.
+type countedAnswer struct {
+	response *httptest.ResponseRecorder
+	work     searchWork
+}
+
+// countedSearch searches for query as alice on a request the server counts (countedRead): every
+// statement the search runs, on a context derived from the request's, and every call it makes to
+// the embedder. It calls no method of t, so it runs on a goroutine of its own.
+func (s throttledSearch) countedSearch(query string) countedAnswer {
+	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true),
+		http.MethodGet, "/api/v1/search?"+query, nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	response := httptest.NewRecorder()
+	s.handler.ServeHTTP(response, request)
+	return countedAnswer{response: response, work: searchWork{
+		statements: slices.Sorted(slices.Values(s.statements.take())), embeds: s.embedder.takeCounted(),
+	}}
 }
 
 // TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority
-// over background work (throttledSearchHandler): concurrent live search requests keep succeeding
+// over background work (throttledSearchServer): concurrent live search requests keep succeeding
 // non-degraded, because their InputQuery calls go straight to the unwrapped fake embedder and are
 // never subject to that backoff at all. Each search must answer while the limiter's wait stands
-// for good: one paced by the limiter never answers, and the wait for it fails naming it.
+// for good: one paced by the limiter never answers, and the wait for it fails naming it. And each
+// makes the work a search made before anything was throttled, no more: a search that waits on the
+// drain's backoff reads its state, or calls the embedder again, and that is work of its own.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
-	handler := throttledSearchHandler(t)
+	server := throttledSearchServer(t)
 	for i := range 5 {
-		answered := make(chan *httptest.ResponseRecorder, 1)
-		go func() { answered <- searchRequest(t, handler, "q=wibbleflorp") }()
-		recorder := testwait.Receive(t, fmt.Sprintf("search request %d to answer while the background drain's limiter waits for good", i), answered)
+		answered := make(chan countedAnswer, 1)
+		go func() { answered <- server.countedSearch("q=wibbleflorp") }()
+		answer := testwait.Receive(t, fmt.Sprintf("search request %d to answer while the background drain's limiter waits for good", i), answered)
+		recorder := answer.response
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("search request %d: status=%d body=%s", i, recorder.Code, recorder.Body.String())
 		}
@@ -414,6 +489,10 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 		if len(response.Results) != 1 {
 			t.Errorf("search request %d: Results = %+v, want the one meaning match (proves the query embedding actually ran, not just that nothing errored)", i, response.Results)
 		}
+		if answer.work.embeds != server.unthrottled.embeds || !slices.Equal(answer.work.statements, server.unthrottled.statements) {
+			t.Errorf("search request %d made %s while embedqueue was throttled, want the %s one search made before anything was: "+
+				"a live query does none of the drain's work and waits on none of it", i, answer.work, server.unthrottled)
+		}
 	}
 }
 
@@ -423,7 +502,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 // as the search's work.
 func TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
-	handler := throttledSearchHandler(t)
+	handler := throttledSearchServer(t).handler
 	for i := range 5 {
 		started := time.Now()
 		searchResponse(t, handler, "q=wibbleflorp")

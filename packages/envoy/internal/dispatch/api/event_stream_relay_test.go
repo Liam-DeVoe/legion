@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -121,7 +123,34 @@ func subscribeRelay(t *testing.T, relay *eventStreamRelay) (<-chan relayedEvent,
 // on a hold in database, the test's own, that has stood OwnHoldBound.
 func receiveRelayed(t *testing.T, subscription <-chan relayedEvent, database *store.Store) relayedEvent {
 	t.Helper()
-	event := horizontest.WaitInProcess(t, "the relay's next event", subscription, database)
+	return receiveRelayedOn(t, nil, subscription, database)
+}
+
+// receiveRelayedOn is receiveRelayed for a relay whose timers run on fake (eventStreamRelay.clock),
+// or on the real clock where fake is nil. While it waits it moves fake to the first deadline the
+// relay has armed, as time passing would, so a coalescing window, a read's retry or a held gap's
+// fallback re-read comes due.
+func receiveRelayedOn(t *testing.T, fake *clocktest.Fake, subscription <-chan relayedEvent, database *store.Store) relayedEvent {
+	t.Helper()
+	var event relayedEvent
+	if fake == nil {
+		event = horizontest.WaitInProcess(t, "the relay's next event", subscription, database)
+	} else {
+		horizontest.PollInProcess(t, "the relay's next event", database, func() bool {
+			select {
+			case event = <-subscription:
+				return true
+			default:
+			}
+			fake.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+				if len(armed) == 0 {
+					return time.Time{}, false
+				}
+				return armed[0], true
+			})
+			return false
+		})
+	}
 	if event.Event.ID == 0 {
 		t.Fatal("the relay's subscription ended")
 	}
@@ -132,8 +161,15 @@ func receiveRelayed(t *testing.T, subscription <-chan relayedEvent, database *st
 // order or at or below after.
 func receiveRelayedThrough(t *testing.T, subscription <-chan relayedEvent, database *store.Store, after, last int64) {
 	t.Helper()
+	receiveRelayedThroughOn(t, nil, subscription, database, after, last)
+}
+
+// receiveRelayedThroughOn is receiveRelayedThrough for a relay whose timers run on fake, which it
+// moves as receiveRelayedOn does; nil is the real clock.
+func receiveRelayedThroughOn(t *testing.T, fake *clocktest.Fake, subscription <-chan relayedEvent, database *store.Store, after, last int64) {
+	t.Helper()
 	for previous := after; previous != last; {
-		id := receiveRelayed(t, subscription, database).Event.ID
+		id := receiveRelayedOn(t, fake, subscription, database).Event.ID
 		if id <= previous {
 			t.Fatalf("the relay published %d after %d; it publishes each event once, in id order", id, previous)
 		}
@@ -435,7 +471,12 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
-	relay, reads := newCountedRelay(t, deps)
+	relay, _ := newCountedRelay(t, deps)
+	// The relay's coalescing window, its read's retry and its gap re-reads run on this fake, which
+	// moves only as the row moves it: a read a timer of the relay's own would make, a poll, is a
+	// deadline armed on it first (Armed).
+	fake := clocktest.New(time.Now())
+	relay.clock = fake
 	var down atomic.Bool
 	down.Store(true)
 	// The relay's own connections, so the test terminates the one it listens on by its backend's
@@ -451,18 +492,26 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	subscription, _, opened := subscribeRelay(t, relay)
 
 	// Committed while the relay has no connection: its notification reaches nobody, and the
-	// redial's catch-up is what sends it. The relay sends a frame only from a read of the log,
-	// which the counted relay reports as it runs (newCountedRelay's reads), and it reads only on a
-	// notification, a LISTEN's catch-up or a gap's re-read, none of which comes while it has no
-	// connection: so the span holds the reads quiet, not the subscription.
+	// redial's catch-up is what sends it. The relay reads only on a notification, a LISTEN's
+	// catch-up, a gap's re-read or a read's retry, and each of the last two, as a poll would,
+	// waits on the fake first. The catch-up the redial's LISTEN wakes waits the coalescing window
+	// on the fake (eventStreamRelay.window): by then the relay has waited for a wake since its
+	// generation began, and the fake has stood still, so every timer it armed while it had no
+	// connection is still armed beside the window, which must be the only one.
 	committed := seedEvents(t, database, issue, 1, 0)
-	testwait.Quiet(t, "a read of the event log while the relay has no listening connection", reads,
-		100*time.Millisecond, "a read a timer of the relay's own made, a poll, is what must not come, and nothing "+
-			"reports it before it runs: the reads report each read only as it runs, no notification or catch-up is "+
-			"there to order against, the socket and the database are real I/O (no synctest), and the redial that ends "+
-			"the span is the next action")
 	down.Store(false)
-	receiveRelayedThrough(t, subscription, database, opened, committed)
+	testwait.Until(t, "the catch-up the relay's redial wakes to wait its coalescing window", func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, fake.Now().Add(relay.window()).Equal)
+	})
+	if armed, moved := fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		window := now.Add(relay.window())
+		return window, len(armed) == 1 && armed[0].Equal(window)
+	}); !moved {
+		t.Fatalf("the relay had %v armed on its clock as its redial's catch-up waited its %s coalescing window, want that window alone: "+
+			"a timer it armed while it had no connection reads the log by itself, a poll", armed, relay.window())
+	}
+	receiveRelayedThroughOn(t, fake, subscription, database, opened, committed)
 
 	// Every later LISTEN catches up the same way, from the cursor as it stands: a redial that
 	// reset it would send every open page the whole log again.
@@ -479,7 +528,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 		return len(dials.dialed()) > len(dialed)
 	})
 	next := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, subscription, database, committed, next)
+	receiveRelayedThroughOn(t, fake, subscription, database, committed, next)
 }
 
 // TestEventStreamRelayRecoversWhenTheEventLogIsReset: the browser suite empties the event log

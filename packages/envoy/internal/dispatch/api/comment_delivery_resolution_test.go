@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -641,7 +640,11 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	served := &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background(), clock: clock.Real()}
+	// A clock whose timers never fire, for the listener client and the server alike: the
+	// listener's answers decide each route, and no call window (envoy.CallWindow) ends a lookup
+	// the listener answers late.
+	held := clocktest.Held()
+	served := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(held))}, lifetime: context.Background(), clock: held}
 
 	id, title, refusal := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "role", ID: "reviewer"}, "steer",

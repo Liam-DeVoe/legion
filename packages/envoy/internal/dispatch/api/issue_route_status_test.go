@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -418,11 +417,26 @@ func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(listener.Close)
+	// One fake that stands still, for the roster read's bound (routeRosterTimeout) and the
+	// listener client's window (envoy.CallWindow) alike: the listener's answer decides the roster
+	// however late it comes, and no real window does.
+	fake := clocktest.New(rosterTestStart)
 	return &server{
-		deps:     Deps{Envoy: envoy.New(listener.URL)},
+		deps:     Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(fake))},
 		lifetime: context.Background(),
-		clock:    clock.Real(),
+		clock:    fake,
 	}
+}
+
+// listedRoster is served's roster read (listRouteRoster), made on a goroutine of its own and
+// waited for through the shared wait. stateRosterServer's clock stands still, so no bound of the
+// read ends it however late the listener answers, and a listener that never answers fails the row
+// by name at the wait's give-up.
+func listedRoster(t *testing.T, served *server) routeRoster {
+	t.Helper()
+	listed := make(chan routeRoster, 1)
+	go func() { listed <- served.listRouteRoster(t.Context()) }()
+	return testwait.Receive(t, "the listener's answer to the roster read", listed)
 }
 
 // A session past its live window still holds its role and still receives: what is sent to it is
@@ -435,7 +449,7 @@ func TestRouteReachNamesAnUnresponsiveHolderRatherThanDroppingIt(t *testing.T) {
 		{"session_id": "ses-live", "state": "live", "last_seen": 1700000000000, "roles": []string{"legion-merger"}},
 		{"session_id": "ses-stalled", "state": "unresponsive", "last_seen": 1699999000000, "roles": []string{"legion-planner"}},
 	})
-	roster := served.listRouteRoster(context.Background())
+	roster := listedRoster(t, served)
 	if !roster.answered {
 		t.Fatalf("the roster did not answer: %v", roster.err)
 	}
@@ -483,7 +497,7 @@ func TestClaimLivenessDatesWhenAnUnresponsiveHoldersClaimComesFree(t *testing.T)
 		{"session_id": "ses-live", "state": "live", "last_seen": lastSeen},
 		{"session_id": "ses-stalled", "state": "unresponsive", "last_seen": lastSeen},
 	})
-	roster := served.listRouteRoster(context.Background())
+	roster := listedRoster(t, served)
 	now := time.UnixMilli(lastSeen).Add(7 * time.Minute).UTC()
 	claim := func(kind, id string) *model.IssueClaim {
 		return &model.IssueClaim{Actor: model.Actor{Kind: kind, ID: id}, At: now}

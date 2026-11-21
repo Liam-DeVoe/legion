@@ -271,6 +271,9 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secrets.Reader
 	PendingTTL time.Duration
+	// Now is the moment a pending request's deadline is stamped from (PendingTTL after it): time.Now
+	// unless a test replaces it.
+	Now func() time.Time
 	// Audience is BROKER_PUBLIC_URL: the aud every request object's signature is checked against.
 	Audience string
 	Skew     time.Duration
@@ -382,6 +385,14 @@ type Machine struct {
 	// deterministically move the request to another enrollment in that window, which is where an
 	// adoption's commit lands; no production caller sets it.
 	testAdoptionHook func()
+}
+
+// now is Now's moment, or the wall clock's where Now is nil, as every production caller leaves it.
+func (m *Machine) now() time.Time {
+	if m.Now == nil {
+		return time.Now()
+	}
+	return m.Now()
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -779,7 +790,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			req.GrantID = &grantID
 		}
 	} else {
-		r.pendingExpiresAt = time.Now().Add(m.PendingTTL)
+		r.pendingExpiresAt = m.now().Add(m.PendingTTL)
 		r.judgeHolds = judgeHolds
 		pending, err := m.createPending(ctx, tx, enr, r, obj)
 		if err != nil {

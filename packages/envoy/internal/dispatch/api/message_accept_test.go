@@ -605,6 +605,8 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Errorf("decode targeted send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var frame struct {
 				Event struct {
@@ -618,6 +620,8 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 			}
 			if err := json.Unmarshal([]byte(request.Payload), &frame); err != nil {
 				t.Errorf("decode targeted delivery frame: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			// The session takes the frame it was just handed, before this send returns.
 			accepted := acceptDelivery(t, handler, frame.Event.Payload.ID, frame.Delivery.Attempt, "s1")

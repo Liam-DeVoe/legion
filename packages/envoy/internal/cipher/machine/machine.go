@@ -65,6 +65,9 @@ type Service struct {
 	Audience   string
 	Skew       time.Duration
 	PendingTTL time.Duration
+	// Now is the moment a person's machine login's deadline is stamped from (PendingTTL after it,
+	// LoginDevice): time.Now unless a test replaces it.
+	Now func() time.Time
 	// CredentialLifetime is how long a minted credential lasts, and how far each refresh of its
 	// device login moves its expiry.
 	CredentialLifetime time.Duration
@@ -81,6 +84,14 @@ type Service struct {
 	// and confirmation code — a confirmation-fatigue/notification-spam vector against the named
 	// operator.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)
+}
+
+// now is Now's moment, or the wall clock's where Now is nil, as every production caller leaves it.
+func (s *Service) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
 }
 
 // jtiRetentionMargin is how long past a request object's expiry its jti is remembered, mirroring
@@ -158,7 +169,7 @@ func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode str
 		Enrollment:      record.Enrollment{Kind: "-", RuntimeID: "-", Operator: ""},
 		LifetimeSeconds: new(int(s.CredentialLifetime.Seconds())),
 		RulesVersion:    s.Policy.Get().Version,
-		ExpiresAt:       now.Add(s.PendingTTL).UTC().Truncate(time.Second),
+		ExpiresAt:       s.now().Add(s.PendingTTL).UTC().Truncate(time.Second),
 		Code:            userCode,
 	}
 	_, err = tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, code, expires_at) values ($1,$2,'launcher_credential',$3,$4,$5)`,

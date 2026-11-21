@@ -124,6 +124,12 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		stop()
 		sender.wait()
 	})
+	// a-first's retry parks on release until the row lets it go, and the sender's wait above
+	// returns only once it has. Cleanups run last first, so this one, registered after that wait,
+	// lets the retry go before it: a row that fails between the retry's start and the release
+	// below fails by name rather than hang in sender.wait.
+	letRetryGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letRetryGo)
 	for _, id := range []string{"a-first", "a-second"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -140,7 +146,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	if got := strings.Count(logs.String(), marker); got != 0 {
 		t.Fatalf("%d WARN lines before either send's wait ended, want none: no park saw the threshold pass", got)
 	}
-	close(release)
+	letRetryGo()
 	testwait.Eventually(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
