@@ -207,15 +207,15 @@
     "values": [
       {
         "value": "criteria",
-        "since": 204
+        "since": 207
       },
       {
         "value": "decisions",
-        "since": 204
+        "since": 207
       },
       {
         "value": "spec",
-        "since": 204
+        "since": 207
       }
     ]
   },
@@ -225,15 +225,15 @@
     "values": [
       {
         "value": "criteria",
-        "since": 204
+        "since": 207
       },
       {
         "value": "decisions",
-        "since": 204
+        "since": 207
       },
       {
         "value": "spec",
-        "since": 204
+        "since": 207
       }
     ]
   },
@@ -668,6 +668,32 @@
       {
         "value": "starting",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "repositories.live.*.cache.state",
+    "values": [
+      {
+        "value": "cloning",
+        "since": 202
+      },
+      {
+        "value": "failing",
+        "since": 202
+      },
+      {
+        "value": "ready",
+        "since": 202
+      },
+      {
+        "value": "refused",
+        "since": 202
+      },
+      {
+        "value": "starting",
+        "since": 202
       }
     ]
   },
@@ -1333,15 +1359,15 @@
     "values": [
       {
         "value": "criteria",
-        "since": 204
+        "since": 207
       },
       {
         "value": "decisions",
-        "since": 204
+        "since": 207
       },
       {
         "value": "spec",
-        "since": 204
+        "since": 207
       }
     ]
   },
@@ -1351,15 +1377,15 @@
     "values": [
       {
         "value": "criteria",
-        "since": 204
+        "since": 207
       },
       {
         "value": "decisions",
-        "since": 204
+        "since": 207
       },
       {
         "value": "spec",
-        "since": 204
+        "since": 207
       }
     ]
   },
