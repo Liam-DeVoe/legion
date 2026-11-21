@@ -12815,8 +12815,12 @@ console.log(JSON.stringify(args));
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
-    // MEASUREMENT-PROVISIONAL
-  }, 60_000);
+    // A hang guard, not a bound on work: what can hang is a wait (`until`) for a registration that
+    // never comes, which has no deadline of its own. Worst measured cost: 14 315.99 ms over 20 runs
+    // at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the cluster's `builds` namespace,
+    // where row A's 5 runs averaged 53.6 s against the calibration's 31.2 s, 2026-11-21T21:18Z to
+    // 21:33Z, so 90_000 is 6.3 times that.
+  }, 90_000);
 
   // Registrations are not serialized: the tool's and a heartbeat's can both carry a topic the edge
   // refuses, and both be refused. The topic stops being followed once, so the session is told of
@@ -12882,8 +12886,12 @@ console.log(JSON.stringify(args));
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
-    // MEASUREMENT-PROVISIONAL
-  }, 60_000);
+    // A hang guard, not a bound on work: what can hang is a wait (`until`) for a registration in
+    // flight that never comes, which has no deadline of its own. Worst measured cost: 11 313.31 ms
+    // over 20 runs at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the cluster's `builds`
+    // namespace, where row A's 5 runs averaged 53.6 s against the calibration's 31.2 s,
+    // 2026-11-21T21:38Z to 21:54Z, so 90_000 is 8.0 times that.
+  }, 90_000);
 
   // The tool names as refused only what its own registration was refused: a topic the session
   // stopped following meanwhile, by an unsubscribe or a session switch, was subscribed, not
@@ -12927,8 +12935,12 @@ console.log(JSON.stringify(args));
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
-    // MEASUREMENT-PROVISIONAL
-  }, 60_000);
+    // A hang guard, not a bound on work: what can hang is the wait (`until`) for the tool's
+    // registration in flight, which has no deadline of its own. Worst measured cost: 15 311.14 ms
+    // over 20 runs at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the cluster's `builds`
+    // namespace, where row A's 5 runs averaged 53.6 s against the calibration's 31.2 s,
+    // 2026-11-21T22:00Z to 22:22Z, so 120_000 is 7.8 times that.
+  }, 120_000);
 
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
@@ -22248,8 +22260,12 @@ console.log(JSON.stringify(args));
       stopSink();
       setNatsConnectForTests(natsStandInConnect);
     }
-    // MEASUREMENT-PROVISIONAL
-  }, 60_000);
+    // A hang guard, not a bound on work: what can hang is the wait for the start (`clock.wait`),
+    // which has no bound of turns, because its trades' DPoP signing is real work. Worst measured
+    // cost: 19 101.82 ms over 20 runs at the 96 rung, 257 busy loops in a two-CPU, 8 GiB Job of the
+    // cluster's `builds` namespace, where row A's 5 runs averaged 53.6 s against the calibration's
+    // 31.2 s, 2026-11-21T22:26Z to 22:40Z, so 120_000 is 6.3 times that.
+  }, 120_000);
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
