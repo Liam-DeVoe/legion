@@ -73,5 +73,5 @@ func (k K8sPodVerifier) Verify(ctx context.Context, raw string) (PodClaims, erro
 	if claims.PodUID == "" {
 		return PodClaims{}, fmt.Errorf("projected token is not bound to a pod")
 	}
-	return PodClaims{Subject: claims.Subject, PodUID: claims.PodUID}, nil
+	return PodClaims{Subject: claims.Subject, PodUID: claims.PodUID, Issuer: claims.Issuer.URL}, nil
 }

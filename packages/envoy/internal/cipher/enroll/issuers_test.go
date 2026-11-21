@@ -164,3 +164,50 @@ func TestATokenLoginsCredentialIsHeldToTheIssuersItsEntryNames(t *testing.T) {
 		}
 	})
 }
+
+// TestAPodsEnrollmentRecordsTheIssuerOfItsToken: Create records in a pod's enrollment row the
+// URL of the issuer whose token proved the pod (enrollments.issuer), each of two named issuers'
+// own, which the request machine reads the pod's exchange entry against; a session's row records
+// none.
+func TestAPodsEnrollmentRecordsTheIssuerOfItsToken(t *testing.T) {
+	const account = "system:serviceaccount:legion:worker"
+	ctx := context.Background()
+	svc := newService(t)
+	first, second, firstKey, secondKey := withTwoIssuers(t, svc)
+	recorded := func(t *testing.T, enrolled Enrollment) *string {
+		t.Helper()
+		var issuer *string
+		if err := svc.Store.Pool.QueryRow(ctx, `select issuer from enrollments where id=$1`, enrolled.ID).Scan(&issuer); err != nil {
+			t.Fatal(err)
+		}
+		return issuer
+	}
+	cred := mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
+	for _, c := range []struct {
+		name, uid string
+		issuer    *oidctest.Issuer
+		key       *oidctest.Key
+	}{
+		{"a pod of the first issuer", "pod-of-first", first, firstKey},
+		{"a pod of the second issuer", "pod-of-second", second, secondKey},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			enrolled, err := svc.Create(ctx, cred, Enrollment{Kind: "pod", RuntimeID: c.uid, Thumbprint: "tp-" + c.uid, PodToken: mintPodToken(t, c.issuer, c.key, account, c.uid)})
+			if err != nil {
+				t.Fatalf("Create(%s) = %v, want it enrolled", c.name, err)
+			}
+			if got := recorded(t, enrolled); got == nil || *got != c.issuer.URL() {
+				t.Fatalf("%s's enrollment records the issuer %v, want %s, whose token proved it", c.name, got, c.issuer.URL())
+			}
+		})
+	}
+	t.Run("a session", func(t *testing.T) {
+		session, err := svc.Create(ctx, mintCredential(t, svc, str("ada@example.com"), nil, "box"), Enrollment{Kind: "session", RuntimeID: "box-1", Thumbprint: "tp-box-1"})
+		if err != nil {
+			t.Fatalf("Create(a session) = %v, want it enrolled", err)
+		}
+		if got := recorded(t, session); got != nil {
+			t.Fatalf("a session's enrollment records the issuer %q, want none", *got)
+		}
+	})
+}

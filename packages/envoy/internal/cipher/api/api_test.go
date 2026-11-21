@@ -183,6 +183,10 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
+		// The issuers the enrollment service verifies pods' tokens against, as cmd/cipherd wires
+		// both from BROKER_K8S_OIDC_ISSUER: a pod's enrollment records its issuer's URL, which
+		// the machine reads as that issuer's name against the entry of the pod's account.
+		Issuers: podIssuers,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)

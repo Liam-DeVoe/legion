@@ -19,7 +19,7 @@ body: |-
   `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
   names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A
   listed account's token from another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's
-  credential records the issuer whose token made it (migration 0040), and it stops working once
+  credential records the issuer whose token made it (migration 0041), and it stops working once
   the account's entry no longer names that issuer.
   A `BROKER_POD_OPERATORS` entry names an account and no issuer: the pod of a mapped account logs
   in only with a token of an issuer its `BROKER_SERVICE_LOGINS` entry names, and its token of
@@ -52,6 +52,12 @@ body: |-
   `first,second`: write those names after an empty session,
   `<service account>=<project>=<person>==first,second`. An entry that names no project names its
   issuers the same way, `<service account>==<person>==first,second`.
+  A service's pod names the private project its account's `BROKER_EXCHANGE_ACCOUNTS` entry maps
+  only while that entry names the issuer whose token enrolled the pod: only then is it released
+  that project's secrets, and only then are its requests that project's. A pod's enrollment
+  records that issuer (migration 0041). A pod enrolled before this release records none and counts
+  as the first issuer's, and a pod enrolled with a token of another issuer, or of an issuer
+  `BROKER_K8S_OIDC_ISSUER` no longer names, names no project.
   A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names no issuer, so the exchange takes its
   account's token from the first issuer of `BROKER_K8S_OIDC_ISSUER` alone, as it does for an
   exchange entry that names none, and a token of any other issuer is `400 invalid_request`, so a

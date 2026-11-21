@@ -14,6 +14,27 @@ type NamedIssuer struct {
 	Name, URL string
 }
 
+// IssuerName is the name of the issuer of issuers, a setting's list in its order, whose URL is
+// url: the URL a row records as the issuer whose token made it, such as a token login's launcher
+// credential or a pod's enrollment. A row that records none (nil) was written before rows recorded
+// one, when the setting named one issuer, which stays its first. A URL the list no longer holds is
+// no issuer's, and so is every row when the list is empty: ok is false, and the empty name an
+// issuer of a bare-URL setting has is never answered for it.
+func IssuerName(issuers []NamedIssuer, url *string) (name string, ok bool) {
+	if len(issuers) == 0 {
+		return "", false
+	}
+	if url == nil {
+		return issuers[0].Name, true
+	}
+	for _, issuer := range issuers {
+		if issuer.URL == *url {
+			return issuer.Name, true
+		}
+	}
+	return "", false
+}
+
 // IssuerSet verifies tokens of several issuers for one audience, such as the projected
 // ServiceAccount tokens of several Kubernetes clusters, each its own issuer. It reads a token's iss
 // without trusting it and gives the token to that issuer's verifier alone, so a token of one

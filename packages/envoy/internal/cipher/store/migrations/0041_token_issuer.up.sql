@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0040_launcher_credential_issuer.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0041_token_issuer.up.sql
 -- BROKER_K8S_OIDC_ISSUER names several clusters' issuers, and a BROKER_SERVICE_LOGINS entry names
 -- the issuers its account logs in from. A token login's credential is read again against that
 -- entry on every use (enroll.Service.AuthenticateLauncher), so the credential records which
@@ -10,4 +10,14 @@
 -- issuer the setting then named and which stays its first, so a null reads as the first issuer.
 -- It is null for a machine's credential and a person's sign-in's as well, whose tokens Google
 -- signs, and which are judged by their Google account alone.
+--
+-- A pod's enrollment records the issuer too, in enrollments.issuer: the URL of the issuer whose
+-- token proved the pod's account, which enroll.Service.Create writes for every pod it enrolls. A
+-- service's pod names the project an operator's BROKER_EXCHANGE_ACCOUNTS entry maps its account
+-- to only while that entry names this issuer (requests.Machine.credentialProjects), as the
+-- exchange takes the account's token only from the issuers the entry names: the same account name
+-- in another cluster is another ServiceAccount. It is null for every enrollment written before
+-- this migration, made under the setting's one issuer, so a null reads as the first issuer, and
+-- for every enrollment that is not a pod's.
 alter table launcher_credentials add column issuer text;
+alter table enrollments add column issuer text;

@@ -429,7 +429,9 @@ type AccountEntry struct {
 	// Issuers are the names, in BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens the account's
 	// pods exchange: the entry's own, or the first issuer's alone where it names none, which
 	// config.Load fills in. The same account name in another cluster is another ServiceAccount,
-	// so Pod refuses a token of any other issuer. The one issuer of a list written as a bare URL
+	// so Pod refuses a token of any other issuer, and a pod of the account that enrolled with
+	// such a token is given neither Person nor Project (PodProjects), so a private project's
+	// secret goes to none of that cluster's pods. The one issuer of a list written as a bare URL
 	// has the empty name.
 	Issuers []string
 }
@@ -710,9 +712,10 @@ func (s *Set) Reservations() []Reservation {
 // MappedProjects is the person and the projects an operator's entry gives the tokens of
 // principal (AccountPrincipal, GooglePrincipal, or a workflow's), and false for a principal no
 // entry lists, a person's own among them. A Google entry naming no person, and a read entry,
-// answer neither, and true. It is how a reader holding no token — a release for a pod or a
-// machine — reads the list that pod's or that machine's token would carry. The slice is the
-// caller's own.
+// answer neither, and true. It is how a reader holding no token — a release for a machine —
+// reads the list that machine's token would carry. It reads no issuer: a pod's account is
+// answered for one issuer by PodProjects, since a token of an issuer its entry does not name is
+// another cluster's ServiceAccount. The slice is the caller's own.
 func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
 	entry, listed := s.mapped[principal]
 	if !listed {
@@ -724,19 +727,20 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 	return entry.person, []string{entry.project}, true
 }
 
-// ProjectsForAccount is the projects this configuration gives a token minted for one account,
-// and false for an account no entry lists. An account that opens with "system:serviceaccount:"
-// is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
-// string its own configuration holds and spells no principal. It reads the same entries Pod and
-// Google mint from, so a grant made from this answer and the token of that account cannot
-// disagree. A workflow is no account and is answered false.
-func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
-	principal := GooglePrincipal(account)
-	if strings.HasPrefix(account, "system:serviceaccount:") {
-		principal = AccountPrincipal(account)
+// PodProjects is the person and the projects the entry of a Kubernetes service account gives a
+// pod of that account whose token the issuer named issuer, in BROKER_K8S_OIDC_ISSUER, signed: what
+// MappedProjects answers for AccountPrincipal(account), and false, with no person and no project,
+// for an account no account or read entry lists and for an issuer its entry does not name. It
+// reads the issuers of the listing Pod reads, so it takes the issuers Pod takes. The same account
+// name in another cluster is another ServiceAccount, so Pod refuses such a token
+// (ErrIssuerNotNamed), and a reader holding no token — a release for a service's pod, read
+// against the issuer its enrollment recorded — gives that pod neither the entry's person nor its
+// project. The slice is the caller's own.
+func (s *Set) PodProjects(account, issuer string) (person string, projects []string, ok bool) {
+	if listing, listed := s.listing(account); !listed || !slices.Contains(listing.issuers(), issuer) {
+		return "", nil, false
 	}
-	_, projects, ok := s.MappedProjects(principal)
-	return projects, ok
+	return s.MappedProjects(AccountPrincipal(account))
 }
 
 // entryProjects is the list a token an operator's entry maps carries: that entry's one project,
@@ -890,13 +894,23 @@ func (s *Set) podEntry(account, uid string) (podListing, error) {
 	if uid == "" {
 		return podListing{}, fmt.Errorf("%w: %s presented a token bound to no pod, which proves only that the account exists", ErrNoPodBinding, account)
 	}
-	if entry, listed := s.accounts[account]; listed {
-		return podListing{account: entry}, nil
-	}
-	if entry, listed := s.reads[account]; listed {
-		return podListing{read: entry, readOnly: true}, nil
+	if listing, listed := s.listing(account); listed {
+		return listing, nil
 	}
 	return podListing{}, fmt.Errorf("%w: no entry lists the service account %s", ErrNoEntry, account)
+}
+
+// listing is the entry that lists a pod's account, its account entry or else its read entry, and
+// false for an account neither lists. Pod, Registration and PodProjects all read it, so they take
+// one entry, and its issuers, for an account.
+func (s *Set) listing(account string) (podListing, bool) {
+	if entry, listed := s.accounts[account]; listed {
+		return podListing{account: entry}, true
+	}
+	if entry, listed := s.reads[account]; listed {
+		return podListing{read: entry, readOnly: true}, true
+	}
+	return podListing{}, false
 }
 
 // Registration refuses what a pod-session registration must refuse before it is written: a token
