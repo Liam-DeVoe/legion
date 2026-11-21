@@ -278,17 +278,15 @@ type brokerAdmission struct {
 // (brokerForeignAccount), when its credential was made (null for a time the broker did not
 // record) and whether the token is held to an account at all: the account binding holds (the
 // deployment's sign-in records accounts and no build without the binding is in the fleet,
-// accountsHeld and accountsHeldSQL), and, at an admission, the token is no operator entry's. With
-// accounts held and people recording one for the address, it holds for a token recording another
-// account (the replaced account's, or an account's that has not signed in since Google gave it the
-// address), for one recording an account of another issuer, and for one recording none whose
-// credential was made before people recorded the address's account or less than
-// brokerCredentialMargin after it, or at an unrecorded time. It is false for an address recording
-// no account, and, for a token recording none, with no recording time, so nothing is refused that
-// predates the column. An admission reads it (brokerPersonAdmitted), and so do the two reads a
-// request makes again once its body has arrived, a decision's (approverStanding) and a personal
-// token's mint (mintAgentTokenSQL), so a token admitted before another account's sign-in committed
-// acts on nothing after it, however long its client held the body back.
+// accountsHeldSQL), and, at an admission, the token is no operator entry's. With accounts held and
+// people recording one for the address, it holds for a token recording another account (the
+// replaced account's, or an account's that has not signed in since Google gave it the address), for
+// one recording an account of another issuer, and for one recording none whose credential was made
+// before people recorded the address's account or less than brokerCredentialMargin after it, or at
+// an unrecorded time. It is false for an address recording no account, and, for a token recording
+// none, with no recording time, so nothing is refused that predates the column. An admission reads
+// it (brokerPersonAdmitted), the one place it is read: a broker token neither decides nor mints
+// (brokerPersonScopes), so no read made again once a request's body has arrived asks it.
 func brokerAccountReplaced(address, subject, foreign, createdAt, held string) string {
 	return "(exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and sub <> " + subject + ")" +
