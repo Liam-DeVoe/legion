@@ -45,12 +45,15 @@ func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID
 }
 
 // RecordDirectoryHeld records a Held outcome of email's Directory check: the account is suspended,
-// missing, or another person's. It sets directory_checked_at to now and records a hold, held_since
-// set to now when it is null, so a held row keeps the time of its first Held outcome. It leaves
-// directory_confirmed_at and not_held_until as they are.
+// missing, or another person's. It sets directory_checked_at to now and records a hold at that
+// time, held_since set to now on every Held outcome, so the row holds the time of its latest Held
+// outcome. An Active write guards on that time (RecordDirectoryActive): one resting on a read made
+// before this outcome writes nothing, whether or not the row was already held when that read was
+// made. Every reader of held_since compares it with signed_in_at or directory_confirmed_at, which a
+// later time keeps true. It leaves directory_confirmed_at and not_held_until as they are.
 func (s *PgPeopleStore) RecordDirectoryHeld(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `
-		update people set directory_checked_at = checked.at, held_since = coalesce(held_since, checked.at)
+		update people set directory_checked_at = checked.at, held_since = checked.at
 		from (select clock_timestamp() as at) as checked
 		where email = $1
 	`, email); err != nil {

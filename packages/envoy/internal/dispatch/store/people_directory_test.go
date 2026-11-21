@@ -81,8 +81,9 @@ func sameInstant(got *time.Time, want time.Time) bool {
 // An Active outcome sets directory_confirmed_at and directory_checked_at to one time, fixes
 // not_held_until 24 hours after it, answers that deadline and clears held_since; the first one
 // stores the Directory user's id, and a later one keeps it. A Held outcome sets
-// directory_checked_at and records a hold, and a second keeps the first's time; it leaves the
-// confirmation and the deadline as they are. A Failed outcome moves directory_checked_at and
+// directory_checked_at and records a hold at one time, and a second moves both to its own time, so
+// held_since is the latest Held outcome's; it leaves the confirmation and the deadline as they
+// are. A Failed outcome moves directory_checked_at and
 // nothing else. RecordDirectoryRebound replaces a stored id with the new account's, confirms with a
 // new deadline and releases a hold, and moves no other column. No outcome writes a row for a login
 // with none. Membership reads DirectoryHeld true for a hold on a row with no confirmation and for a
@@ -145,12 +146,13 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 		t.Fatalf("Membership after a first Held outcome reads %s; want DirectoryHeld for a hold with no confirmation, and no confirmation, deadline or id", directoryMembership(membership))
 	}
 
-	// A second Held outcome keeps the first's time and moves only the check.
+	// A second Held outcome moves the hold and the check to its own time, so the guard of a later
+	// Active write compares with the latest Held outcome (TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead).
 	if err := people.RecordDirectoryHeld(ctx, ada); err != nil {
 		t.Fatal(err)
 	}
-	if again := readDirectoryRow(t, database, ada); !sameInstant(again.heldSince, *firstHeld.heldSince) || again.checkedAt == nil || !again.checkedAt.After(*firstHeld.checkedAt) {
-		t.Fatalf("after a second Held outcome the row reads %+v; want held_since kept at %s and directory_checked_at later than %s", again, *firstHeld.heldSince, *firstHeld.checkedAt)
+	if again := readDirectoryRow(t, database, ada); again.heldSince == nil || !again.heldSince.After(*firstHeld.heldSince) || !sameInstant(again.checkedAt, *again.heldSince) {
+		t.Fatalf("after a second Held outcome the row reads %+v; want held_since and directory_checked_at one time, later than the first Held outcome's %s", again, *firstHeld.heldSince)
 	}
 
 	// An Active outcome confirms, fixes the deadline 24 hours later, stores the id and releases.
@@ -267,24 +269,34 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 // TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead: an Active outcome and a rebind rest on
 // the check's read of the row (readAt), made before its Directory read. On a row whose hold was
 // recorded after that read, or at its very time, which is a later check's Held, each writes
-// nothing and answers the zero time: the whole row, the hold included, stays as it was. The same
-// write resting on a read made after the hold releases it.
+// nothing and answers the zero time: the whole row, the hold included, stays as it was. That holds
+// too for a row that was already held when the check read it and is held again after: the later
+// Held outcome stamps held_since with its own time, so the guard compares the read with the latest
+// hold, not the first. The same write resting on a read made after the hold releases it.
 //
-// Control: drop the held_since guard from either write; its first case fails, naming the row.
+// Controls: drop the held_since guard from either write; its first case fails, naming the row.
+// Keep a held row's first held_since on a later Held outcome (coalesce); the re-held cases fail,
+// naming the hold the Held outcome after the read did not record.
 func TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	active := func(email string, readAt time.Time) (time.Time, error) {
+		return people.RecordDirectoryActive(ctx, email, "directory-"+email, readAt)
+	}
+	rebind := func(email string, readAt time.Time) (time.Time, error) {
+		return people.RecordDirectoryRebound(ctx, email, "directory-new-"+email, readAt)
+	}
 	for _, write := range []struct {
 		name, email string
-		record      func(email string, readAt time.Time) (time.Time, error)
+		// heldBefore is whether the row was already held when the check read it.
+		heldBefore bool
+		record     func(email string, readAt time.Time) (time.Time, error)
 	}{
-		{"an Active outcome", "active@example.com", func(email string, readAt time.Time) (time.Time, error) {
-			return people.RecordDirectoryActive(ctx, email, "directory-"+email, readAt)
-		}},
-		{"a rebind", "rebind@example.com", func(email string, readAt time.Time) (time.Time, error) {
-			return people.RecordDirectoryRebound(ctx, email, "directory-new-"+email, readAt)
-		}},
+		{"an Active outcome", "active@example.com", false, active},
+		{"a rebind", "rebind@example.com", false, rebind},
+		{"an Active outcome on a row held before the read and held again", "active-reheld@example.com", true, active},
+		{"a rebind on a row held before the read and held again", "rebind-reheld@example.com", true, rebind},
 	} {
 		t.Run(write.name, func(t *testing.T) {
 			email := write.email
@@ -294,13 +306,21 @@ func TestPgPeopleStoreKeepsAHoldRecordedSinceTheActiveRead(t *testing.T) {
 			if _, err := people.RecordDirectoryActive(ctx, email, "directory-"+email, databaseNow(t, database)); err != nil {
 				t.Fatal(err)
 			}
+			if write.heldBefore {
+				if err := people.RecordDirectoryHeld(ctx, email); err != nil {
+					t.Fatal(err)
+				}
+			}
 			read := databaseNow(t, database)
 			if err := people.RecordDirectoryHeld(ctx, email); err != nil {
 				t.Fatal(err)
 			}
 			held := readDirectoryRow(t, database, email)
 			if held.heldSince == nil || !held.heldSince.After(read) {
-				t.Fatalf("the Held outcome after the read at %s left the row at %v; want a hold recorded after the read", read, held)
+				t.Errorf("the Held outcome after the read at %s left the row at %v; want a hold recorded after the read", read, held)
+			}
+			if held.heldSince == nil {
+				t.FailNow()
 			}
 			whole := rowLeavingOut(t, database, email, []string{}...)
 			for _, readAt := range []time.Time{read, *held.heldSince} {

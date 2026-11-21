@@ -120,7 +120,9 @@ func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan s
 // one person in other processes run beside this one, so a check that read the Directory later may
 // have recorded Held before this one writes. The Active writes are guarded by that ReadAt: one that
 // finds a hold recorded at or after it writes nothing, so the later read's Held stands, and the
-// check counts RefreshNone, as one that needed no check does.
+// check counts RefreshNone, as one that needed no check does. Every Held outcome stamps the hold
+// with its own time (RecordDirectoryHeld), so this holds as well for a row that was already held
+// when this check read it and is held again by the later check.
 //
 // An answer for the address itself under another account (DirectoryRecreated: the address deleted
 // and created again for another person) is the earlier person's row, keyed by the address, so every

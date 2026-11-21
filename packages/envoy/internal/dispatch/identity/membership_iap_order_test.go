@@ -34,16 +34,25 @@ func (s lateActive) RecordDirectoryActive(ctx context.Context, email, userID str
 // A's Active outcome before Google suspends her: A counts RefreshConfirmed, and B's Held then
 // holds her, so the test fails only on the order of the writes.
 //
-// Control: clear held_since in the Active write whatever the time of the read it rests on; the
-// first case fails, naming the row A's write released.
+// The same holds for a row that was already held when A read it: ada was suspended an hour ago,
+// her account was restored before A's Directory read, and she is suspended again before B's. B's
+// Held stamps the hold with its own time, after A's read, so A's late Active outcome writes nothing
+// there either.
+//
+// Controls: clear held_since in the Active write whatever the time of the read it rests on; the
+// first case fails, naming the row A's write released. Keep a held row's first held_since on a later
+// Held outcome; the re-held case fails the same way.
 func TestIAPActiveAnswerFromAnEarlierReadReleasesNoLaterHold(t *testing.T) {
 	for _, c := range []struct {
 		name        string
+		heldBefore  bool
 		activeFirst bool
 		want        RefreshOutcome
 	}{
-		{"an Active outcome written after a later read's Held", false, RefreshNone},
-		{"order control: the Active outcome written before Google suspends her", true, RefreshConfirmed},
+		{"an Active outcome written after a later read's Held", false, false, RefreshNone},
+		{"order control: the Active outcome written before Google suspends her", false, true, RefreshConfirmed},
+		{"a row held before A's read: an Active outcome written after a later read's Held", true, false, RefreshNone},
+		{"a row held before A's read, order control: the Active outcome written before Google suspends her again", true, true, RefreshConfirmed},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -51,6 +60,14 @@ func TestIAPActiveAnswerFromAnEarlierReadReleasesNoLaterHold(t *testing.T) {
 			adaActive(r.google)
 			r.record(directoryAda)
 			r.active(directoryAda, "u-ada", 2*time.Hour)
+			if c.heldBefore {
+				// Suspended an hour ago, and restored since: the Directory answers her Active again.
+				r.held(directoryAda)
+				r.age(directoryAda, time.Hour)
+				if answer := r.standing(directoryAda); !answer.Held {
+					t.Fatalf("ada before A's check = %+v; want held", answer)
+				}
+			}
 			reader, err := NewDirectoryReader(t.Context(), directorySigner, directoryAdmin, r.google.ClientOptions()...)
 			if err != nil {
 				t.Fatalf("NewDirectoryReader: %v", err)
