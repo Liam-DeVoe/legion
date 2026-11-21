@@ -1546,9 +1546,15 @@ func testJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream) {
 	return js, testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 }
 
+// publish publishes data on subject and returns its acknowledgement. The publish waits for the
+// server's answer until the row's hang guards end, the test binary's deadline less 30 s
+// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// deadline (its defaultAPITimeout), so a NATS server the machine holds is waited out.
 func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) *jetstream.PubAck {
 	t.Helper()
-	ack, err := js.Publish(context.Background(), subject, data)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	ack, err := js.Publish(ctx, subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}

@@ -73,11 +73,15 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 		t.Fatal("the backlog's first fact never reached the handler")
 	}
 
-	item, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
+	// The read waits for the server until the row's hang guards end (testwait.Remaining), in place
+	// of the five seconds nats.go gives a request whose context has no deadline.
+	read, cancelRead := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancelRead()
+	item, err := stream.Consumer(read, dispatchConsumerName(spec.Project))
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer: %v", err)
 	}
-	info, err := item.Info(context.Background())
+	info, err := item.Info(read)
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer's info: %v", err)
 	}

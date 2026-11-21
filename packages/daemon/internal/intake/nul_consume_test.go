@@ -66,7 +66,7 @@ func TestAReviewWhoseBodyHoldsNULIsAppliedOnceWithAReplacementCharacter(t *testi
 		"review_id": "7012", "submitted_at": "2026-11-19T09:00:00Z", "commit_id": nulHead, "head_sha": nulHead,
 		"body": "looks good\x00 ship it",
 	})
-	sent, err := js.Publish(ctx, review.subject, review.data)
+	sent, err := js.Publish(requestContext(t), review.subject, review.data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", review.subject, err)
 	}
@@ -105,7 +105,7 @@ func TestAnIssueEventWhoseTitleHoldsNULIsAppliedOnceWithAReplacementCharacter(t 
 			"labels": []string{"legion"}, "resolved_repo": nulRepo, "blocked_by": []string{}, "claim": nil,
 		},
 	})
-	sent, err := js.Publish(ctx, subject, drainJSON(map[string]any{
+	sent, err := js.Publish(requestContext(t), subject, drainJSON(map[string]any{
 		"event_id": "dispatch-4012", "source": "dispatch", "source_event_id": "4012", "topic": subject,
 		"dedupe_key": "dispatch-4012", "issued_at": int64(1_795_510_800_000), "payload_summary": nulIssue + " issue updated",
 		"payload": string(event), "trace_id": "dispatch-4012",
@@ -168,17 +168,19 @@ func runNULConsumers(t *testing.T, pool *pgxpool.Pool) (jetstream.JetStream, jet
 // A fact PostgreSQL refuses is naked and delivered again every NakDelay for as long as the
 // consumer runs, so the second delivery ends the wait with the redelivery counted, and the wait
 // has no bound of its own but what is left of the test binary's deadline less 30 s
-// (testwait.Remaining): a fixed one let a slow store read fail the row.
+// (testwait.Remaining): a fixed one let a slow store read fail the row. Its reads of the consumer
+// end there too (requestContext).
 func acknowledgedOnce(t *testing.T, stream jetstream.Stream, consumer string, seq uint64, logs *testlog.Buffer) {
 	t.Helper()
-	item, err := stream.Consumer(t.Context(), consumer)
+	requests := requestContext(t)
+	item, err := stream.Consumer(requests, consumer)
 	if err != nil {
 		t.Fatalf("read the %s consumer: %v", consumer, err)
 	}
 	started := time.Now()
 	var info *jetstream.ConsumerInfo
 	ended := testwait.Holds(testwait.Remaining(t), 50*time.Millisecond, func() bool {
-		info, err = item.Info(t.Context())
+		info, err = item.Info(requests)
 		return err == nil && ((info.AckFloor.Stream >= seq && info.NumAckPending == 0) || info.Delivered.Consumer > 1)
 	})
 	if err != nil {
@@ -188,6 +190,17 @@ func acknowledgedOnce(t *testing.T, stream jetstream.Stream, consumer string, se
 		t.Errorf("after %s the %s consumer delivered %d messages and acknowledged through stream sequence %d, want the event at %d delivered once and acknowledged; the consumer logged:\n%s",
 			time.Since(started).Round(time.Millisecond), consumer, info.Delivered.Consumer, info.AckFloor.Stream, seq, logs.String())
 	}
+}
+
+// requestContext is the context of a row's own JetStream requests: it ends where the row's hang
+// guards end, the test binary's deadline less 30 s (testwait.Remaining), in place of the five
+// seconds nats.go gives a request whose context has no deadline (its defaultAPITimeout), so a NATS
+// server the machine holds is waited out and one that never answers fails the row by name.
+func requestContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // seedNULIssue records nulIssue as a root standing in at with the status given, slotted, with its
