@@ -377,9 +377,12 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   `Without` too, each for those characters alone. `Without` tries `TMPDIR`, then its closest
   ancestor that holds none of `chars`, then the module's own `.cache/testtmp`, then `/tmp`, and
   fails the test naming what each base answered when none qualifies. Its `.cache` base sits inside
-  the checkout, so a test whose module must resolve nothing from the repository's `node_modules`
-  refuses that base in its accept check, and no test that builds a repository of its own takes its
-  directory from `Without`.
+  the checkout, in a directory `.gitignore` leaves out, so a test whose module must resolve nothing
+  from the repository's `node_modules` refuses that base in its accept check. `OMPDir` takes it
+  where it is the one base a link from the natives cache reaches (a machine whose `TMPDIR` and
+  `/tmp` are on another filesystem than the cache), so a working copy an `OMPDir` caller makes
+  there sits inside the checkout. `agent_argv_omp_test.go` makes its working copy a git repository
+  of its own (`fixturegit.InitWorkTree`), which git run in it reads in place of the checkout's.
 - A test whose fake writes shell text quotes every temporary path in it as one shell word
   (`shellprefix.Literal` or `shellprefix.Word` in the daemon module, a single-quote helper in the
   envoy module and in TypeScript), and a fake that reports where Oh My Pi loaded a module from

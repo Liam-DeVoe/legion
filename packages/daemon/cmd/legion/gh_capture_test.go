@@ -380,7 +380,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// guard never read; the Copilot API host GitHub names is handed the token by `gh agent-task`.
 	// Each is refused before gh runs, whatever names the editor, and the editor never runs.
 	editor := filepath.Join(home, "editor.sh")
-	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch "+shellprefix.Literal(ran+"-editor")+"\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -405,7 +405,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// editor fails, so nothing it wrote is sent. Measured with the editor left to gh's own choice:
 	// nano ran in both, and discussion create posted what it wrote.
 	nano := t.TempDir()
-	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch "+shellprefix.Literal(ran+"-nano")+"\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	editors := []string{"GH_EDITOR=" + editor, "EDITOR=" + editor, "VISUAL=" + editor, "PATH=" + nano + ":" + bin + ":" + filepath.Dir(git) + ":/usr/bin:/bin"}

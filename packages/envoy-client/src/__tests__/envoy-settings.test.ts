@@ -880,7 +880,7 @@ describe("which inbound a session takes", () => {
         url: "http://envoy.example:9020",
         inbound: "listener",
         natsUrls: ["nats://nats.internal.example:4222"],
-        token: `!echo run >> ${runs}; echo ${FILE_TOKEN}`,
+        token: `!echo run >> ${shellQuote(runs)}; echo ${FILE_TOKEN}`,
       },
     });
     const fromFile = envoySettings({ PATH: process.env.PATH }, config, {
@@ -889,7 +889,7 @@ describe("which inbound a session takes", () => {
     });
     expect(fromFile.enabled).toBe(false);
     expect("error" in fromFile ? fromFile.error : undefined).toMatch(
-      /^envoy\.inbound in \S+ is listener, and envoy\.natsUrls in \S+ names NATS servers: set one of the two\. And the listener's address is plain http to envoy\.example/
+      /^envoy\.inbound in .+ is listener, and envoy\.natsUrls in .+ names NATS servers: set one of the two\. And the listener's address is plain http to envoy\.example/
     );
     expect(existsSync(runs)).toBe(false);
   });
@@ -930,7 +930,7 @@ describe("which inbound a session takes", () => {
           enabled: true,
           url,
           inbound: "listener",
-          token: `!echo run >> ${runs}; echo ${FILE_TOKEN}`,
+          token: `!echo run >> ${shellQuote(runs)}; echo ${FILE_TOKEN}`,
         },
       });
     expect(

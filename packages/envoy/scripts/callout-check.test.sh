@@ -31,8 +31,12 @@
 # a variable the check needs refuses with exit 2, naming it; (g) a hub that never drops the killed
 # broker's connection FAILs line 6; (h) a connection list that cannot be read after the kill reads
 # UNKNOWN on line 6; (i) a hub listing one auth service connection before the kill reads UNKNOWN on
-# line 6 and kills nothing; and (j) a hub whose list is read once after the kill, still naming both
-# connections, and then cannot be read FAILs line 6 with the count it last read.
+# line 6 and kills nothing; (j) a hub whose list is read once after the kill, still naming both
+# connections, and then cannot be read FAILs line 6 with the count it last read; (k) a probe not
+# admitted in words that are not the server's FAILs lines 3 and 4; and (l) with nothing exported,
+# the check starts a stand-in dev-stack.sh --callout beside a copy of itself and reads the banner it
+# prints, its paths through printf %q under a directory holding a space and a quote, as a shell
+# does: it passes all six lines and stops the stack it started.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -191,12 +195,9 @@ fail() {
   exit 1
 }
 
-# run_check runs the check against the fakes, with the control files named and the fake clock at a
-# time of day, after a fresh second broker stand-in (the last one ended first, since a case can
-# leave it running); it sets output and status.
-output=""
-status=0
-run_check() {
+# prepare_case sets the control files named and the fake clock at a time of day, after a fresh
+# second broker stand-in (the last one ended first, since a case can leave it running).
+prepare_case() {
   local name
   for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker; do
     rm -f "${control_dir}/${name}"
@@ -215,6 +216,14 @@ run_check() {
   broker_stand_in=$!
   disown "$broker_stand_in"
   printf '%s' "$broker_stand_in" >"${control_dir}/second-broker"
+}
+
+# run_check runs the check against the fakes, as prepare_case leaves them, under an exported stack;
+# it sets output and status.
+output=""
+status=0
+run_check() {
+  prepare_case "$@"
   status=0
   output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
     DEV_STACK_CALLOUT=1 \
@@ -324,3 +333,53 @@ run_check other-words
   fail "a probe not admitted in other words: line 4 is '$(line 4)'"
 [ "$status" -eq 1 ] || fail "a probe not admitted in other words: exit $status"
 echo "PASS: a probe not admitted in words that are not the server's FAILs lines 3 and 4"
+
+# (l) With nothing exported, the check starts dev-stack.sh --callout from its own directory and
+# reads the banner the stack prints. A copy of the check sits beside a stand-in dev-stack.sh that
+# prints such a banner as the real one does, each path through printf %q, under a directory whose
+# name holds a space and a quote, with the placeholder line no shell evaluates; then it runs until
+# it is stopped. Read as a shell reads each line, the banner's PATH and token file are whole paths,
+# so the check passes all six lines as in (a), and on exit it stops the stack it started. A reader
+# that cuts each line at its "=" reads the escaped text instead and finds no natsprobe (exit 2).
+started="${temporary_dir}/started"
+stack_dir="${temporary_dir}/a dev-stack's dir"
+mkdir -p "$started" "$stack_dir"
+cp "$check" "${started}/callout-check.sh"
+ln -s "$fake_bin_dir" "${stack_dir}/bin"
+: >"${stack_dir}/exchange-token"
+prepare_case
+cat >"${started}/banner" <<EOF
+
+dev-stack: ready.
+
+  export PATH=$(printf %q "${stack_dir}/bin"):\$PATH
+  export AGENT_SECRETS_URL=$stack_broker
+  export NATS_URLS=nats://127.0.0.1:7002
+  export DEV_STACK_DIR=$(printf %q "$stack_dir")
+  export DEV_STACK_EXCHANGE_TOKEN_FILE=$(printf %q "${stack_dir}/exchange-token")
+  export DEV_STACK_CALLOUT=1
+  export DEV_STACK_EXCHANGE_SESSION=$session
+  export DEV_STACK_BROKER_PIDS="1 $broker_stand_in"
+  export DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:7003
+
+  export AGENT_SECRETS_SESSION=<this process's own session name>
+EOF
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'trap %q TERM\n' ": >$(printf %q "${started}/stopped"); exit 0"
+  printf 'cat %q\n' "${started}/banner"
+  printf 'while :; do sleep 0.1; done\n'
+} >"${started}/dev-stack.sh"
+status=0
+output="$(env -u DEV_STACK_CALLOUT -u AGENT_SECRETS_URL -u NATS_URLS -u DEV_STACK_EXCHANGE_TOKEN_FILE \
+  -u DEV_STACK_EXCHANGE_SESSION -u DEV_STACK_BROKER_PIDS -u DEV_STACK_NATS_MONITOR_URL \
+  TMPDIR="$temporary_dir" bash "${started}/callout-check.sh" 2>"${started}/stderr")" || status=$?
+for index in "${!want[@]}"; do
+  [ "$(line $((index + 1)))" = "${want[$index]}" ] ||
+    fail "a stack the check starts: line $((index + 1)) is '$(line $((index + 1)))', want '${want[$index]}'; it said: $(cat "${started}/stderr")"
+done
+[[ "$(line 6)" == "PASS one broker killed and a new session admitted within 2 s: "* ]] || fail "a stack the check starts: line 6 is '$(line 6)'"
+[ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] ||
+  fail "a stack the check starts: want 'all 6 assertions passed' and exit 0, got exit $status; it said: $(cat "${started}/stderr")"
+[ -e "${started}/stopped" ] || fail "the check did not stop the stack it started"
+echo "PASS: with nothing exported the check starts the stack, reads each path its banner prints through printf %q as a shell does, passes all six lines and stops the stack"
