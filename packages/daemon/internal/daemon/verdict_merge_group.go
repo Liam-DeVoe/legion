@@ -1,0 +1,88 @@
+package daemon
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/verdict"
+)
+
+// queueMergeGroupWrite queues, for the writer (writeVerdicts), a write of legion-verdict on group,
+// the commit of a merge queue's group for pull request number of repository (spec R6): a
+// merge_group event's checks_requested asks for it, and so does the writers' sweep for each group
+// commit it finds with no run of this daemon's. overForeign is writeDecided's. A repository no
+// verdict entry names asks nothing, as queueVerdictWrite's does not, and neither does a runtime
+// with no writer. No merge-state read waits on it: a group is no head an issue's reads are of.
+func (w *workflowRuntime) queueMergeGroupWrite(repository ghrepo.Repository, number int, group string, overForeign bool) {
+	if w.verdicts == nil {
+		return
+	}
+	if _, ok := w.verdictEntry(repository); !ok {
+		return
+	}
+	w.verdicts.add(verdictTarget{repository: repository, number: number, group: group, overForeign: overForeign})
+}
+
+// writeMergeGroup writes legion-verdict on target's group commit from the verdict of its pull
+// request at the head that pull request stands at now (mergeGroupHead), decided as a write on
+// that head decides it (decideVerdict): success where the verdict stands there, and failure where
+// it does not (spec R6). A group with no verdict is failure, not nothing, so the queue removes the
+// entry at once rather than at its check's timeout. The group commit holds the pull requests ahead
+// of it in the queue too, each with a group of its own that the queue also waits for, so only the
+// pull request the group's ref names is read. Another project's issue branch is that project's
+// daemon's to write, and is logged once per pull request, as writeVerdictOver logs it.
+func (w *workflowRuntime) writeMergeGroup(ctx context.Context, target verdictTarget) error {
+	entry, ok := w.verdictEntry(target.repository)
+	if !ok {
+		return nil
+	}
+	head, err := w.mergeGroupHead(ctx, target.repository, target.number)
+	if err != nil {
+		return err
+	}
+	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, head)
+	if err != nil {
+		return err
+	}
+	if decided.otherIssue != "" {
+		w.noteOtherProject(target.repository.String(), target.number, decided.otherIssue)
+		return nil
+	}
+	if decided.conclusion != verdict.Success {
+		decided.conclusion = verdict.Failure
+	}
+	return w.writeDecided(ctx, verdictTarget{repository: target.repository, number: target.number, head: target.group}, decided, target.overForeign)
+}
+
+// mergeGroupHead is the head pull request number of repository stands at now: the one the record
+// holds of a Legion pull request (under either name of a renamed repository, as decideVerdict
+// reads it), the one the daemon recorded of an outside pull request, and, for a pull request no
+// record holds, the one GitHub shows (GET /pulls/{number}), which decideVerdict then reads again
+// and records.
+func (w *workflowRuntime) mergeGroupHead(ctx context.Context, repository ghrepo.Repository, number int) (string, error) {
+	var head string
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		pr, err := ghrepo.Under(w.renames(), repository.String(), func(name string) (*record.PullRequest, error) {
+			return w.records.PullRequestByNumber(ctx, tx, name, number)
+		})
+		if err != nil || pr != nil {
+			if pr != nil {
+				head = pr.HeadSHA
+			}
+			return err
+		}
+		outside, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
+		if found {
+			head = outside.Head
+		}
+		return err
+	}); err != nil || head != "" {
+		return head, err
+	}
+	pull, err := w.readVerdictPullRequest(ctx, repository, number)
+	return pull.Head.SHA, err
+}

@@ -76,12 +76,17 @@ type verdictWriter struct {
 
 // verdictTarget is one head a write of legion-verdict is asked for: the pull request's repository
 // and number, the head, and the issue whose merge-state reads wait on the write ("" for a pull
-// request no Legion issue owns).
+// request no Legion issue owns). A merge group's write (queueMergeGroupWrite) names the group's
+// commit as group, which it writes on, and no head: it decides the pull request at the head that
+// stands when the write is made (writeMergeGroup). overForeign is writeDecided's: the writers'
+// sweep's ask to put failure over another writer's run or status where no verdict stands.
 type verdictTarget struct {
-	issue      string
-	repository ghrepo.Repository
-	number     int
-	head       string
+	issue       string
+	repository  ghrepo.Repository
+	number      int
+	head        string
+	group       string
+	overForeign bool
 }
 
 func newVerdictWriter(entries []config.VerdictRepository) *verdictWriter {
@@ -269,29 +274,42 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 				return
 			}
 		}
-		if err := w.writeVerdict(ctx, target.repository, target.number, target.head); err != nil && ctx.Err() == nil {
-			w.log.Warn(verdictWriteFailed,
-				"repository", target.repository.String(), "pull_request", target.number, "head", target.head, "issue", target.issue, "error", err)
+		var err error
+		if target.group != "" {
+			err = w.writeMergeGroup(ctx, target)
+		} else {
+			err = w.writeVerdictOver(ctx, target.repository, target.number, target.head, target.overForeign)
+		}
+		if err != nil && ctx.Err() == nil {
+			w.log.Warn(verdictWriteFailed, "repository", target.repository.String(), "pull_request", target.number, "head", target.head,
+				"group", target.group, "issue", target.issue, "error", err)
 		}
 		w.verdicts.done(target)
 	}
 }
 
 // writeVerdict writes legion-verdict on head of pull request number of repository from the
+// verdict the daemon records at that head, as a fact asks (writeVerdictOver).
+func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
+	return w.writeVerdictOver(ctx, repository, number, head, false)
+}
+
+// writeVerdictOver writes legion-verdict on head of pull request number of repository from the
 // verdict the daemon records at that head (verdict.Decide): success where it stands, failure where a
-// refusal stands, and nothing where neither does, so the head cannot merge (spec R4). It writes
-// only on a repository its verdict_repositories names, and on a legion/<KEY> head only of its own
-// project: another project's issue branch is that project's daemon's to write, and is logged once
-// per pull request. A repository is named under the name GitHub serves it under now as well as the
-// one a record keeps (verdictEntry). It creates its own check run or updates the one its record
-// holds, and writes its conclusion over each run and status of the one App its record does not
-// hold (spec R19, writeDecided).
+// refusal stands, and nothing where neither does, so the head cannot merge (spec R4); with
+// overForeign, the writers' sweep's ask, failure over another writer's run or status there
+// (writeDecided). It writes only on a repository its verdict_repositories names, and on a
+// legion/<KEY> head only of its own project: another project's issue branch is that project's
+// daemon's to write, and is logged once per pull request. A repository is named under the name
+// GitHub serves it under now as well as the one a record keeps (verdictEntry). It creates its own
+// check run or updates the one its record holds, and writes its conclusion over each run and
+// status of the one App its record does not hold (spec R19, writeDecided).
 //
 // Once a Legion head's success stands, the issue's merge state is read once more, a ladder's wait
 // later (mergeStateWait): GitHub can answer the read the write held (verdictWriter.await) with
 // `blocked` while it has not yet counted the new run, an answer that ends the climb, and no other
 // fact asks again, since Envoy leaves the one App's runs out of the CI record.
-func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
+func (w *workflowRuntime) writeVerdictOver(ctx context.Context, repository ghrepo.Repository, number int, head string, overForeign bool) error {
 	entry, ok := w.verdictEntry(repository)
 	if !ok {
 		return nil
@@ -316,7 +334,7 @@ func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Re
 			decided.conclusion = verdict.Failure
 		}
 	}
-	if err := w.writeDecided(ctx, target, decided, false); err != nil {
+	if err := w.writeDecided(ctx, target, decided, overForeign); err != nil {
 		return err
 	}
 	if decided.conclusion == verdict.Success && decided.issue != "" {
