@@ -32,6 +32,7 @@ import {
 } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
+import { standsFailed } from "../../refs/reference-target";
 import {
   buildReferencePath,
   type DispatchReferenceRoute,
@@ -72,7 +73,7 @@ import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, type NamesFailure, standsFailed } from "../useIssueTree";
+import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import {
