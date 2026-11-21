@@ -346,6 +346,43 @@ func TestFindToolsOffersTheReadANeedNames(t *testing.T) {
 	}
 }
 
+// TestFindToolsTellsACloseItsReasonIsThePersonsWhy: the spec of dispatch_issue_update find_tools
+// gives the model, for the need change-35 of the eval's run 3 asked it, says a close takes a reason
+// only where the person's words say why the issue closes, and nowhere that a close requires one:
+// told so, the model made up "Closed as requested.", which the server posted on the issue as a
+// message the person never asked for.
+func TestFindToolsTellsACloseItsReasonIsThePersonsWhy(t *testing.T) {
+	told, refused := (&worker{}).findTools(t.Context(), 0, json.RawMessage(`{"need":"change issue status to needs review and close an issue"}`))
+	type spec struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Arguments   json.RawMessage `json:"arguments"`
+	}
+	var specs []spec
+	_ = json.Unmarshal([]byte(told), &specs)
+	at := slices.IndexFunc(specs, func(found spec) bool { return found.Name == dispatchIssueUpdate })
+	if refused || at < 0 {
+		t.Fatalf("find_tools answered %q, which names no %s", note(told), dispatchIssueUpdate)
+	}
+	update := specs[at]
+	for _, said := range []string{"requires reason", "Required with status done"} {
+		if strings.Contains(update.Description, said) || strings.Contains(string(update.Arguments), said) {
+			t.Errorf("find_tools tells the model a close requires a reason: its spec of %s says %q", dispatchIssueUpdate, said)
+		}
+	}
+	var arguments struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(update.Arguments, &arguments); err != nil {
+		t.Fatal(err)
+	}
+	if reason := arguments.Properties["reason"].Description; !strings.Contains(reason, "only where the person's words say why") {
+		t.Errorf("the reason of a close is told as %q, want it given only where the person's words say why the issue closes", note(reason))
+	}
+}
+
 // TestAnUploadedTextFileReadsAsItsBytes: dispatch_doc_read of an uploaded file, whose text route
 // answers 400 NOT_DOCUMENT, reads the bytes of its latest version, which its summary names, as
 // the person's own `dispatch doc-read` does, and the model is given them where they are text; of

@@ -248,10 +248,42 @@ var issueCommentsRead = contracts.DispatchTool{
 	},
 }
 
-// findableTools is each tool of Dispatch, with dispatch_read's form that lists an issue's comments
-// (issueCommentsRead); the reads the server makes by going's names for them (going.ReadSpecs: the
-// roster of agent sessions and the rest, which no spec of Dispatch states); the two reads outside
-// Dispatch and draw_block, made findable once, at find_tools' first call.
+// dispatchIssueUpdate is the tool of Dispatch that closes an issue, whose close the bar's model is
+// told as the bar makes it (barTool).
+const dispatchIssueUpdate = "dispatch_issue_update"
+
+// The close of dispatch_issue_update as Dispatch's spec tells it, which is the CLI's: a close
+// requires its reason. The bar's close needs none - the server closes an issue with no reason and
+// posts nothing - and a reason is posted on the issue as a message, so the bar's model is told to
+// give one only where the person's words say why the issue closes.
+const (
+	closeRequiresReason = "Closing an issue (status done) requires reason, the note that says why: it is posted on the issue as a message, then the issue closes, so the close carries its note;"
+	closeTakesReason    = "Closing an issue (status done) takes reason only where the person's words say why it closes: reason is posted on the issue as a message, then the issue closes, and a close without it posts nothing;"
+	reasonRequired      = "Required with status done, and only with it: why the issue is closing. Posted on the issue as a message before it closes."
+	reasonOfTheWords    = "Only with status done, and only where the person's words say why the issue is closing: that why, posted on the issue as a message before it closes. Leave it out otherwise, and the issue closes with no message."
+)
+
+// barTool is tool as find_tools gives it to the bar's model: dispatch_issue_update with its close
+// told as the bar makes it, and every other tool as Dispatch's spec states it.
+func barTool(tool contracts.DispatchTool) contracts.DispatchTool {
+	if tool.Name != dispatchIssueUpdate {
+		return tool
+	}
+	tool.Description = strings.Replace(tool.Description, closeRequiresReason, closeTakesReason, 1)
+	tool.Arguments = slices.Clone(tool.Arguments)
+	for at, field := range tool.Arguments {
+		if field.Name == "reason" {
+			tool.Arguments[at].Description = strings.Replace(field.Description, reasonRequired, reasonOfTheWords, 1)
+		}
+	}
+	return tool
+}
+
+// findableTools is each tool of Dispatch as the bar's model is given it (barTool), with
+// dispatch_read's form that lists an issue's comments (issueCommentsRead); the reads the server
+// makes by going's names for them (going.ReadSpecs: the roster of agent sessions and the rest,
+// which no spec of Dispatch states); the two reads outside Dispatch and draw_block, made findable
+// once, at find_tools' first call.
 var findableTools = sync.OnceValue(func() []findable {
 	tools := slices.Concat(contracts.DispatchTools, []contracts.DispatchTool{issueCommentsRead}, outsideReads, []contracts.DispatchTool{drawBlockTool})
 	reads := going.ReadSpecs()
@@ -261,6 +293,7 @@ var findableTools = sync.OnceValue(func() []findable {
 		out = append(out, findable{name: name, description: description, schema: schema, text: text})
 	}
 	for _, tool := range tools {
+		tool = barTool(tool)
 		add(tool.Name, tool.Description, schemaOf(tool.Arguments))
 	}
 	for _, read := range reads {
