@@ -280,11 +280,13 @@ func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) 
 	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), "", access.AddPrincipal)
 }
 
-// deleteProjectAccessPerson takes a person off the project's access list (removePerson), taking the
-// person's machine-login approval lock first, before the project's owner lock
-// (access.LockForAccessWrite's removed): the removal may record the revocation of the person's
-// machine logins, which waits for an approve of theirs the broker has not answered, and so that
-// wait holds up no other write of the project's access.
+// deleteProjectAccessPerson takes a person off the project's access list (removePerson). It names
+// the person to access.LockForAccessWrite as the one it removes, which takes their machine-login
+// approval lock first, before the project's owner lock, where a read that takes no lock finds the
+// removal owes the revocation of their machine logins: the record of it waits for an approve of
+// theirs the broker has not answered, and so that wait holds up no other write of the project's
+// access, and a removal that owes nothing, from a list that does not name them, holds up no approve
+// of theirs.
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	email := r.PathValue("email")
 	s.principalWrite(w, r, access.PrincipalPerson, email, model.CanonicalLogin(email), s.removePerson)
@@ -297,7 +299,11 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 // such removal owes it, whatever other project's list still names them, as R16's approved words
 // read: a machine login is no project's (each trade of it names its own project), so its revoke is
 // whole, and a person another list still names approves a new login, at their browser, for the
-// projects that list them.
+// projects that list them. Its reads under the project's lock decide: where the read before the
+// locks did not find the debt, the person's addition to the list or their becoming a restricted
+// member having committed in between, the record takes the person's approval lock then, and while
+// an approval of theirs is in flight the removal is refused 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT
+// and changes nothing, for the owner to send again.
 func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, email string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	named, err := access.NamesPerson(ctx, tx, key, email)
 	if err != nil {
@@ -308,6 +314,9 @@ func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker,
 		return answer, event, err
 	}
 	if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
+		if errors.Is(err, store.ErrMachineLoginApprovalInFlight) {
+			err = fmt.Errorf("an approval of this person's machine logins is being relayed to the secrets broker, and the removal found them on the list only once it held the project's lock; remove them again in a few seconds (%w)", err)
+		}
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return answer, event, nil
@@ -323,7 +332,9 @@ func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker,
 // broker: an owner removes a person while the broker is down. Every removal that takes the person
 // off a list records it (removePerson); it is written to be the one record any other write that
 // takes a restricted member off a project makes in its own transaction, after it names that person
-// to access.LockForAccessWrite as the one it removes.
+// to access.LockForAccessWrite as the one it removes. The record takes the person's approval lock
+// itself without waiting, so a write that did not take it first records under it or is refused
+// store.ErrMachineLoginApprovalInFlight, never records unordered against an approval in flight.
 func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
 	person = model.CanonicalLogin(person)
 	if s.deps.AgentSecrets == nil || person == "" {
@@ -381,8 +392,8 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
 // to anyone who guessed its key. The owner is read first with no lock (access.ReadOwner), and a
 // caller who does not own the project is refused before the write takes any: a removal's first
-// lock is the approval lock of the person it removes, which that person's approve does not wait
-// for, so a removal anyone who sees the project may send and the owner check refuses would
+// lock may be the approval lock of the person it removes, which that person's approve does not
+// wait for, so a removal anyone who sees the project may send and the owner check refuses would
 // otherwise hold that person's approves at 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT. The read under
 // the locks is the one that decides.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group, removed string,
@@ -469,6 +480,7 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrSlackChannelsFull, "CAP_EXCEEDED", http.StatusBadRequest},
 		{access.ErrGroupsPerOwnerFull, "CAP_EXCEEDED", http.StatusBadRequest},
 		{access.ErrSlackChannelShared, "SLACK_CHANNEL_SHARED", http.StatusConflict},
+		{store.ErrMachineLoginApprovalInFlight, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", http.StatusConflict},
 	} {
 		if errors.Is(err, refusal.match) {
 			writeError(w, refusal.code, refusal.status, err.Error())

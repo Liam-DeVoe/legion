@@ -54,10 +54,10 @@ const machineLoginApprovalsLockSQL = `select %s(hashtextextended('machine_login_
 
 // LockMachineLoginApprovals takes, for the rest of tx, the person email's approval lock, waiting
 // for an approval of theirs that Dispatch is relaying (HoldMachineLoginApprovals) to end. A removal
-// of the person from an access list takes it before the project's owner lock
-// (access.LockForAccessWrite, the person it removes), so its wait for an approve the broker has not
-// answered holds up no other write of the project; the runbook's block for a broker restored alone
-// takes it too. Taking it again in tx returns at once.
+// of the person from an access list that may owe the revocation of their machine logins takes it
+// before the project's owner lock (access.LockForAccessWrite, the person it removes), so its wait
+// for an approve the broker has not answered holds up no other write of the project; the runbook's
+// block for a broker restored alone takes it too. Taking it again in tx returns at once.
 func LockMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) error {
 	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock"), email); err != nil {
 		return fmt.Errorf("wait for the machine-login approvals of %s in flight: %w", email, err)
@@ -95,8 +95,8 @@ func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) 
 // RecordMachineLoginRevocation while another transaction holds the person's approval lock: another
 // approval of theirs that Dispatch is relaying, a removal of them from an access list, or the
 // runbook's restore block. The approve answers it 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT
-// (api.relayMachineLoginApproval); a caller that does not match it relays or records nothing
-// either, since it is an error.
+// (api.relayMachineLoginApproval), and so does a removal whose record met it (api.removePerson); a
+// caller that does not match it relays or records nothing either, since it is an error.
 var ErrMachineLoginApprovalInFlight = errors.New("store: another holder has the person's machine-login approval lock")
 
 // tryMachineLoginApprovals takes, for the rest of tx, the person email's approval lock without
