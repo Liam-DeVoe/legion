@@ -194,6 +194,8 @@ func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks,
 	write.Release()
 	hooks.Await(t, testnats.Point("write.done"), testnats.Consumer(name), testnats.After(released))
 	restartStore(t, hub, server)
+	// The restart closed the admin's connection, which does not reconnect: read on a new one.
+	_, js = hub.admin(t)
 	var info *natsgo.ConsumerInfo
 	waitFor(t, 30*time.Second, func() bool {
 		info, err = js.ConsumerInfo(bus.Stream, name)
