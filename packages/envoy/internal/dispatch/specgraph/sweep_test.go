@@ -207,20 +207,27 @@ const knownRight = "a right that leaves out one place that the input moves and h
 
 // knownPositives is each input that a sweep must report at the base name, with moves, the lines of
 // the states that it is built to move toward true, as towardTrue writes them, in their order: one for
-// each kind of move that the judgment reports. At silent-leg, its failing result of
-// production-delivery-takes-under-a-second (results.json /5) taken out, with no right: the check
-// reads true at the third subject, where silent-leg reads it false (a row of
+// each kind of move that the judgment reports, with no right and beyond a right. At silent-leg, its
+// failing result of production-delivery-takes-under-a-second (results.json /5) taken out, with no
+// right: the check reads true at the third subject, where silent-leg reads it false (a row of
 // TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and its statement delivery-is-fast and that
 // statement's own state read met; and that result with the outcome pass, with the right knownRight,
 // whose places leave out that check's place at the third subject and hold the base's state at each
 // other place: so it moves the same states, each beyond its right, the check at a place that the
 // right leaves out, and the statement and its own state at places that the right names with another
 // state. At wait-cycle, the failing run of a-restart-keeps-the-message (results.json /4) with the
-// outcome pass: that check reads true, a-message-survives-a-restart, its own state and
-// envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. whole
-// is the states of the base. So a judgment blind to checks, to statements or their own states, to
-// waits, or beyond a right to the places that it names or to those that it leaves out, fails by the
-// name of the known positive whose report then lacks a line.
+// outcome pass, with no right: that check reads true, a-message-survives-a-restart, its own state and
+// envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. And at
+// silent-leg, the leg arm of go-checks at m2 (jobs.json /1), which ended with no result of
+// a-restart-loses-no-message, taken out, with the right knownRight, whose places leave out the wait
+// of u-a at the first subject: the check, which silent-leg reads unknown at the first and third
+// subjects, reads true there, a-stored-message-survives-a-restart, its own state and
+// messages-reach-sessions read met, and the wait of u-a on a-stored-message-survives-a-restart ends,
+// each beyond its right, the wait at a place that the right leaves out and the others at places that
+// it names with another state. whole is the states of the base. So a judgment blind to checks, to
+// statements or their own states, or to waits, with no right or beyond a right, or beyond a right to
+// the places that it names or to those that it leaves out, fails by the name of the known positive
+// whose report then lacks a line.
 func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[string]string) []sweepInput {
 	t.Helper()
 	passed := func(i int) treeChange { return treeChange{place: []string{strconv.Itoa(i), "outcome"}, value: "pass"} }
@@ -231,8 +238,10 @@ func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[stri
 			`subject 3 own state of delivery-is-fast: "met", and "not_met" in the whole scenario`,
 			`subject 3 statement delivery-is-fast: "met", and "not_met" in the whole scenario`,
 		}
-		allowed := maps.Clone(whole)
-		delete(allowed, "subject 3 check production-delivery-takes-under-a-second")
+		checkLeftOut := maps.Clone(whole)
+		delete(checkLeftOut, "subject 3 check production-delivery-takes-under-a-second")
+		waitLeftOut := maps.Clone(whole)
+		delete(waitLeftOut, "subject 1 wait of u-a on a-stored-message-survives-a-restart")
 		return []sweepInput{{
 			what:  "the known positive with no right, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out",
 			fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, leftOutAt),
@@ -240,7 +249,21 @@ func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[stri
 		}, {
 			what:  "the known positive beyond its right, results.json /5 (a failure of production-delivery-takes-under-a-second) with the outcome pass",
 			fsys:  changedFile(t, base, "results.json", passed(5), valueAt),
-			right: knownRight, allowed: allowed, known: true, moves: moves,
+			right: knownRight, allowed: checkLeftOut, known: true, moves: moves,
+		}, {
+			what:  "the known positive of a wait beyond its right, jobs.json /1 (the leg arm of go-checks at m2) taken out",
+			fsys:  changedFile(t, base, "jobs.json", treeChange{place: []string{"1"}, out: true}, leftOutAt),
+			right: knownRight, allowed: waitLeftOut, known: true, moves: []string{
+				`subject 1 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
+				`subject 1 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+				`subject 1 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+				`subject 1 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
+				`subject 1 wait of u-a on a-stored-message-survives-a-restart: "ends", and "holds" in the whole scenario`,
+				`subject 3 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
+				`subject 3 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+				`subject 3 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
+				`subject 3 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
+			},
 		}}
 	case "wait-cycle":
 		return []sweepInput{{
