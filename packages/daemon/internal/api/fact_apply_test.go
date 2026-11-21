@@ -147,7 +147,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			r.runs(t, "LEGION-208", testingPlace, tester.token)
 			written := tester.writeHandoff("test", 1)
 			return []agentRequest{{tester.token, func() *httptest.ResponseRecorder {
-				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", HandoffID: written, HandoffVersion: 1})
+				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1})
 			}}}
 		}},
 		// The phase worker's move back is the implementer's: the tester's own move out of testing

@@ -999,14 +999,17 @@ func TestAConflictKeepsPhaseAndRefusesACompletionNamingNoHeadWhileASecondMergeFo
 // the record's stretch of work landed (dispatch://INFRA-4374 R1): before that, no merge forward
 // replaced any head, so the head such a completion judged is no head a merge replaced. A tester's
 // pass naming no head while the merge forward is asked and nothing landed passes the fence: it is
-// recorded on the tester's row with no commit, and it moves the issue to reviewing, as a pass does.
+// recorded on the tester's row with no commit. It moves nothing, though its check reads yes at the
+// head of the pull request on record: the testing move reads the states at the head the test record
+// names and at no other, and this one named none (testedHead), so the issue stays in testing. (The
+// completion route refuses such a completion, TESTED_HEAD_REQUIRED; the engine is handed it here.)
 func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLanded(t *testing.T) {
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != "" || len(asked.Earlier) != 0 {
 		t.Fatalf("the record's merge forward = %+v, want one ask, of %s, with nothing landed", asked, conflictHead)
 	}
-	testedAs(t, pool, readsAfter(4*time.Minute), "LEGION-208", "", true)
+	testedAs(t, pool, readsAfter(4*time.Minute), "LEGION-208", recordedPR(t, pool, "LEGION-208").HeadSHA, true)
 	result := applyFacts(t, pool, readsAfter(4*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
 		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested",
 		HandoffRecord: "handoff-1", HandoffVersion: 1})
@@ -1016,8 +1019,8 @@ func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLa
 	if row := entryRow(t, pool, claim.RoleTester); !row.Completed() || row.HandoffCommit != "" || row.HandoffRecord != "handoff-1" {
 		t.Fatalf("the tester's row = %+v, want its completion naming no commit and handoff-1 recorded", row)
 	}
-	if got := issuePhase(t, pool); got != phase.Reviewing {
-		t.Fatalf("after the tester's pass naming no head the issue is in %s, want reviewing", got)
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the tester's pass naming no head the issue is in %s, want testing: the move reads no state for a completion that named no head", got)
 	}
 }
 

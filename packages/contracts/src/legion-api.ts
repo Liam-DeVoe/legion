@@ -1832,8 +1832,10 @@ export function legionPlanRatingLoneField(
  * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
  * the implementer's completion before it goes when its `implement` record names no head, when the
  * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
- * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
- * the reviewer's completion without one. Retro and every completion of a phase its
+ * head is not that pushed `@-`, and the tester's when its `test` record names no head, since the
+ * testing move reads the check states at that head alone and the daemon refuses a tester's
+ * completion naming none (`TESTED_HEAD_REQUIRED`); a record naming no head leaves the planner's
+ * and the reviewer's completion without one. Retro and every completion of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.

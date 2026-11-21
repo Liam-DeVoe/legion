@@ -54,16 +54,18 @@ func reviewAt(t *testing.T, pool *pgxpool.Pool, id int64, state, head string, at
 }
 
 // backToReviewing takes LEGION-208 from implementing through testing into reviewing again, as the
-// implementer's and the tester's completions of round n do.
+// implementer's and the tester's completions of round n do, the tester's naming the head the pull
+// request on record stands at as the head it tested.
 func backToReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result, round int) {
 	t.Helper()
 	n := strconv.Itoa(round)
 	apply("implementer-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim",
 		Summary: "fixed", Commit: "round-" + n, HandoffRecord: "implement-" + n, HandoffVersion: round})
-	state, id := testedFact(t, pool, "LEGION-208", "", true)
+	head := recordedPR(t, pool, "LEGION-208").HeadSHA
+	state, id := testedFact(t, pool, "LEGION-208", head, true)
 	apply(id, state)
 	apply("tester-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", HandoffRecord: "test-" + n, HandoffVersion: round})
+		Summary: "tested", Commit: head, HandoffRecord: "test-" + n, HandoffVersion: round})
 }
 
 // The reviewer's own deciding review of the entry that stands writes the commit it read on the
@@ -340,15 +342,16 @@ func reviewRoundOne(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.F
 }
 
 // entersRoundOne is the tester's pass that takes LEGION-208, seeded in testing, into its first
-// review round.
+// review round, at the head the pull request on record stands at.
 func entersRoundOne(t *testing.T, pool *pgxpool.Pool) (*Engine, func(string, intake.Fact) intake.Result) {
 	t.Helper()
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
-	state, id := testedFact(t, pool, "LEGION-208", "", true)
+	head := recordedPR(t, pool, "LEGION-208").HeadSHA
+	state, id := testedFact(t, pool, "LEGION-208", head, true)
 	apply(id, state)
 	apply("round-one-tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", HandoffRecord: "test-1", HandoffVersion: 1})
+		Summary: "tested", Commit: head, HandoffRecord: "test-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 1 the issue is in %s, want reviewing", got)
 	}
@@ -658,10 +661,11 @@ func testsIntoReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, int
 	}
 	issue.Phase, issue.Status = phase.Testing, "testing"
 	seedIssue(t, pool, *issue)
-	state, id := testedFact(t, pool, "LEGION-208", "", true)
+	head := recordedPR(t, pool, "LEGION-208").HeadSHA
+	state, id := testedFact(t, pool, "LEGION-208", head, true)
 	apply(id, state)
 	apply("generation-2-tester", intake.HandoffComplete{Generation: 2, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", HandoffRecord: "test-9", HandoffVersion: 9})
+		Summary: "tested", Commit: head, HandoffRecord: "test-9", HandoffVersion: 9})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed generation 2 the issue is in %s, want reviewing", got)
 	}

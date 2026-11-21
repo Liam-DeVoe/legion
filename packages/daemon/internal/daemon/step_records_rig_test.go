@@ -274,8 +274,9 @@ func (r *stepRecordsRig) implement() {
 }
 
 // testCompletion is the tester's completion of a round it passes: the check state of the head the
-// rig holds passes (finish), and the completion names no verdict.
-var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds"}
+// rig holds passes (finish), and the completion names that head as the one it tested and no
+// verdict.
+var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Commit: stepRecordsHead}
 
 // test is one round of the tester, which passes.
 func (r *stepRecordsRig) test() {

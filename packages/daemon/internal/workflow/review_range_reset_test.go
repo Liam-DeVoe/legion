@@ -340,10 +340,10 @@ func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
 			var logs bytes.Buffer
 			engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 			apply := applyFacts(t, pool, engine)
-			state, id := testedFact(t, pool, "LEGION-208", "", true)
+			state, id := testedFact(t, pool, "LEGION-208", headOne, true)
 			apply(id, state)
 			apply("round-one-tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-				Summary: "tested", HandoffRecord: "test-1", HandoffVersion: 1})
+				Summary: "tested", Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
 			first := reviewerRow(t, pool).Entry
 			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))

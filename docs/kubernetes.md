@@ -2505,6 +2505,8 @@ The daemon of this release waits for states that only an envoy-dispatch of the s
 A daemon deployed before it holds no state of any check, so each tester's completion waits in `testing`, telling the architect once that the move waits for Dispatch's states at the tested head.
 An envoy-dispatch deployed first publishes the events to a daemon of the release before, which takes them as no fact, and the boot catch-up of the daemon that follows reads each issue's log from the start.
 A tester's plugin of the release before, in a turn when the daemon is upgraded, still sends `pass` or `fail`: this daemon takes the completion and ignores the verdict, and the states decide.
+Such a completion is taken only with the head its `test` record names: one that names no commit is refused `TESTED_HEAD_REQUIRED`, since the move reads the states at that head alone, and the tester writes a new record naming it and completes again.
+An issue standing in `testing` at the upgrade has no tester's completion recorded: the release before moved each one at once on its verdict, so every move this daemon makes reads a head a completion of its own named.
 
 **The way back is two transactions, run with this release's daemon stopped, before the earlier image is pinned.**
 Run the newer migration's first.

@@ -344,23 +344,24 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 }
 
 // A reviewer started on the tester's pass is told the tester's handoff as the Dispatch record it
-// reads with `dispatch handoff-read`, with no commit, since this completion of the tester's names
-// none, and no verdict of the tester's: no completion carries one, and the check states at the
-// head decided the move.
+// reads with `dispatch handoff-read`, with the commit that record names, the head the tester
+// tested, and no verdict of the tester's: no completion carries one, and the check states at the
+// head decided the move. (This completion named no commit before a tester's completion was held
+// to name the head it tested.)
 func TestAReviewerIsToldTheTestersRecordAndNoVerdict(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}})
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	testedAs(t, pool, engine, "LEGION-208", "", true)
+	testedAs(t, pool, engine, "LEGION-208", headOne, true)
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "tester-passed", intake.HandoffComplete{
-		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "passed", HandoffRecord: "test-handoff", HandoffVersion: 3,
+		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "passed", Commit: headOne, HandoffRecord: "test-handoff", HandoffVersion: 3,
 	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Pull request: #42." +
+	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Handoff commit: " + headOne + ". Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}

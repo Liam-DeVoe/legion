@@ -2488,7 +2488,11 @@ package api
 // commit". `POST /legion/v1/phase/backward` refuses the tester's move out of `testing`, to any
 // target a backward row serves, `BACKWARD_REFUSED`, since the testing step ends by its checks'
 // states: the tester records each check's result and completes instead, and the `legion` tool's
-// description says so. No shape of `GET /legion/v1/state` moves.
+// description says so. A tester's phase completion names the head it tested: the route refuses
+// one that names no commit 400 `TESTED_HEAD_REQUIRED`, before anything is recorded, from a plugin
+// at this contract or below it, since the move reads the states at that head and at no other; the
+// `legion` tool refuses a `test` record naming no head before it posts. No shape of
+// `GET /legion/v1/state` moves.
 // (This entry takes 206, above main's 202: a reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on
 // 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.)

@@ -342,8 +342,8 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 
 	// The relaunched worker finishes the task it held, and its completion is applied: the issue
 	// moves on to reviewing, and the workflow saw exactly that one tester completion.
-	testedAs(t, h, "LEGION-208", "", true)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
+	testedAs(t, h, "LEGION-208", headSHA, true)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
 	assertIssuePhase(t, h, phase.Reviewing)
 	testers := 0

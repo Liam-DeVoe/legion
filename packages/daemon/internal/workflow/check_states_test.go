@@ -143,12 +143,16 @@ func testedAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue, head stri
 
 // testedFact is the state event that decides a tester's completion of issue's testing, decoded as
 // applyStates decodes one, and its event id: k1, the head's one check, yes from the tester where
-// passes, and no for a fail where not. head is the head the completion tests, "" for the head of
-// the pull request on record, as a completion naming no commit tests (testedHead). The event takes
-// the serial after the highest the daemon holds of issue, so it is the newest of its head. A test
-// that applies its facts through a function of its own applies this one there too.
+// passes, and no for a fail where not. head is the head the completion tests, the commit its test
+// record names: the move reads no other (testedHead), so a test names it and this helper reads no
+// head of its own. The event takes the serial after the highest the daemon holds of issue, so it
+// is the newest of its head. A test that applies its facts through a function of its own applies
+// this one there too.
 func testedFact(t *testing.T, pool *pgxpool.Pool, issue, head string, passes bool) (intake.DispatchCheckState, string) {
 	t.Helper()
+	if head == "" {
+		t.Fatal("testedFact needs the head the completion tests: the move reads the states at that head alone")
+	}
 	repo := statesRepo
 	var serial int64
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -158,9 +162,6 @@ func testedFact(t *testing.T, pool *pgxpool.Pool, issue, head string, passes boo
 		}
 		if pr != nil {
 			repo = pr.Repo
-			if head == "" {
-				head = pr.HeadSHA
-			}
 		}
 		return tx.QueryRow(context.Background(), `select coalesce(max(serial), 0) from check_state_serials where issue = $1`, issue).Scan(&serial)
 	})
@@ -445,6 +446,35 @@ func TestTheMoveReadsTheStatesAtTheTestedHead(t *testing.T) {
 			}
 		})
 	}
+}
+
+// noHeadReason is what the architect's notice says of a tester's completion whose test record
+// named no head.
+const noHeadReason = "the move waits for a tested head: the tester's test record named none, so no check state can decide it; " +
+	"the tester writes a new test handoff naming under head the commit it tested and completes again"
+
+// A tester's completion whose test record named no head holds the move and reads no state: the
+// head the tester tested is the record's alone, and the pull request's head, where every check
+// here reads yes, can be one the tester never tested. The completion tells the architect so in its
+// one notice, and a later state event at the pull request's head moves nothing either. The
+// tester's completion again, naming a new record of the head it tested, decides the move, as the
+// notice says. (The completion route refuses a completion naming no commit, so only a row the
+// engine was handed directly, never one a plugin sent, can name none.)
+func TestATestRecordNamingNoHeadHoldsTheMove(t *testing.T) {
+	r := newStatesRig(t, phase.Testing)
+	r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"))
+	r.complete("", 2)
+	r.waitsSaying(noHeadReason)
+	r.states(headOne, 3, ofSet(passOf("k1", "tester", "implementer"), "k1", "k2"))
+	r.waitsSaying(noHeadReason)
+
+	if result, err := intake.ApplyFact(context.Background(), r.pool, "api", "test-again", intake.HandoffComplete{
+		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "Every check passes.",
+		Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2, StatesSerial: 3,
+	}, r.engine, admissionStub{}); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the tester's completion naming %s: %+v, %v", headOne, result.Refusal, err)
+	}
+	assertPhase(t, r.pool, phase.Reviewing)
 }
 
 // Neither the reviewer the pass starts nor the architect told of either move reads a verdict of

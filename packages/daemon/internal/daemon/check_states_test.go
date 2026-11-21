@@ -28,12 +28,15 @@ const entryRigHead = "0000000000000000000000000000000000c0ffee"
 
 // testedFact is the check.state_changed event that decides a tester's completion of issue's
 // testing, and the event id the live consumer would apply it under: k1, the head's one check, yes
-// from the tester where passes, and no for a fail where not, at head, or at the head of the pull
-// request on record where head is "", as a completion naming no commit tests. It is the shared
-// fixture's event (stateChangedEvent) with those fields, decoded by the intake's own decoder of a
-// Dispatch event, at the serial after the highest the daemon holds of issue.
+// from the tester where passes, and no for a fail where not, at head, the commit the completion
+// names, since the move reads the states there alone. It is the shared fixture's event
+// (stateChangedEvent) with those fields, decoded by the intake's own decoder of a Dispatch event,
+// at the serial after the highest the daemon holds of issue.
 func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool) (intake.Fact, string) {
 	t.Helper()
+	if head == "" {
+		t.Fatal("testedFact needs the head the completion tests: the move reads the states at that head alone")
+	}
 	ctx := context.Background()
 	repo := "acme/widgets"
 	var serial int64
@@ -51,9 +54,6 @@ func testedFact(t *testing.T, pool intake.Pool, issue, head string, passes bool)
 	}
 	if pr != nil {
 		repo = pr.Repo
-		if head == "" {
-			head = pr.HeadSHA
-		}
 	}
 	serial++
 	set := map[string]any{"issue": issue, "repo": repo, "head": head, "serial": serial, "checks": []string{"k1"}, "check": "k1",

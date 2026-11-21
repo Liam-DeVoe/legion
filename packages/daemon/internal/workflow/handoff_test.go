@@ -306,9 +306,9 @@ func toSecondReviewRound(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo},
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "renamed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Testing)
-	testedAs(t, pool, engine, "LEGION-208", "", true)
+	testedAs(t, pool, engine, "LEGION-208", headTwo, true)
 	applyRefusingNothing(t, pool, engine,
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", HandoffRecord: "test-2", HandoffVersion: 1})
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: headTwo, HandoffRecord: "test-2", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Reviewing)
 	reviewer := phaseRowOf(t, pool, claim.RoleReviewer)
 	if reviewer.Completed() || reviewer.HandoffVersion != 0 || reviewer.LastHandoff != "review-1" {

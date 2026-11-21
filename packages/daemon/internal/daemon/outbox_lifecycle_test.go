@@ -765,7 +765,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-pass", intake.HandoffComplete{Generation: 1, Issue: "LEGION-209", Role: claim.RoleTester, Summary: "pass", HandoffRecord: "test-1", HandoffVersion: 1}, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-pass", intake.HandoffComplete{Generation: 1, Issue: "LEGION-209", Role: claim.RoleTester, Summary: "pass", Commit: "sha", HandoffRecord: "test-1", HandoffVersion: 1}, engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	var childPhase phase.Phase

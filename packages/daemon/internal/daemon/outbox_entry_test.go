@@ -660,13 +660,13 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 		Pool: rig.pool, Handlers: []intake.Handler{engine}, Record: records, Grants: grants, Dispatch: handoffs,
 		Log: quietLogger(),
 	}).Handler
-	complete := func(handoff string, version int) (int, string) {
+	complete := func(handoff string, version int, commit string) (int, string) {
 		t.Helper()
 		grant, err := grants.Mint(machine.Claim())
 		if err != nil {
 			t.Fatalf("mint the grant the tester completes with: %v", err)
 		}
-		body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass",
+		body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass", Commit: commit,
 			HandoffID: handoff, HandoffVersion: version})
 		if err != nil {
 			t.Fatal(err)
@@ -675,7 +675,9 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/legion/v1/handoff/complete", bytes.NewReader(body)))
 		return recorder.Code, strings.TrimSpace(recorder.Body.String())
 	}
-	status, refusal := complete(handoffs.write(rig.issue.Key, "test", machine.Claim().Session), 1)
+	// It names no commit: the entry fence answers a completion behind its entry before anything
+	// else of it is read.
+	status, refusal := complete(handoffs.write(rig.issue.Key, "test", machine.Claim().Session), 1, "")
 	if status != http.StatusConflict {
 		t.Fatalf("the completion of entry 1's task = %d %s, want 409: the phase was entered again, and this turn is on the entry before", status, refusal)
 	}
@@ -740,8 +742,8 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	handoffs.mu.Lock()
 	handoffs.handoffs[own.ID] = own
 	handoffs.mu.Unlock()
-	testedAs(t, rig.pool, rig.issue.Key, "", true, engine)
-	if status, body := complete(own.ID, own.Version); status != http.StatusOK {
+	testedAs(t, rig.pool, rig.issue.Key, entryRigHead, true, engine)
+	if status, body := complete(own.ID, own.Version, entryRigHead); status != http.StatusOK {
 		t.Fatalf("the completion of entry 2's task = %d %s, want 200: the worker's turn is on the entry its phases row names", status, body)
 	}
 	if got := readIssue(t, rig.pool, rig.issue.Key); got.Phase != phase.Reviewing {

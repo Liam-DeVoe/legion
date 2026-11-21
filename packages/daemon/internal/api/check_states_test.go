@@ -111,11 +111,14 @@ func applyStates(t *testing.T, h *harness, issue, repo, head string, serial int6
 
 // testedAs applies, ahead of a tester's completion of issue's testing whose record names no
 // serial, the state event that decides its move: k1, the head's one check, yes from the tester
-// where passes, and no for a fail where not, at head, or at the head of the pull request on record
-// where head is "", as a completion naming no commit tests. It takes the serial after the highest
-// the daemon holds of issue.
+// where passes, and no for a fail where not, at head, the commit the completion names, since the
+// move reads the states there alone. It takes the serial after the highest the daemon holds of
+// issue.
 func testedAs(t *testing.T, h *harness, issue, head string, passes bool) {
 	t.Helper()
+	if head == "" {
+		t.Fatal("testedAs needs the head the completion tests: the move reads the states at that head alone")
+	}
 	repo := "acme/widgets"
 	var serial int64
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -125,9 +128,6 @@ func testedAs(t *testing.T, h *harness, issue, head string, passes bool) {
 		}
 		if pr != nil {
 			repo = pr.Repo
-			if head == "" {
-				head = pr.HeadSHA
-			}
 		}
 		return tx.QueryRow(context.Background(), `select coalesce(max(serial), 0) from check_state_serials where issue = $1`, issue).Scan(&serial)
 	}); err != nil {
@@ -247,6 +247,54 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 			t.Fatalf("facts after the refusal = %#v, want none", got)
 		}
 	})
+}
+
+// testedHeadRefusal is the refusal of a tester's completion of LEGION-208 that names no commit,
+// written out whole so a change of the route's sentence (testedHeadRequired) fails here.
+const testedHeadRefusal = "the tester's completion of LEGION-208 names no commit, and the testing move reads Dispatch's check states at the head the tester tested, " +
+	"which only its test record names: write a new `test` handoff whose body names under `head` the 40-character lower-case commit you tested " +
+	"(`dispatch handoff-write --issue LEGION-208 --phase test --body-file <file>`), then complete again; nothing was recorded"
+
+// A tester's phase completion names the head it tested, since the testing move reads Dispatch's
+// check states at that head and nothing else names it: not the pull request's head, which can
+// have moved since. One that names no commit is refused 400 TESTED_HEAD_REQUIRED before anything
+// is recorded, telling the tester to write a new test handoff naming the commit it tested and
+// complete again, and the same completion naming the commit is then taken. A tester's plugin
+// below CheckStatesContract, mid-turn when its daemon was upgraded, sends the head its record names
+// beside its verdict: it is taken, the verdict ignored; one that sends no head is refused the same
+// way.
+func TestATestersCompletionNamesTheHeadItTested(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		below   bool
+		verdict string
+	}{
+		{"a tester's plugin at the contract", false, ""},
+		{"a tester's plugin below the contract", true, "fail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			grant := tester.grant(t)
+			if tc.below {
+				h.makeStale(t, tester.token, tester.session, tester.secret, CheckStatesContract-1)
+				if c := h.stored(tester.token); c.PluginContract != CheckStatesContract-1 {
+					t.Fatalf("the claim is at contract %d, want %d: this case proves nothing", c.PluginContract, CheckStatesContract-1)
+				}
+			}
+			written := tester.writeTestHandoff(1, 3)
+			refusedSaying(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Verdict: tc.verdict, HandoffID: written, HandoffVersion: 1}),
+				http.StatusBadRequest, "TESTED_HEAD_REQUIRED", testedHeadRefusal)
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none", got)
+			}
+			completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Verdict: tc.verdict, Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
+			if fact := lastCompletion(t, facts); fact.Role != claim.RoleTester || fact.Commit != headSHA || fact.HandoffRecord != written || fact.StatesSerial != 3 {
+				t.Fatalf("the completion = %+v, want the tester's at %s naming %s with the record's serial 3", fact, headSHA, written)
+			}
+		})
+	}
 }
 
 // The tester's move reads nothing of Dispatch but the test handoff record the completion names:

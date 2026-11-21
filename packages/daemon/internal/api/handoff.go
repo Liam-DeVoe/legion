@@ -35,7 +35,9 @@ import (
 // `legion` tool reads out of the record's body and, for the implementer, holds to be its pushed
 // @- on legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
 // merger's own completion stands on. The entry fence reads it against the head the record holds
-// (behindEntryClause). The workflow refuses a record the role already named for its previous
+// (behindEntryClause). A tester's completion names it always, since the testing move reads the
+// check states at that head and at no other: one naming none is refused (TESTED_HEAD_REQUIRED,
+// testedHeadRequired). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
@@ -139,8 +141,9 @@ func (a *completionAnswer) answered() int {
 // spares the tester's claim and opens a look behind its running testing turn, and that turn's own
 // verdict — pass or fail, which a check report also names — would be recorded as a report on
 // production nobody made. A phase completion is held to its commit (the implementer's and the
-// merger's), the Dispatch handoff record a file-backed phase ends with (handoffRecord), the
-// refusal of a verdict (VERDICT_NOT_TAKEN), the wake no phase carries (CHECK_WAKE_UNEXPECTED), the
+// merger's, and the tester's, the head it tested: TESTED_HEAD_REQUIRED), the Dispatch handoff
+// record a file-backed phase ends with (handoffRecord), the refusal of a verdict
+// (VERDICT_NOT_TAKEN), the wake no phase carries (CHECK_WAKE_UNEXPECTED), the
 // run and the phase entry its claim serves, the implementer's in implementing to an open pull
 // request on its branch or a merged one recorded (implementationPullRequest), and one of a phase
 // its role does not run is refused HANDOFF_NOT_CURRENT_PHASE: by the entry fence (entryFence),
@@ -305,6 +308,18 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The entry fence holds the completion to the phase entry its claim serves (entryFence).
 	if refusal := entryFence(grant, position, entry, req.Commit, c.Pending); refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
+	// A tester's completion names the head it tested: the testing move reads Dispatch's check
+	// states at that head (workflow's decideTesting) and at no other, and the test record is the
+	// one witness of it, since the pull request's head can have moved while the tester worked. The
+	// `legion` tool sends the head its record's body names, so one naming none is a record with no
+	// readable head, or a plugin of the contract before that read none, and the same call cannot
+	// add it: it is refused before anything is recorded, telling the tester to write a new record.
+	// It is read past the entry fence, so a completion of an entry the issue has moved past is told
+	// that first: such a completion is ended, not written again.
+	if grant.Role == claim.RoleTester && req.Commit == "" {
+		writeFailure(w, http.StatusBadRequest, "TESTED_HEAD_REQUIRED", testedHeadRequired(grant.Issue))
 		return
 	}
 	// The phase this completion is of is phase.Of's, and the issue's for the architect, which
@@ -537,6 +552,16 @@ func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *su
 func noRunCompletion(issue string, current uint64, p phase.Phase, held string) string {
 	return fmt.Sprintf("this completion belongs to no run of %s: %s; nothing was recorded. Push nothing further, end this turn without completing and tell the architect; if the daemon queues this claim a generation-%d %s task (none may: this run's phase can be another claim's) and its work and handoff are already done, call the same handoff_complete in that task's turn, and never redo the work or write a second handoff",
 		issue, held, current, p)
+}
+
+// testedHeadRequired is the refusal of a tester's completion of issue that names no commit
+// (TESTED_HEAD_REQUIRED). The `legion` tool reads the commit from the newest `test` record's body,
+// so the worker's remedy is a new record naming under `head` the commit it tested, never the same
+// call again, and never the pull request's head, which may be a head it did not test.
+func testedHeadRequired(issue string) string {
+	return fmt.Sprintf("the tester's completion of %s names no commit, and the testing move reads Dispatch's check states at the head the tester tested, "+
+		"which only its test record names: write a new `test` handoff whose body names under `head` the 40-character lower-case commit you tested "+
+		"(`dispatch handoff-write --issue %s --phase test --body-file <file>`), then complete again; nothing was recorded", issue, issue)
 }
 
 // staleCompletion is the refusal of a completion attributed to a run the issue has left. It names

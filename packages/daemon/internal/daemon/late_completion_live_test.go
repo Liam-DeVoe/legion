@@ -510,7 +510,7 @@ func (r *lateCompletionLive) testerCompletes() {
 	tester := r.token(claim.RoleTester)
 	held := r.heldTurn(claim.RoleTester, phase.Testing, r.testerCall)
 	r.testRecord = r.writeRecord(held.Session, "test")
-	testedAs(t, r.st.Pool(), r.key, "", true)
+	testedAs(t, r.st.Pool(), r.key, r.head, true)
 	mark := time.Now()
 	r.testerCall.release()
 	result := r.testerCall.awaitResult(t, 2*time.Minute)

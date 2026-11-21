@@ -69,15 +69,16 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 }
 
 // testedHead is where the testing move reads the states: the commit the tester's completion
-// reported, the head its test record names, in the repository of the pull request on record; with
-// no commit reported, the pull request's head.
+// reported, the head its test record names, in the repository of the pull request on record. The
+// record is the one witness of the head the tester tested: the pull request's head can have moved
+// while the tester worked (a merge forward asked of the implementer while the issue stays in
+// testing, say), so a completion that reported no commit has no tested head, "", and the move
+// reads no state for it (decideTesting). The completion route refuses such a completion
+// (TESTED_HEAD_REQUIRED), so only a row the engine was handed directly can name none.
 func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) (repo, head string) {
 	repo, head = issue.Repo, row.HandoffCommit
 	if pr != nil {
 		repo = pr.Repo
-		if head == "" {
-			head = pr.HeadSHA
-		}
 	}
 	return repo, head
 }
@@ -87,7 +88,10 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // arrive as check.state_changed events (checkState), and the serial of the tester's test record
 // came with its completion (api's handoffRecord).
 //
-// It moves nothing until the daemon holds every state event of the issue from the lowest serial it
+// A completion whose test record named no head (testedHead's "") holds the move and reads no
+// state, whatever any head holds: the tester's head is the record's to say, and the tester's
+// completing again with a record that names it decides the move then. Otherwise
+// it moves nothing until the daemon holds every state event of the issue from the lowest serial it
 // holds through the record's (record.Store.StatesFenceReached), since each event the tester's
 // results caused has a serial at or below it: below that fence the states held may be the ones from
 // before those results. At the fence it decides only once every check of the head's set holds a
@@ -100,6 +104,11 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // waits for, so each later state event that leaves the move waiting tells nothing more.
 func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, atCompletion bool) error {
 	repo, head := testedHead(issue, row, pr)
+	if head == "" {
+		return e.testingWaits(ctx, tx, issue, row, head, atCompletion,
+			"the move waits for a tested head: the tester's test record named none, so no check state can decide it; "+
+				"the tester writes a new test handoff naming under head the commit it tested and completes again")
+	}
 	reached, err := e.store.StatesFenceReached(ctx, tx, issue.Key, row.StatesSerial)
 	if err != nil {
 		return err
