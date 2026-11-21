@@ -1853,8 +1853,8 @@ console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DIS
 });
 
 // services_up, then services_down, with a stand-in docker, which records each call, answers each
-// `run` with an id and each `inspect` with the container's address on its network, and refuses a
-// `run` that publishes a host port, as Docker does when another process holds the port it chose.
+// `run` with an id and `logs` with the lines NATS logs on a port it chose, and refuses a `run` that
+// publishes a host port, as Docker does when another process holds the port it chose.
 describe("services_up", () => {
   const TAKEN =
     "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint t-nats (bb7e): failed to bind host port 127.0.0.1:41026/tcp: address already in use";
@@ -1877,10 +1877,13 @@ describe("services_up", () => {
   printf '%s\\n' "$*" >>"$S/calls"
   case $1 in
   run)
-    case " $* " in *" -p "*) echo "${TAKEN}" >&2 && return 125 ;; esac
+    case " $* " in *" -p 127.0.0.1:"* | *" --publish "*) echo "${TAKEN}" >&2 && return 125 ;; esac
     n=$((n + 1)) && echo "id-$n"
     ;;
-  inspect) echo 172.20.0.9 ;;
+  logs)
+    echo "[1] 2026/11/21 01:56:40.269703 [INF] Listening for client connections on 127.0.0.1:4567"
+    echo "[1] 2026/11/21 01:56:40.269710 [INF] Server is ready"
+    ;;
   esac
 }`,
         "until_true() { :; }",
@@ -1933,13 +1936,18 @@ describe("services_up", () => {
 
   // Catches: a container that publishes a host port, which Docker chooses among the ports it has
   // not handed out itself and another process of a shared host can hold; a batch of
-  // reviewer-pass-and-fail ended at that refusal, before any run. And a service the listener, the
-  // agents or the runs' Dispatch servers would look for on a host port.
-  test("no container publishes a host port: NATS is reached at its address, Postgres through its socket", () => {
+  // reviewer-pass-and-fail ended at that refusal, before any run. And a NATS the listener would
+  // refuse as another machine's, or a service the runs' Dispatch servers would look for on a host
+  // port.
+  test("no container publishes a host port: NATS binds its own loopback port, Postgres is reached through its socket", () => {
     const { code, stderr, runs, env, socket, socketMade, socketLeft } = up(undefined);
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    expect(runs.filter((line) => ` ${line} `.includes(" -p "))).toEqual([]);
-    expect(env).toContain("ENVOY_NATS_URL=nats://172.20.0.9:4222\n");
+    expect(runs.filter((line) => / (-p 127\.0\.0\.1:|--publish )/.test(line))).toEqual([]);
+    const nats = runs.find((line) => line.startsWith("run -d --name t-nats ")) ?? "";
+    expect(nats).toEndWith(
+      " --network host --cpus 1 --memory 512m nats:rig -js -a 127.0.0.1 -p -1"
+    );
+    expect(env).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4567\n");
     const postgres = runs.find((line) => line.startsWith("run -d --name t-pg ")) ?? "";
     expect(postgres).toContain(
       `--mount type=bind,source=${socket},destination=/var/run/postgresql`

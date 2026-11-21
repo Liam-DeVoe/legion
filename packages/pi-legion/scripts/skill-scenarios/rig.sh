@@ -381,7 +381,7 @@ R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_
 # A run of a -hidden label: its switch (hide_state_on). Empty for every other run.
 hide_state_file=''
 natsd_pid='' fake_github_pid=''
-S='' envoy_port='' dispatch_port='' pg_socket='' nats_host='' github_port='' run_nats_url=''
+S='' envoy_port='' dispatch_port='' pg_socket='' nats_port='' github_port='' run_nats_url=''
 
 # label_dir LABEL prints the profile directory the map's link <work>/maps/profiles/LABEL points at,
 # or nothing when the link or the directory is missing.
@@ -1017,7 +1017,7 @@ services_env=$work/services/env
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
 start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://$nats_host:4222" \
+    ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
 }
@@ -1072,11 +1072,15 @@ lock_services() {
 # Neither container publishes a host port. Docker would choose one among the ports it has not
 # handed out itself, which another process of a shared host can hold, and `docker run` then fails
 # with "address already in use" (a batch of reviewer-pass-and-fail ended so, before any run). NATS
-# is reached at its container's address on its Docker network, which no other process can take.
-# Postgres is reached through its unix socket, in a directory of the batch's own (pg_socket) that
-# the container mounts: each run's Dispatch serves dev sign-in, which refuses a database host that
-# is neither loopback nor a socket (loopbackDatabase, packages/envoy/cmd/dispatch/main.go). The
-# container runs as this user, so the socket and its lock are this user's to remove.
+# runs on the host's network and binds a loopback port its own bind chooses (`-p -1`), and the
+# rig reads that port from its log, so nothing can take the port between the choice and the bind.
+# Its container's address on the Docker network would be free of the race too, but the listener
+# refuses a NATS server that is not this machine's (bus: ENVOY_ALLOW_REMOTE_NATS), and the rig
+# turns that guard off nowhere. Postgres is reached through its unix socket, in a directory of the
+# batch's own (pg_socket) that the container mounts: each run's Dispatch serves dev sign-in, which
+# refuses a database host that is neither loopback nor a socket (loopbackDatabase,
+# packages/envoy/cmd/dispatch/main.go). The container runs as this user, so the socket and its
+# lock are this user's to remove.
 services_up() {
   local owner=()
   evidence=$S
@@ -1093,20 +1097,20 @@ services_up() {
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" "${owner[@]}" --cpus 1 --memory 512m "$nats_image" -js >>"$S/containers"
-  nats_host=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$tag-nats")
-  [ -n "$nats_host" ] || fail "Docker gave NATS no address on its network"
+  docker run -d --name "$tag-nats" "${owner[@]}" --network host --cpus 1 --memory 512m "$nats_image" -js -a 127.0.0.1 -p -1 >>"$S/containers"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+  nats_port=$(docker logs "$tag-nats" 2>&1 | sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -1)
+  [ -n "$nats_port" ] || fail "NATS logged no client port on 127.0.0.1; see docker logs $tag-nats"
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    echo "ENVOY_NATS_URL=nats://$nats_host:4222"
+    echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
-  note "services up: listener :$envoy_port, NATS $nats_host:4222, Postgres $pg_socket"
+  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres $pg_socket"
 }
 
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
