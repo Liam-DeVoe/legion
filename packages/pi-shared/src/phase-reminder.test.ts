@@ -815,3 +815,28 @@ test("a newer revision of the running task's own number withholds no continuatio
     sent: [],
   });
 });
+
+// The running task's own number written again while the host set its text up, before its
+// agent_start: the idle host asks it at once, and the task's turn starts before the daemon
+// answers. That take brings no turn (see the task-take test "pending() is false for a take in
+// flight at a newer revision of the task whose turn is running"), so the settle of the task's own
+// run gives its continuation, as for a newer revision not asked about.
+test("a take in flight at a newer revision of the running task's own number withholds no continuation", async () => {
+  const claim = claimTake();
+  const { reminder, timers, sent } = rig({ taskPending: () => claim.take.pending() });
+  await claim.relay(4, 12);
+  await claim.answer({ outcome: "accepted", text: TASK_TEXT });
+  expect(claim.ran).toEqual([TASK_TEXT]);
+  await claim.relay(4, 13);
+  expect(claim.asked()).toBe(2);
+  claim.take.runStarted();
+  reminder.turnStarted();
+  expect(claim.take.noteFor()).toBeUndefined();
+
+  const continuation = await reminder.settle(said("Pushed."));
+  expect({ continuation, timers: timers.map((t) => t.delayMs), sent }).toEqual({
+    continuation: REMINDER,
+    timers: [],
+    sent: [],
+  });
+});
