@@ -27,19 +27,21 @@ import (
 // from the verdicts, so it is no CI a role reads or waits on: a settlement of it alone wakes and
 // tells nobody (spec R4, "the daemon's own write wakes no role"). Envoy leaves the verdict App's
 // runs out of a head's CI record already; this holds the daemon to the same rule whatever a
-// listener sends. A settlement that names no such check is fact itself, copied nowhere.
+// listener sends, in each list it can name the check in, a failed or cancelled one with no run of
+// it listed among them. A settlement that names no such check is fact itself, copied nowhere.
 func withoutVerdictCheck(fact intake.PullRequestChecks) (intake.PullRequestChecks, bool) {
 	isRun := func(run record.AttemptRun) bool { return run.Name == verdict.CheckName }
 	isStatus := func(status record.CommitStatus) bool { return status.Context == verdict.CheckName }
-	if !slices.ContainsFunc(fact.CheckRuns, isRun) && !slices.ContainsFunc(fact.Statuses, isStatus) {
+	isName := func(name string) bool { return name == verdict.CheckName }
+	if !slices.ContainsFunc(fact.CheckRuns, isRun) && !slices.ContainsFunc(fact.Statuses, isStatus) &&
+		!slices.ContainsFunc(fact.Failing, isName) && !slices.ContainsFunc(fact.Cancelled, isName) {
 		return fact, false
 	}
-	isName := func(name string) bool { return name == verdict.CheckName }
 	fact.CheckRuns = slices.DeleteFunc(slices.Clone(fact.CheckRuns), isRun)
 	fact.Failing = slices.DeleteFunc(slices.Clone(fact.Failing), isName)
 	fact.Cancelled = slices.DeleteFunc(slices.Clone(fact.Cancelled), isName)
 	fact.Statuses = slices.DeleteFunc(slices.Clone(fact.Statuses), isStatus)
-	return fact, len(fact.CheckRuns)+len(fact.Statuses) == 0
+	return fact, len(fact.CheckRuns)+len(fact.Statuses)+len(fact.Failing)+len(fact.Cancelled) == 0
 }
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
