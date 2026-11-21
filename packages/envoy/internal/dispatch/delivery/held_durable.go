@@ -784,11 +784,14 @@ func (d *heldDurable) check(ctx context.Context) {
 }
 
 // stop is the end of run: it stops delivering under ctx, the run's stop deadline, and releases the
-// hold once every hand-back reached the server (handBacksReached), so a standby takes the durable
-// over at once and is redelivered whatever this intake handed back. A hold whose token still records
-// a take-over's start (intakeHoldToken) is lapsed instead, which frees it as Release does and keeps
-// the row, so the next holder reads that start. The release runs on a context of its own: it is one
-// statement, and it must reach the database even when the stop's budget has run out.
+// hold once every hand-back the delivery took has settled and every one it published reached the
+// server (handBacksReached), so a standby takes the durable over at once and is redelivered
+// whatever this intake handed back. Before that release, it seals the delivery
+// (intakeDelivery.seal): a hand-back that begins after the seal is withheld, so none is
+// published after the release. A hold whose token still records a take-over's start
+// (intakeHoldToken) is lapsed instead, which frees it as Release does and keeps the row, so the
+// next holder reads that start. The release runs on a context of its own: it is one statement, and
+// it must reach the database even when the stop's budget has run out.
 //
 // A hand-back still pending when the stop's context ends does not keep Run past that context, and
 // does not give the hold up either. A hand-back is a publish at the message's reply subject, which
@@ -835,16 +838,23 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 // releases it once that hand-back has landed and a flush of the connection answers, or once the
 // intake client's connection has closed. Close flushes a NATS client's outbound buffer before it
 // closes its socket, so a hand-back waiting then is either sent at close or dropped with the
-// connection; only then is it safe to release the hold. It runs on a goroutine of its own that
+// connection; only then is it safe to release the hold. It waits until no hand-back of the delivery
+// is taken and not settled, and then seals the delivery (intakeDelivery.seal); when a hand-back was
+// taken during that wait, the seal fails and it waits again. It runs on a goroutine of its own that
 // nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush at a
 // time. StartIntakes waits for it after it closes that client and before it returns to a caller
 // that can close the database pool. A lost hold ends it: another holder may then act, as after any
 // loss of the hold.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
-	select {
-	case <-delivery.handBacksLanded():
-	case <-hold.Lost():
-		return
+	for {
+		select {
+		case <-delivery.handBacksLanded():
+		case <-hold.Lost():
+			return
+		}
+		if delivery.seal() {
+			break
+		}
 	}
 	retry := time.NewTicker(intakeFlushWait)
 	defer retry.Stop()
@@ -890,37 +900,56 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	}
 }
 
-// handBacksReached reports whether every hand-back delivery published has reached the server. A
-// publish NATS had not taken when the stop went on without it (intakeDelivery.publishHandBack) is
-// waited for first, until ctx ends or hold is lost: the stop can return with one still waiting, since
-// its drain ends once nats.go has answered the drain's flush and run the messages it had buffered,
-// which need not wait for the write that holds nats.go's lock. Then the connection is flushed, a round
-// trip to the server, so the hand-backs nats.go had queued have reached it (flushHandBacks). A
-// delivery that handed nothing back reports true at once.
+// handBacksReached seals delivery (intakeDelivery.seal) once no hand-back of it is taken and not
+// settled, and reports whether every hand-back it published has then reached the server. While a
+// hand-back is taken and not settled, the seal fails, and it waits for that hand-back until ctx ends
+// or hold is lost, when it reports false; once the hand-back settles, it tries to seal again, so a
+// hand-back taken during the wait is waited for in turn. When the stop returns, a hand-back can
+// still be taken and not settled: a publish NATS had not taken when the stop went on without it
+// (intakeDelivery.publishHandBack), or the hand-back of the callback that nats.go runs for a
+// message the client had buffered, after the drain loop gave up and unsubscribed. Once the delivery
+// is sealed with a hand-back published, the connection is flushed, a round trip to the server, so
+// the hand-backs nats.go had queued have reached it (flushHandBacks). A delivery sealed with no
+// hand-back published reports true at once, as does no delivery.
 func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDelivery, hold *duty.Hold) bool {
-	if delivery == nil || !delivery.handedBack() {
+	if delivery == nil {
 		return true
 	}
-	if waiting := handBacksWaiting.Load(); waiting != nil {
-		(*waiting)()
+	hooked := false
+	waiting := func() {
+		if hooked {
+			return
+		}
+		hooked = true
+		if hook := handBacksWaiting.Load(); hook != nil {
+			(*hook)()
+		}
 	}
-	landed := delivery.handBacksLanded()
-	select {
-	case <-landed:
-	case <-hold.Lost():
-	case <-ctx.Done():
+	for !delivery.seal() {
+		waiting()
+		landed := delivery.handBacksLanded()
+		select {
+		case <-landed:
+		case <-hold.Lost():
+		case <-ctx.Done():
+		}
+		select {
+		case <-landed:
+		default:
+			return false
+		}
 	}
-	select {
-	case <-landed:
-	default:
-		return false
+	if !delivery.handedBack() {
+		return true
 	}
+	waiting()
 	return d.flushHandBacks()
 }
 
-// handBacksWaiting is nil outside the release row. It runs when a stop starts to wait for the
-// hand-backs its delivery published (handBacksReached), before the stop releases its hold, so the
-// row sees that the stop waits for its hand-backs with its hold live.
+// handBacksWaiting is nil outside the release row. It runs once in a stop, before the stop releases
+// its hold (handBacksReached): the first time the stop waits for a hand-back its delivery took and
+// has not settled, or else before the flush when its delivery published a hand-back. So the row
+// sees that the stop waits for its hand-backs with its hold live.
 var handBacksWaiting atomic.Pointer[func()]
 
 // flushHandBacks is handBacksSettled within intakeFlushWait, on a bound of its own as the release
