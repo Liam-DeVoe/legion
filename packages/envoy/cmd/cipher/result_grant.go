@@ -107,9 +107,10 @@ func cmdResultGrant(args []string, stdout, stderr io.Writer) int {
 		// every later line of the job's log.
 		fmt.Fprintf(stdout, "::add-mask::%s\n", grant.Placeholder)
 	}
-	// The command gets the placeholder and no identity of the run's own: AGENT_SECRETS_MACHINE_IDENTITY
-	// would let an `agent-secrets` it runs trade the run's token again.
-	environ := withoutVar(os.Environ(), cipherclient.IdentityVar)
+	// The command gets the placeholder and no identity of the run's own: buildChildEnv drops
+	// every AGENT_SECRETS_* variable but sessionIdentityVars, AGENT_SECRETS_MACHINE_IDENTITY
+	// among them, which would let an `agent-secrets` the command runs trade the run's token again.
+	environ := os.Environ()
 	files, err := prepareAirlock(environ, release, grant.GrantID, &grant.ExpiresAt)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets result-grant: %s\n", redact.OneLine(err.Error()))
@@ -189,15 +190,4 @@ func bindsHost(hosts []string, host string) bool {
 		}
 	}
 	return false
-}
-
-// withoutVar is environ with every entry of name taken out.
-func withoutVar(environ []string, name string) []string {
-	out := make([]string, 0, len(environ))
-	for _, entry := range environ {
-		if !strings.HasPrefix(entry, name+"=") {
-			out = append(out, entry)
-		}
-	}
-	return out
 }
