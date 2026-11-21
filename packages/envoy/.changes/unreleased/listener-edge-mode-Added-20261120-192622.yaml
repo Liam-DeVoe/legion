@@ -25,10 +25,11 @@ body: |-
   gap, whose mark carries no reason; the mark is kept for the session, across its relay runs and
   on its `envoy_sessions` entry for the next listener to relay it, until a frame carrying it is
   published, and the relay writes it on the entry before it acknowledges the withheld event,
-  giving the event back for redelivery when that write fails or the entry is gone; the clear
-  after a frame removes only the mark its relay wrote. A session at the edge publishes only a
-  role subject of its project, sends and publishes only as itself (`source` `agent` and
-  `source_session` the token's session, else `403 sender_not_session`), claims and reads only
+  giving the event back for redelivery when that write fails or the entry is gone; each withheld
+  event's mark is a new id, and the clear after a frame removes only the mark that frame carried.
+  A session at the edge publishes only a role subject of its project, sends and publishes only
+  as itself (`source` `agent` and `source_session` the token's session, else
+  `403 sender_not_session`), claims and reads only
   that project's roles, sends only to sessions whose token listed it, and reads only its
   sessions, roles, topics and Legion agents; a role held by a session of no project of its token
   reads to it as a role no claim holds, in a role read, a role send's answers and a claim's 409,

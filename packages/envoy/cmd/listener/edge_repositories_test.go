@@ -243,6 +243,44 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	})
 }
 
+// The gap mark a later withheld event owes outlives another relay's clear of an earlier mark:
+// while the session moves, its old relay (A) noted a mark for a GitHub event it withheld while no
+// repository answer stood, the new relay (B) adopted the mark the entry carries
+// (owedRepositoryGap) and published a frame carrying it, and before B clears that mark A withholds
+// a later event. A's mark for the later event is an id of its own (noteRepositoryGap), so B's
+// clear, which removes only the mark its frame carried (session.SessionRegistry.ClearRepositoryGap),
+// leaves it on the entry for the next frame to send. The relays' marks are every listener's, so
+// the row passes with edge mode off by design. Control: with noteRepositoryGap writing the mark it
+// noted before again, B's clear removes the later event's mark and the row fails.
+func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_handed_over"
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
+	ctx := t.Context()
+	relayA := rig.relays
+	relayB := &sessionRelays{sessions: rig.deps.sessions, logger: rig.harness.config.logger}
+	first, err := relayA.noteRepositoryGap(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("relay A's mark of the first withheld event: %v", err)
+	}
+	carried := relayB.owedRepositoryGap(sessionID)
+	if carried != first {
+		t.Fatalf("UNKNOWN: relay B owes the mark %q, not relay A's %q on the entry, so its frame carries no adopted mark", carried, first)
+	}
+	later, err := relayA.noteRepositoryGap(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("relay A's mark of the later withheld event: %v", err)
+	}
+	relayB.repositoryGapSent(ctx, sessionID, carried)
+	if stored := storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap; stored == "" || stored != later {
+		t.Fatalf("after relay B cleared the mark its frame carried (%q) the entry carries %q, not relay A's mark of the later withheld event (%q): the later event's gap, which no frame has carried, is lost",
+			carried, stored, later)
+	}
+	if owed := relayA.owedRepositoryGap(sessionID); owed != later {
+		t.Fatalf("relay A owes %q after relay B's clear, want its mark of the later withheld event, %q", owed, later)
+	}
+}
+
 // A registration keeps the gap mark another listener set on the session's entry after this
 // listener last read it: the other listener's relay withheld a GitHub event and marked the entry
 // (session.SessionRegistry.SetRepositoryGap) while this listener's copy of the session bucket

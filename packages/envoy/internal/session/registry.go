@@ -948,9 +948,9 @@ func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID, mark 
 }
 
 // ClearRepositoryGap clears sessionID's RepositoryGap while it is mark, the mark a frame carried,
-// as SetRepositoryGap writes it. Any other mark is left as it is: another relay of the session
-// set it since, for an event it withheld later, and that relay's own frame clears it. An entry
-// the bucket does not hold carries no mark to clear, and is no error.
+// as SetRepositoryGap writes it. Any other mark is left as it is: a relay of the session set it
+// since, for an event withheld later (each withheld event's mark is a new id), and a later frame
+// clears it. An entry the bucket does not hold carries no mark to clear, and is no error.
 func (r *SessionRegistry) ClearRepositoryGap(ctx context.Context, sessionID, mark string) error {
 	return r.rewriteStoredEntry(ctx, sessionID, "clear its repository gap", nil, func(entry *SessionEntry) bool {
 		if entry.RepositoryGap != mark {

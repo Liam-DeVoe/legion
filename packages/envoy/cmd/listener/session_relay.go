@@ -1158,21 +1158,18 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // withholds while no fresh repository answer stands, until a frame carrying a gap mark is
 // published (repositoryGapSent), and answers the mark: on the session's entry first, which the
 // next listener to relay the session reads after a move or a restart
-// (session.SessionEntry.RepositoryGap), then in this process. The mark is this process's own: the
-// one it noted for the session already, else a new id, so the clear after its frame removes this
-// mark alone and leaves one another relay of the session wrote over it since, as two relays of
-// one session do while it moves. The entry is read from the bucket for the write
+// (session.SessionEntry.RepositoryGap), then in this process. The mark is a new id for
+// every withheld event, so the clear after a frame removes the mark that frame carried alone: a
+// mark written since, by this relay or by another relay of the session, as two relays of one
+// session run while it moves, stays for the next frame. A relay that adopted the entry's mark
+// (owedRepositoryGap) and clears it after its frame therefore never clears the mark of an event
+// another relay withheld later. The entry is read from the bucket for the write
 // (session.SessionRegistry.SetRepositoryGap), not judged from this listener's copy, which can
 // trail a clear another listener made. A write that failed, and an entry the bucket does not
 // hold, are the error, and nothing is noted: the caller gives the event back (giveBackWithheld),
 // since a mark this process alone kept would be lost with a move.
 func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) (string, error) {
-	m.repositoryGapsMu.Lock()
-	mark, noted := m.repositoryGaps[sessionID]
-	m.repositoryGapsMu.Unlock()
-	if !noted {
-		mark = id.New()
-	}
+	mark := id.New()
 	if err := m.sessions.SetRepositoryGap(ctx, sessionID, mark); err != nil {
 		return "", err
 	}

@@ -177,7 +177,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
   The mark is kept for the session until a frame carrying it is published: across the session's relay runs on this listener, and on the session's entry in `envoy_sessions` (`session.SessionEntry.RepositoryGap`), which the next listener to relay the session reads after a move or a restart.
   The relay writes the mark on the entry before it acknowledges such an event, and gives the event back for redelivery when the write fails or the bucket holds no entry of the session; every other write of the entry, a registration's and the outage renewal's among them, keeps the mark the stored entry holds (`session.SessionRegistry.PutWithin`, `RenewWithin`).
-  A mark is an id of the relay process that wrote it, and the clear after that relay's frame removes that mark alone (`ClearRepositoryGap`), so while two relays of one session run at once, as while it moves, a mark the other relay wrote since stays for that relay's frame.
+  Each withheld event's mark is a new id, and the clear after a frame removes the mark that frame carried alone (`ClearRepositoryGap`), so while two relays of one session run at once, as while it moves, a mark either relay wrote since, for an event withheld later, stays for the next frame, also where the relay that clears adopted the mark from the entry (`noteRepositoryGap`).
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
