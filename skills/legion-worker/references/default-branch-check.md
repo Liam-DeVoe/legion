@@ -41,12 +41,12 @@ The branch name is untrusted text: never paste it into shell source, where `$(â€
   A jj commit names the session your pane registered:
   the id in the `omp-attribution-<id>.toml` file at the end of `JJ_CONFIG` (`printf '%s\n' "${JJ_CONFIG##*:}"`), which differs only after a session switch or a fork.
 
-- Write no trailer yourself but the `Dispatch:` line the next item adds below.
+- Write no trailer yourself, except the `Dispatch:` line the next item allows.
   The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names;
   the git wrapper adds the first two to a `git commit`.
   A merge, revert, cherry-pick or rebase that git makes gets none.
 
-- A line short on a commit you have not pushed: cure it by describing the commit again in the pane's shell;
+- An unpushed commit that lacks one of those lines: describe it again in the pane's shell;
   where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
   A pushed commit is never described again: answer it as `skill://legion-worker/references/conflicts-and-rewrites.md`, "A wrong pushed commit", says.
 

@@ -15,20 +15,20 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 - The surface is production-like (the real-process harness, a sandbox repository, a real browser, a development stack, staging) and has the resource the change touches;
   `--run` or `--observed` links to the run.
-  A unit or integration test is a regression lock, never a result, except as the job a `ci_check` names.
+  A unit or integration test is no result, except as the job a `ci_check` names.
 
 - Record a result only after its commit is pushed (`400 RESULT_COMMIT_UNKNOWN`).
 
-- **A check that cannot fail is not a result.**
+- A check that cannot fail is not a result.
   The negative control shows it failing on a deliberately wrong input.
   A documented procedure counts only when it ran: reading it is not a run.
 
 - A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed.
-  So after a push, record each check with no `ci_check` again.
+  So after a push, record each `before_merge` check with no `ci_check` again.
 
 ## The rules every phase's evidence follows
 
-- The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes the red test for a way no test would catch.
+- The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
   Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
 
 - After a forward merge, the tester reruns each check the merge can reach (`skill://legion-worker/references/conflicts-and-rewrites.md`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
@@ -36,7 +36,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 ## Never waiting on CI
 
-- The implementer re-runs a red check that failed on its own once, with `gh run rerun <run-id> --failed`, and is woken by its settlement as `skill://envoy` says, never by sleeping.
+- The implementer re-runs once a red check whose failure is not in this pull request's code, with `gh run rerun <run-id> --failed`, and is woken by its settlement as `skill://envoy` says, never by sleeping.
   A merge-group run is never re-run.
 
 - A required check missing at the head: read `gh pr view <n> --json mergeStateStatus` first.
@@ -46,5 +46,5 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 ## When no surface reaches the changed path
 
 Report it to the architect with `envoy_publish`, naming the missing surface and what it would have to do (a rig, a sandbox holding the resource, a credential, a command), and do not complete.
-The architect builds it and resumes you.
+The architect has it built in this tree and resumes you.
 A code path that first runs after the merge (a deploy workflow's inline step, a post-merge helper, a production-only resource) is an `after_merge` check instead, recorded after the merge by the role the project's `production_check` names (under `off` nothing records it), unless the implementer can run it against a development stack before then.

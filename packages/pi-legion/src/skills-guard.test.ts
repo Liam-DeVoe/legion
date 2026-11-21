@@ -893,14 +893,14 @@ test("each duty a role skill routes to a reference stands in that reference", ()
       /references\/default-branch-check\.md`[^.]*trailers the pane writes for you/,
     ]),
     ...lacks("legion-worker/references/default-branch-check.md", [
-      /Write no trailer yourself but the `Dispatch:` line[^.;]*below/,
-      /line short on a commit you have not pushed/,
+      /Write no trailer yourself, except the `Dispatch:` line[^.;]*next item allows/,
+      /unpushed commit that lacks one of those lines: describe it again/,
       /pushed commit[^.;]*conflicts-and-rewrites\.md`, "A wrong pushed commit"/,
       /`LEGION_ISSUE_TRAILER` is set[^.;]*`Dispatch: \$LEGION_ISSUE_TRAILER`/,
       /clone under `\$LEGION_WORKSPACE`[^.;]*clone one you will push elsewhere outside it/,
     ]),
     ...lacks("legion-worker/references/results.md", [
-      /The implementer re-runs a red check that failed on its own once/,
+      /The implementer re-runs once a red check whose failure is not in this pull request's code/,
     ]),
     ...lacks("legion-worker/references/pr-body.md", [
       /only the deploy can show it[^.]*plan names its observation/,

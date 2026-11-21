@@ -44,7 +44,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      name the check's block id in the reason.
 
    - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
-     A thread needing a fix sends the task back to `implementing`, with the thread in the reason.
+     For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
 
 2. **Get a second reading.**
    First list in your session the constraints the issue did not state, choices between two working options, abandoned approaches and reusable code.
