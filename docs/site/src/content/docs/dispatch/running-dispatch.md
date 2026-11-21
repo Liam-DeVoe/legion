@@ -182,8 +182,17 @@ the server's own with its `pool_` parameters and its password taken out, and rea
 password from the terminal (Enter alone for a database that asks none), as the blocks name them,
 `$DISPATCH_PSQL_URL` with `$DISPATCH_PGPASSWORD` and `$BROKER_PSQL_URL` with `$BROKER_PGPASSWORD`:
 
-```sh
-psql_url() { printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'; }
+```bash
+psql_url() {
+  case $1 in
+    postgres://*|postgresql://*) ;;
+    *) echo "psql_url: refused: not a postgres:// URL. A keyword/value string (host=... password=...) would put its password on a command line; give the server's URL form" >&2; return 1 ;;
+  esac
+  if printf '%s' "$1" | grep -Eq '^[a-z]+://[^@/?]*/[^@?]*@'; then
+    echo "psql_url: refused: the URL's user part holds an unencoded /, so the password would stay in it; percent-encode the / as %2F" >&2; return 1
+  fi
+  printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'
+}
 DISPATCH_PSQL_URL=$(psql_url "$DATABASE_URL")
 BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
 [ -n "${DISPATCH_PGPASSWORD+set}" ] || { read -rsp "Dispatch's database password: " DISPATCH_PGPASSWORD; echo >&2; }
@@ -191,11 +200,16 @@ BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
 export DISPATCH_PSQL_URL BROKER_PSQL_URL DISPATCH_PGPASSWORD BROKER_PGPASSWORD
 ```
 
-Those `pool_` parameters are the only ones the broker's deployment adds that libpq does not take; a
-URL without them and without a password is left as it is. A password the environment already holds
-in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from wherever the deployment keeps it, is used as it
-is, and nothing asks for it. `printf` is the shell's own, so the URL reaches `sed` on its input and
-is never an argument either.
+The block is bash's: `read -rsp` prompts for a password without echoing it in bash, and zsh reads
+`-p` as a coprocess instead. Those `pool_` parameters are the only ones the broker's deployment
+adds that libpq does not take; a URL without them and without a password is left as it is. A
+password the environment already holds in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from
+wherever the deployment keeps it, is used as it is, and nothing asks for it. `printf` is the
+shell's own, so the URL reaches `grep` and `sed` on their input and is never an argument either.
+`psql_url` makes no URL and says why for a server's URL whose password it cannot take out: a
+keyword/value string (`host=… password=…`), and a URL whose user part holds an unencoded `/`,
+which libpq and Dispatch's own server read as the end of the host rather than part of the
+password. Write that server's URL in the form it names, and run the block again.
 
 A revocation settled without the broker, by that command or by a statement written by hand, tells
 the broker nothing, and the old account's credentials go on reading secrets there. It also leaves

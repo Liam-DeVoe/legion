@@ -151,14 +151,17 @@ func announceMemberKindChange(ctx context.Context, tx pgx.Tx, stored string, wri
 }
 
 // projectsSeenAs answers, in tx, every project email sees as a person of the member kind stored
-// (PersonSeesProjectSQL), in key order, when written is another kind, and none when it is the
-// same. A write that changes the member kind a people row holds reads it under the row's lock and
-// before its update, and then hands it to RecordReachedProjects with email, after its update, so
-// every session tied to email keeps each of those projects the kind written no longer sees: a full
-// member the sign-in rule restricts loses every public project and every one a group admitted
-// them to, unless it names them, and their sessions' transcripts keep what they read of each.
+// (PersonSeesProjectSQL), in key order, when written makes the person restricted from another
+// kind, and none otherwise. A write that changes the member kind a people row holds reads it under
+// the row's lock and before its update, and then hands it to RecordReachedProjects with email,
+// after its update, so every session tied to email keeps each of those projects the kind written
+// no longer sees: a full member the sign-in rule restricts loses every public project and every
+// one a group admitted them to, unless it names them, and their sessions' transcripts keep what
+// they read of each. A write that makes a restricted member full takes nothing from them, since a
+// full member sees every project a restricted one does (PersonSeesProjectSQL's arms), so it reads
+// nothing, and RecordReachedProjects, handed no project, takes no lock and writes nothing.
 func projectsSeenAs(ctx context.Context, tx pgx.Tx, email, stored string, written model.MemberKind) ([]string, error) {
-	if stored == string(written) {
+	if stored == string(written) || written != model.MemberRestricted {
 		return nil, nil
 	}
 	var seen []string

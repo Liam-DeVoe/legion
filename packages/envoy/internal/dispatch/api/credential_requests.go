@@ -381,7 +381,8 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 //     made before people recorded the address's); its account is the one its mint recorded.
 //
 // A broker-issued token never decides: none holds the approve scope these routes require
-// (brokerPersonScopes), so it is refused before it gets here.
+// (brokerPersonScopes), so it is refused before it gets here, and refused here too, before any
+// read (refuseUnboundCredential), since nothing below has an arm for it.
 //
 // A personal token that records no account, made after the recording, is bound to the address's
 // account (credentialSubjectSQL). The read runs in a transaction of its own after the address's
@@ -404,6 +405,9 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 // standing is read from Standing once the transaction has ended (browserDeciderHeld). A revocation
 // answers before a hold.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
+	if err := refuseUnboundCredential(actor); err != nil {
+		return "", 0, err
+	}
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
 	if actor.Act != nil && actor.Act.TokenID != "" {
