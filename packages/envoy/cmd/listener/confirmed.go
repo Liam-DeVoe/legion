@@ -399,10 +399,9 @@ func (s *roleSend) timedOut() {
 // role and dedupe key (forwardRequest, dedupe.Cache.Forward) - a session that sent to the role,
 // took it, and repeats. That repeat is answered as that stored forward (deliveredHeld on the
 // earlier holder's subject), never with the new envelope built for the repeat, whose event_id no
-// stored message carries. The record is this listener's and lasts its window (ten minutes): a
-// repeat another listener answers, or one after the window, is answered as the echo it is, with
-// its own envelope, which the stream does not hold; no stream lookup finds the earlier forward by
-// the request alone, since its message id names the earlier holder's subject.
+// stored message carries. The record is the listener's own and lasts 10 minutes; a repeat after
+// that or on another listener answers its own new envelope, as at main. No stream lookup finds the
+// earlier forward by the request alone, since its message id names the earlier holder's subject.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,
