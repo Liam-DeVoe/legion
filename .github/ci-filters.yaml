@@ -1181,10 +1181,6 @@ go_notices:
   - '.github/agent-secrets-client-targets.json'
   - '.github/envoy-infra-targets.json'
   - '.github/scripts/go-release-notices.sh'
-  # The infra commands link internal/dispatch/delivery (infra/streams/census.go and
-  # infra/consumernames/families.go), whose store embeds its migrations and README.
-  - 'packages/envoy/internal/dispatch/store/README.md'
-  - 'packages/envoy/internal/dispatch/store/migrations/*'
   - 'scripts/go-third-party-notices.sh'
   - *go_workspace
   - *legion_command
@@ -2056,6 +2052,7 @@ dispatch_two_builds:
   # cover for that step to run in it.
   - 'packages/envoy/infra/**'
   - 'packages/envoy/cmd/listener/*'
+  - 'packages/envoy/internal/bus/kvrecords/*'
   - 'packages/envoy/internal/bus/signedrecord/*'
   - 'packages/envoy/internal/cipher/**'
   - 'packages/envoy/internal/holdrecord/**'
@@ -2513,23 +2510,9 @@ envoy_e2e_local:
   - 'packages/envoy/scripts/e2e-local.sh'
   - 'packages/envoy/scripts/e2e-local.test.sh'
   - 'packages/envoy/scripts/fixtures/github/**'
-  # natsd's closure (go list -deps ./internal/testnats/cmd/natsd) now holds internal/streamset and
-  # Dispatch's store, with what they import.
-  - 'packages/envoy/internal/dispatch/architecture/notes/*'
-  - 'packages/envoy/internal/dispatch/auth/*'
-  - 'packages/envoy/internal/dispatch/duty/*'
-  - 'packages/envoy/internal/dispatch/githubapp/*'
-  - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
-  - 'packages/envoy/internal/dispatch/githubreads/*'
-  - 'packages/envoy/internal/dispatch/redeliver/*'
-  - 'packages/envoy/internal/dispatch/store/*'
-  - 'packages/envoy/internal/dispatch/store/migrations/*'
-  - 'packages/envoy/internal/dispatch/text/*'
-  - 'packages/envoy/internal/githubappjwt/*'
-  - 'packages/envoy/internal/pgmigrate/*'
-  - 'packages/envoy/internal/serverwait/*'
+  # natsd's closure (go list -deps ./internal/testnats/cmd/natsd) now holds internal/streamset,
+  # with what it imports.
   - 'packages/envoy/internal/streamset/*'
-  - 'packages/envoy/migrationid/*'
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy-client/src/**'
   # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legioncipher-client-with-it-the-tsc-program-of
