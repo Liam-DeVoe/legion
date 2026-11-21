@@ -248,15 +248,20 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //
 //   - The server's viewer and the viewer's own session pass, and every session passes an open
 //     viewer of a deployment that holds no private project (R9).
+//   - Every other viewer is relayed no session that acted in or reached a project it does not
+//     see: a session_projects pair, or a session_reached_projects pair, which an access change
+//     that took the project from a person the session is tied to wrote (recordReachedProjects),
+//     since the transcript keeps what the session read while its person saw the project, and the
+//     rules below judge the session's people by what they see now.
 //   - A viewer that is not open (a restricted member) is relayed only a session that its own
-//     person's credential proved: every person a proved write of the session recorded
-//     (session_owners, from the write's Actor.Owner, the person the broker-issued token acts for)
-//     is the viewer's person, and one is. A session no proved write tied to anybody, or one a
-//     write tied to another person, answers as one nobody holds, whatever else it did. The
-//     listener record must also list the session's credential's projects, none of them a project
-//     the viewer does not see and at least one: a restricted member's credential reads only the
-//     projects its list names, so the list bounds what the transcript holds for a viewer whose own
-//     credential lists fewer.
+//     person's credential alone proved: every person a write or a broker-issued token of the
+//     session recorded (session_owners, the person the token acts for) is the viewer's person, and
+//     one is. Such a session acts with the viewer's own credential, which reaches only what the
+//     viewer sees, so it passes with a listener list or without one, and where the listener lists
+//     its projects each must be one the viewer sees. A session tied to nobody, or one also tied to
+//     another person, answers as one nobody holds, whatever else it did; another person's
+//     credential acting in it ties it to them, which the live view's re-ask before each batch of
+//     frames reads.
 //   - An open viewer, while a project is private, is relayed a session that wrote in no project
 //     the viewer does not see, once `envoy-dispatch backfill-session-projects` has filled the pairs
 //     (session_projects_filled). Where the listener record lists the session's credential's
@@ -276,36 +281,40 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 				select 1 from session_projects unseen
 				where unseen.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? unseen.project_key)
 				offset 0)
+			and not exists (
+				select 1 from session_reached_projects reached
+				where reached.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? reached.project_key)
+				offset 0)
 			and case when coalesce(%[6]s ? (%[1]s), false) then
 				(%[6]s->(%[1]s)) <@ (%[2]s::jsonb->'sees')
 				and ((%[4]s
 						and exists (select 1 from session_projects_filled offset 0)
 						and (jsonb_array_length(%[6]s->(%[1]s)) > 0
 							or exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)))
-					or (not %[4]s
-						and jsonb_array_length(%[6]s->(%[1]s)) > 0
-						and exists (
-							select 1 from session_owners tied
-							where tied.session_id = (%[1]s) and tied.login = %[7]s
-							offset 0)
-						and not exists (
-							select 1 from session_owners tied
-							where tied.session_id = (%[1]s) and tied.login is distinct from %[7]s
-							offset 0)))
+					or (not %[4]s and %[9]s))
 			else
-				%[4]s
-				and exists (select 1 from session_projects_filled offset 0)
-				and exists (select 1 from session_owners tied where tied.session_id = (%[1]s) offset 0)
-				and not exists (
-					select 1 from session_owners tied
-					join projects hidden on hidden.visibility = 'private' and not ((%[2]s::jsonb->'sees') ? hidden.key)
-					left join people tied_person on tied_person.email = tied.login
-					where tied.session_id = (%[1]s) and %[8]s
-					offset 0)
+				(%[4]s
+					and exists (select 1 from session_projects_filled offset 0)
+					and exists (select 1 from session_owners tied where tied.session_id = (%[1]s) offset 0)
+					and not exists (
+						select 1 from session_owners tied
+						join projects hidden on hidden.visibility = 'private' and not ((%[2]s::jsonb->'sees') ? hidden.key)
+						left join people tied_person on tied_person.email = tied.login
+						where tied.session_id = (%[1]s) and %[8]s
+						offset 0))
+				or (not %[4]s and %[9]s)
 			end))`,
 		sessionExpr, viewerParam, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"),
 		ViewerFlag(viewerParam, "private"), held, ViewerPerson(viewerParam),
-		PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden")))
+		PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden"),
+		fmt.Sprintf(`(exists (
+				select 1 from session_owners tied
+				where tied.session_id = (%[1]s) and tied.login = %[2]s
+				offset 0)
+			and not exists (
+				select 1 from session_owners tied
+				where tied.session_id = (%[1]s) and tied.login is distinct from %[2]s
+				offset 0))`, sessionExpr, ViewerPerson(viewerParam))))
 }
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
