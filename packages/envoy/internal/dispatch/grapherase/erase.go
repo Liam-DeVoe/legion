@@ -199,6 +199,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err != nil {
 		return err
 	}
+	// The keys the search before the locks found by text node go by key here, and the sweep
+	// after the commit reads every tree for those text nodes once more (treeKeysHolding).
+	sums = append(sums, read.heldTrees...)
 	e.sums = sums
 	needles, err := treeNeedles(read)
 	if err != nil {
@@ -279,7 +282,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	}
 	e.removed("search_term_queue", queued)
 	e.Recounted = recounted
-	if err := e.forgetTrees(ctx, tx, sums, needles); err != nil {
+	if err := e.forgetTrees(ctx, tx, sums); err != nil {
 		return err
 	}
 	if err := graphstore.EraseNode(ctx, tx, e.Kind, e.ID, read.tupleSeqs); err != nil {

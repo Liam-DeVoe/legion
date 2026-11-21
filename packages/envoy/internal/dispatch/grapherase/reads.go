@@ -73,6 +73,10 @@ type erasedRead struct {
 	// it, which the redaction replaced whole with the marker. Each may be the head of a body the
 	// comment held before an edit, whose display tree no sum the run holds keys (treeNeedles).
 	cutBodies []string
+	// heldTrees are the keys of the stored display trees that hold a text node of the node's
+	// (treeKeysHolding), which a confirmed run reads before its locks (searchLeft) and deletes
+	// under them by key, so no read of every tree runs while the run holds its owners' writers.
+	heldTrees [][]byte
 	embedded  []embeddingRow
 	owners    events.OwnerRows
 	listing   listing

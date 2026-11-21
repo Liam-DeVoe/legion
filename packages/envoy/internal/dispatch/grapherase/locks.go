@@ -67,13 +67,15 @@ const eraseOwnerAttempts = 3
 // that holds the erased bytes is therefore not on the listing the digest covers, and the run
 // leaves it as it leaves every row the search lists; once the run has committed it searches again,
 // outside its locks, and its report lists each row that search finds and this one did not
-// (searchLeftAfterCommit). Once a try holds its locks, the run holds the writers of those owners
-// for the rest of its work: the read of the rest of the listing under them, the erase and the
-// commit.
+// (searchLeftAfterCommit). The same search answers the keys of the display trees that hold a text
+// node of the node's where an event of it carried a body it cut (treeKeysHolding), which only a
+// read of every stored tree finds, so the run deletes them under its locks by key alone. Once a
+// try holds its locks, the run holds the writers of those owners for the rest of its work: the
+// read of the rest of the listing under them, the erase and the commit.
 func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
-		left, err := searchLeft(ctx, conn, kind, id)
+		left, trees, err := searchLeft(ctx, conn, kind, id)
 		if err != nil {
 			return nil, nil, erasedRead{}, err
 		}
@@ -85,6 +87,7 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 		var read erasedRead
 		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx, left)
 		if err == nil && len(untaken) == 0 {
+			read.heldTrees = trees
 			return tx, erasure, read, nil
 		}
 		_ = tx.Rollback(context.Background())
@@ -101,22 +104,27 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 // a read-only transaction of its own, as a run without --confirm reads its whole listing, over the
 // erased texts and the rows that derive from the node as that transaction reads them
 // (readDerived), and that transaction ends before the try's own begins, so the try holds none of
-// the table locks the search took. It answers the lines of the listing's section of rows left.
-func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) ([]string, error) {
+// the table locks the search took. It answers the lines of the listing's section of rows left,
+// and the keys of the display trees that hold a text node of the node's (treeKeysHolding).
+func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) ([]string, [][]byte, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return nil, fmt.Errorf("begin the search for the rows the erase leaves: %w", err)
+		return nil, nil, fmt.Errorf("begin the search for the rows the erase leaves: %w", err)
 	}
 	defer tx.Rollback(context.Background())
 	searched := &Erasure{Kind: kind, ID: id}
 	read, err := searched.readDerived(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := searched.readLeft(ctx, tx, &read); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return read.listing.left, nil
+	trees, err := searched.treeKeysHolding(ctx, tx, read)
+	if err != nil {
+		return nil, nil, err
+	}
+	return read.listing.left, trees, nil
 }
 
 // searchLeftAfterCommit is the search for the rows the run leaves made once more, after the commit

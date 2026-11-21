@@ -49,11 +49,16 @@ func (l listing) lines(e *Erasure) []string {
 	section("excerpts quoting the node", l.excerpts)
 	section("event rows about the node holding the erased text, redacted in place", l.events)
 	section("live documents whose history is replaced", l.documents)
-	lines = append(lines, "  display trees: the text_trees row of every text above the run removes or rewrites goes; "+
-		"a tree of any other text is that text's, keyed by its digest, and is not listed")
+	trees := "  display trees: the text_trees row of every text above the run removes or rewrites goes, by its key, " +
+		"inside the transaction and again after the commit; "
 	if l.cutBody {
-		lines = append(lines, "  display trees of an earlier body: an event of the node carries a body it cut, so after the commit "+
-			"every text_trees row whose tree holds a text node of an erased text goes as well")
+		lines = append(lines, trees+"so does every tree that holds a text node of an erased text, that of another text included "+
+			"(next line), and no such tree is listed")
+		lines = append(lines, "  display trees of an earlier body: an event of the node carries a body it cut, so a search before "+
+			"the locks finds the key of every tree holding a text node of an erased text or of that body, the transaction deletes "+
+			"those by key, and after the commit every tree holding such a node is deleted once more")
+	} else {
+		lines = append(lines, trees+"a tree of any other text is that text's, keyed by its digest, stays, and is not listed")
 	}
 	section("rows that hold the erased bytes and derive from another node, left as they are", l.left)
 	for _, blocker := range l.blockers {

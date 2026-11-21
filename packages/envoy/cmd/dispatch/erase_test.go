@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -408,9 +409,11 @@ func TestTheCommentEraseTakesItsKeywordVersionsAndTheFillWritesNoneOfItsTextAgai
 // holds whole. The test reads that event cut inside the block with the secret in it, and the
 // comment's body after the edit holding none (the control). The comment's erase takes every byte
 // of the cut body out of its events, and no column of the database holds the secret afterwards,
-// text_trees among them: the create stored the display tree of the first body, keyed by the
-// digest of a text no row holds after the edit, so the erase takes it by its text nodes
-// (grapherase.treeNeedles).
+// text_trees among them: the create stored the display tree of the first body, which the test
+// waits for before the erase (the control), keyed by the digest of a text no row holds after the
+// edit, so the erase takes it by its text nodes (grapherase.treeNeedles). The search before the
+// locks finds its key and the transaction deletes it, so the sweep after the commit finds no tree
+// to delete (Erasure.Swept).
 // The keyword table is then emptied, as the fill empties it for a log that was reset, and the fill
 // runs again over the whole log (textversions.FillToHorizon): the comment has no row and no blocks
 // left, so the fill reads its first body from the event (body_from 'cut'), and no version it
@@ -448,6 +451,22 @@ func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select body from comments where id = $1::uuid`, comment).Scan(&now); err != nil || strings.Contains(now, secret) {
 		t.Fatalf("after the edit comment %s reads %q (err %v), want a body with no secret, so that no erased text is the first body or its cut", comment, now, err)
 	}
+	// The create stores the first body's display tree on a goroutine of its own (api.storeOf),
+	// bounded by api.StoreTreesTimeout, so the control waits for it.
+	var firstTrees int
+	for deadline := time.Now().Add(api.StoreTreesTimeout); ; time.Sleep(50 * time.Millisecond) {
+		if err := database.Pool.QueryRow(ctx, `select count(*) from text_trees where position(convert_to($1, 'UTF8') in tree) > 0`,
+			secret).Scan(&firstTrees); err != nil {
+			t.Fatalf("read the display trees holding comment %s's secret: %v", comment, err)
+		}
+		if firstTrees > 0 || time.Now().After(deadline) {
+			break
+		}
+	}
+	if firstTrees == 0 {
+		t.Fatalf("no display tree holds comment %s's secret within %s of its create, so this test would prove nothing of the tree of its first body",
+			comment, api.StoreTreesTimeout)
+	}
 
 	erasure, err := confirmErase(ctx, databaseURL, "comment", comment, time.Millisecond)
 	if err != nil || !erasure.Applied {
@@ -462,6 +481,10 @@ func TestTheCommentEraseTakesTheCutHeadOfALongBodyOutOfItsEvents(t *testing.T) {
 	}
 	if held != 0 {
 		t.Errorf("after the erase %d event(s) of comment %s still hold the secret in the head of the body their event cut", held, comment)
+	}
+	if erasure.Swept != 0 {
+		t.Errorf("the sweep after the commit deleted %d display tree(s), want none: the transaction deletes the tree of the first body by the key the search before the locks found",
+			erasure.Swept)
 	}
 	if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
 		t.Errorf("after the erase the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)

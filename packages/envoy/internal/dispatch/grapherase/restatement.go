@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -305,10 +304,11 @@ func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][
 // before an edit is held whole by no row once the edit's event cut it, so the key of its stored
 // tree is the digest of a text the run never reads, and treeSums cannot name it. That tree holds
 // the text nodes of the body's blocks, which comment_block_texts holds at that revision
-// (readTexts), and of the head the event carried, so forgetTrees takes every tree that holds one
-// of them. A tree of another text that holds one of those nodes goes too, and is made from its
-// markdown at its next reading, as any tree forgetTrees deletes is. Where no event cut a body,
-// every tree of the run's texts is keyed by one of the sums, and treeNeedles is empty.
+// (readTexts), and of the head the event carried, so the run takes every tree that holds one of
+// them (treeKeysHolding, sweepTrees). A tree of another text that holds one of those nodes goes
+// too, and is made from its markdown at its next reading, as any tree the run deletes is. Where no
+// event cut a body, every tree of the run's texts is keyed by one of the sums, and treeNeedles is
+// empty.
 func treeNeedles(read erasedRead) ([][]byte, error) {
 	if len(read.cutBodies) == 0 {
 		return nil, nil
@@ -351,58 +351,68 @@ func treeNeedles(read erasedRead) ([][]byte, error) {
 	return needles, nil
 }
 
-// deleteTreesBySumQuery deletes the stored display tree of every text whose sum is one of $1,
-// through the table's key. deleteTreesHoldingQuery deletes every stored tree that holds one of
-// the needles of $1 (treeNeedles), which reads every tree, so it runs only where a needle exists.
-// Two statements and not one: an OR of the two would read every tree for every run.
+// treesHoldingQuery reads the key of every stored tree that holds one of the needles of $1
+// (treeNeedles), and deleteTreesHoldingQuery deletes each such tree: each reads every tree, so
+// neither runs under the run's locks, and each runs only where a needle exists.
+// deleteTreesBySumQuery deletes the tree of every text whose sum is one of $1, through the table's
+// key, which is the one delete of trees the run makes under its locks (forgetTrees).
 const (
-	deleteTreesBySumQuery   = `delete from text_trees where sum = any($1::bytea[])`
+	treesHoldingQuery = `
+		select t.sum from text_trees t
+		 where exists (select 1 from unnest($1::bytea[]) as needle (bytes) where position(needle.bytes in t.tree) > 0)`
 	deleteTreesHoldingQuery = `
 		delete from text_trees t
 		 where exists (select 1 from unnest($1::bytea[]) as needle (bytes) where position(needle.bytes in t.tree) > 0)`
+	deleteTreesBySumQuery = `delete from text_trees where sum = any($1::bytea[])`
 )
 
-// deleteTrees runs the two deletes through exec, a transaction's or a connection's, and counts
-// the rows they removed.
-func deleteTrees(ctx context.Context, exec func(context.Context, string, ...any) (pgconn.CommandTag, error), sums, needles [][]byte) (int64, error) {
-	var removed int64
-	if len(sums) > 0 {
-		tag, err := exec(ctx, deleteTreesBySumQuery, sums)
-		if err != nil {
-			return 0, err
-		}
-		removed += tag.RowsAffected()
+// treeKeysHolding answers the keys of the stored display trees that hold a needle of read's
+// (treeNeedles), and none where the read cut no body. A confirmed run reads them in its search
+// before its locks (searchLeft), since the read is of every tree, which the migration of
+// text_trees calls a multi-gigabyte table; the run deletes them under its locks by key
+// (erasedRead.heldTrees), and the sweep after its commit takes every tree holding a needle once
+// more, which a tree stored between the search and the locks may be.
+func (e *Erasure) treeKeysHolding(ctx context.Context, tx pgx.Tx, read erasedRead) ([][]byte, error) {
+	needles, err := treeNeedles(read)
+	if err != nil || len(needles) == 0 {
+		return nil, err
 	}
-	if len(needles) > 0 {
-		tag, err := exec(ctx, deleteTreesHoldingQuery, needles)
-		if err != nil {
-			return 0, err
-		}
-		removed += tag.RowsAffected()
+	rows, err := tx.Query(ctx, treesHoldingQuery, needles)
+	if err != nil {
+		return nil, fmt.Errorf("read the display trees that hold a text of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	return removed, nil
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		return nil, fmt.Errorf("read the display trees that hold a text of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	return keys, nil
 }
 
-// forgetTrees deletes the stored display tree of every text treeSums named, and every tree that
-// holds a needle treeNeedles made. A reader of a text no row holds a tree for makes it from the
-// markdown, as for a text written before the table existed (texttrees), so the cost of a row
-// deleted here is one reading, and a text the run rewrote has the tree of what it now says made
-// the first time it is read.
-func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums, needles [][]byte) error {
-	removed, err := deleteTrees(ctx, tx.Exec, sums, needles)
+// forgetTrees deletes, by its key, the stored display tree of every text treeSums named and every
+// tree the search before the locks found holding a text node of the node's (erasedRead.heldTrees).
+// A reader of a text no row holds a tree for makes it from the markdown, as for a text written
+// before the table existed (texttrees), so the cost of a row deleted here is one reading, and a
+// text the run rewrote has the tree of what it now says made the first time it is read.
+func (e *Erasure) forgetTrees(ctx context.Context, tx pgx.Tx, sums [][]byte) error {
+	if len(sums) == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, deleteTreesBySumQuery, sums)
 	if err != nil {
 		return fmt.Errorf("delete the display trees of the texts holding the text of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	e.removed("text_trees", removed)
+	e.removed("text_trees", tag.RowsAffected())
 	return nil
 }
 
 // sweepTrees deletes once more, after the commit, the display trees forgetTrees deleted inside
-// it. A read that began before the commit stores the trees it read on a goroutine of its own,
-// detached from the request and bounded by api.StoreTreesTimeout (storeOf), so it can put the
-// tree of a text the erase removed back after the commit. The sweep waits that bound out, which
-// the caller passes in, then deletes those keys in a statement of its own, and counts what it
-// found, so an operator reads whether the window was ever used.
+// it, and every tree that holds a text node of the node's where the run cut a body (treeNeedles),
+// which a tree stored after the search before the locks may be. A read that began before the
+// commit stores the trees it read on a goroutine of its own, detached from the request and bounded
+// by api.StoreTreesTimeout (storeOf), so it can put the tree of a text the erase removed back after
+// the commit. The sweep waits that bound out, which the caller passes in, then deletes those trees
+// in statements of its own, and counts what it found, so an operator reads whether the window was
+// ever used.
 //
 // The keys and needles it deletes by are the ones the run held in memory (Erasure.sums and
 // Erasure.needles): no digest or text node of an erased text is written anywhere to remember
@@ -420,11 +430,27 @@ func (e *Erasure) sweepTrees(ctx context.Context, conn *pgx.Conn, bound time.Dur
 			"before it ran (a read that began before the commit may have stored a tree it removed; "+
 			"no record keeps their keys, so the sweep cannot be run again): %w", ctx.Err())
 	}
-	swept, err := deleteTrees(ctx, conn.Exec, e.sums, e.needles)
-	if err != nil {
-		return fmt.Errorf("the erase committed, and its sweep of text_trees after the commit failed "+
-			"(no record keeps their keys, so the sweep cannot be run again): %w", err)
+	var swept int64
+	if len(e.sums) > 0 {
+		tag, err := conn.Exec(ctx, deleteTreesBySumQuery, e.sums)
+		if err != nil {
+			return sweepFailed(err)
+		}
+		swept += tag.RowsAffected()
+	}
+	if len(e.needles) > 0 {
+		tag, err := conn.Exec(ctx, deleteTreesHoldingQuery, e.needles)
+		if err != nil {
+			return sweepFailed(err)
+		}
+		swept += tag.RowsAffected()
 	}
 	e.Swept = swept
 	return nil
+}
+
+// sweepFailed is the error of a sweep whose delete failed after the commit.
+func sweepFailed(err error) error {
+	return fmt.Errorf("the erase committed, and its sweep of text_trees after the commit failed "+
+		"(no record keeps their keys, so the sweep cannot be run again): %w", err)
 }
