@@ -260,3 +260,48 @@ func TestAHalfClosedClientWhoseWriteRolledBackReadsTheError(t *testing.T) {
 		t.Errorf("logged %q and %q, want no ERROR line and one debug line", failures, closed)
 	}
 }
+
+// No line a request writes carries a value of a header that names its caller: the header
+// identity's email, a bearer token, a cookie. The header identity's case is the one that writes
+// an ERROR line: its email holds a NUL, which the people table refuses, so the person's record
+// fails and writeHandlerError logs that failure, the path CodeQL's go/clear-text-logging traced
+// from the header to the ERROR line. The bearer's and the cookie's are refused 401 with the
+// request line alone. Each case first finds its request line, so a run that logged nothing
+// cannot pass.
+func TestARequestLogsNoValueOfAHeaderThatNamesItsCaller(t *testing.T) {
+	const canary = "c4815-credential-canary"
+	handler, _ := newTestHandlerWithStore(t)
+	for _, test := range []struct {
+		name, header, value string
+		// failed is whether the request fails with 500 and its ERROR line.
+		failed bool
+	}{
+		{name: "the header identity's email", header: "X-Dispatch-User", value: canary + "\x00@example.com", failed: true},
+		{name: "a bearer token", header: "Authorization", value: "Bearer dsp_" + canary},
+		{name: "a session cookie", header: "Cookie", value: "dispatch_session=" + canary},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logged := captureDebugLog(t)
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+			request.Header.Set(test.header, test.value)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			if lines := accessLines(t, logged); len(lines) != 1 || !strings.Contains(lines[0], " route=/api/v1/projects ") {
+				t.Fatalf("request lines %q, want the request's one line", lines)
+			}
+			_, failures := handlerErrorLines(logged)
+			if test.failed && (response.Code != http.StatusInternalServerError || len(failures) != 1) {
+				t.Fatalf("answered %d and logged %q, want 500 and its one ERROR line", response.Code, failures)
+			}
+			if !test.failed && response.Code != http.StatusUnauthorized {
+				t.Fatalf("answered %d %q, want 401", response.Code, response.Body.String())
+			}
+			for _, line := range strings.Split(logged.String(), "\n") {
+				if strings.Contains(line, canary) {
+					t.Errorf("a log line carries the %s header's value: %q", test.header, line)
+				}
+			}
+		})
+	}
+}
