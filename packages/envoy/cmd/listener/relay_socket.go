@@ -61,6 +61,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -201,15 +202,21 @@ func relaySocketRoute(sockets *relaySockets) http.Handler {
 }
 
 // serve opens one socket. The token was verified by apiAuth with its proof, as every /v1 request's
-// is, and held to the edge's projects there; here it is held to the session the path names, and
-// then the upgrade is refused 400 without the subprotocol, 429 past relaySocketMaxPerSession and
-// 503 once the listener is stopping.
+// is, and held to the edge's projects there; here the session the path names is refused 400 unless
+// it is one NATS subject token (natsgrant.SessionToken), since its relay subject would otherwise be
+// a wildcard, or reach under another session's, on this replica's connection; then it is held to
+// the token's session, and the upgrade is refused 400 without the subprotocol, 429 past
+// relaySocketMaxPerSession and 503 once the listener is stopping.
 func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	session := r.PathValue("session")
+	if !natsgrant.SessionToken(session) {
+		writeJSONError(w, http.StatusBadRequest, "the session is not one NATS subject token: it holds a '.', '*', '>', whitespace or a control character")
+		return
+	}
 	caller, ok := brokerCaller(r)
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
@@ -304,8 +311,9 @@ func (s *relaySockets) release(socket *relaySocket) {
 }
 
 // stop closes every open socket with 1012, so each client opens it again at once on another
-// replica, and refuses every upgrade after it 503. It returns once each close frame is written or
-// its write has failed. It is safe to call more than once.
+// replica, and refuses every upgrade after it 503. It returns once each close frame is written, or
+// its connection dropped for a client that reads nothing, within relaySocketCloseGrace (end). It
+// is safe to call more than once.
 func (s *relaySockets) stop() {
 	if s == nil {
 		return
@@ -345,9 +353,12 @@ type relaySocket struct {
 
 	// writeMu orders the data frames written to the client, which gorilla/websocket takes from
 	// one writer at a time: the reader's err frames and each subscription's msg frames. ended is
-	// set under it, once, by end.
+	// set once, by end, which takes no lock a data write holds: a write blocked on a client that
+	// reads nothing holds writeMu for up to relaySocketWriteWait.
 	writeMu sync.Mutex
-	ended   bool
+	ended   atomic.Bool
+	// pinging is set while a ping is being written, off the watch's goroutine.
+	pinging atomic.Bool
 
 	subsMu sync.Mutex
 	subs   map[int64]*nats.Subscription
@@ -628,17 +639,24 @@ func (socket *relaySocket) forwarded(subject string) bool {
 // errRelaySocketEnded is a write to a socket that has ended.
 var errRelaySocketEnded = errors.New("the relay socket has ended")
 
-// write writes one data frame to the client.
+// write writes one data frame to the client. A write that ends because the socket ended under it
+// (end wrote its close frame first, or dropped the connection) is errRelaySocketEnded too.
 func (socket *relaySocket) write(frame any) error {
 	socket.writeMu.Lock()
 	defer socket.writeMu.Unlock()
-	if socket.ended {
+	if socket.ended.Load() {
 		return errRelaySocketEnded
 	}
 	if err := socket.conn.SetWriteDeadline(time.Now().Add(relaySocketWriteWait)); err != nil {
 		return err
 	}
-	return socket.conn.WriteJSON(frame)
+	if err := socket.conn.WriteJSON(frame); err != nil {
+		if socket.ended.Load() {
+			return errRelaySocketEnded
+		}
+		return err
+	}
+	return nil
 }
 
 // refuse answers a frame the socket did not take, under sid when it named one.
@@ -658,12 +676,11 @@ func (socket *relaySocket) endNATS(step string, err error) {
 
 // end ends the socket once: it forwards nothing more, drops every subscription, writes the close
 // frame of code when code is not 0, and drops the connection once the client has answered it or
-// relaySocketCloseGrace has passed.
+// relaySocketCloseGrace has passed since end began, so a close and a stop are bounded by the
+// grace whatever the client reads.
 func (socket *relaySocket) end(code int, reason string) {
 	socket.endOnce.Do(func() {
-		socket.writeMu.Lock()
-		socket.ended = true
-		socket.writeMu.Unlock()
+		socket.ended.Store(true)
 		socket.subsMu.Lock()
 		subs := socket.subs
 		socket.subs = nil
@@ -677,16 +694,24 @@ func (socket *relaySocket) end(code int, reason string) {
 		}
 		socket.sockets.logger.Info("listener: relay socket closed",
 			slog.String("session_id", socket.session), slog.Int("code", code), slog.String("reason", reason))
-		// The close frame's write is bounded by the grace too, so a stop that closes every
-		// socket at once spends at most that on a client that reads nothing.
-		_ = socket.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(relaySocketCloseGrace))
-		time.AfterFunc(relaySocketCloseGrace, func() { _ = socket.conn.Close() })
+		// No data writer's lock is taken, since a data frame blocked on a client that reads
+		// nothing holds it for up to relaySocketWriteWait. gorilla/websocket writes the close frame
+		// once a frame being written has ended, waiting for that until the deadline at most, and
+		// refuses every frame after the close (ErrCloseSent). A close frame it could not write by
+		// then goes to a client that reads nothing, which is dropped at once.
+		deadline := time.Now().Add(relaySocketCloseGrace)
+		if err := socket.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), deadline); err != nil {
+			_ = socket.conn.Close()
+			return
+		}
+		time.AfterFunc(time.Until(deadline), func() { _ = socket.conn.Close() })
 	})
 }
 
 // watch is the socket's tick: every relaySocketCheckEvery it asks the broker about the socket's
 // token and closes it on the verdict, closes it 1013 once a subscription has ended under it (its
-// connection closed and was replaced), and otherwise pings the client.
+// connection closed and was replaced), and otherwise pings the client (ping). It writes nothing
+// itself, so a write blocked on a client that reads nothing never holds back a check.
 func (socket *relaySocket) watch() {
 	ticker := time.NewTicker(socket.sockets.relaySocketCheckEvery)
 	defer ticker.Stop()
@@ -704,12 +729,25 @@ func (socket *relaySocket) watch() {
 			socket.end(websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
 			return
 		}
-		if err := socket.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(relaySocketWriteWait)); err != nil {
+		socket.ping()
+	}
+}
+
+// ping writes a ping to the client on a goroutine of its own, one at a time: gorilla/websocket
+// writes it once a data frame being written has ended, which on a client that reads nothing is
+// up to relaySocketWriteWait later. A ping that cannot be written within relaySocketWriteWait takes
+// the client for gone and drops the connection, unless the socket ended meanwhile.
+func (socket *relaySocket) ping() {
+	if !socket.pinging.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer socket.pinging.Store(false)
+		if err := socket.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(relaySocketWriteWait)); err != nil && !socket.ended.Load() {
 			socket.end(0, "")
 			_ = socket.conn.Close()
-			return
 		}
-	}
+	}()
 }
 
 // subscribed reports whether every subscription the socket holds is still the server's.

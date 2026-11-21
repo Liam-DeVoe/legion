@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The edge project every row of this file's rig admits, and the second project a row names when
@@ -641,6 +643,170 @@ func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
 	if _, response, err := rig.dialAs(t, session, rig.upgradeHeader(t, session, token), relaySubprotocol); err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("an upgrade after the listener's stop = %v (%s), want 503", err, describeUpgrade(response))
 	}
+}
+
+// A session that is not one NATS subject token is refused 400 before the upgrade, whatever its
+// token names: its relay subject would be a wildcard or reach under another session's, so a socket
+// of the session * would receive every session's relay frames that this replica's connection may
+// subscribe. The token of each row names that same session, so only the path's own rule refuses
+// it. Control: the rule removed; the socket of * opens, subscribes notifications.envoy.deliver.*,
+// and another session's frame reaches it, which the row names.
+func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
+	rig := newRelaySocketRig(t)
+	const victim = "ses_edge_victim"
+	for _, session := range []string{"*", ">", "ses_edge.dotted"} {
+		t.Run(session, func(t *testing.T) {
+			token := "access-token-of-the-session-" + session
+			rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+			client, response, err := rig.dialAs(t, session, rig.upgradeHeader(t, session, token), relaySubprotocol)
+			if err == nil {
+				client.sub(1, bus.DeliverSubject(session))
+				client.ping()
+				select {
+				case <-client.pongs:
+				case frame := <-client.frames:
+					t.Fatalf("the socket of the session %q was opened, and its sub of %s was answered %s; want 400 before the upgrade", session, bus.DeliverSubject(session), frame.raw)
+				case <-time.After(5 * time.Second):
+					t.Fatalf("the socket of the session %q was opened and answered no ping; want 400 before the upgrade", session)
+				}
+				publishRelayFrame(t, rig.owner.url, victim, natsgo.Header{})
+				select {
+				case frame := <-client.frames:
+					t.Fatalf("the socket of the session %q was opened, and %s's frame reached it: %s", session, victim, frame.raw)
+				case <-time.After(2 * time.Second):
+					t.Fatalf("the socket of the session %q was opened; want 400 before the upgrade", session)
+				}
+			}
+			if response == nil || response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("an upgrade of the session %q = %v (%s), want 400", session, err, describeUpgrade(response))
+			}
+		})
+	}
+	// Control of the rule's reach: a session that is one subject token, on the same rig, opens.
+	rig.open(t, "ses_edge_one_token")
+}
+
+// A socket whose client reads nothing, with a data frame's write blocked on it, is closed within
+// relaySocketCloseGrace of the close's start: after a revoke, its connection is dropped within one
+// check and the grace of the broker's answer changing, and the listener's stop returns within the
+// grace. A write blocked on such a client holds the connection for up to relaySocketWriteWait, so
+// neither the close nor the watch's ping may wait for it. Control: end taking the data writers'
+// lock, or the watch writing its ping in line; the socket stays open until the blocked write's 10 s
+// run out, and the row fails naming how long it took.
+func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		close func(t *testing.T, rig *relaySocketRig, token string)
+		// within is how long after close the connection must be dropped.
+		within time.Duration
+	}{
+		{name: "a revoke", within: 2*relaySocketTestCheck + relaySocketCloseGrace + time.Second,
+			close: func(_ *testing.T, rig *relaySocketRig, token string) {
+				rig.broker.Says(token, brokertoken.Introspection{})
+				rig.clock.advance(brokertoken.AffirmativeCacheTTL + time.Second)
+			}},
+		{name: "the listener's stop", within: relaySocketCloseGrace + time.Second,
+			close: func(t *testing.T, rig *relaySocketRig, _ string) {
+				started := time.Now()
+				rig.sockets.stop()
+				if took := time.Since(started); took > relaySocketCloseGrace+time.Second {
+					t.Errorf("the listener's stop took %s with a write blocked on a client that reads nothing, want it within %s", took.Round(time.Millisecond), relaySocketCloseGrace)
+				}
+			}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newRelaySocketRig(t)
+			const session = "ses_edge_reads_nothing"
+			token := "access-token-of-a-client-that-reads-nothing"
+			rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+			dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
+			conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+relaySocketPath(session), rig.upgradeHeader(t, session, token))
+			if err != nil {
+				t.Fatalf("open the socket: %v (%s)", err, describeUpgrade(response))
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			// The client sends its sub and reads nothing from here on.
+			if err := conn.WriteJSON(map[string]any{"op": "sub", "sid": 1, "subject": bus.DeliverSubject(session)}); err != nil {
+				t.Fatalf("send the sub: %v", err)
+			}
+			socket := rig.openSocket(t, session)
+			sub := socket.awaitSubscription(t)
+
+			// Far more than the connection's buffers hold: the socket's writes block, and the rest
+			// wait on the subscription.
+			publisher := testnats.Connect(t, rig.owner.url)
+			data := bytes.Repeat([]byte("x"), 512<<10)
+			for i := range 60 {
+				if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "unread." + strconv.Itoa(i), Data: data}); err != nil {
+					t.Fatalf("publish frame %d: %v", i, err)
+				}
+			}
+			if err := publisher.Flush(); err != nil {
+				t.Fatalf("flush the frames: %v", err)
+			}
+			if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+				pending, _, _ := sub.Pending()
+				delivered, _ := sub.Delivered()
+				return pending > 0 && delivered > 0
+			}) {
+				t.Fatal("the socket's subscription never held a frame behind the one it was writing")
+			}
+
+			started := time.Now()
+			row.close(t, rig, token)
+			if !testwait.Holds(row.within, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+				t.Fatalf("the socket was still open %s after %s, want it dropped within %s", time.Since(started).Round(time.Millisecond), row.name, row.within)
+			}
+			t.Logf("the socket was dropped %s after %s", time.Since(started).Round(time.Millisecond), row.name)
+		})
+	}
+}
+
+// openSocket is the socket the rig's replica holds open for session once its upgrade is attached,
+// failing the test when none is within 5 s.
+func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket {
+	t.Helper()
+	var found *relaySocket
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+		rig.sockets.mu.Lock()
+		defer rig.sockets.mu.Unlock()
+		for socket := range rig.sockets.open[session] {
+			if socket.conn != nil {
+				found = socket
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("the replica holds no open socket of %s", session)
+	}
+	return found
+}
+
+// awaitSubscription is the subscription the socket holds once its client's sub is taken, failing
+// the test when it holds none within 5 s.
+func (socket *relaySocket) awaitSubscription(t *testing.T) *natsgo.Subscription {
+	t.Helper()
+	var held *natsgo.Subscription
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+		socket.subsMu.Lock()
+		defer socket.subsMu.Unlock()
+		for _, sub := range socket.subs {
+			held = sub
+			return true
+		}
+		return false
+	}) {
+		t.Fatalf("the socket of %s took no subscription", socket.session)
+	}
+	return held
+}
+
+// holds is how many sockets of session the rig's replica holds open.
+func (rig *relaySocketRig) holds(session string) int {
+	rig.sockets.mu.Lock()
+	defer rig.sockets.mu.Unlock()
+	return len(rig.sockets.open[session])
 }
 
 // A frame over 1 MiB closes the socket 1009 (control: a frame just under the bound is read and
