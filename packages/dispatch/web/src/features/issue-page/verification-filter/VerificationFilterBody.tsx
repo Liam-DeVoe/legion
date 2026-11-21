@@ -40,8 +40,9 @@ import { CutWords } from "../CutWords";
 import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
-import { ParentLink } from "../node-line";
+import { NodeParentLine } from "../node-line";
 import { shortDay } from "../node-time";
+import type { ViewReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import {
   authorKind,
@@ -164,6 +165,7 @@ export function queryTyped(query: string): boolean {
 export function VerificationFilterBody({
   checks,
   context,
+  namesLine,
   published,
   reads,
   view,
@@ -175,6 +177,14 @@ export function VerificationFilterBody({
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
+  /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
+   *  `useViewReads`), the outline's own: its words and a Retry that asks those reads again, and
+   *  none while they do not stand failed. Every reference the rows and the parent lines draw
+   *  waits on those names (`published`), so while they stand failed each is drawn as its address
+   *  and "Also under" names nothing; the line says why. The body draws it over the tree after
+   *  its own reads' lines, as the outline draws it after the lines of the reads its rows come
+   *  from. */
+  namesLine: ViewReads["names"];
   /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
    *  which the body hands every row it draws in the render that draws it
    *  (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a reference
@@ -376,6 +386,18 @@ export function VerificationFilterBody({
           </div>
         );
       })}
+      {/* The names' line, the outline's own (`namesLine`), after the view's own reads' lines and
+          over the tree, in an element that names it as each of those names its read. */}
+      {namesLine.map((line) => (
+        <div data-verification-unreadable={line.key} key={line.key}>
+          <FailedReadLine
+            failure={line.failure}
+            message={line.message}
+            onRetry={line.retry}
+            retrying={line.retrying}
+          />
+        </div>
+      ))}
       {/* The page holds one tree on every address, and it holds everything the view draws: the
           issue's row and the table, or in their place the one line that says the issue holds
           nothing to draw. While a read is out or has failed it holds nothing, and is still the
@@ -1083,7 +1105,9 @@ function Statement({
         >
           <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
         </CutWords>
-        <ParentLine node={node} />
+        {node.parentLine === undefined ? null : (
+          <NodeParentLine line={node.parentLine} spaced tabStops />
+        )}
         <Gaps node={node} />
       </div>
       <div className="flex min-w-0 flex-col">
@@ -1502,30 +1526,6 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
   );
 }
 
-/** The one line a row draws for the node its words came from, where the filter draws that node
- *  as no row: its kind, and its first line as the outline's parent line draws it
- *  (`node-line.tsx`'s `ParentLink`): projected from its words, each reference in them read as its
- *  target's current name (R8), and the link a reader follows to that node where its address
- *  names a page, and text where it gives none. The link is a tab stop, as every control of the
- *  view is: the tree's keys move between rows and reach no link inside one. */
-function ParentLine({ node }: { node: TreeNode }): ReactNode {
-  const line = node.parentLine;
-  if (line === undefined) return null;
-  return (
-    <p
-      className={`mt-0.5 flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
-      data-node-parent-line=""
-      data-parent-id={line.id}
-      data-parent-type={line.type}
-    >
-      <span className="shrink-0" {...pageChrome}>
-        {NODE_TYPE_NAMES[line.type]}
-      </span>
-      <ParentLink line={line} tabStops />
-    </p>
-  );
-}
-
 /** A row the filter kept that is neither a statement nor a check: a node an address named,
  *  which outranks the filter. It is drawn by its kind and its words, so nothing the filter drew
  *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
@@ -1550,7 +1550,9 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
       <div className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
         <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
       </div>
-      <ParentLine node={node} />
+      {node.parentLine === undefined ? null : (
+        <NodeParentLine line={node.parentLine} spaced tabStops />
+      )}
     </div>
   );
 }

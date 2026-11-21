@@ -46,7 +46,7 @@ import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } 
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
-import { FirstLine, ParentLink } from "./node-line";
+import { FirstLine, NodeParentLine } from "./node-line";
 import { documentWord } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
@@ -396,17 +396,7 @@ export function NodeRow({
           {/* Under a filter, the node's parent where the filter draws it as no row: one line,
               its kind's word and its first line (R2, R1's first-line rule). */}
           {node.parentLine === undefined ? null : (
-            <p
-              className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
-              data-node-parent-line=""
-              data-parent-id={node.parentLine.id}
-              data-parent-type={node.parentLine.type}
-            >
-              <span className="shrink-0" {...pageChrome}>
-                {NODE_TYPE_NAMES[node.parentLine.type]}
-              </span>
-              <ParentLink line={node.parentLine} tabStops={tabStops} />
-            </p>
+            <NodeParentLine line={node.parentLine} tabStops={tabStops} />
           )}
           {body ? (
             <NodeBody

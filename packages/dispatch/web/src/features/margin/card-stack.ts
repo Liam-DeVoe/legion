@@ -46,20 +46,22 @@ export interface CardStack {
  * composer's picker that opened and closed inside a card left the region its open height, until
  * an unrelated render - the hover a pointer makes on its way to Send - read it again and the
  * margin's scroll clamped under the press. A pass that reads the same tops hands back the map
- * the stack already holds, so it draws no card again. `keyOf` and `wantedTop` must keep one
+ * the stack already holds, so it draws no card again. A pass reads nothing while the region is
+ * not drawn, which it is not while it holds no card. `keyOf` and `wantedTop` must keep one
  * identity while what they answer stays the same (`useCallback`), or every render reads again.
  */
 export function useCardStack<Card>(
   cards: readonly Card[],
   keyOf: (card: Card) => string,
-  wantedTop: (card: Card, origin: number | undefined) => number | undefined
+  wantedTop: (card: Card, origin: number) => number | undefined
 ): CardStack {
   const region = useRef<HTMLElement | null>(null);
   const boxes = useRef(new Map<string, HTMLDivElement>());
   const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [height, setHeight] = useState(0);
   const measure = useCallback(() => {
-    const origin = region.current === null ? undefined : regionOrigin(region.current);
+    if (region.current === null) return;
+    const origin = regionOrigin(region.current);
     const next = new Map<string, number>();
     let bottom = 0;
     for (const card of cards) {
