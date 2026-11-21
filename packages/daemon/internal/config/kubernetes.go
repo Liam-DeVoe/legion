@@ -588,18 +588,21 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 }
 
 // pluginUserinfoPastHost reports whether u, a plugin source's http(s) URL, holds an "@" after its
-// host: in its query, its fragment, or a path segment anywhere but at its first character. That is
-// where a token holding a "/" written as the user lands (`https://<head>/<tail>@cache/x.tgz` parses
-// with <head> as the host), which the daemon's boot log and the state's settings print. An "@" that
-// opens a segment is a scoped package's, as a registry tarball URL holds it
-// (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`), and is kept; natsurl.UserinfoPastHost, which
-// refuses any "@" in the path, is for URLs that name a server, never a package.
+// host: in its query, its fragment, or any path segment but the plugins' own scope
+// (runtime.PluginScope). That is where a token holding a "/" written as the user lands
+// (`https://<head>/<tail>@cache/x.tgz` parses with <head> as the host), and where one ending in
+// "/" leaves a segment that opens with "@" (`https://<head>/@cache/x.tgz`), which the daemon's boot
+// log and the state's settings print. A registry tarball URL of a plugin holds the scope as a
+// segment of its own (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`, Artifactory's
+// `/api/npm/<repo>/@sjawhar/…`, GitHub Packages' `/download/@sjawhar/…`), and is kept;
+// natsurl.UserinfoPastHost, which refuses any "@" in the path, is for URLs that name a server,
+// never a package.
 func pluginUserinfoPastHost(u *url.URL) bool {
 	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
 		return true
 	}
 	for _, segment := range strings.Split(u.Path, "/") {
-		if len(segment) > 1 && strings.Contains(segment[1:], "@") {
+		if strings.Contains(segment, "@") && segment != runtime.PluginScope {
 			return true
 		}
 	}

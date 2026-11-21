@@ -2200,9 +2200,12 @@ func TestPluginsBlockRefusals(t *testing.T) {
 // A plugin source that carries a credential is refused naming the key alone: no refusal quotes
 // it. A source with userinfo and no http(s) scheme, one with a signed query and no host, a
 // scheme-relative one with userinfo, an http(s) one whose user is a token holding a "/" (so the
-// "@" lands in the path), and one with an "@" in its query or fragment each carry a made-up
-// credential here. A bare token in the version slot is quoted no more either, nor is a dist-tag.
-// A registry tarball URL whose path opens a segment with "@", a scoped package's, still loads.
+// "@" lands in the path), one whose token ends in "/" (so a path segment opens with "@"), one
+// whose password is digits then a "/" (so the user and the digits read as a host and a port), and
+// one with an "@" in its query or fragment each carry a made-up credential here. A bare token in
+// the version slot is quoted no more either, nor is a dist-tag. A registry tarball URL whose path
+// holds the plugins' scope as a segment, in the forms an npm registry, Artifactory and GitHub
+// Packages serve and with the scope's "/" percent-encoded, still loads.
 func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
 	const madeUp = "madeUpPluginCredential0123"
 	for name, source := range map[string]string{
@@ -2210,6 +2213,8 @@ func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
 		"a signed query with no host":        "https:///pi-legion.tgz?signature=" + madeUp,
 		"a scheme-relative source with user": "//legion:" + madeUp + "@cache/pi-legion.tgz",
 		"a token holding a / as the user":    "https://" + madeUp + "/rest@cache.example/pi-legion.tgz",
+		"a token ending in / as the user":    "https://" + madeUp + "/mid/@cache.example/pi-legion.tgz",
+		"a password of digits and a /":       "https://" + madeUp + ":12/@cache.example/pi-legion.tgz",
 		"an @ in the query":                  "https://cache.example/pi-legion.tgz?by=" + madeUp + "@x",
 		"an @ in the fragment":               "https://cache.example/pi-legion.tgz#" + madeUp + "@x",
 		"a bare token in the version slot":   madeUp,
@@ -2225,13 +2230,21 @@ func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
 			}
 		})
 	}
-	scoped := "https://registry.example/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz"
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+scoped+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
-	if err != nil {
-		t.Fatalf("a scoped package's registry tarball URL was refused: %v", err)
-	}
-	if got := cfg.Runtime.Kubernetes.Plugins.PiLegion; got != scoped {
-		t.Fatalf("PiLegion = %q, want %q", got, scoped)
+	for name, scoped := range map[string]string{
+		"an npm registry":       "https://registry.example/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz",
+		"Artifactory":           "https://artifactory.example/api/npm/npm-remote/@sjawhar/pi-legion/-/@sjawhar/pi-legion-9.6.1.tgz",
+		"GitHub Packages":       "https://npm.pkg.github.com/download/@sjawhar/pi-legion/9.6.1/0123456789abcdef",
+		"the scope's / encoded": "https://registry.example/@sjawhar%2fpi-legion/-/pi-legion-9.6.1.tgz",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+scoped+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+			if err != nil {
+				t.Fatalf("a scoped package's registry tarball URL was refused: %v", err)
+			}
+			if got := cfg.Runtime.Kubernetes.Plugins.PiLegion; got != scoped {
+				t.Fatalf("PiLegion = %q, want %q", got, scoped)
+			}
+		})
 	}
 }
 

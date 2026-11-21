@@ -80,9 +80,9 @@ const (
 	// envoyPackage the Envoy plugin it claims its role through, which every session loads; and
 	// legacyPackage the one package that carried both before the split, which no pane may still
 	// load beside pluginPackage.
-	pluginPackage = "@sjawhar/pi-legion"
-	envoyPackage  = "@sjawhar/pi-envoy"
-	legacyPackage = "@sjawhar/pi-legion-envoy"
+	pluginPackage = runtime.PiLegionPackage
+	envoyPackage  = runtime.PiEnvoyPackage
+	legacyPackage = runtime.PluginScope + "/pi-legion-envoy"
 	// maxProbeStderr bounds how much of a failed probe's stderr a refusal quotes, keeping the tail,
 	// where the error usually is (MAX_PROBE_STDERR_LENGTH, boot-probes.ts).
 	maxProbeStderr = 2048
