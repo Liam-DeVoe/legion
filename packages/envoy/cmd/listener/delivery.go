@@ -475,10 +475,7 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 			return
 		}
 		cfg.messagesReceived.Inc([2]string{"source", item.Source}, [2]string{"topic_prefix", metrics.TopicPrefix(item.Topic)})
-		// The line carries the message's body only where logPayload allows it: in the required
-		// privacy mode this line makes no privacy decision, so it carries none.
-		received := []slog.Attr{slog.String("source", item.Source), slog.String("source_session", item.SourceSession), slog.String("topic", item.Topic), slog.String("event_id", item.EventID)}
-		cfg.logger.LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(cfg.privacy, item.PayloadSummary)...)...)
+		logReceived(cfg, item)
 		switch {
 		case strings.HasPrefix(item.Topic, contracts.RoleTopicPrefix):
 			roleTopicDelivery(cfg, message, item)
@@ -488,6 +485,14 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 			fanoutDelivery(cfg, message, item)
 		}
 	}
+}
+
+// logReceived writes the "listener received" line of item. It carries the message's body only
+// where logPayload allows it: in the required privacy mode this line makes no privacy decision, so
+// it carries none.
+func logReceived(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) {
+	received := []slog.Attr{slog.String("source", item.Source), slog.String("source_session", item.SourceSession), slog.String("topic", item.Topic), slog.String("event_id", item.EventID)}
+	cfg.logger.LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(cfg.privacy, item.PayloadSummary)...)...)
 }
 
 // roleLaneClaims is the claim side of the role lane's resolution (roles.ClaimStore): the claim

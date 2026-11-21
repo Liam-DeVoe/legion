@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -121,9 +120,9 @@ func (s *privacySource) awaitArrival(t *testing.T) {
 	}
 }
 
-// testK7Reader is K7's reader of source with the timeout given, counting on its own registry.
+// testK7Reader is K7's reader of source with the timeout given.
 func testK7Reader(source string, timeout time.Duration) *k7Reader {
-	reader := newK7Reader(source, listenerBrokerAccount(edgeAccountToken), metrics.New().NewCounter("test_unknown", "test"), logging.New("test-machine"))
+	reader := newK7Reader(source, listenerBrokerAccount(edgeAccountToken), logging.New("test-machine"))
 	reader.timeout = timeout
 	return reader
 }

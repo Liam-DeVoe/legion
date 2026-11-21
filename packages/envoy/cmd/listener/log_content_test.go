@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"strings"
 	"testing"
 
@@ -26,12 +25,12 @@ func recordLine(t *testing.T, privacy *listenerPrivacy, decision *scopeDecision)
 	return out.String()
 }
 
-// receivedLine writes the "listener received" line of the same message under privacy, as the
-// durable delivery handler writes it, and answers it.
+// receivedLine writes the "listener received" line of the same message under privacy, through the
+// durable delivery handler's own writer (logReceived), and answers it.
 func receivedLine(privacy *listenerPrivacy) string {
 	var out bytes.Buffer
-	received := []slog.Attr{slog.String("source", "agent"), slog.String("event_id", "evt-1")}
-	logging.NewWithWriter("test-machine", &out).LogEvent(slog.LevelInfo, "listener received", append(received, logPayload(privacy, logContentMarker)...)...)
+	item := contracts.Envelope{EventID: "evt-1", Source: "agent", SourceSession: "ses_a", PayloadSummary: logContentMarker}
+	logReceived(listenerDeliveryHandlerConfig{logger: logging.NewWithWriter("test-machine", &out), privacy: privacy}, item)
 	return out.String()
 }
 

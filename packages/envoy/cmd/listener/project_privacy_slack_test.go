@@ -77,7 +77,7 @@ func requiredSlackIntake(t *testing.T, source *privacySource, met *metrics.Regis
 	t.Helper()
 	logger := logging.New("test-machine")
 	privacy := &listenerPrivacy{required: true, counters: newPrivacyCounters(met), logger: logger}
-	privacy.k7 = newK7Reader(source.server.URL, listenerBrokerAccount(edgeAccountToken), privacy.counters.unknown, logger)
+	privacy.k7 = newK7Reader(source.server.URL, listenerBrokerAccount(edgeAccountToken), logger)
 	return webhook.SlackHandler(slackTestSecret, published, webhook.WithSlackPrivacy(privacy))
 }
 
@@ -123,7 +123,7 @@ func TestTheSlackIntakeWaitsForAValidRead(t *testing.T) {
 	defer release()
 	lenient := &slackPublished{}
 	privacy := &listenerPrivacy{required: true, counters: newPrivacyCounters(metrics.New()), logger: logging.New("test-machine")}
-	privacy.k7 = newK7Reader(source.server.URL, listenerBrokerAccount(edgeAccountToken), privacy.counters.unknown, privacy.logger)
+	privacy.k7 = newK7Reader(source.server.URL, listenerBrokerAccount(edgeAccountToken), privacy.logger)
 	privacy.k7.timeout = 300 * time.Millisecond
 	if status := slackEvent(t, webhook.SlackHandler(slackTestSecret, lenient, webhook.WithSlackPrivacy(timeoutAsNoPrivateProject{privacy})), "C0PUB00001"); status != http.StatusOK {
 		t.Fatalf("control: the intake that takes a timeout as no private project answered %d", status)

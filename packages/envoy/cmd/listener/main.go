@@ -919,20 +919,13 @@ func openV1Routes(gate *startingGate, ready *listenerDeps, served *atomic.Pointe
 // answering it (bus.WithSilentCutDetection). A hub whose packets stop closes nothing. On nats.go's
 // default pings (one every two minutes, two outstanding) the connection reads connected for four
 // to six minutes, and the reconnect that finds a hub which answers starts only once it reads lost.
-//
-// In the required privacy mode each connection's name ends in privacyRequiredSuffix, which a hub
-// rendered private admits a listener by, as the role lane's and the session consumers' do.
 func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
-	options := []bus.ConnectOption{
+	return []bus.ConnectOption{
 		bus.WithReplicas(cfg.NATSReplicas),
 		bus.WithStreamMaxBytes(cfg.StreamMaxBytes),
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
 	}
-	if cfg.PrivacyRequired {
-		options = append(options, bus.WithPrivacyRequired(privacyRequiredSuffix))
-	}
-	return options
 }
 
 // registerListGauges registers the two gauges that count a list /v1 answers: envoy_active_sessions
@@ -1234,7 +1227,7 @@ func main() {
 	// connect and after every reconnect, at the deployment's replica count and byte limit
 	// (listenerStreamOptions), and leaves as it is a stream that a newer build stamped with a
 	// higher generation (bus.ConnectOwningStream).
-	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
+	client, err := bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), privacy.busOptions()...)...)
 	if err != nil {
 		// Named, because this step and the two below it are the whole of the start-up between the
 		// listening line and "webhooks open", and each one can end it with a bare error: a reader

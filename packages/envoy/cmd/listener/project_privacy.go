@@ -11,8 +11,9 @@ package main
 // not_listener, 503 busy) rather than an empty list when it cannot. The reader keeps nothing
 // between decisions: a read serves only the decisions that began before its request was sent
 // (k7Reader.Read), and any answer that is not a whole one is unknown for every project. An unknown
-// project counts as private: a frame of it is held for a session whose token lists no project,
-// a route that needs it answers 503 refilling, the Slack intake 503, and a role message is held.
+// project counts as private: a frame of it is held for a full member's session whose token does
+// not list it, a route that needs it answers 503 refilling, the Slack intake 503, and a role
+// message is held.
 //
 // In the all-public mode (both variables unset) nothing here reads anything: every project is
 // public and a token's list restricts nothing, as before either mode existed (R9).
@@ -43,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -207,7 +209,6 @@ type k7Reader struct {
 	account ciphertoken.Account
 	client  *http.Client
 	timeout time.Duration
-	unknown *metrics.Counter
 	logger  *logging.Logger
 
 	mu      sync.Mutex
@@ -221,14 +222,13 @@ type k7Reader struct {
 
 // newK7Reader is the reader of the privacy source at source (ENVOY_PROJECT_PRIVACY_URL, the
 // broker's base URL), asking as account.
-func newK7Reader(source string, account ciphertoken.Account, unknown *metrics.Counter, logger *logging.Logger) *k7Reader {
+func newK7Reader(source string, account ciphertoken.Account, logger *logging.Logger) *k7Reader {
 	return &k7Reader{
 		url:     strings.TrimSuffix(source, "/") + k7Path,
 		source:  source,
 		account: account,
 		client:  &http.Client{},
 		timeout: k7ReadTimeout,
-		unknown: unknown,
 		logger:  logger,
 	}
 }
@@ -548,20 +548,15 @@ func (d *scopeDecision) sees(project string) (bool, error) {
 	return roles.Sees(d.ctx, d.privateOf, d.scope.listed, d.scope.restricted, project)
 }
 
-// requiredProjects is the stored projects the required mode reads from entry, the record at key:
-// its list when the record names its key, and none otherwise (session.SessionEntry.RequiredScope).
-func requiredProjects(entry session.SessionEntry, key string) []string {
-	projects, _ := entry.RequiredScope(key)
-	return projects
-}
-
-// seesSession reports whether the caller sees a session whose stored projects (K6) are projects:
-// one of them it sees, or, for a session that lists none, a caller that is no restricted member,
-// or that lists a public project.
-func (d *scopeDecision) seesSession(projects []string) (bool, error) {
+// seesSession reports whether the caller sees the session whose record is entry, read by the
+// required mode's rule (session.SessionEntry.RequiredScope): one of its stored projects (K6) it
+// sees, or, for a session that lists none, a caller that is no restricted member, or that lists a
+// public project.
+func (d *scopeDecision) seesSession(entry session.SessionEntry, sessionID string) (bool, error) {
 	if !d.privacy.isRequired() || d.scope.allProjects {
 		return true, nil
 	}
+	projects, _ := entry.RequiredScope(sessionID)
 	for _, project := range projects {
 		if sees, err := d.sees(project); err != nil || sees {
 			return sees, err
@@ -607,8 +602,8 @@ func writePrivacyUnknown(w http.ResponseWriter) {
 	writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Error: privacyUnknownMessage, Code: listRefillingCode})
 }
 
-// privateOf is project's privacy in the request's one answer: what roles.HolderSees reads for a
-// session the request names.
+// privateOf is project's privacy in the request's one answer: what roles.Sees reads for a session
+// the request names.
 func (d *scopeDecision) privateOf(_ context.Context, project string) (bool, error) {
 	set, err := d.answer()
 	return set.private(project), err
@@ -642,9 +637,7 @@ func logPayload(privacy *listenerPrivacy, summary string) []slog.Attr {
 
 // listenerClaims is the listener's roles.ClaimStore: a role's claim read from the role bucket
 // through store.Registry at contracts.RoleClaimKey(project, role), a project's privacy through the
-// privacy source, read afresh at each call and never from a copy, and the listener's mode. The
-// privacy read runs only on the fallback path and the holder check of a holder whose token lists
-// no project (roles.ResolveHolder), so a role whose claim is found costs no extra read.
+// privacy source, read afresh at each call and never from a copy, and the listener's mode.
 type listenerClaims struct {
 	registry *store.Registry
 	privacy  *listenerPrivacy
@@ -678,14 +671,6 @@ func (cfg listenerDeliveryHandlerConfig) claims() listenerClaims {
 	return listenerClaims{registry: cfg.registry, privacy: cfg.privacy}
 }
 
-// privacyRequiredSuffix ends the client name of each of a required-mode listener's three bus
-// clients (bus.WithPrivacyRequired): the stream client, the role lane and the session consumers.
-// A hub rendered private admits a listener's connection only with it.
-//
-// It stands in for natsgrant.PrivacyRequiredSuffix, the one constant the auth service decides by,
-// until that constant reaches this branch; the switch is this one line.
-const privacyRequiredSuffix = " privacy-required"
-
 // newListenerPrivacy is the listener's privacy mode from cfg: in the required mode a reader of
 // cfg.PrivacyURL asking as the listener's platform identity, account; in the all-public mode
 // none. allProjects is ENVOY_ALL_PROJECTS_ACCOUNTS. Its counters are registered on met in both
@@ -693,7 +678,7 @@ const privacyRequiredSuffix = " privacy-required"
 func newListenerPrivacy(cfg config.Service, account ciphertoken.Account, allProjects []string, met *metrics.Registry, logger *logging.Logger) *listenerPrivacy {
 	privacy := &listenerPrivacy{required: cfg.PrivacyRequired, allProjects: allProjects, counters: newPrivacyCounters(met), logger: logger}
 	if cfg.PrivacyRequired {
-		privacy.k7 = newK7Reader(cfg.PrivacyURL, account, privacy.counters.unknown, logger)
+		privacy.k7 = newK7Reader(cfg.PrivacyURL, account, logger)
 	}
 	return privacy
 }
@@ -704,7 +689,7 @@ func (p *listenerPrivacy) busOptions() []bus.ConnectOption {
 	if !p.isRequired() {
 		return nil
 	}
-	return []bus.ConnectOption{bus.WithPrivacyRequired(privacyRequiredSuffix)}
+	return []bus.ConnectOption{bus.WithPrivacyRequired(natsgrant.PrivacyRequiredSuffix)}
 }
 
 // SlackChannelProjects is the private projects listing channel in a fresh privacy answer, for the
@@ -729,31 +714,39 @@ func (p *listenerPrivacy) SlackWithheld(channel string, projects []string) {
 	}
 }
 
-// rolesSeen is roles, each named by its claim's key, less those whose project the caller does not
-// see (contracts.ParseRoleClaimKey), in their order: roles itself in the all-public mode.
-func (d *scopeDecision) rolesSeen(roles []string) ([]string, error) {
+// seenOf is items less those whose project (projectOf) the caller does not see, in their order:
+// items itself in the all-public mode and for an all-projects caller.
+func seenOf[T any](d *scopeDecision, items []T, projectOf func(T) string) ([]T, error) {
 	if !d.privacy.isRequired() || d.scope.allProjects {
-		return roles, nil
+		return items, nil
 	}
-	kept := make([]string, 0, len(roles))
-	for _, role := range roles {
-		project, _ := contracts.ParseRoleClaimKey(role)
-		sees, err := d.sees(project)
+	kept := make([]T, 0, len(items))
+	for _, item := range items {
+		sees, err := d.sees(projectOf(item))
 		if err != nil {
 			return nil, err
 		}
 		if sees {
-			kept = append(kept, role)
+			kept = append(kept, item)
 		}
 	}
 	return kept, nil
 }
 
-// hidesSession answers a read route for a session whose stored projects are projects: false when
-// the caller sees it; otherwise it writes the answer of a session no listener has heard of, or the
-// 503 refilling when the privacy read did not answer, and reports true.
-func (d *scopeDecision) hidesSession(w http.ResponseWriter, sessionID string, projects []string) bool {
-	seen, err := d.seesSession(projects)
+// rolesSeen is roles, each named by its claim's key, less those whose project the caller does not
+// see (contracts.ParseRoleClaimKey).
+func (d *scopeDecision) rolesSeen(roles []string) ([]string, error) {
+	return seenOf(d, roles, func(role string) string {
+		project, _ := contracts.ParseRoleClaimKey(role)
+		return project
+	})
+}
+
+// hidesSession answers a read route for the session whose record is entry: false when the caller
+// sees it (seesSession); otherwise it writes the answer of a session no listener has heard of, or
+// the 503 refilling when the privacy read did not answer, and reports true.
+func (d *scopeDecision) hidesSession(w http.ResponseWriter, sessionID string, entry session.SessionEntry) bool {
+	seen, err := d.seesSession(entry, sessionID)
 	switch {
 	case err != nil:
 		writePrivacyUnknown(w)
@@ -767,45 +760,25 @@ func (d *scopeDecision) hidesSession(w http.ResponseWriter, sessionID string, pr
 
 // interestRowSeen is row less every topic whose project the caller does not see
 // (contracts.SubjectProject), so an interest row names no topic of a project the caller's token
-// does not list: row itself in the all-public mode.
+// does not list.
 func (d *scopeDecision) interestRowSeen(row listenerwire.InterestRow) (listenerwire.InterestRow, error) {
-	if !d.privacy.isRequired() || d.scope.allProjects {
-		return row, nil
-	}
-	topics := make([]string, 0, len(row.Topics))
-	for _, topic := range row.Topics {
+	topics, err := seenOf(d, row.Topics, func(topic string) string {
 		project, _ := contracts.SubjectProject(topic)
-		sees, err := d.sees(project)
-		if err != nil {
-			return listenerwire.InterestRow{}, err
-		}
-		if sees {
-			topics = append(topics, topic)
-		}
+		return project
+	})
+	if err != nil {
+		return listenerwire.InterestRow{}, err
 	}
 	row.Topics = topics
 	return row, nil
 }
 
-// legionAgentsSeen is agents less those of an issue whose project the caller does not see, in
-// their order: agents itself in the all-public mode.
+// legionAgentsSeen is agents less those of an issue whose project the caller does not see.
 func (d *scopeDecision) legionAgentsSeen(agents []legionagents.Agent) ([]legionagents.Agent, error) {
-	if !d.privacy.isRequired() || d.scope.allProjects {
-		return agents, nil
-	}
-	kept := make([]legionagents.Agent, 0, len(agents))
-	for _, agent := range agents {
-		project, ok := contracts.IssueProject(agent.Issue)
-		if !ok {
-			project = contracts.NoProject
+	return seenOf(d, agents, func(agent legionagents.Agent) string {
+		if project, ok := contracts.IssueProject(agent.Issue); ok {
+			return project
 		}
-		sees, err := d.sees(project)
-		if err != nil {
-			return nil, err
-		}
-		if sees {
-			kept = append(kept, agent)
-		}
-	}
-	return kept, nil
+		return contracts.NoProject
+	})
 }

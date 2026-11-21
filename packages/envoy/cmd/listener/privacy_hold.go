@@ -2,15 +2,15 @@ package main
 
 // privacy_hold.go is the relay's privacy rule in the required mode (project_privacy.go): each
 // frame whose subject names a project (contracts.SubjectProject) is relayed to a session only
-// when the session's stored scope (session.SessionEntry.Projects, K6) sees the project, decided
-// at the frame's delivery:
+// when the session's stored scope (session.SessionEntry.RequiredScope, K6) sees the project
+// (roles.Sees), decided at the frame's delivery:
 //
-//  1. a session whose token lists projects is relayed the frames of those projects and withheld
-//     the rest, private and public alike, with nothing read;
-//  2. a session whose token lists none is relayed a public project's frame and withheld a private
-//     one's, by a fresh privacy read; while the read cannot answer, the project is unknown and
-//     counts as private: the frame is held for that session, in the listener's memory, for at
-//     most holdLimits.undecided, and relayed or withheld once a read decides its project;
+//  1. a session whose token lists the project is relayed its frames in every state, with nothing
+//     read, and a restricted member's session is withheld every other project's;
+//  2. a full member's session is relayed a public project's frame and withheld a private one's, by
+//     a fresh privacy read; while the read cannot answer, the project is unknown and counts as
+//     private: the frame is held for that session, in the listener's memory, for at most
+//     holdLimits.undecided, and relayed or withheld once a read decides its project;
 //  3. a frame of no project, a GitHub event included (contracts.AnyToken), goes at once to every
 //     session its subject reaches and is never held.
 //
@@ -35,6 +35,7 @@ package main
 // does not land marks the session's next frame with the gap too.
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"slices"
@@ -197,14 +198,6 @@ func (m *sessionRelays) decideFrame(ctx context.Context, sessionID string, msg b
 	if !ok || project == contracts.NoProject || project == contracts.AnyToken {
 		return []bus.SessionMessage{msg}
 	}
-	// A project the session's token lists is relayed in every state, with nothing read; a
-	// restricted member's session (or one whose record carries no restricted claim) is withheld
-	// every other project; a full member's session is relayed one a fresh read says is public
-	// (roles.Sees). The scope is read only from a record that names its key
-	// (session.SessionEntry.RequiredScope): any other record - a JetStream answer or empty record
-	// the server stored at the key, a copy of another session's record, an earlier build's - is no
-	// project's, so the session gets no frame of any project until its next registration writes
-	// its own record.
 	entry, _ := m.sessions.Lookup(sessionID)
 	listed, restricted := entry.RequiredScope(sessionID)
 	if slices.Contains(listed, project) {
@@ -272,11 +265,7 @@ func (m *sessionRelays) hold(ctx context.Context, sessionID, project string, msg
 	limits := holdLimits
 	h := m.holds
 	h.mu.Lock()
-	hold := h.sessions[sessionID]
-	if hold == nil {
-		hold = &sessionHold{lanes: map[string]*heldLane{}}
-		h.sessions[sessionID] = hold
-	}
+	hold := h.sessionLocked(sessionID)
 	hold.begin()
 	if len(hold.lanes) == 0 {
 		hold.nextRead = frame.heldAt.Add(limits.redecide)
@@ -371,14 +360,12 @@ func (m *sessionRelays) decideHeld(ctx context.Context, sessionID string, set pr
 			}
 			continue
 		}
-		for range lane.frames {
-			counters.decisions.Inc([2]string{"answer", decisionPublic})
-		}
+		counters.decisions.Add(int64(len(lane.frames)), [2]string{"answer", decisionPublic})
 		relayed = append(relayed, lane.frames...)
 	}
 	// Each lane is in stream order already; frames of two lanes are relayed in the order the
 	// stream stored them too.
-	slices.SortFunc(relayed, func(a, b heldFrame) int { return compareSeq(a.msg.StreamSeq, b.msg.StreamSeq) })
+	slices.SortFunc(relayed, func(a, b heldFrame) int { return cmp.Compare(a.msg.StreamSeq, b.msg.StreamSeq) })
 	if clear {
 		m.writeHeldMarker(ctx, sessionID, false)
 	}
@@ -387,17 +374,6 @@ func (m *sessionRelays) decideHeld(ctx context.Context, sessionID string, set pr
 		messages[i] = frame.msg
 	}
 	return messages
-}
-
-// compareSeq orders two stream sequences.
-func compareSeq(a, b uint64) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }
 
 // readBeforeDrop is a fresh privacy read for sessionID's relay, which runs inline in its loop: while
@@ -525,16 +501,11 @@ func (m *sessionRelays) startHeld(ctx context.Context, sessionID string) {
 		return
 	}
 	m.holds.mu.Lock()
-	hold := m.holds.sessions[sessionID]
-	if hold != nil && (len(hold.lanes) > 0 || hold.marked) {
+	if hold := m.holds.sessions[sessionID]; hold != nil && (len(hold.lanes) > 0 || hold.marked) {
 		m.holds.mu.Unlock()
 		return
 	}
-	if hold == nil {
-		hold = &sessionHold{lanes: map[string]*heldLane{}}
-		m.holds.sessions[sessionID] = hold
-	}
-	hold.gap = true
+	m.holds.sessionLocked(sessionID).gap = true
 	m.holds.mu.Unlock()
 	m.writeHeldMarker(ctx, sessionID, false)
 }
@@ -552,12 +523,17 @@ func (m *sessionRelays) writeHeldMarker(ctx context.Context, sessionID string, h
 		slog.String("session_id", sessionID), slog.Bool("held", held), slog.String("error", err.Error()))
 	m.holds.mu.Lock()
 	defer m.holds.mu.Unlock()
-	hold := m.holds.sessions[sessionID]
+	m.holds.sessionLocked(sessionID).dropped()
+}
+
+// sessionLocked is sessionID's hold, created empty where it has none. The caller holds h.mu.
+func (h *privacyHolds) sessionLocked(sessionID string) *sessionHold {
+	hold := h.sessions[sessionID]
 	if hold == nil {
 		hold = &sessionHold{lanes: map[string]*heldLane{}}
-		m.holds.sessions[sessionID] = hold
+		h.sessions[sessionID] = hold
 	}
-	hold.dropped()
+	return hold
 }
 
 // forgetHeld drops every frame held for sessionID, whose relay this listener no longer runs: the

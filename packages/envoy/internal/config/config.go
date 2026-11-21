@@ -50,7 +50,7 @@ type Service struct {
 	// PrivacyRequired is ENVOY_PROJECT_PRIVACY_REQUIRED=true, the listener's required mode: every
 	// decision a project's privacy turns on reads it afresh from PrivacyURL, a failed or incomplete
 	// read is unknown for every project and holds, and each bus client's connection name ends in
-	// the suffix a tagged hub admits (cmd/listener, project_scope.go). False is the all-public
+	// the suffix a tagged hub admits (cmd/listener, project_privacy.go). False is the all-public
 	// mode, set by leaving both variables unset: the listener makes no privacy read and every
 	// project is public, as before either variable existed. parsePrivacyMode refuses every other
 	// combination, so a failure never selects the all-public path.

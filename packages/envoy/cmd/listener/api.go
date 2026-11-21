@@ -846,8 +846,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// project, else the target's one, else no project's. In the required mode both the
 		// caller and the target must see it (project_privacy.go), and the stored subject names it.
 		if d.privacy.isRequired() {
-			project := sendProject(requestedProject, scopeOf(r, d.privacy).listed, target.Projects)
 			decision := record.decision
+			project := sendProject(requestedProject, decision.scope.listed, target.Projects)
 			sees, err := decision.sees(project)
 			targetSees := sees
 			if err == nil && sees {
@@ -1195,9 +1195,6 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to agent topics; use /v1/messages/send for direct agent messages")
 			return
 		}
-		// In the required privacy mode a publish is held to the projects the caller sees: a topic
-		// whose project (contracts.SubjectProject) the caller's token does not list is refused, a
-		// public project's too. A topic of no project, and a GitHub one, is every caller's.
 		if d.privacy.isRequired() {
 			decideCtx, cancelDecide := context.WithTimeout(r.Context(), sendRequestBudget)
 			defer cancelDecide()
@@ -1580,7 +1577,7 @@ func sessionsHandlerFor(registry *store.Registry, sessions *session.SessionRegis
 				}
 				continue
 			}
-			seen, err := decision.seesSession(requiredProjects(entry.SessionEntry, entry.SessionID))
+			seen, err := decision.seesSession(entry.SessionEntry, entry.SessionID)
 			var roles []string
 			if err == nil && seen {
 				roles, err = decision.rolesSeen(held[entry.SessionID])
@@ -1646,7 +1643,7 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, session.Gone))
 	case err != nil:
 		writeBusUnavailable(w, err)
-	case !edge && d.privacy.decide(ctx, r).hidesSession(w, sessionID, requiredProjects(entry, sessionID)):
+	case !edge && d.privacy.decide(ctx, r).hidesSession(w, sessionID, entry):
 		// In the required privacy mode a session the caller does not see is answered as one no
 		// listener has heard of.
 	default:
@@ -1772,7 +1769,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			// In the required privacy mode a session the caller does not see is answered as one
 			// no listener has heard of, and a shown session's roles are those of projects it sees.
 			decision := d.privacy.decide(ctx, r)
-			if !edge && decision.hidesSession(w, sessionID, requiredProjects(entry, sessionID)) {
+			if !edge && decision.hidesSession(w, sessionID, entry) {
 				return
 			}
 			info, err := sessionInfoFor(ctx, d.registry, session.ListEntry{SessionID: sessionID, SessionEntry: entry, State: state})
@@ -1868,7 +1865,7 @@ func adminInterestsHandlerFor(registry *store.Registry, sessions *session.Sessio
 			rows := make([]listenerwire.InterestRow, 0, len(items))
 			for _, item := range items {
 				entry, _ := sessions.Lookup(item.SessionID)
-				seen, err := decision.seesSession(requiredProjects(entry, item.SessionID))
+				seen, err := decision.seesSession(entry, item.SessionID)
 				if err != nil {
 					writePrivacyUnknown(w)
 					return
@@ -1908,7 +1905,7 @@ func adminInterestsHandlerFor(registry *store.Registry, sessions *session.Sessio
 			projects, edge := heldProjects(r)
 			if edge {
 				item.Topics = edgeShownTopics(repositories, projects, sessionID, item.Topics)
-			} else if entry, _ := sessions.Lookup(sessionID); decision.hidesSession(w, sessionID, requiredProjects(entry, sessionID)) {
+			} else if entry, _ := sessions.Lookup(sessionID); decision.hidesSession(w, sessionID, entry) {
 				return
 			}
 			row, err := decision.interestRowSeen(interestRowFor(sessions, item))
@@ -2152,8 +2149,6 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		// In the required privacy mode a claim is held to the projects the caller sees, a public
-		// project's too, so no claim is made for a project the claimant's token does not list.
 		decision := d.privacy.decide(ctx, r)
 		if sees, err := decision.sees(claimed); err != nil {
 			writePrivacyUnknown(w)
@@ -2575,7 +2570,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			return
 		}
 		if result.Holder != "" {
-			if seen, err := decision.seesSession(requiredProjects(result.Entry, result.Holder)); err != nil {
+			if seen, err := decision.seesSession(result.Entry, result.Holder); err != nil {
 				writePrivacyUnknown(w)
 				return
 			} else if !seen {

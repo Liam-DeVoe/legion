@@ -56,7 +56,7 @@ func outboxDeps(
 
 // projectPrivacyMode is DISPATCH_PROJECT_PRIVACY_REQUIRED, read once at start: `true` is
 // roles.Required, in which a role route's holder is taken only when its stored projects see the
-// project the event is of (roles.HolderSees); unset or blank is roles.AllPublic, in which a holder
+// project the event is of (roles.Sees); unset or blank is roles.AllPublic, in which a holder
 // is taken as before the modes existed. Any other value refuses the start, naming the variable.
 // Its value is the deployment's, set beside its listeners' ENVOY_PROJECT_PRIVACY_REQUIRED, and it
 // is never taken from DISPATCH_PRIVATE_HUBS, which a deployment sets only after its listeners

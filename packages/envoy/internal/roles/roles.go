@@ -63,7 +63,7 @@ const (
 	// check, so a holder's stored projects are never read.
 	AllPublic Mode = iota
 	// Required takes a holder only when its stored projects (session.SessionEntry.Projects) see
-	// the project the message is of (HolderSees).
+	// the project the message is of (Sees).
 	Required
 )
 
@@ -258,7 +258,7 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 //
 // In the required mode (claims.Mode()) a holder, the one claimed under project or the one the
 // fallback finds, is taken only when its stored projects see project under the same privacy
-// answer the relay decides by (HolderSees); otherwise the resolution answers Unclaimed, so the
+// answer the relay decides by (Sees); otherwise the resolution answers Unclaimed, so the
 // message goes to the kept lane and reaches a holder that can see it when one claims. A holder
 // whose record cannot be read is a *ReadError at HolderRead. In the all-public mode the holder's
 // projects are never read and it resolves as before the modes existed.
@@ -268,7 +268,7 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 // it, and a read that answers a role's holder (GET /v1/roles/<role>, the claim route) reads the
 // claim under its own project alone (ResolveClaim).
 func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLookup, project, role string) (Resolution, error) {
-	resolved, err := resolveClaim(ctx, claims, sessions, project, role)
+	resolved, err := ResolveClaim(ctx, claims, sessions, project, role)
 	if err != nil || resolved.State != Unclaimed || project == contracts.NoProject || project == contracts.RoleProject(role) {
 		return resolved, err
 	}
@@ -279,7 +279,7 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 	if private {
 		return resolved, nil
 	}
-	fallback, err := resolveClaim(ctx, claims, sessions, contracts.NoProject, role)
+	fallback, err := ResolveClaim(ctx, claims, sessions, contracts.NoProject, role)
 	if err != nil || fallback.State == Unclaimed || claims.Mode() != Required {
 		return fallback, err
 	}
@@ -295,7 +295,7 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 // reads live, and Lapsed with that state otherwise - a holder past the live window, one past the
 // gone horizon, and one with no record at all. The claim is left exactly as it is on every one of
 // them, so a stalled holder's role and its claimed_at outlive any number of resolutions. In the
-// required mode its holder is held to project as ResolveHolder holds one (HolderSees).
+// required mode its holder is held to project as ResolveHolder holds one (Sees).
 //
 // A read that fails returns a *ReadError naming its step, with the claim's holder in the
 // Resolution when one was read. Every read waits no longer than ctx, and no resolution starts
@@ -309,12 +309,6 @@ func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLooku
 // relay subject. Only the send route probes a session's relay subject, and its answer goes in the
 // send's own state, never in a role answer's holder_state.
 func ResolveClaim(ctx context.Context, claims ClaimStore, sessions SessionLookup, project, role string) (Resolution, error) {
-	return resolveClaim(ctx, claims, sessions, project, role)
-}
-
-// resolveClaim is ResolveClaim: the claim under project, its holder's state, and, in the required
-// mode, the holder check against project.
-func resolveClaim(ctx context.Context, claims ClaimStore, sessions SessionLookup, project, role string) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: fmt.Errorf("resolve role %s's holder: %w", role, err)}
 	}

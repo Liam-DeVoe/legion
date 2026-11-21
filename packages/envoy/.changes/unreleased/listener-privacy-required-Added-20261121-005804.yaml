@@ -4,7 +4,7 @@ body: |-
   `ENVOY_PROJECT_PRIVACY_URL`, the secrets broker's base URL. In it each decision that a
   project's privacy changes reads the broker's `GET /v1/project-privacy` again, and a read that
   fails or gives no whole answer counts every project as private. A frame of a project reaches a
-  session whose token lists the project, or, for a token that lists none, a public project;
+  session whose token lists the project, or a full member's session when the project is public;
   while the read is unknown the listener holds the frame for up to 120 s and marks the session's
   next frame `Envoy-Gap-Reason: privacy_hold`, once per hold, when it drops held frames. The
   send, publish, role and subscribe routes refuse a project the caller does not see

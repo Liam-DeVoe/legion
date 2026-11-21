@@ -43,7 +43,7 @@ func newPrivacyRig(t *testing.T, required bool) *privacyRig {
 	logger := edge.harness.config.logger
 	privacy := &listenerPrivacy{required: required, counters: newPrivacyCounters(edge.met), logger: logger}
 	if required {
-		privacy.k7 = newK7Reader(source.server.URL, listenerBrokerAccount(edgeAccountToken), privacy.counters.unknown, logger)
+		privacy.k7 = newK7Reader(source.server.URL, listenerBrokerAccount(edgeAccountToken), logger)
 	}
 	edge.deps.privacy = privacy
 	edge.relays.setPrivacy(privacy)

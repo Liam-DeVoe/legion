@@ -3,7 +3,7 @@ body: |-
   Dispatch has a privacy mode for its role routes, `DISPATCH_PROJECT_PRIVACY_REQUIRED`, set to
   `true` beside listeners that run with `ENVOY_PROJECT_PRIVACY_REQUIRED=true`. In it the outbox
   takes a role route's holder only when the projects of the holder's token see the event's
-  project: a project the token lists, or, for a token that lists none, a public one. Otherwise it
+  project: a project the token lists, or, for a full member's token, a public one. Otherwise it
   keeps the event on the role's kept lane for a holder that does see it. Unset, a holder is taken
   as before, and any other value refuses startup. Where a role route's holder turns on whether a
   project is private, the outbox reads it from Dispatch's own `projects` rows at that decision: a
