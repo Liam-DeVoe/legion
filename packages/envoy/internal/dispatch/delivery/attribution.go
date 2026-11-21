@@ -669,6 +669,9 @@ func remakeKeysStatement(schema string) string {
 		limit $1
 		for update of t skip locked
 	) update pull_request_texts x set title = x.title from chunk c, id
+	-- The test of the reading below repeats the chunk's and is not its guard: the chunk's
+	-- "for update of t skip locked" checks the condition again on each row it locks, and this
+	-- statement holds that lock until its update, so the repeat excludes no row.
 	where (x.repo, x.number) = (c.repo, c.number) and (x.reading < id.id or x.reading > id.id)
 	returning 1`
 }
