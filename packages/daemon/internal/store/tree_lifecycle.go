@@ -106,6 +106,17 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	})
 }
 
+// WorkHoldStands is whether the work hold of tree stands (supervise.Store.WorkHoldStands): whether
+// the tree's work_holds row exists. The workflow writes the row at the hold's close and deletes it
+// in the opening's own transaction (record.Store.PutWorkHold, DeleteWorkHold).
+func (s *Store) WorkHoldStands(ctx context.Context, tree string) (bool, error) {
+	var stands bool
+	if err := s.pool.QueryRow(ctx, `select exists (select 1 from work_holds where tree = $1)`, tree).Scan(&stands); err != nil {
+		return false, fmt.Errorf("read the work hold of %s: %w", tree, err)
+	}
+	return stands, nil
+}
+
 // ReserveWorkflowTreeCleanup records the workflow close before any resource snapshot. A retry of an
 // unconfirmed reservation resumes regardless of a subsequent re-admission; a retry after the
 // cleanup confirmed reserves nothing; a fresh reservation first proves the root is still lingering

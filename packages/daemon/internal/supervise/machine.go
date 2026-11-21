@@ -934,6 +934,11 @@ type Store interface {
 	// frees nothing, so the claim's record of which abandoned session a release freed never
 	// disagrees with the names the store still holds for it.
 	ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error)
+	// WorkHoldStands is whether the work hold of tree stands: whether the tree's work_holds row
+	// exists. The workflow writes that row at the hold's close and deletes it in the opening's own
+	// transaction, so it is the hold's own record. A decision of a claim whose hold stop is held
+	// reads it first, and drops the stop once the opening has committed (dropOpenedHoldStop).
+	WorkHoldStands(ctx context.Context, tree string) (bool, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -1842,7 +1847,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // may be the very launch the resume let out.
 //
 // Handle gives ev through the store's rule first; the comment that opens its body says why.
-func (m *Machine) Handle(ctx context.Context, ev Event) error {
+func (m *Machine) Handle(ctx context.Context, ev Event) (err error) {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
 	// claim in memory, the store and a restart agree. So the event is given through the store's
@@ -1861,9 +1866,16 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
 	m.repair(ctx)
-	// A project pause's hold whose pause has ended goes before anything of the decision reads the
-	// hold, so the fence, the row, the send and every place a hold fires read only one that stands.
+	// A project pause's hold whose pause has ended, and the work hold's stop whose hold the
+	// opening ended (dropOpenedHoldStop), go before anything of the decision reads the hold, so the
+	// fence, the row, the send and every place a hold fires read only one that stands.
 	m.dropEndedPauseHold()
+	if m.dropOpenedHoldStop(ctx) {
+		// The work hold's stop may have held a task back (sendPending hands nothing while a stop is
+		// held), so the task is sent once the decision has run, whatever its row or the fence made
+		// of the event: the hold's own deadline timer, disarmed by the drop, is refused at the fence.
+		defer func() { err = errors.Join(err, m.sendPending(ctx)) }()
+	}
 	// Settle first, so the fence judges the task the row will find: a settle after the fence could
 	// retire the very task it let the event through for.
 	if err := m.settle(ctx); err != nil {
@@ -1905,7 +1917,7 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// A row ends only in a state it names, except that a held suspension may end in suspended from
 	// whichever row the end comes through (holdSuspension); a claim that holds none may not.
 	from, held := m.claim.State, m.held != nil
-	err := errors.Join(r.act(m, ctx, ev), m.settle(ctx))
+	err = errors.Join(r.act(m, ctx, ev), m.settle(ctx))
 	if to := m.claim.State; to != from && !slices.Contains(r.to, to) && (!held || to != StateSuspended) {
 		err = errors.Join(err, fmt.Errorf("supervise: row %q moved %s from %s to %s, outside %v",
 			r.name, m.claim.Token, from, to, r.to))

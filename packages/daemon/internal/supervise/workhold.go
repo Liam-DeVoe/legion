@@ -5,8 +5,11 @@ package supervise
 // the outbox stores (holdSuspension, suspendAtTimeout), and for a ready or idle claim held for the
 // turn its close message starts (RequestSuspend.TurnAfter). What is the hold's own is here: the
 // one check that holds every request that could start a turn of a claim the hold stopped
-// (workHoldWaits, read by the fence through each event's door), and the hold's end, which drops a
-// stop not yet made and starts a claim the hold stopped with one task (EndHold, DropHoldStop).
+// (workHoldWaits, read by the fence through each event's door), and the hold's end. The machine
+// itself drops a stop not yet made at its first decision after the opening committed: it reads
+// the hold's own record, which the opening deletes (dropOpenedHoldStop). The opening's start
+// drops such a stop too, and starts a claim the hold stopped with one task (EndHold). The stop's
+// own outbox row drops it where the row meets a tree that no longer holds work (DropHoldStop).
 
 import (
 	"context"
@@ -26,8 +29,8 @@ import (
 //
 // A claim the hold's stop is only held over — in a turn, a compaction, idle waiting for the turn
 // its message starts, or a launch held until its ready — is not answered here: its stop is held
-// (Machine.held), so nothing is sent to it (sendPending), and its row runs the stop where the
-// stop is due. A start of such a claim waits all the same (StartedBy).
+// (Machine.held), so nothing is sent to it (sendPending), and while the hold stands its row runs
+// the stop where the stop is due. A start of such a claim waits all the same (StartedBy).
 func (m *Machine) workHoldWaits(ev Event) error {
 	if ev.door() != ruleDoor || !m.claim.WorkHeld() {
 		return nil
@@ -48,7 +51,8 @@ func (m *Machine) workHoldWaits(ev Event) error {
 //   - A stop the hold asked for and has not made — held for a turn, a compaction, a launch's ready,
 //     or an idle claim's next turn — is not made: it is dropped, and a task it held back is sent
 //     where it may go now (dropHoldStop). EndHold reports false: the claim runs on, and nothing
-//     of task is used.
+//     of task is used. The claim's own first decision after the opening drops such a stop too
+//     (dropOpenedHoldStop), so EndHold finds one only where no decision came between them.
 //   - A claim the hold stopped is started again, paced as any start by rule is, with one task,
 //     never two: task, the opening start's, whose text starts with the opening's sentences
 //     (opening). Where the claim kept a task of its own that no turn has taken — a released
@@ -105,11 +109,14 @@ func (m *Machine) EndHold(ctx context.Context, opening string, task *RequestDeli
 }
 
 // DropHoldStop is the work hold's end for a claim whose stop row meets a tree that no longer
-// holds work (the outbox's holdStopUnmade), decided under the claim's lock in one call. A stop the
-// hold asked for and has not made is dropped, as EndHold drops it, and dropped is true. Nothing is
-// started: a claim the hold has already stopped is left stopped, and stopped is true, so the
-// caller has the hold's opening start it with the opening's sentences. Any other claim is left as
-// it is, and both are false.
+// holds work (the outbox's holdStopUnmade), decided under the claim's lock in one call. It is the
+// stop row's end of the drop the machine makes itself at its first decision after the opening
+// (dropOpenedHoldStop). A stop the hold asked for and has not made, which no decision has dropped
+// yet, is dropped, as EndHold drops it, and dropped is true. Nothing is started: a claim the hold
+// has already stopped is left stopped, and stopped is true, so the caller has the hold's opening
+// start it with the opening's sentences. Such a stop was made by a decision that read the hold's
+// record before the opening committed, and the opening's read of the claims came before the stop.
+// Any other claim is left as it is, and both are false.
 func (m *Machine) DropHoldStop(ctx context.Context) (dropped, stopped bool, err error) {
 	m.mu.Lock()
 	defer m.unlock()
@@ -128,10 +135,43 @@ func (m *Machine) dropHoldStop(ctx context.Context) (bool, error) {
 	if m.held == nil || m.held.By != SuspendedByHold {
 		return false, nil
 	}
+	m.dropUnmadeHoldStop()
+	return true, m.sendPending(ctx)
+}
+
+// dropOpenedHoldStop drops the work hold's stop held over the claim once the hold no longer
+// stands. The opening deletes the tree's work_holds row in its own transaction
+// (Store.WorkHoldStands), so the first decision after the opening committed reads no row and
+// makes no stop: a turn's end leaves the claim idle, a compaction's end gives the claim back, the
+// hold's own deadline cuts nothing, and a launch's ready goes ahead. It runs at the start of every
+// decision, beside the pause's drop (Handle), and reads the store only while the hold's stop is
+// held, so no other decision reads anything. A read that fails keeps the stop held, and the
+// stop's outbox row drops it at its next attempt (DropHoldStop). It reports whether it dropped the
+// stop: the decision then sends a task the stop held back once its row has run.
+func (m *Machine) dropOpenedHoldStop(ctx context.Context) bool {
+	if m.held == nil || m.held.By != SuspendedByHold {
+		return false
+	}
+	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	stands, err := m.deps.Store.WorkHoldStands(reading, m.claim.Tree)
+	cancel()
+	if err != nil {
+		m.log.Warn("supervise: the work hold's record did not answer; the hold's stop stays held, and the stop's outbox row drops it if the hold has ended",
+			"tree", m.claim.Tree, "reason", m.held.Reason, "error", err)
+		return false
+	}
+	if stands {
+		return false
+	}
+	m.dropUnmadeHoldStop()
+	return true
+}
+
+// dropUnmadeHoldStop drops the work hold's held stop, which is not made, and logs it.
+func (m *Machine) dropUnmadeHoldStop() {
 	m.log.Info("supervise: the work hold ended before its stop was made; the stop is not made",
 		"reason", m.held.Reason, "deadline", m.held.Deadline, "launch", m.heldLaunch)
 	m.dropHeld()
-	return true, m.sendPending(ctx)
 }
 
 // OpeningTask is the one task the work hold's opening gives a claim it stopped: opening, the

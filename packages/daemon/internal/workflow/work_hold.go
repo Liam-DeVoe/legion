@@ -467,12 +467,12 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 }
 
 // workHoldOpened is the work hold of a tree found ended under a claim it stopped
-// (intake.WorkHoldOpened): the outbox ran the hold's stop of a worker in a turn, the gate opened
-// again while the stop was held for that turn, and the turn ended after the opening committed,
-// which made the stop. The opening read the claim live and started nothing of it (openHeldClaims
-// starts only a claim stored stopped by the hold), so the claim is started now, as the boot starts
-// a claim the hold stopped in a tree that holds no work (openStoppedClaims): a stop not yet made
-// when the gate opens again is not made, and one made since is undone. A tree that holds work
+// (intake.WorkHoldOpened): the claim's decision that made the hold's stop read the hold's record
+// before the opening committed, so it made the stop, and the opening read the claims before that
+// stop and started nothing of the claim (openHeldClaims starts only a claim stored stopped by the
+// hold). A decision after the commit reads no record and makes no stop (supervise's
+// dropOpenedHoldStop), so only this order is left. The claim is started now, as the boot starts a
+// claim the hold stopped in a tree that holds no work (openStoppedClaims). A tree that holds work
 // again, one that lingers, and a root the record does not hold are left alone. Under `merge` no
 // tree holds work, so the gate is read under `work` alone.
 func (e *Engine) workHoldOpened(ctx context.Context, tx pgx.Tx, fact intake.WorkHoldOpened) (intake.Result, error) {

@@ -1017,8 +1017,9 @@ func TestWorkHoldStopsALiveWorkerAtItsTurnsEndOrTwoMinutesAfterTheMessage(t *tes
 
 // Spec step 3, H32, check a3d61f8e: a gate that opens again before a stop is made stops nothing
 // more. The stop a message would have posted is not posted, and a stop held for a turn is
-// dropped, the turn going on; a released worker's stop not yet run takes nothing over. A stop
-// that the turn's end made after the opening committed is started again with its opening task.
+// dropped, the turn going on; a released worker's stop not yet run takes nothing over. A turn that
+// ends after the opening committed and before the stop's row runs again makes no stop either
+// (TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening).
 func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 	t.Run("before the message reached the worker", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
@@ -1063,24 +1064,6 @@ func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 		if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
 			t.Fatalf("the stop still waits as %+v, want it finished unmade", stops)
 		}
-	})
-	t.Run("with the stop made after the opening committed", func(t *testing.T) {
-		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
-		r.working(claim.RoleImplementer)
-		r.close(4)
-		r.runOnce()
-		r.runOnce()
-		r.approve(4, 12)
-		// The turn ends between the opening's commit and the stop's next attempt: the claim stands
-		// stopped by the hold, and the opening, which read it live, started nothing of it.
-		endTurn(r.ctx, t, r.machine(claim.RoleImplementer), r.token(claim.RoleImplementer))
-		if c := r.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
-			t.Fatalf("the implementer after its turn is %s by %q, want it stopped by the hold", c.State, c.SuspendedBy)
-		}
-		r.drain()
-		want := holdSentence + " The work hold stopped your turn. The deployment no longer holds the work of " + r.tree.key + "'s tree." +
-			" Check what your turn already did: a tool call may not have finished.\n\n" + workflow.ResumePhaseTask(r.issue())
-		r.wantStarted(claim.RoleImplementer, 1, want)
 	})
 }
 

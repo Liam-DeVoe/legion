@@ -236,6 +236,9 @@ func (s *relaunchingStore) AdmitClaim(ctx context.Context, c supervise.Claim) (s
 
 func (s *relaunchingStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+// WorkHoldStands answers that every tree's work hold stands: no test of this fake opens one.
+func (s *relaunchingStore) WorkHoldStands(context.Context, string) (bool, error) { return true, nil }
+
 func (s *relaunchingStore) PutDelivery(context.Context, claim.Token, supervise.Delivery) error {
 	return nil
 }

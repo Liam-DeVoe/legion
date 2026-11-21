@@ -3981,15 +3981,17 @@ func (r *outbox) holdStop(ctx context.Context, row record.OutboxRow, payload rec
 }
 
 // holdStopUnmade is the work hold's stop meeting a tree that no longer holds work: the gate opened
-// again before the stop was made, so it is not made, and the row finishes. What the claim is, the
-// claim's machine decides in one call (supervise.Machine.DropHoldStop), so a turn that ends while
-// this row runs is read as it ended:
+// again before the stop was made, so it is not made, and the row finishes. The claim's machine
+// drops such a stop itself at its first decision after the opening committed
+// (supervise.Machine.Handle); this row drops one that no decision has met yet. What the claim is,
+// the claim's machine decides in one call (supervise.Machine.DropHoldStop), so a turn that ends
+// while this row runs is read as it ended:
 //
 //   - A stop the claim holds for its agent's turn is dropped, and the turn goes on.
-//   - A claim the stop already stopped, once the opening had committed — its turn ended between
-//     the opening, which read the claim live and started nothing of it, and this row's try — is
-//     started with the opening's task: the fact of the hold's end (intake.WorkHoldOpened) has
-//     the workflow start each claim of the tree the hold stopped that no opening start covers.
+//   - A claim the stop already stopped is started with the opening's task: the fact of the hold's
+//     end (intake.WorkHoldOpened) has the workflow start each claim of the tree the hold stopped
+//     that no opening start covers. This is a stop whose decision read the hold's record before
+//     the opening committed, and that the opening's read of the claims did not see.
 //   - Any other claim — a released one the stop never took over, one another source took over —
 //     is left as it is.
 func (r *outbox) holdStopUnmade(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,

@@ -155,6 +155,10 @@ type memStore struct {
 	// holds is the claim each name of a session is held for, as the store's claim_sessions table
 	// keeps it (HoldSessions); every claim of a harness is of one project.
 	holds map[Hold]claim.Token
+	// opened is each tree whose work hold an opening ended (openHold): its work_holds row is gone.
+	// Every other tree's hold stands, so no decision drops the hold stop of a tree the test did
+	// not open (dropOpenedHoldStop).
+	opened map[string]bool
 }
 
 func newMemStore() *memStore {
@@ -163,6 +167,7 @@ func newMemStore() *memStore {
 		deliveries: map[claim.Token]Delivery{},
 		failures:   map[string]error{},
 		holds:      map[Hold]claim.Token{},
+		opened:     map[string]bool{},
 	}
 }
 
@@ -320,6 +325,25 @@ func (s *memStore) AdmitClaim(ctx context.Context, c Claim) (Claim, error) {
 }
 
 func (s *memStore) CheckLaunch(context.Context, Claim) error { return nil }
+
+// WorkHoldStands is the store's read of the tree's work hold record: it stands unless the test
+// opened the tree (openHold), and a read the test fails (fail("WorkHoldStands")) answers its error.
+func (s *memStore) WorkHoldStands(_ context.Context, tree string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["WorkHoldStands"]; err != nil {
+		return false, err
+	}
+	return !s.opened[tree], nil
+}
+
+// openHold is the work hold's opening of tree as the store keeps it: the tree's work_holds row is
+// deleted, under the store's lock so it may run while a machine does.
+func (s *memStore) openHold(tree string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opened[tree] = true
+}
 
 func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery) error {
 	s.mu.Lock()

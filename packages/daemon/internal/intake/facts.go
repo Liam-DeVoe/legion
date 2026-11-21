@@ -1443,12 +1443,12 @@ type PodBackstopDue struct {
 func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 
 // WorkHoldOpened is the work hold of tree Tree found ended under a claim it stopped (`gates.hold:
-// work`): the outbox ran the hold's stop of a phase worker in a turn, the gate opened again while
-// the stop was held for that turn, and the turn ended after the opening committed, which made the
-// stop. The opening read the claim live and started nothing of it, so the workflow starts each
-// claim of the tree the hold stopped that no opening start covers, with the opening's task. It is
-// never decoded from an event: the outbox applies it from the stop's row, under the row's id, so a
-// retried row applies it once. It names the whole tree rather than one issue.
+// work`): the claim's decision that made the hold's stop read the hold's record before the opening
+// committed, and the opening read the claims before that stop, so it started nothing of the claim.
+// The workflow starts each claim of the tree the hold stopped that no opening start covers, with
+// the opening's task. It is never decoded from an event: the outbox applies it from the stop's
+// row, under the row's id, so a retried row applies it once. It names the whole tree rather than
+// one issue.
 type WorkHoldOpened struct {
 	Tree string
 }

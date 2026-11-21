@@ -1122,3 +1122,109 @@ func TestWorkHoldStopDropLeavesAStoppedClaimForTheOpening(t *testing.T) {
 		h.wantState(StateIdle)
 	})
 }
+
+// Spec step 3: a stop the daemon has not made when the gate opens again is not made. The opening
+// deletes the tree's work hold record in its own transaction, and the claim's first decision after
+// that commit reads it (Store.WorkHoldStands) and drops the stop held over the claim
+// (dropOpenedHoldStop), whatever the outbox's stop row has run since: the turn's end leaves the
+// claim idle and sends the task the stop held back, and the hold's deadline cuts no turn. A read
+// that fails keeps the stop held, so the turn's end makes it as before, and the stop's row is left
+// to drop it.
+func TestWorkHoldDropsItsStopAtTheFirstDecisionAfterTheOpening(t *testing.T) {
+	const dropped = `msg="supervise: the work hold ended before its stop was made; the stop is not made"`
+	heldInTurn := func(t *testing.T) *harness {
+		t.Helper()
+		h := newHarness(t)
+		h.inPhaseTurn()
+		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the hold's stop of a claim in a turn answered %v, want it held for the turn", err)
+		}
+		h.must(RequestDeliver{Claim: h.token, Task: laterTask, ID: "outbox:8", Row: 8, Phase: phase.Implementing, Generation: 1})
+		h.wantPrompts(1)
+		return h
+	}
+	wantNoStop := func(t *testing.T, h *harness) {
+		t.Helper()
+		h.wantCalls("Suspend", 0)
+		if c := h.claim(); c.WorkHeld() || c.SuspensionHeld {
+			t.Fatalf("the claim reads WorkHeld %v, a stop held %v; want the stop dropped", c.WorkHeld(), c.SuspensionHeld)
+		}
+		for _, put := range h.store.history() {
+			if put.State == StateSuspended {
+				t.Fatalf("the store was written the claim suspended by %q, want no stop written", put.SuspendedBy)
+			}
+		}
+		if lines := h.logs.lines(dropped); len(lines) != 1 {
+			t.Fatalf("logged %q, want the stop's drop logged once", lines)
+		}
+	}
+	t.Run("the turn's end leaves the claim idle and sends the task the stop held back", func(t *testing.T) {
+		h := heldInTurn(t)
+		h.store.openHold(h.claim().Tree)
+
+		h.must(StreamTurnEnd{Claim: h.token})
+
+		h.wantState(StateIdle)
+		wantNoStop(t, h)
+		if prompts := h.wantPrompts(2); prompts[1].Message != laterTask {
+			t.Fatalf("the claim was sent %q, want the task the stop held back", prompts[1].Message)
+		}
+		if stored := h.store.load(h.token); stored.State != StateIdle {
+			t.Fatalf("the store holds the claim %s by %q, want it idle", stored.State, stored.SuspendedBy)
+		}
+	})
+	t.Run("the hold's deadline cuts no turn", func(t *testing.T) {
+		h := heldInTurn(t)
+		h.store.openHold(h.claim().Tree)
+
+		h.advance(holdGrace)
+
+		h.wantState(StateWorking)
+		wantNoStop(t, h)
+		h.wantPendingTask(laterTask)
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
+		if prompts := h.wantPrompts(2); prompts[1].Message != laterTask {
+			t.Fatalf("the claim was sent %q at its turn's end, want the task the stop held back", prompts[1].Message)
+		}
+	})
+	t.Run("an idle claim's deadline sends the task the stop held back", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateIdle)
+		if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the hold's stop of an idle claim answered %v, want it held for the turn its message starts", err)
+		}
+		h.must(RequestDeliver{Claim: h.token, Task: laterTask, ID: "outbox:8", Row: 8, Phase: phase.Implementing, Generation: 1})
+		h.wantPrompts(1)
+		h.store.openHold(h.claim().Tree)
+
+		// The deadline's timer reaches a decision whose drop disarms it, so the fence refuses it,
+		// and the task goes all the same.
+		h.advance(holdGrace)
+
+		h.wantState(StateIdle)
+		wantNoStop(t, h)
+		if prompts := h.wantPrompts(2); prompts[1].Message != laterTask {
+			t.Fatalf("the claim was sent %q, want the task the stop held back", prompts[1].Message)
+		}
+	})
+	t.Run("a read that fails keeps the stop held", func(t *testing.T) {
+		h := heldInTurn(t)
+		h.store.openHold(h.claim().Tree)
+		h.store.fail("WorkHoldStands", errors.New("the database did not answer"))
+
+		h.must(StreamTurnEnd{Claim: h.token})
+
+		h.wantHeld()
+		h.wantCalls("Suspend", 1)
+		h.wantPendingTask(laterTask)
+		h.wantPrompts(1)
+		if lines := h.logs.lines("level=WARN", "the hold's stop stays held", "the database did not answer"); len(lines) != 1 {
+			t.Fatalf("logged %q, want one warning that the stop stays held, naming the failed read", lines)
+		}
+		if lines := h.logs.lines(dropped); len(lines) != 0 {
+			t.Fatalf("logged %q, want no drop of the stop", lines)
+		}
+	})
+}

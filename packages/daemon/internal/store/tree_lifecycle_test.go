@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -76,6 +77,50 @@ func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
 	bound, err := store.AdmitClaim(ctx, root)
 	if err != nil || bound.TreeEpoch != 2 {
 		t.Fatalf("root claim after confirmed cleanup = %+v, err %v", bound, err)
+	}
+}
+
+// The work hold's record as a claim's machine reads it (supervise.Store.WorkHoldStands): a tree's
+// hold stands while its work_holds row exists, from the close that writes the row to the opening
+// that deletes it, and a tree with no row has no hold.
+func TestWorkHoldStandsWhileTheTreesRowExists(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	stands := func(tree string) bool {
+		t.Helper()
+		held, err := store.WorkHoldStands(ctx, tree)
+		if err != nil {
+			t.Fatalf("read the work hold of %s: %v", tree, err)
+		}
+		return held
+	}
+	if stands(rootIssue) {
+		t.Fatalf("the work hold of %s stands before its close, want none", rootIssue)
+	}
+	root := record.Issue{Key: rootIssue, Tree: rootIssue, Project: "LEGION", Title: "root", Phase: "implementing", Generation: 4,
+		Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	hold := record.WorkHold{Project: "LEGION", Tree: rootIssue, RootGeneration: 4, Step: record.DesignStepSpec,
+		ArtifactID: "artifact-208", Version: 4, ClosedAt: time.Date(2026, 11, 21, 0, 2, 54, 0, time.UTC)}
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, root); err != nil {
+			return err
+		}
+		return records.PutWorkHold(ctx, tx, hold)
+	}); err != nil {
+		t.Fatalf("close the work hold of %s: %v", rootIssue, err)
+	}
+	if !stands(rootIssue) {
+		t.Fatalf("the work hold of %s does not stand after its close, want it standing", rootIssue)
+	}
+	if stands(childIssue) {
+		t.Fatalf("the work hold of %s stands, want none: no close wrote its row", childIssue)
+	}
+	if err := store.Tx(ctx, func(tx pgx.Tx) error { return records.DeleteWorkHold(ctx, tx, rootIssue) }); err != nil {
+		t.Fatalf("open the work hold of %s: %v", rootIssue, err)
+	}
+	if stands(rootIssue) {
+		t.Fatalf("the work hold of %s stands after its opening, want none", rootIssue)
 	}
 }
 
