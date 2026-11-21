@@ -2,12 +2,9 @@ package consumernames
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -19,11 +16,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	selection "github.com/sjawhar/envoy/consumernames"
-	"github.com/sjawhar/envoy/infra/seed"
 	"github.com/sjawhar/envoy/infra/writerhold"
-	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -398,22 +392,39 @@ func (a *admission) stop(ctx context.Context, reason, left string) error {
 
 // realEnv is the env of a real run: the broker's routes with the operator's token and the hold
 // key from Secret Manager, the hub as the operator, and each family's database from the file its
-// flag names.
-func realEnv() env {
+// flag names, all from the hold's flags as writerhold reads them (writerhold.HubFlags).
+func realEnv() env { return envFromFlags(realHubOpeners) }
+
+// hubOpeners are how envFromFlags reaches the broker's hold routes, the hub's NATS and the hub's
+// Kubernetes objects from a run's writerhold.HubFlags.
+type hubOpeners struct {
+	records func(h writerhold.HubFlags, ctx context.Context, signing bool) (*holdrecord.Client, error)
+	connect func(h writerhold.HubFlags) (*nats.Conn, error)
+	hub     func(h writerhold.HubFlags, ctx context.Context) (*writerhold.Operator, error)
+}
+
+// realHubOpeners are writerhold's own: HubFlags.Records (Secret Manager's signing key when
+// signing), ConnectOperator and HubFlags.Operator (the in-cluster configuration or KUBECONFIG's, and
+// the Compute API for the hub's disks).
+var realHubOpeners = hubOpeners{
+	records: writerhold.HubFlags.Records,
+	connect: func(h writerhold.HubFlags) (*nats.Conn, error) {
+		return writerhold.ConnectOperator(h.NATS, h.TokenFile, "envoy-infra consumer-names")
+	},
+	hub: writerhold.HubFlags.Operator,
+}
+
+// envFromFlags is the env that reaches everything a run's flags name through open, and each
+// family's database from the file its flag names.
+func envFromFlags(open hubOpeners) env {
 	return env{
 		records: func(ctx context.Context, o options, signing bool) (*holdrecord.Client, error) {
-			return openRecords(ctx, o, signing)
+			return open.records(o.HubFlags, ctx, signing)
 		},
-		connect: func(_ context.Context, o options) (*nats.Conn, error) {
-			credential, _ := natscred.Service(natscred.ServiceFile(o.tokenFile))
-			return nats.Connect(strings.Join(o.nats, ","), credential, nats.CustomInboxPrefix(natsgrant.OperatorInbox),
-				nats.Name("envoy-infra consumer-names"), nats.Timeout(10*time.Second), nats.MaxReconnects(-1))
-		},
+		connect:  func(_ context.Context, o options) (*nats.Conn, error) { return open.connect(o.HubFlags) },
 		database: openDatabase,
-		// The hub's Kubernetes flags come with writerhold's HubFlags, which this command takes once
-		// that export merges; until then a command that needs the hub refuses, naming it.
-		hub: func(context.Context, options) (*writerhold.Operator, error) {
-			return nil, errors.New("this build takes no flags for the hub's Kubernetes objects yet (writerhold.HubFlags)")
+		hub: func(ctx context.Context, o options) (*writerhold.Operator, error) {
+			return open.hub(o.HubFlags, ctx)
 		},
 		now: time.Now,
 	}
@@ -443,54 +454,4 @@ func openDatabase(ctx context.Context, o options, family string) (Database, erro
 		return nil, fmt.Errorf("open %s's database (%s; the URL is not echoed): %w", family, flagName, err)
 	}
 	return pool, nil
-}
-
-// openRecords opens the operator's client of o's broker, as `envoy-infra hold` does: the token
-// read from o.tokenFile at each request, the verify keys parsed from o.verifyKeys, and, when
-// signing, the private half from Secret Manager.
-func openRecords(ctx context.Context, o options, signing bool) (*holdrecord.Client, error) {
-	verify, err := signedrecord.ParsePublicKeys("--verify-keys", o.verifyKeys)
-	if err != nil {
-		return nil, err
-	}
-	cfg := holdrecord.Config{
-		BrokerURL:  o.brokerURL,
-		Token:      tokenFromFile(o.tokenFile),
-		VerifyKeys: verify,
-		HTTP:       &http.Client{Timeout: 30 * time.Second},
-	}
-	if signing {
-		store, err := seed.OpenGCP(ctx, "", "")
-		if err != nil {
-			return nil, err
-		}
-		_, value, err := store.Current(ctx, o.keySecret)
-		if err != nil {
-			return nil, fmt.Errorf("read the signing key from %s: %w", o.keySecret, err)
-		}
-		defer clear(value)
-		seedBytes, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimSpace(string(value)))
-		if err != nil || len(seedBytes) != ed25519.SeedSize {
-			return nil, fmt.Errorf("%s's served version is not the unpadded base64url of a %d-byte Ed25519 seed (not echoed)", o.keySecret, ed25519.SeedSize)
-		}
-		defer clear(seedBytes)
-		cfg.SigningKey = ed25519.NewKeyFromSeed(seedBytes)
-	}
-	return holdrecord.New(cfg)
-}
-
-// tokenFromFile reads the token at path at each call: the kubelet rewrites a projected token in
-// place.
-func tokenFromFile(path string) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read the token file %s: %w", path, err)
-		}
-		token := strings.TrimSpace(string(raw))
-		if token == "" {
-			return "", fmt.Errorf("the token file %s is empty", path)
-		}
-		return token, nil
-	}
 }

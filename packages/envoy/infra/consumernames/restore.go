@@ -897,11 +897,11 @@ func (rr *restoreRun) keyName(ctx context.Context, m member) (restoreSetName, er
 
 // restoreFinish is restore --finish --hold ID (§4 steps 3 and 4). Every name must have its start
 // first. Then, as its first effect, it runs the hold's restart, proof and barrier again
-// (restoreRestartRound), which ends every server-side writer of each target restore --prepare
-// deleted, and requires every declared server's id to differ from the one restore --prepare
-// recorded. It reads each record's live target and completes only when each is present at its
-// safe start: a kept target passing its floor check is adopted; one failing it is deleted, and
-// the restart runs once more, after that last read that saw the name present, before the target
+// (writerhold.RestartProveAndBarrier), which ends every server-side writer of each target restore
+// --prepare deleted, and requires every declared server's id to differ from the one restore
+// --prepare recorded. It reads each record's live target and completes only when each is present
+// at its safe start: a kept target passing its floor check is adopted; one failing it is deleted,
+// and the restart runs once more, after that last read that saw the name present, before the target
 // is created; a created target at its start is adopted, at another start refused; an absent one
 // is created at its start. Then every family's broker cutover row and store marker read
 // rolled_back, and its done entry completes the hold. Every refusal after its intent writes its
@@ -958,7 +958,7 @@ func (r *run) restoreFinishAdmitted(ctx context.Context, a *admission, left *res
 		return err
 	}
 	round := func() (writerhold.Declared, error) {
-		after, err := restoreRestartRound(ctx, op, r.o.holdID)
+		after, err := writerhold.RestartProveAndBarrier(ctx, op, r.o.holdID)
 		if err != nil {
 			return nil, restoreHubError(err)
 		}
@@ -1272,49 +1272,6 @@ func restoreServersRestarted(recorded map[string]string, after writerhold.Declar
 		return errors.New(strings.Join(findings, "; "))
 	}
 	return nil
-}
-
-// restoreRestartRound is §3a's steps 3 to 5 on the hub inside hold holdID: every declared server
-// restarted one eviction at a time and proved, then the meta barrier, answering the servers with
-// their new ids. It is writerhold.RestartProveAndBarrier's body, built from writerhold's exported
-// steps until that function is exported to this module's branch.
-func restoreRestartRound(ctx context.Context, op *writerhold.Operator, holdID string) (writerhold.Declared, error) {
-	nc, err := op.Connect(ctx)
-	if err != nil {
-		return nil, unknownf(err, "connect to the hub as the operator for the restart")
-	}
-	defer nc.Close()
-	render, err := writerhold.Precondition(ctx, op.Hub)
-	if err != nil {
-		return nil, err
-	}
-	declared, err := writerhold.Discover(ctx, op.Hub)
-	if err != nil {
-		return nil, err
-	}
-	claims, err := writerhold.ReadClaims(ctx, op.Hub, render, op.Disks)
-	if err != nil {
-		return nil, err
-	}
-	restart := writerhold.Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, Probe: op.Probe,
-		Bind: func(ctx context.Context, pod string, step1, now writerhold.Varz) error {
-			if err := writerhold.CheckReload(writerhold.StepProof, pod, step1, now); err != nil {
-				return err
-			}
-			return render.ProveBinding(ctx, op.Hub, op.Disks, pod, now, claims[render.Claim(pod)])
-		}}
-	restarted, err := restart.Run(ctx, nc)
-	if err != nil {
-		return nil, err
-	}
-	after := make(writerhold.Declared, len(restarted))
-	for i, server := range restarted {
-		after[i] = writerhold.DeclaredServer{Pod: server.Pod, Varz: server.Varz}
-	}
-	if err := (writerhold.MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}).Run(ctx, nc, nil); err != nil {
-		return nil, err
-	}
-	return after, nil
 }
 
 // restoreHubError is err, a writerhold step's, as this command reports it: a writerhold.Unknown is

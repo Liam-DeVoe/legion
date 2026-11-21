@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/infra/internal/flagerr"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
@@ -49,9 +50,12 @@ const usage = `usage: envoy-infra consumer-names status|prepare|create-bucket|re
   Every command: --broker-url U (the secrets broker), --token-file F (the operator's
   ServiceAccount token, for the broker's routes and the hub), --verify-keys K
   (BROKER_NATS_HOLD_SIGNING_KEYS) and --nats URL..., the hub's client URLs. Every command but
-  status: --signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing. Dispatch's
-  store: --dispatch-database-file F, a file holding its database URL with the operator's
-  credential; each Legion daemon's: --daemon-database PROJECT-KEY=F, once per daemon.
+  status: --signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing. Every held
+  command reads the hub's Kubernetes objects: --kube-namespace (envoy), --statefulset (envoy-nats)
+  and --configmap (envoy-nats-config), with the in-cluster configuration or KUBECONFIG's;
+  restore --finish also restarts the hub's servers and needs --probe-token-file F, the hold probe's
+  token. Dispatch's store: --dispatch-database-file F, a file holding its database URL with the
+  operator's credential; each Legion daemon's: --daemon-database PROJECT-KEY=F, once per daemon.
 
 Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN: a reading that is not
 whole, which is never a pass.
@@ -63,24 +67,25 @@ type stringList []string
 func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
-// options are a run's flags.
+// options are a run's flags. The hold's and the hub's are writerhold.HubFlags, the ones `envoy-infra
+// hold` and `envoy-infra buckets` take: the broker's routes, the operator's token and signing key,
+// the hub's client URLs, the hold probe's token and the hub's Kubernetes objects.
 type options struct {
-	action                                      string
-	brokerURL, tokenFile, verifyKeys, keySecret string
-	nats                                        stringList
-	holdID                                      string
-	dispatchDatabaseFile                        string
-	daemonDatabases                             stringList
-	replicas                                    int
-	afterLoss                                   bool
-	replayFrom                                  uint64
-	backup                                      string
-	key                                         string
-	from                                        uint64
-	final                                       bool
-	prepare, finish                             bool
-	listener                                    string
-	daemon                                      string
+	action string
+	writerhold.HubFlags
+	holdID               string
+	dispatchDatabaseFile string
+	daemonDatabases      stringList
+	replicas             int
+	afterLoss            bool
+	replayFrom           uint64
+	backup               string
+	key                  string
+	from                 uint64
+	final                bool
+	prepare, finish      bool
+	listener             string
+	daemon               string
 }
 
 // daemonDatabase is the database file --daemon-database names for project, and whether it names
@@ -133,11 +138,7 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags := flag.NewFlagSet("envoy-infra consumer-names "+o.action, flag.ContinueOnError)
 	var parsed bytes.Buffer
 	flags.SetOutput(&parsed)
-	flags.StringVar(&o.brokerURL, "broker-url", "", "the secrets broker's base URL")
-	flags.StringVar(&o.tokenFile, "token-file", "", "the operator's ServiceAccount token")
-	flags.StringVar(&o.verifyKeys, "verify-keys", "", "BROKER_NATS_HOLD_SIGNING_KEYS")
-	flags.StringVar(&o.keySecret, "signing-key-secret", "", "projects/<project>/secrets/operator-only-envoy-hold-signing")
-	flags.Var(&o.nats, "nats", "a hub client URL")
+	o.HubFlags.Register(flags)
 	flags.StringVar(&o.holdID, "hold", "", "the hold's id")
 	flags.StringVar(&o.dispatchDatabaseFile, "dispatch-database-file", "", "a file holding Dispatch's database URL")
 	flags.Var(&o.daemonDatabases, "daemon-database", "a Legion daemon's project key and a file holding its database URL, <project>=<file>")
@@ -174,13 +175,16 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	}
 	// A flag's value reaches the lines the command writes and the hold's journal, so a value that
 	// holds an nkey seed is refused naming the flag, never the value, as seed, buckets and hold
-	// refuse one.
+	// refuse one. --nats is read from its list: its flag.Func value prints nothing.
 	var seeded []string
 	flags.Visit(func(set *flag.Flag) {
 		if bus.HoldsSeed(set.Value.String()) {
 			seeded = append(seeded, "--"+set.Name)
 		}
 	})
+	if slices.ContainsFunc(o.NATS, bus.HoldsSeed) {
+		seeded = append(seeded, "--nats")
+	}
 	if len(seeded) > 0 {
 		fmt.Fprintf(stderr, "envoy-infra consumer-names: %s: an nkey seed, which is never an argument (not echoed)\n", strings.Join(seeded, ", "))
 		return o, 2
@@ -205,13 +209,17 @@ func (o options) usageProblem() string {
 			add("--" + flagName + " is required")
 		}
 	}
-	need("broker-url", o.brokerURL != "")
-	need("token-file", o.tokenFile != "")
-	need("verify-keys", o.verifyKeys != "")
-	need("nats", len(o.nats) > 0)
+	need("broker-url", o.BrokerURL != "")
+	need("token-file", o.TokenFile != "")
+	need("verify-keys", o.VerifyKeys != "")
+	need("nats", len(o.NATS) > 0)
 	if o.action != actionStatus {
-		need("signing-key-secret", o.keySecret != "")
+		need("signing-key-secret", o.KeySecret != "")
 		need("hold", o.holdID != "")
+	}
+	if o.action == actionRestore && o.finish {
+		// restore --finish restarts every declared server and proves each refuses the hold's probe.
+		need("probe-token-file", o.ProbeTokenFile != "")
 	}
 	only := func(action, flagName string, set bool) {
 		if set && o.action != action {

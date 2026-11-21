@@ -241,9 +241,13 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 	}
 	// result is the word's report, and reported says it holds one: a run that stops before
 	// streams.Update or streams.Census answered (an unread reader, a refused admission, a failed set
-	// or connect) prints no report, since the zero report's last line reads CLEAN.
+	// or connect), or one they refused at their phase or convert check, which return a zero report
+	// beside the error, prints no report, since the zero report's last line reads CLEAN.
 	var result streams.Report
 	var reported bool
+	madeReport := func(r streams.Report, err error) bool {
+		return err == nil || len(r.Changes)+len(r.Failures)+len(r.Unknown) > 0
+	}
 	c := HeldCommand{HoldID: o.holdID, Reason: o.reason, MintersReport: o.MintersReport}
 	switch o.word {
 	case "update":
@@ -251,7 +255,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		c.Absent = ProtectedStreams()
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]Change, map[string]string, error) {
 			r, err := streams.Update(ctx, nc, settings, held)
-			result, reported = r, true
+			result, reported = r, madeReport(r, err)
 			return streamChanges(r), nil, leftBy(r, streamsRefusal(r, err))
 		}
 	case "census":
@@ -305,7 +309,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				},
 				RecordedFreshNames: fresh,
 			})
-			result, reported = r, true
+			result, reported = r, madeReport(r, err)
 			changes := streamChanges(r)
 			write := func(stream string, n uint64) {
 				change := changes[stream]
