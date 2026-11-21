@@ -25,8 +25,8 @@ import (
 func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
-	a, aStart := beginTransaction(t, database)
-	defer a.Rollback(context.Background())
+	a, aStart := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = a.Rollback(context.Background()) }()
 	pastTheMargin(t, database, aStart)
 	aEvent := appendCommentEvent(t, a, broker, "comment.created", uuid.NewString(), "The audit starts on Tuesday.", aStart)
 	b := commitComment(t, database, broker, otherIssue)
@@ -58,8 +58,8 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
-	a, aStart := beginTransaction(t, database)
-	defer a.Rollback(context.Background())
+	a, aStart := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = a.Rollback(context.Background()) }()
 	pastTheMargin(t, database, aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
@@ -89,8 +89,8 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 func TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
-	a, aStart := beginTransaction(t, database)
-	defer a.Rollback(context.Background())
+	a, aStart := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = a.Rollback(context.Background()) }()
 	pastTheMargin(t, database, aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	safe, err := fill.horizon.Await(ctx)
@@ -150,8 +150,8 @@ func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
 		t.Fatalf("the login inherits: %t, may insert into events itself: %t; want neither", inherits, inserts)
 	}
 	member := storeAs(t, database, login, password)
-	held, heldStart := beginTransaction(t, member)
-	defer held.Rollback(context.Background())
+	held, heldStart := textversionstest.BeginTransaction(t, member)
+	defer func() { _ = held.Rollback(context.Background()) }()
 	pastTheMargin(t, database, heldStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
@@ -200,8 +200,8 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 		t.Fatal("the caught-up fill stored no reach")
 	}
 
-	held, _ := beginTransaction(t, asWriter)
-	defer held.Rollback(context.Background())
+	held, _ := textversionstest.BeginTransaction(t, asWriter)
+	defer func() { _ = held.Rollback(context.Background()) }()
 	var shownStart *time.Time
 	if err := asReader.Pool.QueryRow(ctx, `
 		select a.xact_start from pg_stat_activity a join pg_roles r on r.oid = a.usesysid
@@ -227,8 +227,8 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `revoke insert on events from `+writer); err != nil {
 		t.Fatalf("revoke the writer's insert: %v", err)
 	}
-	idle, _ := beginTransaction(t, asWriter)
-	defer idle.Rollback(context.Background())
+	idle, _ := textversionstest.BeginTransaction(t, asWriter)
+	defer func() { _ = idle.Rollback(context.Background()) }()
 	time.Sleep(1100 * time.Millisecond)
 	if third := reachAs(t, asReader); !third.After(second) {
 		t.Fatalf("while a role that may not insert into events holds a transaction open the reader reads the reach %s; want it past %s",

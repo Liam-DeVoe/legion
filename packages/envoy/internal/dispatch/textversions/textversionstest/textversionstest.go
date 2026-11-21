@@ -1,12 +1,13 @@
 // Package textversionstest holds what the tests of more than one package write and read around
 // the keyword table, search_text_versions, which the fill of package textversions writes from
-// the event log: the project and the issues the tests' events name (SeedProject, SeedIssue,
-// InsertIssue), an issue's events (WrittenIssue.Event, WrittenIssue.InsertVersion) and their
-// append through the broker (AppendEvents, and in a transaction of their own CommitEvents), an
-// issue's run of events of every type a keyword rule reads (WriteIssue), the rows the fill wrote
-// for given events (RowsOf, RequireRowsOf, RequireOnlyRowsOf, AwaitRows) and the fill's cursor
-// (Cursor). A later rules version or a change of the schema changes them here, once, for the tests
-// of textversions, of the API and of the dispatch command.
+// the event log: a test's transactions (Commit, and for one held open BeginTransaction), the
+// project and the issues the tests' events name (SeedProject, SeedIssue, InsertIssue), an issue's
+// events (WrittenIssue.Event, WrittenIssue.InsertVersion) and their append through the broker
+// (AppendEvents, and in a transaction of their own CommitEvents), an issue's run of events of
+// every type a keyword rule reads (WriteIssue), the rows the fill wrote for given events (RowsOf,
+// RequireRowsOf, RequireOnlyRowsOf, AwaitRows), the fill's cursor (Cursor) and the fill run as a
+// serving process runs it (StartFill). A later rules version or a change of the schema changes
+// them here, once, for the tests of textversions, of the API and of the dispatch command.
 //
 // It is an ordinary package rather than a _test.go file because Go cannot share test-only code
 // across packages; only tests import it. It does not import textversions, whose own tests import
@@ -53,16 +54,63 @@ func SeedProject(t testing.TB, database *store.Store) {
 func SeedIssue(t testing.TB, database *store.Store) {
 	t.Helper()
 	SeedProject(t, database)
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
+	Commit(t, database, func(tx pgx.Tx) { InsertIssue(t, tx, 1, "Rotate the signing keys") })
+}
+
+// Commit runs write in a transaction of its own on database and commits it, failing the test on
+// any error. The transaction ends before Commit returns, on every way out: one that write fails
+// the test in, or that does not commit, is rolled back on context.Background(), so a test whose
+// context is done still ends it. A test that holds a transaction open while others run begins it
+// with BeginTransaction.
+func Commit(t testing.TB, database *store.Store, write func(tx pgx.Tx)) {
+	t.Helper()
+	tx, err := database.Pool.Begin(t.Context())
 	if err != nil {
-		t.Fatalf("begin issue %s: %v", Issue, err)
+		t.Fatalf("begin a transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	InsertIssue(t, tx, 1, "Rotate the signing keys")
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit issue %s: %v", Issue, err)
+	write(tx)
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the transaction: %v", err)
 	}
+}
+
+// BeginTransaction begins a transaction on database for a test that holds it open while other
+// transactions run, and answers it and its start (TransactionStart). The test ends it on every
+// way out by deferring, at once,
+//
+//	defer func() { _ = tx.Rollback(context.Background()) }()
+//
+// which does nothing once the test committed or rolled the transaction back itself. A test that
+// begins a transaction, writes and commits uses Commit.
+func BeginTransaction(t testing.TB, database *store.Store) (pgx.Tx, time.Time) {
+	t.Helper()
+	tx, err := database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin a transaction: %v", err)
+	}
+	// TransactionStart fails the test where it cannot read the start, before the caller has
+	// deferred the transaction's end, so this ends it then.
+	held := false
+	defer func() {
+		if !held {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+	startedAt := TransactionStart(t, tx)
+	held = true
+	return tx, startedAt
+}
+
+// TransactionStart is the start of tx, which is the xact_start pg_stat_activity shows for it and
+// the created_at of every event it writes.
+func TransactionStart(t testing.TB, tx pgx.Tx) time.Time {
+	t.Helper()
+	var startedAt time.Time
+	if err := tx.QueryRow(t.Context(), `select now()`).Scan(&startedAt); err != nil {
+		t.Fatalf("read the transaction's start: %v", err)
+	}
+	return startedAt
 }
 
 // Written is an event a test wrote and how many keyword versions it starts.
@@ -89,12 +137,15 @@ func OneEach(ids ...int64) []Written {
 // event with the versions it starts.
 func WriteIssue(t testing.TB, database *store.Store, broker *events.Broker, n int) []Written {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin issue %s-%d: %v", Project, n, err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
+	var written []Written
+	Commit(t, database, func(tx pgx.Tx) { written = writeIssue(t, tx, broker, n) })
+	return written
+}
+
+// writeIssue writes WriteIssue's issue ACME-n, its primary document and its events in tx, and
+// answers each event with the versions it starts.
+func writeIssue(t testing.TB, tx pgx.Tx, broker *events.Broker, n int) []Written {
+	t.Helper()
 	title := fmt.Sprintf("Rotate the signing keys of region %d", n)
 	issue := InsertIssue(t, tx, n, title, fmt.Sprintf("# Rotation %d\n\nMove each signing key to its successor.", n))
 	second := issue.InsertVersion(t, tx, 2,
@@ -138,9 +189,6 @@ func WriteIssue(t testing.TB, database *store.Store, broker *events.Broker, n in
 		appended[index] = step.event
 	}
 	ids := AppendEvents(t, tx, broker, appended...)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit issue %s: %v", key, err)
-	}
 	out := make([]Written, len(ids))
 	for index, id := range ids {
 		out[index] = Written{ID: id, Versions: steps[index].versions}
@@ -230,21 +278,11 @@ func AppendEvents(t testing.TB, tx pgx.Tx, broker *events.Broker, appended ...mo
 	return ids
 }
 
-// CommitEvents appends events through broker in a transaction of their own, in order
-// (AppendEvents), commits it and answers their ids in the same order. It fails the test on any
-// error. A transaction it does not commit is rolled back on context.Background(), so a test whose
-// context is done still ends it.
+// CommitEvents appends events through broker in a transaction of their own (Commit), in order
+// (AppendEvents), and answers their ids in the same order.
 func CommitEvents(t testing.TB, database *store.Store, broker *events.Broker, appended ...model.Event) []int64 {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction of %d events: %v", len(appended), err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	ids := AppendEvents(t, tx, broker, appended...)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %d events: %v", len(appended), err)
-	}
+	var ids []int64
+	Commit(t, database, func(tx pgx.Tx) { ids = AppendEvents(t, tx, broker, appended...) })
 	return ids
 }

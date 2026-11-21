@@ -17,10 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestTheKeywordTableHoldsEachVersionOfEachItem writes, through the API, every kind of item the
@@ -191,15 +189,11 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 	// The reversed pair.
 	pair := createThreadComment(t, handler, issue.Key, map[string]any{"body": "The canary takes the first region."}, "alice")
 	history.keep("the comment the reversed pair edits")
-	a, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin transaction A: %v", err)
-	}
+	a, aStarted := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = a.Rollback(context.Background()) }()
-	var aStarted time.Time
 	var aBackend int32
-	if err := a.QueryRow(ctx, `select now(), pg_backend_pid()`).Scan(&aStarted, &aBackend); err != nil {
-		t.Fatalf("begin transaction A: %v", err)
+	if err := a.QueryRow(ctx, `select pg_backend_pid()`).Scan(&aBackend); err != nil {
+		t.Fatalf("read transaction A's backend: %v", err)
 	}
 	edited := decodeBody[model.Comment](t, wantStatus(t, "B edits the comment",
 		editCommentAs(t, handler, pair.ID, "The canary takes the first two regions.", nil, nil), http.StatusOK))
@@ -271,20 +265,20 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 	last := backlog[len(backlog)-1].ID
 
 	fill := startKeywordFill(t, filled)
-	fill.awaitBatches(t, 1, time.Minute)
+	fill.AwaitLine(t, keywordBatchLine, time.Minute)
 	if cursor := textversionstest.Cursor(t, filled.database); cursor >= last {
 		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: nothing is left to catch up beside the requests", cursor, last)
 	}
-	before := len(fill.lines(t, keywordBatchLine))
+	before := len(fill.Lines(t, keywordBatchLine))
 	var rounds [][]keywordAnswer
 	for round := 1; textversionstest.Cursor(t, filled.database) < last; round++ {
 		if round > keywordMaxRounds {
 			t.Fatalf("the fill had not caught up the backlog after %d rounds of requests: its cursor is %d of %d",
 				keywordMaxRounds, textversionstest.Cursor(t, filled.database), last)
 		}
-		rounds = append(rounds, keywordRound(t, filled, round, fill.wake))
+		rounds = append(rounds, keywordRound(t, filled, round, fill.Wake))
 	}
-	if during := len(fill.lines(t, keywordBatchLine)) - before; during < 2 {
+	if during := len(fill.Lines(t, keywordBatchLine)) - before; during < 2 {
 		t.Fatalf("the fill wrote %d batches while %d rounds of requests ran, want at least two", during, len(rounds))
 	}
 
@@ -306,8 +300,8 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 
 	// Every event has its rows.
 	newest := lastEventID(t, filled.database)
-	keywordAwaitCursor(t, filled.database, newest, time.Minute, fill.wake)
-	fill.stop(t)
+	keywordAwaitCursor(t, filled.database, newest, time.Minute, fill.Wake)
+	fill.Stop(t)
 	textversionstest.RequireRowsOf(t, filled.database, backlog)
 	written := keywordTableRows(t, filled.database, newest)
 	if _, err := filled.database.Pool.Exec(t.Context(), `delete from search_text_versions`); err != nil {
@@ -344,15 +338,12 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
 	fill := startKeywordFill(t, server)
-	fill.awaitBatches(t, 1, time.Minute)
+	fill.AwaitLine(t, keywordBatchLine, time.Minute)
 	if cursor := textversionstest.Cursor(t, server.database); cursor >= last {
 		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
 	}
 
-	holder, err := server.database.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin the transaction that holds the answers read: %v", err)
-	}
+	holder, _ := textversionstest.BeginTransaction(t, server.database)
 	defer func() { _ = holder.Rollback(context.Background()) }()
 	if _, err := holder.Exec(t.Context(), `lock table message_deliveries in access exclusive mode`); err != nil {
 		t.Fatalf("lock message_deliveries: %v", err)
@@ -368,10 +359,10 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	batchesWhenSlow := len(fill.lines(t, keywordBatchLine))
-	fill.awaitLine(t, keywordPausedLine, 30*time.Second)
+	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
+	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
-	for _, msg := range fill.lines(t, "") {
+	for _, msg := range fill.Lines(t, "") {
 		if strings.HasPrefix(msg, keywordPausedLine) {
 			break
 		}
@@ -393,7 +384,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	for time.Now().Before(releaseAt) {
 		writes++
 		keywordWriteUnderLock(t, server, issue.Key, writes)
-		fill.wake()
+		fill.Wake()
 		for sampled := time.Now(); time.Since(sampled) < 2*time.Second && time.Now().Before(releaseAt); {
 			if cursor := textversionstest.Cursor(t, server.database); cursor != paused {
 				t.Fatalf("the cursor moved from %d to %d while the answers read was held by the lock", paused, cursor)
@@ -401,7 +392,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
-	if batches := len(fill.lines(t, keywordBatchLine)); batches != batchesBeforePause {
+	if batches := len(fill.Lines(t, keywordBatchLine)); batches != batchesBeforePause {
 		t.Fatalf("the fill logged %d batches while paused, want none", batches-batchesBeforePause)
 	}
 	if err := holder.Rollback(t.Context()); err != nil {
@@ -437,7 +428,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	}
 
 	// Then the fill continues: the cursor moves, and every event gets its rows.
-	fill.awaitLine(t, keywordContinuesLine, 20*time.Second)
+	fill.AwaitLine(t, keywordContinuesLine, 20*time.Second)
 	moveDeadline := time.Now().Add(20 * time.Second)
 	for textversionstest.Cursor(t, server.database) == paused {
 		if time.Now().After(moveDeadline) {
@@ -445,7 +436,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	keywordAwaitCursor(t, server.database, lastEventID(t, server.database), 2*time.Minute, fill.wake)
+	keywordAwaitCursor(t, server.database, lastEventID(t, server.database), 2*time.Minute, fill.Wake)
 	textversionstest.RequireRowsOf(t, server.database, backlog)
 	var underLock int
 	if err := server.database.Pool.QueryRow(t.Context(), `
@@ -523,18 +514,10 @@ func newKeywordServer(t *testing.T) keywordServer {
 	return keywordServer{handler: mux, database: database, deps: deps, served: served, latency: latency}
 }
 
-// keywordFill is the fill a serving process runs (textversions.Run) beside a keywordServer: its
-// lease pool reserved as the server reserves it, its process serving, its answers reads the
-// server's, its events wake the test's, and its lines logged at debug level.
-type keywordFill struct {
-	logs    *storetest.LockedLog
-	events  chan struct{}
-	cancel  context.CancelFunc
-	stopped chan struct{}
-}
-
-// startKeywordFill runs the fill beside server until the test stops it or ends.
-func startKeywordFill(t *testing.T, server keywordServer) *keywordFill {
+// startKeywordFill runs the fill as a serving process runs it (textversions.Run, through
+// textversionstest.StartFill) beside server, until the test stops it or ends: its lease pool
+// reserved as the server reserves it, its process serving and its answers reads the server's.
+func startKeywordFill(t *testing.T, server keywordServer) *textversionstest.Fill {
 	t.Helper()
 	callers, err := server.database.Pool.Leases()
 	if err != nil {
@@ -546,45 +529,16 @@ func startKeywordFill(t *testing.T, server keywordServer) *keywordFill {
 	}
 	serving := make(chan struct{})
 	close(serving)
-	fill := &keywordFill{logs: &storetest.LockedLog{}, events: make(chan struct{}, 1), stopped: make(chan struct{})}
-	ctx, cancel := context.WithCancel(context.Background())
-	fill.cancel = cancel
 	config := textversions.Config{
 		Leases:  leases,
 		Horizon: events.NewHorizon(server.database.Pool),
 		Latency: server.latency,
 		Serving: serving,
-		Events:  fill.events,
-		Logger:  slog.New(slog.NewJSONHandler(fill.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
-	go func() {
-		defer close(fill.stopped)
-		if err := textversions.Run(ctx, config); err != nil {
-			t.Errorf("run the keyword fill: %v", err)
-		}
-	}()
-	t.Cleanup(func() { fill.stop(t) })
-	return fill
-}
-
-// wake signals the fill's events wake, as a commit that wrote an event does through the listener
-// hub.
-func (f *keywordFill) wake() {
-	select {
-	case f.events <- struct{}{}:
-	default:
-	}
-}
-
-// stop ends the fill's context, as a serving process's stop does, and waits for Run to return.
-func (f *keywordFill) stop(t *testing.T) {
-	t.Helper()
-	f.cancel()
-	select {
-	case <-f.stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the keyword fill did not return within 30 s of its stop:\n%s", f.logs.String())
-	}
+	return textversionstest.StartFill(t, func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error {
+		config.Events, config.Logger = wake, logger
+		return textversions.Run(ctx, config)
+	})
 }
 
 // The lines of the fill the tests read: a batch's (filler.record), and the pause's two
@@ -594,42 +548,6 @@ const (
 	keywordPausedLine    = "dispatch: the keyword fill paused:"
 	keywordContinuesLine = "dispatch: the keyword fill continues:"
 )
-
-// lines is the messages of the lines the fill logged that start with prefix, in order.
-func (f *keywordFill) lines(t *testing.T, prefix string) []string {
-	t.Helper()
-	var messages []string
-	for _, line := range logtest.JSONLines(t, f.logs.String()) {
-		if message, _ := line["msg"].(string); strings.HasPrefix(message, prefix) {
-			messages = append(messages, message)
-		}
-	}
-	return messages
-}
-
-// awaitBatches waits until the fill has logged n batches.
-func (f *keywordFill) awaitBatches(t *testing.T, n int, within time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for len(f.lines(t, keywordBatchLine)) < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("the fill logged no %d batches within %v:\n%s", n, within, f.logs.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// awaitLine waits until the fill logs a line whose message starts with prefix.
-func (f *keywordFill) awaitLine(t *testing.T, prefix string, within time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for len(f.lines(t, prefix)) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the fill logged no %q line within %v:\n%s", prefix, within, f.logs.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
 
 // keywordAwaitCursor waits until the fill's cursor reaches id, waking the fill each second.
 func keywordAwaitCursor(t *testing.T, database *store.Store, id int64, within time.Duration, wake func()) {

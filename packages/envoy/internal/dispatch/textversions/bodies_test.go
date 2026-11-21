@@ -129,10 +129,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		// the next batch, which is the one that warns of it.
 		batch := readLoggedEvents(t, database, comment.event, firstEdit, secondEdit)
 		var logs bytes.Buffer
-		tx, _ := beginTransaction(t, database)
-		_, bounded, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
-		_ = tx.Rollback(t.Context())
-		if err != nil || bounded != 1 {
+		if bounded, err := decideBoundTo1Byte(t, database, &logs, batch); err != nil || bounded != 1 {
 			t.Fatalf("the batch bound to 1 byte decided %d of the comment's events (%v), want its comment.created alone", bounded, err)
 		}
 		got := decideAndWrite(t, database, &logs, batch)
@@ -215,10 +212,10 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 			bBody := "Edit B moves the rotation to the autumn.\n\n" + long
 			comment := writeOwnedComment(t, database, broker, test.owner, "Rotate the staging key first.", true)
 
-			a, _ := beginTransaction(t, database)
-			defer a.Rollback(ctx)
-			b, _ := beginTransaction(t, database)
-			defer b.Rollback(ctx)
+			a, _ := textversionstest.BeginTransaction(t, database)
+			defer func() { _ = a.Rollback(context.Background()) }()
+			b, _ := textversionstest.BeginTransaction(t, database)
+			defer func() { _ = b.Rollback(context.Background()) }()
 			bEvent := writeEdit(t, b, broker, comment.id, bBody)
 			if err := b.Commit(ctx); err != nil {
 				t.Fatalf("commit transaction B: %v", err)
@@ -374,12 +371,10 @@ func TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce(t *testing.T) 
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
 
-	first, _ := beginTransaction(t, database)
-	defer first.Rollback(ctx)
-	early := textversionstest.InsertIssue(t, first, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
-	if err := first.Commit(ctx); err != nil {
-		t.Fatalf("commit ACME-1's transaction: %v", err)
-	}
+	var early textversionstest.WrittenIssue
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		early = textversionstest.InsertIssue(t, tx, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
+	})
 	routedEvent := createIssue(t, database, broker, 2, "Audit the verifiers", "# Audit\n\nRead each verifier's key.")
 	lateEvent := textversionstest.CommitEvents(t, database, broker, early.Event("issue.created", early.Title))[0]
 	batch := readLoggedEvents(t, database, routedEvent, lateEvent)
@@ -422,29 +417,22 @@ func TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce(t *testing.T) {
 		// issue.created, as a reset of the log that kept them leaves them. A retitle is then
 		// written as the update route writes one, and version 2 of the document after it, so the
 		// document's version at the retitle's time is not its latest.
-		rows, _ := beginTransaction(t, database)
-		defer rows.Rollback(ctx)
-		issue := textversionstest.InsertIssue(t, rows, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
-		if err := rows.Commit(ctx); err != nil {
-			t.Fatalf("commit %s's rows: %v", issue.Key, err)
-		}
+		var issue textversionstest.WrittenIssue
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			issue = textversionstest.InsertIssue(t, tx, 1, "Rotate the signing keys", "# Rotation\n\nMove each signing key to its successor.")
+		})
 		created := createIssue(t, database, broker, 2, "Audit the verifiers", "# Audit\n\nRead each verifier's key.")
-		retitle, _ := beginTransaction(t, database)
-		defer retitle.Rollback(ctx)
 		title := issue.Title + ", then audit the verifiers"
-		if _, err := retitle.Exec(ctx, `update issues set title = $2 where key = $1`, issue.Key, title); err != nil {
-			t.Fatalf("retitle %s: %v", issue.Key, err)
-		}
-		retitled := textversionstest.AppendEvents(t, retitle, broker, issue.Event("issue.updated", title))[0]
-		if err := retitle.Commit(ctx); err != nil {
-			t.Fatalf("commit %s's retitle: %v", issue.Key, err)
-		}
-		later, _ := beginTransaction(t, database)
-		defer later.Rollback(ctx)
-		textversionstest.AppendEvents(t, later, broker, issue.InsertVersion(t, later, 2, "# Rotation\n\nMove each signing key, then audit each verifier."))
-		if err := later.Commit(ctx); err != nil {
-			t.Fatalf("commit version 2 of %s's document: %v", issue.Key, err)
-		}
+		var retitled int64
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			if _, err := tx.Exec(ctx, `update issues set title = $2 where key = $1`, issue.Key, title); err != nil {
+				t.Fatalf("retitle %s: %v", issue.Key, err)
+			}
+			retitled = textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.updated", title))[0]
+		})
+		textversionstest.Commit(t, database, func(tx pgx.Tx) {
+			textversionstest.AppendEvents(t, tx, broker, issue.InsertVersion(t, tx, 2, "# Rotation\n\nMove each signing key, then audit each verifier."))
+		})
 
 		got, warned := requireWarnedOnceByItsBatch(t, database, readLoggedEvents(t, database, created, retitled),
 			"found no earlier version of the issue in the log", issue.Key, retitled)
@@ -527,11 +515,8 @@ func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs
 // warning, with every attribute as its text.
 func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []event, message, issue string, event int64) (decided, map[string]string) {
 	t.Helper()
-	ctx := t.Context()
 	var logs bytes.Buffer
-	bounded, _ := beginTransaction(t, database)
-	_, decidedEvents, err := decideVersions(ctx, bounded, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
-	_ = bounded.Rollback(ctx)
+	decidedEvents, err := decideBoundTo1Byte(t, database, &logs, batch)
 	if err != nil || decidedEvents != 1 {
 		t.Fatalf("the batch bound to 1 byte decided %d of its %d events (%v), want the first alone", decidedEvents, len(batch), err)
 	}
@@ -552,19 +537,27 @@ func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []ev
 	return got, warned
 }
 
+// decideBoundTo1Byte decides the versions of batch as a batch bound to 1 byte decides them, with
+// the warnings logged to logs, in a transaction it rolls back, and answers how many of batch's
+// events it decided.
+func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) (int, error) {
+	t.Helper()
+	tx, _ := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	_, decidedEvents, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, 1)
+	return decidedEvents, err
+}
+
 // createIssue writes issue ACME-n of textversionstest.Project with title and its primary document
 // of markdown, and its issue.created event, in one transaction, as the create route writes one,
 // so version 1 of the document is made at the event's created_at, and answers the event's id.
 func createIssue(t *testing.T, database *store.Store, broker *events.Broker, n int, title, markdown string) int64 {
 	t.Helper()
-	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
-	issue := textversionstest.InsertIssue(t, tx, n, title, markdown)
-	event := textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", title))[0]
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the create of %s: %v", issue.Key, err)
-	}
+	var event int64
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		issue := textversionstest.InsertIssue(t, tx, n, title, markdown)
+		event = textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", title))[0]
+	})
 	return event
 }
 
@@ -628,25 +621,22 @@ func writeComment(t *testing.T, database *store.Store, broker *events.Broker, bo
 func writeOwnedComment(t *testing.T, database *store.Store, broker *events.Broker, owner commentOwner, body string, indexed bool) writtenComment {
 	t.Helper()
 	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
 	var comment writtenComment
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `
-		insert into comments (issue_key, artifact_id, author, body) values ($1, $2::uuid, '{"kind":"user","id":"alice"}', $3)
-		returning id::text, created_at
-	`, owner.issue, owner.document, body).Scan(&comment.id, &createdAt); err != nil {
-		t.Fatalf("insert the comment: %v", err)
-	}
-	if indexed {
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, createdAt, nil, nil); err != nil {
-			t.Fatalf("index the comment's blocks: %v", err)
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `
+			insert into comments (issue_key, artifact_id, author, body) values ($1, $2::uuid, '{"kind":"user","id":"alice"}', $3)
+			returning id::text, created_at
+		`, owner.issue, owner.document, body).Scan(&comment.id, &createdAt); err != nil {
+			t.Fatalf("insert the comment: %v", err)
 		}
-	}
-	comment.event = appendOwnedCommentEvent(t, tx, broker, owner, "comment.created", comment.id, body, createdAt)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the comment: %v", err)
-	}
+		if indexed {
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, createdAt, nil, nil); err != nil {
+				t.Fatalf("index the comment's blocks: %v", err)
+			}
+		}
+		comment.event = appendOwnedCommentEvent(t, tx, broker, owner, "comment.created", comment.id, body, createdAt)
+	})
 	return comment
 }
 
@@ -670,31 +660,23 @@ func insertProjectDocument(t *testing.T, database *store.Store) string {
 func indexComment(t *testing.T, database *store.Store, id, body string) {
 	t.Helper()
 	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select created_at from comments where id = $1::uuid`, id).Scan(&createdAt); err != nil {
-		t.Fatalf("read the comment: %v", err)
-	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, createdAt, nil, nil); err != nil {
-		t.Fatalf("index the comment's blocks: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the index: %v", err)
-	}
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `select created_at from comments where id = $1::uuid`, id).Scan(&createdAt); err != nil {
+			t.Fatalf("read the comment: %v", err)
+		}
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, createdAt, nil, nil); err != nil {
+			t.Fatalf("index the comment's blocks: %v", err)
+		}
+	})
 }
 
 // editComment writes body as comment id's new body in a transaction of its own, as the edit route
 // does (writeEdit), and answers the id of its comment.edited event.
 func editComment(t *testing.T, database *store.Store, broker *events.Broker, id, body string) int64 {
 	t.Helper()
-	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
-	event := writeEdit(t, tx, broker, id, body)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the edit: %v", err)
-	}
+	var event int64
+	textversionstest.Commit(t, database, func(tx pgx.Tx) { event = writeEdit(t, tx, broker, id, body) })
 	return event
 }
 
@@ -787,8 +769,8 @@ func readLoggedEvents(t *testing.T, database *store.Store, ids ...int64) []event
 func readBatch(t *testing.T, database *store.Store, after, through int64) []event {
 	t.Helper()
 	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
+	tx, _ := textversionstest.BeginTransaction(t, database)
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	read, _, err := newFiller(database.Pool, nil).readEvents(ctx, tx, after, through)
 	if err != nil {
 		t.Fatalf("read the events after event %d: %v", after, err)
@@ -804,18 +786,17 @@ func readBatch(t *testing.T, database *store.Store, after, through int64) []even
 func decideAndWrite(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) decided {
 	t.Helper()
 	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
-	defer tx.Rollback(ctx)
-	got, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
-	if err != nil {
-		t.Fatalf("decide the versions: %v", err)
-	}
-	if err := insertVersions(ctx, tx, got.Versions); err != nil {
-		t.Fatalf("write the versions: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the batch: %v", err)
-	}
+	var got decided
+	textversionstest.Commit(t, database, func(tx pgx.Tx) {
+		decidedVersions, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
+		if err != nil {
+			t.Fatalf("decide the versions: %v", err)
+		}
+		if err := insertVersions(ctx, tx, decidedVersions.Versions); err != nil {
+			t.Fatalf("write the versions: %v", err)
+		}
+		got = decidedVersions
+	})
 	return got
 }
 
@@ -921,7 +902,7 @@ func genericPlan(t *testing.T, database *store.Store, statement string) planNode
 func analyzedGenericPlan(t *testing.T, database *store.Store, read presentBodyRead, e event, id string) planNode {
 	t.Helper()
 	ctx := t.Context()
-	tx, _ := beginTransaction(t, database)
+	tx, _ := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_generic_plan`); err != nil {
 		t.Fatalf("force generic plans: %v", err)

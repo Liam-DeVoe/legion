@@ -35,14 +35,14 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
 	second := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	awaitLine(t, second, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage, 10*time.Second)
 
 	var holders cursorHolders
 	var ids []int64
 	for range 10 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
-		first.wake()
-		second.wake()
+		first.Wake()
+		second.Wake()
 		holders.sample(t, database)
 		if live := liveHolder(t, database); live != firstHolder {
 			t.Fatalf("while both fills run, the hold names %q; want the first's, %s", live, firstHolder)
@@ -53,21 +53,21 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	if got := holders.read; len(got) != 1 || got[0] != firstHolder {
 		t.Fatalf("while both fills ran the cursor row named %v; want the first's holder %s alone", got, firstHolder)
 	}
-	if second.logged(batchMessage) {
-		t.Fatalf("the standby wrote a batch while the first held the hold:\n%s", second.logs.String())
+	if second.Logged(t, batchMessage) {
+		t.Fatalf("the standby wrote a batch while the first held the hold:\n%s", second.Log())
 	}
 
 	died := time.Now()
 	first.db.Pool.Close()
-	first.stop(t)
+	first.Stop(t)
 	var next []int64
 	for range 3 {
 		next = append(next, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
-	second.wake()
+	second.Wake()
 	textversionstest.AwaitRows(t, database, next, time.Minute-time.Since(died), func() {
 		holders.sample(t, database)
-		second.wake()
+		second.Wake()
 	})
 	t.Logf("the standby wrote the next events %v after the holder died", time.Since(died).Round(time.Millisecond))
 	holders.sample(t, database)
@@ -95,22 +95,22 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	standbyStore := storetest.SecondProcess(t, database)
 	released := releasedWake(t, standbyStore)
 	second := startFill(t, standbyStore, released, true)
-	awaitLine(t, second, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage, 10*time.Second)
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
 	written := commitComment(t, database, broker, textversionstest.Issue).id
-	first.wake()
+	first.Wake()
 	textversionstest.AwaitRows(t, database, []int64{written}, 30*time.Second, nil)
 
-	first.stop(t)
+	first.Stop(t)
 	stopped := time.Now()
-	if !first.logged(releasedHoldMessage) {
-		t.Fatalf("the holder stopped without logging its release:\n%s", first.logs.String())
+	if !first.Logged(t, releasedHoldMessage) {
+		t.Fatalf("the holder stopped without logging its release:\n%s", first.Log())
 	}
 	if live := liveHolder(t, database); live == firstHolder {
 		t.Fatalf("the holder stopped and the hold still names it, %s", firstHolder)
 	}
 	id := commitComment(t, database, broker, textversionstest.Issue).id
-	second.wake()
+	second.Wake()
 	textversionstest.AwaitRows(t, database, []int64{id}, 2*time.Second-time.Since(stopped), nil)
 	t.Logf("the standby wrote the next event %v after the holder stopped", time.Since(stopped).Round(time.Millisecond))
 	if got := readCursorRow(t, database).holder; got == firstHolder || got == "" {
@@ -129,12 +129,12 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
 	never := make(chan struct{})
 	second := startFill(t, storetest.SecondProcess(t, database), never, true)
-	awaitLine(t, second, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage, 10*time.Second)
 
-	first.stop(t)
+	first.Stop(t)
 	stopped := time.Now()
 	id := commitComment(t, database, broker, textversionstest.Issue).id
-	second.wake()
+	second.Wake()
 	textversionstest.AwaitRows(t, database, []int64{id}, standbyRetry+5*time.Second-time.Since(stopped), nil)
 	t.Logf("the standby wrote the next event %v after the holder released its hold", time.Since(stopped).Round(time.Millisecond))
 	if live := liveHolder(t, database); live == "" || live == firstHolder {
@@ -154,7 +154,7 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 	for range 3 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
-	fill.wake()
+	fill.Wake()
 
 	time.Sleep(5 * time.Second)
 	if rows := countRows(t, database); rows != 0 {
@@ -189,7 +189,7 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 	for range 3 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
-	fill.wake()
+	fill.Wake()
 	textversionstest.AwaitRows(t, database, ids, 30*time.Second, nil)
 
 	// Longer than the horizon's longest re-read (rereadMax), so a fill still reading it again is
@@ -219,30 +219,21 @@ func (r *renewalsApart) TraceQueryStart(ctx context.Context, conn *pgx.Conn, dat
 
 func (r *renewalsApart) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// fillProcess is the fill one serving process runs (Run), on a store of the test's own, so two of
-// them take turns on the hold through the database as two processes do. Its serving is the
-// process's, open until the test closes it where startFill did not; its events wake is the test's,
-// signalled where the listener hub's wake on the events channel would be.
+// fillProcess is the fill one serving process runs (Run, through textversionstest.StartFill), on a
+// store of the test's own, so two of them take turns on the hold through the database as two
+// processes do. Its serving is the process's, open until the test closes it where startFill did
+// not.
 type fillProcess struct {
+	*textversionstest.Fill
 	db      *store.Store
 	serving chan struct{}
-	events  chan struct{}
-	logs    *storetest.LockedLog
-	cancel  context.CancelFunc
-	stopped chan struct{}
 }
 
 // startFill runs the fill on db, woken for a released hold by released, with the process serving
 // already when serving is set, and stops it once the test ends.
 func startFill(t *testing.T, db *store.Store, released <-chan struct{}, serving bool) *fillProcess {
 	t.Helper()
-	process := &fillProcess{
-		db:      db,
-		serving: make(chan struct{}),
-		events:  make(chan struct{}, 1),
-		logs:    &storetest.LockedLog{},
-		stopped: make(chan struct{}),
-	}
+	process := &fillProcess{db: db, serving: make(chan struct{})}
 	if serving {
 		close(process.serving)
 	}
@@ -251,44 +242,13 @@ func startFill(t *testing.T, db *store.Store, released <-chan struct{}, serving 
 		Horizon:  events.NewHorizon(db.Pool),
 		Latency:  sessionanswers.NewLatency(time.Now),
 		Serving:  process.serving,
-		Events:   process.events,
 		Released: released,
-		Logger:   slog.New(slog.NewJSONHandler(process.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	process.cancel = cancel
-	go func() {
-		defer close(process.stopped)
-		if err := Run(ctx, config); err != nil {
-			t.Errorf("run the fill: %v", err)
-		}
-	}()
-	t.Cleanup(func() { process.stop(t) })
+	process.Fill = textversionstest.StartFill(t, func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error {
+		config.Events, config.Logger = wake, logger
+		return Run(ctx, config)
+	})
 	return process
-}
-
-// wake signals the fill's events wake, as a commit of an event does through the listener hub.
-func (p *fillProcess) wake() {
-	select {
-	case p.events <- struct{}{}:
-	default:
-	}
-}
-
-// stop ends the fill's context, as a serving process's stop does, and waits for Run to return.
-func (p *fillProcess) stop(t *testing.T) {
-	t.Helper()
-	p.cancel()
-	select {
-	case <-p.stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the fill did not return within 30 s of its stop:\n%s", p.logs.String())
-	}
-}
-
-// logged is whether the fill logged a line holding message.
-func (p *fillProcess) logged(message string) bool {
-	return p.logs.Lines(message) != ""
 }
 
 // releasedWake runs a listener hub on db's listener pool, as the server runs its own, with a wake
@@ -340,18 +300,6 @@ func awaitLiveHolder(t *testing.T, database *store.Store, within time.Duration) 
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("no fill took the hold within %v", within)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// awaitLine waits until the fill logs a line holding message.
-func awaitLine(t *testing.T, fill *fillProcess, message string, within time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for !fill.logged(message) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the fill logged no %q within %v:\n%s", message, within, fill.logs.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

@@ -522,6 +522,23 @@ func (c *LeaseCallers) For(name string) (*pgxpool.Pool, error) {
 	return c.pool, nil
 }
 
+// ForAll reserves a connection of the lease pool for each caller of names, in order (For), and
+// returns the pool they take them from: a group of callers that work together, such as a hold's
+// holder and its renewal goroutine, reserves them here at once. The error of a name For refuses
+// names that caller, and the names before it stay reserved. No name at all is refused too, since
+// a caller reaches the pool only through a reservation.
+func (c *LeaseCallers) ForAll(names ...string) (*pgxpool.Pool, error) {
+	if len(names) == 0 {
+		return nil, errors.New("reserve the lease pool: no caller named")
+	}
+	for _, name := range names {
+		if _, err := c.For(name); err != nil {
+			return nil, fmt.Errorf("reserve the lease pool for %s: %w", name, err)
+		}
+	}
+	return c.pool, nil
+}
+
 // Reserved is the names that have reserved a connection, in the order they took it.
 func (c *LeaseCallers) Reserved() []string {
 	c.mu.Lock()
