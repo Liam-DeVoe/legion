@@ -4024,7 +4024,7 @@ An EOF during the NATS handshake also refuses at once
 
 Behind the NATS auth service in the secrets broker, the daemon's own connection may present a platform identity token instead of a seed:
 `nats_daemon_service_token_file` (relative to `legion.yaml`'s directory) names a projected ServiceAccount token for the broker's `BROKER_NATS_K8S_AUDIENCE`, whose account the broker's `BROKER_NATS_SERVICES` lists as a `daemon` entry.
-The daemon reads the file afresh at each connect, connects as user `service` with the token as its password, takes its account's own reply prefix (`_INBOX_` and the account, each byte outside `[A-Za-z0-9-]` escaped), and moves to a later token ten minutes before the one it presented lapses.
+The daemon reads the file afresh at each connect, connects as user `service` with the token as its password, takes its account's own reply prefix (`_INBOX_envoy.` and the account, each byte outside `[A-Za-z0-9-]` escaped), and moves to a later token ten minutes before the one it presented lapses.
 List the daemon's entry with `*`, the daemon's whole grant (with its own reply prefix).
 Do not list it with `-` yet: `-` holds the grant to the projects the account's exchange entry lists (`docs/site/src/content/docs/broker/operate.md`, the NATS auth service), and that grant names the consumers a daemon opens only once it opens its consumers per project, and drops the stream reads today's daemon makes, so today's daemon would be refused at boot.
 `-` is for daemon entries once every reading of the release gate holds for such a daemon: `daemon-release-gate.sh`'s listener and daemon legs (each with `--deployment <owner/repo>`, which the script requires), the stored-wake read, the running-daemon read and the consumer-filter read.
