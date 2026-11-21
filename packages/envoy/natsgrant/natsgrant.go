@@ -169,8 +169,9 @@ func EdgeInboxPrefix(machineID string) string {
 
 // EdgeRelayReplyPrefix is the receipt family of the edge listener of machine machineID:
 // bus.RelayReplyPrefix followed by the machine id, under which its session relay names a relay
-// frame's receipt subject (the prefix, a dot and a token of its own). Edge subscribes only its own
-// machine's family, so no edge machine subscribes another machine's receipts, and since it can
+// frame's receipt subject (that family, then a nuid, the session id and a token). Edge subscribes
+// only its own machine's family, so no edge machine subscribes another machine's receipts, and
+// since it can
 // change no stream's subjects, no stream it reads captures them. It publishes every edge
 // machine's (bus.RelayReplyPrefix): the listener serving a session's relay socket may be another
 // edge machine than the one holding the session's consumer, and it publishes the receipt on the

@@ -22,7 +22,6 @@ package main
 // ciphertoken.AffirmativeCacheTTL.
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
@@ -31,10 +30,6 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,9 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -83,19 +76,11 @@ const (
 	relayLiveCloseBound = relayLiveCheck + ciphertoken.AffirmativeCacheTTL + time.Second
 )
 
-// relayLiveViolation matches a permissions violation nats-server logs, capturing its kind and the
-// subject it names.
-var relayLiveViolation = regexp.MustCompile(`(Publish|Subscription) Violation - .*?Subject "([^"]*)"`)
-
-// relayLiveRig is one row's deployment: the server, Dispatch's client on it, the broker, and the
-// two edge replicas.
+// relayLiveRig is one row's deployment: the server and Dispatch's client on it (edgeLiveHub), the
+// broker, and the two edge replicas.
 type relayLiveRig struct {
-	server interface {
-		Logs(context.Context) (io.ReadCloser, error)
-	}
-	uri      string
-	dispatch *bus.Client
-	binary   string
+	edgeLiveHub
+	binary string
 	// broker is the real broker, nil on a rig whose replicas ask stub. access is its project
 	// check's Dispatch stand-in, and proxy the address the replicas call the broker at, which a
 	// row closes to stop the broker for them.
@@ -125,8 +110,6 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 		Flags: []string{"-ldflags", "-X main.relaySocketCheckBuild=" + relayLiveCheck.String()},
 	})}
 
-	seeds := map[string]string{}
-	var users []testnats.StaticUser
 	grants := map[string]natsgrant.Permissions{relayLiveDispatch: natsgrant.Dispatch(relayLiveDispatch)}
 	for _, machineID := range []string{relayLiveA, relayLiveB} {
 		grant, err := natsgrant.Edge(machineID, strings.Split(options.edgeProjects, ","))
@@ -135,37 +118,12 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 		}
 		grants[machineID] = grant
 	}
-	for name, grant := range grants {
-		seed, public := testnats.User(t)
-		seeds[name] = seed
-		users = append(users, testnats.StaticUser{NKey: public, Publish: grant.Publish, Subscribe: grant.Subscribe})
-	}
-	rig.server, rig.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(users...), []string{"-js"}, false)
-	dispatch, err := bus.ConnectOwningStream([]string{rig.uri}, bus.WithName(relayLiveDispatch), bus.WithEnvironment(func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return seeds[relayLiveDispatch], true
-		}
-		return "", false
-	}))
-	if err != nil {
-		t.Fatalf("Dispatch's user creates the stream: %v", err)
-	}
-	t.Cleanup(dispatch.Close)
-	rig.dispatch = dispatch
-	// The edge's grant creates and raises no bucket's stream, so each replica finds each bucket
-	// the shared listeners made at their start; Dispatch's user, whose grant holds each one's
-	// create, makes them here before either replica starts, as edge_live_test.go does.
-	for _, bucket := range bus.ListenerBuckets() {
-		if _, err := dispatch.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
-			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
-		}
-	}
+	rig.edgeLiveHub = startEdgeLiveHub(t, grants, relayLiveDispatch, bus.ListenerBuckets())
 
-	account := filepath.Join(t.TempDir(), "account-token")
 	var brokerURL, accountToken string
 	if options.stub {
 		rig.stub = ciphertokentest.NewStubBroker(t)
-		brokerURL, accountToken = rig.stub.Server.URL, "edge-listener-account-token"
+		brokerURL, accountToken = rig.stub.Server.URL, edgeAccountToken
 	} else {
 		rig.access = projectaccesstest.NewServer(t,
 			map[string]projectaccesstest.Row{relayLiveProject: {Visibility: "private", Owner: "owner@example.com", Listed: []string{relayLivePerson, relayLiveOtherPerson}}},
@@ -180,26 +138,9 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 		t.Cleanup(rig.proxy.Close)
 		brokerURL, accountToken = rig.proxy.URL, rig.broker.ListenerToken
 	}
-	if err := os.WriteFile(account, []byte(accountToken), 0o600); err != nil {
-		t.Fatalf("write the replicas' account token: %v", err)
-	}
 
 	start := func(machineID string) *listenerProcess {
-		held := cmdtest.HoldPort(t)
-		cmd := exec.Command(rig.binary)
-		cmd.Env = []string{
-			"PORT=" + strconv.Itoa(held.Port),
-			"ENVOY_LISTEN_HOST=127.0.0.1",
-			"ENVOY_MACHINE_ID=" + machineID,
-			"NATS_URLS=" + rig.uri,
-			bus.NkeySeedEnvVar + "=" + seeds[machineID],
-			config.EdgeProjectsEnvVar + "=" + options.edgeProjects,
-			EnvBrokerURL + "=" + brokerURL,
-			EnvBrokerAccountTokenFile + "=" + account,
-			EnvPublicURL + "=http://127.0.0.1:" + strconv.Itoa(held.Port),
-		}
-		held.Pass(cmd, "ENVOY_LISTEN_FD")
-		return &listenerProcess{Process: cmdtest.Start(t, "the edge listener "+machineID, cmd), port: held.Port}
+		return startEdgeListenerProcess(t, rig.binary, rig.uri, machineID, options.edgeProjects, brokerURL, accountToken, bus.NkeySeedEnvVar+"="+rig.seeds[machineID])
 	}
 	rig.a, rig.b = start(relayLiveA), start(relayLiveB)
 	t.Cleanup(func() {
@@ -213,19 +154,11 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 	return rig
 }
 
-// requireNoViolation fails the row naming every permissions violation the server logged.
+// requireNoViolation fails the row naming every permissions violation the server logged, as kind
+// and subject.
 func (r *relayLiveRig) requireNoViolation(t *testing.T) {
 	t.Helper()
-	logs, err := r.server.Logs(context.Background())
-	if err != nil {
-		t.Fatalf("read the server's log: %v", err)
-	}
-	defer logs.Close()
-	text, err := io.ReadAll(logs)
-	if err != nil {
-		t.Fatalf("read the server's log: %v", err)
-	}
-	if found := relayLiveViolation.FindAllString(string(text), -1); len(found) > 0 {
+	if found := r.violations(t); len(found) > 0 {
 		t.Fatalf("the server refused %d requests under the rendered grants: %q", len(found), found)
 	}
 }

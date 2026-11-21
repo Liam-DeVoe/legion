@@ -12,7 +12,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -96,8 +95,8 @@ type relaySocketRigConfig struct {
 	// own by default.
 	pendingMsgs, pendingBytes int
 	// budget is what the replica's sockets together may hold, relaySocketReplicaPendingBytes by
-	// default.
-	budget int64
+	// default, and callerBudget what one caller's may, relaySocketCallerPendingBytes by default.
+	budget, callerBudget int64
 }
 
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
@@ -118,6 +117,10 @@ func withPendingLimits(msgs, bytes int) relaySocketRigOption {
 
 func withReplicaBudget(bytes int64) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.budget = bytes }
+}
+
+func withCallerBudget(bytes int64) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.callerBudget = bytes }
 }
 
 func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySocketRig {
@@ -181,6 +184,9 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	if config.budget > 0 {
 		sockets.budget = config.budget
 	}
+	if config.callerBudget > 0 {
+		sockets.callerBudget = config.callerBudget
+	}
 	sockets.now = clock.now
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: client, relaySockets: sockets}, "edge-b", logger)
@@ -240,6 +246,16 @@ func (rig *relaySocketRig) open(t *testing.T, session string) (*relaySocketClien
 	return rig.openWith(t, session, token), token
 }
 
+// openAs is open for a session of person, another person than the rig's.
+func (rig *relaySocketRig) openAs(t *testing.T, person, session string) *relaySocketClient {
+	t.Helper()
+	token := "access-token-of-" + session + "-" + t.Name()
+	answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+	answer.Person = person
+	rig.broker.Says(token, answer)
+	return rig.openWith(t, session, token)
+}
+
 // openWith opens session's socket with token, failing the test unless the upgrade admits it.
 func (rig *relaySocketRig) openWith(t *testing.T, session, token string) *relaySocketClient {
 	t.Helper()
@@ -251,6 +267,13 @@ func (rig *relaySocketRig) openWith(t *testing.T, session, token string) *relayS
 		t.Fatalf("the socket was opened with the subprotocol %q, want %q", got, relaySubprotocol)
 	}
 	return client
+}
+
+// revoke has the broker hold token live no longer, as a revoke does, and moves the rig's clock past
+// the time its last live answer is reused for (ciphertoken.AffirmativeCacheTTL).
+func (rig *relaySocketRig) revoke(token string) {
+	rig.broker.Says(token, ciphertoken.Introspection{})
+	rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
 }
 
 // describeUpgrade is an upgrade's refusal as a failure names it: its status and its body.
@@ -326,6 +349,17 @@ func (c *relaySocketClient) send(frame map[string]any) {
 	defer c.writeMu.Unlock()
 	if err := c.conn.WriteJSON(frame); err != nil {
 		c.t.Fatalf("send %v: %v", frame, err)
+	}
+}
+
+// sendRaw writes one WebSocket message of kind holding data as it is, which may be no frame the
+// wire reads.
+func (c *relaySocketClient) sendRaw(kind int, data []byte) {
+	c.t.Helper()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.conn.WriteMessage(kind, data); err != nil {
+		c.t.Fatalf("send %s: %v", data, err)
 	}
 }
 
@@ -468,14 +502,21 @@ func (rig *relaySocketRig) holds(session string) int {
 	return len(rig.sockets.open[session])
 }
 
+// relayFrameReceipt is a receipt subject of a relay frame of session, shaped as an edge relay
+// names one (relayReceiptOf): the receipt family, a machine id, a relay's nuid, the session and a
+// token of its own.
+func relayFrameReceipt(session string) string {
+	return bus.SessionReplySubject(bus.RelayReplyPrefix+"edge-rows.rows", session)
+}
+
 // publishRelayFrame publishes, on session's relay subject, a message shaped as a relay frame -
-// its receipt subject under bus.RelayReplyPrefix - carrying header, and answers it.
+// its receipt subject a receipt of session's (relayFrameReceipt) - carrying header, and answers it.
 func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) *natsgo.Msg {
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	msg := &natsgo.Msg{
 		Subject: bus.DeliverSubject(session),
-		Reply:   bus.RelayReplyPrefix + "rowsown." + strings.ReplaceAll(t.Name(), "/", "."),
+		Reply:   relayFrameReceipt(session),
 		Header:  header,
 		Data:    []byte(`{"row":"` + t.Name() + `"}`),
 	}
@@ -514,7 +555,7 @@ func flood(t *testing.T, url, session string, n int) {
 	publisher := testnats.Connect(t, url)
 	data := bytes.Repeat([]byte("x"), 512<<10)
 	for i := range n {
-		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "unread." + strconv.Itoa(i), Data: data}); err != nil {
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: data}); err != nil {
 			t.Fatalf("publish frame %d: %v", i, err)
 		}
 	}

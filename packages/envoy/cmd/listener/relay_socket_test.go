@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -398,10 +399,7 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 		within time.Duration
 	}{
 		{name: "a revoke", within: 2*relaySocketTestCheck + relaySocketCloseGrace + time.Second,
-			close: func(_ *testing.T, rig *relaySocketRig, token string) {
-				rig.broker.Says(token, ciphertoken.Introspection{})
-				rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
-			}},
+			close: func(_ *testing.T, rig *relaySocketRig, token string) { rig.revoke(token) }},
 		{name: "the listener's stop", within: relaySocketCloseGrace + time.Second,
 			close: func(t *testing.T, rig *relaySocketRig, _ string) {
 				started := time.Now()
@@ -510,6 +508,50 @@ func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T
 	}
 }
 
+// A frame the NATS client drops ahead of the socket's queue, past nats.go's own pending limits on
+// the subscription, closes nothing: the queue is the bound on what a socket holds, and the owning
+// relay sends that frame again, since it hears no receipt for it. The row holds the queue's lock,
+// so the subscription's goroutine waits in enqueue with the first frame, lowers nats.go's limit on
+// the socket's subscription to 2 frames and sends 6: nats.go keeps 2, that one among them, and
+// drops 4. Once the lock is let go the client reads the 2 kept, and the socket stays open. Control:
+// the socket closing 1013 slow_consumer once its subscription dropped a frame (forward reading
+// Subscription.Dropped); the client reads the first frame and then that close, and the row fails
+// naming it.
+func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	const session, sent = "ses_edge_nats_drops", 6
+	client, _ := rig.open(t, session)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	<-client.pongs
+	socket := rig.openSocket(t, session)
+	sub := socket.awaitSubscription(t)
+	if err := sub.SetPendingLimits(2, 1<<30); err != nil {
+		t.Fatalf("lower the subscription's pending limits: %v", err)
+	}
+	unlock := sync.OnceFunc(socket.queueMu.Unlock)
+	socket.queueMu.Lock()
+	defer unlock()
+	flood(t, rig.owner.url, session, sent)
+	var kept, dropped int
+	accounted := testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+		kept, _, _ = sub.Pending()
+		dropped, _ = sub.Dropped()
+		return kept+dropped == sent
+	})
+	unlock()
+	if !accounted || dropped == 0 {
+		t.Fatalf("nats.go kept %d and dropped %d of the %d frames sent, want all %d accounted for and some dropped", kept, dropped, sent, sent)
+	}
+	t.Logf("nats.go kept %d and dropped %d of the %d frames sent", kept, dropped, sent)
+	for i := range kept {
+		if frame := client.next(5 * time.Second); frame.Op != "msg" {
+			t.Fatalf("frame %d of the %d nats.go kept reached the client as %s, want a msg", i+1, kept, frame.raw)
+		}
+	}
+	client.stillOpen(time.Second, "frames nats.go dropped ahead of the queue")
+}
+
 // What a replica's sockets hold for their clients together stays within its budget
 // (relaySocketReplicaPendingBytes; here 8 MiB), whatever each socket may hold alone: four clients
 // that read nothing are each sent 40 frames of 512 KiB at once, 80 MiB in all, and the frame that
@@ -607,12 +649,7 @@ func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
 	client.sub(1, bus.DeliverSubject(session))
 	client.ping()
 	<-client.pongs
-	client.writeMu.Lock()
-	err := client.conn.WriteMessage(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
-	client.writeMu.Unlock()
-	if err != nil {
-		t.Fatalf("send a binary frame: %v", err)
-	}
+	client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
 	if code, text := client.closeCode(5 * time.Second); code != websocket.CloseUnsupportedData || text != relaySocketReasonTextOnly {
 		t.Fatalf("a binary frame closed the socket %d %q, want %d %q", code, text, websocket.CloseUnsupportedData, relaySocketReasonTextOnly)
 	}
@@ -662,29 +699,21 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		close func(t *testing.T, rig *relaySocketRig, client *relaySocketClient, token string)
+		close func(rig *relaySocketRig, client *relaySocketClient, token string)
 		code  int
 		text  string
 	}{
 		{name: "a 4403 the check writes", code: relaySocketCloseRefused, text: relaySocketReasonRefused,
-			close: func(_ *testing.T, rig *relaySocketRig, _ *relaySocketClient, token string) {
-				rig.broker.Says(token, ciphertoken.Introspection{})
-				rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
-			}},
+			close: func(rig *relaySocketRig, _ *relaySocketClient, token string) { rig.revoke(token) }},
 		{name: "a 1003 the reader writes", code: websocket.CloseUnsupportedData, text: relaySocketReasonTextOnly,
-			close: func(t *testing.T, _ *relaySocketRig, client *relaySocketClient, _ string) {
-				client.writeMu.Lock()
-				err := client.conn.WriteMessage(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
-				client.writeMu.Unlock()
-				if err != nil {
-					t.Fatalf("send a binary frame: %v", err)
-				}
+			close: func(_ *relaySocketRig, client *relaySocketClient, _ string) {
+				client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
 			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newRelaySocketRig(t)
 			client, token := rig.open(t, "ses_edge_close_answered")
-			row.close(t, rig, client, token)
+			row.close(rig, client, token)
 			if code, text := client.closeCode(5 * time.Second); code != row.code || text != row.text {
 				t.Fatalf("the socket closed %d %q, want %d %q", code, text, row.code, row.text)
 			}
@@ -790,12 +819,7 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			client, _ := rig.open(t, session)
 			for _, frame := range append(row.before, row.frame) {
-				client.writeMu.Lock()
-				err := client.conn.WriteMessage(websocket.TextMessage, []byte(frame))
-				client.writeMu.Unlock()
-				if err != nil {
-					t.Fatalf("send %s: %v", frame, err)
-				}
+				client.sendRaw(websocket.TextMessage, []byte(frame))
 			}
 			if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != relayErrBadFrame {
 				t.Fatalf("%s was answered %s, want err %s", row.frame, frame.raw, relayErrBadFrame)

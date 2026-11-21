@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -210,7 +211,7 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	// waits for both: the move below writes the entry over the marked one, as another listener's
 	// registration does.
 	testwait.Eventually(t, "the edge to withhold the acme/pub event and mark the session's entry", func() bool {
-		return rig.withheld(t, "answer_unknown") >= 1 && storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap
+		return rig.withheld(t, "answer_unknown") >= 1 && storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap != ""
 	})
 
 	// Another listener registers the session: its entry names that listener, so this one's relay
@@ -238,7 +239,7 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld)
 	}
 	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
-		return !storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap
+		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
 	})
 }
 
@@ -265,13 +266,13 @@ func TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead(t *testing.T) 
 		t.Fatalf("open the other listener's session registry: %v", err)
 	}
 	t.Cleanup(other.StopWatch)
-	if err := other.SetRepositoryGap(t.Context(), sessionID, true); err != nil {
+	if err := other.SetRepositoryGap(t.Context(), sessionID, "the-other-listeners-mark"); err != nil {
 		t.Fatalf("mark %s's entry from the other listener: %v", sessionID, err)
 	}
-	if !storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap {
+	if storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == "" {
 		t.Fatalf("UNKNOWN: the other listener's mark of %s is not on the stored entry", sessionID)
 	}
-	if cached, err := rig.deps.sessions.Get(sessionID); err != nil || cached.RepositoryGap {
+	if cached, err := rig.deps.sessions.Get(sessionID); err != nil || cached.RepositoryGap != "" {
 		t.Fatalf("UNKNOWN: this listener's copy of %s's entry reads %+v (%v), not the entry without the mark, so the registration below is not made over a stale read", sessionID, cached, err)
 	}
 
@@ -280,7 +281,7 @@ func TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead(t *testing.T) 
 	if stored.UpdatedAt <= registered.UpdatedAt {
 		t.Fatalf("UNKNOWN: %s's stored entry %+v was not written by the second registration (UpdatedAt %d, first registration's %d)", sessionID, stored, stored.UpdatedAt, registered.UpdatedAt)
 	}
-	if !stored.RepositoryGap {
+	if stored.RepositoryGap != "the-other-listeners-mark" {
 		t.Fatalf("after this listener's registration %s's stored entry is %+v: the gap mark the other listener set since this listener's read is lost", sessionID, stored)
 	}
 }
@@ -296,8 +297,35 @@ func TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead(t *testing.T) 
 // the event acknowledged before the mark is written (sessionRelays.edgeWithholds before this row),
 // the consumer's ack floor passes the event while the entry carries no mark, and the row fails.
 func TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored(t *testing.T) {
+	requireWithheldEventGivenBackUntilMarked(t, "ses_edge_gap_durable", func(bucket natsgo.KeyValue, sessionID string) error {
+		_, err := bucket.Put(sessionID, []byte(`{"machine_id":7}`))
+		return err
+	})
+}
+
+// A GitHub event the edge withholds while no fresh repository answer stands is given back to the
+// server, as for a mark write that failed, while the bucket holds no entry of the session at all:
+// a mark kept in this process alone is lost with a move, and the delete that took the entry
+// records a resume floor past an acknowledged event, while the session's next entry carries no
+// mark. Here the entry is deleted behind this listener's copy, which still holds the session's
+// projects (its watch is stopped), and is then written whole again: the redelivery marks it, and
+// only then is the event acknowledged. Control: with an entry the bucket does not hold answered
+// as marked (session.SessionRegistry.SetRepositoryGap before this row), the consumer's ack floor
+// passes the event while no entry carries its mark, and the row fails.
+func TestAWithheldEventIsGivenBackWhileTheSessionHasNoEntry(t *testing.T) {
+	requireWithheldEventGivenBackUntilMarked(t, "ses_edge_gap_no_entry", func(bucket natsgo.KeyValue, sessionID string) error {
+		return bucket.Delete(sessionID)
+	})
+}
+
+// requireWithheldEventGivenBackUntilMarked is the give-back rows' body: sessionID registers at the
+// edge following acme/pub, spoil makes the bucket's entry of the session one the relay cannot
+// mark, behind this listener's copy (its watch is stopped), and an acme/pub event is stored while
+// no repository answer stands. The event is given back and not counted while the entry cannot be
+// marked, and is marked, acknowledged and counted once after the entry is written whole again.
+func requireWithheldEventGivenBackUntilMarked(t *testing.T, sessionID string, spoil func(bucket natsgo.KeyValue, sessionID string) error) {
+	t.Helper()
 	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_gap_durable"
 	token := rig.personToken(sessionID, "PRIV")
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
@@ -323,8 +351,8 @@ func TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored(t *testing.T) {
 		t.Fatalf("read %s's entry: %v", sessionID, err)
 	}
 	rig.deps.sessions.StopWatch()
-	if _, err := bucket.Put(sessionID, []byte(`{"machine_id":7}`)); err != nil {
-		t.Fatalf("store a value no read decodes as %s's entry: %v", sessionID, err)
+	if err := spoil(bucket, sessionID); err != nil {
+		t.Fatalf("make %s's stored entry one no mark can be written on: %v", sessionID, err)
 	}
 
 	rig.repositories.failWith(http.StatusServiceUnavailable)
@@ -351,7 +379,7 @@ func TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored(t *testing.T) {
 		t.Fatalf("write %s's entry whole again: %v", sessionID, err)
 	}
 	testwait.Eventually(t, "the redelivered event to mark the entry and be acknowledged", func() bool {
-		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap && consumer().AckFloor.Stream >= seq
+		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap != "" && consumer().AckFloor.Stream >= seq
 	})
 	if got := rig.withheld(t, "answer_unknown"); got != 1 {
 		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want 1: the event is withheld once, however often it was given back`, got)

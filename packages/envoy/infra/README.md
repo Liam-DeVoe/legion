@@ -4008,7 +4008,7 @@ exception lane. A message on a role lane of its own project that names a role of
 is the shared listeners' role lane to refuse, which it does (`roleLaneProjectError`). It holds no
 `$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
-bucket, so it can change no stream's subjects, limits or republish, and delete no stream:
+bucket, so it can change no stream's subjects, limits or republish:
 
 - A republish to a `$JS.API.…` subject is a JetStream API request in the stream's account, with
   the stored value as its body. On the hub's image an empty value republished to a stream delete
@@ -4020,6 +4020,12 @@ bucket, so it can change no stream's subjects, limits or republish, and delete n
   stream delete deletes it. So an edge listener reads its buckets with stream message gets
   (`$JS.API.STREAM.MSG.GET.KV_<bucket>`). Their answer is the API's own, and aimed at the API it
   takes no action there, nor does a stream info answer or a stored publish's acknowledgement.
+- It can, though, delete any stream of its account without changing it: a `no_wait` pull on a
+  consumer with nothing to deliver is answered a `404 No Messages` status, and a synchronous ack
+  an empty reply, each with no body on whatever reply subject it names and needing no other
+  client, so one aimed at `$JS.API.STREAM.DELETE.<s>` deletes stream `<s>` on the hub's nats-server
+  (2.15.1). That reach is availability only - no message of any project crosses it - accepted for
+  day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
 
 An edge listener reads the stream and its start ends, naming the stream, on a server that has
 none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
@@ -4041,9 +4047,16 @@ The relay receipts, and the subscription to the relay subjects, are the relay so
 (`cmd/listener/relay_socket.go`): the replica serving a session's socket subscribes the session's
 relay subject and publishes each receipt the client sends on the receipt subject of the machine
 that relayed the frame, under which that machine's session relay names it. Since every edge machine
-publishes every
-machine's receipts, one edge machine can forge a receipt for another machine's frame. That adds
-nothing past the reach below: an edge machine can already update or delete any consumer.
+publishes every machine's receipts and subscribes every session's relay subject, which carries
+each frame's receipt subject, one edge machine can forge a receipt for another machine's frame. It
+is not the only user that can: every grant built on the listener grant (`Listener`,
+`ListenerHost`, `Dispatch` and `Host`) publishes all of `notifications.>`, the receipt family
+included, and `ListenerHost` and `Host` also subscribe `notifications.>`, so they read each frame's
+receipt subject as it is relayed and can answer it too. A forged `done` acknowledges a frame its
+session then never receives. For an edge machine and a `ListenerHost` user that adds nothing past
+the reach below, since each can already update or delete any session consumer; a `Host` user holds
+no session-consumer call, so for it the receipt is reach it would not have otherwise, which a deny
+of `notifications.envoy.relayreply.>` on every grant but the edge's would take away.
 
 An edge listener holds itself to that list. It keeps no role message for a role's next holder and
 hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
@@ -4132,6 +4145,10 @@ the edge's update of a bucket's stream, and its control has an administrator's r
 empty value delete a stream. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has a
 listener's direct gets aimed at the API change one stream and delete another, the edge's refused,
 and its stream message get, stream info and key write aimed the same way take no action.
+`TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream` has a `no_wait` pull's `404 No Messages`
+status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
+stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
+on its inbox as controls (nats-server 2.15.1; the deletes are refused once the hub runs 2.15.3).
 `cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
 reached by a role message through a shared listener, takes a role another session holds and is
 relayed a role message of a role another session holds, with no refusal, and its start ends,
