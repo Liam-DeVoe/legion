@@ -508,7 +508,7 @@ func controlDefaultClient(ctx context.Context) *http.Client {
 			{"boundary census", plantTSDir + "control-namespace.ts:8", "dynamic import"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_other_os.go", "//go:build !linux\n\npackage brokerclient\n\nimport (\n\t\"context\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlOtherOS is control (25)'s planted raw x/oauth2 call in a file the Linux build leaves out.\nfunc controlOtherOS(cfg *oauth2.Config) error {\n\t_, err := cfg.Exchange(context.Background(), \"code\")\n\treturn err\n}\n"); err != nil {
+			if err := c.write(plantDir+"control_other_os.go", "//go:build !linux\n\npackage cipherclient\n\nimport (\n\t\"context\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlOtherOS is control (25)'s planted raw x/oauth2 call in a file the Linux build leaves out.\nfunc controlOtherOS(cfg *oauth2.Config) error {\n\t_, err := cfg.Exchange(context.Background(), \"code\")\n\treturn err\n}\n"); err != nil {
 				return err
 			}
 			return c.write(plantTSDir+"control-namespace.ts", "import * as oidc from \"openid-client\";\n\n/** Control (25)'s planted openid-client function, destructured outside callLibrary. */\nconst { randomState } = oidc;\nexport const controlState = randomState();\n/** Control (25)'s planted dynamic import outside callLibrary: the control exercises the census's\n *  view of module loading, which no static import can stand in for. */\nexport const controlDynamic = async () => (await import(\"openid-client\")).randomNonce();\n")
