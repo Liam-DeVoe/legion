@@ -275,8 +275,8 @@ export interface StallWatchdogAborter {
    * ended turn and sends nothing after it, so this message is what starts the work again. It
    * answers `held` where it sent nothing because the claim's take is pending: the task's text, if
    * the daemon accepts the take, starts the next run, and the message waits for that take and is
-   * sent if it is refused or dropped, or once a take refused `in-turn` has waited its bound past
-   * the run's end (dispatch://INFRA-4130 R6). */
+   * sent once it settles with no run starting first (`TaskTake.deferUntilSettled`,
+   * dispatch://INFRA-4130 R6). */
   readonly sendMessage: (text: string) => Promise<"sent" | "held"> | "sent" | "held";
 }
 

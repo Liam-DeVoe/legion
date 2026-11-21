@@ -61,10 +61,10 @@ export interface StallAborterDeps {
   /** `pi.sendMessage`: the host's own delivery, which queues the message and starts a turn on
    * it. */
   readonly sendMessage: PiApi["sendMessage"];
-  /** Holds the message's send for the claim's pending take (`ClaimSession.deferUntilTakeSettles`,
-   * `TaskTake.deferUntilSettled`): true where the take is pending, which keeps the callback and
-   * calls it once if that take is refused or dropped, or once a take refused `in-turn` has waited
-   * its bound past the run's end; false, keeping nothing, where it is not. */
+  /** Holds the message's send for the claim's pending take (`ClaimSession.deferUntilTakeSettles`):
+   * true where the take is pending, which keeps the callback and calls it once the take settles
+   * with no run starting first (`TaskTake.deferUntilSettled` says when); false, keeping nothing,
+   * where it is not. */
   readonly deferUntilTakeSettles: (callback: () => void) => boolean;
   readonly log: {
     readonly info: (message: string, context?: Record<string, unknown>) => void;

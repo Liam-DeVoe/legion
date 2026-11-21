@@ -80,12 +80,14 @@ async function flush(): Promise<void> {
  * attempt `takes` holds (a refusal, by default, as a hold would answer it), and each seen report
  * with the next `seens` holds (204, by default). `advance` moves the clock, firing every wait it
  * passes; a wait that fired stops listening for its abort, as `timerWait` does, so a later abort
- * of its signal takes no other wait off the clock. `waits` is every wait between two attempts of
- * one request, in the order they were made. `handed` is the host's answer to each text the take
- * handed it, in the order of `ran`, which a case rejects where the host dropped that text. `host`
- * is the host's own idle reading at each hand-over: a case sets `idle` false while the host sets
- * up a prompt it already took (a card's or a person's, before its `agent_start`), for which `run`
- * answers that the host is not idle and hands nothing, as pi-legion's `runTask` does.
+ * of its signal takes no other wait off the clock. `waits` is every wait the take made other than
+ * an attempt's own bound, in the order they were made: the wait between two attempts of one
+ * request, and the bound of a take refused `in-turn` after its run's end. `handed` is the host's
+ * answer to each text the take handed it, in the order of `ran`, which a case rejects where the
+ * host dropped that text. `host` is the host's own idle reading at each hand-over: a case sets
+ * `idle` false while the host sets up a prompt it already took (a card's or a person's, before its
+ * `agent_start`), for which `run` answers that the host is not idle and hands nothing, as
+ * pi-legion's `runTask` does.
  */
 function rig() {
   const calls: Call[] = [];
@@ -1078,22 +1080,7 @@ test("a value that arrives after the run's last tool result gets no note, and is
   expect(take.noteFor()).toBe(4);
 });
 
-test("a take refused in-turn during a run stays pending past that run's end, until the daemon writes the value again or deletes it", async () => {
-  // Past the run's end: the daemon writes the value again once it hears that turn's end, which
-  // comes after it, so the take is still pending there; that write ends it, and the take asks at
-  // the new revision.
-  const ended = await refusedInTurnDuringRun();
-  expect(ended.take.pending()).toBe(true);
-  ended.take.runEnded(false);
-  await ended.advance(0);
-  expect(ended.take.pending()).toBe(true);
-  expect(ended.routed("take")).toEqual([body(4, 12)]);
-  ended.takes.push({ answer: ACCEPTED });
-  ended.take.relayed(put(4, 13));
-  await ended.advance(0);
-  expect(ended.routed("take")).toEqual([body(4, 12), body(4, 13)]);
-  expect(ended.ran).toEqual([TEXT]);
-
+test("a take refused in-turn during a run is ended by a delete, during the run or after its end, and an in-turn answer to an idle host sets nothing", async () => {
   // A delete ends it, during the run or after its end, and nothing is pending.
   const deletedInRun = await refusedInTurnDuringRun();
   expect(deletedInRun.take.pending()).toBe(true);
@@ -1128,8 +1115,9 @@ test("a take refused in-turn during a run stays pending past that run's end, unt
 
 // A stall abort that ends a run whose take was refused `in-turn` holds its restart message for
 // that take. The daemon writes the value again only once it hears the turn's end, from the report
-// `agent_end` sends after `runEnded`, so at the run's end the take is still to come: the restart
-// must wait for that write, and a run the take's text starts drops it.
+// `agent_end` sends after `runEnded`, so the take is still pending past the run's end, and asks
+// nothing there: the restart waits for that write, at which the take asks, and a run the take's
+// text starts drops it.
 test("a stall restart held during a run whose take was refused in-turn waits for the daemon's write at that run's end", async () => {
   const { take, takes, routed, ran, advance } = await refusedInTurnDuringRun();
   let calls = 0;
@@ -1142,6 +1130,7 @@ test("a stall restart held during a run whose take was refused in-turn waits for
   await advance(0);
   expect(calls).toBe(0);
   expect(take.pending()).toBe(true);
+  expect(routed("take")).toEqual([body(4, 12)]);
 
   // The daemon writes task 4 again at revision 13: the take asks it, and the host runs its text.
   takes.push({ answer: ACCEPTED });

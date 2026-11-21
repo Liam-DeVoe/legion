@@ -372,8 +372,7 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 // turn took: Claude Code re-emitted it (taskRun.taken). Only such a turn's end holds the number
 // finished (runEnded). A turn whose text Claude Code never re-emitted is reported as no task's
 // (result), so its end marks nothing finished, and the bridge takes a newer revision of that
-// number the moment the turn ends. So the number is the running task's own only once the turn
-// took its text.
+// number the moment the turn ends.
 func (b *bridge) runningOwn() bool {
 	return b.inRun && b.run.taken && b.task != nil && b.task.number == b.run.task
 }

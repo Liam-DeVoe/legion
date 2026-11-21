@@ -64,10 +64,9 @@ export interface ClaimSession {
   /** Whether the claim's take is pending (R6, `TaskTake.pending`), so that the phase reminder
    * starts no turn ahead of its task; false where the session holds no take. */
   readonly taskPending: () => boolean;
-  /** Holds `callback`, the stall abort's restart message, for the claim's pending take
-   * (`TaskTake.deferUntilSettled`): true where the take is pending, which calls it once if that
-   * take is refused or dropped, or once a take refused `in-turn` has waited its bound past the
-   * run's end, and not if a run starts first; false, keeping nothing, where the take is not
+  /** Holds `callback`, the stall abort's restart message, for the claim's pending take: true where
+   * the take is pending, which calls it once the take settles with no run starting first
+   * (`TaskTake.deferUntilSettled` says when); false, keeping nothing, where the take is not
    * pending or the session holds no take. */
   readonly deferUntilTakeSettles: (callback: () => void) => boolean;
   /**
