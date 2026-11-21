@@ -2735,6 +2735,48 @@ test("what a reader types into a priority survives a reload made before the typi
   }
 });
 
+// INFRA-2947 check 3bca8d03, and main's #4835 (a priority's description is drawn from the tree
+// the server read it into, so no reader's browser parses it): a person, who may write it, opens a
+// priority whose description nests emphasis 4,000 deep - the text #4835 measured at about 55 s of
+// the browser's parser - and reads it drawn whole, on the priority's own page and in its open row
+// of the priorities page, with no line saying it could not be drawn.
+// SLOW(>=2s): a priority written, and two pages read.
+test("a person reads a description nested 4,000 deep on its priority's page and in its open row", async ({
+  browser,
+}) => {
+  const nested = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
+  const deep = await createPriority({ description: nested, owner: "alice", title: "Nested deep" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    const drawnWhole = async (editor: Locator, where: string) => {
+      await soft(editor, `${where} draws the description`).toBeVisible({ timeout: 30_000 });
+      soft(
+        (await editor.allTextContents()).join("").length,
+        `${where} draws every word of it`
+      ).toBeGreaterThan(8_000);
+      await soft(
+        page.getByText(/could not be drawn/),
+        `${where} says nothing of a description it could not draw`
+      ).toHaveCount(0);
+    };
+    await page.goto(`/priorities/${deep.id}`);
+    await drawnWhole(
+      page.getByRole("textbox", { exact: true, name: "Description" }),
+      "the priority's own page"
+    );
+    await page.goto(PRIORITIES_PATH);
+    await page.getByRole("button", { name: "Open #1 Nested deep" }).click();
+    await drawnWhole(
+      page.getByRole("textbox", { exact: true, name: "Description of #1" }),
+      "its open row"
+    );
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the seed, a description typed and the tab closed at once, and the server read.
 test("what a reader types into a priority's description is written as the tab closes", async ({
   browser,
