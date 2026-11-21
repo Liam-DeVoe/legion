@@ -25,8 +25,8 @@ package main
 //     project in the form that names it (edgePublishRefusal). A refused registration names every
 //     topic it refused (listenerwire.EdgeRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
-//     (edgeRoleRefusal), and a read names the place of a holder of none of them (its directory,
-//     machine, host, title and capabilities) to nobody (edgeRoleHolder).
+//     (edgeRoleRefusal), and a read, a role send or a claim's 409 names no holder of none of
+//     them: such a role reads as one no claim holds (edgeRoleResolution, edgeNamesHolder).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (sessionOfProjects).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
@@ -60,6 +60,7 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/projectscope"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -491,21 +492,32 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 		fmt.Sprintf("role %s is not claimed or read here: it works for no project of %s", role, strings.Join(projects, ", ")), "role")
 }
 
-// edgeRoleHolder is holder, the answer of GET /v1/roles/<role> about a live holder whose session
-// entry is entry, as a read held to the token's projects shows it: whole for a holder whose
-// registering token listed one of them (sessionOfProjects), and with the holder's place left out
-// (its directory, machine, host and title, and its capabilities the empty list) for any other, a
-// session the edge's reads do not show. The role, the holder's id and state and the claim's
-// revision stay, so a caller still sees who holds a role of its project, and can claim it with
-// if_claim_revision. Every other listener's answer is holder as it is. The holder is live: the
-// route answers this only for a live one (roleGetHandler).
-func edgeRoleHolder(r *http.Request, entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
-	if projects, held := heldProjects(r); !held || sessionOfProjects(entry, session.Live, projects) {
-		return holder
+// edgeRoleResolution is result, the resolution of a role's holder, as an answer to r names it: a
+// holder whose session is not one of the token's projects (sessionOfProjects), live or lapsed, is
+// no holder the edge names, so the role reads as one no claim holds (roles.Unclaimed), naming no
+// holder, process, state or last registration, nor the revision of its claim. A role of the
+// token's project can be claimed by any session, and its claim written by any writer of the role
+// bucket, so the claim says nothing of whose session it names; the edge's reads show no session of
+// another project, and its role answers show none either. A holder of one of the token's projects
+// is answered whole, and so is every holder on every listener but the edge.
+func edgeRoleResolution(r *http.Request, result roles.Resolution) roles.Resolution {
+	if projects, held := heldProjects(r); held && result.State != roles.Unclaimed && !sessionOfProjects(result.Entry, result.HolderState, projects) {
+		return roles.Resolution{State: roles.Unclaimed}
 	}
-	holder.Capabilities = []string{}
-	holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", ""
-	return holder
+	return result
+}
+
+// edgeNamesHolder reports whether an answer to r may name holder, the holder of a role that an
+// answer names outside a resolution (a claim's 409): always on every listener but the edge, and at
+// the edge only a session of the token's projects (sessionOfProjects, of its entry in sessions),
+// the holder edgeRoleResolution names.
+func edgeNamesHolder(r *http.Request, sessions *session.SessionRegistry, holder string) bool {
+	projects, held := heldProjects(r)
+	if !held {
+		return true
+	}
+	entry, state := sessions.Lookup(holder)
+	return sessionOfProjects(entry, state, projects)
 }
 
 // edgeInterestReadRefusal is the edge's rule for GET /v1/interests/ and GET

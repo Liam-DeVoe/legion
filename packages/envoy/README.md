@@ -142,7 +142,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   anything else gets `403 topic_not_published` (`edgePublishRefusal`).
 
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
-  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title and capabilities (`edgeRoleHolder`).
+  A role whose holder's registering token listed none of the token's projects, live or lapsed, reads as one no claim holds (`edgeRoleResolution`): `GET /v1/roles/{role}` answers it the `404` `unclaimed`, with no holder, process, state, last registration or claim revision, the answers of a role send through `POST /v1/messages/publish` name no holder, state or last registration for it, and the `409` of a claim of it names no holder (`edgeNamesHolder`).
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
   Any other target, and one the session registry reads as gone, gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`, which every edge read of a session's projects asks).
