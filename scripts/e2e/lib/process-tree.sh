@@ -670,7 +670,7 @@ bounds_shown() {
 # fail with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
   local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err empties complaint line rest shell comm unread=
-  local child child_start at lost='' lineage='' found held again shown walk_snap deadline=
+  local child child_start at lost='' lineage='' found held again shown walk_snap hold deadline=
   # $0 is the batch's name and "$@" the patterns (-e PATTERN pairs) and the batch's entries. grep's
   # matches go out on fd 3, the walk's own output, and its complaints on stderr. Around grep the
   # batch reads the bound where each entry's environment starts (env_start, field 50 of its stat;
@@ -782,20 +782,23 @@ exit 2'
   # memory before the bounds of its arguments and environment, so a read across one comes back
   # empty, or cut short at a page where the mark sits further on, and the walk named nothing of a
   # marked process in its exec (34 of 385 reads of a process re-exec'ing itself came back empty;
-  # the tester of b285526b59 had 4 of 1,000 cut short). It is read again every 10 ms while it is the
-  # process that started at its start, and while its exec fills in its bounds (`exec`, by its
-  # start_code), in which they read equal for a moment: a walk that took that for an environment of
-  # no variable missed a process re-exec'ing itself in 3 of 1,000 walks, and a process held there
-  # every time. Bounds set and equal after that (`empty`) end the reads: no mark is in an
+  # the tester of b285526b59 had 4 of 1,000 cut short). While it is inside one exec (`exec`, its
+  # bounds 0 or its start_code not yet set: an exec sets the bounds equal for a moment, and a walk
+  # that took that for an environment of no variable missed a process re-exec'ing itself in 3 of
+  # 1,000 walks, and a process held there every time) it is waited for, every 10 ms, whatever the
+  # walk's bound and whatever its lineage: every exec ends, and a process a loaded machine holds
+  # inside one (10.8 s under the exec-window forcing) is no process that cannot be read. Only one
+  # held inside one exec for procs_naming_hold_seconds (300) makes the walk print why and fail with
+  # 2, never pass. Bounds set and equal after that (`empty`) end the reads: no mark is in an
   # environment of no variable. Where the kernel shows no bounds (bounds_shown), each read decides
-  # as it comes. The walk waits up to procs_naming_exec_seconds (10) for every such process
-  # together. Past it, one grep did not match is judged as an unreadable environment is
-  # (naming_may_carry), and one that cannot carry the run's mark, another session's process in an
-  # exec a loaded machine holds, is passed, which on a devbox at load 960 had failed 1 of 100 walks
-  # of its /proc; for any other the walk prints why and fails with 2. One the kernel keeps from this
-  # user (it cannot be opened, as a process of this user in another user namespace's environment
-  # cannot; its stat then shows the bounds as 0 as well) is no exec: it goes to the judgment of this
-  # user's unreadable environments below, once. A process listed twice is printed once.
+  # as it comes. A process whose execs come faster than a read (its bounds moved during each) is
+  # read again up to procs_naming_exec_seconds (10) for every such process together. Past it, one
+  # grep did not match is judged as an unreadable environment is (naming_may_carry), and one that
+  # cannot carry the run's mark is passed; for any other the walk prints why and fails with 2. One
+  # the kernel keeps from this user (it cannot be opened, as a process of this user in another user
+  # namespace's environment cannot; its stat then shows the bounds as 0 as well) is no exec: it goes
+  # to the judgment of this user's unreadable environments below, once. A process listed twice is
+  # printed once.
   for p in ${naming_files[@]+"${naming_files[@]}"}; do
     pid=${p%/environ}
     grepped[${pid##*/}]=1
@@ -806,6 +809,7 @@ exit 2'
     [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] && [ -z "${named[$pid]:-}" ] || continue
     before=$(proc_start "$pid")
     [ -n "$before" ] || continue
+    hold=
     while :; do
       { : <"/proc/$pid/environ"; } 2>/dev/null || {
         [ ! -O "/proc/$pid" ] || [ -n "${unread_seen[$pid]:-}" ] || {
@@ -817,7 +821,15 @@ exit 2'
       exec_state "$pid" "$before" held "$shown"
       case $held in
         gone) break ;;
-        exec) ;;
+        exec)
+          hold=${hold:-$((SECONDS + ${procs_naming_hold_seconds:-300}))}
+          [ "$SECONDS" -lt "$hold" ] || {
+            echo "procs_naming: process $pid stayed inside one exec for ${procs_naming_hold_seconds:-300} s, so whether it carries the run's mark was not checked and the processes naming $dir were not read" >&2
+            return 2
+          }
+          sleep 0.01
+          continue
+          ;;
         empty*) break ;;
         *)
           found=0

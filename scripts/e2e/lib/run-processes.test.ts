@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -779,7 +779,7 @@ cat "$WORK/h.err" >&2`;
 );
 
 test.skipIf(skip)(
-  "a marked process caught inside an exec is still named: a read of its environment counts only when it falls within one exec",
+  "a marked process that re-execs itself is named by every walk: a read that falls inside its exec is read again, not taken for an answer",
   async () => {
     // A read of /proc/<pid>/environ reads the memory the process had when the file was opened, and
     // inside an exec the kernel gives the process new memory before the bounds of its arguments and
@@ -876,6 +876,151 @@ echo "named the marked sleep in $named of 30 walks, the loop in $loop, $failed f
     });
   },
   // A guard on a hang only: the walks read the loop not at all, and the marked sleep once each.
+  60_000
+);
+
+// execEntry ROOT PID makes PID's entry in the proc root ROOT one the walk takes for a read that an
+// exec may have met: a directory in place of the link to /proc/PID, whose environ holds a
+// 9,000-byte variable and no mark of the run (what a read an exec cut short leaves) and whose stat
+// is PID's own with start_code, env_start and env_end (fields 26, 50 and 51) 0, so the batch's
+// read of the bound around grep flags it. The rest of the walk reads /proc/PID itself.
+function execEntry(root: string, pid: number): void {
+  const entry = join(root, String(pid));
+  rmSync(entry, { force: true, recursive: true });
+  mkdirSync(entry);
+  writeFileSync(join(entry, "environ"), `PAD=${"x".repeat(9000)}\0PATH=/usr/bin\0`);
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const cut = stat.lastIndexOf(") ") + 2;
+  const fields = stat.slice(cut).trim().split(" ");
+  for (const at of [23, 47, 48]) fields[at] = "0";
+  writeFileSync(join(entry, "stat"), `${stat.slice(0, cut)}${fields.join(" ")}\n`);
+}
+
+// execScript is the shell of the two rows below, sourced after lib/rig.sh: exec_entry PID does in
+// the shell what execEntry does, and exec_state and names_dir answer for the processes in the
+// space-separated $targets as each row scripts them (exec_answer, names_answer), from counters in
+// $work (exec_state's Nth call for PID is es.PID, names_dir's nd.PID), and pass every other process
+// to the walk's own. exec_state assigns its answer to its third argument, or prints it where it is
+// given none (the form of aec1fb77ff and before); those before it have no exec_state.
+const execScript = `exec_entry() {
+  local entry=$proc_root/$1 stat= pad
+  local -a f
+  rm -rf "$entry"
+  mkdir "$entry"
+  pad=$(head -c 9000 /dev/zero | tr '\\0' x)
+  printf 'PAD=%s\\0PATH=/usr/bin\\0' "$pad" >"$entry/environ"
+  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+  read -r -a f <<<"\${stat##*) }"
+  f[23]=0 f[47]=0 f[48]=0
+  printf '%s) %s\\n' "\${stat%) *}" "\${f[*]}" >"$entry/stat"
+}
+eval "real_$(declare -f names_dir)"
+! declare -F exec_state >/dev/null || eval "real_$(declare -f exec_state)"
+count() { local n=0; { read -r n <"$work/$1"; } 2>/dev/null || n=0; n=$((n + 1)); echo "$n" >"$work/$1"; echo "$n"; }
+exec_state() {
+  case " $targets " in *" $1 "*) ;; *) real_exec_state "$@"; return ;; esac
+  local s
+  s=$(exec_answer "$1" "$(count "es.$1")")
+  if [ -n "\${3:-}" ]; then printf -v "$3" '%s' "$s"; else printf '%s\\n' "$s"; fi
+}
+names_dir() {
+  case " $targets " in *" \${!#} "*) ;; *) real_names_dir "$@"; return ;; esac
+  return "$(names_answer "\${!#}" "$(count "nd.\${!#}")")"
+}`;
+
+test.skipIf(skip)(
+  "a read of an environment that an exec cut short is read again, never taken for an unmarked process: the bounds moved between the two reads around it",
+  () => {
+    // A read of /proc/<pid>/environ across an exec comes back cut short at a page, and a mark past
+    // it is lost: aec1fb77ff read again only an empty read, so it took a cut one for an environment
+    // without the mark and named nothing of a marked process, exit 0. Here the process is a sleep
+    // the harness starts, as a run starts its processes; its entry in the row's proc root is a read
+    // grep finds no mark in and whose bound the batch reads as 0 (execEntry), and the walk's two
+    // stat reads and its read of the environment answer as an exec in the middle of the first read
+    // would: the bounds 1000-2000, the read with no mark (names_dir 1), the bounds 3000-4000; then
+    // 3000-4000, the read with the mark, 3000-4000. The walk must read again and name it. No clock
+    // decides it: the answers come in that order however fast the machine is.
+    const work = join(dir, "cut-short");
+    mkdirSync(work);
+    const procRoot = rowRoot();
+    const r = harness(
+      work,
+      `${execScript}
+sleep 60 </dev/null >/dev/null 2>&1 &
+targets=$!
+echo "target $targets"
+exec_entry "$targets"
+exec_answer() { case $2 in 1) echo "set 1000-2000" ;; *) echo "set 3000-4000" ;; esac; }
+names_answer() { case $2 in 1) echo 1 ;; *) echo 0 ;; esac; }
+st=0; out=$(procs_naming "$work" "\${run_marks[@]}" 2>"$work/pn.err") || st=$?
+read -r reads <"$work/nd.$targets" || reads=0
+echo "status $st, named [$(echo $out | cut -d' ' -f1)], reads of the environment $reads"
+kill -KILL "$targets"`,
+      "",
+      procRoot
+    );
+    const target = /^target (\d+)$/m.exec(r.out)?.[1];
+    if (target !== undefined) started.push(Number(target));
+    const said = join(work, "pn.err");
+    expect({ err: r.err, said: existsSync(said) ? readFileSync(said, "utf8") : "(none)" }).toEqual({
+      err: "",
+      said: "",
+    });
+    expect(r.out.replace(/^target \d+\n/m, "")).toBe(
+      `status 0, named [${target}], reads of the environment 2\n`
+    );
+  },
+  // A guard on a hang only: the walk reads the target twice, 10 ms apart.
+  60_000
+);
+
+test.skipIf(skip)(
+  "a process held inside one exec is waited for, whatever the walk's bound: one that started outside the run's shell is named once its exec ends, never passed, and so is the run's own",
+  async () => {
+    // A process a loaded machine holds inside one exec (the exec-window forcing held one 10.8 s)
+    // shows its bounds as 0 until the exec ends. A walk that counted those reads against its 10 s
+    // bound judged it there by its line of parents and passed one that started outside the run's
+    // shell, as the double-forked row's escaped process does, unnamed, and failed the run's own
+    // with 2. Here exec_state answers `exec` 20 times for each of two sleeps, one started before the
+    // harness's shell and one the harness starts, and then their bounds, each read with the mark;
+    // the walk's bound is 0 s (procs_naming_exec_seconds), so only the wait decides. Both must be
+    // named.
+    const work = join(dir, "held-exec");
+    mkdirSync(work);
+    const outside = spawn(["sleep", "60"], { cwd: dir });
+    await untilRunning(outside, "sleep");
+    await pastStarts([outside]);
+    const procRoot = rowRoot();
+    execEntry(procRoot, outside);
+    const r = harness(
+      work,
+      `${execScript}
+procs_naming_exec_seconds=0
+sleep 60 </dev/null >/dev/null 2>&1 &
+own=$!
+echo "own $own"
+exec_entry "$own"
+targets="${outside} $own"
+exec_answer() { if [ "$2" -le 20 ]; then echo exec; else echo "set 1000-2000"; fi; }
+names_answer() { echo 0; }
+st=0; out=$(procs_naming "$work" "\${run_marks[@]}" 2>"$work/pn.err") || st=$?
+named=
+for p in $targets; do case " $(echo $out) " in *" $p "*) named="$named $p" ;; esac; done
+echo "status $st, named [\${named# }]"
+kill -KILL "$own"`,
+      "",
+      procRoot
+    );
+    const own = /^own (\d+)$/m.exec(r.out)?.[1];
+    if (own !== undefined) started.push(Number(own));
+    const said = join(work, "pn.err");
+    expect({ err: r.err, said: existsSync(said) ? readFileSync(said, "utf8") : "(none)" }).toEqual({
+      err: "",
+      said: "",
+    });
+    expect(r.out.replace(/^own \d+\n/m, "")).toBe(`status 0, named [${outside} ${own}]\n`);
+  },
+  // A guard on a hang only: the walk waits 20 times 10 ms for each.
   60_000
 );
 
