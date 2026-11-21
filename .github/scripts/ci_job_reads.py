@@ -3549,8 +3549,8 @@ GATES = [
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
-    # text, and each gate pins its whole line: envoy-go-race-api's runs its package through
-    # database-skips.sh (RACE_API_SCRIPT), which counts that run's skips, and envoy-go-race-docs'
+    # text, and each gate pins its whole step: envoy-go-race-api's runs one shard of its package per
+    # leg of a matrix, through database-skips.sh --run (RACE_API_SCRIPT), and envoy-go-race-docs'
     # runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
