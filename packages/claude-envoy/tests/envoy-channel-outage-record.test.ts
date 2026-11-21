@@ -244,7 +244,9 @@ test("an end told under one id that is still queued when a /clear lands is not s
   const refusing = new Set([SESSION])
   const run = await startRefusable(notifier, refusing)
   try {
-    // The outage notice is held mid-write, and the end of the outage is queued behind it.
+    // The outage notice is held mid-write when the outage ends: the report waits for that notice
+    // before it tells the end, and the `/clear`'s bind (`recordRead`) drops the wait, so the end
+    // is never told, to either id.
     await waitFor(async () => notifier.held === 1, "the outage notice held", run.state)
     refusing.delete(SESSION)
     await run.registrations(SESSION, 1)
@@ -260,6 +262,60 @@ test("an end told under one id that is still queued when a /clear lands is not s
     expect(notices(notifier, "Envoy inbound restored")).toBe(0)
     expect(await toldIn(run.directory, NEXT)).not.toBe(true)
   } finally {
+    await run.session.shutdown()
+  }
+}, 30_000)
+
+// The outage notice was shown, and the outage ends while a frame's write holds the channel's
+// queue: the end's notice is queued behind that write, addressed to the id it was told under. The
+// `/clear` is taken up before its turn comes, so the id the server serves is the new one at the
+// notice's turn, which refuses it: the new conversation never heard of the outage.
+test("an end queued behind a held write when a /clear is taken up is not shown to the id it moved to, and the first id's record keeps the outage told", async () => {
+  const HELD = "a peer message held mid-write"
+  const notifier = new HoldingNotifier()
+  const refusing = new Set([SESSION])
+  const run = await startRefusable(notifier, refusing)
+  /** A peer's message to `sessionID`, as the relay hands it to the channel's write queue. */
+  const frame = (sessionID: string, eventId: string, summary: string) => {
+    const subject = `notifications.agent.${sessionID}`
+    return {
+      subject,
+      raw: JSON.stringify({
+        event_id: eventId,
+        source: "agent",
+        source_session: "ses_peer",
+        topic: subject,
+        dedupe_key: `delivery-${eventId}`,
+        issued_at: 1_760_000_000_000,
+        payload_summary: summary,
+      }),
+    }
+  }
+  try {
+    await waitFor(
+      async () =>
+        notices(notifier, "Envoy inbound unavailable") === 1 &&
+        (await toldIn(run.directory, SESSION)) === true,
+      "the outage shown under the first id, and its file recording it",
+      run.state,
+    )
+    notifier.holding = HELD
+    const writing = run.session.delivery.enqueue(frame(SESSION, "evt-held", HELD))
+    await waitFor(async () => notifier.held === 1, "the frame's write held", run.state)
+    // The end is told at the accepted registration, and its notice waits behind the held write.
+    refusing.delete(SESSION)
+    await run.registrations(SESSION, 1)
+    await run.clear()
+    await run.registrations(NEXT, 1)
+    notifier.release()
+    await writing
+    // A write queued after the end's notice has its turn after it.
+    await run.session.delivery.enqueue(frame(NEXT, "evt-after", "a peer message after the clear"))
+    expect(notices(notifier, "Envoy inbound restored")).toBe(0)
+    expect(await toldIn(run.directory, NEXT)).not.toBe(true)
+    expect(await toldIn(run.directory, SESSION)).toBe(true)
+  } finally {
+    notifier.release()
     await run.session.shutdown()
   }
 }, 30_000)
