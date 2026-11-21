@@ -897,9 +897,9 @@ test(
     // whatever the machine's load: an earlier form of this row stopped the leg while a file of
     // passing rows could still be running or not, and failed 6 of 120 runs in the harness legs of
     // runs 44751162563 and 44751677485 when that file's worker was still in it. The row sets both
-    // of the tool's stop bounds past its own short bound, so that neither decides its verdict: a
-    // review held the names run 25 s and Bun's end 15 s under the tool's defaults, and the row
-    // failed on what each bound then cut short.
+    // of the tool's stop bounds to 120 s, past its driver's own `stoppedLeg` bound of 90 s, so
+    // that neither decides its verdict: a review held the names run 25 s and Bun's end 15 s under
+    // the tool's defaults, and the row failed on what each bound then cut short.
     const directory = scratch();
     const marks = [join(directory, "spins-began"), join(directory, "beside-began")];
     const { code, stdout, report, leftBehind } = await stoppedLeg(

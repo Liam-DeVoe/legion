@@ -85,8 +85,8 @@ name: Dispatch unit suite repeated
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
-# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 27 runs that
-# the notes' measurement reads took 115 to 169 minutes each, and $0, since those minutes are free
+# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 28 runs that
+# the notes' measurement reads took 115 to 175 minutes each, and $0, since those minutes are free
 # here.
 
 on:
@@ -135,14 +135,15 @@ jobs:
         # Three legs a lane, each under a seed of its own. The head says why three.
         round: [1, 2, 3]
         # Each lane's reruns; its slowest test step and its slowest other steps, each the largest
-        # reading over the 27 runs the notes list, with the run and round that gave it; and the
-        # deadline, the test step's budget and the job's budget set from them, with a margin of
-        # twice the slowest, each line's arithmetic beside it. The job takes the other steps twice
-        # too, where dispatch-browser.yaml's rule takes them once: a margin of this file's own,
-        # which the notes measure. The step's 60 s of slack, for the step's own start around
-        # `timeout`, rests on no reading: it sits behind the deadline and the kill-after, so it
-        # decides nothing. A budget is a hang guard only, and decides no verdict. The head says
-        # why a web or harness leg runs 20 times and a web-cold leg once.
+        # reading over the 28 runs the notes list, with the run and round that gave it (the harness
+        # slowest leaves out the legs of branches that add harness rows of their own, #4236's and
+        # #4790's, as the notes say); and the deadline, the test step's budget and the job's budget
+        # set from them, with a margin of twice the slowest, each line's arithmetic beside it. The
+        # job takes the other steps twice too, where dispatch-browser.yaml's rule takes them once:
+        # a margin of this file's own, which the notes measure. The step's 60 s of slack, for the
+        # step's own start around `timeout`, rests on no reading: it sits behind the deadline and
+        # the kill-after, so it decides nothing. A budget is a hang guard only, and decides no
+        # verdict. The head says why a web or harness leg runs 20 times and a web-cold leg once.
         # packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts holds each budget to
         # exactly its rule over the measurement beside it.
         # why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
@@ -163,9 +164,9 @@ jobs:
             job_minutes: 10 # 8 + 2 x 44 s = 88 s, up to the next whole minute, 2
           - lane: harness
             reruns: 20
-            slowest_seconds: 1642 # run 44839359908, round 1, with #4615's rows
+            slowest_seconds: 1649 # run 44940719055, round 2
             other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
-            deadline_seconds: 3300 # 2 x 1,642 = 3,284 s, up to the next whole minute
+            deadline_seconds: 3300 # 2 x 1,649 = 3,298 s, up to the next whole minute
             step_minutes: 57 # 3,300 + 60 s kill-after + 60 s of slack = 3,420 s
             job_minutes: 65 # 57 + 2 x 229 s = 458 s, up to the next whole minute, 8
     steps:

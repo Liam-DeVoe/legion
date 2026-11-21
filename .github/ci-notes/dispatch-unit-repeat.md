@@ -44,8 +44,8 @@ notes and no line of the test.
 
 ### What was measured, on 2026-11-20 and 2026-11-21
 
-The step times of every leg of 27 runs of the workflow, read from
-`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 81 legs a
+The step times of every leg of 28 runs of the workflow, read from
+`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 84 legs a
 lane:
 
 - the ten runs before 11:00Z on 2026-11-20 (runs 44681726917 to 44712651976, pull requests and
@@ -58,49 +58,61 @@ lane:
   44821135577 at its seventh, all on main `5570d0acd2`; and 44836898568 at its eighth, a merge of
   main `f1d27d3a82`;
 - five pull-request runs of 2026-11-21 under main's old budgets: #4615's run 44839359908, and
-  44913926295, 44918296869, 44921906214 and 44926138389, each a merge of its branch with main
-  after #4615 had merged.
+  44913926295 (#4437), 44918296869, 44921906214 and 44926138389 (#4790), each a merge of its
+  branch with main after #4615 had merged;
+- run 44940719055, the pull request's own at its head `3989f41d6a`, a merge of main `e2ce417d59`.
 
 A leg stopped before Bun ended has no time of its own, and no report. Its time is estimated from
 its `bun.log`, which holds a result line for each row that ended: the step's time, times the
 results a whole leg of the same lane of that run wrote, over the results the stopped leg's log
 holds. The two web-cold legs stopped at 132 s, rounds 2 and 3 of run 44696645178, hold 6,166 and
 6,208 results against round 1's 6,225, so they are estimated at 133.3 s and 132.4 s. In the runs
-of 2026-11-21 a run of main's suite has 6,892 rows (run 44913926295, round 1), so a whole web leg
-writes 137,840 results; run 44918296869's own whole leg wrote 6,909 a run, and #4615's 6,464.
-Runs 44921906214 and 44926138389 have no whole leg of their own, and take main's 6,892. The
-estimate takes the results to come at an even rate. A leg whose last minutes are one slow file
-running alone ends later than its estimate says, so an estimate is a floor.
+of 2026-11-21, a whole leg of run 44913926295 (#4437's branch) wrote 6,892 rows a run, so a whole
+web leg there writes 137,840 results; run 44918296869's own whole leg wrote 6,909 a run, and
+#4615's 6,464. Runs 44921906214 and 44926138389 have no whole leg of their own, and take 6,892,
+more than the 6,861 a run of this pull request's merge of main: where their branches run main's
+rows, that errs toward a longer estimate and a larger budget. The estimate takes the results to
+come at an even rate. A leg whose last minutes are one slow file running alone ends later than
+its estimate says, so an estimate is a floor.
 
 | Lane | Legs whose Bun ended by itself | Legs stopped before Bun ended | Slowest | Old step budget |
 | --- | --- | --- | --- | --- |
-| web | 50, 726 to 1,954 s | 31, by the budget at 972 or 973 s, estimated at most 1,614 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
-| web-cold | 70, 94 to 169 s; 14 of them past the budget, so their steps failed with no row failed | 11, by the budget at 132 or 133 s, estimated at 132.4 to 173.9 s | 174 s, estimated, run 44926138389, round 3: 5,270 of 6,892 results at 133 s | 2 minutes |
-| harness | 80, 1,070 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,642 s, run 44839359908, round 1 | 30 minutes |
+| web | 53, 726 to 1,954 s | 31, by the budget at 972 or 973 s, estimated at most 1,614 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
+| web-cold | 73, 94 to 169 s; 14 of them past the old budget, so their steps failed with no row failed | 11, by the budget at 132 or 133 s, estimated at 132.4 to 173.9 s | 174 s, estimated, run 44926138389, round 3: 5,270 of 6,892 results at 133 s | 2 minutes |
+| harness | 83, 1,070 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,649 s, run 44940719055, round 2 | 30 minutes |
 
 The web lane grew within the day: main's `a8067fcd51` (11:41Z) added
 `web/src/features/issue/useIssueDrafts.test.ts`, whose rows took 1,168 s together over a leg's 20
 runs, and its rows a run went from 6,296 (run 44726566359) to 6,462 (run 44751162563). So the
 ten runs on main `5570d0acd2` hold the slowest web leg. The same suite's web legs took 1,062 to
 1,954 s across those ten runs: one runner can take 1.8 times another's time, which is the spread
-the margin of 2 is there for. By 2026-11-21 main's suite had grown again, to 6,892 rows a run, and
-no web leg on it had ended by itself: all 15 web legs of that day's five runs stopped at main's
-16 minutes, estimated at 1,016 to 1,614 s. The pull request's run at its tenth head reads the
-first whole ones.
+the margin of 2 is there for. By 2026-11-21 main's suite had grown again, to 6,861 rows a run in
+this pull request's merge of main, and no web leg of that day's five runs ended by itself: all 15
+stopped at main's 16 minutes, estimated at 1,016 to 1,614 s. The pull request's own run at its
+head `3989f41d6a`, 44940719055, read the first whole ones: 1,815, 1,313 and 1,881 s, under the
+1,954 s the web budgets rest on.
 
-The harness lane's slowest leg is read over the 72 legs of the branches whose harness rows are
-main's. Pull request #4615 merged on 2026-11-21 with harness rows of its own, so its run
-44839359908 counts, and its round 1, 1,642 s, is the slowest. Pull request #4236 adds harness rows
-whose real-time waits take minutes: its 9 legs in the window took 1,651 to 2,301 s, and round 3 of
-its later run 44740717331 took 2,375 s. It sets its own harness budget, and 2,375 s is inside the
-deadline set here. If it merges, its harness legs come into the window and set the harness
-budgets again by the rule.
+The harness lane's slowest leg is read over the 72 legs of the branches that add no harness row of
+their own beside main's: #4236's 9 legs in the window, and the 3 of #4790's run 44926138389, whose
+head adds a harness row, are left out. Pull request #4615 merged on 2026-11-21 with harness rows of
+its own, so its run 44839359908 counts, and its round 1 took 1,642 s. The slowest is round 2 of the
+pull request's own run 44940719055, 1,649 s. Pull request #4236 adds harness rows whose real-time
+waits take minutes: its 9 legs in the window took 1,651 to 2,301 s, and round 3 of its later run
+44740717331 took 2,375 s. It sets its own harness budget, and 2,375 s is inside the deadline set
+here. If it merges, its harness legs come into the window and set the harness budgets again by
+the rule.
+
+Pull request #4523 sets its own web and web-cold budgets and changes the lanes' tests, so its runs
+are not in the window either. Its run 44922135913's web-cold legs took 169, 169 and 185 s, and
+185 s is above the 174 s the web-cold deadline rests on: 360 s still leaves 1.95 times it. If
+#4523 merges, its web-cold legs come into the window, and by the rule 2 × 185 s sets a 420 s
+deadline.
 
 The other steps took at most 37 s in a web leg (run 44751162563, round 3), 44 s in a web-cold leg
 (run 44814644776, round 1) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's
 install), and at least 15, 13 and 28 s.
 
-The window grew six times after a head had set budgets from it:
+The window grew seven times after a commit had set budgets from it:
 
 - the runs at the pull request's first head read a web leg of 1,661 s, which its second head took
   in;
@@ -111,16 +123,18 @@ The window grew six times after a head had set budgets from it:
 - the run at its sixth head read a web-cold leg whose other steps took 44 s, which its seventh head
   took in;
 - the pull request's own run at its fourth head, 44796938761, read a web-cold leg of 169 s, which
-  its ninth head took in, with the runs at its seventh and eighth heads;
+  `b6160faaae` took in, with the runs at its seventh and eighth heads;
 - #4615's merge and the five runs of 2026-11-21 read a harness leg of 1,642 s and a web-cold leg
-  estimated at 173.9 s, which its tenth head took in.
+  estimated at 173.9 s, which `62898d3adc` took in;
+- the run at `3989f41d6a` read a harness leg of 1,649 s, which the next commit took in.
 
 The first three times, a lane's budgets no longer kept the rule over every leg read, and the head
 that took the legs in set every lane's budgets again by the rule. The next two times the rule
 still gave the same budgets: 8 minutes and 2 × 44 s come to 568 s, under the web-cold job's 10
 minutes, and 2 × 169 s is 338 s, which rounds up to the same 360 s deadline. The sixth time it
 set the harness budgets again, to 3,300 s, 57 minutes and 65 minutes from 2 × 1,642 s, and kept
-the web-cold ones, since 2 × 174 s is 348 s, which rounds up to the same 360 s.
+the web-cold ones, since 2 × 174 s is 348 s, which rounds up to the same 360 s. The seventh time
+it kept them all: 2 × 1,649 s is 3,298 s, which rounds up to the same 3,300 s.
 
 The largest job budget, 70 minutes for a web leg, is far inside GitHub's own limit for a job on a
 GitHub-hosted runner. GitHub's "Actions limits" page
@@ -142,8 +156,8 @@ budget failed the step. No row was running long; the lane was.
 
 ### What a run costs now
 
-A run that passes takes what its rows take: the 27 runs read cost 115 to 169 billed minutes each
-(each leg's job rounded up to a whole minute; run 44696645178 cost 169), and $0,
+A run that passes takes what its rows take: the 28 runs read cost 115 to 175 billed minutes each
+(each leg's job rounded up to a whole minute; run 44940719055 cost 175), and $0,
 since standard runners are free for a public repository. The budgets bound only a leg that hangs:
 at most 70 minutes for a web leg, 10 for a web-cold leg and 65 for a harness leg.
 
@@ -163,7 +177,7 @@ reaches, with signals to the step's top process alone: SIGINT, SIGTERM 7.5 s lat
 takes that path, since `ScriptHandler.cs` starts it with `killProcessOnCancel: false`). The top
 process of a `run:` step is the bash that runs the step's script file, which passes no signal on
 to a child it waits for. So before this deadline the tool never learned of a budget's end: no
-report named a row, and the 18 legs the old budgets stopped before Bun ended, in the reading
+report named a row, and the 42 legs the old budgets stopped before Bun ended, in the reading
 above, wrote no report at all. So the step's own deadline comes first, inside its budget, the
 tool is told of it, and the runner's own signals reach the tool too:
 

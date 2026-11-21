@@ -90,8 +90,9 @@
  *   half minute, is 90 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
- * 6.5 minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
+ * listing after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9
+ * minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
