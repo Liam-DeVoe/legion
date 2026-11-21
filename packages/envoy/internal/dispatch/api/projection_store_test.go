@@ -40,7 +40,7 @@ import (
 //
 // The six read-state tables of R6 are projections of tuples and of no node, so they name no node
 // and carry no such key; what holds them to the store is their marker (markedProjections) and the
-// census, and the one exemption's marker test below.
+// census.
 var projectedTables = []string{
 	"block_refs", "comments", "document_blocks",
 	"comment_deliveries", "message_deliveries", "messages",
@@ -76,10 +76,11 @@ var rowsTheRunUpdates = []string{"comment_deliveries"}
 // row they insert with its node and its tuples from the transaction that inserted the row, and an
 // update of a column a tuple projects carries the transaction of the tuple it appended.
 //
-// The catalogue half also holds the one exemption the one Go writer of a thread leaves
-// (inboxwrite.PlanRecord): user_threads_record and user_agent_thread_dismissed_clear are the only
-// stored functions that write user_threads or user_agent_thread_dismissed, and each of their
-// writes sits under the marker test that passes only a write an older build made (markerTests).
+// The catalogue half also reads the exemption list the one Go writer of a thread
+// (inboxwrite.PlanRecord) left, which is empty: the boot's retirements, which the run's database
+// is brought through as the server brings one (newProjectionRun), delete the two stored functions
+// that wrote user_threads and user_agent_thread_dismissed for an older build's write, with their
+// triggers (startup.ProjectionTriggersRetirement), so no stored function writes either table.
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	ctx := context.Background()
 	sources := readProjectionWriters(t)
@@ -94,8 +95,8 @@ func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	t.Run("no stored function or trigger writes a projected table", func(t *testing.T) {
 		requireNoStoredFunctionWritesAProjection(t, ctx, run)
 	})
-	t.Run("the two trigger functions of the one exemption write only under the marker test", func(t *testing.T) {
-		requireTheExemptionWritesUnderTheMarkerTest(t, ctx, run)
+	t.Run("no stored function writes a thread's projection, so the exemption list is empty", func(t *testing.T) {
+		requireNoStoredFunctionWritesAThread(t, ctx, run)
 	})
 	t.Run("no projected table carries a deferred check", func(t *testing.T) {
 		requireNoDeferredCheckOnAProjection(t, ctx, run)
@@ -1086,9 +1087,12 @@ func newProjectionRun(t *testing.T) *projectionRun {
 	// The run's pool reports every statement to connectionWatch, so a watched write's statements
 	// are read on the connection each of them ran on, the ones a helper ran outside the
 	// transaction it was handed among them.
-	handler, database, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), connectionWatch{}),
-	})
+	traced := storetest.TracedStore(t, storetest.Open(t), connectionWatch{})
+	// The run's database is brought to this head as the server brings one it created from empty:
+	// the migrations, which made the template it is a copy of, and then, before the server
+	// serves, the boot's retirements (startup.Retire).
+	retireAsTheBootDoes(t, traced.Pool, true)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, store: traced})
 	issue := createInteractionIssue(t, handler, "PROJ", "A projection of its node",
 		"# Spec\n\nA passage the anchor names.\n")
 	run := &projectionRun{handler: handler, database: database, issue: issue.Key, specID: issue.PrimaryArtifactID, project: "PROJ"}
@@ -1132,6 +1136,19 @@ func newProjectionRun(t *testing.T) *projectionRun {
 	return run
 }
 
+// storedFunctionBodiesSQL answers the name and the body of every stored function of the schema.
+// prolang is the oid of a pg_language row, so the language is named through pg_language. An
+// internal function's body is the name of a C entry point, not statements, so it is left out.
+// 'internal'::regtype::oid is the oid of the type named internal (2281), which no language has, so
+// comparing prolang with it left nothing out.
+const storedFunctionBodiesSQL = `
+	select p.proname, p.prosrc
+	from pg_proc p
+	join pg_namespace n on n.oid = p.pronamespace
+	where n.nspname = current_schema()
+		and p.prolang <> (select l.oid from pg_language l where l.lanname = 'internal')
+`
+
 // requireNoStoredFunctionWritesAProjection reads the catalogue: no function of the schema and
 // no trigger makes or unmakes a row of a projected table or sets a column a tuple projects, so a
 // write hidden in plpgsql is found where the Go sources cannot show it. Each scan gathers every
@@ -1139,17 +1156,7 @@ func newProjectionRun(t *testing.T) *projectionRun {
 // only logs its rows cannot fail.
 func requireNoStoredFunctionWritesAProjection(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
-	// prolang is the oid of a pg_language row, so the language is named through pg_language.
-	// An internal function's body is the name of a C entry point, not statements, so it is left
-	// out. 'internal'::regtype::oid is the oid of the type named internal (2281), which no
-	// language has, so comparing prolang with it left nothing out.
-	functions, read := catalogueProjectionWrites(t, ctx, run, `
-		select p.proname, p.prosrc
-		from pg_proc p
-		join pg_namespace n on n.oid = p.pronamespace
-		where n.nspname = current_schema()
-			and p.prolang <> (select l.oid from pg_language l where l.lanname = 'internal')
-	`)
+	functions, read := catalogueProjectionWrites(t, ctx, run, storedFunctionBodiesSQL)
 	if read == 0 {
 		t.Fatal("no stored function was read, so nothing was checked")
 	}
@@ -1218,141 +1225,58 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 // write of the projection as much as its insert is.
 var readStateWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+from)\s+(user_threads|user_agent_thread_dismissed)\b`)
 
-// recordCall matches a call of user_threads_record, which a trigger function makes as
-// `perform user_threads_record(`.
-var recordCall = regexp.MustCompile(`(?i)\buser_threads_record\s*\(`)
+// markerTestedProjectionWriters is the exemption list of R9, the stored functions that may still
+// write those projections, and it is empty. The inbox release kept two, user_threads_record and
+// user_agent_thread_dismissed_clear, each writing only for a write an older build made during a
+// roll, which its triggers' marker tests found (migration 20261116160001); the boot's retirements
+// delete both with those triggers (startup.ProjectionTriggersRetirement), so every write of either
+// table is inboxwrite.Record's.
+var markerTestedProjectionWriters = []string{}
 
-// markerTestedProjectionWriters are the one exemption of R9: the two stored functions that still
-// write those projections, each only for a write an older build made during a roll, which the
-// marker test finds (migration 20261116160001). The root's own pull request deletes both with their
-// triggers.
-var markerTestedProjectionWriters = []string{"user_agent_thread_dismissed_clear", "user_threads_record"}
-
-// markerTests are, for each trigger function that reaches the exemption, the marker test each of
-// its writes sits under, in the order its body holds them: a call of user_threads_record, or the
-// clear's own delete. Each is written as the body reads once its comments are dropped, its case
-// lowered and its white space folded (normalizedSQLBody). A test that ends `end if;` is a guard
-// that returns before the write; any other is the condition of the `if` the write sits inside.
-//
-// A comment names its writer's stated pointers (comments.tuples_stored), a message its node pair,
-// and an ask the moment of the writes the store holds (asks.tuples_stored_at): on its insert, any
-// marker at all, and on an answer the answer's own moment, so an older build's answer to an ask this
-// release created is still projected.
-var markerTests = map[string][]string{
-	"user_threads_comment": {"if new.tuples_stored then return null; end if;"},
-	"user_threads_message": {"if new.node_kind is not null and new.node_address is not null then return null; end if;"},
-	"user_threads_ask": {
-		"if tg_op = 'insert' and new.tuples_stored_at is not null then return null; end if;",
-		"and new.tuples_stored_at is distinct from (new.answer->>'at')::timestamptz then",
-	},
-	"user_agent_thread_dismissed_clear": {"if new.node_kind is not null and new.node_address is not null then return null; end if;"},
-}
-
-// normalizedSQLBody is a stored function's body as markerTests spells it: its line comments
-// dropped, lower-cased, and every run of white space one space.
-func normalizedSQLBody(body string) string {
-	return strings.Join(strings.Fields(strings.ToLower(withoutSQLComments(body))), " ")
-}
-
-// requireTheExemptionWritesUnderTheMarkerTest reads the catalogue for the one exemption the one
-// Go writer of a thread leaves (R9): the stored functions whose bodies write user_threads or
-// user_agent_thread_dismissed are user_threads_record and user_agent_thread_dismissed_clear and no
-// other; user_threads_record is called by the three trigger functions of 0095-0097 alone and by no
-// trigger directly; every write each trigger function makes, through user_threads_record or its
-// own delete, sits under that function's marker test (markerTests); and each of those functions
-// is run by a trigger of the schema. So a write hidden in plpgsql that projects a thread without
-// the store is found, and so is a marker test taken away from one of the four.
-func requireTheExemptionWritesUnderTheMarkerTest(t *testing.T, ctx context.Context, run *projectionRun) {
+// storedFunctionsWritingAThread is, sorted, every stored function of the schema whose body writes
+// user_threads or user_agent_thread_dismissed (readStateWrite), with how many stored functions it
+// read.
+func storedFunctionsWritingAThread(t *testing.T, ctx context.Context, pool *store.Pool) ([]string, int) {
 	t.Helper()
-	rows, err := run.database.Pool.Query(ctx, `
-		select p.proname, p.prosrc
-		from pg_proc p
-		join pg_namespace n on n.oid = p.pronamespace
-		where n.nspname = current_schema()
-			and p.prolang <> (select l.oid from pg_language l where l.lanname = 'internal')
-	`)
+	rows, err := pool.Query(ctx, storedFunctionBodiesSQL)
 	if err != nil {
 		t.Fatalf("read the stored functions: %v", err)
 	}
-	bodies := map[string]string{}
+	defer rows.Close()
+	var writers []string
+	read := 0
 	for rows.Next() {
 		var name, body string
 		if err := rows.Scan(&name, &body); err != nil {
 			t.Fatalf("read a stored function: %v", err)
 		}
-		bodies[name] = normalizedSQLBody(body)
+		read++
+		if readStateWrite.MatchString(withoutSQLComments(body)) {
+			writers = append(writers, name)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the stored functions: %v", err)
 	}
-	var writers, callers []string
-	for name, body := range bodies {
-		if readStateWrite.MatchString(body) {
-			writers = append(writers, name)
-		}
-		if recordCall.MatchString(body) {
-			callers = append(callers, name)
-		}
-	}
 	slices.Sort(writers)
-	slices.Sort(callers)
+	return writers, read
+}
+
+// requireNoStoredFunctionWritesAThread reads the catalogue of the run's database, which the boot's
+// retirements ran over (newProjectionRun): the stored functions whose bodies write user_threads or
+// user_agent_thread_dismissed are exactly the exemption list, which is empty. So a write hidden in
+// plpgsql that projects a thread without the store is found.
+func requireNoStoredFunctionWritesAThread(t *testing.T, ctx context.Context, run *projectionRun) {
+	t.Helper()
+	writers, read := storedFunctionsWritingAThread(t, ctx, run.database.Pool)
+	if read == 0 {
+		t.Fatal("no stored function was read, so nothing was checked")
+	}
 	if !slices.Equal(writers, markerTestedProjectionWriters) {
-		t.Errorf("the stored functions writing user_threads or user_agent_thread_dismissed are %v, want the one exemption %v: every other write of them is inboxwrite.Record's",
+		t.Errorf("the stored functions writing user_threads or user_agent_thread_dismissed are %v, want the exemption list %v: every write of them is inboxwrite.Record's",
 			writers, markerTestedProjectionWriters)
 	}
-	if want := []string{"user_threads_ask", "user_threads_comment", "user_threads_message"}; !slices.Equal(callers, want) {
-		t.Errorf("user_threads_record is called by %v, want the three trigger functions %v, each under its marker test", callers, want)
-	}
-	for _, name := range slices.Sorted(maps.Keys(markerTests)) {
-		tests := markerTests[name]
-		body, held := bodies[name]
-		if !held {
-			t.Errorf("the schema holds no function %s, whose writes markerTests names", name)
-			continue
-		}
-		sites := recordCall.FindAllStringIndex(body, -1)
-		if name == "user_agent_thread_dismissed_clear" {
-			sites = readStateWrite.FindAllStringIndex(body, -1)
-		}
-		if len(sites) != len(tests) {
-			t.Errorf("%s writes %d time(s), and markerTests names the marker test of %d: %s", name, len(sites), len(tests), body)
-			continue
-		}
-		for index, site := range sites {
-			before := body[:site[0]]
-			at := strings.LastIndex(before, tests[index])
-			switch {
-			case at < 0:
-				t.Errorf("%s's write %d (%q) sits under no marker test %q: %s", name, index+1, body[site[0]:site[1]], tests[index], body)
-			case !strings.HasSuffix(tests[index], "end if;") && strings.Contains(before[at+len(tests[index]):], "end if"):
-				t.Errorf("%s's write %d (%q) follows the end of the if whose condition is the marker test %q: %s", name, index+1, body[site[0]:site[1]], tests[index], body)
-			}
-		}
-	}
-	names := append(slices.Sorted(maps.Keys(markerTests)), "user_threads_record")
-	fired, err := readStrings(ctx, run.database.Pool, `
-		select p.proname || ' on ' || c.relname || ' (' || t.tgname || ')'
-		from pg_trigger t
-		join pg_class c on c.oid = t.tgrelid
-		join pg_namespace n on n.oid = c.relnamespace
-		join pg_proc p on p.oid = t.tgfoid
-		where not t.tgisinternal and n.nspname = current_schema() and p.proname = any($1)
-		order by 1
-	`, names)
-	if err != nil {
-		t.Fatalf("read the triggers of the exemption: %v", err)
-	}
-	for _, trigger := range fired {
-		if strings.HasPrefix(trigger, "user_threads_record ") {
-			t.Errorf("a trigger runs user_threads_record directly (%s), with no marker test in front of it", trigger)
-		}
-	}
-	for name := range markerTests {
-		if !slices.ContainsFunc(fired, func(trigger string) bool { return strings.HasPrefix(trigger, name+" ") }) {
-			t.Errorf("no trigger runs %s (the triggers of the exemption are %v), so its marker test is no longer what stands in front of the projection", name, fired)
-		}
-	}
-	t.Logf("the exemption %v, reached from %v, under the triggers %v", writers, callers, fired)
+	t.Logf("%d stored functions read; the ones writing a thread's projection are %v, the exemption list %v", read, writers, markerTestedProjectionWriters)
 }
 
 // deferredCountersOfAProjection is the deferred work a projected table may carry: work that

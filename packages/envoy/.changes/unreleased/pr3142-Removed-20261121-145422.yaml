@@ -1,0 +1,5 @@
+kind: Removed
+body: The two stored functions that wrote a thread's projection for an unmarked row, with their four triggers and the three functions those call, go at the first boot where no build a rollback reaches needs them and no unmarked row stands.
+time: 2026-11-21T14:54:22.536517524Z
+custom:
+    Issue: pr3142
