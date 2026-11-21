@@ -147,6 +147,12 @@ export interface RelaySocketStandIn {
   /** Answers every open socket of `session` as the listener answers a frame it cannot read: the
    *  err frame `bad_frame`, then a close 1008 with reason `bad_frame`. */
   refuseFrame(session: string): void;
+  /** Sends `text` as one text frame to every open socket of `session`, as it is: a frame no
+   *  listener sends, for a row on what the client does with one. */
+  sendRaw(session: string, text: string): void;
+  /** Ends every open socket of `session` with no close frame, as a path that drops the
+   *  connection does: the client sees 1006. */
+  drop(session: string): void;
   /** Closes every open socket of `session`, or of every session, with `code`. */
   close(code: number, reason: string, session?: string): void;
   /** Ends a token before it lapses, as a revoke does. */
@@ -292,6 +298,16 @@ export function startRelaySocketStandIn(
     refuseFrame(session) {
       for (const socket of [...open]) {
         if (socket.data.session === session) badFrame(socket);
+      }
+    },
+    sendRaw(session, text) {
+      for (const socket of open) {
+        if (socket.data.session === session) socket.send(text);
+      }
+    },
+    drop(session) {
+      for (const socket of [...open]) {
+        if (socket.data.session === session) socket.terminate();
       }
     },
     close(code, reason, session) {

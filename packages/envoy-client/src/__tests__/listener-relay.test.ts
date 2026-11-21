@@ -11,10 +11,12 @@
 // an inbound outage is. The socket with a host's registrations is `./relay-registration.test.ts`,
 // and which settings choose the socket is `./envoy-settings.test.ts`.
 //
-// The reopen rows read the real clock: what they hold is how long the client waits on it, which
-// is the platform's timers against a real socket, so no fake clock stands in for it.
+// The reopen rows read the real clock against a real socket, but what they hold is the wait each
+// close logs, never how long a reopen took beyond it; the waits themselves, each cause and streak,
+// are the table at the end (`relayReopenDelay`), which reads no clock.
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   frame,
@@ -25,7 +27,7 @@ import {
 } from "../../test/relay-socket-fixtures";
 import { standInDeliverSubject } from "../../test/relay-socket-stand-in";
 import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
-import { ListenerRelay } from "../listener-relay";
+import { ListenerRelay, type RelayEnd, relayReopenDelay, relayRun } from "../listener-relay";
 
 const { started, standIn, opened } = relaySocketFixtures("listener-relay");
 
@@ -88,80 +90,62 @@ describe("a relay socket", () => {
 
   test("closed 4403 reopens with a fresh token after 1 s, then 2 s", async () => {
     const server = standIn();
-    await opened(server, "ses_a");
-    const closes: number[] = [];
-    for (const nth of [1, 2]) {
-      closes.push(Date.now());
-      server.close(4403, "credential_refused");
-      await until(
-        () => opens(server).length === nth + 1,
-        10_000,
-        () => `no reopen after 4403 close ${nth}; upgrades ${JSON.stringify(server.upgrades)}`
-      );
-    }
-    const waited = opens(server)
-      .slice(1)
-      .map((upgrade, index) => upgrade.at - (closes[index] ?? 0));
-    // The stand-in's count of reopens sooner than the backoff: none.
-    const early = waited.filter((ms, index) => ms < 1_000 * 2 ** index);
-    if (early.length > 0) {
-      throw new Error(
-        `the stand-in counted ${early.length} reopens sooner than 1 s doubling after a 4403 close: ${waited.join(" ms, ")} ms after each`
-      );
-    }
-    // Each wait is the backoff's and no longer than it by more than the trade and the upgrade.
-    expect(waited[0]).toBeLessThan(1_900);
-    expect(waited[1]).toBeLessThan(2_900);
-    const tokens = opens(server).map((upgrade) => upgrade.token);
-    expect(new Set(tokens).size).toBe(3);
+    const logs: string[] = [];
+    await opened(server, "ses_a", { logs });
+    const closedAt = Date.now();
+    server.close(4403, "credential_refused");
+    await until(
+      () => opens(server).length === 2,
+      10_000,
+      () => `no reopen after the 4403 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    server.close(4403, "credential_refused");
+    await until(
+      () => logs.filter((line) => line.includes("4403")).length === 2,
+      5_000,
+      () => `the second 4403 close was not logged; the log holds ${JSON.stringify(logs)}`
+    );
+    // The waits are the logged ones (`relayReopenDelay`), and the first was waited out.
+    expect(logs.filter((line) => line.includes("4403"))).toEqual([
+      "the listener's relay socket for ses_a closed (4403 credential_refused); it opens again in 1000 ms",
+      "the listener's relay socket for ses_a closed (4403 credential_refused); it opens again in 2000 ms",
+    ]);
+    expect((opens(server)[1]?.at ?? 0) - closedAt).toBeGreaterThanOrEqual(1_000);
+    const [first, second] = opens(server);
+    expect(second?.token).not.toBe(first?.token);
   });
 
   test("closed 1013 reopens after 5 s, then 10 s, on the token it holds", async () => {
     const server = standIn();
-    await opened(server, "ses_a");
-    const closes: number[] = [];
-    for (const nth of [1, 2]) {
-      closes.push(Date.now());
-      server.close(1013, "broker_unavailable");
-      await until(
-        () => opens(server).length === nth + 1,
-        15_000,
-        () => `no reopen after 1013 close ${nth}; upgrades ${JSON.stringify(server.upgrades)}`
-      );
-    }
-    const waited = opens(server)
-      .slice(1)
-      .map((upgrade, index) => upgrade.at - (closes[index] ?? 0));
-    const early = waited.filter((ms, index) => ms < 5_000 * 2 ** index);
-    if (early.length > 0) {
-      throw new Error(
-        `the stand-in counted ${early.length} reopens sooner than 5 s doubling after a 1013 close: ${waited.join(" ms, ")} ms after each`
-      );
-    }
-    expect(waited[0]).toBeLessThan(5_900);
-    expect(waited[1]).toBeLessThan(10_900);
-    expect(new Set(opens(server).map((upgrade) => upgrade.token)).size).toBe(1);
-  }, 40_000);
-
-  test("closed 1012 reopens at once", async () => {
-    const server = standIn();
-    await opened(server, "ses_a");
+    const logs: string[] = [];
+    await opened(server, "ses_a", { logs });
     const closedAt = Date.now();
-    server.close(1012, "service_restart");
+    server.close(1013, "broker_unavailable");
     await until(
       () => opens(server).length === 2,
-      1_000,
-      () => `no reopen within 1 s of a 1012 close; upgrades ${JSON.stringify(server.upgrades)}`
+      15_000,
+      () => `no reopen after the 1013 close; upgrades ${JSON.stringify(server.upgrades)}`
     );
-    expect(opens(server)[1]?.at ?? Number.POSITIVE_INFINITY).toBeLessThan(closedAt + 1_000);
-  });
+    server.close(1013, "broker_unavailable");
+    await until(
+      () => logs.filter((line) => line.includes("1013")).length === 2,
+      5_000,
+      () => `the second 1013 close was not logged; the log holds ${JSON.stringify(logs)}`
+    );
+    expect(logs.filter((line) => line.includes("1013"))).toEqual([
+      "the listener's relay socket for ses_a closed (1013 broker_unavailable); it opens again in 5000 ms",
+      "the listener's relay socket for ses_a closed (1013 broker_unavailable); it opens again in 10000 ms",
+    ]);
+    expect((opens(server)[1]?.at ?? 0) - closedAt).toBeGreaterThanOrEqual(5_000);
+    expect(new Set(opens(server).map((upgrade) => upgrade.token)).size).toBe(1);
+  }, 30_000);
 
   test("4401 and 1012 reopen at once however often they come", async () => {
     // The listener sends 4401 at most once a check and 1012 once a stop, so neither runs up a
     // wait, however close together they come, and neither waits out a wait the other ran up.
     const server = standIn();
-    await opened(server, "ses_a");
-    const waited: string[] = [];
+    const logs: string[] = [];
+    await opened(server, "ses_a", { logs });
     const closes = [
       [4401, "credential_expired"],
       [1012, "listener_stopping"],
@@ -169,7 +153,6 @@ describe("a relay socket", () => {
       [1012, "listener_stopping"],
     ] as const;
     for (const [index, [code, reason]] of closes.entries()) {
-      const closedAt = Date.now();
       server.close(code, reason);
       await until(
         () => opens(server).length === index + 2,
@@ -177,64 +160,59 @@ describe("a relay socket", () => {
         () =>
           `no reopen after close ${index + 1} (${code}); upgrades ${JSON.stringify(server.upgrades)}`
       );
-      waited.push(`${code} after ${(opens(server)[index + 1]?.at ?? 0) - closedAt} ms`);
     }
-    const late = waited.filter((one) => Number(/after (\d+) ms/.exec(one)?.[1]) >= 1_000);
-    if (late.length > 0) {
-      throw new Error(
-        `the stand-in counted ${late.length} reopens a second or more after their close: ${waited.join(", ")}`
-      );
-    }
-  }, 30_000);
+    expect(logs.filter((line) => line.includes(" closed ("))).toEqual(
+      closes.map(
+        ([code, reason]) =>
+          `the listener's relay socket for ses_a closed (${code} ${reason}); it opens again in 0 ms`
+      )
+    );
+  });
 
   test("a 1013 after a 4403 waits 5 s, not 10 s: each close counts its own run of waits", async () => {
     const server = standIn();
-    await opened(server, "ses_a");
+    const logs: string[] = [];
+    await opened(server, "ses_a", { logs });
     server.close(4403, "credential_refused");
     await until(
       () => opens(server).length === 2,
       10_000,
       () => `no reopen after the 4403 close; upgrades ${JSON.stringify(server.upgrades)}`
     );
-    const closedAt = Date.now();
     server.close(1013, "broker_unavailable");
     await until(
-      () => opens(server).length === 3,
-      20_000,
-      () => `no reopen after the 1013 close; upgrades ${JSON.stringify(server.upgrades)}`
+      () => logs.some((line) => line.includes("1013")),
+      5_000,
+      () => `the 1013 close was not logged; the log holds ${JSON.stringify(logs)}`
     );
-    const waited = (opens(server)[2]?.at ?? 0) - closedAt;
-    if (waited < 5_000 || waited >= 5_900) {
-      throw new Error(
-        `the reopen after a 1013 that came after a 4403 came ${waited} ms after it, where a first 1013 waits 5 s`
-      );
-    }
-  }, 40_000);
+    expect(logs.filter((line) => line.includes("1013"))).toEqual([
+      "the listener's relay socket for ses_a closed (1013 broker_unavailable); it opens again in 5000 ms",
+    ]);
+  });
 
   test("1001 reopens at once, then after 1 s while it repeats", async () => {
     // A proxy's 1001 and a socket that ended with no close frame (1006) can repeat as fast as a
     // socket opens, so a repeat within a minute waits 1 s doubling to a minute.
     const server = standIn();
-    await opened(server, "ses_a");
-    const waited: number[] = [];
-    for (const nth of [1, 2]) {
-      const closedAt = Date.now();
-      server.close(1001, "going_away");
-      await until(
-        () => opens(server).length === nth + 1,
-        10_000,
-        () => `no reopen after 1001 close ${nth}; upgrades ${JSON.stringify(server.upgrades)}`
-      );
-      waited.push((opens(server)[nth]?.at ?? 0) - closedAt);
-    }
-    if ((waited[1] ?? 0) < 1_000) {
-      throw new Error(
-        `a second 1001 within a minute reopened ${waited[1]} ms after it, where a repeated 1001 waits 1 s`
-      );
-    }
-    expect(waited[0]).toBeLessThan(1_000);
-    expect(waited[1]).toBeLessThan(1_900);
-  }, 30_000);
+    const logs: string[] = [];
+    await opened(server, "ses_a", { logs });
+    server.close(1001, "going_away");
+    await until(
+      () => opens(server).length === 2,
+      5_000,
+      () => `no reopen after the first 1001 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    server.close(1001, "going_away");
+    await until(
+      () => logs.filter((line) => line.includes("1001")).length === 2,
+      5_000,
+      () => `the second 1001 close was not logged; the log holds ${JSON.stringify(logs)}`
+    );
+    expect(logs.filter((line) => line.includes("1001"))).toEqual([
+      "the listener's relay socket for ses_a closed (1001 going_away); it opens again in 0 ms",
+      "the listener's relay socket for ses_a closed (1001 going_away); it opens again in 1000 ms",
+    ]);
+  });
 
   test("closed 1008 bad_frame reopens after 1 s, then 2 s, on the token it holds, the close logged", async () => {
     // The listener answers a frame it cannot read `bad_frame` and closes 1008: this client's
@@ -242,35 +220,29 @@ describe("a relay socket", () => {
     const server = standIn();
     const logs: string[] = [];
     await opened(server, "ses_a", { logs });
-    const closes: number[] = [];
-    for (const nth of [1, 2]) {
-      closes.push(Date.now());
-      server.refuseFrame("ses_a");
-      await until(
-        () => opens(server).length === nth + 1,
-        10_000,
-        () => `no reopen after 1008 close ${nth}; upgrades ${JSON.stringify(server.upgrades)}`
-      );
-    }
-    const waited = opens(server)
-      .slice(1)
-      .map((upgrade, index) => upgrade.at - (closes[index] ?? 0));
-    const early = waited.filter((ms, index) => ms < 1_000 * 2 ** index);
-    if (early.length > 0) {
-      throw new Error(
-        `the stand-in counted ${early.length} reopens sooner than 1 s doubling after a 1008 bad_frame close: ${waited.join(" ms, ")} ms after each`
-      );
-    }
-    expect(waited[0]).toBeLessThan(1_900);
-    expect(waited[1]).toBeLessThan(2_900);
-    expect(new Set(opens(server).map((upgrade) => upgrade.token)).size).toBe(1);
-    expect(logs).toContain(
-      "the listener's relay socket for ses_a closed (1008 bad_frame: one of the frames sent since its last pong, none); it opens again in 1000 ms"
+    const closedAt = Date.now();
+    server.refuseFrame("ses_a");
+    await until(
+      () => opens(server).length === 2,
+      10_000,
+      () => `no reopen after the 1008 close; upgrades ${JSON.stringify(server.upgrades)}`
     );
+    server.refuseFrame("ses_a");
+    await until(
+      () => logs.filter((line) => line.includes("1008")).length === 2,
+      5_000,
+      () => `the second 1008 close was not logged; the log holds ${JSON.stringify(logs)}`
+    );
+    expect(logs.filter((line) => line.includes("1008"))).toEqual([
+      "the listener's relay socket for ses_a closed (1008 bad_frame: one of the frames sent since its last pong, none); it opens again in 1000 ms",
+      "the listener's relay socket for ses_a closed (1008 bad_frame: one of the frames sent since its last pong, none); it opens again in 2000 ms",
+    ]);
+    expect((opens(server)[1]?.at ?? 0) - closedAt).toBeGreaterThanOrEqual(1_000);
+    expect(new Set(opens(server).map((upgrade) => upgrade.token)).size).toBe(1);
     expect(logs.filter((line) => line.includes("answered bad_frame"))).toEqual([
       "the listener's relay socket for ses_a answered bad_frame",
     ]);
-  }, 30_000);
+  });
 
   test("a 1008 bad_frame close names the ops of the frames sent since the listener last answered a ping", async () => {
     // The listener's `bad_frame` names no op: the frame it could not read is one of those this
@@ -333,27 +305,19 @@ describe("a relay socket", () => {
     server.close(1013, "broker_unavailable");
     const refused = () => server.upgrades.filter((upgrade) => upgrade.status === 503);
     await until(
-      () => refused().length >= 2,
-      25_000,
+      () => refused().length >= 1 && logs.some((line) => line.includes("HTTP 503")),
+      15_000,
       () =>
         `the stand-in refused ${refused().length} upgrades 503; upgrades ${JSON.stringify(server.upgrades)}`
     );
-    const [first, second] = refused().map((upgrade) => upgrade.at);
-    const waited = [(first ?? 0) - closedAt, (second ?? 0) - (first ?? 0)];
-    const early = waited.filter((ms, index) => ms < 5_000 * 2 ** index);
-    if (early.length > 0) {
-      throw new Error(
-        `the stand-in counted ${early.length} upgrades sooner than 5 s doubling after a 1013 close, each refused 503: ${waited.join(" ms, ")} ms after the one before`
-      );
-    }
-    expect(waited[0]).toBeLessThan(5_900);
-    expect(waited[1]).toBeLessThan(10_900);
+    expect((refused()[0]?.at ?? 0) - closedAt).toBeGreaterThanOrEqual(5_000);
     expect(server.tradesAsked - trades).toBe(0);
     expect(new Set(server.upgrades.map((upgrade) => upgrade.token)).size).toBe(1);
-    expect(logs.filter((line) => line.includes("503"))).toEqual([
+    expect(logs.filter((line) => line.includes("1013") || line.includes("503"))).toEqual([
+      "the listener's relay socket for ses_a closed (1013 broker_unavailable); it opens again in 5000 ms",
       "the listener's relay socket for ses_a could not be opened: the listener refused the upgrade with HTTP 503; it is tried again in 10000 ms, the wait doubling to a minute while it fails",
     ]);
-  }, 40_000);
+  }, 30_000);
 
   test("an upgrade refused 401 trades a fresh token; one refused 429 opens again on the token it holds", async () => {
     // 401 and 403 say the token was the cause, so the next open trades for a fresh one and the
@@ -702,5 +666,192 @@ describe("a relay socket", () => {
       "rejected: the listener's relay socket closed before the flush was sent",
     ]);
     expect(server.handled).toContainEqual({ session: "ses_a", frame: "ping 1" });
+  });
+
+  test("a reopen is a disconnect and then a reconnect on status(), from which a host begins its next epoch", async () => {
+    // Both hosts register a new epoch at `reconnect`, so the listener restarts the session's relay
+    // at its ack floor and nothing published while the socket was away is lost.
+    const server = standIn();
+    const relay = await opened(server, "ses_a");
+    const statuses = relay.status()[Symbol.asyncIterator]();
+    server.close(1012, "listener_stopping");
+    const next = () =>
+      Promise.race([
+        statuses.next().then((read) => (read.done === true ? "ended" : read.value.type)),
+        Bun.sleep(5_000).then(() => "nothing within 5 s"),
+      ]);
+    const seen = [await next(), await next()];
+    expect(seen).toEqual(["disconnect", "reconnect"]);
+  });
+
+  test("a socket the path drops with no close frame (1006) reopens at once and takes its subject again", async () => {
+    const server = standIn();
+    const logs: string[] = [];
+    const relay = await opened(server, "ses_a", { logs });
+    relay.subscribe(standInDeliverSubject("ses_a"));
+    await relay.flush();
+    server.drop("ses_a");
+    await until(
+      () => opens(server).length === 2 && server.subs.length === 2,
+      5_000,
+      () =>
+        `no reopen and no subject taken again after the drop; upgrades ${JSON.stringify(server.upgrades)}, subs ${JSON.stringify(server.subs)}`
+    );
+    expect(logs.filter((line) => line.includes(" closed ("))).toEqual([
+      "the listener's relay socket for ses_a closed (1006); it opens again in 0 ms",
+    ]);
+  });
+
+  test("a socket that answers no ping for 20 s is ended, logged, and opened again", async () => {
+    // A path that froze keeps the socket open with nothing on it. The client pings every 10 s,
+    // and a socket that answered neither of two is ended (1006) and opened again at once. The
+    // listener here completes the upgrade and then reads nothing, so it answers no ping.
+    const upgrades: number[] = [];
+    const deaf = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data: (socket, data) => {
+          const text = Buffer.from(data).toString("latin1");
+          const key = /Sec-WebSocket-Key: (.+)\r\n/i.exec(text)?.[1]?.trim();
+          if (key === undefined) return;
+          upgrades.push(Date.now());
+          const accept = createHash("sha1")
+            .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+            .digest("base64");
+          socket.write(
+            `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: envoy-relay.v1\r\n\r\n`
+          );
+        },
+      },
+    });
+    started.push(() => deaf.stop(true));
+    const logs: string[] = [];
+    // Never traded or checked: this listener reads nothing, so any token will do.
+    const token = fixtureSecret("relay");
+    const relay = new ListenerRelay({
+      url: `http://127.0.0.1:${deaf.port}`,
+      session: "ses_a",
+      credential: {
+        scheme: "DPoP",
+        headers: async () => ({ Authorization: `DPoP ${token}`, DPoP: "a-proof" }),
+        secret: () => token,
+      },
+      outage: inboundUnavailable(
+        () => undefined,
+        () => undefined
+      ),
+      log: (line) => logs.push(line),
+    });
+    started.push(() => relay.close());
+    await until(
+      () => upgrades.length >= 2,
+      45_000,
+      () =>
+        `the deaf socket was not opened again within 45 s; upgrades at ${JSON.stringify(upgrades)}, log ${JSON.stringify(logs)}`
+    );
+    expect((upgrades[1] ?? 0) - (upgrades[0] ?? 0)).toBeGreaterThanOrEqual(20_000);
+    expect(logs.slice(0, 2)).toEqual([
+      "the listener's relay socket for ses_a: the socket answered no ping for 20 s",
+      "the listener's relay socket for ses_a closed (1006); it opens again in 0 ms",
+    ]);
+  }, 60_000);
+
+  test("a frame that is no JSON, and a msg whose headers are no map of lists, are dropped and logged once; later frames go on", async () => {
+    const server = standIn();
+    const logs: string[] = [];
+    const relay = await opened(server, "ses_a", { logs });
+    const subscription = relay.subscribe(standInDeliverSubject("ses_a"));
+    await relay.flush();
+    const sid = Number(
+      /^sub (\d+) /.exec(
+        server.handled.find((one) => one.frame.startsWith("sub "))?.frame ?? ""
+      )?.[1]
+    );
+    const malformed = JSON.stringify({
+      op: "msg",
+      sid,
+      subject: standInDeliverSubject("ses_a"),
+      reply: "notifications.envoy.relayreply.x",
+      headers: { "Envoy-Subject": "notifications.agent.ses_a" },
+      data: Buffer.from("{}").toString("base64"),
+    });
+    for (const text of ["no json", "no json", malformed, malformed]) server.sendRaw("ses_a", text);
+    server.deliver("ses_a", frame("ses_a", 9));
+    const next = await subscription[Symbol.asyncIterator]().next();
+    expect(next.value?.headers.get("Envoy-Stream-Seq")).toBe("9");
+    expect(logs).toEqual([
+      "the listener's relay socket for ses_a sent a frame that is no JSON",
+      "the listener's relay socket for ses_a sent a msg whose headers are not a map of names to lists of strings; it is dropped",
+    ]);
+  });
+
+  test("drain unsubscribes every subscription, waits for the listener to take that, and closes", async () => {
+    const server = standIn();
+    const relay = await opened(server, "ses_a");
+    const subject = standInDeliverSubject("ses_a");
+    const subscriptions = [relay.subscribe(subject), relay.subscribe(subject)];
+    const statuses = relay.status()[Symbol.asyncIterator]();
+    await relay.flush();
+    await relay.drain();
+    expect(relay.isClosed()).toBe(true);
+    expect(server.handled.filter((one) => one.frame.startsWith("unsub "))).toHaveLength(2);
+    const ended = await Promise.all(
+      subscriptions.map(
+        async (subscription) => (await subscription[Symbol.asyncIterator]().next()).done
+      )
+    );
+    expect(ended).toEqual([true, true]);
+    expect((await statuses.next()).done).toBe(true);
+  });
+});
+
+// The wait before each open again (`relayReopenDelay`), by how the last open ended and how many
+// of its run (`relayRun`) came before it with no socket open a minute between: no clock read.
+describe("how long a relay socket waits before it opens again", () => {
+  const cases: readonly (readonly [string, RelayEnd, readonly number[]])[] = [
+    ["closed 4401", { closed: 4401 }, [0, 0, 0]],
+    ["closed 1012", { closed: 1012 }, [0, 0, 0]],
+    ["closed 4403", { closed: 4403 }, [1_000, 2_000, 4_000]],
+    ["closed 1013", { closed: 1013 }, [5_000, 10_000, 20_000]],
+    ["closed 1001", { closed: 1001 }, [0, 1_000, 2_000]],
+    ["closed 1006", { closed: 1006 }, [0, 1_000, 2_000]],
+    ["closed 1008", { closed: 1008 }, [1_000, 2_000, 4_000]],
+    ["refused 401", { refused: 401, after: undefined }, [1_000, 2_000, 4_000]],
+    ["refused 403", { refused: 403, after: 4401 }, [1_000, 2_000, 4_000]],
+    ["refused 503 after a 1013", { refused: 503, after: 1013 }, [5_000, 10_000, 20_000]],
+    ["refused 503 after a 1012", { refused: 503, after: 1012 }, [1_000, 2_000, 4_000]],
+    ["refused 429", { refused: 429, after: undefined }, [1_000, 2_000, 4_000]],
+    ["never answered", { refused: undefined, after: 1012 }, [1_000, 2_000, 4_000]],
+  ];
+
+  test("each cause waits as its run says, doubling with each end of that run", () => {
+    expect(
+      cases.map(([name, end]) => [name, [0, 1, 2].map((streak) => relayReopenDelay(end, streak))])
+    ).toEqual(cases.map(([name, , waits]) => [name, [...waits]]));
+  });
+
+  test("no wait passes a minute", () => {
+    expect(cases.map(([name, end]) => [name, relayReopenDelay(end, 20)])).toEqual(
+      cases.map(([name, , waits]) => [name, waits[2] === 0 ? 0 : 60_000])
+    );
+  });
+
+  test("the token's causes share one run, the broker's another, and each other close its own", () => {
+    expect(cases.map(([name, end]) => [name, relayRun(end)])).toEqual([
+      ["closed 4401", "closed 4401"],
+      ["closed 1012", "closed 1012"],
+      ["closed 4403", "token"],
+      ["closed 1013", "broker"],
+      ["closed 1001", "closed 1001"],
+      ["closed 1006", "closed 1006"],
+      ["closed 1008", "closed 1008"],
+      ["refused 401", "token"],
+      ["refused 403", "token"],
+      ["refused 503 after a 1013", "broker"],
+      ["refused 503 after a 1012", "unopened"],
+      ["refused 429", "unopened"],
+      ["never answered", "unopened"],
+    ]);
   });
 });

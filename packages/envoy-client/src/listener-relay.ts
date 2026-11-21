@@ -113,6 +113,13 @@ const SUBSCRIPTION_REFUSALS: Readonly<Record<string, true>> = {
   subscription_limit: true,
 };
 
+/** Every `err` code the wire names (this file's header). */
+const ERR_CODES: Readonly<Record<string, true>> = {
+  ...SUBSCRIPTION_REFUSALS,
+  publish_not_granted: true,
+  bad_frame: true,
+};
+
 /** How long a drain waits for the listener to have taken its unsubscribes. */
 const DRAIN_BOUND_MS = 1_000;
 
@@ -140,19 +147,31 @@ export type RelayEnd =
   | { readonly closed: number }
   | { readonly refused: number | undefined; readonly after: number | undefined };
 
-/** The run of the broker's absence: a 1013, and the upgrades refused 503 after it. */
-const BROKER_RUN = `closed ${CLOSE_TRY_AGAIN_LATER}`;
+/** The run of waits an end counts in (`relayRun`): the token's (4403, an upgrade refused 401 or
+ *  403), the broker's (1013, and the upgrades refused 503 after it), every open that never opened,
+ *  or each other close code's own. */
+export type RelayRun = "token" | "broker" | "unopened" | `closed ${number}`;
 
 /**
  * The run of waits `end` counts in, each doubling apart from every other: one per close code, an
  * upgrade refused 401 or 403 counted with 4403 (the token was the cause of each), one refused 503
  * after a 1013 with that 1013, and every other open that never opened together.
  */
-function relayRun(end: RelayEnd): string {
-  if ("closed" in end) return end.closed === CLOSE_REFUSED ? "token" : `closed ${end.closed}`;
+export function relayRun(end: RelayEnd): RelayRun {
+  if ("closed" in end) {
+    if (end.closed === CLOSE_REFUSED) return "token";
+    if (end.closed === CLOSE_TRY_AGAIN_LATER) return "broker";
+    return `closed ${end.closed}`;
+  }
   if (end.refused !== undefined && TOKEN_REFUSED.has(end.refused)) return "token";
-  if (end.refused === UPGRADE_UNAVAILABLE && end.after === CLOSE_TRY_AGAIN_LATER) return BROKER_RUN;
+  if (end.refused === UPGRADE_UNAVAILABLE && end.after === CLOSE_TRY_AGAIN_LATER) return "broker";
   return "unopened";
+}
+
+/** Whether `end` says the token was the cause, so the next open trades for a fresh one: 4401 (it
+ *  lapsed), and every end of the token's run. */
+function tokenCaused(end: RelayEnd): boolean {
+  return ("closed" in end && end.closed === CLOSE_EXPIRED) || relayRun(end) === "token";
 }
 
 /** How long to wait before opening again after `end`, the `streak`th end of its run (`relayRun`)
@@ -166,7 +185,7 @@ export function relayReopenDelay(end: RelayEnd, streak: number): number {
   if ("closed" in end && AT_ONCE_FIRST.has(end.closed)) {
     return streak === 0 ? 0 : doubling(RELAY_FIRST_WAIT_MS, streak - 1);
   }
-  if (relayRun(end) === BROKER_RUN) return doubling(RELAY_BROKER_FIRST_WAIT_MS, streak);
+  if (relayRun(end) === "broker") return doubling(RELAY_BROKER_FIRST_WAIT_MS, streak);
   return doubling(RELAY_FIRST_WAIT_MS, streak);
 }
 
@@ -362,7 +381,7 @@ export class ListenerRelay implements InboundConnection {
   #everOpened = false;
   /** Each run's ends in a row (`relayRun`) with no socket between that stayed open
    *  `RELAY_STABLE_MS`. */
-  readonly #streaks = new Map<string, number>();
+  readonly #streaks = new Map<RelayRun, number>();
   /** The code of the close that began the run of opens that have not opened since, if one did. */
   #closedWith: number | undefined;
   #stableTimer: ReturnType<typeof setTimeout> | undefined;
@@ -844,9 +863,14 @@ export class ListenerRelay implements InboundConnection {
       );
       return;
     }
+    // Logged once per code the wire names; any other code once in all, so a listener sending code
+    // after code grows the once-logged set by one key, not one each.
+    const known = ERR_CODES[code] === true;
     this.#logOnce(
-      `${session}\u0000${code}`,
-      `the listener's relay socket for ${session} answered ${code}`
+      `${session}\u0000${known ? code : "another code"}`,
+      known
+        ? `the listener's relay socket for ${session} answered ${code}`
+        : `the listener's relay socket for ${session} answered ${code}, a code this client does not know; later unknown codes are not logged`
     );
   }
 
@@ -865,11 +889,7 @@ export class ListenerRelay implements InboundConnection {
     // Only where the token was the cause does the next open trade for a fresh one; every other
     // presents the token in hand again, with a fresh proof. A fresher token the credential already
     // holds is kept (`RequestCredential.stale`).
-    const tokenCaused =
-      "closed" in end
-        ? end.closed === CLOSE_EXPIRED || end.closed === CLOSE_REFUSED
-        : end.refused !== undefined && TOKEN_REFUSED.has(end.refused);
-    if (tokenCaused) this.#options.credential.stale?.(session, this.#presented);
+    if (tokenCaused(end)) this.#options.credential.stale?.(session, this.#presented);
     const delay = this.#reopenAfter(end);
     if ("closed" in end) {
       this.#closedWith = end.closed;
