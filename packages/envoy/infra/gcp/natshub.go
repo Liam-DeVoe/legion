@@ -333,7 +333,7 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 			[][2]string{{"nkey", l.NKey}, {"seedSecret", l.SeedSecret}}); err != nil {
 			return settings{}, err
 		}
-		hubListener = &listenerUser{machineID: args.Hostname, nkey: l.NKey, service: service}
+		hubListener = &listenerUser{machineID: args.Hostname, nkey: l.NKey}
 	}
 	auth, err := authorization(args.Users, hubListener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
@@ -637,12 +637,11 @@ func selectedUserKind(where string, u NATSUserArgs) (userKind, error) {
 
 // listenerUser is a hub's own Envoy listener: the listener's machine id, which names its durable
 // and, for a listener with a seed, its user and the user's grant, and the public key of its seed.
-// service is set when the listener connects by its service identity, through the auth service:
-// the hub then renders no user for it, and its durable is still its own.
+// Behind the auth service (a callout) the listener connects by its service identity: the hub then
+// renders no user for it, and its durable is still its own.
 type listenerUser struct {
 	machineID string
 	nkey      string
-	service   bool
 }
 
 // authorization maps a hub's users onto core's, for both hubs, gcp:NatsHub and
@@ -710,7 +709,7 @@ func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserAr
 			Name: u.Name, NKey: u.NKey, Publish: &perms.Publish, Subscribe: &perms.Subscribe, HasSeed: true,
 		})
 	}
-	if l != nil && !l.service {
+	if l != nil && callout == nil {
 		if l.nkey == "" {
 			return core.Authorization{}, errors.New("listener.nkey is required")
 		}

@@ -214,7 +214,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if listener.env, err = config.Env([]string{s.serviceURL}); err != nil {
 		return nil, nil, prefixedInput(path, err)
 	}
-	return listener, &listenerUser{machineID: machineID, nkey: l.NKey, service: service}, nil
+	return listener, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
 }
 
 // prefixedInput is err, core's refusal of a listener config, with the input it names prefixed by
