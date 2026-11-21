@@ -37,11 +37,11 @@
 --
 -- phases.entry_given_task, phases.entry_given_entry and phases.entry_given_generation are the
 -- last task a phase worker was given for an entry, as it was composed, that entry, and the
--- issue's generation it was given in (record.PhaseRow.EntryGivenTask, EntryGivenEntry,
--- EntryGivenGeneration): the work a raise of the entry was composed with (workflow's enter), or
--- the task of a retry of the entry, which names the retry's reason (workflow's restart: the
--- architect's retry of a held phase, a todo on a held root and the operator's restart). They are
--- written for phase workers alone, and an architect's row keeps them at '', 0 and 0.
+-- issue's generation it was given in (record.PhaseRow.Given, one record.GivenTask): the work a
+-- raise of the entry was composed with (workflow's enter), or the task of a retry of the entry,
+-- which names the retry's reason (workflow's restart: the architect's retry of a held phase, a
+-- todo on a held root and the operator's restart). They are written for phase workers alone, and
+-- an architect's row keeps them at '', 0 and 0.
 -- phases.entry_task stays the text the role was sent when the entry was raised, which carries the
 -- daemon's decorations of a send: the base-merge sentence that ends a testing task of a parent
 -- and the reviewer's two sentences of its review round. A generation's clear resets the three
@@ -49,7 +49,7 @@
 -- one reader is the admission pass's stop of a parent whose start is written and not delivered or
 -- whose worker is in the middle of its phase (workflow's entryWork, StopForChildren): it holds the
 -- given task where entry_given_entry is the row's entry and entry_given_generation the issue's
--- generation, and the return decorates what it holds once.
+-- generation (record.PhaseRow.GivenFor), and the return decorates what it holds once.
 --
 -- The migration leaves every row it finds at '', 0 and 0 and fills nothing in: the stop reads such
 -- a row, and every row whose given task is not of its entry in the issue's generation, as one
@@ -64,9 +64,13 @@
 -- and its upserts leave them as they are. So an entry it raises leaves entry_given_entry at an
 -- entry before, and its generation clear of an issue it reruns, adopts or re-admits as a root
 -- leaves entry_given_generation below the issue's new generation, each of which the stop passes
--- over, and no rollback statement clears them. Its clear of a re-admitted tree's member, which
--- keeps its generation, leaves the given task readable beside the emptied entry_task;
--- docs/kubernetes.md's rollback section named below says what that costs.
+-- over, so a rollback that stops at or above 20261111225552_phase_entry clears none of them. Its
+-- clear of a re-admitted tree's member, which keeps its generation, leaves the given task readable
+-- beside the emptied entry_task; docs/kubernetes.md's rollback section named below says what that
+-- costs. A rollback below 20261111225552_phase_entry clears the three, by that section's statement
+-- for it: that migration's way back drops phases.entry, and the roll forward runs it again, which
+-- puts every role the earlier release handed work at entry 1 again, so a given task of entry 1
+-- from before the rollback would match its row again in the same generation of its issue.
 --
 -- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the
