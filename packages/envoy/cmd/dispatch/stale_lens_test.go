@@ -4,7 +4,7 @@
 // earlier builds with baseBuildOf, main's, the commit MAIN_BASELINE_SHA names, and the one
 // BASELINE_SHA names, and is run as
 //
-//	BASELINE_SHA=$(git merge-base origin/legion/INFRA-1150 HEAD) MAIN_BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild -timeout 30m ./cmd/dispatch/ -run '^TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress$' -count=1 -v
+//	BASELINE_SHA=<the commit of cybermonklabs/legion#4173 this branch holds> MAIN_BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild -timeout 30m ./cmd/dispatch/ -run '^TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress$' -count=1 -v
 
 package main
 
