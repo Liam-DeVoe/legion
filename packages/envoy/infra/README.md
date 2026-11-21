@@ -1374,7 +1374,10 @@ Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it wit
 inputs: `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, then `DISPATCH_SIGNIN_PASSKEY` with
 `signInPasskey`. With it Dispatch refuses a write that leaves a parent's status out of line with
 its children's, and at boot it runs the one-time fix of the parents and children that break the
-rule. The fix runs once per database, so turning the input off and on again runs nothing. Set
+rule. The fix runs once per database, so turning the input off and on again runs nothing: a
+parent and a child that came to break the rule while it was off still break it once it is on
+again, and each status move of that child is refused until a person takes the child off that
+parent or closes it (`packages/envoy/cmd/dispatch/README.md`, the fix's bullet). Set
 it only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
 the releases with the daemon's side of the rule, which send the parent-status options. Second,
 each project's instructions retry a failed root architect with a status write of `todo` alone,

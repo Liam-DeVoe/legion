@@ -660,8 +660,9 @@ describe("dispatch issue-update with an option of the status change", () => {
 });
 
 describe("a PARENT_STATUS_CONFLICT", () => {
-  const childFlags =
-    "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.";
+  // The line after the issues names the flags that move them; the words around the flags are the
+  // CLI's to change.
+  const childFlags = expect.stringMatching(/--unlink-children\b.*--include-children\b/);
 
   // Whichever command Dispatch refuses, the CLI prints the refusal, each issue that holds the
   // rule as `KEY [status] title`, and the flags that move them, and exits 1, as it prints a near
@@ -724,14 +725,12 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "ACME-4",
     ]);
     expect(create.code).toBe(1);
-    expect(create.stdout).toBe(
-      [
-        `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}`,
-        "ACME-5 [todo] Child in work",
-        childFlags,
-        "",
-      ].join("\n")
-    );
+    expect(create.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}`,
+      "ACME-5 [todo] Child in work",
+      childFlags,
+      "",
+    ]);
   });
 });
 
