@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A line that comes after its delivery's lines were written keeps that delivery's cadence: at
@@ -89,4 +92,57 @@ func (l *heldLimitRead) Wait(context.Context, string) (time.Duration, time.Time,
 	close(l.entered)
 	<-l.release
 	return 0, time.Time{}, errors.New("the test's read of the shared limit failed after its caller ended")
+}
+
+// A delivery writes its lines before it answers NATS, so a reader that sees the answer, the
+// durable's ack floor past the envelope, finds them in the log however long the log takes to write
+// a line (Intake.deliver, deliveryLines). The log here takes 500 ms to write the ERROR line of a
+// malformed envelope. At 4684370d14 the delivery answered first and wrote its lines after, so the
+// line was not in the log once the ack floor passed the envelope: main's
+// TestIntakeLogsAMalformedEnvelopePayload, which reads the log so, failed once that way under
+// -race. The control is the same envelope with a log that takes no time over that line.
+func TestADeliveryWritesItsLinesBeforeItAnswers(t *testing.T) {
+	const line = "dispatch delivery: decode envelope payload"
+	topic := contracts.GithubResourceSubject("acme", "widgets", "pr", "7")
+	for _, delay := range []time.Duration{0, 500 * time.Millisecond} {
+		t.Run("line_takes_"+delay.String(), func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			seedDeliverySettings(t, ctx, pool)
+			var buffer lockedBuffer
+			logtest.SetDefault(t, slowLine{Handler: slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelInfo}), message: line, delay: delay})
+			fake := newFakeGitHub(t)
+			natsClient := intakeTestClient(t)
+			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+			awaitBoundDurable(t, natsClient)
+
+			publishGitHubEnvelope(t, natsClient, topic, `["pr","closed"]`)
+			awaitAcknowledged(t, natsClient)
+			if !strings.Contains(buffer.String(), line) {
+				t.Errorf("the durable's ack floor passed the malformed envelope before its ERROR %q was in the log (the line takes %v to write): the delivery answered NATS before it wrote its lines; logged %s", line, delay, buffer.String())
+			}
+		})
+	}
+}
+
+// slowLine is a slog.Handler that takes delay to write a record whose message is message, as a log
+// sink under load may, and writes every other record at once.
+type slowLine struct {
+	slog.Handler
+	message string
+	delay   time.Duration
+}
+
+func (h slowLine) Handle(ctx context.Context, record slog.Record) error {
+	if record.Message == h.message {
+		time.Sleep(h.delay)
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
+func (h slowLine) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return slowLine{Handler: h.Handler.WithAttrs(attrs), message: h.message, delay: h.delay}
+}
+
+func (h slowLine) WithGroup(name string) slog.Handler {
+	return slowLine{Handler: h.Handler.WithGroup(name), message: h.message, delay: h.delay}
 }
