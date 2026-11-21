@@ -48,7 +48,7 @@ type childrenHold struct {
 	// phases row keeps as the one its worker was given for the entry the phase stands on, a start
 	// of which is written and not delivered or in whose middle its worker stands (entryWork). Each
 	// is kept as it was composed, with none of the daemon's decorations of a send, the base-merge
-	// sentence and the reviewer's round sentences (heldTask, record.PhaseRow.EntryGivenTask). The
+	// sentence and the reviewer's round sentences (task, record.PhaseRow.Given). The
 	// return starts it where the start goes back as it was held, and builds a testing task of its
 	// own where a held testing, reviewing or accepting comes back as testing (ReturnFromChildren);
 	// the start decorates either once (start).
@@ -197,30 +197,26 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // holdForChildren moves issue to awaiting_children in place of the start of to that trigger's row
-// chose for it (awaitChildren). The hold keeps the task the start would have given its worker
-// (heldTask). The notice it sends carries what the one it replaces (noticeFor) would have carried.
-// It tells no role that its phase ended: each move it holds is the completion or the move back of
-// the role it leaves, or the daemon's own move on a review it read, which leaves the reviewer that
-// has just made that review.
+// chose for it (awaitChildren). The hold keeps the task the start would have given its worker,
+// built as transition builds one (task) on a copy of issue standing in to, as it was composed,
+// with none of the decorations the start would have added, which the return's start adds once to
+// the task it gives, after the words that name the return and the children that merged
+// (ReturnFromChildren, start). So the testing task the return builds for a held testing that the
+// implementer's completion raised opens with the held task, since both are built over the
+// implementer's handoff. The release of a hold (retryPhase) holds the task the same way, built on
+// the issue it has put back in the held phase. The notice it sends carries what the one it
+// replaces (noticeFor) would have carried. It tells no role that its phase ended: each move it
+// holds is the completion or the move back of the role it leaves, or the daemon's own move on a
+// review it read, which leaves the reviewer that has just made that review.
 func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow,
 	pr *record.PullRequest, reason string, open []record.OpenChild,
 ) error {
 	replaced := noticeFor(trigger, issue.Phase, to, handoff, reason)
-	return e.awaitChildren(ctx, tx, issue, childrenHold{Start: to, Task: heldTask(issue, to, handoff, pr, reason),
+	moved := issue
+	moved.Phase = to
+	return e.awaitChildren(ctx, tx, issue, childrenHold{Start: to, Task: task(moved, handoff, pr, reason),
 		Cause: heldCause(trigger, issue.Phase, replaced, reason), Open: open,
 		Summary: replaced.Summary, Verdict: replaced.Verdict})
-}
-
-// heldTask is the task a start of to gives issue's worker, held while the parent waits on its
-// children: built as transition builds one (task), as it was composed, with none of the
-// decorations the start would have added, which the return's start adds once to the task it
-// gives, after the words that name the return and the children that merged (ReturnFromChildren,
-// start). So the testing task the return builds for a held testing that the implementer's
-// completion raised opens with the held task, since both are built over the implementer's handoff.
-// The transition's guard (holdForChildren) and the release of a hold (retryPhase) both hold it.
-func heldTask(issue record.Issue, to phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	issue.Phase = to
-	return task(issue, handoff, pr, reason)
 }
 
 // heldCause is what a start the transition's guard held was for (childrenHold.Cause): the reason
@@ -300,7 +296,7 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 //
 // Each of those tasks is held as it was composed, before the daemon decorated its send with the
 // base-merge sentence of a testing task of a parent and the reviewer's round sentences: the row
-// keeps the task that way (record.PhaseRow.EntryGivenTask), a fact of the record rather than a
+// keeps the task that way (record.PhaseRow.Given), a fact of the record rather than a
 // reading of the task's text, and the return's start decorates the task it gives once (start). A
 // row that keeps no such task for its entry in the issue's generation, as on an entry a release
 // before this one raised, has entryWork say what is held for it.

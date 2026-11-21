@@ -237,7 +237,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		// given for entry 2 in generation 1 (workflow's restart), and its start carries it.
 		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleTester, Claim: "tester", Entry: 2,
 			EntryTask: "Continue LEGION-300. Issue: LEGION-300. Phase: testing.", EntryRaisedAt: fixedNow.Add(-time.Hour),
-			EntryGivenTask: retried, EntryGivenEntry: 2, EntryGivenGeneration: 1})
+			Given: record.GivenTask{Task: retried, Entry: 2, Generation: 1}})
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), spParent, record.SuperviseRequest{Op: "start",
 				Tree: spParent, Role: claim.RoleTester, Task: retried, Generation: 1, Phase: phase.Testing, Entry: 2, ResendEntry: true}, fixedNow); err != nil {

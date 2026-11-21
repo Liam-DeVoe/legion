@@ -54,11 +54,7 @@ type roleForReader struct {
 // the stop holds accepting with no role told (StopForChildren), since the architect's notice tells
 // it. The release of a hold reads the held phase's role twice (retryPhase), for the entry that
 // phase stands on and for the restart, and a held phase is never admitted. The owner walk reads no
-// role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice). The
-// phase's resume task reads it for the start's base-merge sentence alone (Engine.resumePhaseTask,
-// through withBaseMergeRunFor in internal/workflow's effects.go), which only a testing task of a
-// parent takes, so the architect it answers at admitted and accepting leaves the task as every
-// phase but testing does.
+// role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -76,7 +72,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}:          {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 1, test: "TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:             {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
-	{file: "internal/workflow/effects.go", fn: "Engine.resumePhaseTask"}:              {calls: 1, test: "TestParentWaitsHoldsNoSlotAndComesBack"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                          {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                             {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
 	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:                  {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},

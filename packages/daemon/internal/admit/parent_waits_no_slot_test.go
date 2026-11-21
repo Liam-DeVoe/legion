@@ -36,7 +36,7 @@ const pnForwardMerge = "merge the default branch main into the branch, push, and
 // an issue with no Dispatch child carries not at all: the tester's rule for every round of a
 // parent (dispatch://INFRA-3320 R12 and R14), where a parent is an issue with a Dispatch child of
 // any status in the daemon's copy. The start of a phase worker of a parent in testing ends the
-// task it composed with it (workflow's withBaseMergeRunFor), the phase's resume task among them;
+// task it composed with it (workflow's withBaseMergeRun), the phase's resume task among them;
 // neither workflow's task nor ResumePhaseTask adds it.
 const pnBaseMerge = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
@@ -448,10 +448,11 @@ type pnTestingPath struct {
 // accepting to testing, which stands for every move back into testing, since each reaches the same
 // task call of the transition; the architect's retry of a held testing; the operator's restart of
 // the tester; a todo on a root held from testing; and the return of a held testing, with its pull
-// request open and with it merged during the wait, whose task heldTask wrote before the wait. Five
-// send ResumePhaseTask's to a tester in testing: the catch-up of a ready claim (readyWorkerTask),
-// the silence repair, the boot's resume, a re-admitted tree's promotion (StartPromotedWorker) and
-// the admission pass's send of an entry whose row names no task (sendOwedEntry's resume task).
+// request open and with it merged during the wait, whose task workflow's task wrote for the held
+// phase before the wait. Five send ResumePhaseTask's to a tester in testing: the catch-up of a
+// ready claim (readyWorkerTask), the silence repair, the boot's resume, a re-admitted tree's
+// promotion (StartPromotedWorker) and the admission pass's send of an entry whose row names no
+// task (sendOwedEntry's resume task).
 // Each is driven here through the fact or the pass the daemon drives it with: the engine handles
 // the ready, the silence and the boot as facts.
 func pnTestingPaths() []pnTestingPath {

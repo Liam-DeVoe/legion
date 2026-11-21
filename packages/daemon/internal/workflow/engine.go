@@ -1910,12 +1910,12 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // A release is a phase start like any other (dispatch://INFRA-3320 R9): a release into planning
 // through accepting of a parent whose Dispatch child is open moves it to awaiting_children instead,
-// holding the retried phase with the task the retry would have given its worker (heldTask) and the
+// holding the retried phase with the task the retry would have given its worker (task) and the
 // retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
 // then: the held reviewing goes back as testing, whatever that round came to. A retry of testing
 // tells the tester of a parent to test the head merged with its base's tip, as every testing task
 // of a parent does: the restart's start ends the task the retry composes with that sentence
-// (restart, withBaseMergeRunFor).
+// (restart, withBaseMergeRun).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a role's move back raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
@@ -1949,7 +1949,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		if !acceptedEntry(entry) {
 			return phase.AwaitingChildren, e.awaitChildren(ctx, tx, issue, childrenHold{Start: from,
-				Task: heldTask(issue, from, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
+				Task: task(issue, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
 		}
 	}
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
@@ -2187,20 +2187,6 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	waits, err := record.OpenChildWaits(ctx, tx, e.store, e.cfg.Project, members, map[string][]record.DispatchIssueRow{issue.Key: rows}, nil)
 	return waits[issue.Key].Open, err
-}
-
-// testingParent is the parent flag of a task of the phase issue stands in (withBaseMergeRunFor):
-// whether issue is a parent where that phase is testing, the one phase whose task reads the flag,
-// and false with no read of the copy for any other, so a start of another phase, the admission
-// pass's send of each owed entry among them, reads nothing more. A parent is an issue with a
-// Dispatch child of any status in the daemon's copy of Dispatch (Store.HasDispatchChildren, one
-// exists query), whether or not it ever waited on one: every testing task of a parent asks for the
-// round on the head merged with the tip of the pull request's base branch (withBaseMergeRun).
-func (e *Engine) testingParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
-	if issue.Phase != phase.Testing {
-		return false, nil
-	}
-	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
 }
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
