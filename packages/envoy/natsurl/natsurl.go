@@ -18,8 +18,13 @@
 //
 // A path, a query or a fragment with no "@" is kept: nats.go sends a websocket URL's path and
 // query in its handshake (nats.go v1.55.0 ws.go wsInitHandshake), and the daemon's configuration
-// takes a path. Like natsversion, it is a door for the daemon's module, which Go's internal rule
-// keeps out of the envoy module's internal packages.
+// takes a path.
+//
+// It also holds how a NATS client prints a connection's failure and the server it reached
+// (ConnectionClass, ConnectionError, ServerPosition): by a class of fixed words and a position,
+// never by the error's text or any part of a server's URL, for the bus, natsprobe, the load
+// generator and the daemon's connection alike. Like natsversion, it is a door for the daemon's
+// module, which Go's internal rule keeps out of the envoy module's internal packages.
 package natsurl
 
 import (

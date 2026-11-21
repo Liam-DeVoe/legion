@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -173,11 +174,11 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it once no turn runs and no claim's activity report holds it (internal/daemon's
-	// roundEnd.holding), and no answer, turn or background work holds the round past it. It is a
-	// decimal number of minutes, as `worker_silence_minutes` is, so a live proof can drive the
-	// bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
+	// can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -488,6 +489,22 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 	return cfg, nil
 }
 
+// yamlErrorLine is the line yaml.v3 names at the start of a parse error ("yaml: line 3: …").
+var yamlErrorLine = regexp.MustCompile(`^yaml: line ([0-9]+): `)
+
+// yamlParseRefusal is what a refusal of a file whose YAML does not parse says of err, yaml.v3's
+// parse error: that it does not parse, at the line the error names, and none of the error's own
+// text. yaml.v3 quotes the file's text in some of its errors (`unknown anchor '<name>'
+// referenced`, whose name, in an unquoted flow item, can be the part of a credential after a comma
+// and a `*`), so a refusal that printed the error could print a part of a secret. An error that
+// names no line, as the unknown anchor's does not, gives none.
+func yamlParseRefusal(err error) string {
+	if line := yamlErrorLine.FindStringSubmatch(err.Error()); line != nil {
+		return "the YAML does not parse at line " + line[1]
+	}
+	return "the YAML does not parse"
+}
+
 // rootMapping returns the document's root mapping, or nil for an empty file.
 func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 	if document.Kind == 0 || len(document.Content) == 0 {
@@ -720,33 +737,51 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once. An entry the NATS client would read
-// other than as written once the entries are joined with commas is refused too, with natsurl's
-// reason (natsurl.EntryRefusal: a comma, an "@" after its host, a websocket path that stops parsing
-// once decoded), and so are:
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. Each entry must be a non-empty
+// string, and an entry the NATS client would read other than as written once the entries are
+// joined with commas is refused too, with natsurl's reason (natsurl.EntryRefusal: a comma, an "@"
+// after its host, a websocket path that stops parsing once decoded), and so are:
 //
-//   - a plain (unquoted) item of a flow list, `[...]`, that carries a user name or password: YAML
-//     splits a plain flow item at every comma, so a credential holding a comma, `,nats://` among
-//     them, reaches here as two entries that each parse, and the daemon would dial the
-//     credential's head as a host and print it; a block list or a quoted item is never split;
+//   - an entry whose host and port are not written as an address the NATS client dials
+//     (dialableAuthority): one net.SplitHostPort refuses, as an IPv6 address written with a port
+//     and no brackets is, or one with a port outside 1 to 65535. Such a list loaded and failed at
+//     boot, but for an IPv6 address with a zone written that way, which the client's lookup
+//     returns as it is and the client brackets and dials; it is refused too, so it is written in
+//     brackets;
+//   - an unquoted item of a flow list, `[...]`, plain or tagged (`!!str`), that carries a user name
+//     or password: YAML splits an unquoted flow item at every comma, so a credential holding a
+//     comma, `,nats://` among them, reaches here as two entries that each parse, and the daemon
+//     would dial the credential's head as a host and print it. A block list or a quoted item is
+//     never split: a comma in one is an entry that holds the comma, refused with natsurl's
+//     CommaReason;
 //   - a list that mixes websocket (ws, wss) and other schemes, which the NATS client refuses at
 //     boot, so `legion config check` and boot refuse the same list;
-//   - a list natsurl.Check refuses (its tail rule: a later entry with a user name and none of the
-//     schemes nats, tls, ws and wss, what a comma in a quoted or block credential leaves).
+//   - a list natsurl.Check refuses: its tail rule, which at load refuses only a later entry a
+//     person wrote with a user name or password and none of the schemes nats, tls, ws and wss,
+//     since the two rules above already refuse every list a comma in a credential split.
 //
 // Every refusal names its entry by its position alone (`nats_urls entry 2`), never by any of its
 // text: a credential holding a "/", "?", "#", space or comma ends url.Parse's authority early, so
 // the entry does not parse, or parses with a part of the credential as its host, and nothing that
 // reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
-	read, err := readStrings(value, key)
-	if err != nil || read == nil {
-		return read, err
+	if value.Tag == "!!null" {
+		return nil, nil
 	}
-	flow := value.Kind == yaml.SequenceNode && value.Style&yaml.FlowStyle != 0
-	urls := make([]string, 0, len(read))
-	for index, raw := range read {
-		if flow && value.Content[index].Style == 0 && strings.Contains(raw, "@") {
+	if value.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be an array of non-empty strings", key)
+	}
+	flow := value.Style&yaml.FlowStyle != 0
+	read := make([]string, 0, len(value.Content))
+	urls := make([]string, 0, len(value.Content))
+	for index, item := range value.Content {
+		var raw string
+		if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || item.Decode(&raw) != nil || raw == "" {
+			return nil, fmt.Errorf("%s entry %d must be a non-empty string", key, index+1)
+		}
+		// The quoting bits, not Style == 0: a plain item written with an explicit tag has
+		// yaml.TaggedStyle and is split at its commas all the same.
+		if flow && item.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) == 0 && strings.Contains(raw, "@") {
 			return nil, fmt.Errorf("%s entry %d carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list", key, index+1)
 		}
 		// A comma first, so an entry that lists two servers, or a credential holding a comma, gets
@@ -754,12 +789,17 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 		if strings.Contains(raw, ",") {
 			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.CommaReason)
 		}
-		if _, err := endpointURL(raw, key); err != nil {
+		parsed, err := endpointURL(raw, key)
+		if err != nil {
 			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
 		}
 		if why := natsurl.EntryRefusal(raw); why != "" {
 			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, why)
 		}
+		if !dialableAuthority(parsed) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none", key, index+1)
+		}
+		read = append(read, raw)
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
 		}
@@ -769,11 +809,37 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 			return nil, fmt.Errorf("%s entry %d cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind", key, index+1)
 		}
 	}
-	// readStrings refuses an empty entry, so Check's position is the entry's in the file.
+	// Every entry here is a URL endpointURL took, none blank, so Check drops none and its position
+	// is the entry's in the file.
 	if _, position, why := natsurl.Check(read); why != "" {
 		return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, position, why)
 	}
 	return urls, nil
+}
+
+// dialableAuthority reports whether parsed, a nats_urls entry endpointURL read, names its host and
+// port as the NATS client dials them, reading the URL alone: nothing is looked up. The client dials
+// the URL's host and port as written (a host that is an IP address, or one whose lookup finds
+// nothing) or each address the host's lookup answers, joined with the port, adding the scheme's
+// default port where the URL names none (nats.go v1.55.0 addURLToPool and createConn), so the
+// authority must split as net.SplitHostPort splits one, an IPv6 host in brackets, and a port it
+// names must be 1 to 65535. The one form refused that the client would dial is an IPv6 address
+// with a zone, a port and no brackets: its lookup answers the address as it is, and the join
+// brackets it.
+func dialableAuthority(parsed *url.URL) bool {
+	authority, port := strings.TrimSuffix(parsed.Host, ":"), parsed.Port()
+	if port == "" {
+		// Any valid port stands in for the default the client adds.
+		authority += ":4222"
+	}
+	if _, _, err := net.SplitHostPort(authority); err != nil {
+		return false
+	}
+	if port == "" {
+		return true
+	}
+	number, err := strconv.Atoi(port)
+	return err == nil && number >= 1 && number <= 65535
 }
 
 // websocketURL reports whether raw, a nats_urls entry endpointURL accepted, names ws or wss, as the

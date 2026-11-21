@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/cipheraddr"
@@ -115,19 +116,20 @@ func answeringBroker(t *testing.T, status int, body map[string]any) string {
 }
 
 // TestNatscredPrintsNoCredential: natscred prints no part of a credential. A made-up platform token
-// (a JWT of fixed made-up claims) and a made-up DPoP key go where a person or a server could put
-// them: in a service token file that cannot be read or is empty, in a token natscred reads
-// unverified that is no JWT or names no expiry or no account, in the audience a Google identity
-// token is minted for, beside the broker's refusal of a session's trade, as the broker's access
-// token for a server that sends no nonce to sign, and as the renewed token of a reconnect the
-// closed connection refuses, beside the token it presented. No error natscred answers holds a run
-// of leakRun or more characters of any of them, and each names the file or the failure it is
-// about. natscred writes no log line, so its errors are all it prints. natscred is handed values,
-// not settings: its caller names the setting a token came from (internal/bus, credential.go), and
-// a Google identity token's read names the setting its caller hands it, never agent-secrets' own
-// AGENT_SECRETS_MACHINE_AUDIENCE, with a plain URL audience whole beside it (the control: the
-// check sees a value where one prints). The row that reads an unreadable file skips under root,
-// which reads a 0000 file.
+// (a JWT of fixed made-up claims), a made-up nkey seed, a made-up opaque token and a made-up DPoP
+// key go where a person or a server could put them: each of the three as the path of a service
+// token file, which is where a person who pasted the token itself puts it; in a service token file
+// that cannot be read or is empty, in a token natscred reads unverified that is no JWT or names no
+// expiry or no account, in the audience a Google identity token is minted for, beside the broker's
+// refusal of a session's trade, as the broker's access token for a server that sends no nonce to
+// sign, and as the renewed token of a reconnect the closed connection refuses, beside the token it
+// presented. No error natscred answers holds a run of leakRun or more characters of any of them,
+// and each names the setting, the file or the failure it is about; a file that could not be read
+// is named by its setting and the system's reason, never by its path. natscred writes no log line,
+// so its errors are all it prints. A service token file's and a Google identity token's reads name
+// the setting their caller hands them, never agent-secrets' own AGENT_SECRETS_MACHINE_AUDIENCE,
+// with a plain URL audience whole beside it (the control: the check sees a value where one
+// prints). The row that reads an unreadable file skips under root, which reads a 0000 file.
 func TestNatscredPrintsNoCredential(t *testing.T) {
 	token := madeUpToken(madeUpClaims())
 	parts := strings.Split(token, ".")
@@ -137,11 +139,17 @@ func TestNatscredPrintsNoCredential(t *testing.T) {
 	noExpiry, noAccount := madeUpToken(without(madeUpClaims(), "exp")), madeUpToken(without(madeUpClaims(), "sub"))
 	presentedToken := madeUpToken(without(madeUpClaims(), "aud"))
 	key, keyForms := madeUpKey(t)
+	seedRaw := sha256.Sum256([]byte("a made-up nkey seed pasted as a path"))
+	seed, err := nkeys.EncodeSeed(nkeys.PrefixByteUser, seedRaw[:])
+	require.NoError(t, err)
+	opaqueRaw := sha256.Sum256([]byte("a made-up opaque token pasted as a path"))
+	opaque := "madeUpOpaqueToken" + hex.EncodeToString(opaqueRaw[:])
 	credentials := append([]credential{
 		{"the made-up token", token}, {"the made-up token cut short of its signature", cut},
 		{"the made-up token with a payload that is no base64url", notBase64}, {"the made-up token with a payload that is no JSON", notJSON},
 		{"the made-up token that names no expiry", noExpiry}, {"the made-up token that names no account", noAccount},
 		{"the made-up token the connection presented", presentedToken},
+		{"the made-up nkey seed", string(seed)}, {"the made-up opaque token", opaque},
 	}, keyForms...)
 
 	dir := t.TempDir()
@@ -172,24 +180,36 @@ func TestNatscredPrintsNoCredential(t *testing.T) {
 		t.Setenv(googleidentity.MetadataHostVar, metadata.Listener.Addr().String())
 	}
 
+	// pastedPath is the row of a credential pasted where the service token file's path goes.
+	pastedPath := func(value string) func(t *testing.T) error {
+		return func(t *testing.T) error {
+			_, err := natscred.ServiceFile(value, "NATS_SERVICE_TOKEN_FILE").Read()
+			return err
+		}
+	}
+	fileUnread := []string{"NATS_SERVICE_TOKEN_FILE names a service token file that could not be read", "open: "}
+
 	for _, row := range []struct {
 		name    string
 		printed func(t *testing.T) error
 		names   []string
 	}{
+		{"a JWT-shaped token pasted as the service token file (service.go, Read)", pastedPath(token), fileUnread},
+		{"an nkey seed pasted as the service token file (service.go, Read)", pastedPath(string(seed)), fileUnread},
+		{"an opaque token pasted as the service token file (service.go, Read)", pastedPath(opaque), fileUnread},
 		{"an unreadable service token file (service.go, Read)", func(t *testing.T) error {
 			if os.Geteuid() == 0 {
 				t.Skip("root reads a 0000 file")
 			}
 			path := write("unreadable.token", token)
 			require.NoError(t, os.Chmod(path, 0))
-			_, err := natscred.ServiceFile(path).Read()
+			_, err := natscred.ServiceFile(path, "NATS_SERVICE_TOKEN_FILE").Read()
 			return err
-		}, []string{"the service token", filepath.Join(dir, "unreadable.token"), "permission denied"}},
+		}, append(fileUnread, "permission denied")},
 		{"an empty service token file (service.go, Read)", func(t *testing.T) error {
-			_, err := natscred.ServiceFile(write("empty.token", " \n")).Read()
+			_, err := natscred.ServiceFile(write("empty.token", " \n"), "NATS_SERVICE_TOKEN_FILE").Read()
 			return err
-		}, []string{"the service token", filepath.Join(dir, "empty.token"), "is empty"}},
+		}, []string{"the service token file", filepath.Join(dir, "empty.token"), "NATS_SERVICE_TOKEN_FILE", "is empty"}},
 		{"a token cut short of its signature, read for its account (expiry.go, claimsOf)", func(t *testing.T) error {
 			_, err := natscred.Identity(cut)
 			return err
@@ -258,6 +278,9 @@ func TestNatscredPrintsNoCredential(t *testing.T) {
 				require.Contains(t, printed, name, "the error does not name what it is about")
 			}
 			require.NotContains(t, printed, cipherclient.MachineAudienceVar, "the error names agent-secrets' own setting, which no caller of natscred reads")
+			if strings.Contains(printed, "could not be read") {
+				require.NotContains(t, printed, dir, "a file that could not be read is named by its setting, never its path")
+			}
 		})
 	}
 }

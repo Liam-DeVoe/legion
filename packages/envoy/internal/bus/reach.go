@@ -30,11 +30,19 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 // ErrRemoteNATS is what a connect refuses a NATS server this machine does not run with.
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
-// refuseRemoteNATS reports the first url naming another machine, unless the run opted in through
-// lookup (the connect's environment, WithEnvironment). An empty urls is nats.go's own default,
-// this machine's server, and passes. A set SOCKS5ProxyEnvVar is remote reach whatever the URLs
-// say: the proxy chooses the server a connection reaches, so a loopback URL no longer names this
-// machine's.
+// refuseRemoteNATS reports the first of urls, the list as it was configured, that names another
+// machine, unless the run opted in through lookup (the connect's environment, WithEnvironment). An
+// empty urls is nats.go's own default, this machine's server, and passes, and so does a blank
+// entry, which the connect drops (natsurl.Check). A set SOCKS5ProxyEnvVar is remote reach whatever
+// the URLs say: the proxy chooses the server a connection reaches, so a loopback URL no longer
+// names this machine's.
+//
+// The refusal names the URL by its position in urls alone (`NATS server URL 2 of 3`), never by any
+// of its text, and so does every line the bus logs about a server (serverOf, natsurl.ConnectionClass). A
+// caller splits its list on commas, so a token or password holding ",nats://" (or tls, ws or wss)
+// leaves its head a URL of its own, whose host is a piece of the credential: natsurl's tail rule
+// lets such a list through, since a later URL that carries a user name and names a NATS scheme is
+// one a person writes, and nothing that reads the head can tell it from a host.
 func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 	if allow, _ := lookup(AllowRemoteEnvVar); allow == "1" {
 		return nil
@@ -43,11 +51,11 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 		// Not the value: a proxy can be written with credentials, and this refusal is logged.
 		return fmt.Errorf("%w: %s is set, which sends every connection through a proxy that chooses the server (set %s=1 to reach it)", ErrRemoteNATS, SOCKS5ProxyEnvVar, AllowRemoteEnvVar)
 	}
-	for _, raw := range urls {
-		if LocalNATSURL(raw) {
+	for index, raw := range urls {
+		if strings.TrimSpace(raw) == "" || LocalNATSURL(raw) {
 			continue
 		}
-		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, natsURLWithoutUserinfo(raw), AllowRemoteEnvVar)
+		return fmt.Errorf("%w: NATS server URL %d of %d names another machine (set %s=1 to reach it)", ErrRemoteNATS, index+1, len(urls), AllowRemoteEnvVar)
 	}
 	return nil
 }
@@ -85,40 +93,4 @@ func LocalNATSURL(raw string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-// natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
-// that is logged, with no userinfo, query or fragment at all. nats.go authenticates with the URL's
-// userinfo (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
-// user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
-// the user name, would log a token whole; a query can hold a token a person put there. raw is read
-// as LocalNATSURL reads it. A URL with no "@" carries no userinfo and comes back as written, up to
-// its first "?" or "#". Any other comes back as nothing that preceded an "@" in it: parsed and
-// rendered without its userinfo, query and fragment when that leaves no "@", and otherwise - a URL
-// that does not parse, or one with an "@" past its authority - as what follows its last "@", up to
-// its first "?" or "#".
-func natsURLWithoutUserinfo(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if !strings.Contains(trimmed, "@") {
-		return beforeQuery(trimmed)
-	}
-	withScheme := trimmed
-	if !strings.Contains(withScheme, "://") {
-		withScheme = "nats://" + withScheme
-	}
-	if parsed, err := url.Parse(withScheme); err == nil {
-		parsed.User, parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = nil, "", false, "", ""
-		if rendered := parsed.String(); !strings.Contains(rendered, "@") {
-			return rendered
-		}
-	}
-	return beforeQuery(trimmed[strings.LastIndex(trimmed, "@")+1:])
-}
-
-// beforeQuery is text up to its first "?" or "#": a URL without its query and fragment.
-func beforeQuery(text string) string {
-	if end := strings.IndexAny(text, "?#"); end >= 0 {
-		return text[:end]
-	}
-	return text
 }

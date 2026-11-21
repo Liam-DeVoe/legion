@@ -200,19 +200,27 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // ServiceFile is the token in the file at path, read afresh at every Read: a projected Kubernetes
-// ServiceAccount token, which the kubelet rewrites in place.
-func ServiceFile(path string) TokenReader { return serviceFile(path) }
+// ServiceAccount token, which the kubelet rewrites in place. setting is what the caller read path
+// from (a variable or a flag), which a failed Read names: a file that could not be read is named
+// by setting and the system's reason alone (redact.File), never by path or by the error's own
+// text, which repeats it, since path is where a person who pasted the token itself put it. A file
+// that was read, and is empty, is named by its path too.
+func ServiceFile(path, setting string) TokenReader {
+	return serviceFile{path: path, setting: setting}
+}
 
-type serviceFile string
+type serviceFile struct {
+	path, setting string
+}
 
 func (f serviceFile) Read() (string, error) {
-	contents, err := os.ReadFile(string(f))
+	contents, err := os.ReadFile(f.path)
 	if err != nil {
-		return "", fmt.Errorf("natscred: read the service token %s: %w", string(f), err)
+		return "", fmt.Errorf("natscred: %s names a service token file that could not be read: %w", f.setting, redact.File(err))
 	}
 	token := strings.TrimSpace(string(contents))
 	if token == "" {
-		return "", fmt.Errorf("natscred: the service token %s is empty", string(f))
+		return "", fmt.Errorf("natscred: the service token file %s, which %s names, is empty", f.path, f.setting)
 	}
 	return token, nil
 }

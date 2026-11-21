@@ -2,6 +2,7 @@ package natsauth_test
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"log/slog"
 	"net"
@@ -97,11 +98,14 @@ func madeUpSeed(t *testing.T, prefix nkeys.PrefixByte, words string) (seed, publ
 
 // TestTheDaemonsNATSAuthPrintsNoSeedOrToken: the daemon's NATS connection prints no part of its
 // credential. A made-up nkey seed, a second one no server admits, an account's seed, the seed with
-// a letter mistyped and a made-up NATS token go where a person could put them, and the error of
-// each refusal of a seed (Seed, DaemonSeed, SeedFile, Connect and PublicKey: a file missing,
-// unreadable, empty, no regular file or open to others, a variable set but empty, a value that is
-// no nkey seed, a seed that is not a user's) holds no run of printedRun or more characters of any
-// of them, and names the key or variable, and the file where there is one. A seed's public key may
+// a letter mistyped, a made-up NATS token and a made-up JWT-shaped token go where a person could
+// put them, and the error of each refusal of a seed (Seed, DaemonSeed, SeedFile, Connect and
+// PublicKey: a file missing, unreadable, empty, no regular file or open to others; the seed, the
+// NATS token or the JWT-shaped token pasted where the seed file's path goes, for each of Seed,
+// DaemonSeed and SeedFile; a variable set but empty, a value that is no nkey seed, a seed that is
+// not a user's) holds no run of printedRun or more characters of any of them, and names the key or
+// variable, and the file where it was opened; a file that could not be read is named by its key or
+// variable and the system's reason, never by its path. A seed's public key may
 // print. Then every line LogEvents writes while the daemon connects to test servers and is refused
 // holds none of them either: the seed no server admits, refused until the connection closes; a
 // subscription and a publish the server refuses the admitted seed; a slow consumer's asynchronous
@@ -129,12 +133,22 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 	fragmentPassword, spacedPassword := "madeUpNatsPassword#"+tail, "madeUpNatsPassword "+tail
 	commaPassword := "madeUpNatsPassword," + tail
 	slashedToken := "madeUpNatsToken/" + tail
+	jwtHash := sha256.Sum256([]byte("a made-up JWT signature"))
+	jwtShaped := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"made-up-subject","exp":4070908800}`)) + "." +
+		base64.RawURLEncoding.EncodeToString(jwtHash[:])
+	// The head of a password holding a comma after a run of digits, which a caller that splits the
+	// list on its commas hands Connect as a URL whose port is those digits, and a piece of a server
+	// URL's path, which a person writes and nats.go keeps in the URL it reports reaching.
+	digitsHead := "8472915603918274"
+	pathPiece := "madeUpServerPathPiece" + tail[:12]
 	credentials := []printedCredential{
 		{"the made-up seed", seed}, {"the made-up seed no server admits", stranger}, {"the made-up account seed", account},
-		{"the mistyped seed", mistyped}, {"the made-up NATS token", token},
+		{"the mistyped seed", mistyped}, {"the made-up NATS token", token}, {"the made-up JWT-shaped token", jwtShaped},
 		{"the made-up password holding a /", slashedPassword}, {"the made-up password holding a ?", queryPassword},
 		{"the made-up password holding a #", fragmentPassword}, {"the made-up password holding a space", spacedPassword},
 		{"the made-up password holding a comma", commaPassword}, {"the made-up token holding a /", slashedToken},
+		{"the made-up password's digits before its comma", digitsHead}, {"the made-up piece of a server URL's path", pathPiece},
 	}
 
 	dir := t.TempDir()
@@ -181,9 +195,21 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 			names      []string
 		}{
 			{name: "a key file that is not there", printed: seedOf(missing, map[string]string{natsauth.SeedVariable: seed}),
-				names: []string{natsauth.SeedFileKey, missing, "could not be read"}},
+				names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: no such file or directory"}},
 			{name: "a key file that cannot be read", printed: seedOf(unreadable, nil), unreadable: true,
-				names: []string{natsauth.SeedFileKey, unreadable, "permission denied"}},
+				names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: permission denied"}},
+			{name: "the seed pasted as the key file", printed: seedOf(seed, nil), names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "the NATS token pasted as the key file", printed: seedOf(token, nil), names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "a JWT-shaped token pasted as the key file", printed: seedOf(jwtShaped, nil), names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "the seed pasted as the daemon's key file", printed: daemonSeedOf(seed, nil), names: []string{natsauth.DaemonSeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "the NATS token pasted as the daemon's key file", printed: daemonSeedOf(token, nil), names: []string{natsauth.DaemonSeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "a JWT-shaped token pasted as the daemon's key file", printed: daemonSeedOf(jwtShaped, nil), names: []string{natsauth.DaemonSeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "the seed pasted as the operator's seed file", printed: func() error { _, err := natsauth.SeedFile(seed); return err },
+				names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "the NATS token pasted as the operator's seed file", printed: func() error { _, err := natsauth.SeedFile(token); return err },
+				names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: "}},
+			{name: "a JWT-shaped token pasted as the operator's seed file", printed: func() error { _, err := natsauth.SeedFile(jwtShaped); return err },
+				names: []string{natsauth.SeedFileKey + " names a file that could not be read", "open: "}},
 			{name: "an empty key file", printed: seedOf(empty, nil), names: []string{natsauth.SeedFileKey, empty, "is empty"}},
 			{name: "a key file that is a directory", printed: seedOf(directory, nil),
 				names: []string{natsauth.SeedFileKey, directory, "not a regular file"}},
@@ -227,6 +253,18 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 				}
 				return err
 			}, names: []string{"the NATS nkey seed", "does not hold a valid nkey seed"}},
+			// A caller that split its list on commas hands Connect the head of a password holding
+			// a comma, a URL whose port is the password's digits: nats.go dials it, last (in order,
+			// DontRandomize), and net's error quotes the port. Connect returns the failure by its
+			// class.
+			{name: "Connect handed a list whose last server's port is a password's digits", printed: func() error {
+				conn, err := natsauth.Connect([]string{"nats://127.0.0.1:1", "nats://127.0.0.1:" + digitsHead}, "", t.Name(),
+					nats.DontRandomize(), nats.Timeout(time.Second))
+				if err == nil {
+					conn.Close()
+				}
+				return err
+			}, names: []string{"the server's address is no host and port the system can dial"}},
 			{name: "Connect handed a server URL naming the token as its user that does not parse",
 				printed: connectTo("nats://" + token + "%zz@127.0.0.1:1"), names: unparsed},
 			{name: "Connect handed a server URL whose password holds a /",
@@ -280,6 +318,9 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 					if !strings.Contains(printed, name) {
 						t.Errorf("the error %q does not name %q", printed, name)
 					}
+				}
+				if strings.Contains(printed, "could not be read") && strings.Contains(printed, dir) {
+					t.Errorf("the error %q names the path of a file that could not be read", printed)
 				}
 			})
 		}
@@ -341,12 +382,13 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 			return logged("NATS refused the daemon a permission: its NATS user lacks that grant") >= 2 && logged("NATS reported an asynchronous error") >= 1
 		})
 
-		// The token as the server URL's user name, which nats.go presents as the CONNECT's token:
+		// The token as the server URL's user name, which nats.go presents as the CONNECT's token,
+		// and a made-up piece of the URL's path, which nats.go keeps in the URL it reports reaching:
 		// one connection lost and restored, one lost and closed.
 		upstream := strings.TrimPrefix(testnats.URL(t), "nats://")
 		restoring, closing := dropProxy(t, upstream), dropProxy(t, upstream)
 		lost, restored, closed := channel(), channel(), channel()
-		reconnecting, err := natsauth.Connect([]string{"nats://" + token + "@" + restoring.addr}, "", t.Name()+" restored", nats.Timeout(5*time.Second),
+		reconnecting, err := natsauth.Connect([]string{"nats://" + token + "@" + restoring.addr + "/" + pathPiece}, "", t.Name()+" restored", nats.Timeout(5*time.Second),
 			nats.ReconnectWait(10*time.Millisecond), nats.ReconnectJitter(0, 0),
 			natsauth.LogEvents(log), signalled(channel(), lost, restored, channel()))
 		if err != nil {
@@ -373,7 +415,7 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 		}{
 			{"the refused seed's close, with the server's refusal", strings.Contains(logs, `msg="NATS connection closed" error="nats: Authorization Violation"`)},
 			{"the lost connection", logged("NATS connection lost") >= 1},
-			{"the restored connection, naming its server", strings.Contains(logs, `msg="NATS connection restored" server=`) && strings.Contains(logs, restoring.addr)},
+			{"the restored connection, naming its server by its position", strings.Contains(logs, `msg="NATS connection restored" server="1 of 1"`)},
 			{"two closes", logged("NATS connection closed") >= 2},
 		} {
 			if !want.ok {

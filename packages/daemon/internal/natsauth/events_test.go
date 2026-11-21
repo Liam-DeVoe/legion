@@ -258,7 +258,7 @@ func TestAnAsynchronousErrorIsLoggedWithItsSubscriptionSubject(t *testing.T) {
 }
 
 // A connection the network drops is logged at warn with its cause, and its reconnect at info naming
-// the server.
+// the server by its position in the servers the connection was configured with, never its URL.
 func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
 	upstream := strings.TrimPrefix(testnats.URL(t), "nats://")
 	proxy := dropProxy(t, upstream)
@@ -278,11 +278,14 @@ func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
 	logged := out.String()
 	for _, want := range []string{
 		`level=WARN msg="NATS connection lost" error=`,
-		`level=INFO msg="NATS connection restored" server=nats://` + proxy.addr + "\n",
+		`level=INFO msg="NATS connection restored" server="1 of 1"` + "\n",
 	} {
 		if strings.Count(logged, want) != 1 {
 			t.Errorf("log = %s\nwant exactly one line containing %s", logged, want)
 		}
+	}
+	if strings.Contains(logged, proxy.addr) {
+		t.Errorf("log = %s\nwant no line naming the server's address %s", logged, proxy.addr)
 	}
 }
 
