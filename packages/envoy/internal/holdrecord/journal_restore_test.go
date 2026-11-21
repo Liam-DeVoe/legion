@@ -3,7 +3,10 @@ package holdrecord_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -158,6 +161,73 @@ func restoreLogRows(t *testing.T) {
 		restored, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "restored after the release's done entry")
 		if err != nil || restored.Phase != natsgrant.OperatorPhaseReleased || restored.Gen != mismatch.RestoreGen {
 			t.Fatalf("RestoreRow of released at restore_gen %d = %+v, %v; want released at that gen", mismatch.RestoreGen, restored, err)
+		}
+	})
+
+	// lostBelowHeld is a rig whose hold is held at gen 3, written on the first replica, after which
+	// a database writer deletes the row and the log's held entry: the latest entry, which verifies,
+	// is the hold's prepare at gen 2, so a held restore of the hold would land at gen 3 again.
+	lostBelowHeld := func(t *testing.T, holdID string) (rig, *holdrecord.Client, holdrecord.Row) {
+		t.Helper()
+		r := newRig(t)
+		c := r.client(t)
+		held := hold(t, c, holdID, holdrecord.WorkflowCutover, nil)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log where gen = $1`, int64(held.Gen)); err != nil {
+			t.Fatal(err)
+		}
+		return r, c, held
+	}
+	storedAt := func(t *testing.T, r rig) (int64, string) {
+		t.Helper()
+		var gen int64
+		var phase string
+		if err := r.Pool.QueryRow(ctx, `select gen, phase from nats_hold`).Scan(&gen, &phase); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal(err)
+		}
+		return gen, phase
+	}
+
+	t.Run("a restore at or below the row the broker wrote is refused 409, and stores nothing", func(t *testing.T) {
+		// A fresh client, which has verified no row, so only the route's floor bounds the gen. Fails
+		// while the route asks no floor of a restore: the held row is stored again at gen 3, and with
+		// the log emptied Bootstrap stores released at gen 1, mid-hold.
+		r, _, held := lostBelowHeld(t, "h-restore-below")
+		fresh := r.client(t)
+		got, err := fresh.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-restore-below", "restored below the floor")
+		var refusal *holdrecord.RouteError
+		if !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("RestoreRow of held after the writer removed gen %d answered %+v, %v; want 409 below_floor", held.Gen, got, err)
+		}
+		if gen, phase := storedAt(t, r); gen != 0 {
+			t.Errorf("the refused restore stored %s at gen %d", phase, gen)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log`); err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Bootstrap(ctx); !errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("Bootstrap with the log emptied under a row the broker wrote answered %v, want 409 below_floor", err)
+		}
+		if gen, phase := storedAt(t, r); gen != 0 {
+			t.Errorf("Bootstrap with the log emptied stored %s at gen %d", phase, gen)
+		}
+	})
+
+	t.Run("RestoreRow follows restore_gen only one above the row it verified", func(t *testing.T) {
+		// The second replica has no floor for the row, so the client's own bound is all that stands:
+		// it verified held at gen 3, and the route names restore_gen 3. Fails while RestoreRow follows
+		// any restore_gen: the held row is stored again at gen 3.
+		r, c, held := lostBelowHeld(t, "h-follow-below")
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		got, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-follow-below", "restored below the client's row")
+		if !errors.Is(err, holdrecord.ErrUnknown) || !strings.Contains(err.Error(), "restore_gen") {
+			t.Errorf("RestoreRow after the client verified gen %d answered %+v, %v; want ErrUnknown naming restore_gen", held.Gen, got, err)
+		}
+		if gen, phase := storedAt(t, r); gen != 0 {
+			t.Errorf("the refused follow stored %s at gen %d", phase, gen)
 		}
 	})
 }

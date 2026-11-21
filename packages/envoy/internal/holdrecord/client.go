@@ -47,6 +47,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -72,6 +73,10 @@ type Config struct {
 // write with the configuration's SigningKey and verifies its answer against VerifyKeys.
 type Client struct {
 	cfg Config
+	// seenMu guards seenGen, the highest gen of a hold row this client has verified, read or
+	// written: the row floor it has seen, which bounds the restore_gen RestoreRow follows.
+	seenMu  sync.Mutex
+	seenGen uint64
 }
 
 // Row is the hold row. Its phase is natsgrant's type, the one the operator's grant is decided by.
@@ -231,12 +236,17 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // other gen 409 `gen_mismatch` naming that one in `restore_gen`. For a `held` row with its hold id
 // RestoreRow then signs the row afresh at `restore_gen` and sends it once more, and answers a
 // second refusal, another writer's restore between the two, as it is; for any other row it answers
-// the first as a RestoreGenError. Before it restores a `held` row it reads the hold's journal, and
-// refuses a hold that has ended, a done `hold release` or `hold abort` (ErrAlreadyDone): no command
-// is admitted after the end, so a held row restored for it would keep every client out with no
-// command left to release it. The route judges every restore by the log's latest entry, which
-// carries the row the operator signed and must verify (409 `below_floor` otherwise, read as
-// ErrUnknown). It stores held only after a prepare or held entry of the same hold id, so a hold
+// the first as a RestoreGenError. It follows `restore_gen` only when it is one above the highest
+// row gen this client has verified, read or written, and refuses any other as ErrUnknown: one at
+// or below that gen, or more than one above it, is a gen a database writer chose by the log
+// entries it deleted or added, and the operator would sign the restored row there. A client that
+// has verified no row has nothing to bound it by. Before it restores a `held` row it reads the
+// hold's journal, and refuses a hold that has ended, a done `hold release` or `hold abort`
+// (ErrAlreadyDone): no command is admitted after the end, so a held row restored for it would keep
+// every client out with no command left to release it. The route judges every restore by the log's
+// latest entry, which carries the row the operator signed and must verify, and by its floor of the
+// row, which refuses a restore at or below a row it served, read or wrote (409 `below_floor`, read
+// as ErrUnknown). It stores held only after a prepare or held entry of the same hold id, so a hold
 // that `hold abort` from `prepare` ended, which leaves no journal entry, is refused 400
 // `bad_transition` too. A `released` row, the one a completed hold left, the first row's shape
 // with no hold id, or a row lost while the hold was `prepare`, before its journal starts or after
@@ -263,9 +273,24 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 	row, err := c.restore(ctx, gen, phase, holdID, reason)
 	var mismatch *RestoreGenError
 	if phase == natsgrant.OperatorPhaseHeld && holdID != "" && errors.As(err, &mismatch) && mismatch.RestoreGen != gen {
+		if err := c.followable(mismatch.RestoreGen); err != nil {
+			return Row{}, err
+		}
 		return c.restore(ctx, mismatch.RestoreGen, phase, holdID, reason)
 	}
 	return row, err
+}
+
+// followable is whether RestoreRow follows restoreGen, the gen a route's restore refusal named:
+// only one above the highest row gen this client has verified, when it has verified one.
+func (c *Client) followable(restoreGen uint64) error {
+	c.seenMu.Lock()
+	seen := c.seenGen
+	c.seenMu.Unlock()
+	if seen == 0 || restoreGen == seen+1 {
+		return nil
+	}
+	return wrap(ErrUnknown, fmt.Sprintf("the route names restore_gen %d, and the latest hold row this client verified is at gen %d, so a restored row follows it at gen %d alone", restoreGen, seen, seen+1))
 }
 
 // Bootstrap writes the first row, `released` with no hold id at gen 1, through `POST
@@ -712,7 +737,8 @@ type rowWire struct {
 }
 
 // verifyRow is the row an answer holds, or ErrUnknown when it does not verify, comes without its
-// signature or holds a phase outside the row's three.
+// signature or holds a phase outside the row's three. A row that verifies moves the client's seen
+// gen (followable).
 func (c *Client) verifyRow(wire rowWire) (Row, error) {
 	signedAt, err := time.Parse(time.RFC3339Nano, wire.SignedAt)
 	if err != nil {
@@ -725,6 +751,9 @@ func (c *Client) verifyRow(wire rowWire) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, wrap(ErrUnknown, err.Error())
 	}
+	c.seenMu.Lock()
+	c.seenGen = max(c.seenGen, wire.Gen)
+	c.seenMu.Unlock()
 	return Row{Gen: wire.Gen, Phase: phase, HoldID: wire.HoldID, SignedAt: signedAt}, nil
 }
 

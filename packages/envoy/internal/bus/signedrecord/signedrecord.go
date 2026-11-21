@@ -238,3 +238,12 @@ func (f *Floor) Accept(gen uint64, lines []string) error {
 	}
 	return nil
 }
+
+// Reached reports whether the floor has accepted gen or a gen above it, so a record written at gen
+// now would be at or below the floor. It moves nothing: the hold's restore route asks it before it
+// writes a row at a gen of its own choosing.
+func (f *Floor) Reached(gen uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.accepted && gen <= f.gen
+}

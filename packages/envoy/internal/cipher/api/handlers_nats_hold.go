@@ -369,13 +369,14 @@ type holdRestoreBody struct {
 }
 
 // errHoldLogUnknown is a restore refused because the log's latest entry cannot be judged by: it
-// does not verify.
+// does not verify, or the log is empty under a row this broker served, read or wrote.
 var errHoldLogUnknown = errors.New("the hold log's latest entry reads as unknown")
 
 // restoreNATSHold writes the hold row while there is none, once its signature verifies, judging
 // from the log's latest entry, which must verify (restoreTrusted), whether the row may be restored
-// after it (restoreAdmitted). A latest entry that does not verify is 409 below_floor and stores
-// nothing.
+// after it (restoreAdmitted). A latest entry that does not verify, or that this broker's floor of
+// the row reads as a replay or a fork (a restore at or below the floor), is 409 below_floor and
+// stores nothing.
 func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdRestoreBody
 	if !readHoldBody(w, r, &body) {
@@ -415,23 +416,30 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeInternal(w, "restore the hold row", err)
 		return
 	}
-	// The restored row raises the floor.
+	// The restored row is one above the log's latest entry, which the floor accepted, so it raises
+	// the floor.
 	_ = s.holdRowFloor.Accept(row.Gen, holdRowLines(row))
 	writeJSON(w, http.StatusOK, holdRowAnswer(row))
 }
 
 // restoreTrusted is a restore's trust in the log's latest entry, before any gen is compared: the
 // entry must verify against BROKER_NATS_HOLD_SIGNING_KEYS, since a database writer can add or
-// change a log row but not one that verifies. An empty log, the first row's, is trusted.
+// change a log row but not one that verifies, and this broker's floor of the row must take it,
+// which refuses an entry below a row the floor has accepted (so a restore at or below the floor)
+// and another entry at the floor's gen. An empty log is trusted only by a floor that has accepted
+// nothing: under a row this broker served, read or wrote, it is a log a writer emptied.
 func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 	if latest == nil {
+		if s.holdRowFloor.Reached(1) {
+			return fmt.Errorf("%w: the log is empty, under a hold row this broker has served, read or written", errHoldLogUnknown)
+		}
 		return nil
 	}
 	lines := signedrecord.HoldRow(latest.Gen, latest.Phase, latest.HoldID, latest.SignedAt)
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, latest.Sig, lines); err != nil {
 		return fmt.Errorf("%w: the entry at gen %d: %w", errHoldLogUnknown, latest.Gen, err)
 	}
-	return nil
+	return s.holdRowFloor.Accept(latest.Gen, lines)
 }
 
 // restoreAdmitted is whether next may be restored after the log's latest entry, which verified
