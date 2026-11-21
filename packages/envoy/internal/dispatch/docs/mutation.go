@@ -660,9 +660,10 @@ func mergeUpdates(updates [][]byte) ([]byte, error) {
 // seed makes these before any check that reads the database.
 //
 // newDocumentOnly says whether a replacement makes the refusal too. False is a rule ReplaceText
-// keeps whatever document it replaces: the parse's element budget, its schema and its read-back,
-// the refusal of an ask that breaks its content rule in a text whose rendering does not read back,
-// which that read-back's refusal names instead (askRefusalInstead), and a render that fails. True
+// keeps whatever document it replaces, and refuses in the same words (textRefusalError): the
+// parse's element budget, its schema and its read-back, the refusal of an ask that breaks its
+// content rule in a text whose rendering does not read back, which that read-back's refusal names
+// instead (askRefusalInstead), and a render that fails. True
 // is one a replacement relaxes where the document it replaces holds the same already, which a new
 // document never does: a block id named on two blocks and an element this build cannot create yet
 // (pmdoc.RefusedUnlessLiveHolds), an ask that breaks its content rule and a check CI proves that
@@ -766,6 +767,26 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	return seeded.markdown, nil
 }
 
+// textRefusalError marks a refusal ReplaceText makes of its markdown alone: its parse's
+// (parseWrittenReplacing), the ask rule's refusal that the parse's read-back names instead
+// (askRefusalInstead) among them, and its render's (renderTreeWithLayout). ReplaceText answers
+// err, the refusal it marks, as it stands, in its own words and chain, without the context
+// "replace live document" it puts before every other failure of the write: a new document's
+// upload (SeedText) and the markdown round trip without new_document (SeedRendering) make the same
+// refusals of the same text in those words, and `dispatch artifact --force` takes the round trip's
+// refusal in its dry run and the upload's in its call, so the two print one refusal only where the
+// two answers are one. A repair's render refusal reaches ReplaceText as the document's own refusal
+// instead (joinedSchemaError), which carries no mark. It is used by pointer, as pmdoc's
+// unknownElementError is: two values of it compared with == compare the errors they hold, which
+// panics where those are of one type that cannot be compared.
+type textRefusalError struct {
+	err error
+}
+
+func (e *textRefusalError) Error() string { return e.err.Error() }
+
+func (e *textRefusalError) Unwrap() error { return e.err }
+
 // ReplaceText replaces the entire live document tree so connected clients
 // receive document uploads as a regular server-side transaction. The precondition names the
 // token of the version the caller believes it is replacing and is checked under the write's own
@@ -835,10 +856,12 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 				return err
 			}
 		}
+		// The parse's refusal and the render's below are refusals of the markdown alone, which
+		// the write answers in their own words (textRefusalError).
 		var target *pmdoc.Node
 		target, read, err = parseWrittenReplacing(current, markdown)
 		if err != nil {
-			return err
+			return &textRefusalError{err: err}
 		}
 		// A repair is a whole new document, held to every ask's content rule and to the bound
 		// an ask's wording shares, as RebuildDocument holds supplied markdown, and it keeps
@@ -856,7 +879,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		var offsets []pmdoc.BlockOffset
 		var layout *pmdoc.Layout
 		if canonical, offsets, layout, err = renderTreeWithLayout(target); err != nil {
-			return err
+			return &textRefusalError{err: err}
 		}
 		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
@@ -964,8 +987,15 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		return updateErr
 	})
 	// A write the document already held makes no change, and is as much a write that read its
-	// markdown back as one the fragment took.
+	// markdown back as one the fragment took. A refusal of the markdown alone is answered as it
+	// stands, as a new document's upload and the round trip answer it (textRefusalError); every
+	// other failure is named the replacement's, unless it refuses a write too large to store, which
+	// reaches its route in the bound's own words (wrapUnlessTooLarge).
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
+		var refused *textRefusalError
+		if errors.As(err, &refused) {
+			return "", refused.err
+		}
 		return "", wrapUnlessTooLarge(err, "replace live document")
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;

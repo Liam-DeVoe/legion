@@ -594,8 +594,8 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 // blocks, as a browser editor can leave it until settlement repairs it. A replacement naming c1 on
 // two blocks too is not refused the repeat, which the document holds already, and the round trip
 // without new_document answers as that replacement does. Markdown whose rendering no reader reads
-// back beside the repeat is refused that read-back by both, in the same status, code and words,
-// which the replacement's refusal prefixes with its own, where the round trip with new_document
+// back beside the repeat is refused that read-back by both, in the same status and code, the
+// replacement in the round trip's own words, where the round trip with new_document
 // refuses the repeat (roundTripRefusals). The repeat alone is stored, the second block under an
 // id the store mints (pmdoc.EnsureBlockIDs), which is the rendering the round trip answers: the
 // store keeps no text naming one id on two blocks as it is written, so a client that compares the
@@ -631,11 +631,11 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementOverARepeatedBloc
 		t.Fatalf("the round trip of the repeat beside a rendering no reader reads back, without new_document: status=%d %s=%q body=%.300s, want 400 INVALID_MARKDOWN naming the read-back, marked %q",
 			unasked.Code, contracts.TextRefusalHeader, unasked.Header().Get(contracts.TextRefusalHeader), unasked.Body.String(), contracts.TextRefusalUpload)
 	}
-	// A replacement's refusal carries the round trip's words after its own "replace live
-	// document: " (ReplaceText).
+	// A replacement's refusal of its parse is the round trip's, in the round trip's own words
+	// (ReplaceText).
 	refused := replace(misread)
 	if replacedCode, replacedMessage := refusalOf(t, refused); refused.Code != unasked.Code || replacedCode != code ||
-		!strings.HasSuffix(replacedMessage, ": "+message) {
+		replacedMessage != message {
 		t.Fatalf("the replacement over the repeat answers %d %s %q, want the round trip's %d %s %q",
 			refused.Code, replacedCode, replacedMessage, unasked.Code, code, message)
 	}

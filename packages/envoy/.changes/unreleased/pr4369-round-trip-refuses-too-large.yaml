@@ -28,7 +28,9 @@ body: |-
   the response header `Dispatch-Text-Refusal`, valued with its scope: `upload` for one every
   upload makes, and `new-document` for one only a new document's seed makes.
   No other answer of the route carries it. Its body is `{markdown, new_document}`; a body naming no
-  markdown asks about the empty text and is answered `""`, as before.
+  markdown asks about the empty text and is answered `""`, as before. An upload that replaces a
+  document and is refused for its parse or its render now gives that refusal in the same words as
+  a new document's upload and the round trip, without the `replace live document:` prefix.
 
   `POST /api/v1/markdown/file-round-trip` is new: the same answers for a file's bytes, base64 in
   `{file, new_document}`, checked as an upload checks its file part, so a file holding a NUL
