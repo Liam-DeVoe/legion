@@ -164,6 +164,13 @@ missing marker cannot tell a store before its cutover from one whose state was l
 | an open create's candidate that another principal made first, with the key's own metadata and a setting the family's create never gives and no update changes | `ErrUnexpectedConsumer`, naming the candidate and the setting. A session's registrations are refused for that session alone. The listener's own durable stops the listener at every start (`subscribe refused, shutting down`, as a refused durable does today). An accepted residual: it fails closed. The remedy is the operator's `envoy-infra consumer-names replace --listener` for the durable, and a replay of the key (`consumer-names replay`) for a session |
 | in the fixed mode, a cutover marker read answered "stream not found" (10059) by a cluster member that has not yet applied the bucket's create | read as no bucket, so no marker. A stated limit: the session bucket is created, recreated and restored only inside a writer hold, while every creator is held, and the hold's restart round waits for the stream before it releases them, so no fixed-mode reader meets that answer outside a hold |
 
+Two more stated limits. A hub whose JetStream limits set `max_request_batch` has the server fill
+`max_batch` on every pull consumer again after each correction, so the listener would send an
+update on every `Ensure` and never keep a listed consumer; envoy-infra's `gcp:ClusteredNatsHub`
+has no such input, and the deployment sets none. A refused paused candidate stays on the server
+once the operator's replay has overwritten its operation, named by no record and holding a slot
+of the stream's consumer limit, until the cutover hold's streams census removes it as an orphan.
+
 A key never written, while the sentinel is present, is a new name, and the family's first-create
 rule applies. A family can refuse that too (`Config.MissingRecord`): Dispatch's two durables, and a
 daemon's checkpoint with no record. `IsSelectionStateLost` reports the lost-state errors together.

@@ -275,8 +275,11 @@ var (
 	// ErrNoStore is a selection store that is missing: the KV bucket or the table.
 	ErrNoStore = errors.New("consumer names: the selection store is missing")
 	// ErrNoSentinel is a store whose sentinel is absent: its key holds nothing, so a lost record
-	// cannot be told from a new key. It is the one sentinel error a creator in the fixed mode may
-	// read as no marker; a sentinel key holding anything else is ErrMalformedSentinel.
+	// cannot be told from a new key. A creator in the fixed mode may read it as no marker for a
+	// Postgres store (PGStore) alone, as Dispatch and the daemons do. In the session bucket an absent
+	// sentinel, a delete or purge marker among them, is never no marker: the listener reads it as a
+	// failed read and reads again (bus.Client.ReadMarker), and only a bucket that does not exist is
+	// no marker. A sentinel key holding anything else is ErrMalformedSentinel, in either store.
 	ErrNoSentinel = errors.New("consumer names: the selection store's sentinel is missing")
 	// ErrMalformedSentinel is a store whose sentinel key holds something other than the store's own
 	// exact sentinel (decodeSentinel): another JSON document, a field this build does not know (a
