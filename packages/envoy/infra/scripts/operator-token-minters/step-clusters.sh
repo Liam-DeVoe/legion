@@ -60,6 +60,38 @@ else
   ! unchanged || pass "$step" "the project runs $clusters_text; the operator's is $CLUSTER in $OPERATOR_LOCATION"
 fi
 
+# The pool project's own clusters, when --pool-project names another project: each uses the
+# workload pool too, so it is read as another cluster of the pool (pool-clusters.tsv: name,
+# location, Google Groups for RBAC).
+: >"$WORK/pool-clusters.tsv"
+if [ -n "$POOL_PROJECT" ] && [ "$POOL_PROJECT" != "$PROJECT" ]; then
+  step="live: clusters of the pool project $POOL_PROJECT"
+  mark
+  if ! have gcloud; then
+    unknown "$step" "gcloud is not on PATH"
+  elif ! gcloud container clusters list --project="$POOL_PROJECT" --format=json --quiet >"$WORK/pool-clusters.json" 2>"$WORK/pool-clusters.err"; then
+    unknown "$step" "gcloud container clusters list --project $POOL_PROJECT was refused (it needs container.clusters.list): $(first_line "$WORK/pool-clusters.err")"
+  elif ! jq -r '.[] | [.name, .location,
+      (if .authenticatorGroupsConfig.enabled == true then "on:" + (.authenticatorGroupsConfig.securityGroup // "") else "off" end)] | @tsv' \
+    "$WORK/pool-clusters.json" >"$WORK/pool-clusters.tsv" 2>"$WORK/pool-clusters.err.jq"; then
+    unknown "$step" "gcloud container clusters list --project $POOL_PROJECT answered no JSON list: $(first_line "$WORK/pool-clusters.err.jq")"
+    : >"$WORK/pool-clusters.tsv"
+  else
+    while IFS=$'\t' read -r name location groups; do
+      PROJECT_CLUSTERS["$POOL_PROJECT/$location/$name"]=1
+      GROUPS_CONFIG["$POOL_PROJECT/$location/$name"]="$groups"
+    done <"$WORK/pool-clusters.tsv"
+    if grep -q 'did not respond' "$WORK/pool-clusters.err"; then
+      unknown "$step" "gcloud container clusters list --project $POOL_PROJECT says its list is incomplete, so a cluster in a zone that did not answer is neither read nor counted: $(grep -m 1 'did not respond' "$WORK/pool-clusters.err" | sed 's/[[:cntrl:]]/ /g')"
+    fi
+    if [ -s "$WORK/pool-clusters.tsv" ]; then
+      ! unchanged || pass "$step" "the pool project runs $(awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$WORK/pool-clusters.tsv")"
+    else
+      ! unchanged || pass "$step" "the pool project runs no cluster"
+    fi
+  fi
+fi
+
 # kube_for NAME LOCATION PROJECT: sets KUBE to a kubeconfig of this run's own for the GKE cluster;
 # returns 1 with KUBE_ERROR. The caller's own kubeconfig is never read or written.
 kube_for() {

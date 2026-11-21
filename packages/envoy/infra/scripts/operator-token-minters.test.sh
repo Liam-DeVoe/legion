@@ -159,7 +159,16 @@
 #   (ay) any other Group reads UNKNOWN where the cluster takes its groups from elsewhere: the Group
 #        ci-deployers bound to cluster-admin on a non-GKE fleet member, a Group on another cluster
 #        or a GKE fleet member with Google Groups for RBAC on, a GKE fleet member whose describe is
-#        refused, and the operator's cluster with Google Groups for RBAC on and no Group bound.
+#        refused, and the operator's cluster with Google Groups for RBAC on and no Group bound;
+#   (az) with --pool-project example-pool, that project's own cluster holding the namespace
+#        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
+#        UNKNOWN;
+#   (ba) a get-ancestors answer of [] reads UNKNOWN, and so does another cluster that lists no
+#        ServiceAccount outside its system namespaces though a binding names a subject there;
+#   (bb) a ServiceAccount a binding names that does not exist (ci/ghost, allowed to create pods in
+#        envoy-operator) is reviewed and exits 1;
+#   (bc) a copy of the script missing output.sh, or missing analysis.jq, prints "UNKNOWN run" naming
+#        it, writes that to --report, and exits 2 before any step runs.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -1850,6 +1859,94 @@ other_group_row() {
 if row ay; then
   each other_group_row member google-on google-on-member describe-refused google-on-operator
   passed "(ay) a Group other than Kubernetes' own reads UNKNOWN on a non-GKE member, where Google Groups for RBAC is on, where whether it is on is unknown, and on the operator's cluster with it on"
+fi
+
+# --- (az) The pool project's own clusters, with --pool-project naming another project. ---
+pool_row() {
+  base_world
+  case "$1" in
+    holds)
+      mkdir -p "$world/pool-clusters"
+      jq -n '[{name: "pool-cluster", location: "us-west1", status: "RUNNING"}]' >"$world/pool-clusters/example-pool.json"
+      make_cluster pool-cluster
+      echo envoy-operator >>"$world/clusters/pool-cluster/namespaces"
+      run --pool-project example-pool
+      want_status 1 "the pool project's cluster holding envoy-operator"
+      want_line "FINDING cluster:example-pool/us-west1/pool-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool example-pool.svc.id.goog" \
+        "the pool project's cluster holding envoy-operator"
+      ;;
+    refused)
+      run --pool-project other-pool
+      [ "$status" -ne 0 ] || fail "a pool project whose clusters cannot be listed: exit 0"
+      want_text "UNKNOWN live: clusters of the pool project other-pool: gcloud container clusters list --project other-pool was refused (it needs container.clusters.list)" \
+        "a pool project whose clusters cannot be listed"
+      ;;
+  esac
+}
+if row az; then
+  each pool_row holds refused
+  passed "(az) the pool project's own cluster holding envoy-operator exits 1, and a pool project whose clusters cannot be listed reads UNKNOWN"
+fi
+
+# --- (ba) Two reads that saw nothing. ---
+saw_nothing_row() {
+  base_world
+  case "$1" in
+    ancestors)
+      mkdir -p "$world/ancestors"
+      echo '[]' >"$world/ancestors/$project.json"
+      run
+      want_status 2 "a get-ancestors answer of []"
+      want_text "UNKNOWN live: who can set IAM on the ancestors of project $project: gcloud projects get-ancestors $project answered no ancestor holding the project itself" \
+        "a get-ancestors answer of []"
+      ;;
+    accounts)
+      add_cluster other-cluster us-east1
+      edit "$world/clusters/other-cluster/serviceaccounts.json" 'map(select(.namespace | test("^(kube-system|gke-.*|gmp-.*)$")))'
+      subject_grant other-cluster "$(user_subject ops-bot@example-project.iam.gserviceaccount.com)" get "" configmaps "" default ""
+      run
+      want_status 2 "another cluster listing no ServiceAccount outside its system namespaces"
+      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default" \
+        "another cluster listing no ServiceAccount outside its system namespaces"
+      ;;
+  esac
+}
+if row ba; then
+  each saw_nothing_row ancestors accounts
+  passed "(ba) a get-ancestors answer of [], and a cluster listing no ServiceAccount outside its system namespaces, each read UNKNOWN"
+fi
+
+# --- (bb) A ServiceAccount a binding names, which does not exist yet. ---
+if row bb; then
+  base_world
+  subject_grant operator-cluster "$(sa_subject ci ghost)" create "" pods "" envoy-operator ""
+  run
+  want_status 1 "a bound ServiceAccount that does not exist"
+  want_line "FINDING system:serviceaccount:ci:ghost: create pods in envoy-operator" "a bound ServiceAccount that does not exist"
+  passed "(bb) a ServiceAccount a binding names, which does not exist yet, is reviewed and exits 1"
+fi
+
+# --- (bc) A copy missing a part reads "UNKNOWN run" before any step runs. ---
+missing_part_row() {
+  local copy="$temporary_dir/copy-$1" args
+  base_world
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp "$check" "$copy/operator-token-minters.sh"
+  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+  rm "$copy/operator-token-minters/$1"
+  mapfile -t args < <(full_args)
+  status=0
+  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$copy/operator-token-minters.sh" \
+    "${args[@]}" --report "$copy/report.json" 2>&1)" || status=$?
+  want_status 2 "a copy without $1"
+  want_text "UNKNOWN run: the parts $1 of " "a copy without $1"
+  jq -e --arg p "$1" '.findings == [] and any(.unknown[]; .step == "run" and (.reason | contains($p)))' "$copy/report.json" >/dev/null 2>&1 ||
+    fail "a copy without $1: the report does not hold the UNKNOWN run: $(cat "$copy/report.json" 2>&1)"
+}
+if row bc; then
+  each missing_part_row output.sh analysis.jq
+  passed "(bc) a copy missing output.sh or analysis.jq prints UNKNOWN run naming it, reports it, and exits 2"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

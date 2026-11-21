@@ -51,13 +51,17 @@ read_other_cluster() {
     accounts=$((accounts + 1))
     sa_record "$ns" "$name" >>"$WORK/principals.rec"
   done 3<"$WORK/serviceaccounts.rec"
-  namespace_groups
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
+  namespace_groups
   groups_verdict "$cstep" "$groups_mode"
   masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
   named_rights
   guard_rights="$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$NAMED_RIGHTS")"
+  # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
+  # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
+  [ "$accounts" -gt 0 ] ||
+    unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default, so its list cannot be read as whole"
   if [ "$((accounts + BOUND))" -eq 0 ]; then
     unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject to review, so there is no principal to review"
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
@@ -98,6 +102,23 @@ else
     read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
   done 5<"$WORK/clusters.tsv"
 fi
+
+# The projects of the clusters read here other than --project (the pool project's, a fleet GKE
+# member's), whose own IAM the step after this one reads.
+declare -A OTHER_PROJECTS=()
+
+# The pool project's own clusters, when --pool-project names another project (live: clusters of the
+# pool project): each uses the pool, as the project's other clusters do.
+while IFS=$'\t' read -r -u 5 cluster location _; do
+  OTHER_PROJECTS[$POOL_PROJECT]=1
+  label="$POOL_PROJECT/$location/$cluster"
+  cstep="live: Workload Identity on $label"
+  if ! kube_for "$cluster" "$location" "$POOL_PROJECT"; then
+    unknown "$cstep" "$KUBE_ERROR"
+    continue
+  fi
+  read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
+done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
 # page, as records in $WORK/fleet.rec: `unreachable` and the locations the listing could not reach,
@@ -164,9 +185,7 @@ elif ! fleet_memberships; then
   unknown "$step" "$FLEET_ERROR"
 else
   fleet_f="${#FINDINGS[@]}" fleet_u="${#UNKNOWNS[@]}" members=0 own=0 above=0 here=0
-  # The projects of the GKE members read here other than --project, whose IAM the step after this
-  # one reads.
-  declare -A OTHER_PROJECTS=()
+  # A GKE member read here in a project other than --project adds to OTHER_PROJECTS.
   while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
     if [ "$what" = unreachable ]; then
       unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"

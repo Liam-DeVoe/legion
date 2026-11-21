@@ -49,17 +49,29 @@ case "${words[*]}" in
     fi
     ;;
   "container clusters list")
-    [ "${flag[project]:-}" = "$project" ] || { echo "fake gcloud: clusters list of project ${flag[project]:-none}" >&2; exit 2; }
+    # The world's project's clusters, or another project's from pool-clusters/<project>.json; a
+    # project the world holds no clusters for is refused, as GKE refuses one the caller cannot read.
+    if [ "${flag[project]:-}" != "$project" ]; then
+      [ -e "$world/pool-clusters/${flag[project]:-}.json" ] ||
+        refuse container.clusters.list "Required \"container.clusters.list\" permission(s) for \"projects/${flag[project]:-}\"."
+      cat "$world/pool-clusters/${flag[project]:-}.json"
+      exit 0
+    fi
     [ ! -e "$world/refuse-clusters" ] || refuse container.clusters.list "Required \"container.clusters.list\" permission(s) for \"projects/$project\"."
     [ ! -e "$world/missing-zones" ] || echo "WARNING: The following zones did not respond: us-west1-b. List results may be incomplete." >&2
     cat "$world/clusters.json"
     ;;
   "container clusters get-credentials "*)
-    # A cluster of the project's own list, or a GKE member of the fleet, in the project named.
+    # A cluster of the project's own list, of another project's list, or a GKE member of the fleet,
+    # in the project named.
     cluster="${words[3]}"
-    jq -e --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" --slurpfile fleet "$world/fleet.json" \
-      '($p == $project and any(.[]; .name == $c and .location == $l))
-       or any($fleet[0].memberships[]; .gke == {project: $p, location: $l, cluster: $c})' "$world/clusters.json" >/dev/null ||
+    others="$world/pool-clusters/${flag[project]:-}.json"
+    [ -e "$others" ] || others=/dev/null
+    jq -e -n --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" \
+      --slurpfile fleet "$world/fleet.json" --slurpfile clusters "$world/clusters.json" --slurpfile others "$others" \
+      '($p == $project and any($clusters[0][]; .name == $c and .location == $l))
+       or any(($others[0] // [])[]; .name == $c and .location == $l)
+       or any($fleet[0].memberships[]; .gke == {project: $p, location: $l, cluster: $c})' >/dev/null ||
       { echo "ERROR: (gcloud.container.clusters.get-credentials) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
     [ ! -e "$world/refuse-credentials-$cluster" ] ||
       refuse container.clusters.get-credentials "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."

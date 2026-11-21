@@ -43,6 +43,9 @@ for anc_project in "${ancestor_projects[@]}"; do
     >"$WORK/ancestors.list" 2>"$WORK/ancestors.err"; then
     unknown "$step" "gcloud projects get-ancestors $anc_project answered no JSON list: $(first_line "$WORK/ancestors.err")"
     continue
+  elif ! jq -e --arg p "$anc_project" 'any(.[]; .type == "project" and .id == $p)' "$WORK/ancestors.json" >/dev/null 2>&1; then
+    unknown "$step" "gcloud projects get-ancestors $anc_project answered no ancestor holding the project itself, though a real answer always does, so it saw nothing"
+    continue
   elif [ ! -s "$WORK/ancestors.list" ]; then
     pass "$step" "the project has no folder or organization above it"
     continue

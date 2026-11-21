@@ -61,8 +61,8 @@ else
   while IFS= read -r bound; do
     printf 'serviceAccount:%s\x1f%s\x1fsystem:authenticated\n' "$bound" "$bound" >>"$WORK/principals.rec"
   done < <(printf '%s\n' ${seen_accounts[@]+"${!seen_accounts[@]}"} | sed '/^$/d' | sort)
-  namespace_groups
   bound_subjects "$KUBE" || unknown "$step" "$BOUND_ERROR"
+  namespace_groups
   # Groups that are not Kubernetes' own, judged by where this cluster takes its groups from, and
   # every binding of system:masters but the bootstrap one.
   groups_verdict "$step" "${GROUPS_CONFIG["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
@@ -71,6 +71,10 @@ else
   # and user by name, and escalate, bind, update or patch each role bound to a reviewed principal.
   named_rights
   rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
+  # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
+  # namespaces is not the cluster's whole list.
+  [ "$accounts" -gt 0 ] ||
+    unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default, so its list cannot be read as whole"
   if [ "$((accounts + ${#seen_accounts[@]} + BOUND))" -eq 0 ]; then
     unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject, so there is no principal to review"
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights"; then

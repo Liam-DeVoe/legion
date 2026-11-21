@@ -52,7 +52,9 @@
 #                     list's one cluster of that name; a name the list holds more than once with no
 #                     --location is UNKNOWN, and no cluster of that name is read as the operator's or
 #                     as another. A list gcloud says is incomplete (a zone that did not respond) is
-#                     UNKNOWN: a cluster there is neither read nor counted.
+#                     UNKNOWN: a cluster there is neither read nor counted. With --pool-project
+#                     naming another project, that project's own clusters are listed too, and read
+#                     as other clusters of the pool; a refused or incomplete list is UNKNOWN.
 #   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
 #                     the principals being every ServiceAccount outside the system namespaces
 #                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
@@ -151,7 +153,8 @@
 #   live: IAM on      For each folder and organization above --project, the pool project and each
 #     ancestors       fleet member's project (`gcloud projects get-ancestors`), Policy Analyzer's
 #                     holders of its setIamPolicy, and of the organization's iam.roles.update: each
-#                     can grant itself any role below it.
+#                     can grant itself any role below it. An answer that does not hold the project
+#                     itself, as a real one always does, is UNKNOWN.
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
 #                     get on the Secret --db-secret (a SubjectAccessReview for each principal of the
@@ -174,7 +177,10 @@
 # service account, and a User that is no email (a bare name such as deployer-bot, a principal://
 # name), are reviewed and can be findings. A person's User subject is never reviewed, so never a
 # finding, as iam_verdict never makes a `user:` member one and the accepted list names no person.
-# A refused list of bindings is UNKNOWN, naming the permission.
+# A ServiceAccount a binding names is reviewed whether it exists or not: whoever can make it and a
+# pod in its namespace takes the binding's rights. On every cluster a ServiceAccount list that holds
+# none outside the system namespaces is UNKNOWN, since every cluster has default/default. A refused
+# list of bindings is UNKNOWN, naming the permission.
 #
 # Group and User subjects. Kubernetes' own groups take their members from Kubernetes, whatever
 # Google Groups for RBAC says: system:authenticated, system:serviceaccounts and
@@ -217,8 +223,10 @@
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,
 # each naming its step and why, such as the permission the running identity lacks; also a usage
-# error, and a run that stops before its end (a command failing under set -e), which prints the
-# UNKNOWN `run` and writes it to --report. --report is deleted when the run starts, so a report is
+# error, a copy of the script missing a part or a jq file of operator-token-minters/ (checked before
+# any is sourced), and a run that stops before its end (a command failing under set -e), each of
+# which prints the UNKNOWN `run` and writes it to --report (a usage error writes none). --report is
+# deleted when the run starts, so a report is
 # this run's or none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal",
 # "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]} beside
 # the text, run_at being when the run began. `right` is the sentence the text prints; the rest are
@@ -396,6 +404,24 @@ mkdir -p "$WORK/kube" "$WORK/roles"
 # this script, sourced here so that all of them share this run's state; a part's large jq programs
 # are .jq files there, read with jq -f.
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
+# Every part and jq file must be readable before any is sourced: a missing one would stop the run
+# before output.sh defines its report, or leave a step that needs it unread.
+missing=""
+for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
+  step-clusters.sh reviews.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh step-workload-identity.sh step-live-iam.sh \
+  step-admin-tag.sh analysis.jq become-rights.jq code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq \
+  guard-rights.jq named-rights.jq rec.jq review-answer.jq review-request.jq; do
+  [ -r "$LIB/$part" ] || missing="${missing:+$missing, }$part"
+done
+if [ -n "$missing" ]; then
+  reason="the parts $missing of $LIB cannot be read, so no step runs"
+  echo "UNKNOWN run: $reason"
+  [ -z "$REPORT" ] ||
+    jq -n --arg run_at "$RUN_AT" --arg reason "$reason" '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}]}' >"$REPORT"
+  echo "operator-token-minters: no step ran, 1 unknown: exit 2"
+  FINISHED=true
+  exit 2
+fi
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/output.sh
 . "$LIB/output.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/rights.sh

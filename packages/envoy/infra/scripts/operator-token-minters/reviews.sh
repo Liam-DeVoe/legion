@@ -157,33 +157,45 @@ custom_rights() {
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject
-# does not allow, with system:authenticated (system:anonymous with system:unauthenticated), and each
-# Group subject that is one of Kubernetes' own (own_group), alone. A person's User subject, a Group
-# subject that is not Kubernetes' own (groups_verdict judges those) and system:masters
-# (masters_bindings) are left out, and so is a ServiceAccount subject. Sets BOUND to how many it
-# added, and BINDINGS_OK to whether $WORK/bindings.json holds this cluster's bindings; returns 1 with
-# BOUND_ERROR when the API server refused the list or answered no JSON.
+# does not allow, with system:authenticated (system:anonymous with system:unauthenticated), each
+# Group subject that is one of Kubernetes' own (own_group), alone, and each ServiceAccount subject,
+# whether it exists or not, with its groups (a system namespace's as a seed). A person's User
+# subject, a Group subject that is not Kubernetes' own (groups_verdict judges those) and
+# system:masters (masters_bindings) are left out. Sets BOUND to how many it added, and BINDINGS_OK to
+# whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
+# server refused the list or answered no JSON.
 bound_subjects() {
-  local kind name label
+  local kind ns name label
   local -A held=()
   BOUND=0 BOUND_ERROR="" BINDINGS_OK=false
   if ! kubectl --kubeconfig "$1" get clusterrolebindings,rolebindings --all-namespaces -o json >"$WORK/bindings.json" 2>"$WORK/bindings.err"; then
     BOUND_ERROR="the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings, container.clusterRoleBindings.list and container.roleBindings.list on GKE): $(first_line "$WORK/bindings.err")"
     return 1
   fi
-  if ! jq -r "$JQ_REC"'[.items[]?.subjects[]? | select(.kind == "User" or .kind == "Group") | [.kind, .name]] | unique[] | rec' \
+  if ! jq -r "$JQ_REC"'[.items[]? | (.metadata.namespace // "") as $bns | .subjects[]?
+      | select(.kind == "User" or .kind == "Group" or .kind == "ServiceAccount")
+      | [.kind, (if .kind == "ServiceAccount" then (.namespace // $bns) else "" end), .name]] | unique[] | rec' \
     "$WORK/bindings.json" >"$WORK/bindings.rec" 2>"$WORK/bindings.err"; then
     BOUND_ERROR="the API server's list of bindings is not JSON: $(first_line "$WORK/bindings.err")"
     return 1
   fi
   BINDINGS_OK=true
   while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
-  while IFS="$US" read -r -u 7 kind name; do
+  while IFS="$US" read -r -u 7 kind ns name; do
     if [ "$kind" = Group ]; then
       own_group "$name" || continue
       [ -z "${held[group:$name]:-}" ] || continue
       held[group:$name]=1
       printf 'group:%s\x1f\x1f%s\n' "$name" "$name" >>"$WORK/principals.rec"
+      BOUND=$((BOUND + 1))
+      continue
+    fi
+    # A ServiceAccount a binding names is reviewed whether or not it exists yet: whoever can make it
+    # and a pod in its namespace takes the binding's rights. A system namespace's is a seed.
+    if [ "$kind" = ServiceAccount ]; then
+      [ -z "${held[system:serviceaccount:$ns:$name]:-}" ] && [ -z "${held[seed:system:serviceaccount:$ns:$name]:-}" ] || continue
+      held[system:serviceaccount:$ns:$name]=1
+      if system_namespace "$ns"; then sa_record "$ns" "$name" seed:; else sa_record "$ns" "$name"; fi >>"$WORK/principals.rec"
       BOUND=$((BOUND + 1))
       continue
     fi
@@ -200,15 +212,17 @@ bound_subjects() {
     BOUND=$((BOUND + 1))
   done 7<"$WORK/bindings.rec"
 }
-# namespace_groups: Kubernetes' own groups, each reviewed alone and added to $WORK/principals.rec:
-# system:authenticated, system:serviceaccounts, and system:serviceaccounts:<namespace> for the
-# namespace of each reviewed ServiceAccount outside the system namespaces (a system namespace's
-# ServiceAccounts are seeds, reviewed with that group). A binding to one reaches every member
-# Kubernetes gives it, whatever Google Groups for RBAC says. Sets GROUPS_ADDED.
+# namespace_groups: Kubernetes' own groups, each reviewed alone and added to $WORK/principals.rec
+# when the file does not hold it: system:authenticated, system:serviceaccounts, and
+# system:serviceaccounts:<namespace> for the namespace of each reviewed ServiceAccount outside the
+# system namespaces, a bound one too (a system namespace's ServiceAccounts are seeds, reviewed with
+# that group). A binding to one reaches every member Kubernetes gives it, whatever Google Groups for
+# RBAC says. Sets GROUPS_ADDED.
 namespace_groups() {
   local group
   GROUPS_ADDED=0
   while IFS= read -r group; do
+    grep -qxF -- "group:$group" < <(cut -d"$US" -f1 "$WORK/principals.rec") && continue
     printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
     GROUPS_ADDED=$((GROUPS_ADDED + 1))
   done < <({
