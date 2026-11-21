@@ -1147,7 +1147,15 @@ func TestLoadRefuses(t *testing.T) {
 			name: "nats_urls entry whose password holds a comma",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				withNATSPassword("madeUpNatsPassword,abc", "127.0.0.1:4222"), 1),
-			want: `nats_urls entry 1 cannot be read: it holds a comma, where the NATS client splits its list of servers, so it can never connect; write a comma in a credential percent-encoded (%2C)`,
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// Two servers in one entry: before, the entry loaded and the NATS client split it, and it
+			// is refused with the comma's reason, which says how to list them.
+			name: "nats_urls entry that lists two servers",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222,nats://127.0.0.1:4223"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
 		},
 		{
 			name: "nats_urls entry naming a token that holds a / as its user",

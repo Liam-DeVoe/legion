@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// listening is the address of a loopback listener that takes connections and answers none, closed
+// when t ends: a client reaches what it does once connected, a websocket handshake among them.
+func listening(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().String()
+}
 
 // printedRun is the shortest run of a credential's characters no printed text may hold: the run
 // the TypeScript clients' scrub withholds (@legion/contracts/held-secrets, SCRUB_RUN).
@@ -201,12 +214,17 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 				printed: connectTo("nats://legion:" + spacedPassword + "@127.0.0.1:1"), names: unparsed},
 			{name: "Connect handed a server URL whose password holds a comma",
 				printed: connectTo("nats://legion:" + commaPassword + "@127.0.0.1:1"),
-				names:   []string{"the NATS server URL 1 of 1 cannot be read", "it holds a comma"}},
+				names:   []string{"the NATS server URL 1 of 1 cannot be read", "it holds a comma", "list each server as its own nats_urls entry"}},
 			{name: "Connect handed a server URL naming a token that holds a / as its user",
 				printed: connectTo("nats://" + slashedToken + "@127.0.0.1:1"),
 				names:   []string{"the NATS server URL 1 of 1 cannot be read", `an "@" stands after its host`}},
 			{name: "Connect handed a server URL that does not parse with the token in its query",
 				printed: connectTo("nats://127.0.0.1:1/%zz?token=" + token), names: unparsed},
+			// A listener that takes the connection, so nats.go reaches its websocket handshake, as it
+			// does against a server, where the handshake's parse error quotes the URL it rebuilt.
+			{name: "Connect handed a websocket URL with the token in its query whose path stops parsing once decoded",
+				printed: connectTo("ws://" + listening(t) + "/%25zz?token=" + token),
+				names:   []string{"the NATS server URL 1 of 1 cannot be read", "does not parse once decoded", "%2525"}},
 			{name: "PublicKey of the token", printed: func() error { _, err := natsauth.PublicKey(token); return err },
 				names: []string{"the NATS nkey seed", "does not hold a valid nkey seed"}},
 			{name: "PublicKey of an account's seed", printed: func() error { _, err := natsauth.PublicKey(account); return err },
