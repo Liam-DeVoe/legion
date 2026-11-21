@@ -55,10 +55,7 @@ gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submit
 
 ## Side reviews
 
-A controller can name you the side reviewer of a pull request no Legion tree opened, at one head. Review that head as this page says, then:
-
-1. Post your findings as a `COMMENT` review; it decides nothing.
-2. `envoy_publish` `approve` or `changes`, with the pull request and the head you read, to the controller's role topic (its message's `reply_role`).
+A controller can name you side reviewer of a pull request no Legion tree opened, at one head. Review it as above, post a `COMMENT` review, and `envoy_publish` `approve` or `changes`, with the pull request and head, to the controller's role topic (`reply_role`).
 
 ## The production check after the close
 
