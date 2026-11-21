@@ -130,119 +130,6 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	return execWrapped("legion jj", next, words, withVariable(env, wrappedJJStepped, jjStepped(words)), nil, stderr)
 }
 
-// jjPush is a jj command line as legion jj reads it (readJJPush).
-type jjPush struct {
-	args []string
-	// push is whether the command's subcommand pair is `git push`.
-	push bool
-	// leave is whether a push runs no step: one that sends nothing (--dry-run, -h, --help), or
-	// one at an earlier operation (--at-op, --at-operation).
-	leave bool
-	// options are the words of the caller's -R/--repository, --config, --config-file and
-	// --config-toml, each with its value, in the order written: what every command of the step
-	// carries first, so it reads the repository and the configuration the push reads.
-	options []string
-	// pushOnly are the indexes of the words that stay on the real push alone: --quiet, --debug,
-	// --no-integrate-operation, --ignore-immutable, and --color with its value.
-	pushOnly map[int]bool
-	// revisions are the push's revision arguments, in order.
-	revisions []jjRevision
-}
-
-// jjRevision is one revision argument of a push: the value of -c/--change or
-// -r/--revision/--revisions, or the revision of --named <name>=<revision>, which is the word at
-// index from offset on. jj itself resolves it (jjStep.readRevisions).
-type jjRevision struct{ index, offset int }
-
-// jjGlobalValues are jj's global options whose value may be the next word: the list of the pod's
-// wrapper (packages/daemon/docker/jj), which finds the subcommand pair past them.
-var jjGlobalValues = []string{"-R", "--repository", "--at-operation", "--at-op", "--color", "--config", "--config-file", "--config-toml"}
-
-// jjPushValues are jj's global options and `jj git push`'s own whose value may be the next word.
-var jjPushValues = slices.Concat(jjGlobalValues, []string{"--remote", "-b", "--bookmark", "-t", "--tag", "-r", "--revision", "--revisions", "-c", "--change", "--named", "-o", "--option"})
-
-// readJJPush reads args, a jj command line. It finds the subcommand pair as the pod's wrapper
-// (packages/daemon/docker/jj) finds it: the first two words that are no option and no option's
-// value, jj's global options being the ones that take one. Past the pair it reads `git push`'s
-// options too, and each revision argument (jjRevision). An option takes its value as the next
-// word, after `=` (`--change=X`, `-c=X`), or attached to a short name (`-cX`), as clap reads each.
-func readJJPush(args []string) jjPush {
-	p := jjPush{args: args, pushOnly: map[int]bool{}}
-	var pair []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		values := jjGlobalValues
-		if len(pair) == 2 {
-			values = jjPushValues
-		}
-		name, offset, option := jjOption(arg, values)
-		if !option {
-			switch arg {
-			case "--dry-run", "-h", "--help":
-				p.leave = true
-			case "--quiet", "--debug", "--no-integrate-operation", "--ignore-immutable":
-				p.pushOnly[i] = true
-			default:
-				if !strings.HasPrefix(arg, "-") && len(pair) < 2 {
-					pair = append(pair, arg)
-				}
-			}
-			continue
-		}
-		first, at := i, i
-		if offset < 0 {
-			if i+1 == len(args) {
-				break
-			}
-			i++
-			at, offset = i, 0
-		}
-		switch name {
-		case "-R", "--repository", "--config", "--config-file", "--config-toml":
-			p.options = append(p.options, args[first:at+1]...)
-		case "--at-operation", "--at-op":
-			p.leave = true
-		case "--color":
-			for j := first; j <= at; j++ {
-				p.pushOnly[j] = true
-			}
-		case "-c", "--change", "-r", "--revision", "--revisions":
-			p.revisions = append(p.revisions, jjRevision{index: at, offset: offset})
-		case "--named":
-			if eq := strings.IndexByte(args[at][offset:], '='); eq >= 0 {
-				p.revisions = append(p.revisions, jjRevision{index: at, offset: offset + eq + 1})
-			}
-		}
-	}
-	p.push = len(pair) == 2 && pair[0] == "git" && pair[1] == "push"
-	return p
-}
-
-// jjOption reads arg as one of the options among values, by its name: the name, and the offset
-// in arg of the value it holds itself (`--name=value`, `-Xvalue`, `-X=value`), or -1 when its
-// value is the next word.
-func jjOption(arg string, values []string) (name string, offset int, ok bool) {
-	for _, value := range values {
-		switch {
-		case arg == value:
-			return value, -1, true
-		case strings.HasPrefix(value, "--"):
-			if strings.HasPrefix(arg, value+"=") {
-				return value, len(value) + 1, true
-			}
-		case strings.HasPrefix(arg, value):
-			if arg[len(value)] == '=' {
-				return value, len(value) + 1, true
-			}
-			return value, len(value), true
-		}
-	}
-	return "", 0, false
-}
-
-// steps is whether the command is a push the step runs before.
-func (p jjPush) steps() bool { return p.push && !p.leave }
-
 // withRevisions is the command's words with each revision argument that names a commit that no
 // longer stands for itself (jjFollowed) written so that it names the commit that does in its
 // place. Of the commits jj resolved the argument to (revisionCommits, jjStep.readRevisions), those
@@ -418,15 +305,9 @@ func (s *jjStep) readRevisions() error {
 	if len(hidden) == 0 {
 		return nil
 	}
-	read, err := s.read(jjChanges(hidden))
+	visible, err := s.visible(hidden)
 	if err != nil {
 		return err
-	}
-	visible := map[string][]jjCommitRead{}
-	for _, c := range read {
-		if !c.hidden {
-			visible[c.change] = append(visible[c.change], c)
-		}
 	}
 	for _, commits := range s.revisionCommits {
 		for _, f := range commits {
@@ -726,7 +607,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 		// A hidden commit's change can already have a visible commit that replaced it, which
 		// names it in jj evolog as the commit the metaedit makes will: the one visible before is
 		// not this step's.
-		var before map[string][]string
+		var before map[string][]jjCommitRead
 		if len(hidden) > 0 {
 			var err error
 			if before, err = s.visible(hidden); err != nil {
@@ -827,7 +708,7 @@ func (s *jjStep) existing(made string, commits []*jjFollowed) (*jjFollowed, erro
 // replaced it (successor), and has moved. A commit that was hidden already and that the metaedit
 // did not name stays as it is. before is what s.visible read of the changes of in's hidden
 // commits ahead of the metaedit.
-func (s *jjStep) advance(in map[string]bool, before map[string][]string) error {
+func (s *jjStep) advance(in map[string]bool, before map[string][]jjCommitRead) error {
 	var moving []*jjFollowed
 	var changes []string
 	for _, f := range s.followed {
@@ -849,7 +730,7 @@ func (s *jjStep) advance(in map[string]bool, before map[string][]string) error {
 	successors := map[string]string{}
 	for _, f := range moving {
 		now := visible[f.change]
-		if slices.Contains(now, f.commit) {
+		if slices.ContainsFunc(now, func(c jjCommitRead) bool { return c.commit == f.commit }) {
 			f.hidden = false
 			continue
 		}
@@ -873,25 +754,27 @@ func (s *jjStep) advance(in map[string]bool, before map[string][]string) error {
 // commits of old's change: the one there is, or, where the change is divergent, the one whose
 // `jj evolog` names old second. Where several do, it is the one the step's own metaedit made, the
 // one not among before. It is "" when no single commit replaced old.
-func (s *jjStep) successor(old string, visible, before []string) (string, error) {
+func (s *jjStep) successor(old string, visible, before []jjCommitRead) (string, error) {
 	switch len(visible) {
 	case 0:
 		return "", nil
 	case 1:
-		return visible[0], nil
+		return visible[0].commit, nil
 	}
 	var named []string
-	for _, commit := range visible {
-		out, err := s.jj(s.env, "--color=never", "evolog", "-r", commit, "--no-graph", "-n", "2", "-T", `commit.commit_id() ++ "\0"`)
+	for _, c := range visible {
+		out, err := s.jj(s.env, "--color=never", "evolog", "-r", c.commit, "--no-graph", "-n", "2", "-T", `commit.commit_id() ++ "\0"`)
 		if err != nil {
 			return "", err
 		}
 		if entries := strings.Split(out, "\x00"); len(entries) > 1 && entries[1] == old {
-			named = append(named, commit)
+			named = append(named, c.commit)
 		}
 	}
 	if len(named) > 1 {
-		named = slices.DeleteFunc(named, func(commit string) bool { return slices.Contains(before, commit) })
+		named = slices.DeleteFunc(named, func(commit string) bool {
+			return slices.ContainsFunc(before, func(c jjCommitRead) bool { return c.commit == commit })
+		})
 	}
 	if len(named) == 1 {
 		return named[0], nil
@@ -913,16 +796,17 @@ func (s *jjStep) follow(c jjCommitRead, arg bool) *jjFollowed {
 	return f
 }
 
-// visible is the visible commits of each of changes, by change id.
-func (s *jjStep) visible(changes []string) (map[string][]string, error) {
+// visible is the visible commits of each of changes, by change id, each read with
+// jjCommitTemplate (read).
+func (s *jjStep) visible(changes []string) (map[string][]jjCommitRead, error) {
 	commits, err := s.read(jjChanges(changes))
 	if err != nil {
 		return nil, err
 	}
-	visible := map[string][]string{}
+	visible := map[string][]jjCommitRead{}
 	for _, c := range commits {
 		if !c.hidden {
-			visible[c.change] = append(visible[c.change], c.commit)
+			visible[c.change] = append(visible[c.change], c)
 		}
 	}
 	return visible, nil
