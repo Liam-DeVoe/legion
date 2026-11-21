@@ -40,9 +40,10 @@ jobs:
     # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
     # where cmd/listener took 785 s here (run 43875539224), so the sum stands. Each forced-order
     # step then compiles a hooked nats-server and the packages above it under the detector again,
-    # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66 in
-    # all.
-    timeout-minutes: 75
+    # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each; the
+    # listener's and consumernames' rows add their own race test binaries to each step's compile,
+    # 10 minutes more apiece, so 86 in all.
+    timeout-minutes: 95
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -81,10 +82,10 @@ jobs:
       # environment variable: check-ci-filters.sh reduces no go command of a job one of whose
       # steps sets a GO* name.
       - name: Forced-order tests on the hooked nats-server the module links
-        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./internal/bus/
+        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
-        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/ ./internal/bus/
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

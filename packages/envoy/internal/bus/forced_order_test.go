@@ -51,6 +51,7 @@ const (
 // under test, and a plain connection of the test's own.
 type forcedRig struct {
 	srv       *testnats.Server
+	uri       string
 	hooks     *testnats.Hooks
 	owner     *Client
 	consumers *SessionConsumers
@@ -61,7 +62,7 @@ type forcedRig struct {
 // (natsversion.Refusal: every 2.10, v2.10.29 among them) no session consumer can exist, at this
 // build or the one before it, so no creation site of the family can meet a held write there: the
 // row confirms that the connection is refused for that reason, and skips. A skip is no pass.
-func newForcedRig(t *testing.T) *forcedRig {
+func newForcedRig(t *testing.T, ownerOptions ...ConnectOption) *forcedRig {
 	t.Helper()
 	srv, uri := testnats.Start(t)
 	if refusal := natsversion.Refusal(natsserver.VERSION); refusal != nil {
@@ -71,7 +72,7 @@ func newForcedRig(t *testing.T) *forcedRig {
 		}
 		t.Skipf("the session consumers refuse nats-server %s, so no session consumer exists to collide: %v", natsserver.VERSION, err)
 	}
-	owner, err := ConnectOwningStream([]string{uri})
+	owner, err := ConnectOwningStream([]string{uri}, ownerOptions...)
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
@@ -79,7 +80,7 @@ func newForcedRig(t *testing.T) *forcedRig {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	consumers := forcedSessionConsumers(t, uri, conn)
-	return &forcedRig{srv: srv, hooks: testnats.Hook(t), owner: owner, consumers: consumers, conn: conn}
+	return &forcedRig{srv: srv, uri: uri, hooks: testnats.Hook(t), owner: owner, consumers: consumers, conn: conn}
 }
 
 // storedState is consumer name's state as its o.dat holds it, or nil while there is none or it does
