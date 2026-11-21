@@ -22,10 +22,11 @@ the bash it runs cannot undo: a proof under it would read `seq 1 100000 | head -
 go back to SIG_DFL before the exec, as a proof started without this wrapper has them. (Python
 installs a handler for SIGINT too, but an exec resets a handled signal to its default by itself.)
 
-Where the mark cannot be set, the kernel refusing it or this Python having no ctypes or no prctl,
-it says why on stderr, sets LEGION_E2E_SUBREAPER to `PID START refused`, which lib/subreaper.sh
-reads as done and procs_naming as no subreaper, and executes CMD all the same. A CMD that cannot be
-executed exits 127 (not found) or 126.
+Where the mark cannot be set, the kernel refusing it, this Python having no ctypes or no prctl, or
+no /proc to read its own start from, it says why on stderr, sets LEGION_E2E_SUBREAPER to `PID START
+refused` (START empty where it could not be read), which lib/subreaper.sh reads as done and
+procs_naming as no subreaper, and executes CMD all the same. A CMD that cannot be executed exits
+127 (not found) or 126.
 """
 
 import os
@@ -36,10 +37,14 @@ PR_SET_CHILD_SUBREAPER = 36
 
 
 def start_of(pid: int) -> str:
-    """The start of PID in clock ticks since boot, field 22 of /proc/PID/stat, as proc_start reads it."""
-    with open(f"/proc/{pid}/stat", "rb") as stat:
-        fields = stat.read().rsplit(b") ", 1)[1].split()
-    return fields[19].decode()
+    """The start of PID in clock ticks since boot, field 22 of /proc/PID/stat, as proc_start reads
+    it, or "" where it cannot be read (no /proc)."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as stat:
+            fields = stat.read().rsplit(b") ", 1)[1].split()
+        return fields[19].decode()
+    except (OSError, IndexError, UnicodeDecodeError):
+        return ""
 
 
 def mark() -> str:
@@ -60,8 +65,9 @@ def main() -> None:
     if len(sys.argv) < 2:
         sys.exit("usage: subreaper.py CMD [ARG]...")
     pid = os.getpid()
-    shell = f"{pid} {start_of(pid)}"
-    refused = mark()
+    start = start_of(pid)
+    shell = f"{pid} {start}"
+    refused = mark() if start != "" else f"no start to read for process {pid} in /proc/{pid}/stat"
     if refused == "":
         os.environ["LEGION_E2E_SUBREAPER"] = shell
     else:

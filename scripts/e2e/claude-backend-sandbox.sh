@@ -1134,7 +1134,12 @@ cleanup() {
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
   stop_pid "$dispatch_identity_issuer_pid"
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: it costs the run its status.
+  stop_marked_processes "$work" || {
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $?), so a process of the run may still be running" >&2
+    status=1
+  }
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch

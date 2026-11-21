@@ -749,15 +749,20 @@ procs_naming() {
   # NAMING_SNAP) and puts out on fd 4 each entry whose bound read 0 or moved between the two reads
   # (NAMING_MOVED): its process was inside an exec then, which gives it memory whose environment
   # bounds read 0 until the exec is done and whose stack, so its environment, the kernel places
-  # anew (address space randomization), and grep's read of it may have come back empty.
-  local batch='before=$(awk "$NAMING_SNAP" "$@" 2>/dev/null)
+  # anew (address space randomization), and grep's read of it may have come back empty. An awk of
+  # the bounds that fails (either read, or their comparison) leaves the batch no list of the entries
+  # an exec met, so the batch says which and exits 2, as for a grep that failed: a walk that took
+  # its empty list for "none moved" read clean (a reviewer's forcing, status 0, named []).
+  local batch='before=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || snap="the bounds read before grep (awk exited $?)"
 said=$(grep -lzF "$@" 2>&1 >&3 3>&- 4>&-)
 status=$?
-after=$(awk "$NAMING_SNAP" "$@" 2>/dev/null)
-{ printf "%s\n" "$before"; echo --; printf "%s\n" "$after"; } | awk -F "\t" "$NAMING_MOVED" >&4
+after=$(awk "$NAMING_SNAP" "$@" 2>/dev/null) || snap="${snap:+$snap, }the bounds read after grep (awk exited $?)"
+{ printf "%s\n" "$before"; echo --; printf "%s\n" "$after"; } | awk -F "\t" "$NAMING_MOVED" >&4 ||
+  snap="${snap:+$snap, }the bounds compared (awk exited $?)"
 [ -z "$said" ] || printf "%s\n" "$said" >&2
+[ -z "${snap:-}" ] || echo "awk failed at $snap" >&2
 case $status in
-  0 | 1) exit 0 ;;
+  0 | 1) [ -n "${snap:-}" ] || exit 0 ;;
   2) [ -n "$said" ] || echo "grep exited 2 and printed nothing" >&2 ;;
   *)
     [ "$status" -le 128 ] || kill "-$((status - 128))" "$$"
@@ -786,7 +791,7 @@ exit 2'
   walk_snap=$snap
   [ -n "$shown" ] || walk_snap='BEGIN { exit }'
   local -a names=("${@:2}") naming_patterns=() naming_files=() empty_files=() listed=() entries=() unread_pids=() ancestors=()
-  local -A unread_seen=() named=() grepped=()
+  local -A unread_seen=() named_pids=() grepped=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
@@ -878,7 +883,7 @@ exit 2'
   for p in ${naming_files[@]+"${naming_files[@]}"} ${empty_files[@]+"${empty_files[@]}"}; do
     pid=${p%/environ}
     pid=${pid##*/}
-    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] && [ -z "${named[$pid]:-}" ] || continue
+    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] && [ -z "${named_pids[$pid]:-}" ] || continue
     before=$(proc_start "$pid")
     [ -n "$before" ] || continue
     hold=
@@ -909,7 +914,7 @@ exit 2'
           exec_state "$pid" "$before" again "$shown"
           if [ "$again" = "$held" ] && [ "$found" != 2 ]; then
             [ "$found" != 0 ] || {
-              named[$pid]=1
+              named_pids[$pid]=1
               printf '%s %s\n' "$pid" "$before"
             }
             break

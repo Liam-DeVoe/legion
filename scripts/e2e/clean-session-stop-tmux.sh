@@ -349,8 +349,12 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "$listener_keeper_pid"
   # Any process of the run's the daemon's tmux server left: each carries the run's mark, and nothing
-  # of this user's else does.
-  stop_marked_processes "$work"
+  # of this user's else does. The sweep's 2 (a walk that could not read the machine, or a process of
+  # the run it could not check, left running) is no clean teardown: it costs the run its status.
+  stop_marked_processes "$work" || {
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $?), so a process of the run may still be running" >&2
+    [ "$status" -ne 0 ] || status=1
+  }
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2

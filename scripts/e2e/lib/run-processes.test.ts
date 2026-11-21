@@ -423,6 +423,60 @@ exit 2`
   60_000
 );
 
+test.skipIf(skip)(
+  "a walk whose read of the environments' bounds failed is no answer: run_processes and stop_marked_processes exit 2, say which awk failed, and leave the marked process running",
+  async () => {
+    // Around grep each batch reads every entry's environment bound twice (NAMING_SNAP) and compares
+    // the reads (NAMING_MOVED), and the entries whose bound read 0 or moved are read again whole: a
+    // read an exec cut short. An awk that failed left that list empty, and the walk took it for
+    // "none moved" and answered clean (a reviewer's forcing at 49fafd2027: status 0, named []).
+    // One stub fails the two reads (its arguments are the -e PATTERN pairs and the entries), and
+    // one the comparison (`-F TAB PROGRAM`); every other awk runs the real one.
+    const work = join(dir, "awk-failed");
+    mkdirSync(work);
+    const awkStub = (name: string, test: string) => {
+      const stubBin = join(dir, `awk-${name}`);
+      mkdirSync(stubBin);
+      writeFileSync(
+        join(stubBin, "awk"),
+        `#!/bin/bash\n${test} && exit 1\nexec /usr/bin/awk "$@"\n`,
+        {
+          mode: 0o755,
+        }
+      );
+      return stubBin;
+    };
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilRunning(marked, "sleep");
+    const sweep = (path: string) => {
+      const r = harness(
+        work,
+        `st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?; echo "run_processes $st"
+st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_marked_processes $st"`,
+        path
+      );
+      return { ...r, said: readFileSync(join(work, "rp.err"), "utf8") };
+    };
+    const reads = sweep(awkStub("reads", `[ "\${2:-}" = -e ]`));
+    expect(reads.err).toBe("");
+    expect(reads.out).toBe("run_processes 2\nstop_marked_processes 2\n");
+    expect(reads.said).toMatch(
+      /^procs_naming: xargs exited 123 reading \S+: awk failed at the bounds read before grep \(awk exited 1\), the bounds read after grep \(awk exited 1\), so /m
+    );
+    const compared = sweep(awkStub("compared", `[ "\${1:-}" = -F ] && [[ \${3:-} == *past* ]]`));
+    expect(compared.err).toBe("");
+    expect(compared.out).toBe("run_processes 2\nstop_marked_processes 2\n");
+    expect(compared.said).toMatch(
+      /^procs_naming: xargs exited 123 reading \S+: awk failed at the bounds compared \(awk exited 1\), so /m
+    );
+    expect(state(marked)).toBe("S");
+    process.kill(marked, "SIGKILL");
+    expect(await gone(marked)).toBe(true);
+  },
+  // A guard on a hang only: two sweeps, each walking twice, every wait with a bound of its own.
+  60_000
+);
+
 // unreadablePy READY MODE [GO] is a python3 whose /proc/<pid>/environ is root's, so this user's
 // test of it fails: it makes itself not dumpable (prctl PR_SET_DUMPABLE 0, as ssh-agent and
 // gpg-agent do at their start), checks that PR_GET_DUMPABLE reads 0, writes its pid to READY
@@ -1216,6 +1270,85 @@ test.skipIf(withoutPython)(
     });
   },
   // A guard on a hang only: one Python and one shell.
+  60_000
+);
+
+test.skipIf(withoutPython)(
+  "lib/subreaper.py with no /proc to read its own start from says why, names the shell refused with no start, and runs the proof all the same, and lib/subreaper.sh runs that proof once",
+  () => {
+    // start_of read /proc/<pid>/stat unguarded, so on a host with no /proc subreaper.py ended with a
+    // traceback before the proof started (a reviewer's reading at 49fafd2027). Here a sitecustomize
+    // that refuses every open under /proc/ stands first on the path (python3 without -I reads
+    // PYTHONPATH). Through lib/subreaper.sh, a python3 stand-in that drops -I, and so reads it,
+    // gives the shell a value of its own pid with no start, which the shell's own start does not
+    // match: a subreaper.sh that took only `PID START` for done ran the proof under subreaper.py
+    // again, without end. The stand-in counts its calls: the shell's check of python3, and the run.
+    const fake = join(dir, "no-proc");
+    mkdirSync(join(fake, "bin"), { recursive: true });
+    writeFileSync(
+      join(fake, "sitecustomize.py"),
+      `import builtins
+_open = builtins.open
+def _refused(path, *args, **kwargs):
+    if str(path).startswith("/proc/"):
+        raise FileNotFoundError(2, "No such file or directory", str(path))
+    return _open(path, *args, **kwargs)
+builtins.open = _refused
+`
+    );
+    const said = (r: { exitCode: number | null; stdout: Buffer; stderr: Buffer }) => ({
+      code: r.exitCode,
+      out: r.stdout.toString().replace(/\[\d+ {2}refused\]/, "[PID  refused]"),
+      err: r.stderr.toString().replace(/\b\d+\b/g, "PID"),
+    });
+    const direct = Bun.spawnSync(
+      ["python3", subreaperPy, "bash", "-c", `echo "ran, [\${LEGION_E2E_SUBREAPER:-}]"`],
+      { env: { PATH: process.env.PATH ?? "", PYTHONPATH: fake } }
+    );
+    expect(said(direct)).toEqual({
+      code: 0,
+      out: "ran, [PID  refused]\n",
+      err: "subreaper.py: no start to read for process PID in /proc/PID/stat; running bash without it\n",
+    });
+    // The interpreter itself (sys.executable), not the first python3 on PATH: a shim there (mise's)
+    // finds python3 through PATH again, which would be this stand-in.
+    const python = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"], {
+      env: { PATH: process.env.PATH ?? "" },
+    })
+      .stdout.toString()
+      .trim();
+    const counted = join(fake, "calls");
+    writeFileSync(
+      join(fake, "bin", "python3"),
+      `#!/bin/bash
+echo call >>${JSON.stringify(counted)}
+args=()
+for a; do [ "$a" = -I ] || args+=("$a"); done
+PYTHONPATH=${JSON.stringify(fake)} exec ${JSON.stringify(python)} "\${args[@]}"
+`,
+      { mode: 0o755 }
+    );
+    const proof = join(fake, "proof.sh");
+    writeFileSync(
+      proof,
+      `set -eu\n. ${JSON.stringify(join(import.meta.dir, "subreaper.sh"))}\necho "proof ran, [\${LEGION_E2E_SUBREAPER:-}]"\n`
+    );
+    const viaSh = Bun.spawnSync(["bash", proof], {
+      env: { PATH: `${join(fake, "bin")}:${process.env.PATH ?? ""}` },
+      timeout: 20_000,
+    });
+    expect({
+      ...said(viaSh),
+      err: said(viaSh).err.replace(/running \S+ without/, "running BASH without"),
+      calls: readFileSync(counted, "utf8"),
+    }).toEqual({
+      code: 0,
+      out: "proof ran, [PID  refused]\n",
+      err: "subreaper.py: no start to read for process PID in /proc/PID/stat; running BASH without it\n",
+      calls: "call\ncall\n",
+    });
+  },
+  // A guard on a hang only: two Pythons and two shells, the second bounded at 20 s on its own.
   60_000
 );
 

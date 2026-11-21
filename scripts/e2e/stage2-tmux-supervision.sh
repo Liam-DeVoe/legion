@@ -141,7 +141,7 @@ until_true() {
 # ---- cleanup: never fails, leaves nothing of the run behind ---------------------------------------
 
 cleanup() {
-  local status=$? p
+  local status=$? p swept=0
   # A second Ctrl-C, TERM or HUP must not end the teardown part way: its own signal traps would
   # exit from inside this one, leaving panes running and, under box-login, the profile's link to
   # the operator's login in a kept workspace. Every wait below is bounded, so ignoring them costs
@@ -160,14 +160,22 @@ cleanup() {
   # profile's link to that database goes (the link alone) once they are gone, so a kept workspace
   # holds no live path to the login (lib/box-login.sh). The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_marked_processes "$work" "$box_login_stop_grace" || true
+    stop_marked_processes "$work" "$box_login_stop_grace" || {
+      swept=$?
+      echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+    }
     unlink_box_login_db "$profile_agent"
   fi
   for p in "$ptoken" "$deadline_ptoken"; do
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
   done
   stop_pid "$listener_pid"
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+  }
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
@@ -179,6 +187,7 @@ cleanup() {
     # killed, which is a failure, still does.
     [[ $status =~ ^(129|130|143)$ ]] || bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$work/model-gateway" "$check_started" "$check" >&2 || true
   fi
+  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
   return 0
 }
 trap cleanup EXIT

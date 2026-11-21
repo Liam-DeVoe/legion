@@ -157,7 +157,7 @@ remove_run_branch() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$? p swept=0
   set +e
   # Teardown is best effort: a failing command here is a warning about the teardown, never a check's
   # FAIL line, and the run's exit status stays the one the checks set.
@@ -180,7 +180,12 @@ cleanup() {
   stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$daemon_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  stop_marked_processes "$work" || true
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+  }
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   remove_run_branch
@@ -196,6 +201,7 @@ cleanup() {
   # The review App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
   app_key_left "$work/app-key" || exit 1
+  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
   return 0
 }
 trap cleanup EXIT

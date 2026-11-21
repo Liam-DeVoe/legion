@@ -96,17 +96,24 @@ tm() { tmux -S "$work/tmux.sock" "$@"; }
 
 # Unconditional: every run removes what it made, whatever it ended on.
 cleanup() {
+  local status=$? swept=0
   set +e
   tm capture-pane -p -t user >"$evidence/checks/session.pane" 2>/dev/null
   [ -z "$session_file" ] || cp "$session_file" "$evidence/session.jsonl" 2>/dev/null
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  stop_marked_processes "$work"
+  # The sweep's 2 (a walk that could not read the machine, or a process of the run it could not
+  # check, left running) is no clean teardown: the run exits non-zero at the end of this trap.
+  stop_marked_processes "$work" || {
+    swept=$?
+    echo "the run's sweep of its own processes failed (stop_marked_processes exited $swept), so a process of the run may still be running" >&2
+  }
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"
   echo "evidence: $evidence (logs/, checks/ with the page's screenshots and the session pane, session.jsonl)"
+  [ "$swept" = 0 ] || exit "$((status == 0 ? 1 : status))"
   return 0
 }
 trap cleanup EXIT
