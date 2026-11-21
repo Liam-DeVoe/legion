@@ -169,6 +169,9 @@ type Erasure struct {
 	// which the run deleted trees where an event of the node carried a body it cut (treeNeedles).
 	// They are held as the sums are, and for the same reason.
 	needles [][]byte
+	// underLocks bounds the read of the events about the node that a confirmed run makes under its
+	// locks (readEvents); nil for every other read, which reads every event.
+	underLocks *eventsUnderLocks
 }
 
 // Mismatch reports whether a confirmed run read a listing other than the one its --confirm

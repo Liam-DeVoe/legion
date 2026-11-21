@@ -743,6 +743,83 @@ func TestTheEraseListsARowWrittenBetweenItsSearchAndItsLocks(t *testing.T) {
 	}
 }
 
+// TestTheEraseReadsUnderItsLocksAnEventAboutTheNodeWrittenAfterItsSearch holds a confirmed erase
+// to reading under its locks an event about the node that was written after its search before the
+// locks. Its search reads every event for the node (readEvents with no bound), and under its locks
+// it reads only the events the search found, by id, and the events of the owners it took, through
+// the event log's owner indexes (eventsUnderLocks). An event about the node is written under the
+// node's owner, whose lock its writer takes before the insert, so one written between the search
+// and the locks is among the owner's events the run reads.
+//
+// The run erases the comment seedAgreeingStore writes on a document of issue CORE-1, whose owner
+// lock is the first lock the run takes. Once the run without --confirm has printed its digest, a
+// transaction holds that owner lock, and the confirmed run is started: the test reads that it
+// waits at the statement that takes the lock, which it reaches only once its search has ended.
+// While it waits there, the holder appends a comment.edited event of the erased comment under
+// CORE-1 whose body is the comment's text, and commits. The listing the run then reads under its
+// locks names that event, which the listing its digest covers does not, so the run refuses and
+// removes nothing: that is the read under the locks finding the event. The erase made again
+// redacts the event, and no event of the comment holds its text afterwards.
+func TestTheEraseReadsUnderItsLocksAnEventAboutTheNodeWrittenAfterItsSearch(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	var erasedText string
+	if err := database.Pool.QueryRow(ctx, `select body from comments where id = $1::uuid`, seeded.comment).Scan(&erasedText); err != nil {
+		t.Fatalf("read the body of comment %s, the text the erase takes: %v", seeded.comment, err)
+	}
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+	core := lockstep.HoldOwner(t, database, &lockstep.Hold{Name: "issue CORE-1's owner lock", Step: lockstep.StepOwner, Statement: ownerLockStatement},
+		store.IssueOwner("CORE-1"))
+
+	pid, answered := startConfirmedEraseOver(t, database, commentNodeKind, seeded.comment, listing, true)
+	if early, done := storetest.WaitForQueuedBehind(t, core.Tx, pid, answered, lockstep.Wait); done {
+		t.Fatalf("the confirmed erase answered (err %v) without waiting on issue CORE-1's owner lock, which another transaction held", early.err)
+	}
+	if waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid)); !strings.HasPrefix(waited, ownerLockStatement) {
+		t.Fatalf("the confirmed erase waits behind issue CORE-1's owner lock at %q, which is not the statement that takes it (it starts %q)",
+			waited, ownerLockStatement)
+	}
+
+	author := model.Actor{Kind: "user", ID: "alice"}
+	edited := appendEventBy(t, core.Tx, "CORE-1", "comment.edited", author,
+		model.CommentEventPayload{Comment: model.Comment{ID: seeded.comment, IssueKey: new("CORE-1"), Author: author, Body: erasedText}})
+	if err := core.Tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the comment.edited event %d of comment %s: %v", edited, seeded.comment, err)
+	}
+	line := fmt.Sprintf("events %d comment.edited", edited)
+
+	var answer eraseAnswer
+	select {
+	case answer = <-answered:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the confirmed erase did not answer within %s of the commit of event %d, which let go of issue CORE-1's owner lock", lockstep.Wait, edited)
+	}
+	if answer.err != nil {
+		t.Fatalf("the confirmed erase failed once issue CORE-1's owner lock was let go: %v", answer.err)
+	}
+	if answer.erasure.Applied || !answer.erasure.Mismatch() || !listed(answer.erasure, line) {
+		t.Fatalf("the confirmed erase of comment %s answered applied %t and a listing that differs from the one its digest covers %t, naming %q %t; want it to refuse, its read under its locks naming the event written after its search:\n%s",
+			seeded.comment, answer.erasure.Applied, answer.erasure.Mismatch(), line, listed(answer.erasure, line), strings.Join(answer.erasure.Listing, "\n"))
+	}
+
+	erasure, err := confirmedErase(t, database, commentNodeKind, seeded.comment, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase comment %s again: %v", seeded.comment, err)
+	}
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	var held int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events
+		where (payload->>'id' = $1 or payload->>'comment_id' = $1) and position($2 in payload::text) > 0`,
+		seeded.comment, erasedText).Scan(&held); err != nil {
+		t.Fatalf("read the events of comment %s after the erase: %v", seeded.comment, err)
+	}
+	if held != 0 || !listed(erasure, line) {
+		t.Errorf("after the erase %d event(s) of comment %s hold its text, and its listing names event %d %t", held, seeded.comment, edited, listed(erasure, line))
+	}
+}
+
 // createACommentUnderItsOwnerLock writes a comment by alice on issue CORE-1 in the order the API's
 // createComment takes its locks: its transaction takes the issue's owner lock first
 // (store.LockOwner, which lockCommentOwner's read is guarded by), then writes the comment's row and
@@ -936,6 +1013,14 @@ func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <
 // millisecond, which no lock step here rests on.
 func startConfirmedErase(t *testing.T, database *store.Store, kind, id string, listing *Erasure) (uint32, <-chan eraseAnswer) {
 	t.Helper()
+	return startConfirmedEraseOver(t, database, kind, id, listing, false)
+}
+
+// startConfirmedEraseOver is startConfirmedErase, which fails the test where the confirmed run
+// read a listing other than the one its digest covers, unless moved says the test moves that
+// listing on purpose and reads the refusal itself.
+func startConfirmedEraseOver(t *testing.T, database *store.Store, kind, id string, listing *Erasure, moved bool) (uint32, <-chan eraseAnswer) {
+	t.Helper()
 	answered := make(chan eraseAnswer, 1)
 	go func() {
 		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listing.Digest, time.Millisecond)
@@ -943,7 +1028,7 @@ func startConfirmedErase(t *testing.T, database *store.Store, kind, id string, l
 			for _, document := range erasure.Documents {
 				t.Errorf("document %s has a stored history, which this test never writes", document.Document)
 			}
-			if erasure.Mismatch() {
+			if erasure.Mismatch() && !moved {
 				t.Errorf("the confirmed run read a listing of digest %s, not the %s the run before it printed:\n%s",
 					erasure.Digest, listing.Digest, strings.Join(erasure.Listing, "\n"))
 			}

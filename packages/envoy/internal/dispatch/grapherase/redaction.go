@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -70,6 +71,15 @@ type redactedEvent struct {
 // node - is searched for by the search for the rows the run leaves, which lists it (readLeft,
 // cleanedEvents), so the listing says what the run does. So is an event of a version of the
 // block's document it did not stand in, which the run does not read as about it.
+//
+// Neither `about` predicate has an index, so a read of them alone reads every row of the event
+// log. A confirmed run makes that read in its search before its locks (searchLeft), and under its
+// locks reads only the events about the node among the ids that search found and the events of
+// the owners it holds (eventsUnderLocks), each through an index of its own. That loses no event:
+// every event this predicate reads is written under the owner of the node it names - a comment's
+// under the comment's issue or unlinked document, a document's under its issue or itself - with
+// that owner's lock taken before the insert (events' lockEventOwner), so one written after the
+// search waits for the run's locks and is read under them.
 func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -99,6 +109,13 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		args = []any{read.document.artifact, read.texts, read.blockID, read.numbers}
 	default:
 		return nil
+	}
+	if bound := e.underLocks; bound != nil {
+		issues, artifacts := bound.owners.Owners()
+		next := len(args)
+		about = fmt.Sprintf(`(id = any($%d::bigint[]) or issue_key = any($%d::text[]) or artifact_id = any($%d::uuid[])) and (%s)`,
+			next+1, next+2, next+3, about)
+		args = append(args, bound.ids, issues, artifacts)
 	}
 	rows, err := tx.Query(ctx, `select id, type, payload::text from events where `+about+` order by id`, args...)
 	if err != nil {
@@ -136,6 +153,15 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		read.listing.events = append(read.listing.events, fmt.Sprintf("events %d %s", event.id, event.kind))
 	}
 	return nil
+}
+
+// eventsUnderLocks is what bounds the read of the events about the node that a confirmed run
+// makes under its locks (readEvents): the owners it took, whose events it reads through the event
+// log's owner indexes, and the ids of the events about the node its search before the locks found
+// (searchedBeforeLocks), which it reads through the log's key.
+type eventsUnderLocks struct {
+	owners events.OwnerRows
+	ids    []int64
 }
 
 // redactPayload replaces each erased text with the marker inside every string value of a JSON
