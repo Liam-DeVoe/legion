@@ -286,11 +286,13 @@ func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
 	}
 }
 
-// proxy forwards every connection to its address on to upstream until drop closes them.
+// proxy forwards every connection to its address on to upstream until drop closes them. While cut,
+// it closes each connection it accepts at once, so a client stays disconnected until restore.
 type proxy struct {
-	addr  string
-	mu    sync.Mutex
-	conns []net.Conn
+	addr    string
+	mu      sync.Mutex
+	conns   []net.Conn
+	refused bool
 }
 
 // dropProxy is a proxy to upstream, closed with t.
@@ -306,6 +308,13 @@ func dropProxy(t *testing.T, upstream string) *proxy {
 			client, err := ln.Accept()
 			if err != nil {
 				return
+			}
+			p.mu.Lock()
+			refused := p.refused
+			p.mu.Unlock()
+			if refused {
+				client.Close()
+				continue
 			}
 			server, err := net.Dial("tcp", upstream)
 			if err != nil {
@@ -334,4 +343,19 @@ func (p *proxy) drop() {
 		c.Close()
 	}
 	p.conns = nil
+}
+
+// cut drops every connection and refuses new ones until restore.
+func (p *proxy) cut() {
+	p.mu.Lock()
+	p.refused = true
+	p.mu.Unlock()
+	p.drop()
+}
+
+// restore forwards new connections again.
+func (p *proxy) restore() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refused = false
 }
