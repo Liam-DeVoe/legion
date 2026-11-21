@@ -3312,7 +3312,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The process's Prometheus metrics, for an open viewer; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. */
+    /** @description The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED. */
     get: operations["getMetrics"];
     put?: never;
     post?: never;
