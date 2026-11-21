@@ -55,13 +55,28 @@ func StartImageConfig(t testing.TB, image, config string, serverArgs []string, a
 
 // startImage runs the container StartImageConfig runs and returns it with its client URL, before
 // any wait for the server to answer a client: each caller waits the way its configuration admits.
-// The client port is published on a loopback address of its own and a port the kernel chose there
-// (testport.LoopbackPorts), as every other server of this package listens, and the URL names that
-// address rather than localhost (ImageURL). A start Docker refuses because the port was taken
-// between the probe and the publish is tried again on a fresh address and port, up to
-// imageStartTries starts, and a failure names every refusal before it.
+// Where the Docker daemon is this machine (localDaemon), the client port is published on a
+// loopback address of its own and a port the kernel chose there (testport.LoopbackPorts), as every
+// other server of this package listens, and the URL names that address rather than localhost
+// (ImageURL). A start Docker refuses because the port was taken between the probe and the publish
+// is tried again on a fresh address and port, up to imageStartTries starts, and a failure names
+// every refusal before it. A daemon on another machine publishes on that machine, whose loopback
+// this one does not reach, so there the port takes Docker's default binding and the URL names the
+// daemon's host.
 func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnats.NATSContainer, string) {
 	t.Helper()
+	local, err := localDaemon(context.Background())
+	if err != nil {
+		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
+	}
+	if !local {
+		ctr, err := startImageAt(image, config, serverArgs, "", 0)
+		testcontainers.CleanupContainer(t, ctr)
+		if err != nil {
+			t.Fatalf("start NATS on %s: %v", image, err)
+		}
+		return ctr, ImageURL(t, ctr)
+	}
 	var refused []string
 	// before is the refusals so far, for a failure's message.
 	before := func() string {
@@ -91,7 +106,8 @@ func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnat
 	return nil, ""
 }
 
-// startImageAt is one start of startImage's container, its client port published at host:port.
+// startImageAt is one start of startImage's container, its client port published at host:port,
+// or at Docker's default binding when host is "".
 func startImageAt(image, config string, serverArgs []string, host string, port int) (*tcnats.NATSContainer, error) {
 	return tcnats.Run(context.Background(), image,
 		testcontainers.WithCmd(append([]string{"-c", imageConfigPath}, serverArgs...)...),
@@ -105,6 +121,9 @@ func startImageAt(image, config string, serverArgs []string, host string, port i
 			// capped on a shared host: a test server holds a few small streams.
 			hostConfig.NanoCPUs = 1_000_000_000
 			hostConfig.Memory = 512 << 20
+			if host == "" {
+				return
+			}
 			if hostConfig.PortBindings == nil {
 				hostConfig.PortBindings = nat.PortMap{}
 			}
@@ -117,17 +136,45 @@ func startImageAt(image, config string, serverArgs []string, host string, port i
 	)
 }
 
+// localDaemon reports whether the Docker daemon testcontainers reaches runs on this machine
+// (localDaemonHost of the host testcontainers places it at).
+func localDaemon(ctx context.Context) (bool, error) {
+	provider, err := testcontainers.NewDockerProvider()
+	if err != nil {
+		return false, err
+	}
+	defer provider.Close()
+	host, err := provider.DaemonHost(ctx)
+	if err != nil {
+		return false, err
+	}
+	return localDaemonHost(host), nil
+}
+
+// localDaemonHost reports whether a Docker daemon testcontainers places at host is this machine,
+// so a port it publishes on a loopback address is one this process can dial: testcontainers names
+// such a daemon "localhost" (a unix socket, outside a container) or a loopback address. A daemon
+// that DOCKER_HOST names on another machine, or the host's daemon as a container reaches it through
+// its gateway, publishes on a machine whose loopback this one does not reach.
+func localDaemonHost(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}
+
 // ImageServer is the part of the container StartImageConfig returns that ImageURL reads.
 type ImageServer interface {
 	Inspect(context.Context) (*container.InspectResponse, error)
+	Host(context.Context) (string, error)
 }
 
 // ImageURL is the client URL of an image server StartImageConfig started: its client port, as
-// Docker published it on the server's loopback address. A test that restarts the container reads
-// it again, since Docker publishes the port again at each start.
+// Docker published it, on the server's loopback address (startImage), or at the Docker daemon's
+// host where the port took Docker's default binding of every address. A test that restarts the
+// container reads it again, since Docker publishes the port again at each start.
 func ImageURL(t testing.TB, ctr ImageServer) string {
 	t.Helper()
-	info, err := ctr.Inspect(context.Background())
+	ctx := context.Background()
+	info, err := ctr.Inspect(ctx)
 	if err != nil {
 		t.Fatalf("inspect the NATS container: %v", err)
 	}
@@ -135,5 +182,11 @@ func ImageURL(t testing.TB, ctr ImageServer) string {
 		t.Fatalf("the NATS container publishes no %s", imageClientPort)
 	}
 	binding := info.NetworkSettings.Ports[imageClientPort][0]
-	return "nats://" + net.JoinHostPort(binding.HostIP, binding.HostPort)
+	host := binding.HostIP
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		if host, err = ctr.Host(ctx); err != nil {
+			t.Fatalf("read the Docker daemon's host: %v", err)
+		}
+	}
+	return "nats://" + net.JoinHostPort(host, binding.HostPort)
 }

@@ -360,8 +360,8 @@ func monitor(container *tcnats.NATSContainer) (string, error) {
 	return "http://" + address, nil
 }
 
-// clientURL returns a container's NATS client URL, at the loopback address start published its
-// client port on.
+// clientURL returns a container's NATS client URL, where start published its client port
+// (endpoint).
 func clientURL(container *tcnats.NATSContainer) (string, error) {
 	address, err := endpoint(container, clientPort)
 	if err != nil {
@@ -509,12 +509,16 @@ func retryStreamStoreFailure(create func() error) error {
 
 // hostConfig caps a NATS test container at one CPU and 512 MiB, as every container the
 // repository's tests and proofs start is capped on a shared host (a test server holds a few small
-// streams), and publishes its client and monitoring ports at host on the ports given. It is one
-// modifier because testcontainers keeps only the last a request is given.
+// streams), and publishes its client and monitoring ports at host on the ports given, or leaves
+// them on Docker's default binding when host is "". It is one modifier because testcontainers
+// keeps only the last a request is given.
 func hostConfig(host string, client, monitoring int) testcontainers.CustomizeRequestOption {
 	return testcontainers.WithHostConfigModifier(func(config *container.HostConfig) {
 		config.NanoCPUs = 1_000_000_000
 		config.Memory = 512 << 20
+		if host == "" {
+			return
+		}
 		if config.PortBindings == nil {
 			config.PortBindings = nat.PortMap{}
 		}
@@ -538,11 +542,25 @@ const startTries = 5
 // published; each caller's own connect (connect, ready, answering) is the proof a client reaches
 // the server. A container Docker created and never saw ready (a readiness wait that timed out
 // under load, or a refused publish) comes back beside the error, and is removed before start
-// returns: no test's end would remove a container the package shares.
+// returns: no test's end would remove a container the package shares. A Docker daemon on another
+// machine (localDaemon) publishes on that machine, whose loopback this one does not reach, so
+// there the ports take Docker's default binding and its choice of port, in one start, and endpoint
+// names the daemon's host.
 //
 // Every start is given options again, so none of them may hold state a start uses up; the
 // configuration comes as text for that reason, and each start reads it anew (run).
 func start(image, config string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+	local, err := localDaemon(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("find where the Docker daemon publishes a container's ports: %w", err)
+	}
+	if !local {
+		started, err := run(image, config, hostConfig("", 0, 0), options)
+		if err != nil {
+			return started, errors.Join(err, testcontainers.TerminateContainer(started))
+		}
+		return started, nil
+	}
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
