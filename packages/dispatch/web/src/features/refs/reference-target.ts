@@ -538,7 +538,7 @@ export function useReferenceData(
     markdown: text.data !== undefined && "markdown" in text.data ? text.data.markdown : undefined,
     markdownTree:
       text.data !== undefined && "markdown_tree" in text.data ? text.data.markdown_tree : undefined,
-    textFailed: text.isError && text.data === undefined,
+    textFailed: text.isLoadingError,
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,

@@ -6,7 +6,7 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { correction } from "../../__tests__/correction-feed";
+import { insertDeleted } from "../../__tests__/correction-feed";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -890,20 +890,6 @@ test("a document's card shows its owner, name, latest version and text from its 
   }
 });
 
-/** The delete of a comment whose pending insert stood in `document`, as the feed carries it: its
- *  anchor with the quote emptied, since the insert's words were the comment's. */
-const insertDeleted = (document: string) =>
-  correction("comment", "comment-insert", false, {
-    anchor: {
-      artifact_id: document,
-      block_id: "p1",
-      mark_id: "mark-insert",
-      orphaned: false,
-      quote: "",
-      version: 4,
-    },
-  });
-
 /** The words a pending insert put in a document, which its comment's delete takes out. */
 const INSERTED = "cleared by the security review";
 
@@ -950,7 +936,7 @@ test("after a pending insert's delete whose text read fails again, a document's 
     await waitFor(() => expect(card).toHaveTextContent(INSERTED));
 
     getArtifactText.mockRejectedValue(unavailable());
-    act(() => markCorrectedPost(client, insertDeleted("doc-9")));
+    act(() => markCorrectedPost(client, insertDeleted("doc-9", "p1", 4)));
     const straightAfter = card.textContent;
 
     await waitFor(() => expect(card).toHaveTextContent("Could not load this document's text."));
@@ -1004,7 +990,7 @@ test("after a pending insert's delete whose text read fails again, an issue's ca
     await waitFor(() => expect(card).toHaveTextContent(INSERTED));
 
     getArtifactText.mockRejectedValue(unavailable());
-    act(() => markCorrectedPost(client, insertDeleted("spec")));
+    act(() => markCorrectedPost(client, insertDeleted("spec", "p1", 4)));
     const straightAfter = card.textContent;
 
     await waitFor(() => expect(card).toHaveTextContent("Could not load this issue's spec."));

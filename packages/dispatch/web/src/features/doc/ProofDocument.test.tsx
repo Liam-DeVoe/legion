@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-import { correction } from "../../__tests__/correction-feed";
+import { insertDeleted } from "../../__tests__/correction-feed";
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
@@ -633,21 +633,7 @@ test("after a pending insert's delete whose text read fails again, Diff vs curre
       })
     );
     const asked = getArtifactText.mock.calls.length;
-    act(() =>
-      markCorrectedPost(
-        queryClient,
-        correction("comment", "comment-insert", false, {
-          anchor: {
-            artifact_id: artifact.id,
-            block_id: "block-1",
-            mark_id: "mark-insert",
-            orphaned: false,
-            quote: "",
-            version: 1,
-          },
-        })
-      )
-    );
+    act(() => markCorrectedPost(queryClient, insertDeleted(artifact.id, "block-1", 1)));
     const straightAfter = view.container.textContent;
 
     await within(view.container).findByText("Could not load the current version to compare.");

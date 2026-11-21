@@ -295,9 +295,9 @@ interface FamilyDrop {
 export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
   /** A read of one stored version (`["artifact", id, "version", n]`, and `["artifact", id, n]`
    *  where a reference pins version n), the document's blocks (`["artifact", id, "blocks"]`), and
-   *  its live text (`["artifact", id, "text"]`): only that read's tree carries each pending
-   *  suggestion's mark, its markdown none, and no surface that draws it reads the marks. The
-   *  comments and the asks are posts, which the family's writer marks. */
+   *  its live text (`["artifact", id, "text"]`): its markdown carries no mark, and its tree is the
+   *  display tree of that markdown, so neither tells a pending insert's words from the document's
+   *  own. The comments and the asks are posts, which the family's writer marks. */
   artifact: {
     reads: (queryKey, document) =>
       queryKey[1] === document.id &&

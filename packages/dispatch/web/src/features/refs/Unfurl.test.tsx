@@ -5,7 +5,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { correction } from "../../__tests__/correction-feed";
+import { insertDeleted } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
@@ -177,17 +177,7 @@ test("Unfurl draws none of a deleted insert's words in a document's card whose t
     act(() =>
       markCorrectedPost(
         queryClient,
-        correction("comment", "comment-insert", false, {
-          anchor: {
-            artifact_id: "artifact-1",
-            block_id: "p1",
-            mark_id: "mark-insert",
-            orphaned: false,
-            quote: "",
-            version: 3,
-          },
-          artifact_slug: "design",
-        })
+        insertDeleted("artifact-1", "p1", 3, { artifact_slug: "design" })
       )
     );
     const straightAfter = card.textContent;

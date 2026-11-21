@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
 import { cachedKeysHolding } from "../../__tests__/cached-keys-holding";
-import { correction } from "../../__tests__/correction-feed";
+import { insertDeleted } from "../../__tests__/correction-feed";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
@@ -336,19 +336,7 @@ test("after a pending insert's delete whose reads fail again, the Spec tab's lin
     reads.getArtifactBlocks.mockRejectedValue(unreachable);
     const asked = reads.getReferences.mock.calls.length;
     await act(async () => {
-      markCorrectedPost(
-        queryClient,
-        correction("comment", "comment-insert", false, {
-          anchor: {
-            artifact_id: spec.id,
-            block_id: "h-rollout",
-            mark_id: "mark-insert",
-            orphaned: false,
-            quote: "",
-            version: 4,
-          },
-        })
-      );
+      markCorrectedPost(queryClient, insertDeleted(spec.id, "h-rollout", 4));
       await settle();
     });
 

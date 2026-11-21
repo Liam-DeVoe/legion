@@ -1605,7 +1605,7 @@ for (const row of DROP_ROWS) {
     markCorrectedPost(client, INSERT_DELETE);
     expect(client.getQueryData(row.key)).toBeUndefined();
     expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
-    expect(client.getQueryData(row.other.key)).toEqual(row.other.answer);
+    expect<unknown>(client.getQueryData(row.other.key)).toEqual(row.other.answer);
   });
 
   test(`a delete that leaves its quote drops nothing of ${row.family} (${JSON.stringify(row.key)})`, () => {
@@ -1613,7 +1613,7 @@ for (const row of DROP_ROWS) {
       const client = new QueryClient();
       client.setQueryData(row.key, row.answer);
       markCorrectedPost(client, deleted);
-      expect(client.getQueryData(row.key), what).toEqual(row.answer);
+      expect<unknown>(client.getQueryData(row.key), what).toEqual(row.answer);
     }
   });
 }

@@ -1324,16 +1324,12 @@ export function ProofDocument({
         </section>
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
+      ) : showDiff && liveTextQuery.data !== undefined ? (
+        <ChangeView after={liveTextQuery.data.markdown} before={versionMarkdown} />
+      ) : showDiff && liveTextQuery.isError ? (
+        <p>Could not load the current version to compare.</p>
       ) : showDiff ? (
-        liveTextQuery.data === undefined ? (
-          <p>
-            {liveTextQuery.isError
-              ? "Could not load the current version to compare."
-              : "Loading the current version…"}
-          </p>
-        ) : (
-          <ChangeView after={liveTextQuery.data.markdown} before={versionMarkdown} />
-        )
+        <p>Loading the current version…</p>
       ) : (
         <div data-testid="version-view">
           <VersionView

@@ -3,7 +3,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import { rowsOf } from "../../api/event-refresh";
 import type { ArtifactText, Comment, DisplayTree } from "../../api/types";
-import type { ComposerOwner } from "../conversation/composer-model";
+import { type ComposerOwner, commentListKey } from "../conversation/composer-model";
 import { postDeletion } from "../refs/post-marks";
 import { wordsOf } from "../refs/tree-fragment";
 import { liveTextQueryOptions } from "./live-text-query";
@@ -108,8 +108,9 @@ function listedWords(
 }
 
 /**
- * Whether the document `words` names still holds the words a draft was written for
- * (`words.quote`), as the page holds them now. This read asks for nothing itself.
+ * Which of the four states of `QuoteInDocument` the words a draft was written for (`words.quote`)
+ * are in, in the document `words` names, as the page holds them now: held, gone, loading or
+ * unchecked. This read asks for nothing itself.
  *
  * The words can leave the document while the draft waits. A selection inside another comment's
  * pending insert suggestion quotes that comment's words, and the comment's delete rejects the
@@ -144,12 +145,7 @@ export function useQuoteInDocument(
   owner: ComposerOwner
 ): QuoteInDocument {
   const client = useQueryClient();
-  const margin =
-    owner.kind === "issue"
-      ? ["comments", owner.issueKey]
-      : owner.kind === "artifact"
-        ? ["artifact", owner.artifactId, "comments"]
-        : undefined;
+  const margin = owner.kind === "session" ? undefined : commentListKey(owner);
   // What the comment lists say changes only with one of them, and a change to one sends an
   // event for it.
   const subscribe = useCallback(
@@ -167,7 +163,7 @@ export function useQuoteInDocument(
   const {
     data: words,
     dataUpdatedAt,
-    isError: textFailed,
+    isLoadingError: textFailed,
   } = useQuery({
     ...liveTextQueryOptions(artifact),
     enabled: false,

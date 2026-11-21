@@ -452,7 +452,7 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           </span>
         )}
       </span>
-      {specText.isError && specText.data === undefined ? (
+      {specText.isLoadingError ? (
         <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
           Could not load this issue's spec.
         </span>

@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
-import { correction } from "../../__tests__/correction-feed";
+import { insertDeleted } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -235,20 +235,6 @@ test.each([
   }
 });
 
-/** The delete of a comment whose pending insert stood in this module's document, as the feed
- *  carries it: its anchor with the quote emptied, since the insert's words were the comment's. */
-const insertDeleted = () =>
-  correction("comment", "comment-insert", false, {
-    anchor: {
-      artifact_id: artifact.id,
-      block_id: "block-1",
-      mark_id: "mark-insert",
-      orphaned: false,
-      quote: "",
-      version: 1,
-    },
-  });
-
 // Census row V.40 of dispatch://INFRA-1523: a pending insert's delete drops the document's text
 // read, and gives up a read of it still out (`dropUnmarkedText`), which can be the admission's
 // own. The admission reads again rather than taking that for a failure, and the editor connects
@@ -267,7 +253,7 @@ test("ProofDocument admits the editor though a pending insert's delete gives up 
   try {
     await waitFor(() => expect(getArtifactText).toHaveBeenCalledTimes(1));
     await act(async () => {
-      markCorrectedPost(queryClient, insertDeleted());
+      markCorrectedPost(queryClient, insertDeleted(artifact.id, "block-1", 1));
       await settle();
     });
     // The read given up lands nowhere.
@@ -290,7 +276,7 @@ test("ProofDocument admits the editor though a pending insert's delete gives up 
       })
     );
     await act(async () => {
-      markCorrectedPost(queryClient, insertDeleted());
+      markCorrectedPost(queryClient, insertDeleted(artifact.id, "block-1", 1));
       await settle();
     });
     await waitFor(() =>
