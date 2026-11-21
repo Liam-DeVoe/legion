@@ -300,7 +300,8 @@ function proxyServer(run: DispatchProxyRun, tally: Tally): Server {
       // reads Dispatch's status line, its headers and the body bytes the fetch yielded, then the
       // close; `response.destroy()` would drop what is queued. A response queued behind an earlier
       // answer on a pipelined connection has no socket until its turn, so it is destroyed itself:
-      // it drops what it holds, and the tool reads the earlier answer whole, then the close.
+      // it drops what it holds, and the tool reads the earlier answer, whole or cut where the tool
+      // hung up on it, then the close, and nothing of this one.
       if (response.socket) response.socket.destroy();
       else response.destroy();
     });
@@ -547,7 +548,11 @@ async function serve(
   try {
     sent = await send();
     // A token the broker no longer holds live (R3): that token alone is dropped, and the request
-    // is sent once more with the token the next trade gives.
+    // is sent once more with the token the next trade gives. A JSON 401's body is read here, from
+    // a clone, before `giveBack` writes the head. Where that body breaks off, this read reaches the
+    // break-off first, and on Bun 1.4.4 the body `giveBack` streams then yields none of the bytes
+    // Dispatch sent: the tool reads the 401's status line and headers, no body byte, then the
+    // close, still a cut answer.
     if (await tokenNotLive(sent.answer)) {
       run.config.credential.stale?.(undefined, sent.presented);
       await sent.answer.body?.cancel();
@@ -578,17 +583,10 @@ async function serve(
  * carries `Transfer-Encoding`: a body with that length goes out unchunked, and any other body goes
  * out chunked. A redirect is given back, never followed.
  *
- * The status line and the headers go out before the body is read. A body that breaks off, before
- * its first byte or after it, throws to {@link proxyServer}'s catch, which closes the connection,
- * so the tool reads a cut answer as one: Dispatch's status line and headers, a short body (fewer
- * bytes than its `Content-Length`, or chunks with no last chunk), then the close. The short body
- * holds the bytes Dispatch sent before the break-off, but most often none of those that arrive in
- * the same read as Dispatch's close, which Bun's fetch does not yield; so it can be empty although
- * Dispatch sent some. A response queued behind an earlier answer on a pipelined connection holds
- * its status line, its headers and its body until its turn, so where it breaks off before then,
- * the tool reads the earlier answer whole, then the close, and nothing of this one. Where the tool
- * hangs up, `serve` stops the fetch, and the loop below ends by the same throw or at the next
- * chunk.
+ * It writes the status line and the headers, flushes them, streams the body as it comes, and ends
+ * the answer. A body that breaks off throws to {@link proxyServer}'s catch, which closes the
+ * connection. Where the tool hangs up, `serve` stops the fetch, and the loop below ends by the same
+ * throw or at the next chunk.
  */
 async function giveBack(answer: Response, response: ServerResponse): Promise<void> {
   response.writeHead(answer.status, answeredHeaders(answer.headers));
@@ -596,8 +594,10 @@ async function giveBack(answer: Response, response: ServerResponse): Promise<voi
     response.end();
     return;
   }
-  // Bun's `node:http` puts nothing on the wire until the first write. The status line and the
-  // headers are queued now, so a body that breaks off before its first byte still has them sent.
+  // Bun's `node:http` puts nothing on the wire until the first write. On a response that has its
+  // socket, this queues the status line and the headers, so a body that breaks off before its
+  // first byte still has them sent. A response queued behind an earlier answer on a pipelined
+  // connection has no socket yet, and this queues nothing for it.
   response.flushHeaders();
   for await (const chunk of answer.body) {
     if (response.destroyed) return;

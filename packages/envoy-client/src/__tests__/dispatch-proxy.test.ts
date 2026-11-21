@@ -1254,16 +1254,17 @@ interface Expected {
   readonly chunked: boolean;
   /** Headers it must carry as Dispatch sent them, by lower-case name. */
   readonly headers?: Readonly<Record<string, string>>;
-  /** Dispatch's body as it sent it, its chunks decoded. */
+  /** Dispatch's body as it sent it, its chunks decoded; of a cut answer, the bytes Dispatch sent
+   *  before the cut. */
   readonly body: Buffer | string;
   /** Whether the answer is cut, Dispatch's broken off or the tool's hung up on: the tool must read
-   *  a start of the body, fewer bytes than its `Content-Length` or chunks with no last chunk, and
-   *  never the whole answer. The start can be empty, since Bun's fetch most often yields none of
-   *  the bytes that arrive in the same read as Dispatch's close. */
+   *  exactly `body`, fewer bytes than its `Content-Length` or chunks with no last chunk, then the
+   *  close, and never the whole answer. */
   readonly cut: boolean;
-  /** Whether it waits behind an earlier answer on a pipelined connection and breaks off before
-   *  its turn: the tool reads it cut, or nothing of it at all. */
-  readonly queued?: boolean;
+  /** Whether the bytes of a cut answer came in the same read as Dispatch's close: Bun's fetch
+   *  most often yields none of the bytes in that read, so the tool may read any start of `body`,
+   *  the empty one included. */
+  readonly sameReadAsClose?: boolean;
 }
 
 /** One row of the framing table. */
@@ -1392,7 +1393,7 @@ function framingRows(): readonly FramingRow[] {
         SECOND_ANSWER,
       ],
     },
-    // A proxy that sends no last chunk; no earlier proxy fails it, as each ended a whole answer.
+    // A proxy that sends no last chunk.
     {
       name: "a chunked answer with its last chunk, on a keep-alive connection, then a second request on it",
       dispatch: {
@@ -1450,7 +1451,7 @@ function framingRows(): readonly FramingRow[] {
       requests: [keptGet(FRAMED), rawGet(SECOND)],
       answers: [{ status: 200, chunked: true, body: "hello world", cut: false }, SECOND_ANSWER],
     },
-    // A proxy that adds a Content-Length to a 204; no earlier proxy fails it, as none added one.
+    // A proxy that adds a Content-Length to a 204.
     {
       name: "a 204, on a keep-alive connection, then a second request on it",
       dispatch: { [FRAMED]: [onTheWire("HTTP/1.1 204 No Content", ["X-Dispatch-Test: kept"])] },
@@ -1521,7 +1522,8 @@ function framingRows(): readonly FramingRow[] {
         { status: 401, length: "100", chunked: false, headers: JSON_TYPE, body: "", cut: true },
       ],
     },
-    // A catch that destroys only the response's socket, which a queued response does not have.
+    // A catch that destroys only the response's socket, which a queued response does not have. The
+    // tool reads the slow answer whole, then the close, and nothing of the queued 503.
     {
       name: "a 503 cut before its first body byte, pipelined behind a slow answer on the same connection",
       dispatch: {
@@ -1530,20 +1532,10 @@ function framingRows(): readonly FramingRow[] {
       },
       requests: [keptGet(SLOW), keptGet(FRAMED)],
       side: { pipelined: true },
-      answers: [
-        SLOW_ANSWER,
-        {
-          status: 503,
-          length: "64",
-          chunked: false,
-          headers: JSON_TYPE,
-          body: "",
-          cut: true,
-          queued: true,
-        },
-      ],
+      answers: [SLOW_ANSWER],
     },
-    // A proxy that drops Dispatch's Content-Length from an answer that breaks off.
+    // A proxy that drops Dispatch's Content-Length from an answer that breaks off, or drops the
+    // bytes it had at the break-off.
     {
       name: "an answer cut after 10 of its 100 bytes, on a connection that asks for a close",
       dispatch: {
@@ -1556,7 +1548,33 @@ function framingRows(): readonly FramingRow[] {
       requests: [rawGet(FRAMED)],
       answers: [{ status: 200, length: "100", chunked: false, body: TEN_OF_100, cut: true }],
     },
-    // A proxy that ends a cut chunked answer; no earlier proxy fails it, as each closed instead.
+    // A proxy that ends an answer whole where its last bytes come in the same read as Dispatch's
+    // close. Bun's fetch most often yields none of the bytes in that read, so the tool may read
+    // any start of the 10, the empty one included; it still reads the answer as cut.
+    {
+      name: "an answer cut after 10 of its 100 bytes, in the same read as its close, on a keep-alive connection",
+      dispatch: {
+        [FRAMED]: [
+          onTheWire(
+            "HTTP/1.1 200 OK",
+            ["Content-Type: application/json", "Content-Length: 100"],
+            TEN_OF_100
+          ),
+        ],
+      },
+      requests: [keptGet(FRAMED)],
+      answers: [
+        {
+          status: 200,
+          length: "100",
+          chunked: false,
+          body: TEN_OF_100,
+          cut: true,
+          sameReadAsClose: true,
+        },
+      ],
+    },
+    // A proxy that ends a cut chunked answer, or drops the chunk it had at the break-off.
     {
       name: "a chunked answer with no last chunk, on a keep-alive connection",
       dispatch: {
@@ -1569,7 +1587,7 @@ function framingRows(): readonly FramingRow[] {
       requests: [keptGet(FRAMED)],
       answers: [{ status: 200, chunked: true, body: "hello ", cut: true }],
     },
-    // A proxy that holds a body until it is whole; no earlier proxy fails it, as each streamed.
+    // A proxy that holds a body until it is whole.
     {
       name: "SSE frames, then a drop, on a keep-alive connection",
       dispatch: {
@@ -1599,7 +1617,8 @@ function framingRows(): readonly FramingRow[] {
       ],
       streamed: "data: one\n\n",
     },
-    // A proxy that drops Dispatch's Content-Length, on a body of many reads.
+    // A proxy that drops Dispatch's Content-Length, or the bytes it had at the break-off, on a body
+    // of many reads.
     {
       name: "a 1 MiB answer cut after 64 KiB, on a keep-alive connection",
       dispatch: {
@@ -1617,7 +1636,8 @@ function framingRows(): readonly FramingRow[] {
         { status: 200, length: String(MIB), chunked: false, body: FIRST_64_KIB, cut: true },
       ],
     },
-    // The same catch, for a queued response that took body bytes before its break-off.
+    // The same catch, for a queued response that took body bytes before its break-off. The tool
+    // reads the slow answer whole, then the close, and nothing of the queued one.
     {
       name: "an answer cut after 10 of its 100 bytes, pipelined behind a slow answer on the same connection",
       dispatch: {
@@ -1630,19 +1650,9 @@ function framingRows(): readonly FramingRow[] {
       },
       requests: [keptGet(SLOW), keptGet(FRAMED)],
       side: { pipelined: true },
-      answers: [
-        SLOW_ANSWER,
-        {
-          status: 200,
-          length: "100",
-          chunked: false,
-          body: TEN_OF_100,
-          cut: true,
-          queued: true,
-        },
-      ],
+      answers: [SLOW_ANSWER],
     },
-    // A proxy that reads on, fails or stops serving after a hang-up; no earlier proxy did.
+    // A proxy that reads on, fails or stops serving after a hang-up.
     {
       name: "a tool that hangs up mid-body, on a keep-alive connection",
       dispatch: { [FRAMED]: longSteps("x") },
@@ -1653,7 +1663,8 @@ function framingRows(): readonly FramingRow[] {
       ],
       cutShort: [FRAMED],
     },
-    // The same for the queued response, which has no socket; no earlier proxy threw on it.
+    // The same for the queued response, which has no socket. The tool reads the first answer cut,
+    // then the close, and nothing of the queued one.
     {
       name: "a tool that hangs up mid-body of the first of two requests pipelined on one connection",
       dispatch: { [FRAMED]: longSteps("x"), [NEXT]: longSteps("y") },
@@ -1661,14 +1672,6 @@ function framingRows(): readonly FramingRow[] {
       side: { pipelined: true, hangUpAfter: 150 },
       answers: [
         { status: 200, length: "100000", chunked: false, body: "x".repeat(200), cut: true },
-        {
-          status: 200,
-          length: "100000",
-          chunked: false,
-          body: "y".repeat(200),
-          cut: true,
-          queued: true,
-        },
       ],
       cutShort: [FRAMED, NEXT],
     },
@@ -1682,7 +1685,8 @@ interface Seen {
   readonly chunked: boolean;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly whole: boolean;
-  /** Dispatch's body, a start of it, or the bytes the tool read in its place. */
+  /** Dispatch's body, the bytes it sent before a cut or a start of them, or the bytes the tool
+   *  read in their place. */
   readonly body: string;
 }
 
@@ -1693,8 +1697,10 @@ function seenAs(
 ): Seen {
   const sent = Buffer.from(expected?.body ?? "");
   const { answer, whole } = seen;
-  const started = sent.subarray(0, answer.body.length).equals(answer.body);
-  const other = `${answer.body.length} other bytes: ${JSON.stringify(answer.body.toString("latin1").slice(0, 120))}`;
+  const anyStart = expected?.cut === true && expected.sameReadAsClose === true;
+  const matched = anyStart
+    ? sent.subarray(0, answer.body.length).equals(answer.body)
+    : answer.body.equals(sent);
   return {
     status: answer.status,
     length: answer.headers["content-length"],
@@ -1703,14 +1709,9 @@ function seenAs(
       Object.keys(expected?.headers ?? {}).map((name) => [name, answer.headers[name]])
     ),
     whole,
-    body:
-      expected?.cut === true
-        ? started
-          ? "a start of Dispatch's body"
-          : other
-        : answer.body.equals(sent)
-          ? "Dispatch's body"
-          : other,
+    body: matched
+      ? bodyAs(expected)
+      : `${answer.body.length} other bytes: ${JSON.stringify(answer.body.toString("latin1").slice(0, 120))}`,
   };
 }
 
@@ -1722,8 +1723,16 @@ function expectedAs(expected: Expected): Seen {
     chunked: expected.chunked,
     headers: { ...expected.headers },
     whole: !expected.cut,
-    body: expected.cut ? "a start of Dispatch's body" : "Dispatch's body",
+    body: bodyAs(expected),
   };
+}
+
+/** The body a framing row expects, as {@link Seen} names it. */
+function bodyAs(expected?: Expected): string {
+  if (expected?.cut !== true) return "Dispatch's body";
+  return expected.sameReadAsClose === true
+    ? "a start of the bytes Dispatch sent before the cut"
+    : "the bytes Dispatch sent before the cut";
 }
 
 // Each row reads the tool's side byte for byte up to the connection's close, then asks for a
@@ -1737,14 +1746,10 @@ for (const row of framingRows()) {
     const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
 
     const read = await untilClosed(run.socket, row.name, row.requests, row.side);
-    const answers = answersIn(read.bytes);
-    const expected = row.answers.filter(
-      (answer, at) => at < answers.length || answer.queued !== true
-    );
     expect(
-      answers.map((seen, at) => seenAs(seen, row.answers[at])),
+      answersIn(read.bytes).map((seen, at) => seenAs(seen, row.answers[at])),
       row.name
-    ).toEqual(expected.map(expectedAs));
+    ).toEqual(row.answers.map(expectedAs));
     if (row.streamed !== undefined) {
       const droppedAt = dispatch.ended.get(FRAMED) ?? 0;
       const by = read.arrivals.filter((arrival) => arrival.at <= droppedAt).at(-1)?.total ?? 0;
