@@ -393,10 +393,14 @@ func TestAResultGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
 	}
 	for _, target := range []string{net.JoinHostPort(echoHost, "443"), net.JoinHostPort(boundHost, "8443")} {
 		before := r.dials.Load()
-		// connectRaw reads the answer's head alone, so a tunnel that opened is read as its 200
-		// rather than waited on; a refusal's body is read whole.
+		// connectRaw reads the answer's head alone, and a refusal's body is read whole; the body
+		// of a tunnel that opened never ends, so its 200 is judged by its head.
 		answer, _, _ := r.connectRaw(target, basic(resultsPlaceholder))
-		refused("a CONNECT to "+target, answer, bodyOf(t, answer), before)
+		body := ""
+		if answer.StatusCode != http.StatusOK {
+			body = bodyOf(t, answer)
+		}
+		refused("a CONNECT to "+target, answer, body, before)
 	}
 	before := r.dials.Load()
 	answer, body := r.plainRaw("plain.example.net", "/anything", basic(resultsPlaceholder))
