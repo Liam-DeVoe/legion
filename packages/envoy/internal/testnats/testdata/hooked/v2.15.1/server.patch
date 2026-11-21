@@ -36,7 +36,7 @@ index 5fe536b..97639a3 100644
  	if err = o.loadState(); err != nil {
  		return nil, err
  	}
-+	measure(&MeasureEvent{Point: "store.loaded", Gen: o.mgen, Name: name, Store: fs.fcfg.StoreDir, Path: o.ifn, State: encodeConsumerState(&o.state)})
++	measure(o.mev("store.loaded", encodeConsumerState(&o.state), 0, nil))
  
  	// Assign to filestore.
  	if err = fs.AddConsumer(o); err != nil {
