@@ -165,14 +165,17 @@ func requireStatus(t *testing.T, what string, response *httptest.ResponseRecorde
 	}
 }
 
-// TestEveryRepositoryWriteRecordsItsID (c-proxy-by-repository-id): each write that sets a
-// repository name records the GitHub id GitHub answers for that name as the write runs, and a write
-// that carries the name its row stores keeps the row's id, or its lack of one, and asks GitHub
-// nothing. Over newPrivateProjectsServer's projects, with PRIV made private through its row and
-// OTHER public: alice owns both; carol, a full member, sees OTHER and not PRIV.
+// TestEveryRepositoryWriteRecordsItsID (c-proxy-by-repository-id): while a project is private, each
+// write that sets a repository name records the GitHub id GitHub answers for that name as the write
+// runs, a write GitHub does not answer is refused, and a write that carries the name its row stores
+// keeps the row's id, or its lack of one, and asks GitHub nothing. Over newPrivateProjectsServer's
+// projects, with PRIV made private through its row and OTHER public: alice owns both; carol, a full
+// member, sees OTHER and not PRIV.
 //
+//   - With no project private, alice's create of an OTHER issue naming acme/pubearly asks GitHub
+//     nothing and stores the name with no id, as before any project could be private (R9).
 //   - A PRIV issue's create naming acme/priv records 9101, a patch to acme/privpatched records 9102,
-//     and PRIV's default write of acme/privdefault records 9103.
+//     OTHER's default write of acme/pubdefault records 9104, and PRIV's of acme/privdefault 9103.
 //   - A PRIV issue names acme/privold2, which GitHub answers with acme/privnew2 (9003), and records
 //     9003. After a new repository (9010) takes the name, a patch carrying acme/privold2 keeps
 //     9003, and GitHub is asked nothing.
@@ -180,10 +183,11 @@ func requireStatus(t *testing.T, what string, response *httptest.ResponseRecorde
 //     owner confirms a PRIV issue's acme/privold2 as 9003 with shared false, carol's patch carrying
 //     acme/privnew2 keeps it with no id, asking GitHub nothing, and the proxy still hides
 //     acme/privnew2 from carol.
-//   - While GitHub does not answer: carol's create of an OTHER issue naming acme/pubfail is stored
-//     with no id; alice's create of a PRIV issue naming acme/privfail, her patch of a PRIV issue to
-//     acme/privfail, and her PRIV default write of acme/privfaildefault each answer 503
-//     REPOSITORY_ID_UNAVAILABLE and write nothing.
+//   - While GitHub does not answer, a project being private: carol's create of an OTHER issue naming
+//     acme/pubfail, alice's create of a PRIV issue naming acme/privfail, her patch of a PRIV issue
+//     to acme/privfail, and her PRIV default write of acme/privfaildefault each answer 503
+//     REPOSITORY_ID_UNAVAILABLE ("GitHub did not answer; try again", naming no project) and write
+//     nothing.
 //   - An OTHER parent above a PRIV child (rows only a direct write makes): clearing the parent's
 //     repository, and moving the parent under an OTHER issue whose repository holds no id, are each
 //     written, and carol then reads the repository the PRIV child resolves to, through the parent.
@@ -195,7 +199,8 @@ func requireStatus(t *testing.T, what string, response *httptest.ResponseRecorde
 // Controls, each run on its own: drop the id read from the default write (OTHER's default records
 // none); read the id again for a stored name (the patch after the reuse records 9010); read the id
 // for a stored name that has none (carol's re-saved OTHER issue asks GitHub, and is refused the
-// repository PRIV holds by that id). Each time the test fails naming it.
+// repository PRIV holds by that id); store a name with no id when GitHub does not answer, the path
+// before this rule (carol's create of acme/pubfail is written). Each time the test fails naming it.
 func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 	github := newIDGitHub(map[string]repositoryIdentity{
 		"acme/priv": {9101, "acme/priv"}, "acme/privpatched": {9102, "acme/privpatched"}, "acme/privdefault": {9103, "acme/privdefault"},
@@ -227,6 +232,11 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 			"/api/v1/settings/repo-projects/"+repo, map[string]any{"project": project, "default": true}, "alice"), status)
 	}
 	unconfirmed := create("alice", map[string]any{"project": "PRIV", "title": "Names acme/privold2 before ids", "force": true})
+	// With no project private, a write reads no id (R9).
+	early := create("alice", map[string]any{"project": "OTHER", "title": "Names acme/pubearly with no project private", "repo": "acme/pubearly", "force": true})
+	if id, asked := issueRepoID(t, database, early), github.reads(); id != nil || asked != 0 {
+		t.Errorf("with no project private, %s's create naming acme/pubearly recorded %s and asked GitHub %d times, want no id and GitHub asked nothing", early, idOf(id), asked)
+	}
 	makeProjectPrivate(t, database, "PRIV")
 
 	written := create("alice", map[string]any{"project": "PRIV", "title": "Names acme/priv", "repo": "acme/priv", "force": true})
@@ -293,25 +303,24 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 		t.Errorf("carol, who sees OTHER and not PRIV, reads acme/privnew2 (9003) through the GitHub proxy: PRIV's owner did not share it")
 	}
 
-	// GitHub does not answer.
+	// GitHub does not answer while a project is private: every repository write is refused.
 	github.fail(true)
-	failed := create("carol@example.com", map[string]any{"project": "OTHER", "title": "Names acme/pubfail", "repo": "acme/pubfail", "force": true})
-	if id := issueRepoID(t, database, failed); id != nil {
-		t.Errorf("an OTHER issue's create whose id read failed recorded %s, want the name stored with no id", idOf(id))
-	}
-	issues := countRows(t, database, `select count(*) from issues where project_key = 'PRIV'`)
+	issues := countRows(t, database, `select count(*) from issues`)
 	requireUnavailable := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
 		var refusal refusalAnswer
 		_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-		if response.Code != http.StatusServiceUnavailable || refusal.Code != codeRepositoryIDUnavailable {
-			t.Errorf("%s while GitHub does not answer: %d %s, want 503 %s", what, response.Code, strings.TrimSpace(response.Body.String()), codeRepositoryIDUnavailable)
+		if response.Code != http.StatusServiceUnavailable || refusal.Code != codeRepositoryIDUnavailable || refusal.Error != "GitHub did not answer; try again" {
+			t.Errorf("%s while GitHub does not answer: %d %s, want 503 %s, GitHub did not answer; try again",
+				what, response.Code, strings.TrimSpace(response.Body.String()), codeRepositoryIDUnavailable)
 		}
 	}
+	requireUnavailable("carol's create of an OTHER issue naming acme/pubfail",
+		send("POST /api/v1/issues", "/api/v1/issues", map[string]any{"project": "OTHER", "title": "Names acme/pubfail", "repo": "acme/pubfail", "force": true}, "carol@example.com"))
 	requireUnavailable("alice's create of a PRIV issue naming acme/privfail",
 		send("POST /api/v1/issues", "/api/v1/issues", map[string]any{"project": "PRIV", "title": "Names acme/privfail", "repo": "acme/privfail", "force": true}, "alice"))
-	if after := countRows(t, database, `select count(*) from issues where project_key = 'PRIV'`); after != issues {
-		t.Errorf("the refused create left PRIV with %d issues, want %d", after, issues)
+	if after := countRows(t, database, `select count(*) from issues`); after != issues {
+		t.Errorf("the refused creates left %d issues, want %d", after, issues)
 	}
 	requireUnavailable("alice's patch of "+written+" to acme/privfail",
 		send("PATCH /api/v1/issues/{key}", "/api/v1/issues/"+written, map[string]any{"repo": "acme/privfail"}, "alice"))
@@ -376,29 +385,27 @@ func requireWaitingFor(t *testing.T, database *store.Store, project string, resp
 }
 
 // TestASwitchWaitsForTheOwnersRepositoryConfirmation: a switch to private waits while a repository
-// name its project's own issues hold has no GitHub id. PRIV, which the deployment provisions, has
-// one issue naming acme/privold2 with no id, written before ids were recorded, and one naming
-// acme/priv, whose id its create recorded. The switch answers 409 PRIVATE_PROJECT_NOT_PROVISIONED
-// naming acme/privold2 alone in unconfirmed_repositories, changes nothing and appends no event, and
-// OTHER, which the deployment does not provision, answers the same code with no such field. Once
-// PRIV's owner reads acme/privold2 as GitHub's acme/privnew2 (9003) and confirms it, the switch
-// completes. Control: skip refs.UnconfirmedRepositories, and PRIV becomes private with an
-// unconfirmed name; the test fails naming it.
+// name its project's own issues hold has no GitHub id. With no project private, PRIV's issues name
+// acme/priv and acme/privold2 and their creates read no id (R9). The switch answers 409
+// PRIVATE_PROJECT_NOT_PROVISIONED naming both in unconfirmed_repositories, changes nothing and
+// appends no event, and OTHER, which the deployment does not provision, answers the same code with
+// no such field. PRIV's owner reads acme/privold2 as GitHub's acme/privnew2 (9003) and acme/priv as
+// 9101, and confirms acme/privold2: the switch still waits, naming acme/priv alone. Once the owner
+// confirms acme/priv too, the switch completes. Control: skip refs.UnconfirmedRepositories, and
+// PRIV becomes private with unconfirmed names; the test fails naming them.
 func TestASwitchWaitsForTheOwnersRepositoryConfirmation(t *testing.T) {
 	github := newIDGitHub(map[string]repositoryIdentity{
 		"acme/priv": {9101, "acme/priv"}, "acme/privold2": {9003, "acme/privnew2"},
 	})
 	handler, database := newPrivateProjectsServer(t, github.options(t, testServerOptions{privateProjects: []string{"PRIV"}}), &recordingAdmission{})
-	recorded := createdIssueKey(t, handler, "alice", map[string]any{"project": "PRIV", "title": "Names acme/priv", "repo": "acme/priv", "force": true})
-	if id := issueRepoID(t, database, recorded); id == nil || *id != 9101 {
-		t.Fatalf("%s's create naming acme/priv recorded %s, want 9101", recorded, idOf(id))
-	}
-	legacy := createdIssueKey(t, handler, "alice", map[string]any{"project": "PRIV", "title": "Names acme/privold2 before ids", "force": true})
-	if _, err := database.Pool.Exec(context.Background(), `update issues set repo = 'acme/privold2', repo_id = null where key = $1`, legacy); err != nil {
-		t.Fatalf("write %s as a row written before ids: %v", legacy, err)
+	for _, repo := range []string{"acme/priv", "acme/privold2"} {
+		created := createdIssueKey(t, handler, "alice", map[string]any{"project": "PRIV", "title": "Names " + repo, "repo": repo, "force": true})
+		if id := issueRepoID(t, database, created); id != nil {
+			t.Fatalf("with no project private, %s's create naming %s recorded %s, want none", created, repo, idOf(id))
+		}
 	}
 	before := allEvents(t, database)
-	requireWaitingFor(t, database, "PRIV", switchToPrivate(t, handler, "PRIV"), "acme/privold2")
+	requireWaitingFor(t, database, "PRIV", switchToPrivate(t, handler, "PRIV"), "acme/priv", "acme/privold2")
 	if appended := allEvents(t, database) - before; appended != 0 {
 		t.Errorf("the refused switch appended %d events, want none", appended)
 	}
@@ -417,9 +424,12 @@ func TestASwitchWaitsForTheOwnersRepositoryConfirmation(t *testing.T) {
 	}
 	requireStatus(t, "alice confirms acme/privold2 as 9003", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/PRIV/repositories/confirm",
 		map[string]any{"repo": "acme/privold2", "id": 9003}, "alice"), http.StatusOK)
+	requireWaitingFor(t, database, "PRIV", switchToPrivate(t, handler, "PRIV"), "acme/priv")
+	requireStatus(t, "alice confirms acme/priv as 9101", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/PRIV/repositories/confirm",
+		map[string]any{"repo": "acme/priv", "id": 9101}, "alice"), http.StatusOK)
 	made := switchToPrivate(t, handler, "PRIV")
 	if made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
-		t.Fatalf("the switch after the owner's confirmation answered %d %s, PRIV %s, want 200 and PRIV private",
+		t.Fatalf("the switch after the owner's confirmations answered %d %s, PRIV %s, want 200 and PRIV private",
 			made.Code, strings.TrimSpace(made.Body.String()), visibilityOf(t, database, "PRIV"))
 	}
 }
@@ -432,8 +442,8 @@ func TestASwitchWaitsForTheOwnersRepositoryConfirmation(t *testing.T) {
 // write takes it (refuseUnidentifiedRepository), stores PRIV's issue's repository acme/raced with
 // no id. PRIV's switch starts beside it and waits; the write commits; the switch answers 409 naming
 // acme/raced. And the route's own write takes that lock: while PRIV's owner lock is held
-// exclusively, as a switch holds it, a PATCH of PRIV's issue naming acme/racedroute, whose id GitHub
-// does not answer, waits, and is written, with no id, once the lock is let go.
+// exclusively, as a switch holds it, a PATCH of PRIV's issue naming acme/racedroute, which reads no
+// id while no project is private, waits, and is written, with no id, once the lock is let go.
 //
 // Controls, each on its own: drop the switch's owner lock (access.LockForAccessWrite's
 // lockProject), and the switch completes beside the write; drop the write's shared lock, and the
@@ -503,22 +513,30 @@ func TestARepositoryWriteBesideTheSwitchIsSeen(t *testing.T) {
 	}
 	requireStatus(t, "the PATCH naming acme/racedroute", await(patched, "the PATCH"), http.StatusOK)
 	if id := issueRepoID(t, database, key); id != nil {
-		t.Errorf("the PATCH whose id read failed recorded %s, want acme/racedroute stored with no id", idOf(id))
+		t.Errorf("the PATCH, which read no id while no project was private, recorded %s, want acme/racedroute stored with no id", idOf(id))
 	}
 }
 
 // TestARepositorySharedBeforeTheSwitchStaysSharedAndIsReported: a repository an issue of another
 // project resolves to by its recorded id is shared, and the switch to private neither waits on it
-// nor hides it from that issue's people; the owner's list reports it. An OTHER issue and a PRIV
-// issue each name acme/both, each recording 9107 at its create. PRIV's switch completes; PRIV's
-// owner reads acme/both with shared_elsewhere 1; carol, who sees OTHER and not PRIV, reads acme/both
-// through the GitHub proxy. Control: make the switch wait on shared_elsewhere as it waits on an
-// unconfirmed name, and the switch is refused; the test fails naming acme/both.
+// nor hides it from that issue's people; the owner's list reports it. With HID, another project,
+// private, so each write reads its id, an OTHER issue and a PRIV issue each name acme/both, each
+// recording 9107 at its create. PRIV's switch completes; PRIV's owner reads acme/both with
+// shared_elsewhere 1; carol, who sees OTHER and not PRIV, reads acme/both through the GitHub proxy.
+// Control: make the switch wait on shared_elsewhere as it waits on an unconfirmed name, and the
+// switch is refused; the test fails naming acme/both.
 func TestARepositorySharedBeforeTheSwitchStaysSharedAndIsReported(t *testing.T) {
 	github := newIDGitHub(map[string]repositoryIdentity{"acme/both": {9107, "acme/both"}})
 	handler, database := newPrivateProjectsServer(t, github.options(t, testServerOptions{privateProjects: []string{"PRIV"}}), &recordingAdmission{})
-	createdIssueKey(t, handler, "alice", map[string]any{"project": "OTHER", "title": "Works in acme/both", "repo": "acme/both", "force": true})
-	createdIssueKey(t, handler, "alice", map[string]any{"project": "PRIV", "title": "Works in acme/both too", "repo": "acme/both", "force": true})
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee, visibility) values ('HID', 'Hidden', 'alice', 'private')`); err != nil {
+		t.Fatalf("seed HID, private: %v", err)
+	}
+	for _, project := range []string{"OTHER", "PRIV"} {
+		created := createdIssueKey(t, handler, "alice", map[string]any{"project": project, "title": "Works in acme/both", "repo": "acme/both", "force": true})
+		if id := issueRepoID(t, database, created); id == nil || *id != 9107 {
+			t.Fatalf("%s's create naming acme/both recorded %s, want 9107", created, idOf(id))
+		}
+	}
 	if made := switchToPrivate(t, handler, "PRIV"); made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
 		t.Fatalf("PRIV's switch beside OTHER's issue naming acme/both answered %d %s, want 200 and PRIV private: a shared repository informs and holds nothing",
 			made.Code, strings.TrimSpace(made.Body.String()))

@@ -90,6 +90,12 @@ func TestEveryWriteDeclaresItsColumns(t *testing.T) {
 		}
 	}
 	walk := seedHiddenWrites(t)
+	// The columns a route writes do not turn on who may see what it writes, and with no project
+	// private a repository write reads no GitHub id (writtenRepository), which this seed's server
+	// has no GitHub to answer.
+	if _, err := walk.database.Pool.Exec(context.Background(), `update projects set visibility = 'public'`); err != nil {
+		t.Fatalf("make every project public: %v", err)
+	}
 	if _, err := walk.database.Pool.Exec(context.Background(), writtenColumnTriggers); err != nil {
 		t.Fatalf("record the written columns: %v", err)
 	}

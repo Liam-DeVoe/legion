@@ -173,17 +173,18 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 
 	key := r.PathValue("key")
 	// The GitHub id of the repository the body names, read before the transaction so no lock waits
-	// on GitHub, and only where the issue does not store that name already: a write that carries the
-	// stored name keeps the row's id, or its lack of one, and reads nothing (writtenRepository). The
-	// stored name is read here as the caller sees the issue, with nothing locked, and read again
-	// below under the issue's owner lock, which decides.
+	// on GitHub, while a project is private and only where the issue does not store that name
+	// already: a write that carries the stored name keeps the row's id, or its lack of one, and reads
+	// nothing (writtenRepository). The stored name is read here as the caller sees the issue, with
+	// nothing locked, and read again below under the issue's owner lock, which decides; a read GitHub
+	// did not answer is kept and refuses the write there, after the issue's own refusals.
 	var written *writtenRepository
 	if repo != nil {
-		written = s.writtenRepository(*repo)
+		written = s.writtenRepository(*repo, who)
 		var stored *string
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select repo from issues where key = $1 and `+
 			access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&stored); err == nil && !sameRepositoryName(stored, *repo) {
-			written.id(r.Context())
+			_, _ = written.id(r.Context())
 		}
 	}
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
@@ -299,7 +300,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The id the write records beside its repository: the one the issue stores, under its owner
 	// lock, where the body carries the name it stores, and else GitHub's for the new name, read above
-	// or, where the issue's name changed since, now.
+	// or, where the issue's name changed since, now; a read GitHub did not answer refuses the write
+	// (repositoryIDUnavailable).
 	var repoID *int64
 	keepRepoID := false
 	if repo != nil {
@@ -311,7 +313,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			repoID = written.id(r.Context())
+			var err error
+			if repoID, err = written.id(r.Context()); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 	}
 	// A repository the GitHub proxy hides from the writer is not theirs to name

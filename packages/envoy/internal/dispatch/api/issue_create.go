@@ -307,11 +307,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The GitHub id of the repository the body names, read before the transaction so no lock waits
-	// on GitHub: a create's name is new to its row, so the id GitHub answers now is the one the
-	// creator means (writtenRepository).
+	// on GitHub, while a project is private: a create's name is new to its row, so the id GitHub
+	// answers now is the one the creator means, and a read GitHub does not answer refuses the
+	// create before anything is written (writtenRepository).
 	var repoID *int64
 	if repo != nil {
-		repoID = s.writtenRepository(*repo).id(r.Context())
+		var err error
+		if repoID, err = s.writtenRepository(*repo, who).id(r.Context()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {

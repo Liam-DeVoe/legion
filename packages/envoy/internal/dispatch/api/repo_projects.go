@@ -125,19 +125,20 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The GitHub id of the repository, read before the transaction so no lock waits on GitHub, for
-	// a write that makes the mapping its project's default where it is not that already: a write
-	// that leaves a default as it was keeps the row's id, or its lack of one, and reads nothing
-	// (writtenRepository). The mapping is read here with nothing locked, as the caller sees it, and
-	// again below under the mapping's locks, which decide.
-	written := s.writtenRepository(repo)
+	// The GitHub id of the repository, read before the transaction so no lock waits on GitHub, while
+	// a project is private, for a write that makes the mapping its project's default where it is not
+	// that already: a write that leaves a default as it was keeps the row's id, or its lack of one,
+	// and reads nothing (writtenRepository). The mapping is read here with nothing locked, as the
+	// caller sees it, and again below under the mapping's locks, which decide; a read GitHub did not
+	// answer is kept and refuses the write there.
+	written := s.writtenRepository(repo, who)
 	if input.Default != nil && *input.Default {
 		var mapped string
 		var wasDefault bool
 		err := s.deps.Store.Pool.QueryRow(r.Context(), `select project, is_default from repo_projects where repo = $1 and `+
 			access.ProjectClause("project", "$2"), repo, refs.VisibilityArg(who)).Scan(&mapped, &wasDefault)
 		if err != nil || mapped != input.Project || !wasDefault {
-			written.id(r.Context())
+			_, _ = written.id(r.Context())
 		}
 	}
 
@@ -158,7 +159,8 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		isDefault = *input.Default
 	}
 	// The id the default records: the one the mapping holds where it stays its project's default,
-	// and else GitHub's, read above or, where the mapping changed since, now.
+	// and else GitHub's, read above or, where the mapping changed since, now; a read GitHub did not
+	// answer refuses the write (repositoryIDUnavailable).
 	keepRepoID := isDefault && previous != nil && !moved && previous.Default
 	var repoID *int64
 	switch {
@@ -168,7 +170,10 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case isDefault:
-		repoID = written.id(r.Context())
+		if repoID, err = written.id(r.Context()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// A project's default is the repository each of its issues that names none resolves to, so a
 	// mapping this write leaves as a default is held to the rule an issue's own repository is

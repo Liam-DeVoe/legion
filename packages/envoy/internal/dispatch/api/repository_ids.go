@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,56 +14,71 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Each write that sets a repository name, an issue's own repository (POST /api/v1/issues, PATCH
-// /api/v1/issues/{key}) and a project's default (PUT /api/v1/settings/repo-projects/{owner}/{repo}
-// leaving the mapping a default), records beside it the GitHub id GitHub answers for that name as
-// the write runs (writtenRepository): the name a person writes now names the repository they mean
-// now. A write that carries the name its row already stores keeps the row as it is, with its id or
-// with none, and reads nothing: a read of a stored name can answer a repository that took the name
-// later, and a new id on a row the project's owner left unconfirmed would undo the owner's
-// confirmation (refs.ConfirmRepository). A read that does not answer stores the name with no id,
-// except where the row belongs to a private project: there the write is refused 503
-// REPOSITORY_ID_UNAVAILABLE and writes nothing (refuseUnidentifiedRepository), since every name a
-// private project's own rows hold carries an id from its switch on (refs.UnconfirmedRepositories).
+// While the deployment holds a private project, each write that sets a repository name, an issue's
+// own repository (POST /api/v1/issues, PATCH /api/v1/issues/{key}) and a project's default (PUT
+// /api/v1/settings/repo-projects/{owner}/{repo} leaving the mapping a default), records beside it
+// the GitHub id GitHub answers for that name as the write runs (writtenRepository): the name a
+// person writes now names the repository they mean now. A write GitHub does not answer is refused
+// 503 REPOSITORY_ID_UNAVAILABLE in words that name no project, and nothing is stored: no write
+// while a project is private stores a name without the repository it means. With no project
+// private, no id is read and the name is stored with none, as before any project could be private
+// (R9); the switch to private then waits for its owner to confirm each such name
+// (refs.UnconfirmedRepositories). A write that carries the name its row already stores keeps the
+// row as it is, with its id or with none, and reads nothing: a read of a stored name can answer a
+// repository that took the name later, and a new id on a row the project's owner left unconfirmed
+// would undo the owner's confirmation (refs.ConfirmRepository).
 
-// codeRepositoryIDUnavailable is the code refuseUnidentifiedRepository refuses a write with.
+// codeRepositoryIDUnavailable is the code a repository write is refused with when GitHub does not
+// answer the id it reads, or when its project turned private beside a write that read none.
 const codeRepositoryIDUnavailable = "REPOSITORY_ID_UNAVAILABLE"
 
+// repositoryIDUnavailable is the refusal of a repository write whose id GitHub did not answer: 503
+// REPOSITORY_ID_UNAVAILABLE, naming no project and no repository.
+func repositoryIDUnavailable() error {
+	return errorf(http.StatusServiceUnavailable, codeRepositoryIDUnavailable, "GitHub did not answer; try again")
+}
+
 // writtenRepository is the repository name one write sets, with the GitHub id the write records
-// beside it, read from GitHub at most once (id).
+// beside it, read from GitHub at most once (id), and only while the deployment holds a private
+// project (reads).
 type writtenRepository struct {
 	github *githubapp.Client
 	name   string
+	reads  bool
 	read   bool
 	found  *int64
+	err    error
 }
 
-// writtenRepository is the repository canonical, the name a write sets, read through the
-// server's GitHub App client.
-func (s *server) writtenRepository(canonical string) *writtenRepository {
-	return &writtenRepository{github: s.deps.GitHub, name: canonical}
+// writtenRepository is the repository canonical, the name a write by who sets, read through the
+// server's GitHub App client while the deployment holds a private project, the flag who's viewer
+// carries (Viewer.AnyPrivate, the one the GitHub proxy's R9 arm reads).
+func (s *server) writtenRepository(canonical string, who model.Actor) *writtenRepository {
+	return &writtenRepository{github: s.deps.GitHub, name: canonical, reads: who.Viewer != nil && who.Viewer.AnyPrivate}
 }
 
 // id is the GitHub id of the repository the written name reaches now (githubapp.CurrentRepository,
-// which follows GitHub's redirect from an old name), read the first time it is asked for and kept:
-// nil where GitHub did not answer, a deployment with no App key's included. ctx is the request's,
-// never one held to a repository.
-func (w *writtenRepository) id(ctx context.Context) *int64 {
+// which follows GitHub's redirect from an old name), read the first time it is asked for and kept.
+// With no project private it reads nothing and answers nil. A read GitHub does not answer, a
+// deployment with no App key's included, is repositoryIDUnavailable. ctx is the request's, never
+// one held to a repository.
+func (w *writtenRepository) id(ctx context.Context) (*int64, error) {
+	if !w.reads {
+		return nil, nil
+	}
 	if w.read {
-		return w.found
+		return w.found, w.err
 	}
 	w.read = true
 	owner, name, _ := strings.Cut(w.name, "/")
 	current, err := w.github.CurrentRepository(ctx, owner, name)
-	switch {
-	case errors.Is(err, githubapp.ErrNoAppKey):
-		slog.Debug("dispatch: a repository write records no GitHub id: no App key", "repository", w.name)
-	case err != nil:
-		slog.Warn("dispatch: a repository write could not read the repository's GitHub id; the name is stored with none", "repository", w.name, "error", err)
-	default:
-		w.found = &current.ID
+	if err != nil {
+		slog.Warn("dispatch: a repository write could not read the repository's GitHub id while a project is private; the write is refused", "repository", w.name, "error", err)
+		w.err = repositoryIDUnavailable()
+		return nil, w.err
 	}
-	return w.found
+	w.found = &current.ID
+	return w.found, nil
 }
 
 // sameRepositoryName reports whether a write that sets repo carries the name stored already, as
@@ -73,9 +87,10 @@ func sameRepositoryName(stored *string, repo string) bool {
 	return stored != nil && strings.EqualFold(*stored, repo)
 }
 
-// refuseUnidentifiedRepository refuses, with 503 REPOSITORY_ID_UNAVAILABLE and nothing written, a
-// write that would leave a row of project, an issue of it or its default, holding the repository
-// name repo with no GitHub id while project is private. It takes the project's owner lock shared
+// refuseUnidentifiedRepository refuses, with repositoryIDUnavailable and nothing written, a write
+// that would leave a row of project, an issue of it or its default, holding the repository name
+// repo with no GitHub id while project is private: a write that began with no project private
+// read no id, and its project turned private beside it. It takes the project's owner lock shared
 // before it reads the project's visibility, so it either reads the visibility a switch to private
 // committed, which holds that lock exclusively, or the switch waits for this write and then sees
 // its row (refs.UnconfirmedRepositories); a transaction that already holds the lock exclusively,
@@ -95,6 +110,5 @@ func refuseUnidentifiedRepository(ctx context.Context, tx pgx.Tx, project string
 	if visibility != model.ProjectPrivate {
 		return nil
 	}
-	return errorf(http.StatusServiceUnavailable, codeRepositoryIDUnavailable,
-		"GitHub did not answer the id of %s, and every repository a private project names records its id: nothing was written; try again", *repo)
+	return repositoryIDUnavailable()
 }
