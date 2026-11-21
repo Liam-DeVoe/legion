@@ -782,22 +782,101 @@ test(
   rowLimit()
 );
 
+/** Runs the rest of its arguments as a child subreaper: `prctl(PR_SET_CHILD_SUBREAPER)`, which is
+ *  option 36, and then an exec of them, which keeps it. So each process the command's tree leaves
+ *  when its parent ends re-parents to the command, whatever process group or session it went to,
+ *  and the command can list its whole tree from its own `/proc/<pid>/task/<tid>/children`, with no
+ *  read of any other process on the machine. Where `prctl` refuses, it exits 1 saying so, and the
+ *  command never runs. */
+const asSubreaper = [
+  "python3",
+  "-c",
+  "import ctypes, os, sys\n" +
+    "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n" +
+    "    sys.exit(f'prctl(PR_SET_CHILD_SUBREAPER) failed: errno {ctypes.get_errno()}')\n" +
+    "os.execvp(sys.argv[1], sys.argv[1:])",
+] as const;
+
+/** Bash for the end of a driver that runs under `asSubreaper`: once what it started has ended, it
+ *  lists every process still below it, which is every process its tree left, and prints each one
+ *  that nothing has killed or is ending as `left: <pid> <command line>`, then `left behind: <n>`.
+ *  A process counts as ended once its state is Z or X, as killed once SIGKILL stands in its shared
+ *  pending set (`ShdPnd`, where a kill of a process or a group puts it, and where it stays until
+ *  the process is gone), and as ending once its flags carry PF_EXITING. One that is gone between
+ *  two reads is gone. Each process left is then killed, so the row leaves nothing running. The walk
+ *  reads with builtins only, so it starts no process that it would count itself, and it reads no
+ *  process outside the driver's own tree. It reads `$1`, a pid the driver started, in its own list
+ *  of children first: where the list does not show it, the list is no instrument, and the driver
+ *  prints `left behind: unknown` and exits 2. */
+const leftBehind = `
+seen() {
+  local t c
+  for t in /proc/$$/task/*/children; do
+    c=""; read -r c <"$t" 2>/dev/null
+    case " $c " in *" $1 "*) return 0 ;; esac
+  done
+  return 1
+}
+walk() {
+  local queue=($$) p t c k
+  tree=()
+  while ((\${#queue[@]})); do
+    p=\${queue[0]}; queue=("\${queue[@]:1}")
+    for t in /proc/$p/task/*/children; do
+      c=""; read -r c <"$t" 2>/dev/null
+      for k in $c; do tree+=("$k"); queue+=("$k"); done
+    done
+  done
+}
+count() {
+  local p stat fields key value shd
+  left=()
+  walk
+  for p in "\${tree[@]}"; do
+    stat=""; read -r stat <"/proc/$p/stat" 2>/dev/null || continue
+    fields=(\${stat##*) })
+    case \${fields[0]} in Z | X) continue ;; esac
+    ((fields[6] & 4)) && continue
+    shd=""
+    while read -r key value; do [ "$key" = ShdPnd: ] && { shd=$value; break; }; done <"/proc/$p/status" 2>/dev/null
+    [ -n "$shd" ] || continue
+    ((0x$shd & 0x100)) && continue
+    left+=("$p")
+  done
+  for p in "\${left[@]}"; do echo "left: $p $(tr '\\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)"; done
+  echo "left behind: \${#left[@]}"
+  for p in "\${left[@]}"; do kill -KILL "$p" 2>/dev/null; done
+}
+`;
+
 /** What a leg the tool was stopped on left behind. */
 interface StoppedLeg {
   readonly code: number;
   readonly stdout: string;
   readonly report: Report;
-  /** How many processes had the copy package as their directory once the tool had ended. */
-  readonly leftBehind: number;
+  /** Each process the leg left running once the tool had ended, nothing having killed it, as
+   *  `<pid> <command line>`. */
+  readonly left: readonly string[];
+}
+
+/** The processes a driver that ran `leftBehind` printed as left, or a throw where it printed no
+ *  count, `unknown`, or a count that disagrees with its list. */
+function leftOf(stdout: string): string[] {
+  const count = /^left behind: (\d+)$/m.exec(stdout);
+  const left = [...stdout.matchAll(/^left: (.*)$/gm)].map((line) => line[1]);
+  if (count === null || Number(count[1]) !== left.length) {
+    throw new Error(`the driver could not list what the leg left behind:\n${stdout}`);
+  }
+  return left;
 }
 
 /** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
  *  tool there as the harness lane with two reruns, and sends the tool alone the SIGTERM the
  *  step's `timeout` sends, once every one of `marks` exists, or once the tool has ended first.
- *  Then counts the processes whose directory is the package, for up to 2 s while any killed one
- *  is still dying, in the driver itself: the bounded child's own kill of what it left would hide
- *  them. `bounds` are the tool's two stop bounds, which the caller sets so that its verdict
+ *  The driver runs as its tree's subreaper (`asSubreaper`), and once the tool has ended it lists
+ *  what the leg left (`leftBehind`): no read of the machine's other processes, and no wait for
+ *  one to die. `bounds` are the tool's two stop bounds, which the caller sets so that its verdict
  *  rests on its marks and not on how long Bun or a names run takes. `how.hold`, where given, is a
  *  preload of the tool's own process, and a file the driver writes once it has sent the SIGTERM,
  *  which that preload can wait for. `how.killFrom`, where given, is a file that holds a pid: the
@@ -828,17 +907,15 @@ async function stoppedLeg(
   for (const [name, text] of Object.entries(files)) await Bun.write(join(rows, name), text);
   const out = join(directory, "out");
   const driver =
-    '"$@" & tool=$!; ready() { for m in $MARKS; do [ -e "$m" ] || return 1; done; }; ' +
+    leftBehind +
+    '"$@" & tool=$!; seen "$tool" || { echo "left behind: unknown: the driver\'s own children do not list the tool $tool"; exit 2; }; ' +
+    'ready() { for m in $MARKS; do [ -e "$m" ] || return 1; done; }; ' +
     'until ready || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
     'if [ -n "$KILL_FROM" ]; then kill -KILL "$(cat "$KILL_FROM")" 2>/dev/null; else kill -TERM "$tool" 2>/dev/null; fi; ' +
-    'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; ' +
-    // One `find`, run from `/` so that its own directory is not the package's, lists every
-    // process whose directory is; the driver itself is left out. A process the kill took can take
-    // a moment to die, so the count is read again for up to 2 s while it is not 0.
-    'dir=$PWD; for i in $(seq 40); do left=$(cd / && find /proc -mindepth 2 -maxdepth 2 -name cwd -lname "$dir" 2>/dev/null | grep -cvx "/proc/$$/cwd"); ' +
-    '[ "$left" = 0 ] && break; sleep 0.05; done; echo "left behind: $left"; exit "$code"';
+    'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; count; exit "$code"';
   const { code, stdout } = await runBounded({
     argv: [
+      ...asSubreaper,
       "bash",
       "-c",
       driver,
@@ -870,13 +947,11 @@ async function stoppedLeg(
     },
     from: import.meta.url,
   });
-  const left = /^left behind: (\d+)$/m.exec(stdout);
-  if (left === null) throw new Error(`the driver counted no process left behind:\n${stdout}`);
   return {
     code,
     stdout,
     report: JSON.parse(readFileSync(join(out, "report.json"), "utf8")),
-    leftBehind: Number(left[1]),
+    left: leftOf(stdout),
   };
 }
 
@@ -902,7 +977,7 @@ test(
     // the tool's defaults, and the row failed on what each bound then cut short.
     const directory = scratch();
     const marks = [join(directory, "spins-began"), join(directory, "beside-began")];
-    const { code, stdout, report, leftBehind } = await stoppedLeg(
+    const { code, stdout, report, left } = await stoppedLeg(
       directory,
       {
         "spins.test.ts": `${spinningHead}test("before the spin", () => {});\n${spinningRow("spins for ever", marks[0])}test("after the spin", () => {});\n`,
@@ -946,7 +1021,7 @@ test(
     expect(stdout).toMatch(
       /^::error file=packages\/dispatch\/e2e\/__tests__\/beside\.test\.ts,title=Running when the leg was stopped::e2e\/__tests__\/beside\.test\.ts: in row 1, "spins beside it", or a hook after it, of run 1 of 2, /m
     );
-    expect(leftBehind).toBe(0);
+    expect(left).toEqual([]);
     // The record of where each file was stays beside the report.
     expect(readFileSync(join(directory, "out", "progress.jsonl"), "utf8")).toContain(
       '"event":"start"'
@@ -967,7 +1042,7 @@ test(
     // name, whatever the machine's load. Both bounds are past the row's own, so neither decides.
     const directory = scratch();
     const mark = join(directory, "hook-began");
-    const { code, report, leftBehind } = await stoppedLeg(
+    const { code, report, left } = await stoppedLeg(
       directory,
       {
         "hook.test.ts": `${spinningHead}test("ends before its hook", () => {});\nafterAll(() => {\n  writeFileSync(${JSON.stringify(mark)}, "");\n  for (;;) {}\n});\n`,
@@ -990,7 +1065,7 @@ test(
       expect.objectContaining({ boundMs: 120_000, killed: false, read: true })
     );
     expect(report.stop?.bunEnd?.killed).toBe(false);
-    expect(leftBehind).toBe(0);
+    expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
 );
@@ -1004,7 +1079,7 @@ test(
     // print the row's name, and only its 2 s bound ends it, whatever the machine's load.
     const directory = scratch();
     const mark = join(directory, "row-began");
-    const { code, report, leftBehind } = await stoppedLeg(
+    const { code, report, left } = await stoppedLeg(
       directory,
       {
         "never.test.ts": `${spinningHead}if (process.env.DISPATCH_UNIT_REPEAT_NAMES_ONLY === "1") {\n  for (;;) {}\n}\n${spinningRow("spins in the leg", mark)}`,
@@ -1027,7 +1102,7 @@ test(
     expect(report.stop?.namesRuns["e2e/__tests__/never.test.ts"]).toEqual(
       expect.objectContaining({ boundMs: 2_000, killed: true, read: false })
     );
-    expect(leftBehind).toBe(0);
+    expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
 );
@@ -1068,7 +1143,7 @@ test(
     const release = join(directory, "report-released");
     const preload = join(directory, "holds-the-report.js");
     await Bun.write(preload, holdsTheReport(mark, release));
-    const { code, stdout, report, leftBehind } = await stoppedLeg(
+    const { code, stdout, report, left } = await stoppedLeg(
       directory,
       { "ends.test.ts": 'import { test } from "bun:test";\n\ntest("ends by itself", () => {});\n' },
       [mark],
@@ -1102,7 +1177,7 @@ test(
     expect(readFileSync(join(directory, "out", "report.md"), "utf8")).toContain(
       "### The leg was stopped after Bun had ended, and no test file was running"
     );
-    expect(leftBehind).toBe(0);
+    expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
 );
@@ -1137,7 +1212,7 @@ test(
     // the driver sends that worker a SIGKILL, and the tool no signal at all.
     const directory = scratch();
     const pid = join(directory, "worker-pid");
-    const { code, stdout, report, leftBehind } = await stoppedLeg(
+    const { code, stdout, report, left } = await stoppedLeg(
       directory,
       { "killed.test.ts": killedRow(pid, "process.pid"), "beside.test.ts": besideIt },
       [pid],
@@ -1164,7 +1239,7 @@ test(
     expect(readFileSync(join(directory, "out", "progress.jsonl"), "utf8")).toContain(
       '"event":"start"'
     );
-    expect(leftBehind).toBe(0);
+    expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
 );
@@ -1178,7 +1253,7 @@ test(
     // spins; the driver sends that process a SIGKILL, and the tool no signal at all.
     const directory = scratch();
     const pid = join(directory, "test-process-pid");
-    const { code, report, leftBehind } = await stoppedLeg(
+    const { code, report, left } = await stoppedLeg(
       directory,
       { "killed.test.ts": killedRow(pid, "process.ppid"), "beside.test.ts": besideIt },
       [pid],
@@ -1201,7 +1276,7 @@ test(
     expect(readFileSync(join(directory, "out", "progress.jsonl"), "utf8")).toContain(
       '"event":"start"'
     );
-    expect(leftBehind).toBe(0);
+    expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
 );
@@ -1259,14 +1334,15 @@ test(
     const runner = join(directory, "runner");
     mkdirSync(runner);
     // `set -m`, so that the step's bash runs as the runner starts it, with SIGINT not ignored as
-    // a shell ignores it for a job it puts in the background with no job control.
+    // a shell ignores it for a job it puts in the background with no job control. The driver runs
+    // as its tree's subreaper, and lists what the step left once it has ended (`leftBehind`).
     const driver =
-      'set -m; bash -e step.sh & step=$!; until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; ' +
-      'do sleep 0.05; done; kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; ' +
-      'dir=$PWD; for i in $(seq 40); do left=$(cd / && find /proc -mindepth 2 -maxdepth 2 -name cwd -lname "$dir" 2>/dev/null | grep -cvx "/proc/$$/cwd"); ' +
-      '[ "$left" = 0 ] && break; sleep 0.05; done; echo "left behind: $left"; exit "$code"';
+      leftBehind +
+      'set -m; bash -e step.sh & step=$!; set +m; seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; exit 2; }; ' +
+      'until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; do sleep 0.05; done; ' +
+      'kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; count; exit "$code"';
     const { code, stdout } = await runBounded({
-      argv: ["bash", "-c", driver],
+      argv: [...asSubreaper, "bash", "-c", driver],
       bound: "stoppedLeg",
       cwd: directory,
       env: {
@@ -1296,7 +1372,7 @@ test(
     );
     // The step ends on the tool's own exit, not on the deadline's 124.
     expect(code).toBe(1);
-    expect(/^left behind: 0$/m.test(stdout)).toBe(true);
+    expect(leftOf(stdout)).toEqual([]);
   },
   rowLimit("stoppedLeg")
 );

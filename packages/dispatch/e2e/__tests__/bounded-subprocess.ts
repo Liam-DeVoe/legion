@@ -87,7 +87,10 @@
  *   was left: the seven rows that run such a driver, 5 runs each, on 3 CPUs (`taskset`) with 9
  *   busy loops on them, on a dev box of 288 CPUs at a 1-minute load of 1,233 to 1,466 on
  *   2026-11-21. The others took 6.15 s to 15.92 s. Three times 28.24 s, rounded up to the next
- *   half minute, is 90 s.
+ *   half minute, is 90 s. That driver counted what was left with one `find` over every process's
+ *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
+ *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
+ *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
