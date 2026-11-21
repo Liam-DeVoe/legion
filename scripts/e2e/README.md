@@ -1206,7 +1206,7 @@ The checks, in order, which is the tmux proof's:
 - `stop-hook-reminds-the-open-phase`: while the implementer still holds its phase
   — open in the daemon's record since its start task, and not yet completed
   — it is told to answer in one line of prose and to call nothing, the `legion` tool included, so it declares no wait with `declare_wait`, ends a turn with that phase open, and the pod's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}`.
-  The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `inbound` case of `packages/pi-shared/src/phase-stall.ts`).
+  The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `news` case of `packages/pi-shared/src/phase-stall.ts`).
   Once the daemon has the phase's completion, it answers that the claim owes nothing and no reminder comes:
   that is why this check runs before `claude-implementer-handoff` completes the phase, never after.
   The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "This reminder repeats at the end of every turn" (a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.

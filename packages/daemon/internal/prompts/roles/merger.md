@@ -90,11 +90,11 @@ gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){me
 
 Each task from the daemon starts with the state of the gate at the time the daemon sent the task. The closed form is the closing message above. It holds the merge as the closing message does. This form tells you that the gate does not hold the merge: `The design gate of <tree> stands open: every gated step that someone registered is approved.`
 
-Before you merge (step 3) or enqueue (step 4), read your hold with the `legion` tool's `read_record` for your issue. While the closed gate holds you, `workers.merger.claim.hold` names the gated step, its document and the version with its reviewer. If your claim has a `hold`, merge nothing and enqueue nothing.
+Before you merge (step 3) or enqueue (step 4), read your hold with the `legion` tool's `read_record` for your issue. While your claim has a hold (`workers.merger.claim.hold`), merge nothing and enqueue nothing.
 
-While the closed gate holds you, do not declare a wait. The daemon refuses it. While the gate stays closed, no reminder follows a turn that ends with your phase open. The one exception is a turn that ends with a tool call written as text. That turn gets a reminder that the call did not run.
+While the closed gate holds you, do not declare a wait. While the gate stays closed, no reminder follows a turn that ends with your phase open. The one exception is a turn that ends with a tool call written as text.
 
-If you were away when the gate closed or opened, the daemon wakes you with a task. You were away if your pod was released or your session was not running. That task starts with the message of the gate.
+If you were away when the gate closed or opened, the daemon wakes you with a task.
 
 End your turn while the gate is closed. This message releases the merge: `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every gated step that someone registered now stands open, so the design you are working to is the approved one. A merge the closed gate held is released.` The daemon sends it only when every gated step that someone registered stands open. A deployment that gates more than one document sends it for the last of them. Then start again at step 1. Read the head again, because it can move while you wait.
 

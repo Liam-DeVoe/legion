@@ -6,8 +6,7 @@ body: |-
   arms no timer and reports no reminder due, except for a tool call written as text, whose reminder
   also names the closed gate during a hold. An Envoy delivery or a person's message after the
   declaration is reported to the daemon as news, with the delivery's own key, and a report that
-  fails is kept and sent again, also after a relaunch. A WAITING line at the end of a reply buys
-  nothing now: only the worker's own background work buys the quiet wait.
+  fails is kept and sent again, also after a relaunch.
 time: 2026-11-21T14:35:21Z
 custom:
     Issue: pr4030

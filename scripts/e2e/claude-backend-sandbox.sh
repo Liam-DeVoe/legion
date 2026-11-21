@@ -1550,7 +1550,7 @@ pass
 # `{"decision":"block","reason":<the reminder>}`, and Claude Code carries that reason into the
 # session as `Stop hook feedback` and one more turn of the same session. The instruction is what
 # makes the turn settle that way: it arrives as an Envoy delivery, which puts the run of reminders
-# back at zero (the `inbound` case of packages/pi-shared/src/phase-stall.ts), so the reminder this
+# back at zero (the `news` case of packages/pi-shared/src/phase-stall.ts), so the reminder this
 # settle earns is the hook's own continuation rather than a later timer's. It must come while the
 # phase is still open, because once the daemon has the completion it answers that the claim owes
 # nothing and no reminder comes. It forbids the `legion` tool, so the phase is still open when the

@@ -5,9 +5,9 @@ architect holds its role, else the nearest one above that does. A `child-status`
 and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the
 child. Your role prompt describes each notice; this table says what to do. "Section N" is that
 section of `skill://legion-architect`. Where a row says to ask a person, a child's own architect
-sends the question to the architect above it. A worker's standing wait is the `wait` of its claim
-in `read_record`, and the daemon sends no `worker-silent` or `worker-background-stalled` notice
-about a worker whose wait stands.
+sends the question to the architect above it. The daemon sends no `worker-silent` or
+`worker-background-stalled` notice about a worker whose wait stands or a merger the gate holds
+(its claim's `wait` or `hold` in `read_record`).
 
 | Wake | What to do |
 | --- | --- |

@@ -1051,6 +1051,12 @@ The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
 That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
 
+A worker whose declared wait stands is left alone too, and so is a merger that the closed design gate holds.
+The daemon prompts neither, writes no `worker-silent` or `worker-background-stalled` notice about either, and leaves both off the controller's `silent` list.
+A worker declares a wait with the `legion` tool's `declare_wait`, and the daemon sends it a task at the wait's time if nothing ended the wait before.
+A merger's hold ends when the gate opens.
+`legion state`'s `waits` and `holds` lines name each such claim, and `read_record` gives each as the `wait` or the `hold` of its claim.
+
 ## Which role made a commit
 
 Two trailers in a commit's message name the session and the role that made the commit: `Omp-Session: <session id>` and `Legion-Role: <role>`.
