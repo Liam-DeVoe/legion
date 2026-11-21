@@ -303,7 +303,7 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Release before"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
 	status := workflow.PhaseStatus(phase.Reviewing)
-	// Two titles of the in-flight run, whose places number the slots the seed writes.
+	// Two titles of the in-flight run, which Dispatch takes as two issues of no near-copy title.
 	for place, title := range []string{inFlightTitles[3], inFlightTitles[7]} {
 		var created createdIssue
 		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title}, http.StatusCreated, &created)
