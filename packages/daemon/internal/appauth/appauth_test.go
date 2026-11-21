@@ -1449,9 +1449,9 @@ func TestTheReadLeaseAsksForTheReadSet(t *testing.T) {
 }
 
 // No request this daemon sends names a repository, for any set's write lease, the verdict token
-// or the read lease: the App's installation is the whole of what a token reaches (INFRA-2543). A
+// or the read lease: the App's installation is the whole of what a token reaches. A
 // body naming `repositories` or `repository_ids` would narrow the token GitHub mints, which is
-// the narrowing INFRA-2543 took away, so every body sent is read for both, and for any key but
+// the narrowing the daemon gave up, so every body sent is read for both, and for any key but
 // the permissions.
 func TestNoMintEverNamesARepositoryToGitHub(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
@@ -1807,6 +1807,53 @@ func TestANarrowingRefusalIsServedFromMemoryInsideItsWindow(t *testing.T) {
 	}
 	if asked := github.exchanges(); len(asked) != 3 {
 		t.Errorf("%d exchanges, want one more: a scope that answers is remembered nowhere and served from its lease", len(asked))
+	}
+}
+
+// Forget of a set and owner drops the narrowing refusals remembered for the two scopes its
+// caller may have met one of, the set's write lease and the owner's read lease, so the next mint
+// of either asks GitHub at once rather than serving the refusal until narrowingRefusalWindow
+// ends: the caller forgets after an operator fixed the grant, and is answered the grant as it
+// stands. Another set's refusal of the same owner stays remembered inside its window, since its
+// caller has not forgotten it.
+func TestForgetDropsTheRefusalsOfItsSetAndTheOwnersReadLease(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	var stderr bytes.Buffer
+	granting := false
+	github := &keyModeGitHub{owners: []string{"acme"}, slug: "legion-reviewer"}
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		if !granting {
+			return http.StatusUnprocessableEntity, `{"message":"The permissions requested are not granted to this installation."}`
+		}
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
+	}
+	tokens := keyModeManager(t, github, &now, &stderr)
+	mints := map[string]func() (Lease, error){
+		"the read lease":    func() (Lease, error) { return tokens.ReadToken(context.Background(), "acme") },
+		"the reviewer's":    func() (Lease, error) { return tokens.Token(context.Background(), SetReviewer, "acme") },
+		"the implementer's": func() (Lease, error) { return tokens.Token(context.Background(), SetImplementer, "acme") },
+	}
+	for name, mint := range mints {
+		if _, err := mint(); !errors.Is(err, ErrNarrowingRefused) {
+			t.Fatalf("%s mint while the grant is short = %v, want ErrNarrowingRefused", name, err)
+		}
+	}
+	if asked := github.exchanges(); len(asked) != 3 {
+		t.Fatalf("%d exchanges, want the three GitHub refused", len(asked))
+	}
+
+	granting = true
+	tokens.Forget(SetReviewer, "ACME")
+	for _, name := range []string{"the read lease", "the reviewer's"} {
+		if lease, err := mints[name](); err != nil || lease.Token == "" {
+			t.Errorf("%s mint after Forget = %q, %v; want GitHub asked again and its lease served", name, lease.Token, err)
+		}
+	}
+	if _, err := mints["the implementer's"](); !errors.Is(err, ErrNarrowingRefused) {
+		t.Errorf("the implementer's mint after the reviewer's Forget = %v, want its own refusal still remembered", err)
+	}
+	if asked := github.exchanges(); len(asked) != 5 {
+		t.Errorf("%d exchanges, want two more: the forgotten scopes asked again, the other set's refusal served from memory", len(asked))
 	}
 }
 

@@ -794,9 +794,10 @@ func bundleDefault(bundle ghconfig.Bundle, role claim.Role, dflt string, layout 
 		role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), errors.Join(failures...))
 }
 
-// dirEntry is the directory's lease, rendered as gh's two files. A lease is the owner's whole
-// installation, so there is nothing narrower to ask for and nothing to probe: a mint that fails
-// is the whole directory, which mintBundle leaves out or fails the bundle for.
+// dirEntry is the directory's lease, rendered as gh's two files and labelled with set, the set
+// of the role the bundle is for, the controller's for its read leases too. A lease is the
+// owner's whole installation, so there is nothing narrower to ask for and nothing to probe: a
+// mint that fails is the whole directory, which mintBundle leaves out or fails the bundle for.
 func dirEntry(ctx context.Context, tokens Tokens, set TokenSet, hold dirLease) (ghconfig.Rendered, error) {
 	lease, err := hold.mint(ctx, tokens, set)
 	if err != nil {

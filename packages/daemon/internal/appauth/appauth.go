@@ -317,14 +317,14 @@ func New(app config.GitHubApp, options Options) *Manager {
 // before anything is asked (errVerdictSet), since only VerdictToken mints it, and so is a set no
 // role has.
 func (m *Manager) Token(ctx context.Context, set TokenSet, owner string) (Lease, error) {
-	permissions, known := writePermissions[set]
+	_, known := writePermissions[set]
 	switch {
 	case set == SetVerdict:
 		return Lease{}, errVerdictSet
 	case !known:
 		return Lease{}, fmt.Errorf("no role's token is of the set %q", set)
 	}
-	return m.lease(ctx, mintRequest{set: set, owner: owner, permissions: permissions})
+	return m.lease(ctx, mintRequest{set: set, owner: owner})
 }
 
 // ReadToken is Token for a token narrowed to readPermissions, the owner's one read lease, cached
@@ -337,7 +337,7 @@ func (m *Manager) Token(ctx context.Context, set TokenSet, owner string) (Lease,
 // release, so the two never stand in for each other. An owner with no name is refused, and
 // nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, owner string) (Lease, error) {
-	return m.lease(ctx, mintRequest{owner: owner, read: true, permissions: readPermissions})
+	return m.lease(ctx, mintRequest{owner: owner, read: true})
 }
 
 // VerdictToken is the write lease of SetVerdict for owner, served and minted as Token serves a
@@ -348,7 +348,7 @@ func (m *Manager) VerdictToken(ctx context.Context, owner string) (Lease, error)
 	if m.githubApp.TokenCommand != "" {
 		return Lease{}, ErrNoVerdictToken
 	}
-	return m.lease(ctx, mintRequest{set: SetVerdict, owner: owner, permissions: writePermissions[SetVerdict]})
+	return m.lease(ctx, mintRequest{set: SetVerdict, owner: owner})
 }
 
 // Forgetter drops the leases a token source holds for a set and owner, so the next one is
@@ -412,17 +412,27 @@ func leaseScope(read bool, set TokenSet, owner string) scope {
 
 // mintRequest is one ask for a lease, built by Token, ReadToken and VerdictToken and carried
 // whole through the mint: the set a write token is minted with (none for the read token), the
-// owner whose installation mints it, whether it is the read token, and the permissions GitHub is
-// asked for.
+// owner whose installation mints it, and whether it is the read token. What GitHub is asked for
+// follows from those two (permissions) rather than riding beside them, so no request can name
+// one set and ask for another's.
 type mintRequest struct {
-	set         TokenSet
-	owner       string
-	read        bool
-	permissions map[string]string
+	set   TokenSet
+	owner string
+	read  bool
 }
 
 // scope is the key the request's lease is cached and awaited under (leaseScope).
 func (r mintRequest) scope() scope { return leaseScope(r.read, r.set, r.owner) }
+
+// permissions is what the request asks GitHub for: readPermissions for the read token, else its
+// set's (writePermissions). Every mint shares the map, so a caller copies before it changes one
+// (narrowToGranted).
+func (r mintRequest) permissions() map[string]string {
+	if r.read {
+		return readPermissions
+	}
+	return writePermissions[r.set]
+}
 
 // token is the request's token as a message names it: the read token, or the set's.
 func (r mintRequest) token() string {

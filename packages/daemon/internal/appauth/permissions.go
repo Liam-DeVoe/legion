@@ -264,11 +264,11 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	if err != nil {
 		return Lease{}, err
 	}
-	permissions, short := narrowToGranted(request.permissions, granted)
-	m.sayShortfalls(request.token(), request.owner, short)
+	permissions, short := narrowToGranted(request.permissions(), granted)
+	m.sayShortfalls(request, short)
 	if len(permissions) == 0 {
 		return Lease{}, fmt.Errorf("the App's installation on %s is granted none of the permissions the %s token asks for (%s), and a token request naming no permission holds every permission the installation has: %w",
-			request.owner, request.token(), askedFor(request.permissions), errGrantedNone)
+			request.owner, request.token(), askedFor(request.permissions()), errGrantedNone)
 	}
 	return m.exchange(ctx, jwt, installation, permissions)
 }
@@ -340,14 +340,16 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	return payload.Permissions, nil
 }
 
-// sayShortfalls logs shortfallMessage at warn for each of short the first time a mint for owner
-// meets it, whichever token the mint was for, and nothing on any mint after it: the grant is the
-// installation's and the record is about the installation, which the owner names. Beside the
-// message the record carries what it says as fields, so a reader filtering the daemon's log finds
-// it by them: the token that met it first (mintRequest.token), the owner, the permission, the
-// access the set asks for and the access the installation is granted, empty where it is granted
-// none.
-func (m *Manager) sayShortfalls(token, owner string, short []grantShortfall) {
+// sayShortfalls logs shortfallMessage at warn for each of short the first time a mint for the
+// request's owner meets it, whichever token the mint was for, and nothing on any mint after it:
+// the grant is the installation's and the record is about the installation, which the owner
+// names. Beside the message the record carries what it says as fields, so a reader filtering the
+// daemon's log finds it by them: the token that met it first, by its name (mintRequest.token)
+// and never its value, the owner, the permission, the access the set asks for and the access
+// the installation is granted, empty where it is granted none. It takes the request whole rather
+// than its name and owner, two strings a call could swap.
+func (m *Manager) sayShortfalls(request mintRequest, short []grantShortfall) {
+	name, owner := request.token(), request.owner
 	for _, shortfall := range short {
 		key := saidShortfall{owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}
 		m.mu.Lock()
@@ -357,9 +359,9 @@ func (m *Manager) sayShortfalls(token, owner string, short []grantShortfall) {
 		if said {
 			continue
 		}
-		m.log.Warn(fmt.Sprintf(shortfallMessage, owner, shortfall.granting(), token,
+		m.log.Warn(fmt.Sprintf(shortfallMessage, owner, shortfall.granting(), name,
 			shortfall.permission, shortfall.asked, shortfall.minting(), shortfall.permission, shortfall.asked),
-			"token", token, "owner", owner, "permission", shortfall.permission,
+			"token", name, "owner", owner, "permission", shortfall.permission,
 			"asked", shortfall.asked, "granted", shortfall.granted)
 	}
 }
