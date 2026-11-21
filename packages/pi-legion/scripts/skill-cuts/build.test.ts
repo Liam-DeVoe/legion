@@ -875,7 +875,7 @@ const ghCalls: string[][] = [];
 
 /** The stand-in gh: GET reads of commits, default branches, two files, each file of a made-up
  *  repository at SHA, and the tree and the blobs of each made-up repository at SHA; and GraphQL
- *  reads of blobs in a batch. */
+ *  reads of blobs in a batch. The clock is the real one. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -933,6 +933,7 @@ const io = (lines: string[]): BuildIo => ({
     }
     return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
   },
+  now: () => performance.now(),
 });
 
 const setupDir = path.join(scratch, "setup");
@@ -2321,7 +2322,19 @@ const psqlLines = (from: number) =>
     .slice(from)
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => JSON.parse(line) as { kind: string; rows: number });
+    .map((line) => JSON.parse(line) as { kind: string; rows: number; after?: number[] });
+
+/** The characters of the stand-in store's log: none before its first call. */
+const psqlLogLength = () => (existsSync(psqlLog) ? readFileSync(psqlLog, "utf8").length : 0);
+
+/** The transcripts the stand-in store started to pull since `from` characters of its log: one
+ *  pull call from the place before every row (PULL_START) for each. */
+const transcriptPulls = (from: number) =>
+  psqlLines(from).filter((line) => line.kind === "pull" && line.after?.[0] === -2).length;
+
+/** A clock for `BuildIo.now` that moves one minute with each transcript the stand-in store starts
+ *  to pull, so a search's own time is the same in every run. */
+const pullClock = () => transcriptPulls(0) * 60_000;
 
 /** `summary` with each dollar figure of its spend rounded, since a run that goes on adds its
  *  spend to the earlier run's, which can differ from one running sum in the last bit. */
@@ -3344,3 +3357,309 @@ test("build-tasks refuses --profiles-out without --copies and --count, or withou
   expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
   expect(existsSync(out)).toBe(false);
 });
+
+/** The arguments of a build-tasks run in the reader's mode on store_a, with `extra`. */
+const tasksArgs = (out: string, ...extra: string[]) => [
+  "build-tasks",
+  "--config",
+  config,
+  "--key-file",
+  keyFile,
+  "--skill",
+  old,
+  "--store",
+  "store_a",
+  "--out",
+  out,
+  ...extra,
+];
+
+/** The flags that write each task's profile under `dir`, a written task taking the legion
+ *  session's. */
+const profileFlags = (dir: string) => [
+  "--profiles-out",
+  dir,
+  "--copies",
+  copiesDir,
+  "--count",
+  countDir,
+  "--context-session",
+  `store_b:${fileHash(sessionPath("legion"))}`,
+];
+
+/** An io that throws on the first printed text `pattern` matches, as a kill then would end the
+ *  run: what was saved before the text was printed stays. */
+const killedOn = (pattern: RegExp, lines: string[], now = () => performance.now()): BuildIo => ({
+  ...io(lines),
+  out: (text) => {
+    lines.push(text);
+    if (pattern.test(text)) throw new Error("killed");
+  },
+  now,
+});
+
+test("build-tasks --max-candidates ends the candidate search once that many candidates are decided; the reader gets the messages accepted by then and writes the rest of the tasks in the --context-session's context, and the summary says the bound ended the search", async () => {
+  const dir = path.join(scratch, "bound-candidates");
+  const out = path.join(dir, "tasks.jsonl");
+  const lines: string[] = [];
+  const logged = psqlLogLength();
+  expect(
+    await main(
+      tasksArgs(out, ...profileFlags(path.join(dir, "profiles")), "--max-candidates", "2"),
+      io(lines)
+    )
+  ).toBe(EXIT.ok);
+  // task-1's session is dropped (skill-not-listed) and task-4's, of the same text, accepted: two
+  // candidates decided, so task-3's, which a search with no bound takes too, is never pulled. The
+  // context session and those two are.
+  expect(transcriptPulls(logged)).toBe(3);
+  const tasks = tasksOf(out);
+  expect(tasks.filter((task) => task.source === "session")).toEqual([
+    expect.objectContaining({
+      text: "Give me the alpha checklist for the fixture project.",
+      pathHash: pathHash("/sessions/task-4.jsonl"),
+    }),
+  ]);
+  expect(tasks.filter((task) => task.source === "written")).toHaveLength(9);
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.messagesOffered).toBe(1);
+  expect(summary.search).toEqual({
+    maxCandidates: 2,
+    maxSearchMinutes: null,
+    ended: "--max-candidates",
+    decided: 2,
+    accepted: 1,
+    seconds: expect.any(Number),
+  });
+  expect(summary.candidateDrops.counts).toEqual({ "skill-not-listed": 1 });
+  expect(
+    summary.profiles.tasks.filter((each: { from: string }) => each.from === "context-session")
+  ).toHaveLength(9);
+  expect(lines.join("")).toContain(
+    "build-tasks: the candidate search ended (--max-candidates): 2 candidates decided, 1 accepted, 1 dropped, "
+  );
+  expect(existsSync(`${out}.candidates.jsonl`)).toBe(false);
+}, 120_000);
+
+test("build-tasks --max-search-minutes ends the candidate search at the first candidate after the search's own time reaches it, and the summary says the bound ended the search", async () => {
+  const out = path.join(scratch, "bound-minutes", "tasks.jsonl");
+  const lines: string[] = [];
+  // Each candidate's pull moves the clock a minute, so 1.5 minutes are reached after the second.
+  expect(
+    await main(tasksArgs(out, "--model", "openai/gpt-6.1-sol", "--max-search-minutes", "1.5"), {
+      ...io(lines),
+      now: pullClock,
+    })
+  ).toBe(EXIT.ok);
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.search).toEqual({
+    maxCandidates: null,
+    maxSearchMinutes: 1.5,
+    ended: "--max-search-minutes",
+    decided: 2,
+    accepted: 0,
+    seconds: 120,
+  });
+  // task-1's and task-4's sessions ran on another model; task-3's, on the model, is not reached.
+  expect(summary.candidateDrops.counts).toEqual({ "other-model": 2 });
+  expect(summary.messagesOffered).toBe(0);
+  expect(tasksOf(out).every((task) => task.source === "written")).toBe(true);
+  expect(lines.join("")).toContain(
+    "build-tasks: the candidate search ended (--max-search-minutes): 2 candidates decided, 0 accepted, 2 dropped, 120 s of search"
+  );
+}, 60_000);
+
+test("build-tasks with bounds, killed mid-search and run again, pulls no decided candidate again and ends with the tasks and summary of one unkilled run, the search's seconds summed over the runs", async () => {
+  const bounds = [
+    "--model",
+    "openai/gpt-6.1-sol",
+    "--max-candidates",
+    "60",
+    "--max-search-minutes",
+    "90",
+  ];
+  const once = path.join(scratch, "bound-once", "tasks.jsonl");
+  const killed = path.join(scratch, "bound-killed", "tasks.jsonl");
+  let logged = psqlLogLength();
+  expect(await main(tasksArgs(once, ...bounds), { ...io([]), now: pullClock })).toBe(EXIT.ok);
+  expect(transcriptPulls(logged)).toBe(3);
+  const lines: string[] = [];
+  expect(
+    await main(
+      tasksArgs(killed, ...bounds),
+      killedOn(/^build-tasks: candidate .*: dropped /, lines, pullClock)
+    )
+  ).toBe(EXIT.failed);
+  // The candidate decided before the kill is saved, after the bounds.
+  expect(
+    readFileSync(`${killed}.candidates.jsonl`, "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line))
+  ).toEqual([
+    { bounds: { maxCandidates: 60, maxSearchMinutes: 90 } },
+    {
+      dropped: {
+        store: "store_a",
+        pathHash: pathHash("/sessions/task-1.jsonl"),
+        reason: "other-model",
+        detail: "its first reply ran on anthropic/claude-sonnet-5-5, not openai/gpt-6.1-sol",
+      },
+      seconds: 60,
+    },
+  ]);
+  logged = psqlLogLength();
+  const from = recorder.requests.length;
+  expect(await main(tasksArgs(killed, ...bounds), { ...io(lines), now: pullClock })).toBe(EXIT.ok);
+  expect(lines.join("")).toContain("build-tasks: going on from 1 candidates decided in ");
+  // task-1's session is not pulled again; task-4's and task-3's are.
+  expect(transcriptPulls(logged)).toBe(2);
+  // The terms and the queries were recorded: the one reader call is the pick of the tasks.
+  expect(recorder.requests.length - from).toBe(1);
+  expect(readFileSync(killed, "utf8")).toBe(readFileSync(once, "utf8"));
+  const summary = (out: string) =>
+    roundedSpend(
+      JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as Record<string, unknown>
+    );
+  expect(summary(killed)).toEqual(summary(once));
+  expect(summary(killed).search).toEqual({
+    maxCandidates: 60,
+    maxSearchMinutes: 90,
+    ended: "candidates ran out",
+    decided: 3,
+    accepted: 1,
+    seconds: 180,
+  });
+  expect(existsSync(`${killed}.candidates.jsonl`)).toBe(false);
+}, 120_000);
+
+test("build-tasks refuses (exit 2) to go on from a candidate search saved under other bounds, naming both values, and leaves its files as they were; an --out whose search decided nothing takes any bounds", async () => {
+  const model = ["--model", "openai/gpt-6.1-sol"];
+  const bounds = [...model, "--max-candidates", "60", "--max-search-minutes", "90"];
+  const out = path.join(scratch, "bound-refused", "tasks.jsonl");
+  expect(await main(tasksArgs(out, ...bounds), killedOn(/^build-tasks: candidate /, []))).toBe(
+    EXIT.failed
+  );
+  const files = [`${out}.candidates.jsonl`, `${out}.summary.json`, `${out}.found.jsonl`];
+  const before = files.map((file) => readFileSync(file, "utf8"));
+  const from = recorder.requests.length;
+  const logged = psqlLogLength();
+  const rows: [string[], string][] = [
+    [["--max-candidates", "30", "--max-search-minutes", "90"], "--max-candidates was 60, now 30"],
+    [["--max-candidates", "60"], "--max-search-minutes was 90, now not given"],
+    [[], "--max-candidates was 60, now not given; --max-search-minutes was 90, now not given"],
+  ];
+  for (const [extra, why] of rows) {
+    const lines: string[] = [];
+    expect({ why, code: await main(tasksArgs(out, ...model, ...extra), io(lines)) }).toEqual({
+      why,
+      code: EXIT.refused,
+    });
+    expect(lines.join("\n")).toContain(
+      `${out}.candidates.jsonl holds a candidate search made under other bounds (1 candidates decided)`
+    );
+    expect(lines.join("\n")).toContain(why);
+  }
+  expect(files.map((file) => readFileSync(file, "utf8"))).toEqual(before);
+  expect(recorder.requests.length).toBe(from);
+  expect(psqlLogLength()).toBe(logged);
+
+  // A build killed at its first query has no search file; this one holds only the bounds, as a
+  // run killed after its search started and before its first decision leaves it. A run with
+  // other bounds goes on from it.
+  const queried = path.join(scratch, "bound-queried", "tasks.jsonl");
+  expect(
+    await main(
+      tasksArgs(queried, ...bounds),
+      killedOn(/^build-tasks: store_a \d{4}-\d{2}-\d{2}: /, [])
+    )
+  ).toBe(EXIT.failed);
+  writeFileSync(
+    `${queried}.candidates.jsonl`,
+    `${JSON.stringify({ bounds: { maxCandidates: 60, maxSearchMinutes: 90 } })}\n`
+  );
+  expect(await main(tasksArgs(queried, ...model, "--max-candidates", "2"), io([]))).toBe(EXIT.ok);
+  expect(JSON.parse(readFileSync(`${queried}.summary.json`, "utf8")).search).toMatchObject({
+    maxCandidates: 2,
+    maxSearchMinutes: null,
+    ended: "--max-candidates",
+    decided: 2,
+  });
+}, 120_000);
+
+test("build-tasks refuses a bound that is no number, a bound with no candidate search to bound, and a bound with --first-read, before any read", async () => {
+  const out = path.join(scratch, "bound-values", "tasks.jsonl");
+  const sessions = controlSessionsFile("bound-values.jsonl", ["c-one"]);
+  const model = ["--model", "openai/gpt-6.1-sol"];
+  const from = recorder.requests.length;
+  const logged = psqlLogLength();
+  const rows: [string[], string][] = [
+    [
+      tasksArgs(out, ...model, "--max-candidates", "0"),
+      "--max-candidates 0 is not a whole number of 1 or more",
+    ],
+    [
+      tasksArgs(out, ...model, "--max-candidates", "2.5"),
+      "--max-candidates 2.5 is not a whole number of 1 or more",
+    ],
+    [
+      tasksArgs(out, ...model, "--max-search-minutes", "0"),
+      "--max-search-minutes 0 is not a number of minutes above 0",
+    ],
+    [
+      tasksArgs(out, ...model, "--max-search-minutes", "soon"),
+      "--max-search-minutes soon is not a number of minutes above 0",
+    ],
+    [
+      tasksArgs(out, "--max-candidates", "60"),
+      "--max-candidates and --max-search-minutes bound the candidate search, which runs only with --model or --profiles-out",
+    ],
+    [
+      [...controlArgs(sessions, out, "1"), "--max-search-minutes", "90"],
+      "--first-read takes no --max-search-minutes: it stops once --max requests are kept",
+    ],
+  ];
+  for (const [args, why] of rows) {
+    const lines: string[] = [];
+    expect({ why, code: await main(args, io(lines)) }).toEqual({ why, code: EXIT.refused });
+    expect(lines.join("\n")).toContain(why);
+  }
+  expect(recorder.requests.length).toBe(from);
+  expect(psqlLogLength()).toBe(logged);
+  expect(existsSync(out)).toBe(false);
+});
+
+test("build-tasks with no bound writes byte for byte what it wrote before the bounds: the tasks, the summary, the profiles and the printed lines of a run with --model and of one with --profiles-out", async () => {
+  /** The SHA-256 of `text`, the suite's scratch directory in it written `<scratch>`. */
+  const digest = (text: string) =>
+    createHash("sha256").update(text.replaceAll(scratch, "<scratch>")).digest("hex");
+  const runs: Record<string, string[]> = {
+    model: ["--model", "openai/gpt-6.1-sol"],
+    profiles: profileFlags(path.join(scratch, "no-bound-profiles", "profiles")),
+  };
+  const digests: Record<string, string> = {};
+  for (const [name, extra] of Object.entries(runs)) {
+    const out = path.join(scratch, `no-bound-${name}`, "tasks.jsonl");
+    const lines: string[] = [];
+    expect(await main(tasksArgs(out, ...extra), io(lines))).toBe(EXIT.ok);
+    expect(existsSync(`${out}.candidates.jsonl`)).toBe(false);
+    digests[`${name} tasks`] = digest(readFileSync(out, "utf8"));
+    digests[`${name} summary`] = digest(readFileSync(`${out}.summary.json`, "utf8"));
+    digests[`${name} printed`] = digest(lines.join(""));
+    const profiles = tasksOf(out).flatMap((task) =>
+      task.profile === undefined ? [] : [readFileSync(String(task.profile), "utf8")]
+    );
+    if (profiles.length > 0) digests[`${name} profiles`] = digest(profiles.join(""));
+  }
+  // The digests of the files and printed lines a run of the code before the bounds gave on the
+  // same input. A change to what build-tasks writes changes them.
+  expect(digests).toEqual({
+    "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
+    "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
+    "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
+    "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
+    "profiles summary": "fa41da9e62a9f60d1a7f75f4b2f29bf7a79251643e4348ada6e11d2899b0e28e",
+    "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
+    "profiles profiles": "c749ba1f82683dc6045da91d28a90b0238a5d74211f3ef2244d3df0e2af7fbfd",
+  });
+}, 120_000);

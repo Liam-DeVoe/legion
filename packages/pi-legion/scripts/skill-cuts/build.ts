@@ -19,6 +19,7 @@
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
  *       --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
  *       --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
+ *       [--max-candidates <n>] [--max-search-minutes <m>]
  *   bun scripts/skill-cuts/build.ts build-tasks --first-read --config <skill-cuts.json>
  *       --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>]
  *       --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <copies out dir>
@@ -327,6 +328,21 @@
  * first reply. Written tasks are unchanged. The summary names the model; the inputs hold it, so a
  * run that goes on with another model is refused. Without `--model` nothing of this happens.
  *
+ * **--max-candidates <n>, --max-search-minutes <m>** (the reader's mode, with `--model` or
+ * `--profiles-out`, whose candidate search pulls each candidate's whole transcript): the search
+ * ends before its next candidate once the candidates decided (accepted or dropped) reach n, or its
+ * own time reaches m minutes, both summed over the runs of one `--out`; the time is checked
+ * between candidates, so the last one decided can run past it. The reader then gets the messages
+ * accepted so far and writes the rest of the tasks, as when the candidates run out. Each decision
+ * is appended to `<out>.candidates.jsonl` as it is made, after a first line that holds the bounds,
+ * and the bound that ends the search too; a run that goes on takes each candidate decided there as
+ * it was decided, with no pull, and refuses (exit 2) other bounds than those, naming both values.
+ * A file that holds only the bounds, or none, takes any bounds. The summary's `search` holds the
+ * bounds, what ended the search (a bound's flag, `candidates ran out` or `enough offered`), the
+ * candidates decided and accepted, and the search's seconds; `candidateDrops` holds the drops by
+ * reason. The file is removed once the summary is written. With neither bound the search is as
+ * above, and no file is written.
+ *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
  * `--budget-usd`, with the cases built so far written; 4 stopped by the stop rule, the same.
  */
@@ -623,6 +639,9 @@ export interface BuildIo {
   err(line: string): void;
   /** Runs gh (copies.ts's `spawnGh` in a real run). */
   readonly gh: Gh;
+  /** Milliseconds on a clock that only goes forward (`performance.now()` in a real run): what
+   *  build-tasks' candidate search measures its own time by. */
+  now(): number;
 }
 
 /** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
@@ -2424,7 +2443,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 const BUILD_CASES_USAGE =
   "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
-  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
+  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
 /** One candidate session of the sessions file. */
 const Candidate = z.strictObject({
@@ -4392,13 +4411,175 @@ function profilesRecord(
 /** A candidate session the tasks reader is not offered, and why: its first request ran on another
  *  model than `--model` (`other-model`), its context does not list the skill
  *  (`skill-not-listed`), or it cannot be pulled or its profile rebuilt. */
-interface CandidateDrop {
-  readonly store: string;
-  readonly pathHash: string;
-  readonly reason: string;
-  readonly detail: string;
-  readonly context?: string;
+const CandidateDrop = z.strictObject({
+  store: z.string(),
+  pathHash: z.string(),
+  reason: z.string(),
+  detail: z.string(),
+  context: z.string().optional(),
+});
+type CandidateDrop = z.infer<typeof CandidateDrop>;
+
+/** The bounds of build-tasks' candidate search, each null when not given: `--max-candidates`, the
+ *  candidates decided (accepted or dropped), and `--max-search-minutes`, the search's own time;
+ *  both summed over the runs of one `--out`. */
+const SearchBounds = z.strictObject({
+  maxCandidates: z.number().nullable(),
+  maxSearchMinutes: z.number().nullable(),
+});
+type SearchBounds = z.infer<typeof SearchBounds>;
+
+/** A bound of the candidate search, by its flag. */
+const BOUNDS = ["--max-candidates", "--max-search-minutes"] as const;
+type Bound = (typeof BOUNDS)[number];
+
+/** What ended a candidate search: a bound, no candidate left, or TASK_MESSAGES accepted. */
+type SearchEnd = Bound | "candidates ran out" | "enough offered";
+
+/** A line of the search file (`<out>.candidates.jsonl`) after its first, which holds the bounds:
+ *  a candidate accepted, a candidate dropped, or the bound that ended the search; each with the
+ *  search's seconds then, summed over the runs. */
+const SearchLine = z.union([
+  z.strictObject({
+    accepted: z.strictObject({ store: z.string(), pathHash: z.string() }),
+    seconds: z.number(),
+  }),
+  z.strictObject({ dropped: CandidateDrop, seconds: z.number() }),
+  z.strictObject({ ended: z.enum(BOUNDS), seconds: z.number() }),
+]);
+type SearchLine = z.infer<typeof SearchLine>;
+
+/** What earlier runs of one `--out` saved of its candidate search: its lines in order; the
+ *  decision of each candidate they decided, by `<store>\0<path hash>` (`candidateKey`): its drop,
+ *  or null when it was accepted; the search's seconds at their last line; and the bound that
+ *  ended the search, when one did. */
+interface SavedSearch {
+  readonly lines: readonly SearchLine[];
+  readonly decided: ReadonlyMap<string, CandidateDrop | null>;
+  readonly seconds: number;
+  readonly ended: Bound | undefined;
 }
+
+/** Nothing saved of a candidate search. */
+const NOTHING_SAVED: SavedSearch = { lines: [], decided: new Map(), seconds: 0, ended: undefined };
+
+/** The candidate search of a build-tasks run that has bounds: the bounds, the search file each
+ *  decision is saved in, and what earlier runs saved there. */
+interface SearchPlan {
+  readonly bounds: SearchBounds;
+  readonly file: string;
+  readonly saved: SavedSearch;
+}
+
+/** A candidate's key in a saved search. */
+const candidateKey = (each: { readonly store: string; readonly pathHash: string }) =>
+  `${each.store}\0${each.pathHash}`;
+
+/** The bounds `--max-candidates` and `--max-search-minutes` of `values`, or undefined when
+ *  neither is given. Refuses a value that is no bound, and a bound when the run makes no candidate
+ *  search (`searches`: only `--model` or `--profiles-out` makes one). */
+function searchBounds(
+  values: Readonly<Record<string, unknown>>,
+  searches: boolean
+): SearchBounds | undefined {
+  const candidates = values["max-candidates"];
+  const minutes = values["max-search-minutes"];
+  if (typeof candidates !== "string" && typeof minutes !== "string") return undefined;
+  if (!searches) {
+    throw new Refused(
+      `--max-candidates and --max-search-minutes bound the candidate search, which runs only with --model or --profiles-out. ${BUILD_TASKS_USAGE}`
+    );
+  }
+  if (typeof candidates === "string" && (!/^\d+$/.test(candidates) || Number(candidates) < 1)) {
+    throw new Refused(`--max-candidates ${candidates} is not a whole number of 1 or more`);
+  }
+  const m = Number(minutes);
+  if (typeof minutes === "string" && (minutes.trim() === "" || !(Number.isFinite(m) && m > 0))) {
+    throw new Refused(`--max-search-minutes ${minutes} is not a number of minutes above 0`);
+  }
+  return {
+    maxCandidates: typeof candidates === "string" ? Number(candidates) : null,
+    maxSearchMinutes: typeof minutes === "string" ? m : null,
+  };
+}
+
+/** The bound of `bounds` a search has reached with `decided` candidates decided in `seconds` of
+ *  its own time, or undefined. */
+function boundReached(bounds: SearchBounds, decided: number, seconds: number): Bound | undefined {
+  if (bounds.maxCandidates !== null && decided >= bounds.maxCandidates) return "--max-candidates";
+  if (bounds.maxSearchMinutes !== null && seconds >= bounds.maxSearchMinutes * 60) {
+    return "--max-search-minutes";
+  }
+  return undefined;
+}
+
+/**
+ * What earlier runs saved in the search file `file`: the bounds of its first line, then its lines
+ * up to the first that does not parse (one a kill cut short) or the line of the bound that ended
+ * the search. Refuses (exit 2) a file that holds a line of the search made under other bounds than
+ * `bounds` (undefined when none is given), naming both values of each bound that differs; a file
+ * with no line after the bounds holds nothing, whatever its bounds.
+ */
+function savedSearch(file: string, bounds: SearchBounds | undefined): SavedSearch {
+  if (!existsSync(file)) return NOTHING_SAVED;
+  const [first = "", ...rest] = readFileSync(file, "utf8").split("\n");
+  let was: SearchBounds;
+  try {
+    was = z.strictObject({ bounds: SearchBounds }).parse(JSON.parse(first)).bounds;
+  } catch {
+    return NOTHING_SAVED;
+  }
+  const lines: SearchLine[] = [];
+  for (const text of rest) {
+    let line: SearchLine;
+    try {
+      line = SearchLine.parse(JSON.parse(text));
+    } catch {
+      break;
+    }
+    lines.push(line);
+    if ("ended" in line) break;
+  }
+  const last = lines[lines.length - 1];
+  if (last === undefined) return NOTHING_SAVED;
+  const decided = new Map<string, CandidateDrop | null>();
+  for (const line of lines) {
+    if ("accepted" in line) decided.set(candidateKey(line.accepted), null);
+    else if ("dropped" in line) decided.set(candidateKey(line.dropped), line.dropped);
+  }
+  const now = bounds ?? { maxCandidates: null, maxSearchMinutes: null };
+  const given = (value: number | null) => (value === null ? "not given" : String(value));
+  const differ: string[] = [];
+  if (was.maxCandidates !== now.maxCandidates) {
+    differ.push(
+      `--max-candidates was ${given(was.maxCandidates)}, now ${given(now.maxCandidates)}`
+    );
+  }
+  if (was.maxSearchMinutes !== now.maxSearchMinutes) {
+    differ.push(
+      `--max-search-minutes was ${given(was.maxSearchMinutes)}, now ${given(now.maxSearchMinutes)}`
+    );
+  }
+  if (differ.length > 0) {
+    throw new Refused(
+      `${file} holds a candidate search made under other bounds (${decided.size} candidates decided), so this run does not go on from it: ${differ.join("; ")}`
+    );
+  }
+  return {
+    lines,
+    decided,
+    seconds: last.seconds,
+    ended: "ended" in last ? last.ended : undefined,
+  };
+}
+
+/** A bounded search's record in the summary (`search`). */
+type SearchRecord = SearchBounds & {
+  readonly ended: SearchEnd;
+  readonly decided: number;
+  readonly accepted: number;
+  readonly seconds: number;
+};
 
 /**
  * The first user messages the tasks reader is offered: the first message of each distinct text,
@@ -4410,13 +4591,26 @@ interface CandidateDrop {
  * context does not list the skill, or one that cannot be pulled or rebuilt, is dropped and
  * counted, and the next session of the same text is tried, then the next text, until TASK_MESSAGES
  * are offered or the candidates run out (the reader then writes tasks, in the `--context-session`
- * context). Returns the messages, how many distinct texts there were, the profiles rebuilt (by
- * `<store>\0<hash>`), the drops, and the sessions.sql queries made for the paths.
+ * context).
+ *
+ * With `search` (the run's bounds), the search also ends before its next candidate once the
+ * candidates decided reach `--max-candidates`, or its own time (from the start of this function,
+ * on `io.now`) reaches `--max-search-minutes`, both summed over the runs of the same `--out`; the
+ * time is checked between candidates, so the last one decided can run past it. Each decision is
+ * appended to the search file as one whole line as it is made, and the bound that ends the search
+ * too. A run that goes on takes each candidate the file decides as it was decided, with no pull,
+ * and ends where the file says a bound ended the search; a candidate a kill cut short is decided
+ * again, and only the time of the run that decides it counts.
+ *
+ * Returns the messages, how many distinct texts there were, the profiles rebuilt (by
+ * `<store>\0<hash>`), the drops, the sessions.sql queries made for the paths, and, with `search`,
+ * the search's record.
  */
 async function offeredMessages(
   found: readonly FoundRow[],
   plan: ProfilesPlan | undefined,
   model: string | undefined,
+  search: SearchPlan | undefined,
   config: SkillCutsConfig,
   spool: string,
   skill: string,
@@ -4427,6 +4621,7 @@ async function offeredMessages(
   built: Map<string, SessionProfile>;
   drops: CandidateDrop[];
   queries: number;
+  search?: SearchRecord;
 }> {
   const groups = new Map<string, FoundRow[]>();
   for (const row of found) {
@@ -4441,6 +4636,18 @@ async function offeredMessages(
   const drops: CandidateDrop[] = [];
   if (plan === undefined && model === undefined) {
     return { offered: numbered(chosen), distinct: groups.size, built, drops, queries: 0 };
+  }
+  const started = io.now();
+  const saved = search?.saved ?? NOTHING_SAVED;
+  const seconds = () => Math.round(saved.seconds * 1000 + io.now() - started) / 1000;
+  const save = (line: SearchLine) => {
+    if (search !== undefined) appendFileSync(search.file, `${JSON.stringify(line)}\n`);
+  };
+  // The search file starts again from its bounds and the lines that parse, so a line a kill cut
+  // short is not followed by the next.
+  if (search !== undefined) {
+    const lines = [{ bounds: search.bounds }, ...saved.lines];
+    writeWhole(search.file, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
   }
   const paths = new Map<string, string>();
   let queries = 0;
@@ -4461,17 +4668,40 @@ async function offeredMessages(
   >();
   const accepted: FoundRow[] = [];
   const order = [...chosen, ...firsts.filter((row) => !chosen.includes(row))];
+  let decided = 0;
+  let ended: SearchEnd | undefined;
   for (const first of order) {
-    if (accepted.length === TASK_MESSAGES) break;
+    if (accepted.length === TASK_MESSAGES || ended !== undefined) break;
     for (const row of groups.get(first.text.trim()) ?? []) {
+      const earlier = saved.decided.get(candidateKey(row));
+      if (earlier !== undefined) {
+        decided += 1;
+        if (earlier === null) {
+          accepted.push(row);
+          break;
+        }
+        drops.push(earlier);
+        continue;
+      }
+      if (search !== undefined) {
+        const bound = saved.ended ?? boundReached(search.bounds, decided, seconds());
+        if (bound !== undefined) {
+          if (saved.ended === undefined) save({ ended: bound, seconds: seconds() });
+          ended = bound;
+          break;
+        }
+      }
+      decided += 1;
       const drop = (reason: string, detail: string, context?: string) => {
-        drops.push({
+        const each: CandidateDrop = {
           store: row.store,
           pathHash: row.pathHash,
           reason,
           detail,
           ...(context === undefined ? {} : { context }),
-        });
+        };
+        drops.push(each);
+        save({ dropped: each, seconds: seconds() });
         io.out(
           `build-tasks: candidate ${row.store} ${row.pathHash.slice(0, 12)}: dropped (${reason}) ${detail}\n`
         );
@@ -4517,11 +4747,28 @@ async function offeredMessages(
         drop(SKILL_NOT_LISTED, `its context ${context} does not list ${skill}`, context);
         continue;
       }
+      if (search !== undefined) {
+        save({ accepted: { store: row.store, pathHash: row.pathHash }, seconds: seconds() });
+        io.out(`build-tasks: candidate ${row.store} ${row.pathHash.slice(0, 12)}: accepted\n`);
+      }
       accepted.push(row);
       break;
     }
   }
-  return { offered: numbered(accepted), distinct: groups.size, built, drops, queries };
+  const offered = numbered(accepted);
+  if (search === undefined) return { offered, distinct: groups.size, built, drops, queries };
+  ended ??= accepted.length === TASK_MESSAGES ? "enough offered" : "candidates ran out";
+  const record: SearchRecord = {
+    ...search.bounds,
+    ended,
+    decided,
+    accepted: accepted.length,
+    seconds: seconds(),
+  };
+  io.out(
+    `build-tasks: the candidate search ended (${ended}): ${decided} candidates decided, ${accepted.length} accepted, ${drops.length} dropped, ${record.seconds} s of search\n`
+  );
+  return { offered, distinct: groups.size, built, drops, queries, search: record };
 }
 
 /** The model `--model` names (`value`), in the models table's form (`modelForm`), or undefined
@@ -4553,6 +4800,8 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       count: { type: "string" },
       "context-session": { type: "string" },
       model: { type: "string" },
+      "max-candidates": { type: "string" },
+      "max-search-minutes": { type: "string" },
     },
     BUILD_TASKS_USAGE
   );
@@ -4577,6 +4826,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   const skill = taskSkill(given.skill);
   const model = modelOption(values.model);
   const plan = profilesPlan(values, config, io, true);
+  const bounds = searchBounds(values, plan !== undefined || model !== undefined);
   // An earlier run of the same inputs at --out: its terms and every query it recorded are kept,
   // with the messages those queries found (`<out>.found.jsonl`), and the build goes on from the
   // first query it did not record. A finished build is left as it is.
@@ -4592,6 +4842,15 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   if (prior?.done === true) {
     io.out(`build-tasks: ${summaryFile} records a finished build of these inputs; nothing to do\n`);
     return EXIT.ok;
+  }
+  // The candidate search an earlier run of the same inputs saved (`<out>.candidates.jsonl`), which
+  // a build with no summary at --out does not go on from.
+  const searchFile = `${given.out}.candidates.jsonl`;
+  const saved = prior === undefined ? NOTHING_SAVED : savedSearch(searchFile, bounds);
+  if (saved.lines.length > 0) {
+    io.out(
+      `build-tasks: going on from ${saved.decided.size} candidates decided in ${searchFile}\n`
+    );
   }
   const priorSpend = prior?.spend ?? NO_SPEND;
   const recorded = new Map(
@@ -4683,7 +4942,16 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       io.out(`build-tasks: ${store} ${day}: ${query.rows ?? "no"} rows\n`);
     }
   }
-  const candidates = await offeredMessages(found, plan, model, config, spool, skill.name, io);
+  const candidates = await offeredMessages(
+    found,
+    plan,
+    model,
+    bounds === undefined ? undefined : { bounds, file: searchFile, saved },
+    config,
+    spool,
+    skill.name,
+    io
+  );
   const { offered } = candidates;
   const picked = await runReader(
     "tasks",
@@ -4779,6 +5047,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
               sessionQueries: candidates.queries,
             },
           }),
+      ...(candidates.search === undefined ? {} : { search: candidates.search }),
       counts: {
         need: { session: count("need", "session"), written: count("need", "written") },
         "near-miss": {
@@ -4792,8 +5061,10 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       readerSpend: spend(),
     })
   );
-  // The messages found are in the tasks file where a task names one; the rest are not kept.
+  // The messages found are in the tasks file where a task names one; the rest are not kept. The
+  // summary records the candidate search, so its file is not kept either.
   rmSync(foundFile, { force: true });
+  rmSync(searchFile, { force: true });
   const notListed = candidates.drops.filter((each) => each.reason === SKILL_NOT_LISTED).length;
   const onOther = candidates.drops.filter((each) => each.reason === OTHER_MODEL).length;
   const drops =
@@ -4907,6 +5178,11 @@ async function buildControlTasks(
   );
   if (values.store !== undefined) {
     throw new Refused("--first-read takes its sessions from --sessions, so it takes no --store");
+  }
+  for (const flag of ["max-candidates", "max-search-minutes"]) {
+    if (values[flag] !== undefined) {
+      throw new Refused(`--first-read takes no --${flag}: it stops once --max requests are kept`);
+    }
   }
   if (!/^\d+$/.test(given.seed)) throw new Refused(`--seed ${given.seed} is not a whole number`);
   const maxText = values.max;
@@ -5321,6 +5597,7 @@ if (import.meta.main) {
       out: (text) => process.stdout.write(text),
       err: (line) => process.stderr.write(`${line}\n`),
       gh: spawnGh,
+      now: () => performance.now(),
     })
   );
 }

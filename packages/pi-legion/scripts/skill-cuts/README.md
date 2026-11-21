@@ -300,7 +300,8 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skil
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --store <db>... --out <tasks.jsonl> [--model <model>] \
-  [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
+  [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash>] \
+  [--max-candidates <n>] [--max-search-minutes <m>]
 bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> \
   [--model <model>] [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
@@ -452,6 +453,26 @@ where the summary's `model` (`{name, firstRead, otherModel}`) and the printed li
 sessions tried on that model read the skill in their first reply, and say so when they are fewer
 than 5. Written tasks are unchanged. The summary names the model, and the inputs hold it, so a run
 that goes on with another model is refused.
+
+`--max-candidates <n>` and `--max-search-minutes <m>` bound the reader's mode's candidate search,
+which runs with `--model` or `--profiles-out` and pulls each candidate's whole transcript, one at a
+time: on the real stores the terms can match tens of thousands of messages, and the search can run
+for days. The search ends before its next candidate once the candidates decided (accepted or
+dropped) reach n, or its own time reaches m minutes, both summed over the runs of one `--out`; the
+time is checked between candidates, so the last one decided can run past it. The `tasks` reader
+then gets the messages accepted so far and writes the rest of the tasks (in the
+`--context-session` context with `--profiles-out`), as when the candidates run out. Each decision
+is appended to `<out>.candidates.jsonl` as it is made, after a first line holding the bounds, and
+so is the bound that ends the search. A run that goes on takes each candidate decided there as it
+was decided, with no pull, and refuses (exit 2) bounds other than those, naming both values of
+each; a file that holds only the bounds, or no file (a run killed during its queries), takes any
+bounds. The summary's `search` holds the bounds, what ended the search (`--max-candidates`,
+`--max-search-minutes`, `candidates ran out` or `enough offered`), the candidates decided and
+accepted, and the search's seconds; `candidateDrops` holds the drops by reason. The file is
+removed once the summary is written. With neither bound the search runs to 60 messages offered or
+the last candidate, and writes no file. A bound is refused without `--model` or `--profiles-out`
+(no search runs) and with `--first-read` (it stops at `--max`). R6 and R7 give
+`--max-candidates 60 --max-search-minutes 90`.
 
 ## The request log
 
