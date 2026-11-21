@@ -514,7 +514,10 @@ type podReplacement struct {
 // replacement (roundReplacement). The check (RelaunchRefusal) hands nil and asks nothing: the
 // daemon records each answer as the act of the launch that asked (the pod kept or replaced at its
 // launch), so only a launch that acts on the answer may ask, and a round that is over has no role
-// process in its pod, so its replacement ends none of the roles the check guards.
+// process in its pod, so its replacement ends none of the roles the check guards. For a claim
+// relaunching on its same session that has not answered the round and that the round does not pass
+// over, the daemon holds the pod from the relaunch's stop until its launch starts, at most until
+// the round's bound (internal/daemon's roundPodEnds, relaunchesInPlace).
 func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch, rounds runtime.RoundPodEnds) (podReplacement, error) {
 	sandbox := r.supersededDisk(s, *l)
 	if sandbox == "" {

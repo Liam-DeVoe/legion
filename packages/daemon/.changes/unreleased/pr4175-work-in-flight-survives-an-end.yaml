@@ -17,8 +17,13 @@ body: |-
     last 20 minutes, while its open call is not a `wait`, and while its last activity report since
     its launch is missing or shows background work. The daemon also refuses a second relaunch of
     a claim within 6 hours, a role whose launcher is not connected, a launch that would replace the
-    pod, and a claim whose pod holds two or more claims that are all unreachable, and it does
-    nothing more after a stop that the claim's process outlived. Under `controller: daemon` the
+    pod for a reason of its own and so end the other roles running in it, and a claim whose pod
+    holds two or more claims that are all unreachable, and it does nothing more after a stop that
+    the claim's process outlived. When the relaunched claim has not answered an update round over
+    its pod, and the round does not pass the claim over, the relaunch holds the pod from its stop
+    until its launch starts, even when that launch waits for a retry, and at most until the round's
+    bound, so the claim comes back where its unpushed work is. Reaching the bound ends that hold;
+    an operator's suspension or a pause's hold still keeps the pod. Under `controller: daemon` the
     daemon relaunches its own controller on its same session, at most once in 6 hours, and replaces
     the controller's pod where the launch needs that or the launcher is not connected.
     A role message or hook prompt to a claim that keeps the session it recorded is held in the

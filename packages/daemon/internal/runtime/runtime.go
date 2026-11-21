@@ -209,9 +209,13 @@ var ErrPodGone = errors.New("the pod the locator records is not there")
 // through InPlaceRelauncher and the daemon's `relaunch` names to its caller as a case for a person.
 // ErrLauncherNotConnected and ErrRelaunchReplacesPod are answered before anything is stopped: a
 // start through a launcher that does not connect waits out the launch bound and is charged, and a
-// launch that replaces the pod ends every other role running in it, so neither may follow a stop
-// the relaunch made. ErrProcessOutlivedStop is answered after the stop, which did not end the
-// process: starting the next one beside it would leave two processes writing one session.
+// launch that replaces the pod for a reason of its own (a drift, a lost binding, a disk to
+// replace) ends every other role running in it, so neither may follow a stop the relaunch made.
+// The update round's own replacement of a pod it is done with is no such reason: no other role
+// runs in such a pod, and the daemon holds it for the relaunch, from its stop until its launch
+// starts, where the claim has not answered the round and the round does not pass it over, at most
+// until the round's bound. ErrProcessOutlivedStop is answered after the stop, which did not end
+// the process: starting the next one beside it would leave two processes writing one session.
 var (
 	ErrLauncherNotConnected = errors.New("the role's launcher is not connected")
 	ErrRelaunchReplacesPod  = errors.New("the launch would replace the pod, which ends every other role running in it")
@@ -230,14 +234,16 @@ var (
 // connected or a launch that needs a new pod is answered by replacing it rather than refused.
 type InPlaceRelauncher interface {
 	// RelaunchRefusal is why a relaunch of loc's process, started as its claim's next launch
-	// would start it, cannot stop it and start the next one through the same launcher in the
-	// same pod: ErrLauncherNotConnected or ErrRelaunchReplacesPod, wrapped with what the runtime
-	// read, and nil where it can. It stops, starts and writes nothing. Any other error is a
-	// runtime that could not be asked, which refuses the relaunch as surely and says so. A nil
-	// promises that the relaunch ends no other role running in the pod, not that the next process
-	// starts in it: a runtime whose launch replaces a pod an update round is done with, once no
-	// role process is left in it, makes that replacement after the stop (the Kubernetes runtime,
-	// Options.RoundPodEnds).
+	// would start it, would end another role running in its pod or wait out the launch bound:
+	// ErrLauncherNotConnected or ErrRelaunchReplacesPod, wrapped with what the runtime read, and
+	// nil where neither holds. It stops, starts and writes nothing. Any other error is a runtime
+	// that could not be asked, which refuses the relaunch as surely and says so. It asks nothing
+	// of the update round over the pod, which the daemon reads at the launch itself
+	// (Options.RoundPodEnds in the Kubernetes runtime) and may answer by having the launch replace
+	// a pod the round is done with; the daemon holds the pod for the relaunch, from its stop until
+	// its launch starts, only where the claim has not answered the round and the round does not
+	// pass it over, and at most until the round's bound. So a nil promises that the relaunch ends
+	// no other running role, and not that the next process starts in the same pod.
 	RelaunchRefusal(ctx context.Context, loc Locator, mayReplacePod bool) error
 	// StopForRelaunch stops loc's process for its relaunch: through its launcher, which answers
 	// once the process has ended, or, where mayReplacePod and the launcher is not connected, by

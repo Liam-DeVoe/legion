@@ -170,9 +170,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
 // boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
 // pacing off: every launch runs where it is raised.
+//
+// checkLaunch stands in for the store's own CheckLaunch in front of the real store, as the daemon's
+// overrides.checkLaunch does (gateLaunch): a test's way to have the store not answer one launch's
+// recheck, which leaves that launch waiting to be tried again at the probe interval
+// (supervise's relaunchRefused). A restart opens its store without it. nil asks the real store.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	wakePace       supervise.WakePace
+	checkLaunch    func(context.Context, supervise.Claim) error
 }
 
 // newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
@@ -264,7 +270,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// binds the Sandbox runtime's (plan.launchRounds).
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		Runtime: rt, Conns: conns, Store: gateLaunch(st, opts.checkLaunch), Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,

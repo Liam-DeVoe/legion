@@ -25,11 +25,15 @@ var _ runtime.InPlaceRelauncher = (*Runtime)(nil)
 //
 // The check guards the other roles running in the pod, and it keeps one decision of the launch out
 // of its reading: the update round over the pod (Options.RoundPodEnds), which the daemon records as
-// the act of the launch that asked, so the check asks nothing of it (replacement's rounds). A pod
-// whose round is over when the launch runs, after this claim's process has stopped, has no role
-// process left in it, and the launch replaces it as the round's own replacement; a check that
-// passed is thus no promise that the next generation starts in the same pod, only that no other
-// role running in it is ended for this relaunch.
+// the act of the launch that asked, so the check asks nothing of it (replacement's rounds). Where
+// the claim has not answered the round and the round does not pass it over, the daemon holds the
+// pod from the relaunch's stop until its launch starts, at most until the round's bound
+// (internal/daemon's roundPodEnds, relaunchesInPlace), against the launch's own reading and the
+// sweep's replacement by issue alike, so the claim comes back where its unpushed work is. Without
+// that hold, and with nothing else holding the pod, the launch replaces a pod the round is done
+// with as the round's own replacement. A check that passed is thus no promise that the next
+// generation starts in the same pod, only that no other role running in it is ended for this
+// relaunch.
 //
 // With mayReplacePod nothing refuses: the daemon's own relaunch of its controller replaces a pod in
 // which no other role runs, so it reads nothing. It stops, starts and writes nothing; the launcher
