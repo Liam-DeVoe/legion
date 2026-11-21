@@ -135,7 +135,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // the comment list's validator hashes it beside its own counters, which a new issue under the key
 // reaches again too (commentListETag). It is the same fact, read the same way, that tells the
 // event relay an event log that was reset under its cursor from one that merely went quiet
-// (eventLogWasReset).
+// (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
