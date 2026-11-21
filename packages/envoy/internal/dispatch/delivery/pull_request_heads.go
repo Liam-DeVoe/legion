@@ -108,7 +108,7 @@ func PullRequestHeadState(action string, merged bool) string {
 // rows that exist (ListStalePullRequestHeads), so a row no write ever made is offered to
 // nothing. The `pull_request` envelope's handler tests for it and hands the envelope back for
 // redelivery rather than acking it (Intake.handlePullRequestEnvelope, Intake.deliver), up to
-// headWriteMaxDeliveries deliveries of it, since both of the statements behind the write are
+// ownHandBackMaxDeliveries deliveries of it, since both of the statements behind the write are
 // `on conflict … do update` and a redelivery writes the same pair.
 //
 // It marks every database failure on the way to that write and not the write alone, because

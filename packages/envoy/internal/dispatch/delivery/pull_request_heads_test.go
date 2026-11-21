@@ -1559,7 +1559,7 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // that writes a merge's head row and its branch seed together rolls back at every delivery and
 // no attempt can ever store the row. The cap is shrunk to two deliveries, since what is
 // measured here is that there is a cap at all and not the number it is shipped at
-// (headWriteMaxDeliveries).
+// (ownHandBackMaxDeliveries).
 //
 // The measure is the consumer's delivery count, read twice: once when the cap has been spent,
 // and again after two whole redelivery delays, which is when the third delivery would have
@@ -1570,7 +1570,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
-	capHeadWriteDeliveriesAt(t, 2)
+	capOwnHandBackDeliveriesAt(t, 2)
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
@@ -1595,10 +1595,10 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 			info.Delivered.Consumer-before, info)
 	})
 
-	time.Sleep(2 * headWriteRedeliverAfter)
+	time.Sleep(2 * ownHandBackAfter)
 	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
 		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
-			2*headWriteRedeliverAfter, delivered)
+			2*ownHandBackAfter, delivered)
 	}
 
 	var stored int

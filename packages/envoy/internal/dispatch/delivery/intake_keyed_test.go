@@ -875,6 +875,11 @@ func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T
 	const (
 		prPayload       = `{"kind":"pr","action":"closed","merged":"true","repo":"cybermonklabs/legion","number":"42","author":"octocat"}`
 		workflowPayload = `{"kind":"workflow","action":"completed","repo":"cybermonklabs/legion","run_id":"77"}`
+		// settlementPayload is the listener's settlement of #70's check runs at one commit
+		// (cistore.Summary), with its groups and its runs, which are no strings.
+		settlementPayload = `{"kind":"checks","repo":"acme/app","number":"70","sha":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",` +
+			`"check_runs":[{"name":"go-checks","id":901,"conclusion":"success"}],"generation":1,` +
+			`"passed":{"count":1,"checks":["go-checks"]},"failed":{"count":0,"checks":[]},"failing_checks":[]}`
 	)
 	for _, tc := range []struct {
 		name     string
@@ -944,7 +949,16 @@ func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T
 			key: "workflow #77", wanted: true, envelope: true,
 		},
 		{name: "a review on a pull request", subject: "notifications.github.cybermonklabs.legion.pr.42.review", payload: prPayload},
-		{name: "the checks of a pull request", subject: "notifications.github.cybermonklabs.legion.pr.42.checks", payload: prPayload},
+		{
+			name:    "the settlement of a pull request's checks",
+			subject: "notifications.github.acme.app.pr.70.checks", payload: settlementPayload,
+			key: "pr acme/app#70", wanted: true, envelope: true,
+		},
+		{
+			name:    "the same settlement under the repository's former name",
+			subject: "notifications.github.acme.oldapp.pr.70.checks", payload: settlementPayload,
+		},
+		{name: "a subject past a settlement's", subject: "notifications.github.acme.app.pr.70.checks.more", payload: settlementPayload},
 		{name: "a push", subject: "notifications.github.cybermonklabs.legion.push.heads.main", payload: prPayload},
 		{name: "a job", subject: "notifications.github.cybermonklabs.legion.job.500.completed", payload: prPayload},
 	} {
