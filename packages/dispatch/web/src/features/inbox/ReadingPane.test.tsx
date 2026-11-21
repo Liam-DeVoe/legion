@@ -5,7 +5,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
-import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -33,10 +32,10 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
-import { AskSnoozeContext, useAskSnoozeWrites } from "./useAskSnooze";
 
 installInboxApiMocks();
 
@@ -228,22 +227,6 @@ function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
     root.innerHTML = blocks;
     return handle;
   };
-}
-
-/** The Inbox's snooze writes over `children`, as the Inbox provides them to every Snooze it
- *  draws, with each set of asks whose write is out handed to `onOut` as it changes. */
-function SnoozeWrites({
-  children,
-  onOut,
-}: {
-  children: ReactNode;
-  onOut: (out: ReadonlySet<string>) => void;
-}): ReactNode {
-  const writes = useAskSnoozeWrites();
-  useEffect(() => {
-    onOut(writes.out);
-  }, [onOut, writes.out]);
-  return <AskSnoozeContext value={writes}>{children}</AskSnoozeContext>;
 }
 
 function renderPane({

@@ -159,8 +159,8 @@ async function pressAsBrowser(press: () => void): Promise<void> {
 }
 
 /** The header's Edit title button, which the title's heading is the description of. */
-function editTitleButton(description = base.title): Promise<HTMLElement> {
-  return screen.findByRole("button", { description, name: "Edit title" });
+function editTitleButton(): Promise<HTMLElement> {
+  return screen.findByRole("button", { description: base.title, name: "Edit title" });
 }
 
 /** Opens the title's editor with a click on Edit title and writes `title` into it. */

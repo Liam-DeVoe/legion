@@ -582,6 +582,55 @@ test("a page's own control that takes itself away hands the focus to the next co
   }
 });
 
+/** A row whose page slot holds a "New group name" box and, after it, a Delete group that takes
+ *  itself away when pressed, as the delivery editor draws them for its only group, beside a
+ *  filter trigger; with `added`, an Add group button before the box. */
+function GroupEditorRow({ added }: { added: boolean }) {
+  const [deleted, setDeleted] = useState(false);
+  return (
+    <ControlRow
+      trigger={
+        <button data-control="panel-trigger" type="button">
+          Filter
+        </button>
+      }
+    >
+      {added ? <button type="button">Add group</button> : null}
+      <input aria-label="New group name" type="text" />
+      {deleted ? null : (
+        <button onClick={() => setDeleted(true)} type="button">
+          Delete group
+        </button>
+      )}
+    </ControlRow>
+  );
+}
+
+// A hand-off passes over every control that takes typed text: the reader never chose such a
+// field, and their next key would be typed into it. So Delete group's going hands the focus over
+// the "New group name" box before it to the control before that, and to the filter trigger
+// where only the box stands before it.
+test("a page's own control that takes itself away hands the focus past a text box before it, to the control before that, else to the filter trigger", async () => {
+  const user = userEvent.setup();
+  // Where the focus went once Delete group had gone, with an Add group before the box and with
+  // none.
+  const landed: Record<string, string | null> = {};
+  for (const added of [true, false]) {
+    const view = render(<GroupEditorRow added={added} />);
+    try {
+      act(() => screen.getByRole("button", { name: "Delete group" }).focus());
+      await user.keyboard("{Enter}");
+      expect(screen.queryByRole("button", { name: "Delete group" })).toBeNull();
+      const focused = document.activeElement;
+      landed[added ? "with Add group" : "the box alone"] =
+        focused?.getAttribute("aria-label") ?? focused?.textContent ?? null;
+    } finally {
+      view.unmount();
+    }
+  }
+  expect(landed).toEqual({ "the box alone": "Filter", "with Add group": "Add group" });
+});
+
 /** The shell's main content holding a row whose page slot draws exactly `names`, as a live update
  *  leaves them, with the page's focus rescue mounted on it as `app.tsx` mounts it. */
 function LivePage({ names }: { names: readonly string[] }) {

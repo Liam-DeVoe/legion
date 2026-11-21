@@ -1,6 +1,6 @@
 /**
- * The snooze writes (`useAskSnooze`, `useAskSnoozeMany`) against the Inbox read they move the
- * rows in: a read asked while a snooze is out waits for Dispatch's answer.
+ * The snooze writes (`useAskSnoozeWrites`, `useAskSnoozeMany`) against the Inbox read they move
+ * the rows in: a read asked while a snooze is out waits for Dispatch's answer.
  */
 
 import { expect, spyOn, test } from "bun:test";
@@ -17,22 +17,11 @@ import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, InboxRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import { issueAsk } from "./inbox-fixture";
-import {
-  AskSnoozeContext,
-  type AskSnoozeFailure,
-  useAskSnooze,
-  useAskSnoozeMany,
-  useAskSnoozeWrites,
-} from "./useAskSnooze";
+import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
-
-/** The Inbox's snooze writes over `children`, as the Inbox provides them to every Snooze it
- *  draws: `useAskSnooze` reads one ask's write from them. */
-function SnoozeWrites({ children }: { children: ReactNode }): ReactNode {
-  return <AskSnoozeContext value={useAskSnoozeWrites()}>{children}</AskSnoozeContext>;
-}
 
 /**
  * `use` beside the Inbox's read and under the Inbox's snooze writes, under Dispatch's own client

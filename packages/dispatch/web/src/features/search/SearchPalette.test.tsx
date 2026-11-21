@@ -1502,8 +1502,8 @@ function picks(name: RegExp): HTMLElement[] {
   ];
 }
 
-// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The bar's Project and Status lists are such lists. Each one, opened from the panel,
+// Every list of options a reader picks from holds a text box that narrows the options, and the
+// bar's Project and Status lists are such lists. Each one, opened from the panel,
 // holds a text box of its own, and a word typed into it leaves only the options that match.
 test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
   const user = userOnFakeClock();
@@ -1547,9 +1547,8 @@ test("the bar's Project and Status lists each hold a text box that narrows their
   }
 });
 
-// INFRA-3135, round 12: the Project list was drawn from whatever the bar's read of the projects
-// held, and said "No projects yet" while that read was still out and after it had failed. It says
-// which, as the Agents composer's Issue list does.
+// The Project list says whether the bar's read of the projects is still out or failed, rather
+// than "No projects yet", as the Agents composer's Issue list does.
 test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
   const user = userOnFakeClock();
   const read = Promise.withResolvers<Project[]>();
@@ -1578,9 +1577,9 @@ test("the bar's Project list says its projects are loading, then that they could
   }
 });
 
-// INFRA-3135, review round 1 (thread PRRT_kwDORFy7ds63p6zJ): Shift+Tab out of the Project list
-// left both panels open with the focus on Updated since, and every Escape after it was refused
-// while the list stood open, so the bar could not be closed from the keyboard.
+// Shift+Tab out of the Project list closes that list and gives the focus back to its Project
+// trigger in the Filter panel. From there Escape closes the panel, with the focus on the bar's
+// Filter trigger, and the next Escape closes the bar, so the bar can be closed from the keyboard.
 test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([

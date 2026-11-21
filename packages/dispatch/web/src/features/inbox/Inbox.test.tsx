@@ -5,7 +5,6 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-import { type ReactNode, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
@@ -42,6 +41,7 @@ import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
 import { replyRow } from "../threads/replies-fixture";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import { Inbox } from "./Inbox";
 import {
   FIXTURE_PROJECT_DEFAULT,
@@ -52,7 +52,6 @@ import {
 } from "./inbox-fixture";
 import type { InboxRoute } from "./inbox-route";
 import { SnoozeControl } from "./SnoozeControl";
-import { AskSnoozeContext, useAskSnoozeWrites } from "./useAskSnooze";
 
 const mocks = installInboxApiMocks();
 
@@ -3121,22 +3120,6 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
     snoozeAsk.mockRestore();
   }
 });
-
-/** The Inbox's snooze writes over `children`, as the Inbox provides them to every Snooze it
- *  draws, with each set of asks whose write is out handed to `onOut` as it changes. */
-function SnoozeWrites({
-  children,
-  onOut,
-}: {
-  children: ReactNode;
-  onOut?: (out: ReadonlySet<string>) => void;
-}): ReactNode {
-  const writes = useAskSnoozeWrites();
-  useEffect(() => {
-    onOut?.(writes.out);
-  }, [onOut, writes.out]);
-  return <AskSnoozeContext value={writes}>{children}</AskSnoozeContext>;
-}
 
 // A press carries every value its Retry sends, the ask it is of among them: a Retry of a snooze
 // the reader stopped is of that press's ask under that press's key. The list holds each write by

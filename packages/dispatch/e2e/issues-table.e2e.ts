@@ -1164,7 +1164,7 @@ test("a status the bundle does not know leaves the whole page standing", async (
   }
 });
 
-// B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
+// A closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
 // list stages a target instead, and the confirmation is what sends anything. An arrow key on the
 // closed trigger opens the list, and picks nothing.
 test("an arrow key on the merge list's trigger closes no epic, and the confirmed merge does", async ({

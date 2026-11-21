@@ -27,6 +27,10 @@ export const CLOSED_ISSUE_RENAME_REFUSAL = "This issue is closed. Reopen it to c
 export const CLOSED_ISSUE_REMOVE_REFUSAL =
   "This issue is closed. Reopen it to remove this document.";
 
+/** What the Artifacts tab says when its list read failed, and what a removal's row says before
+ *  why the list read after it has not settled. */
+export const ARTIFACTS_NOT_LOADED = "Could not load artifacts.";
+
 /** Who holds `artifact`: its issue, its project, or the agent whose conversation holds it. */
 function artifactOwner(artifact: Artifact): ArtifactOwner {
   if (artifact.session_id !== null) {
@@ -222,7 +226,7 @@ export function RemoveDocument({
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const [unread, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound();
   const remove = useKeyedWrite({
     inline: true,
     // The press carries the document it removes: the indicator names it, and the route takes its
@@ -238,8 +242,8 @@ export function RemoveDocument({
     // Pending, and the button held, through the read of the document list that takes the row
     // away, so the press is still the cause of the row's going (`causedByReader`). That read
     // settles either way, and a failed one lets the button go. A read that has not settled by the
-    // query's own timeout - one paused while the browser is offline - lets it go then, and the
-    // row says why the list is not read yet (`holdThrough`).
+    // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
+    // it go then, and the row says why the list is not read yet (`useReadBound`).
     onSuccess: (_result, removed) => {
       const list = refreshArtifact(queryClient, removed);
       onRemoved?.(removed);
@@ -256,9 +260,9 @@ export function RemoveDocument({
           stopped: remove.error,
         })
       : apiErrorMessage(remove.error, "Could not remove the document.")
-    : unread === undefined
+    : unsettled === undefined
       ? undefined
-      : `Could not load artifacts. ${unread}.`;
+      : `${ARTIFACTS_NOT_LOADED} ${unsettled}.`;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">

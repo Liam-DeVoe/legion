@@ -1,7 +1,7 @@
 import { onlineManager } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
-import { REQUEST_DEADLINE_MS } from "./client";
+import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } from "./client";
 
 /**
  * Waits for `read`, the re-read that draws what a landed write changed, for `REQUEST_DEADLINE_MS`
@@ -19,8 +19,8 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
     () =>
       resolve(
         onlineManager.isOnline()
-          ? `Dispatch did not answer within ${REQUEST_DEADLINE_MS / 1000} seconds`
-          : "Dispatch could not be reached"
+          ? requestTimeoutMessage(REQUEST_DEADLINE_MS)
+          : NETWORK_ERROR_MESSAGE
       ),
     REQUEST_DEADLINE_MS
   );
@@ -36,24 +36,24 @@ export function readWithinBound(read: Promise<unknown>): Promise<string | undefi
  * A control's hold through the re-read that draws what its write changed, bounded by
  * `readWithinBound`. `holdThrough` answers once its read settles or the bound runs out, whichever
  * is first, so a write that returns it from `onSuccess` stays pending, and its control held, for
- * that long and no longer. `unread` is why the read of the latest hold that ran out has not
+ * that long and no longer. `unsettled` is why the read of the latest hold that ran out has not
  * settled. The page shows it beside the sentence it shows for a read that failed. It goes once
  * that read settles, and a later hold that runs out puts its own reason in its place.
  */
 export function useReadBound(): readonly [
-  unread: string | undefined,
+  unsettled: string | undefined,
   holdThrough: (read: Promise<unknown>) => Promise<void>,
 ] {
-  const [unread, setUnread] = useState<{
+  const [unsettled, setUnsettled] = useState<{
     readonly read: Promise<unknown>;
     readonly reason: string;
   }>();
   const holdThrough = useCallback(async (read: Promise<unknown>) => {
     const reason = await readWithinBound(read);
     if (reason === undefined) return;
-    setUnread({ read, reason });
-    const settled = () => setUnread((current) => (current?.read === read ? undefined : current));
+    setUnsettled({ read, reason });
+    const settled = () => setUnsettled((current) => (current?.read === read ? undefined : current));
     read.then(settled, settled);
   }, []);
-  return [unread?.reason, holdThrough];
+  return [unsettled?.reason, holdThrough];
 }

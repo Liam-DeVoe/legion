@@ -1823,7 +1823,7 @@ test.each([
   );
 });
 
-// B2: a closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
+// A closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
 // two destructive lists, Move to epic and Merge into another epic, may write on one, so each
 // stages a value for a button to commit. An arrow key on the closed trigger opens its list.
 test("an arrow key on the move or merge list's trigger writes nothing", async () => {
@@ -2121,10 +2121,10 @@ test("a row's Start next that Dispatch refuses is free again before the list rea
 // `DispatchQueryClient` answers the invalidation of the idle list after an action with the list's
 // own fetch, which TanStack pauses while the browser is offline, and no request deadline runs
 // while a fetch is paused. So the List's hold through that read has a timer of its own, the
-// query's timeout: a row's Start next whose write landed offline is free again then, and the
-// notice says, after what the action did, that the list is not read yet and why. Once the network
-// returns, the list is read and the notice says what the action did alone.
-test("offline, a row's Start next whose write landed is free again at the list read's timeout, and the notice says why", async () => {
+// request deadline (`REQUEST_DEADLINE_MS`): a row's Start next whose write landed offline is free
+// again then, and the notice says, after what the action did, that the list is not read yet and
+// why. Once the network returns, the list is read and the notice says what the action did alone.
+test("offline, a row's Start next whose write landed is free again at the request deadline, and the notice says why", async () => {
   const online = onlineManager.isOnline();
   // The write's answer, held until the case moves the clock, so what it sets off runs in `act`.
   const answer = Promise.withResolvers<Issue>();

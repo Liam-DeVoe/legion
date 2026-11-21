@@ -310,9 +310,10 @@ function ListedSection(): ReactNode {
 // `DispatchQueryClient` answers the invalidation of the idle list after a dismissal with the
 // list's own fetch, which TanStack pauses while the browser is offline, and no request deadline
 // runs while a fetch is paused. So Dismiss's hold through that read has a timer of its own, the
-// query's timeout: Dismiss whose dismissal landed offline is let go then, and the row says the
-// list is not read yet and why. Once the network returns, the list is read and the row goes.
-test("offline, Dismiss whose dismissal landed is let go at the list read's timeout, and the row says why", async () => {
+// request deadline (`REQUEST_DEADLINE_MS`): Dismiss whose dismissal landed offline is let go
+// then, and the row says the list is not read yet and why. Once the network returns, the list is
+// read and the row goes.
+test("offline, Dismiss whose dismissal landed is let go at the request deadline, and the row says why", async () => {
   const online = onlineManager.isOnline();
   const getPending = spyOn(api, "getCredentialPending").mockResolvedValue({
     pending: [expiredSecretRow()],

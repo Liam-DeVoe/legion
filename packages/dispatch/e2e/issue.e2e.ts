@@ -16,7 +16,9 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
+import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
+import { watchWrites } from "./keyed-writes";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -1015,10 +1017,12 @@ test("issue header delivers the click that ends a title edit to the control unde
 // reader's next key goes to the page's keys: `x` writes no title and opens no editor, and `t`
 // starts the tab chord wherever the focus landed. `IssueHeader.test.tsx` sends these presses in
 // the order a browser sends them; this row has each engine send them.
-// `@firefox` and `@webkit`: the press that ends the edit takes the focus out of the title's text
-// box, and a commit after it takes the box away and draws Edit title in its place. These engines
-// fire no `focusout` for a control taken away, so the page's focus rescue reads that removal only
-// by watching the page (`playwright.config.ts`).
+// `@firefox` and `@webkit`: the press that ends the edit blurs the title's text box - Enter by the
+// page's own `blur()`, a click on the page's text by the engine - and a commit after it takes the
+// box away and draws Edit title in its place. The page's focus rescue reads that loss as the
+// reader leaving the box only where the box still stands in the microtask it queues from the
+// box's `focusout`, so the row rests on the order in which each engine fires the blur, runs that
+// microtask and lets React commit the save (`playwright.config.ts`).
 test("Enter in the title's editor, and a click outside it, close it and leave the next key to the page @firefox @webkit", async ({
   browser,
 }) => {
@@ -1030,15 +1034,7 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
     const page = await context.newPage();
     await page.setViewportSize({ height: 900, width: 1280 });
     // Every PATCH of the issue, so a title a stray key wrote is caught even if a later read hid it.
-    const patched: unknown[] = [];
-    page.on("request", (request) => {
-      if (
-        request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
-      ) {
-        patched.push(request.postDataJSON());
-      }
-    });
+    const patched = watchWrites(page, "PATCH", `/api/v1/issues/${issue.key}`);
     await page.goto(`/issues/${issue.key}`);
     const header = page.getByTestId("issue-header");
     const heading = (title: string) => header.getByRole("heading", { level: 1, name: title });
@@ -1067,24 +1063,11 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
       await nextFrames(page);
       // One read is the answer: every hand-off of the loss has run, and nothing else moves the
       // focus. The rescue may land it on Edit title, drawn where the editor stood.
-      const holder = await page.evaluate(() => {
-        const active = document.activeElement;
-        const takesText =
-          active instanceof HTMLTextAreaElement ||
-          (active instanceof HTMLElement && active.isContentEditable) ||
-          (active instanceof HTMLInputElement &&
-            ["", "text", "search", "email", "url", "tel", "number", "password"].includes(
-              active.getAttribute("type") ?? ""
-            ));
-        const named =
-          active?.getAttribute("aria-label") || active?.textContent?.trim().slice(0, 40);
-        return { name: `${active?.tagName.toLowerCase()} "${named}"`, takesText };
-      });
+      const holder = await focusHolder(page);
       expect(holder.takesText, `the focus is in ${holder.name}, which takes text`).toBe(false);
       await page.keyboard.press("x");
       await expect(editor).toHaveCount(0);
       await expect(heading(title)).toBeVisible();
-      expect((await getIssue(issue.key)).title).toBe(title);
     };
 
     // 1. Enter saves the title and closes the editor; `t` then starts the tab chord wherever the
@@ -1106,7 +1089,10 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
     await header.getByText(issue.key, { exact: true }).click();
     await expectClosedOn("Saved by a click outside");
 
-    expect(patched).toEqual([{ title: "Saved by Enter" }, { title: "Saved by a click outside" }]);
+    expect(patched.map(({ input }) => input)).toEqual([
+      { title: "Saved by Enter" },
+      { title: "Saved by a click outside" },
+    ]);
   } finally {
     await context.close();
   }

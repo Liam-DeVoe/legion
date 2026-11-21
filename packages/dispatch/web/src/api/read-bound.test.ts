@@ -45,8 +45,9 @@ test("a read that fails ends the wait at once with no reason", async () => {
 // `DispatchQueryClient` answers an invalidation of an idle query with the query's own fetch, which
 // TanStack pauses while the browser is offline: that fetch does not settle until the network
 // returns, and no request deadline runs while it is paused. The bound is the wait's own timer, so
-// the wait ends at the query's timeout all the same, and says the network is why.
-test("an invalidation paused offline is let go at the query's timeout, saying Dispatch could not be reached", async () => {
+// the wait ends at the request deadline (`REQUEST_DEADLINE_MS`) all the same, and says the network
+// is why.
+test("an invalidation paused offline is let go at the request deadline, saying Dispatch could not be reached", async () => {
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.mount();
   const observer = new QueryObserver(queryClient, {
@@ -107,12 +108,15 @@ test("useReadBound shows why a hold's read has not settled until that read settl
       });
     });
     await tick(REQUEST_DEADLINE_MS - 2);
-    expect({ held, unread: hook.result.current[0] }).toEqual({ held: true, unread: undefined });
+    expect({ held, unsettled: hook.result.current[0] }).toEqual({
+      held: true,
+      unsettled: undefined,
+    });
 
     await tick(1);
-    expect({ held, unread: hook.result.current[0] }).toEqual({
+    expect({ held, unsettled: hook.result.current[0] }).toEqual({
       held: false,
-      unread: "Dispatch could not be reached",
+      unsettled: "Dispatch could not be reached",
     });
 
     await act(async () => read.resolve());
@@ -125,7 +129,10 @@ test("useReadBound shows why a hold's read has not settled until that read settl
       });
     });
     await settle();
-    expect({ quick, unread: hook.result.current[0] }).toEqual({ quick: false, unread: undefined });
+    expect({ quick, unsettled: hook.result.current[0] }).toEqual({
+      quick: false,
+      unsettled: undefined,
+    });
   } finally {
     onlineManager.setOnline(online);
     hook.unmount();

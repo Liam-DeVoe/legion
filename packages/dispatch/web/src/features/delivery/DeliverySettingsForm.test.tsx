@@ -38,10 +38,13 @@ const record: DeliverySettings = {
 /** The form as the Settings page draws it, reading its record through `queryClient`, a plain
  *  client unless the case needs the app's own; `rescued` draws it in the shell's main content with
  *  the page's focus rescue mounted on it (`RescuedMain`), as the app shell mounts it. */
-function renderForm(
+function renderForm({
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
   rescued = false,
-  queryClient: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-) {
+}: {
+  readonly queryClient?: QueryClient;
+  readonly rescued?: boolean;
+} = {}) {
   render(
     <QueryClientProvider client={queryClient}>
       {rescued ? (
@@ -367,7 +370,7 @@ test("Save keeps the focus once the read draws the stored record, and no field t
   const restoreFocus = emulateChromiumFocusFixup();
 
   try {
-    const queryClient = renderForm(true);
+    const queryClient = renderForm({ rescued: true });
     await screen.findByDisplayValue("acme/widgets");
     await replace(user, "Deploy repository", "acme/gadgets");
     // The list as typed, one line; the server stores it as its entries.
@@ -407,9 +410,10 @@ test("Save keeps the focus once the read draws the stored record, and no field t
 // `DispatchQueryClient` answers the invalidation of the idle record after a save with the
 // record's own fetch, which TanStack pauses while the browser is offline, and no request deadline
 // runs while a fetch is paused. So Save's hold through that read has a timer of its own, the
-// query's timeout: Save whose save landed offline is enabled again then, and the form says the
-// record is not read yet and why. Once the network returns, the record is read and the note goes.
-test("offline, Save whose save landed is enabled again at the record read's timeout, and the form says why", async () => {
+// request deadline (`REQUEST_DEADLINE_MS`): Save whose save landed offline is enabled again then,
+// and the form says the record is not read yet and why. Once the network returns, the record is
+// read and the note goes.
+test("offline, Save whose save landed is enabled again at the request deadline, and the form says why", async () => {
   const online = onlineManager.isOnline();
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
   // The save's answer, held until the case moves the clock, so what it sets off runs in `act`.
@@ -417,10 +421,9 @@ test("offline, Save whose save landed is enabled again at the record read's time
   const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(
     () => saved.promise
   );
-  const queryClient = renderForm(
-    false,
-    new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } })
-  );
+  const queryClient = renderForm({
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
   await screen.findByDisplayValue("acme/widgets");
   const save = screen.getByRole("button", { name: "Save delivery settings" });
   jest.useFakeTimers();

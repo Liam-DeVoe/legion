@@ -18,6 +18,9 @@ export function useHoldUntilDrawn(
   version: string | null
 ): readonly [held: boolean, hold: () => void] {
   const [heldOn, setHeldOn] = useState<{ readonly version: string | null } | null>(null);
+  // A new version ends the hold. It is let go during render, so the effect's cleanup clears the
+  // hold's timer then and the timer does not run on to its end.
+  if (heldOn !== null && heldOn.version !== version) setHeldOn(null);
   useEffect(() => {
     if (heldOn === null) return;
     const bound = window.setTimeout(() => setHeldOn(null), SEND_DEADLINE_MS);

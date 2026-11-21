@@ -751,8 +751,8 @@ function openedAsClicked(active: string): void {
 }
 
 // The closed trigger opens on the keys the WAI-ARIA select-only combobox opens its list on,
-// beside Enter and Space: ArrowDown, Alt+ArrowDown (Option+ArrowDown on a Mac) and ArrowUp each
-// open it as a click does, and move no option.
+// beside Enter and Space: ArrowDown and ArrowUp, with Alt (Option on a Mac) or without. Each of
+// ArrowDown, Alt+ArrowDown and ArrowUp opens it as a click does, and moves no option.
 test.each([
   ["ArrowDown", "{ArrowDown}"],
   ["Alt+ArrowDown", "{Alt>}{ArrowDown}{/Alt}"],

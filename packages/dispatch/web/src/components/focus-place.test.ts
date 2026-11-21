@@ -6,7 +6,7 @@ import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
-import { SHOWN_ITEM_ATTRIBUTE, useFocusRescue } from "./focus-place";
+import { FRAME_WAIT_MS, SHOWN_ITEM_ATTRIBUTE, useFocusRescue } from "./focus-place";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
@@ -2607,13 +2607,31 @@ test("a keystroke in a text field, or the change its removal fires, makes no pre
   }
 });
 
+/** A bubbling `keydown` of `key` at `code`, held with the modifiers `held` names. Its
+ *  `getModifierState` answers from those modifiers, as a browser's does, since happy-dom reads
+ *  `AltGraph` off `altKey` and would take Option for AltGr. */
+function keydownHolding(key: string, code: string, held: readonly string[]): KeyboardEvent {
+  const down = new KeyboardEvent("keydown", {
+    altKey: held.includes("Alt"),
+    bubbles: true,
+    code,
+    ctrlKey: held.includes("Control"),
+    key,
+    metaKey: held.includes("Meta"),
+  });
+  Object.defineProperty(down, "getModifierState", {
+    value: (modifier: string) => held.includes(modifier),
+  });
+  return down;
+}
+
 // (bj) A character typed with a modifier in a field that takes typed text is no press either
 // (`isPress`): AltGr, which Windows reports as Ctrl and Alt together with `AltGraph` held, types
 // `@` on a German layout, and macOS's Option, Alt held alone, types `@` on many layouts. So the
 // update of (bi), after either character in a `<textarea>` or an `<input>`, is a loss the reader
 // did not cause: the focus stays on the page, in no row and on no field that takes typed text,
-// and nothing scrolls. Each keydown answers `getModifierState` from the modifiers it holds, as a
-// browser does, since happy-dom reads `AltGraph` off `altKey` and would take Option for AltGr.
+// and nothing scrolls. Each keydown holds its modifiers as a browser reports them
+// (`keydownHolding`).
 test("a character typed with AltGr or Option in a text field makes no press, so an uncaused removal of the field takes the uncaused path", async () => {
   const characters = [
     { code: "KeyQ", held: ["AltGraph", "Control", "Alt"] },
@@ -2633,17 +2651,7 @@ test("a character typed with AltGr or Option in a text field makes no press, so 
             field.focus();
             placeAt(field, 200);
             box.dispatchEvent(new Event("scroll"));
-            const typed = new KeyboardEvent("keydown", {
-              altKey: held.includes("Alt"),
-              bubbles: true,
-              code,
-              ctrlKey: held.includes("Control"),
-              key: "@",
-            });
-            Object.defineProperty(typed, "getModifierState", {
-              value: (modifier: string) => held.includes(modifier),
-            });
-            field.dispatchEvent(typed);
+            field.dispatchEvent(keydownHolding("@", code, held));
             field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code, key: "@" }));
             // The update of (bi): the row drawn again in its place, holding a Reply form.
             const redrawn = document.createElement("div");
@@ -2711,19 +2719,7 @@ test("in a text field, Escape, Tab, Enter in a single-line input and a key held 
         field.setAttribute("aria-label", "Note");
         main.append(field);
         field.focus();
-        const down = new KeyboardEvent("keydown", {
-          altKey: held.includes("Alt"),
-          bubbles: true,
-          code: key,
-          ctrlKey: held.includes("Control"),
-          key,
-          metaKey: held.includes("Meta"),
-        });
-        // The modifiers it holds, as a browser answers, as in (bj).
-        Object.defineProperty(down, "getModifierState", {
-          value: (modifier: string) => held.includes(modifier),
-        });
-        field.dispatchEvent(down);
+        field.dispatchEvent(keydownHolding(key, key, held));
         await settled();
         field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code: key, key }));
         if (withFocusout) lose(field);
@@ -2736,10 +2732,6 @@ test("in a text field, Escape, Tab, Enter in a single-line input and a key held 
   }
   expect(landed).toEqual(walkedBack);
 });
-
-/** The rescue's longest wait for an animation frame before it goes on without one
- *  (`focus-place.ts`'s `FRAME_WAIT_MS`). */
-const FRAME_WAIT_MS = 100;
 
 // (by) A press of the reader's is the cause of a loss for a frame and a task after it (ah, aq), or
 // for 100 ms and a task where no frame comes, as WebKit can hold a page's frames back (r). With
@@ -2781,16 +2773,12 @@ test("with the page's frames held back, a removal within 100 ms and a task of th
 
 // (bk) A date box fires its `change` at the reader's pick - in its picker, or with the digit that
 // completes the date - and not on blur, as a text field does, so that change is a press of theirs
-// (`isPress`). INFRA-3135, round 18 (the tester's): the search bar's Filter panel draws its
-// Updated since box only while no date is set (`SearchPalette.tsx`), so the pick takes the
-// focused box away. At e9ed2743 the rescue reads that as a loss the reader did not cause, passes
-// over the Author box before it and lands on the Status trigger, in Chromium, Firefox and WebKit
-// at 1440 and 390 px (builds Job infra-3135-r18xh); at 90fa8211 the focus goes to the Author box,
-// the nearest control before the date box, as a loss the reader caused does in (u). A caused
-// walk-back now passes over a control that takes typed text (bz), so it passes over the Author box
-// and lands on the Status trigger; a loss the reader did not cause leaves the focus on the page
-// (bp), so the landing still tells the two apart.
-test("a date picked in a date box is the reader's press, so the box's removal walks back to the control before it", async () => {
+// (`isPress`). The search bar's Filter panel draws its Updated since box only while no date is
+// set (`SearchPalette.tsx`), so the pick takes the focused box away, and that loss is one the
+// reader caused. Its walk-back passes over the Author box before the date box, which takes typed
+// text (bz), to the Status trigger. A loss the reader did not cause would leave the focus on the
+// page (bp), so the landing tells the two apart.
+test("a date picked in a date box is the reader's press, so the box's removal walks back to the nearest control before it that takes no typed text", async () => {
   for (const typed of [false, true]) {
     for (const withFocusout of [true, false]) {
       await withRescue(async () => {
@@ -2829,15 +2817,12 @@ test("a date picked in a date box is the reader's press, so the box's removal wa
 });
 
 // (bo) The page drops the date box at its `input`, which React's onChange answers, before any
-// `change` reaches it. INFRA-3135, round 19 (the tester's, builds Job infra-3135-r19dt at
-// 89072a56, a trace of the events in each engine): Firefox fires `input` alone as the digit that
-// completes the date is typed, and Playwright's fill() - a value set without keys, as assistive
-// technology sets it - fires `input`, then `change` on the box the page has already taken away,
-// which no listener of the page hears. The date is the reader's all the same, so the box's
-// removal walks back to the control before it, as in (bk); at 89072a56 the rescue reads it as a
-// loss the reader did not cause and lands on Status. The walk-back now passes over the Author box,
-// which takes typed text (bz), and lands on Status too; a loss the reader did not cause now leaves
-// the focus on the page (bp), so the landing still tells the two apart.
+// `change` reaches it: Firefox fires `input` alone as the digit that completes the date is typed,
+// and Playwright's fill() - a value set without keys, as assistive technology sets it - fires
+// `input`, then `change` on the box the page has already taken away, which no listener of the
+// page hears. The date is the reader's all the same, so the box's removal is a loss they caused,
+// and the focus walks back as in (bk): over the Author box, which takes typed text (bz), to the
+// Status trigger. A loss the reader did not cause would leave the focus on the page (bp).
 test("a date box dropped at its input, before any change, is the reader's press all the same", async () => {
   for (const typed of [false, true]) {
     for (const withFocusout of [true, false]) {
@@ -2970,7 +2955,7 @@ function focusedName(): string | null {
 // it, which makes a press of its own (bo) - is a loss the reader caused: the focus walks back past
 // the Author box, which takes typed text (bz), to the Status trigger before it, as in (bk), where
 // a loss the reader did not cause would leave it on the page (bm).
-test("a change on a control that fires it at the reader's pick is their press, so the control's removal walks back to the control before it", async () => {
+test("a change on a control that fires it at the reader's pick is their press, so the control's removal walks back to the nearest control before it that takes no typed text", async () => {
   const kinds = [
     "select",
     "checkbox",

@@ -119,6 +119,10 @@ interface DeliverySettingsFormProps {
   readonly initial?: DeliverySettings | null;
 }
 
+/** What the form says when its record's read failed, and before why a read of the record after
+ *  a save has not settled. */
+const DELIVERY_SETTINGS_NOT_LOADED = "Couldn't load the delivery settings.";
+
 /**
  * The delivery timeline's configuration record as a form: the deploy repository, its deploy and
  * pull-request-check workflow paths, the deploy workflow's production jobs (one per line) and
@@ -145,7 +149,7 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
       return (
         <div className="mt-6">
           <QueryError
-            message="Couldn't load the delivery settings."
+            message={DELIVERY_SETTINGS_NOT_LOADED}
             onRetry={() => void settings.refetch()}
             retrying={settings.isFetching}
           />
@@ -167,8 +171,9 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  *  (`useHoldUntilDrawn`). The form and its Save stay the same elements through the read, so the
  *  page's rescue gives the focus back to Save once it is enabled again; a form the caller replaces
  *  goes while Save is held, so its going is still the press's doing (`causedByReader`). A record
- *  read that has not settled by the query's own timeout lets them go then, with the reason under
- *  the form (`useReadBound`). A refusal lets them go at once, with its reason under the form. */
+ *  read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then,
+ *  with the reason under the form (`useReadBound`). A refusal lets them go at once, with its
+ *  reason under the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,
@@ -193,7 +198,7 @@ function DeliverySettingsFields({
   // The write time of the record the newest press was made over.
   const [pressedOver, setPressedOver] = useState(version);
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
-  const [unread, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound();
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -204,9 +209,9 @@ function DeliverySettingsFields({
     onSuccess: () => {
       if (replacedByCaller) holdUntilDrawn();
       // Pending through the record's own read, which a caller holding the record has none of. A
-      // read that has not settled by the query's own timeout - one paused while the browser is
-      // offline - lets Save go then, and the form says why the record is not read yet
-      // (`holdThrough`).
+      // read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused
+      // while the browser is offline - lets Save go then, and the form says why the record is not
+      // read yet (`useReadBound`).
       const read = queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
@@ -401,11 +406,11 @@ function DeliverySettingsFields({
             }
           />
         </div>
-      ) : unread === undefined ? null : (
+      ) : unsettled === undefined ? null : (
         <div className="mt-4">
           {/* A read of the record that has not settled is said in the words the form says for a
               read of it that failed. */}
-          <QueryError message={`Couldn't load the delivery settings. ${unread}.`} />
+          <QueryError message={`${DELIVERY_SETTINGS_NOT_LOADED} ${unsettled}.`} />
         </div>
       )}
     </>

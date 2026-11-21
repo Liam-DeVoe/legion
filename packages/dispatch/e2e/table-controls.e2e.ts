@@ -72,6 +72,7 @@ import {
   listTrigger,
   openFilterPanel,
 } from "./filters";
+import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
@@ -5456,24 +5457,7 @@ test("an ask withdrawn while the reader types its answer in the Inbox's list tak
     await nextFrames(page);
     await nextFrames(page);
     // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
-    const holder = await page.evaluate(() => {
-      const active = document.activeElement;
-      const takesText =
-        active instanceof HTMLTextAreaElement ||
-        (active instanceof HTMLElement && active.isContentEditable) ||
-        (active instanceof HTMLInputElement &&
-          ["", "text", "search", "email", "url", "tel", "number", "password"].includes(
-            active.getAttribute("type") ?? ""
-          ));
-      // A field's name as a reader hears it: its own label, else its placeholder.
-      const field = active as HTMLTextAreaElement | HTMLInputElement | null;
-      const named =
-        active?.getAttribute("aria-label") ||
-        field?.labels?.[0]?.textContent?.trim() ||
-        active?.getAttribute("placeholder") ||
-        active?.textContent?.trim().slice(0, 40);
-      return { name: `${active?.tagName.toLowerCase()} "${named}"`, takesText };
-    });
+    const holder = await focusHolder(page);
     if (holder.takesText)
       wrong.push(`${surface}: the focus is in ${holder.name}, which takes text`);
     await page.keyboard.press("j");
@@ -5758,23 +5742,7 @@ test("a Snooze pick in the reading column's head takes none of the reader's next
   await nextFrames(page);
   const wrong: string[] = [];
   // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
-  const holder = await page.evaluate(() => {
-    const active = document.activeElement;
-    const takesText =
-      active instanceof HTMLTextAreaElement ||
-      (active instanceof HTMLElement && active.isContentEditable) ||
-      (active instanceof HTMLInputElement &&
-        ["", "text", "search", "email", "url", "tel", "number", "password"].includes(
-          active.getAttribute("type") ?? ""
-        ));
-    const field = active as HTMLTextAreaElement | HTMLInputElement | null;
-    const named =
-      active?.getAttribute("aria-label") ||
-      field?.labels?.[0]?.textContent?.trim() ||
-      active?.getAttribute("placeholder") ||
-      active?.textContent?.trim().slice(0, 40);
-    return { name: `${active?.tagName.toLowerCase()} "${named}"`, takesText };
-  });
+  const holder = await focusHolder(page);
   if (holder.takesText) wrong.push(`the focus is in ${holder.name}, which takes text`);
   await page.keyboard.press("j");
   await nextFrames(page);

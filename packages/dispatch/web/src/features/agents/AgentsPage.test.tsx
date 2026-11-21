@@ -1686,29 +1686,34 @@ test("Agents keeps an issue-attached legacy reply on its issue message route", a
   }
 });
 
+/** A failed attempt of the message `id`, in `delivery`'s mode, to the Planner. */
+function failedAttempt(id: string, delivery: MessageDeliveryMode): MessageDelivery {
+  return {
+    ...messageDeliveryFields(),
+    attempt: 1,
+    created_at: recentAttemptAt,
+    delivery,
+    envelope_id: null,
+    error: "no live session planner-session",
+    message_id: id,
+    reply_id: null,
+    session_id: "planner-session",
+    state: "failed",
+  };
+}
+
+/** The listed agents, with the Planner advertising steer beside its own capabilities. */
+const steerCapableAgents = agents.map((candidate) =>
+  candidate.session_id === "planner-session"
+    ? { ...candidate, capabilities: [...candidate.capabilities, "steer"] }
+    : candidate
+);
+
 test("Agents retain targeted-message retries and attempt history", async () => {
   const user = userEvent.setup();
   const root = message("Can this ship?", {
-    deliveries: [
-      {
-        ...messageDeliveryFields(),
-        attempt: 1,
-        created_at: recentAttemptAt,
-        delivery: "btw",
-        envelope_id: null,
-        error: "no live session planner-session",
-        message_id: "message-1",
-        reply_id: null,
-        session_id: "planner-session",
-        state: "failed",
-      },
-    ],
+    deliveries: [failedAttempt("message-1", "btw")],
   });
-  const steerCapableAgents = agents.map((candidate) =>
-    candidate.session_id === "planner-session"
-      ? { ...candidate, capabilities: [...candidate.capabilities, "steer"] }
-      : candidate
-  );
   const page = renderAgents({
     listedAgents: steerCapableAgents,
     messages: [{ message: root, replies: [] }],
@@ -1737,29 +1742,13 @@ test("Agents retain targeted-message retries and attempt history", async () => {
   }
 });
 
-/** A failed attempt of the message `id`, in `delivery`'s mode, to the Planner. */
-function failedAttempt(id: string, delivery: MessageDeliveryMode): MessageDelivery {
-  return {
-    ...messageDeliveryFields(),
-    attempt: 1,
-    created_at: recentAttemptAt,
-    delivery,
-    envelope_id: null,
-    error: "no live session planner-session",
-    message_id: id,
-    reply_id: null,
-    session_id: "planner-session",
-    state: "failed",
-  };
-}
-
 // `DispatchQueryClient` answers the invalidation of the idle conversation after a delivery retry
 // with the conversation's own fetch, which TanStack pauses while the browser is offline, and no
 // request deadline runs while a fetch is paused. So the retry's hold through that read has a
-// timer of its own, the query's timeout: Retry and the mode change, held while the retry is out,
-// are enabled again then, and the conversation says it is not read yet and why. Once the network
-// returns, the conversation is read and the note goes. A message's retry row and a reply's are
-// two writes of their own, each held through the same read.
+// timer of its own, the request deadline (`REQUEST_DEADLINE_MS`): Retry and the mode change,
+// held while the retry is out, are enabled again then, and the conversation says it is not read
+// yet and why. Once the network returns, the conversation is read and the note goes. A message's
+// retry row and a reply's are two writes of their own, each held through the same read.
 test.each([
   {
     exchange: {
@@ -1793,7 +1782,7 @@ test.each([
     retried: "message-3",
     which: "reply's",
   },
-] as const)("offline, a $which delivery Retry that landed lets Retry and the mode change go at the conversation read's timeout, saying why", async ({
+] as const)("offline, a $which delivery Retry that landed lets Retry and the mode change go at the request deadline, saying why", async ({
   exchange,
   instead: insteadName,
   mode,
@@ -1801,11 +1790,6 @@ test.each([
 }) => {
   const online = onlineManager.isOnline();
   const user = userEvent.setup();
-  const steerCapableAgents = agents.map((candidate) =>
-    candidate.session_id === "planner-session"
-      ? { ...candidate, capabilities: [...candidate.capabilities, "steer"] }
-      : candidate
-  );
   const page = renderAgents({
     listedAgents: steerCapableAgents,
     messages: [{ message: exchange.message, replies: [...exchange.replies] }],
@@ -1870,20 +1854,7 @@ test.each([
 test("Use Send instead is disabled when the target does not advertise steer", async () => {
   const user = userEvent.setup();
   const root = message("Can this ship?", {
-    deliveries: [
-      {
-        ...messageDeliveryFields(),
-        attempt: 1,
-        created_at: recentAttemptAt,
-        delivery: "btw",
-        envelope_id: null,
-        error: "no live session planner-session",
-        message_id: "message-1",
-        reply_id: null,
-        session_id: "planner-session",
-        state: "failed",
-      },
-    ],
+    deliveries: [failedAttempt("message-1", "btw")],
   });
   // The shared "planner" fixture advertises aside and btw, not steer.
   const page = renderAgents({ messages: [{ message: root, replies: [] }] });

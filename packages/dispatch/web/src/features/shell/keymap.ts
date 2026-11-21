@@ -291,12 +291,11 @@ export function commitsOnBlur(element: Element): boolean {
  * the Board's, restored on load - masks nothing.
  *
  * An option list's trigger (`MultiSelect`'s, the one control that names a `listbox` popup) takes
- * the keys a select takes, open or closed, whatever control it replaced: a select, a text box or
- * a button. A closed trigger opens its list on ArrowDown, Alt+ArrowDown, ArrowUp and a typed
- * character, and a typed character goes to the list's search, so a digit on the issue header's
- * Assignee is no priority, and `c` on a Settings project list opens no Create issue. A key the
- * trigger leaves alone, such as a letter on a busy trigger, fires only the bindings that fire
- * while the reader types (`inEditable`).
+ * the keys a select takes, open or closed; a typed character goes to its list's search. Which
+ * keys open a closed list is `MultiSelect`'s to say. So a digit on the issue header's Assignee is
+ * no priority, and `c` on a Settings project list opens no Create issue. A key the trigger leaves
+ * alone, such as a letter on a busy trigger, fires only the bindings that fire while the reader
+ * types (`inEditable`).
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {

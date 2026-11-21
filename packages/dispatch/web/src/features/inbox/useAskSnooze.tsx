@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
 
 import { api, askSnoozeRequest, type WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -59,18 +59,31 @@ export interface AskSnoozeWrites {
 
 /**
  * The snooze writes of the Inbox around a control (`useAskSnoozeWrites`). Each Inbox provides its
- * own: the page's and the drawer's are separate. A row's Snooze is drawn only inside an Inbox, so
- * a control with no provider is a mistake in the code, and `useAskSnooze` throws for it.
+ * own (`AskSnoozeWritesProvider`): the page's and the drawer's are separate. A row's Snooze is
+ * drawn only inside an Inbox, so a control with no provider is a mistake in the code, and
+ * `useAskSnoozeWritesAround` throws for it.
  */
 export const AskSnoozeContext = createContext<AskSnoozeWrites | undefined>(undefined);
 
-/** The snooze write of `askId` in the Inbox around the control (`AskSnoozeContext`). */
-export function useAskSnooze(askId: string): AskSnoozeWrite {
+/** Makes the snooze writes of one Inbox (`useAskSnoozeWrites`) and provides them to `children`.
+ *  The writes' own steps re-render this component alone: what it draws re-renders only when the
+ *  writes it provides change. */
+export function AskSnoozeWritesProvider({ children }: { children: ReactNode }): ReactNode {
+  return <AskSnoozeContext value={useAskSnoozeWrites()}>{children}</AskSnoozeContext>;
+}
+
+/** The snooze writes of the Inbox around the caller (`AskSnoozeContext`). */
+export function useAskSnoozeWritesAround(): AskSnoozeWrites {
   const writes = useContext(AskSnoozeContext);
   if (writes === undefined) {
     throw new Error("A row's Snooze is drawn outside an Inbox, which holds its write");
   }
-  return writes.of(askId);
+  return writes;
+}
+
+/** The snooze write of `askId` in the Inbox around the control (`AskSnoozeContext`). */
+export function useAskSnooze(askId: string): AskSnoozeWrite {
+  return useAskSnoozeWritesAround().of(askId);
 }
 
 /**
@@ -81,12 +94,12 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
  *
  * The Inbox holds these writes by ask, and the control that pressed holds none of them. A control
  * can go while its write is out: the reading column's head goes when the reader moves the
- * selection, and a row's own control goes when its band folds. So the row stays in the band the
- * reader saw it in until its write lands (`out`), and moves into `Later` (or back out) then -
- * save under the Blocked on you narrowing, which lists no snoozed ask and keeps the row only
- * while the reader's hand is on it. A refusal stays with the ask until its next press, and
- * every control drawn for the ask shows it, with its Retry. A refused or stopped write holds no
- * row: the rollback has put the row's moment back, and the next read of the Inbox places it.
+ * selection. So the row stays in the band the reader saw it in until its write lands (`out`),
+ * and moves into `Later` (or back out) then - save under the Blocked on you narrowing, which
+ * lists no snoozed ask and keeps the row only while the reader's hand is on it. A refusal stays
+ * with the ask until its next press, and every control drawn for the ask shows it, with its
+ * Retry. A refused or stopped write holds no row: the rollback has put the row's moment back,
+ * and the next read of the Inbox places it.
  *
  * Each press carries the ask it is of: a Retry runs the newest render's `write` with the press's
  * own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. One write hook
@@ -150,6 +163,9 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
     for (const [askId, { failure }] of held) {
       if (failure === undefined) out.add(askId);
     }
+    // A press is out from the moment it is made: its ask's entry holds it with no failure.
+    const holdOut = (press: AskSnoozePress) =>
+      setHeld((current) => new Map(current).set(press.askId, { failure: undefined, press }));
     return {
       of: (askId: string): AskSnoozeWrite => {
         const entry = held.get(askId);
@@ -172,7 +188,7 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
           retry: () => {
             if (entry === undefined || failure === undefined) return;
             const { press } = entry;
-            setHeld((current) => new Map(current).set(askId, { failure: undefined, press }));
+            holdOut(press);
             const kept = stopped((variables) => variables === press);
             if (kept === undefined || !again(kept)) mutate(press);
           },
@@ -180,7 +196,7 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
             const press = { askId, until };
             // Out from the reader's own press, in the same commit, so the row is held before the
             // optimistic moment reaches the cache.
-            setHeld((current) => new Map(current).set(askId, { failure: undefined, press }));
+            holdOut(press);
             mutate(press);
           },
         };

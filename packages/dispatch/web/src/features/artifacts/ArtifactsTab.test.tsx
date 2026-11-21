@@ -68,13 +68,19 @@ function Location() {
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferences | Error = noReferences,
-  isClosed = false,
-  /** The query the tab is opened at, as a reload or a shared link hands it over. */
-  search = "",
-  /** The query client the tab reads through, a plain one unless the case needs the app's own. */
-  queryClient: QueryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  })
+  {
+    isClosed = false,
+    queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    }),
+    search = "",
+  }: {
+    readonly isClosed?: boolean;
+    /** The query client the tab reads through, a plain one unless the case needs the app's own. */
+    readonly queryClient?: QueryClient;
+    /** The query the tab is opened at, as a reload or a shared link hands it over. */
+    readonly search?: string;
+  } = {}
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences");
@@ -128,7 +134,9 @@ test("renders one row per artifact with no compare controls", async () => {
 // keyboard path opens a chooser whose file is ignored.
 test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
-  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, {
+    isClosed: true,
+  });
   // Spied on HTMLElement, the prototype that owns the method: spying on HTMLInputElement would
   // leave an own property behind that shadows every later spy on HTMLElement.
   const pick = spyOn(HTMLElement.prototype, "click");
@@ -518,7 +526,7 @@ test("the filter rides in the address: absent until set, and found again after a
 
   // The same address opened afresh, as a reload hands it over: the box holds those words and
   // the list is already narrowed by them, before anybody types.
-  const reloaded = renderTab([artifact, notes], noReferences, false, "?q=notes");
+  const reloaded = renderTab([artifact, notes], noReferences, { search: "?q=notes" });
 
   try {
     await screen.findByTestId("artifact-notes-md");
@@ -703,22 +711,18 @@ test("a refused removal shows the server's sentence on the row", async () => {
 // `DispatchQueryClient` answers the invalidation of the idle document list after a removal with
 // the list's own fetch, which TanStack pauses while the browser is offline, and no request
 // deadline runs while a fetch is paused. So Remove's hold through that read has a timer of its
-// own, the query's timeout: a row's Remove whose removal landed offline is free again then, and
-// the row says the list is not read yet and why. Once the network returns, the list is read and
-// the row goes.
-test("offline, a row's Remove whose removal landed is free again at the list read's timeout, and the row says why", async () => {
+// own, the request deadline (`REQUEST_DEADLINE_MS`): a row's Remove whose removal landed offline
+// is free again then, and the row says the list is not read yet and why. Once the network
+// returns, the list is read and the row goes.
+test("offline, a row's Remove whose removal landed is free again at the request deadline, and the row says why", async () => {
   const online = onlineManager.isOnline();
   const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
   const queryClient = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const { getIssueReferences, listArtifacts, view } = renderTab(
-    [notes],
-    noReferences,
-    false,
-    "",
-    queryClient
-  );
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
   // The removal's answer, held until the case moves the clock, so what it sets off runs in `act`.
   const removal = Promise.withResolvers<void>();
   const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
@@ -772,11 +776,9 @@ test("offline, a row's Remove whose removal landed is free again at the list rea
 // its row offers no press that is always refused; a closed issue says why before the press.
 test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
   const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
-  const { getIssueReferences, listArtifacts, view } = renderTab(
-    [artifact, notes],
-    noReferences,
-    true
-  );
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact, notes], noReferences, {
+    isClosed: true,
+  });
 
   try {
     const picture = await screen.findByTestId("artifact-diagram-png");

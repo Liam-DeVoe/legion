@@ -33,7 +33,7 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
-import { useIssueTableActions } from "./issues-table-actions";
+import { ISSUES_NOT_LOADED, useIssueTableActions } from "./issues-table-actions";
 import {
   issueTableLayout,
   listingColumns,
@@ -538,7 +538,7 @@ export function IssuesTable({
       {loading ? <LoadingSkeleton label="Loading issues" /> : null}
       {failed ? (
         <p className={dangerText} role="alert">
-          Could not load issues.{" "}
+          {ISSUES_NOT_LOADED}{" "}
           <button
             type="button"
             onClick={() => {

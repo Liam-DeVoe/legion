@@ -47,6 +47,10 @@ export type EpicNaming =
   | { kind: "new"; keys: readonly string[] }
   | { kind: "rename"; key: string; title: string };
 
+/** What the list says when its read failed, and what an action's notice says before why the list
+ *  read after it has not settled. */
+export const ISSUES_NOT_LOADED = "Could not load issues.";
+
 /** The one sentence a merge records on the source issue, written and recognised in one place.
  *  A resume compares the whole sentence against the source's own messages, because the server
  *  is what knows whether it was posted: a recorded key only says a write was made. */
@@ -77,7 +81,7 @@ export function useIssueTableActions({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
   // Why the list read after an action has not settled, once its hold ran out (`useReadBound`).
-  const [unread, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
@@ -217,11 +221,11 @@ export function useIssueTableActions({
       // of the list that draws what it changed - a row's Start next gone once its issue starts
       // next - so that going is still the press's doing (`causedByReader`); a batch that saved
       // some of its changes before a refusal changed the list too. The read settles either way,
-      // and a failed one lets them go. A read that has not settled by the query's own timeout -
-      // one paused while the browser is offline - lets them go then, and the notice says why the
-      // list is not read yet (`holdThrough`). An action that changed nothing - every write
-      // refused, or none made - lets them go at once, while the list is still read again behind
-      // them.
+      // and a failed one lets them go. A read that has not settled by the request deadline
+      // (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets them go then,
+      // and the notice says why the list is not read yet (`useReadBound`). An action that changed
+      // nothing - every write refused, or none made - lets them go at once, while the list is
+      // still read again behind them.
       const listed = client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
@@ -581,11 +585,11 @@ export function useIssueTableActions({
     // A list read that has not settled is said after what the action did, in the words the List
     // says for a list read that failed.
     notice:
-      unread === undefined
+      unsettled === undefined
         ? notice
         : {
             kind: "error" as const,
-            text: `${notice === undefined ? "" : `${notice.text} `}Could not load issues. ${unread}.`,
+            text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
           },
     moved,
     duplicateEpic,

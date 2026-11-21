@@ -256,7 +256,8 @@ export interface ControlRowProps {
  * Any other focused control a commit takes out of a slot of the first line while the row stays -
  * a page's own control that removes itself, as the Inbox's **Mark all read** does once nothing
  * is left unread - hands the focus the same way: to the control now at its place in that slot,
- * else to the one before it, else to the trigger, else to the search box (`useFocusPlace`).
+ * else to the nearest one before it, passing over every control that takes typed text, else to
+ * the trigger, else to the search box (`useFocusPlace`).
  * **Clear filters**' own rule, the trigger, comes first wherever it sits.
  *
  * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The

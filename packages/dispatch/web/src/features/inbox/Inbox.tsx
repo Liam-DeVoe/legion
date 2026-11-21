@@ -129,7 +129,7 @@ import {
 import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
-import { AskSnoozeContext, useAskSnooze, useAskSnoozeWrites } from "./useAskSnooze";
+import { AskSnoozeWritesProvider, useAskSnooze, useAskSnoozeWritesAround } from "./useAskSnooze";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
@@ -804,13 +804,36 @@ export interface InboxProps {
   scroller?: RefObject<HTMLElement | null>;
 }
 
+/** The Inbox under its own snooze writes. Every Snooze it draws shows its ask's one write, which
+ *  the Inbox holds (`AskSnoozeWritesProvider`), whichever control pressed it. A write's own steps
+ *  re-render the provider alone, and the list re-renders only when the writes change. */
 export function Inbox({
+  filter,
+  keymapScope,
+  onFilterChange,
+  pane,
+  scroller,
+}: InboxProps = {}): ReactNode {
+  return (
+    <AskSnoozeWritesProvider>
+      <InboxBody
+        filter={filter}
+        keymapScope={keymapScope}
+        onFilterChange={onFilterChange}
+        pane={pane}
+        scroller={scroller}
+      />
+    </AskSnoozeWritesProvider>
+  );
+}
+
+function InboxBody({
   filter: filterOverride,
   keymapScope = "inbox",
   onFilterChange,
   pane = true,
   scroller,
-}: InboxProps = {}): ReactNode {
+}: InboxProps): ReactNode {
   const [addressRoute, goToRoute] = useInboxRoute();
   const filter = filterOverride ?? addressRoute;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
@@ -914,17 +937,16 @@ export function Inbox({
       return next;
     });
   }, []);
-  // Every row's snooze write, held here by ask rather than by the control that pressed, which can
-  // go while the write is out: the column's head goes when the reader moves the selection. A row
-  // whose write is out (`snoozing`) stays in the band the reader saw it in, though the optimistic
-  // moment puts it into Later or out of it, and is drawn even when that band is folded
-  // (`heldRow`). Its move is made in the commit this lets go of it, once the write lands (see
-  // `SnoozeControl`). A refused or stopped write holds no row, and its reason stays with the ask
-  // for every control drawn for it. Under the Blocked on you narrowing (`?section=needs-you`),
-  // which lists no snoozed ask, the optimistic moment drops the row at once, and only the reader's
-  // hand keeps it.
-  const snoozes = useAskSnoozeWrites();
-  const snoozing = snoozes.out;
+  // Every row's snooze write, held by ask around this list (`Inbox`) rather than by the control
+  // that pressed, which can go while the write is out: the column's head goes when the reader
+  // moves the selection. A row whose write is out (`snoozing`) stays in the band the reader saw
+  // it in, though the optimistic moment puts it into Later or out of it, and is drawn even when
+  // that band is folded (`heldRow`). Its move is made in the commit this lets go of it, once the
+  // write lands (see `SnoozeControl`). A refused or stopped write holds no row, and its reason
+  // stays with the ask for every control drawn for it. Under the Blocked on you narrowing
+  // (`?section=needs-you`), which lists no snoozed ask, the optimistic moment drops the row at
+  // once, and only the reader's hand keeps it.
+  const snoozing = useAskSnoozeWritesAround().out;
   /** The rows the reader can see, in the order they see them, as this list last rendered them:
    *  what the motion hold is read against, what the selection steps through, and which asks a
    *  hand-on may hold. Written on every render below, and read here as the record of the
@@ -1360,16 +1382,13 @@ export function Inbox({
   // (`showsAnother`, `components/focus-place.ts`), so without this hand-off it would walk a
   // caused loss back to a control before the column, and leave an uncaused one on the body. So
   // the focus goes to the column's own focus stop, with no scroll, whoever caused the loss, and
-  // `j`, `k` and Enter answer from there as they do from the body. A component that hands a lost
-  // focus to its own region's stop - the column's stop here, the ask card's own row or column
-  // stop for a form it loses (`AskCard`'s `handOffFocus`) - may do so whoever caused the loss:
-  // the rescue's rule for a loss the reader did not cause governs only where no component hands
-  // the focus off. On the layout lane too, in the commit that draws the column again, so it runs
-  // before the rescue's check a frame later, which then finds the focus placed. A focus the
-  // column lost while it still shows the same question - an editor a press opened in place - is
-  // the rescue's, and so is one that has gone somewhere by then. `focusLost`, not the body alone,
-  // since Firefox and WebKit still name the removed element as focused until their next rendering
-  // update.
+  // `j`, `k` and Enter answer from there as they do from the body. A component may hand a lost
+  // focus to its own region's stop whoever caused the loss (`leaveUncaused`). On the layout lane
+  // too, in the commit that draws the column again, so it runs before the rescue's check a frame
+  // later, which then finds the focus placed. A focus the column lost while it still shows the
+  // same question - an editor a press opened in place - is the rescue's, and so is one that has
+  // gone somewhere by then. `focusLost`, not the body alone, since Firefox and WebKit still name
+  // the removed element as focused until their next rendering update.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
     if (noted === null || noted.element.isConnected) return;
@@ -2081,9 +2100,9 @@ export function Inbox({
 
   // The bar outlives an empty list: a pick that empties this view leaves its write in the air,
   // and the refusal that comes back has to land somewhere the reader can see. It is drawn over
-  // the list rather than in it, so marking a row moves no row (INFRA-3135, R4). It is drawn
-  // always, and given no count and no state while it is not shown, so its going is the bar's
-  // own to see and the focus it held is handed on (`SelectionBar`).
+  // the list rather than in it, so marking a row moves no row. It is drawn always, and given no
+  // count and no state while it is not shown, so its going is the bar's own to see and the focus
+  // it held is handed on (`SelectionBar`).
   const dismissLabel = showDismissed ? "Move to Inbox" : "Dismiss";
   const selectedCount = selectedAsks.length + selectedThreads.length;
   // In flight the count is the press's. While Later is folded the optimistic moment has taken
@@ -2190,10 +2209,10 @@ export function Inbox({
   // scrolling list rather than an item in it: the controls stay put while the rows move.
   //
   // One row holds the page's search, sorting and filtering, and nothing else between the title
-  // and the first row draws a search box, a panel trigger or a chip (INFRA-3135, R1). Nothing
-  // the reader can press here makes the header taller: the filter panel and the display menu
-  // are portalled over the page (`AnchoredPanel`), the selection bar is drawn over the list,
-  // and the chips are the one part of the row that may take a second line.
+  // and the first row draws a search box, a panel trigger or a chip. Nothing the reader can press
+  // here makes the header taller: the filter panel and the display menu are portalled over the
+  // page (`AnchoredPanel`), the selection bar is drawn over the list, and the chips are the one
+  // part of the row that may take a second line.
   const header = (
     <div className="space-y-4">
       <CredentialRequestsSection credentials={credentials} />
@@ -2258,63 +2277,59 @@ export function Inbox({
         {/* Every Snooze this list draws - a row's, and the column head's - is held while the
             bar's own Snooze write is out over its ask (`SnoozeControl`). */}
         <BulkSnoozingContext value={bulkSnoozing}>
-          {/* Every Snooze this list draws shows its ask's one write, which this list holds
-              (`useAskSnoozeWrites`), whichever control pressed it. */}
-          <AskSnoozeContext value={snoozes}>
-            {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
-              rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
-            {selectionBar}
-            <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-              {header}
-              {paneShown ? (
-                // The two columns are a grid of two fractions, so the share the reader dragged the
-                // divider to is exactly the share the pane takes, at any width; the divider is the
-                // column between them and takes its own.
-                //
-                // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
-                // so a long document in the pane would make the row - and with it both columns'
-                // boxes - taller than the page, and neither column would scroll in itself. The page
-                // would scroll instead, which is how the pane came to show a document's top however
-                // far down it the reader's section sat.
-                <div
-                  className="grid min-h-0 flex-1"
-                  ref={columnsRef}
-                  style={{
-                    gridTemplateColumns:
-                      subject === undefined
-                        ? "minmax(0, 1fr)"
-                        : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-                    gridTemplateRows: "minmax(0, 1fr)",
-                  }}
-                >
-                  {listColumn}
-                  {subject === undefined ? null : (
-                    <>
-                      <PaneDivider
-                        columns={columnsRef}
-                        onWidthChange={setPaneWidth}
-                        width={paneWidth}
-                      />
-                      {/* The column names the question it shows, by which the page's rescue tells
+          {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
+              rather than in it, so the first mark moves no row. */}
+          {selectionBar}
+          <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
+            {header}
+            {paneShown ? (
+              // The two columns are a grid of two fractions, so the share the reader dragged the
+              // divider to is exactly the share the pane takes, at any width; the divider is the
+              // column between them and takes its own.
+              //
+              // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
+              // so a long document in the pane would make the row - and with it both columns'
+              // boxes - taller than the page, and neither column would scroll in itself. The page
+              // would scroll instead, which is how the pane came to show a document's top however
+              // far down it the reader's section sat.
+              <div
+                className="grid min-h-0 flex-1"
+                ref={columnsRef}
+                style={{
+                  gridTemplateColumns:
+                    subject === undefined
+                      ? "minmax(0, 1fr)"
+                      : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                  gridTemplateRows: "minmax(0, 1fr)",
+                }}
+              >
+                {listColumn}
+                {subject === undefined ? null : (
+                  <>
+                    <PaneDivider
+                      columns={columnsRef}
+                      onWidthChange={setPaneWidth}
+                      width={paneWidth}
+                    />
+                    {/* The column names the question it shows, by which the page's rescue tells
                         the next question drawn here from what a press drew in its place
                         (`SHOWN_ITEM_ATTRIBUTE`). */}
-                      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                      <div
-                        className="min-h-0 min-w-0"
-                        {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
-                        onBlur={forgetPaneReturn}
-                        ref={holdPane}
-                      >
-                        <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
-                      </div>
-                    </>
-                  )}
-                </div>
-              ) : (
-                listColumn
-              )}
-            </div>
-          </AskSnoozeContext>
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                    <div
+                      className="min-h-0 min-w-0"
+                      {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
+                      onBlur={forgetPaneReturn}
+                      ref={holdPane}
+                    >
+                      <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              listColumn
+            )}
+          </div>
         </BulkSnoozingContext>
       </RowDismissContext>
     </AskHandOnLiveContext>

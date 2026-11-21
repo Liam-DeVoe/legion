@@ -194,7 +194,7 @@ function rowTarget(agent: Agent): AgentPart {
 
 function AgentExchangeReply({
   agent,
-  holdThrough,
+  holdThroughRead,
   liveAgents,
   onReply,
   read,
@@ -202,15 +202,14 @@ function AgentExchangeReply({
   replyDisabled,
 }: {
   agent: Agent;
-  /** The conversation's hold through its own read (`useReadBound`). */
-  holdThrough: (read: Promise<unknown>) => Promise<void>;
+  /** Holds through the conversation's re-read (`useReadBound`). */
+  holdThroughRead: () => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
@@ -219,14 +218,10 @@ function AgentExchangeReply({
     // Pending through the read that draws the new attempt: Retry and the mode changes stay
     // disabled until that read takes them away, so the press is still the cause of their going
     // (`causedByReader`). The read settles either way, and a failed one lets them go. A read that
-    // has not settled by the query's own timeout - one paused while the browser is offline - lets
-    // them go then, and the conversation says why it is not read yet (`holdThrough`).
-    onSuccess: () =>
-      holdThrough(
-        queryClient.invalidateQueries({
-          queryKey: agentMessagesQuery(agent.session_id).queryKey,
-        })
-      ),
+    // has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
+    // browser is offline - lets them go then, and the conversation says why it is not read yet
+    // (`useReadBound`).
+    onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
@@ -284,21 +279,20 @@ function AgentExchangeReply({
 
 function AgentTargetedMessage({
   agent,
-  holdThrough,
+  holdThroughRead,
   liveAgents,
   onReply,
   read,
   replyDisabled,
 }: {
   agent: Agent;
-  /** The conversation's hold through its own read (`useReadBound`). */
-  holdThrough: (read: Promise<unknown>) => Promise<void>;
+  /** Holds through the conversation's re-read (`useReadBound`). */
+  holdThroughRead: () => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
@@ -306,12 +300,7 @@ function AgentTargetedMessage({
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     // Pending through the read that draws the new attempt, as a reply's retry is, and bounded
     // the same way.
-    onSuccess: () =>
-      holdThrough(
-        queryClient.invalidateQueries({
-          queryKey: agentMessagesQuery(agent.session_id).queryKey,
-        })
-      ),
+    onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
@@ -347,7 +336,7 @@ function AgentTargetedMessage({
             {replies.map((reply) => (
               <AgentExchangeReply
                 agent={agent}
-                holdThrough={holdThrough}
+                holdThroughRead={holdThroughRead}
                 key={reply.id}
                 liveAgents={liveAgents}
                 onReply={onReply}
@@ -382,6 +371,9 @@ function exchangesAfter(
   return exchanges.filter((read) => compareTimestamps(exchangeActivityAt(read), clearedBefore) > 0);
 }
 
+/** What a conversation says when its read failed, and before why its read has not settled. */
+const CONVERSATION_NOT_LOADED = "Could not load this conversation.";
+
 function AgentMessageList({
   agent,
   liveAgents,
@@ -405,7 +397,11 @@ function AgentMessageList({
   const [showCleared, setShowCleared] = useState(false);
   // A retry's hold through this conversation's read, and why that read has not settled once the
   // hold ran out (`useReadBound`).
-  const [notRead, holdThrough] = useReadBound();
+  const [unsettled, holdThrough] = useReadBound();
+  const holdThroughRead = () =>
+    holdThrough(
+      queryClient.invalidateQueries({ queryKey: agentMessagesQuery(agent.session_id).queryKey })
+    );
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
   const unread = exchangesAfter(all, clearedBefore);
@@ -442,13 +438,13 @@ function AgentMessageList({
   });
   if (messages.isPending || agentState.isPending) return null;
   if (messages.isError || agentState.isError) {
-    return <p className={`mt-3 text-sm ${dangerText}`}>Could not load this conversation.</p>;
+    return <p className={`mt-3 text-sm ${dangerText}`}>{CONVERSATION_NOT_LOADED}</p>;
   }
   if (all.length === 0) return null;
   const row = (read: MessageRead) => (
     <AgentTargetedMessage
       agent={agent}
-      holdThrough={holdThrough}
+      holdThroughRead={holdThroughRead}
       key={read.message.id}
       liveAgents={liveAgents}
       onReply={onReply}
@@ -460,8 +456,10 @@ function AgentMessageList({
     <div className={`mt-3 border-t pt-3 ${borderDefault}`}>
       {/* A read of the conversation that has not settled is said as this list says one that
           failed, in the same line. */}
-      {notRead === undefined ? null : (
-        <p className={`mt-3 text-sm ${dangerText}`}>Could not load this conversation. {notRead}.</p>
+      {unsettled === undefined ? null : (
+        <p className={`mt-3 text-sm ${dangerText}`}>
+          {CONVERSATION_NOT_LOADED} {unsettled}.
+        </p>
       )}
       {newest === undefined ? null : (
         <ol aria-label={`Conversation with ${label}`} className="space-y-2">

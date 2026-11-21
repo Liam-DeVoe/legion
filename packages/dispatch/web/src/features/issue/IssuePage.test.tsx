@@ -879,11 +879,11 @@ test("IssuePage's `e` opens the title's editor through the Edit title button", a
   }
 });
 
-// The issue header's Assignee was a `<select>`, which takes a page's single keys as its own. Its
-// list's trigger opens the list on a typed character, with that character as the list's search,
-// so a digit or a letter of a page binding typed on the closed trigger does nothing else on the
-// page: no priority, no title editor, no labels list, no pin, no tab chord. The same digit
-// pressed on the page writes the priority, which shows the binding was there to fire.
+// The issue header's Assignee is an option list's trigger, which takes the keys a select takes.
+// It opens the list on a typed character, with that character as the list's search, so a digit
+// or a letter of a page binding typed on the closed trigger does nothing else on the page: no
+// priority, no title editor, no labels list, no pin, no tab chord. The same digit pressed on the
+// page writes the priority, which shows the binding was there to fire.
 test("IssuePage takes a digit or a binding's letter typed on the closed Assignee trigger as the list's search, and the digit writes the priority from the page", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
