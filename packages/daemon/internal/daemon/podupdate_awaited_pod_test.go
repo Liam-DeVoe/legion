@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,6 +242,64 @@ func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.
 	}
 	wantField(t, lines[0], "notWaitedFor", claim.RolePlanner)
 	wantField(t, lines[0], "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
+}
+
+// The round passed over a claim the daemon suspended, and no claim records a process in the pod,
+// so the pod is replaced through the claim whose launch waits on it (podProcess). The passed-over
+// claim makes a read of the issue's workspace due (readRoundWorkspace), but no role process runs
+// in the pod to make it: the waiting claim runs none there, and the Sandbox runtime refuses a read
+// through a claim that records no process (its runningRoleConn), as the fake is scripted to here.
+// So the replacement makes no read, as the replacement of a pod no role process ran in makes none
+// (processlessRead). Its line names the read as not made because no role process ran in the pod,
+// and names the claims as every replacement through ReplacePod does. The one message on the issue
+// names the suspended planner and says that no role process ran in the pod.
+//
+// The negative control is #4392 before its fix: the round read the workspace through the waiting
+// implementer, the read failed, and the message said that the read failed.
+func TestPodUpdateMakesNoReadThroughAClaimWhoseLaunchWaitsOnThePod(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer),
+		suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon),
+	)
+	token := rig.tokens[claim.RoleImplementer]
+	rig.rt.FailWorkspaceWork(podUpdateIssue, fmt.Errorf("read %s's workspace: %s holds no role process to read it", podUpdateIssue, token))
+	rig.drifts(podUpdateExchangeDrift)
+	rig.refuseUntilReplaced(claim.RoleImplementer)
+	rig.diesRefused(claim.RoleImplementer)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RolePlanner, podUpdateRound)
+	replaced := rig.awaitReplacement(1, "through the claim whose launch waits on it")
+	if got := replaced[0].Pod; got.Claim != token || podOf(got.Locator) != podUpdatePod {
+		t.Fatalf("ReplacePod was asked %+v, want the waiting implementer's locator in pod %s", got, podUpdatePod)
+	}
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
+		t.Errorf("the workspace was read %+v, want no read: no role process ran in the pod", reads)
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 || lines[0]["atTheBound"] != false {
+		t.Fatalf("the replacement was logged %+v, want one line that no bound made", lines)
+	}
+	line := lines[0]
+	if line["workspaceRead"] != "not made" || line["workspaceNotReadBecause"] != noProcessRead {
+		t.Errorf("the replacement's line names the read %+v, want one not made because %q", line, noProcessRead)
+	}
+	wantField(t, line, "notWaitedFor", claim.RolePlanner)
+	wantField(t, line, "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
+
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+	}
+	for _, want := range []string{"planner (suspended)", "No role process ran in the pod"} {
+		if !strings.Contains(messages[0], want) {
+			t.Errorf("the message does not say %q:\n%s", want, messages[0])
+		}
+	}
+	if strings.Contains(messages[0], "The read failed") {
+		t.Errorf("the message says a read failed, want no read made:\n%s", messages[0])
+	}
 }
 
 // waitingOn is role's claim of the rig's issue with no process, its launch waiting on pod
