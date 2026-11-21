@@ -21,7 +21,8 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 - **`retro-held`:** a parent's task passed its last step with no `acceptance:owner` step to wait in, while issues beneath it are still in the workflow.
   Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.
   Run each issue it names to done, or park one with `park_child` under the park rule.
-  `retry_or_escalate` refuses that hold, a retry and an escalation alike (`409 HELD_FOR_CHILDREN`, naming each issue beneath it still in the workflow), and a `todo` on the root leaves it held.
+  `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
+  A `todo` on the root leaves it held.
 
 - **`plan-not-taken`:** an earlier owner of the issue gave it a plan, and Legion did not take it at the issue's first step.
   Its reason names the version, who gave it, and the plan the first step runs: yours, or the default steps.
