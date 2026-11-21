@@ -77,11 +77,14 @@ type routeAuth struct {
 var routeCredential = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 
 // newRouteAuth is the routeAuth of user and password, failing t when either holds anything but
-// letters and digits.
+// letters and digits. The refusal names the user and never prints the password.
 func newRouteAuth(t testing.TB, user, password string) *routeAuth {
 	t.Helper()
-	if !routeCredential.MatchString(user) || !routeCredential.MatchString(password) {
-		t.Fatalf("a route credential is letters and digits alone, not user %q, password %q", user, password)
+	if !routeCredential.MatchString(user) {
+		t.Fatalf("a route credential is letters and digits alone, not user %q", user)
+	}
+	if !routeCredential.MatchString(password) {
+		t.Fatalf("a route credential is letters and digits alone, and user %q's password is not", user)
 	}
 	return &routeAuth{user: user, password: password}
 }

@@ -124,6 +124,36 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	cluster.AwaitReady(t)
 }
 
+// A route credential's refusal names its user and never prints its password, which every test log
+// of the run would otherwise hold (CodeQL's clear-text logging of sensitive information). The
+// control is a credential of letters and digits alone, which is taken whole.
+func TestARouteCredentialRefusalPrintsNoPassword(t *testing.T) {
+	refused := func(user, password string) string {
+		t.Helper()
+		recorder := &fatalRecorder{TB: t}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			newRouteAuth(recorder, user, password)
+		}()
+		<-done
+		if recorder.message == "" {
+			t.Fatalf("user %q with a password of %d characters was not refused", user, len(password))
+		}
+		return recorder.message
+	}
+	const notAlphanumeric = "not-letters-and-digits"
+	if message := refused("route", notAlphanumeric); strings.Contains(message, notAlphanumeric) || !strings.Contains(message, `"route"`) {
+		t.Fatalf("the refusal of a bad password prints it, or does not name its user: %s", message)
+	}
+	if message := refused("ro ute", "secret1"); strings.Contains(message, "secret1") || !strings.Contains(message, `"ro ute"`) {
+		t.Fatalf("the refusal of a bad user prints the password, or does not name the user: %s", message)
+	}
+	if auth := newRouteAuth(t, "route", "secret1"); auth.user != "route" || auth.password != "secret1" {
+		t.Fatalf("control: the credential of letters and digits was taken as %+v", *auth)
+	}
+}
+
 // A cluster with route authorization (StartClusterRouteAuth) routes its members to each other with
 // the credential, and refuses a server that routes to a member with none: the member logs the
 // route's authentication error and never lists it. Its control is the same server with the
