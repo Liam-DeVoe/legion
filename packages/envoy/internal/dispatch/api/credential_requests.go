@@ -329,10 +329,6 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	return subject, generation, nil
 }
 
-// membershipHeldDeciderDirectoryText is the refusal of a decision, a mint or a scope change at a
-// browser under IAP identity whose person the Workspace Directory holds (browserDeciderHeld).
-const membershipHeldDeciderDirectoryText = "Google's Workspace Directory no longer confirms this caller; their decisions work again once it does"
-
 // errDeciderUnreadable is a decision, a mint or a scope change whose caller's standing could not
 // be read: the statement of approverStanding failed, or under IAP identity Standing failed or
 // answered unavailable (browserDeciderHeld). It is never an accept.

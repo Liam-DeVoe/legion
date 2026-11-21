@@ -663,24 +663,30 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	}, nil
 }
 
-// codeMembershipHeld refuses, 401, a credential of a person Dispatch holds until they sign in
-// again, or until a refresh confirms them (identity.Membership.Standing): their personal token, or
-// a token the secrets broker issued naming them. A hold revokes nothing, so a client keeps the
-// credential, which works again once the hold ends.
+// codeMembershipHeld refuses, 401, what a person Dispatch holds does with a credential: use their
+// personal token, or a token the secrets broker issued naming them, until they sign in again or a
+// refresh confirms them (identity.Membership.Standing), or under IAP identity until the Workspace
+// Directory does; and, there, decide a credential request, mint a personal token or change a
+// token's scopes at their browser (browserDeciderHeld). A hold revokes nothing, so a client keeps
+// the credential, which works again once the hold ends.
 const codeMembershipHeld = "MEMBERSHIP_HELD"
 
-// The three texts of codeMembershipHeld Dispatch can give a rule for (errMembershipHeld): a
+// The four texts of codeMembershipHeld Dispatch can give a rule for (errMembershipHeld): a
 // recorded hold, or the unopenable rule, which a sign-in ends; the 24-hour rule, which the next
 // confirmation ends; and, under IAP identity, a hold the Workspace Directory's answer recorded,
-// which its next Active answer ends, since a sign-in through IAP releases nothing. The words name no
-// person: whoever holds the token is told why it stopped.
+// which its next Active answer ends, since a sign-in through IAP releases nothing, in one text for
+// a credential and another for a decision, a mint or a scope change at the person's browser
+// (browserDeciderHeld). The words name no person: whoever holds the token, or acts at the browser,
+// is told why it stopped. A broker token's held introspection answer outside IAP gets the broker's
+// own words instead, which name the person, since that answer carries no rule (brokerTokenHeld).
 const (
-	membershipHeldText          = "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"
-	membershipHeldGraceText     = "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation"
-	membershipHeldDirectoryText = "Google's Workspace Directory no longer confirms this token's owner; the token works again once it does"
+	membershipHeldText                 = "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"
+	membershipHeldGraceText            = "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation"
+	membershipHeldDirectoryText        = "Google's Workspace Directory no longer confirms this token's owner; the token works again once it does"
+	membershipHeldDeciderDirectoryText = "Google's Workspace Directory no longer confirms this caller; their decisions work again once it does"
 )
 
-// errMembershipHeld is the refusal of a held person's credential, saying text.
+// errMembershipHeld is codeMembershipHeld's refusal, saying text.
 func errMembershipHeld(text string) error {
 	return errorf(http.StatusUnauthorized, codeMembershipHeld, "%s", text)
 }
