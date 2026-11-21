@@ -87,6 +87,27 @@ func (s *Store) UseClock(clock func() time.Time) {
 	s.clock = clock
 }
 
+// clockNow is the store's clock (UseClock), or the wall clock for the daemon's own store: the
+// moment a write the store bounds or stamps from Go rather than in SQL reads.
+func (s *Store) clockNow() time.Time {
+	if s.clock == nil {
+		return time.Now()
+	}
+	return s.clock()
+}
+
+// stamp is the store's clock (UseClock) as a statement's argument: the time a statement that reads
+// Postgres's clock writes or compares with in its place, as coalesce($n::timestamptz, now()). It
+// is nil for the daemon's own store, so each such statement reads the database's clock exactly as
+// it did before the store took one.
+func (s *Store) stamp() *time.Time {
+	if s.clock == nil {
+		return nil
+	}
+	at := s.clock()
+	return &at
+}
+
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
 // Its pool is PoolConfig's, so every connection runs the store's text rule, and a dsn whose exec

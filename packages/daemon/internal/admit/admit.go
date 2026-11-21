@@ -42,7 +42,7 @@ type Admission struct {
 	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
 	// experiment when it first records an issue (drawExperiments). source is the random source a
 	// `random` mode is drawn with, experiment.CryptoSource in production and a pinned one in a
-	// test, injected as now is.
+	// test or a replay (UseExperimentSource), injected as now is (UseClock).
 	experiments []config.Experiment
 	source      func(uint64) (uint64, error)
 	// stalledTreeNotice is `stalled_tree_notice_hours` (UseStalledTreeNotice), how long a tree
@@ -134,6 +134,18 @@ func (a *Admission) ReportCapabilities(open func() []string) {
 // every test that admits anything builds an admission, and most of them declare no experiment.
 func (a *Admission) UseExperiments(experiments []config.Experiment) {
 	a.experiments = experiments
+}
+
+// UseExperimentSource sets the random source a `random` mode of the project's experiments is drawn
+// with (drawExperiments). New sets experiment.CryptoSource, the daemon's own, and a nil source is
+// that one; a replay of a recorded window sets a source seeded from its run, so two runs of one
+// window draw alike, as the engine's draw takes a seeded one (workflow.Config.ExperimentSource).
+// It is a setter rather than a parameter of New for the reason UseExperiments is.
+func (a *Admission) UseExperimentSource(source func(uint64) (uint64, error)) {
+	if source == nil {
+		source = experiment.CryptoSource
+	}
+	a.source = source
 }
 
 // UseStalledTreeNotice registers how long a tree of this project may be quiet before the
@@ -1600,7 +1612,10 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // mark would say the issue stands in the line waiting for its slot
 // back when nothing of it is waiting, and its work coming back later would take its place in
 // the line from the moment before the park (record.Waiting).
-func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
+//
+// Each release is recorded on moves with the term of the predicate that failed (releaseReason),
+// for the pass's record line.
+func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts, moves *passMoves) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
 		return nil, fmt.Errorf("list this project's slotted issues: %w", err)
@@ -1616,7 +1631,8 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		// A slotted issue whose root the live records do not hold belongs to a tree that has
 		// finished: LiveRoots does not name it either, so the predicate releases it.
 		_, running := live[issue.Tree]
-		if facts.NeedsSlot(issue, byKey[issue.Tree], running) {
+		root := byKey[issue.Tree]
+		if facts.NeedsSlot(issue, root, running) {
 			continue
 		}
 		if err := a.store.ReleaseSlot(ctx, tx, issue.Key); err != nil {
@@ -1625,6 +1641,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		inUse--
 		released = append(released, issue.Key)
 		a.logSlot(ctx, "released", issue.Key, inUse)
+		moves.take(issue.Key, releaseReason(issue, root, running), inUse)
 	}
 	for _, issue := range issues {
 		if issue.ReleasedForWaitAt == nil {
@@ -1663,9 +1680,10 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 // and the mark that says why are written together, so no pass can read one without the other.
 // The rows it frees are reported to the caller with the rows the ordinary release frees, because
 // the controller's free-slot wake is about the capacity of the project and not about the reason
-// a row came free.
+// a row came free. Each release is recorded on moves with what the issue waits on (waitReason),
+// for the pass's record line.
 func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts,
+	slots []record.Slot, facts record.LineFacts, moves *passMoves,
 ) ([]string, error) {
 	own := ownSlots(issues, slots)
 	inUse := len(own)
@@ -1682,6 +1700,7 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 		inUse--
 		released = append(released, slot.Issue)
 		a.logSlot(ctx, "released", slot.Issue, inUse)
+		moves.take(slot.Issue, waitReason(slot.Issue, waits, facts), inUse)
 		if !a.rule.WaitStopsPhase {
 			continue
 		}
@@ -1749,7 +1768,14 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // release, the boot's Reconcile — so each of them is also a look at every issue a blocker holds,
 // at every slot whose worker has lost its task, and at every tree a step that left gates.design
 // released (record.Waiting's LineFirstPhase).
+//
+// It is also every path that moves one of the cap's slots, so it writes the record of the pass
+// (passMoves): each slot the releases take back and the promotion gives out, and each candidate
+// the promotion passes over, in one line once the fact commits where any slot moved
+// (logPassMoves), whichever return ends the pass.
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
+	var moves passMoves
+	defer a.logPassMoves(ctx, &moves)
 	// A paused project promotes nothing (decision 11 of dispatch://INFRA-3759): no slot, no owed
 	// entry, no stalled-tree notice and no children-first notice. The tick's wake of the
 	// controller is the caller's and still runs, and the resume applies one pass of its own. The
@@ -1781,7 +1807,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	released, err := a.releaseSlots(ctx, tx, issues, facts)
+	released, err := a.releaseSlots(ctx, tx, issues, facts, &moves)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1816,7 +1842,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// so this pass's own line and its ownSlots read the state after the release: an issue that
 	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
 	// this very pass rather than the next one.
-	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
+	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts, &moves)
 	if err != nil {
 		return 0, append(released, waiting...), err
 	}
@@ -1869,8 +1895,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		// (covers): nothing under every other rule, the daemon's own among them.
 		lending := coversOf(own, rows, facts)
 		stopped, opened, resumed := false, false, false
-		for _, candidate := range line {
+		moves.round()
+		for at, candidate := range line {
 			issue := candidate.Issue
+			// The candidate's place in this round's line, counted from 1, which the pass's record
+			// names for each candidate it passes over.
+			place := at + 1
 			// A hold stops the whole pass, the candidates behind this one included. Every
 			// candidate competes for the same slots now that the cap counts the project's
 			// issues rather than its trees, so passing one over would invert Dispatch's rank
@@ -1887,6 +1917,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// it is the boot catch-up's hold alone, so a release bypasses the Dispatch
 			// consumer's hold and never the catch-up's.
 			if heldKeys(issue.Key) {
+				moves.pass(candidate, place, record.PassedHeldKey)
 				stopped = true
 				break
 			}
@@ -1898,6 +1929,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// loop would start anyway.
 			if waits := blockers.LineWaitsOn(rows, candidate); len(waits) > 0 {
 				a.log.Info("admission waits for what this issue waits on", "issue", issue.Key, "blockers", waits)
+				moves.pass(candidate, place, record.PassedWaits)
 				continue
 			}
 			// A candidate that already holds a row, or that stands in a phase keeping none,
@@ -1923,6 +1955,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// (api.WaitingLineView) — and the daemon resumes it by itself on the pass that
 				// finds a slot free, so a message would carry a snapshot of a place that moves
 				// with every pass and nothing besides.
+				moves.pass(candidate, place, record.PassedCap)
 				continue
 			}
 			if candidate.Kind == record.LineAnswered {
@@ -1937,6 +1970,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				if reason != "" {
 					a.log.Warn("admission skips an answered root it may not resume", "issue", issue.Key, "reason", reason)
+					moves.pass(candidate, place, record.PassedNotResumable)
 					continue
 				}
 			}
@@ -1951,12 +1985,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err != nil {
 					if errors.Is(err, treelifecycle.ErrCleanupReserved) {
 						a.log.Info("admission waits for tree cleanup", "issue", issue.Key, "tree", issue.Tree)
+						moves.pass(candidate, place, record.PassedTreeCleanup)
 						continue
 					}
 					// The operator opened a tree under this root's key: this root waits until
 					// that tree's cleanup confirms, and the candidates behind it go on.
 					if errors.Is(err, treelifecycle.ErrAuthorityHeld) {
 						a.log.Warn("admission waits for its tree's other authority", "issue", issue.Key, "tree", issue.Tree, "error", err)
+						moves.pass(candidate, place, record.PassedTreeCleanup)
 						continue
 					}
 					return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
@@ -2004,6 +2040,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// of the cap's own (covers.take); under every other rule nothing is lent.
 				lending.take(issue.Key)
 				a.logSlot(ctx, "taken", issue.Key, len(own))
+				moves.give(issue.Key, candidate.Kind, len(own))
 			}
 			switch candidate.Kind {
 			case record.LineReturning:

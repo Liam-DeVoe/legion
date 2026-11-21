@@ -1118,6 +1118,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
+	// The hold's beginning is a line of its own once the fact commits, so a window of the daemon's
+	// log read later says when the phase stopped and why: the cause the failed claim names, or
+	// unrecorded for a fact that names none (noticeFailure). A replay of the window starts the
+	// hold at this line, which a phase changed line does not carry.
+	e.logOnCommit(ctx, "workflow: a phase is held", "issue", issue.Key, "tree", issue.Tree, "from", from,
+		"role", fact.Role, "reason", cmp.Or(string(fact.Cause), string(supervise.CauseUnrecorded)))
 	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
 		Failure: failure}); err != nil {
 		return intake.Result{}, err
@@ -1833,6 +1839,12 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
 			return intake.Result{}, err
 		}
+		// The escalation is a line of its own once the fact commits, as the hold's beginning is
+		// (claimFailed): it is the moment the hold became the controller's to act on. The role is
+		// the held phase's, as the held notice names it (HeldNotice).
+		held := HeldNotice(*issue)
+		e.logOnCommit(ctx, "workflow: a phase is held", "issue", issue.Key, "tree", issue.Tree, "from", held.Phase,
+			"role", held.Role, "reason", held.Reason)
 		// The architect's own words where it named any, beside the cause the hold already names:
 		// the controller must act on this hold, and why the architect escalated it is what it
 		// acts on. They travel in a field of their own, since Reason is the word `escalated`
