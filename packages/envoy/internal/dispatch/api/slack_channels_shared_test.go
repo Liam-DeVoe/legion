@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -194,7 +194,7 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const brokerToken = "alice-broker-token-holding-no-project"
 	says := liveNamedToken(caller.jkt)
-	says.Person, says.ProjectScope, says.Projects = "alice", brokertoken.ProjectScopePerson, nil
+	says.Person, says.ProjectScope, says.Projects = "alice", ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
 	personal := mintListed(t, rig.handler, "alice", "alice's token listing PRIV2", []string{"PRIV2"})
 	const unseen = "C0SHARED001 is listed by a private project you cannot see"
