@@ -137,12 +137,11 @@ type Deps struct {
 	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
 	// and audience, as a deployment that names none always did.
 	OIDCAccounts []string
-	// AccessAccounts are the service-account subjects that may read the membership answer (GET
-	// /api/v1/access/projects/{key}, GET /api/v1/access/person and GET
-	// /api/v1/access/private-projects) and the repository answer (GET
-	// /api/v1/access/projects/{key}/repositories; cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS). A caller
-	// with no credential, or one whose credential does not verify, is refused there as every route
-	// refuses it (401 NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
+	// AccessAccounts are the service-account subjects that may read the routes of the read class
+	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
+	// caller with no credential, or one whose credential does not verify, is refused there as
+	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
+	// ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
 	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made

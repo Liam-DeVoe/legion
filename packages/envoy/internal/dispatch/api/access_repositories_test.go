@@ -42,9 +42,10 @@ func seedAnswerProject(t *testing.T, database *store.Store, key string, reposito
 // DISPATCH_ACCESS_ACCOUNTS names. A person's cookie, that person's personal token and an outside
 // agent's broker token naming the project are each 403 ACCESS_ACCOUNT_REQUIRED, as are a verified
 // service account the list does not name and the shared token; a caller with no credential is 401
-// NO_IDENTITY. Each of the refused credentials is first shown live, answered 200 by GET
-// /api/v1/whoami, so each 403 is this route's refusal and not a credential that resolves nowhere.
-// Control: the listed account is answered 200 with the project's repositories.
+// NO_IDENTITY. Each refusal names the route, as every access route's does. Each of the refused
+// credentials is first shown live, answered 200 by GET /api/v1/whoami, so each 403 is this route's
+// refusal and not a credential that resolves nowhere. Control: the listed account is answered 200
+// with the project's repositories.
 func TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	database := storetest.Open(t)
@@ -110,9 +111,9 @@ func TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts(t *testing.T) {
 		}
 		response := caller.send(path)
 		if body := response.Body.String(); response.Code != http.StatusForbidden || !strings.Contains(body, `"code":"ACCESS_ACCOUNT_REQUIRED"`) ||
-			!strings.Contains(body, "the repository answer is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS") ||
+			!strings.Contains(body, "GET /api/v1/access/projects/{key}/repositories is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS") ||
 			strings.Contains(body, "acme/") {
-			t.Errorf("GET %s as %s = %d %s, want 403 ACCESS_ACCOUNT_REQUIRED, saying the repository answer is the listed accounts' and naming no repository",
+			t.Errorf("GET %s as %s = %d %s, want 403 ACCESS_ACCOUNT_REQUIRED, naming the route as the listed accounts' and naming no repository",
 				path, caller.name, response.Code, body)
 		}
 	}

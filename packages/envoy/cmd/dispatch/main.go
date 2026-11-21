@@ -91,8 +91,8 @@ type bootConfig struct {
 	DefaultProject string
 	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
 	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
-	// account of the issuer and audience), and those of them that read the membership answer and
-	// the repository answer. resolveBootConfig has held each to the subject's form, refused either
+	// account of the issuer and audience), and those of them that read the routes of the read
+	// class accessAccount. resolveBootConfig has held each to the subject's form, refused either
 	// without DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list
 	// leaves out.
 	OIDCAccounts   []string
@@ -1603,11 +1603,10 @@ func commaList(env settingValues, name string) []string {
 
 // checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
 // accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
-// would configure nothing, and each entry is a service account's subject. An account that reads
-// the membership answer and the repository answer must be one the deployment admits, which every
-// account is while DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch
-// stores one, a lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does
-// not.
+// would configure nothing, and each entry is a service account's subject. An access account must
+// be one the deployment admits, which every account is while DISPATCH_OIDC_ACCOUNTS names none.
+// The owner fallback is a person as Dispatch stores one, a lowercase email; the refusal does not
+// repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
 func checkAccessSettings(boot bootConfig) error {
 	for _, list := range []struct {
 		name     string
@@ -1631,7 +1630,7 @@ func checkAccessSettings(boot bootConfig) error {
 	if len(boot.OIDCAccounts) > 0 {
 		for _, account := range boot.AccessAccounts {
 			if !slices.Contains(boot.OIDCAccounts, account) {
-				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an account that reads the membership answer and the repository answer must be one the deployment admits", account)
+				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an access account must be one the deployment admits", account)
 			}
 		}
 	}

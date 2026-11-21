@@ -260,9 +260,8 @@ var readClasses = map[string]readEntry{
 // fails closed there.
 func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if slices.Contains(route.Reads, readclass.AccessAccount) {
-		answer := accessAnswerName(route.Pattern)
 		return func(w http.ResponseWriter, r *http.Request) {
-			if s.requireAccessAccount(w, r, answer) {
+			if s.requireAccessAccount(w, r, route.Method, route.Pattern) {
 				handler(w, r)
 			}
 		}

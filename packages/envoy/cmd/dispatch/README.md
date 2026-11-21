@@ -4609,8 +4609,9 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
   A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
-  `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`), but the repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer (`GET /api/v1/access/projects/{key}/repositories`) read and which reads no rename:
+  `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
+  The repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer read, is the exception: it reads no rename.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
