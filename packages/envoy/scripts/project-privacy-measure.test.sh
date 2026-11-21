@@ -380,4 +380,50 @@ expect_text 'the counter envoy_listener_requests_total is not exposed there' "a 
 [[ "$(fake_count reads)" == 0 ]] || fail "a counter not exposed: the fake saw $(fake_count reads) reads"
 printf 'PASS: a counter the listener does not expose is UNKNOWN (exit 3)\n'
 
+# check_job_account FILE prints why the manifest in FILE does not run under the measurement's own
+# account, or nothing: the ServiceAccount project-privacy-measure and the Job, both in namespace
+# envoy, the Job's pods running as that account and carrying the label the broker's ingress admits,
+# and the listener's account and label named nowhere.
+check_job_account() {
+  local file="$1" why=""
+  grep -Fqx 'kind: ServiceAccount' "$file" || why+="no ServiceAccount; "
+  grep -Fqx '  name: project-privacy-measure' "$file" || why+="no object is named project-privacy-measure; "
+  [[ "$(grep -c -Fx '  namespace: envoy' "$file")" == 2 ]] || why+="the account and the Job are not both in namespace envoy; "
+  grep -Fqx '      serviceAccountName: project-privacy-measure' "$file" || why+="the Job's pods do not run as project-privacy-measure; "
+  grep -Fqx '      labels: {app.kubernetes.io/name: project-privacy-measure, project-privacy-measure/run: "r1"}' "$file" ||
+    why+="the Job's pods do not carry app.kubernetes.io/name: project-privacy-measure; "
+  ! grep -Fq 'envoy-listener' "$file" || why+="it names envoy-listener; "
+  printf '%s' "$why"
+}
+
+# (j1) The production run's manifest: an account of its own, which the broker answers as a privacy
+# reader, never the listener's.
+readonly job_file="${temporary_dir}/job.yaml"
+status=0
+bash "$driver" job --run r1 --image registry.test/envoy@sha256:0123 --source https://broker.test \
+  --audience broker.test --metrics-url http://10.0.0.5:9020/metrics >"$job_file" 2>"$output_file" || status=$?
+expect_status 0 "rendering the production run's manifest"
+account_why="$(check_job_account "$job_file")"
+[[ -z "$account_why" ]] || {
+  cat "$job_file" >>"$output_file"
+  fail "the production run's manifest: ${account_why}"
+}
+printf 'PASS: the production run runs as the ServiceAccount project-privacy-measure in namespace envoy\n'
+
+# (j2) Control: the same manifest with its pods running as the listener's account fails the check,
+# naming both the account and the listener.
+sed 's/^      serviceAccountName: project-privacy-measure$/      serviceAccountName: envoy-listener/' "$job_file" >"${temporary_dir}/job-control.yaml"
+account_why="$(check_job_account "${temporary_dir}/job-control.yaml")"
+[[ "$account_why" == *"do not run as project-privacy-measure"* && "$account_why" == *"names envoy-listener"* ]] ||
+  fail "control: a manifest running as envoy-listener passed the account check (${account_why:-no reason})"
+printf 'PASS: control - a manifest running as envoy-listener fails the account check\n'
+
+# (j3) The manifest of a run shorter than an hour is refused, as the run is.
+status=0
+bash "$driver" job --run r1 --image registry.test/envoy@sha256:0123 --source https://broker.test \
+  --audience broker.test --metrics-url http://10.0.0.5:9020/metrics --minutes 59 >"$output_file" 2>&1 || status=$?
+expect_status 2 "the manifest of a 59-minute run"
+expect_text 'a run shorter than an hour sets no bound, so it is refused' "the manifest of a 59-minute run"
+printf 'PASS: the manifest of a run shorter than an hour is refused (exit 2)\n'
+
 printf 'PASS: project-privacy-measure.sh\n'

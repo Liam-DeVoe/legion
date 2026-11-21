@@ -17,6 +17,13 @@
 #            read and one per minute, and ends with the verdict below. The first read that fails,
 #            or the first counter read that fails, ends the run.
 #   verdict  Judges a log a run printed (kubectl logs of the run's Job, say), with no network.
+#   job      Prints the manifest of one production run: the ServiceAccount project-privacy-measure
+#            and a Job that runs this script's `run` under it, in namespace envoy. The Job reads
+#            the script from a ConfigMap named as the Job, which the caller creates from the
+#            committed script. The broker answers that account's reads as its own kind, so the run
+#            reads as no listener does, and its pods carry app.kubernetes.io/name:
+#            project-privacy-measure, the label the broker's ingress admits and that no
+#            listener's Service selects.
 #
 # Verdict: the count of reads, their p50 and p99 (nearest rank) and the longest. The bound is
 # twice the longest read, rounded up to the next 100 ms; where twice the longest read exceeds the
@@ -42,6 +49,8 @@ Usage:
       --metrics-url <listener /metrics URL> [--metrics-url <URL>]...
       [--counter <name>]... [--minutes <n>] [--max-time <seconds>]
   project-privacy-measure.sh verdict <log>
+  project-privacy-measure.sh job --run <id> --image <listener image> --source <broker base URL>
+      --audience <broker token audience> --metrics-url <URL> [--metrics-url <URL>]... [--minutes <n>]
 
 run:
   --source       the broker's base URL; each read is GET <source>/v1/project-privacy
@@ -55,6 +64,12 @@ run:
 
 verdict:
   <log>          the output of a run, whole
+
+job:
+  --run          the run's id, lower-case letters and digits; names the Job and its ConfigMap
+  --image        the image the Job runs, the listener's own, which carries bash and curl
+  --audience     the audience of the projected token the broker verifies
+  --source, --metrics-url, --minutes   as for run
 EOF
 }
 
@@ -432,6 +447,91 @@ run() {
   exit "$code"
 }
 
+# The production run's identity and place (job): an account of its own, which the broker answers
+# as a privacy reader, in the listener's namespace, whose pods the broker's ingress admits by
+# measure_label.
+readonly measure_account=project-privacy-measure
+readonly measure_namespace=envoy
+readonly measure_label=app.kubernetes.io/name
+
+# job ARG... prints the ServiceAccount and the Job of one production run.
+job() {
+  local run_id="" image="" source="" audience="" minutes="$hour_minutes" url
+  local -a metrics=()
+  while (($#)); do
+    (($# >= 2)) || die_usage "$1 needs a value"
+    case "$1" in
+    --run) run_id="$2" ;;
+    --image) image="$2" ;;
+    --source) source="$2" ;;
+    --audience) audience="$2" ;;
+    --metrics-url) metrics+=("$2") ;;
+    --minutes) minutes="$2" ;;
+    *) die_usage "unknown argument $1" ;;
+    esac
+    shift 2
+  done
+  [[ "$run_id" =~ ^[0-9a-z]{1,30}$ ]] || die_usage "--run must be 1 to 30 lower-case letters and digits, got ${run_id:-nothing}"
+  [[ "$image" =~ ^[^[:space:]\"\\]+$ ]] || die_usage "--image is required and holds no space, quote or backslash"
+  [[ "$source" =~ ^https?://[^[:space:]\"\\]+$ ]] || die_usage "--source must be an http(s) URL, got ${source:-nothing}"
+  [[ "$audience" =~ ^[^[:space:]\"\\]+$ ]] || die_usage "--audience is required and holds no space, quote or backslash"
+  ((${#metrics[@]} > 0)) || die_usage "--metrics-url is required"
+  for url in "${metrics[@]}"; do
+    [[ "$url" =~ ^https?://[^[:space:]\"\\]+$ ]] || die_usage "--metrics-url must be an http(s) URL, got ${url:-nothing}"
+  done
+  if ! [[ "$minutes" =~ ^[0-9]+$ ]] || ((minutes < hour_minutes)); then
+    die_usage "--minutes is ${minutes}: a run shorter than an hour sets no bound, so it is refused"
+  fi
+  local name="project-privacy-measure-${run_id}" args
+  args="\"run\", \"--source\", \"${source}\", \"--token-file\", \"/var/run/secrets/envoy-broker/token\", \"--minutes\", \"${minutes}\""
+  for url in "${metrics[@]}"; do
+    args+=", \"--metrics-url\", \"${url}\""
+  done
+  # The deadline is the run's minutes and a quarter of an hour for the image's start.
+  cat <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${measure_account}
+  namespace: ${measure_namespace}
+  labels: {${measure_label}: ${measure_account}, project-privacy-measure/run: "${run_id}"}
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${name}
+  namespace: ${measure_namespace}
+  labels: {${measure_label}: ${measure_account}, project-privacy-measure/run: "${run_id}"}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: $(((minutes + 15) * 60))
+  template:
+    metadata:
+      labels: {${measure_label}: ${measure_account}, project-privacy-measure/run: "${run_id}"}
+    spec:
+      serviceAccountName: ${measure_account}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: measure
+          image: "${image}"
+          command: ["bash", "/measure/project-privacy-measure.sh", ${args}]
+          env: [{name: TMPDIR, value: /tmp}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 50m, memory: 32Mi}, limits: {memory: 64Mi}}
+          volumeMounts:
+            - {name: script, mountPath: /measure, readOnly: true}
+            - {name: broker-token, mountPath: /var/run/secrets/envoy-broker, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: script, configMap: {name: ${name}}}
+        - {name: broker-token, projected: {sources: [{serviceAccountToken: {audience: "${audience}", expirationSeconds: 3600, path: token}}]}}
+        - {name: tmp, emptyDir: {}}
+EOF
+}
+
 case "${1:-}" in
 run)
   shift
@@ -441,9 +541,13 @@ verdict)
   (($# == 2)) || die_usage "verdict takes one log"
   verdict "$2"
   ;;
+job)
+  shift
+  job "$@"
+  ;;
 -h | --help)
   usage
   exit 0
   ;;
-*) die_usage "the first argument is run or verdict" ;;
+*) die_usage "the first argument is run, verdict or job" ;;
 esac

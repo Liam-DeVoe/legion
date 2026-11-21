@@ -722,9 +722,12 @@ batch, and the broker reads Dispatch, so each read is one listener â†’ broker â†
 ```bash
 packages/envoy/scripts/project-privacy-measure.sh run \
   --source <the broker's base URL, the listener's ENVOY_AGENT_SECRETS_URL> \
-  --token-file <the listener's projected token of the broker's audience> \
+  --token-file <a projected token of the broker's audience> \
   --metrics-url http://<a listener replica>:9020/metrics [--metrics-url ...]
 packages/envoy/scripts/project-privacy-measure.sh verdict <the log a run printed>
+packages/envoy/scripts/project-privacy-measure.sh job --run <id> --image <the listener's image> \
+  --source <the broker's base URL> --audience <the broker's token audience> \
+  --metrics-url http://<a listener replica>:9020/metrics [--metrics-url ...]
 ```
 
 `run` reads for at least an hour (`--minutes`, 60 by default, and a run asked for less is refused
@@ -759,8 +762,19 @@ then one of:
   the log is not one run. A bound needs an hour of answered reads.
 
 A usage error exits 2 and a missing tool 4. The script needs bash 5, curl, sort and sleep, which
-the listener's own image carries, so it runs there as a Job under the listener's own service
-account.
+the listener's own image carries, so it runs in that image.
+
+### The production run's manifest
+
+`job` prints the manifest of one production run: the ServiceAccount `project-privacy-measure`
+and a Job that runs `run` under it, both in namespace `envoy`. The broker answers that account's
+reads as a privacy reader of its own, not as a listener. The Job's pods carry
+`app.kubernetes.io/name: project-privacy-measure`: the broker's ingress admits that label, and no
+listener's Service selects it. The Job mounts the script from a ConfigMap named as the Job
+(`project-privacy-measure-<run>`), which the caller creates from the committed script. Its token is
+a projected token of `--audience`, and its deadline is the run's minutes and a quarter of an hour.
+`--run` is 1 to 30 lower-case letters and digits, and a run shorter than an hour is refused as
+`run` refuses it.
 
 `project-privacy-measure.test.sh` proves each verdict over fixture logs (a longest read one
 millisecond longer changes the constant), and the run over a fake that serves a listener's
@@ -768,8 +782,11 @@ millisecond longer changes the constant), and the run over a fake that serves a 
 run without it, at most one read is in flight, a failed or incomplete answer stops the run at that
 read, and counters that never move are UNKNOWN with no read made. A run there takes a minute of
 100 ms (`PROJECT_PRIVACY_MEASURE_MINUTE_MS`, read by the test alone); a run records its minute and
-a verdict refuses a log whose minute is not its own, so such a run never sets a bound. CI runs it in
-the `envoy-go-checks` job, whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
+a verdict refuses a log whose minute is not its own, so such a run never sets a bound. It also
+holds `job`'s manifest to the account `project-privacy-measure` in `envoy`, with the same check
+run over that manifest with the pods moved to `envoy-listener` as its control, which must fail.
+CI runs it in the `envoy-go-checks` job, whose steps are in
+`.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 ## Measuring search on a copy of the corpus
 
