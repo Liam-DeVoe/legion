@@ -44,7 +44,7 @@ type Deps struct {
 	// holds no service to its projects, and refuses every entry that is not an all-projects one.
 	Exchange func(account string) (person string, projects []string, ok bool)
 	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
-	// the service asks it in the background and decides on the pass it holds (heldAccess).
+	// the service asks it in the background and decides on the answers it holds (heldAccess).
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
@@ -57,9 +57,8 @@ type Deps struct {
 	// nothing.
 	Metrics *Metrics
 
-	// held is the pass of Dispatch's answers and repository mapping a held entry's grant is built
-	// from, which Start makes and a decision reads (scopeGrant); nil until Start, when no held
-	// entry is admitted.
+	// held is the answers of Dispatch a held entry's grant is built from, which Start makes and a
+	// decision reads (scopeGrant); nil until Start, when no held entry is admitted.
 	held *heldAccess
 }
 
@@ -130,31 +129,31 @@ func (r *Refusal) because(cause error) *Refusal {
 
 // The reason labels of the decision counter, one per kind of refusal.
 const (
-	labelNoCredential      = "no_credential"
-	labelBrokerUnreachable = "broker_unreachable"
-	labelTokenNotLive      = "token_not_live"
-	labelKeyMismatch       = "key_mismatch"
-	labelNotASession       = "not_a_session"
-	labelProofInvalid      = "proof_invalid"
-	labelNoExpiry          = "no_expiry"
-	labelBadSessionID      = "bad_session_id"
-	labelServiceToken      = "service_token_not_verified"
-	labelTokenTooLong      = "token_too_long"
-	labelServiceNotListed  = "service_not_listed"
-	labelHeldToProjects    = "held_to_projects"
-	labelNoExchangeEntry   = "no_exchange_entry"
-	labelProjectNotFound   = "project_not_found"
-	labelProjectNotVisible = "project_not_visible"
-	labelAccessRefused     = "project_access_refused"
-	labelNoProjects        = "no_exchange_projects"
-	labelGrantNotHoldable  = "grant_not_holdable"
-	labelNoCompletePass    = "no_complete_pass"
-	labelSystemSubject     = "system_subject"
-	labelOpenDirection     = "open_direction"
-	labelBudget            = "budget"
-	labelServiceFailed     = "service_failed"
-	labelUnsealed          = "unsealed"
-	labelWaitingBound      = "waiting_bound"
+	labelNoCredential         = "no_credential"
+	labelBrokerUnreachable    = "broker_unreachable"
+	labelTokenNotLive         = "token_not_live"
+	labelKeyMismatch          = "key_mismatch"
+	labelNotASession          = "not_a_session"
+	labelProofInvalid         = "proof_invalid"
+	labelNoExpiry             = "no_expiry"
+	labelBadSessionID         = "bad_session_id"
+	labelServiceToken         = "service_token_not_verified"
+	labelTokenTooLong         = "token_too_long"
+	labelServiceNotListed     = "service_not_listed"
+	labelHeldToProjects       = "held_to_projects"
+	labelNoExchangeEntry      = "no_exchange_entry"
+	labelProjectNotFound      = "project_not_found"
+	labelProjectNotVisible    = "project_not_visible"
+	labelAccessRefused        = "project_access_refused"
+	labelNoProjects           = "no_exchange_projects"
+	labelGrantNotHoldable     = "grant_not_holdable"
+	labelProjectAccessUnknown = "project_access_unknown"
+	labelSystemSubject        = "system_subject"
+	labelOpenDirection        = "open_direction"
+	labelBudget               = "budget"
+	labelServiceFailed        = "service_failed"
+	labelUnsealed             = "unsealed"
+	labelWaitingBound         = "waiting_bound"
 )
 
 // credentialKind is which credential req presents: a session's token beside a proof and no user,
@@ -169,7 +168,12 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects (scopeGrant):
+// natsgrant's set of that kind, as a hub's static user of the kind holds it. An all-projects
+// daemon's also takes its account's own reply prefix (natsgrant.InboxPrefix) beside _INBOX.>,
+// because a Legion daemon presenting its token always takes that prefix (the daemon's
+// natsauth.ConnectService), whatever its entry's scope; a held daemon's is written in place of
+// _INBOX.> by natsgrant.WithinProjects.
 func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 	switch entry.Kind {
 	case KindDispatch:
@@ -177,7 +181,11 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 	case KindListener:
 		return natsgrant.Listener(entry.MachineID)
 	case KindDaemon:
-		return natsgrant.Daemon()
+		grant := natsgrant.Daemon()
+		if entry.AllProjects {
+			grant.Subscribe = append(grant.Subscribe, natsgrant.InboxPrefix(entry.Account)+".>")
+		}
+		return grant
 	case KindMeasure:
 		return natsgrant.Measure()
 	}
@@ -297,7 +305,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry))
+	grant, err := scopeGrant(deps, *entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
