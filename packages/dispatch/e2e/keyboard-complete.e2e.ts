@@ -4427,6 +4427,61 @@ test("k-next-item: in the drawer a dismiss focuses the item after, the item befo
   await nextItemDismissSteps(page, "the drawer");
 });
 
+// SLOW(>=2s): four threads seeded, two dismissed by their row's own Dismiss beside the reading
+// pane, and Enter pressed between the two.
+test("k-next-item: beside the reading pane a Dismiss on a row that is not in hand leaves the focus on no other row, so Enter after it dismisses nothing", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-next-item: a Dismiss on a row not in hand: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const rows: string[] = [];
+  for (const name of ["A", "B", "C", "D"]) {
+    rows.push(replyRowId(await seedCommentThread(issue.key, `Root ${name}`, `Reply ${name}`)));
+  }
+  // The list draws the newest first: D, C, B, A.
+  const [a, b, c, d] = rows;
+  if (a === undefined || b === undefined || c === undefined || d === undefined) {
+    throw new Error("the four threads were not seeded");
+  }
+  const dismisses = dismissWrites(page);
+  await page.setViewportSize(WIDE);
+  await page.goto(inboxAt(d));
+  await expect(selectedRow(page), step("D is the item being read")).toHaveAttribute(
+    "data-inbox-row",
+    d
+  );
+
+  // The pointer's Dismiss on B, a row that is not in hand: the button takes the focus as it is
+  // pressed, and goes with B.
+  const rowB = inboxRow(page, b);
+  await rowB.hover();
+  await rowB.getByRole("button", { name: /^Dismiss/ }).click();
+  await expect(rowB, step("the Dismiss takes B out")).toHaveCount(0);
+  await expect(selectedRow(page), step("D stays the item being read")).toHaveAttribute(
+    "data-inbox-row",
+    d
+  );
+  const rowA = inboxRow(page, a);
+  await expect(rowA, step("A, the row in B's place, does not take the focus")).not.toBeFocused();
+  await expect(
+    rowA.locator(":focus"),
+    step("no control of A, the row in B's place, takes the focus")
+  ).toHaveCount(0);
+
+  // Enter presses a focused button (R18), so a Dismiss of A that held the focus, with no ring
+  // drawn after a pointer's press, would take A out too.
+  await page.keyboard.press("Enter");
+  // The pointer's Dismiss on C is sent after anything Enter sent, so once C is gone every write
+  // Enter set off is in the list.
+  const rowC = inboxRow(page, c);
+  await rowC.hover();
+  await rowC.getByRole("button", { name: /^Dismiss/ }).click();
+  await expect(rowC, step("the Dismiss takes C out")).toHaveCount(0);
+  expect(dismisses.length, step("the two Dismisses send two dismissals, and Enter none")).toBe(2);
+  await expect(rowA, step("A, which the reader did not dismiss, is still listed")).toHaveCount(1);
+});
+
 // SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search beside the pane.
 test("k-next-item: beside the reading pane an approval, a request for changes and an answer select and focus the item after, and the only item a search leaves hands the focus to the empty message", async ({
   page,
@@ -5904,6 +5959,50 @@ test("k-remap: a key changed in Settings works at once on the Inbox in another p
     await expect(help, step("the help closes on the move")).toHaveCount(0);
     await expect(shortcutsSection(inbox), step("the section is in view")).toBeInViewport();
     await expect(shortcutsSection(inbox), step("the section has the focus")).toBeFocused();
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a key recorded on Settings and read on the Inbox of another page, then on Settings
+// loaded again.
+test("k-remap: a key pressed in Settings and left by a click on the page before the second press's second ends is the new key, as R14 makes the next key press", async ({
+  browser,
+}) => {
+  const step = (text: string) => `k-remap: a key left within the second: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
+  const context = await asUser(browser, "alice", { viewport: WIDE });
+  try {
+    const settings = await context.newPage();
+    const inbox = await context.newPage();
+    await settings.goto("/settings");
+    const snooze = shortcutLine(settings, "Inbox", SNOOZE_LABEL);
+    await snooze.getByRole("button", { exact: true, name: "Change b" }).click();
+    const recorder = settings.getByRole("button", { name: "Press the new key" });
+    await expect(recorder, step("Change b waits for the new key")).toBeFocused();
+    await settings.keyboard.press("Shift+B");
+    await expect(snooze.locator("kbd"), step("Snooze draws Shift+B and h")).toHaveText([
+      "Shift+B",
+      "h",
+    ]);
+    // The click lands well inside the one second a second press may still come in.
+    await settings.getByRole("heading").first().click();
+
+    // The Inbox takes the person's keys when the browser tells it, with no reload.
+    await inbox.goto(inboxAt(ask.id));
+    await expect(selectedRow(inbox), step("the ask is the item being read")).toHaveAttribute(
+      "data-inbox-row",
+      ask.id
+    );
+    const headSnooze = paneHead(inbox).getByRole("button", { name: /^Snooze / });
+    await expectKeyHint(headSnooze, "Shift+B", step("the pane head's Snooze shows Shift+B"));
+    await settings.reload();
+    await expect(
+      shortcutLine(settings, "Inbox", SNOOZE_LABEL).locator("kbd"),
+      step("Settings, loaded again, lists Shift+B and h for Snooze")
+    ).toHaveText(["Shift+B", "h"]);
   } finally {
     await context.close();
   }
