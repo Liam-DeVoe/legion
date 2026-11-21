@@ -723,29 +723,43 @@ Slack may read as `channel`; and a call whose body it cannot read: one of anothe
 or a form, compressed, or over 1 MiB. A broker with `BROKER_PROJECT_ACCESS_URL` reads that list
 with its own token at every release of the secret, keeping it 30 seconds, so a pod that has just
 started fences a project Dispatch holds private from its first release, whatever
-`BROKER_PRIVATE_PROJECTS` names; a pod holding the secret reads it again within ten minutes. While
-it cannot read the list, or a private project's entry carries no channel list, every call on the
-secret is refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads it again within a minute. While
-no private project lists a channel, the proxy reads no body and every call is carried as before,
-at one read of the list a pod in each 30 seconds; a broker with no `BROKER_PROJECT_ACCESS_URL`
-asks Dispatch nothing and fences nothing. A broker whose `BROKER_PRIVATE_PROJECTS` names a project
-refuses to start without `BROKER_PROJECT_ACCESS_URL`.
+`BROKER_PRIVATE_PROJECTS` names; a pod holding the secret reads it again within ten minutes. The
+broker keeps the last list it read, and the projects a switch to private recorded, in its own
+database (the stored private list). While it cannot read Dispatch's list, whatever the failure, it
+fences by the stored list instead: nothing while the store holds no private project, the stored
+projects' channels otherwise, read again within a minute. Every call on the secret is refused
+`PRIVATE_CHANNELS_UNREAD` only when a private project's entry carries no channel list, or the
+broker cannot read its own store or holds a project there whose channels it never read; it reads
+again within a minute. While no private project lists a channel, the proxy reads no body and
+every call is carried as before, at one read of the list a pod in each 30 seconds; a broker with
+no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing and fences nothing. A broker whose
+`BROKER_PRIVATE_PROJECTS` names a project refuses to start without `BROKER_PROJECT_ACCESS_URL`.
+
+The stored list is an exception to the rule that a deployment with no private project behaves as
+before: while Dispatch's list cannot be read, the broker fences the channels of the projects its
+store names, and a project that is public can be named there for a short time. A switch to private
+records its project and channels in the store before Dispatch commits it; a switch that does not
+commit, and a switch back to public, has Dispatch send the broker a forget. Until that forget takes
+effect, or until the first good read three minutes after the record when no forget comes, the
+project's own channels are fenced while Dispatch cannot be read, and the token serves only
+`chat.postMessage` and `conversations.replies` naming none of them, and `auth.test`.
 
 The fence holds only behind the airlock. So while a private project's owner lists a channel, the
 broker gives a `project-channels` secret with no airlock entry to no credential at all, denying it
 `project-channels-need-airlock`, and a grant made before then is not released again: the
 session's next request for the secret is denied the same way rather than answered that grant.
-While it cannot read the list, such a request or release is answered
+While it cannot read the list or its stored list, such a request or release is answered
 `503 PROJECT_ACCESS_UNAVAILABLE` and decided once it can.
 
 A channel an owner names is fenced from every other credential before the owner's own project
-posts to it with a value read after the change. A private project's credential posts to none of
-its project's channels for 16 minutes and 30 seconds after Dispatch last changed the list, or after
-the project turned private: the longest a pod holding a value read before the change goes on
-carrying calls to that channel for other credentials. `CHANNEL_NOT_ALLOWED` then ends with the time
-posting reopens. A value the project's own session read while the project was still public is not
-limited until the proxy reads it again, within five minutes. A channel an owner removes needs no
-wait.
+posts to it with a value read after the change. A private project's credential posts only to
+channels the broker's stored list holds for its project, and to none of them for 16 minutes and 30
+seconds after Dispatch last changed the list, after the project turned private, or after the store
+first held the channel, whichever is latest: the longest a pod holding a value read before the
+change goes on carrying calls to that channel for other credentials. `CHANNEL_NOT_ALLOWED` then
+ends with the time posting reopens. A value the project's own session read while the project was
+still public is not limited until the proxy reads it again, within five minutes. A channel an
+owner removes needs no wait.
 
 A request of a private project is the project's own: one for a secret of the project, one from a
 credential that names the project (the list above), or one whose reason names one of the
