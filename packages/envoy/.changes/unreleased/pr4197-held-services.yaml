@@ -18,5 +18,9 @@ body: |-
   cannot see (`project_not_visible`), and a grant that cannot be held to projects
   (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
   measurement entry's is. A daemon entry with `*` is also granted its account's own reply prefix.
-  List a Legion daemon with `*` until the daemon release gate opens for a daemon that opens its
-  consumers per project: `-` names consumers today's daemon does not open.
+  List a Legion daemon with `*` until every reading of the release gate holds for a daemon that
+  opens its consumers per project: `daemon-release-gate.sh`'s listener and daemon legs, the
+  stored-wake read, the running-daemon read (`daemon-running-gate.sh` printing that every running
+  daemon is at or after that release; the pin gates alone read the repository, not the daemons
+  running) and the consumer-filter read (each daemon durable on its own kind's filter): `-` names
+  consumers today's daemon does not open, and reads a wider durable whole.
