@@ -175,10 +175,11 @@ type SettlementClaim struct {
 // number, head SHA).
 //
 // Checks and Suites hold what GitHub counts for the pull request, as its own rollup of the pull
-// request does: a check run or check suite of a GitHub Actions workflow run whose event GitHub
-// does not evaluate for a pull request (a workflow_dispatch run of the pull request's branch) is in
-// neither, so it is not a check of the head, replaces no check of the head, and takes no part in
-// its settlement or its snapshot (applyCheckRun, learnRunEvent).
+// request does: a check run or check suite of a GitHub Actions workflow run whose event GitHub's
+// rollup does not count for a pull request (EventCounted: a workflow_dispatch run of the pull
+// request's branch, and a pull_request_review_comment run) is in neither, so it is not a check of
+// the head, replaces no check of the head, and takes no part in its settlement or its snapshot
+// (applyCheckRun, learnRunEvent).
 type State struct {
 	Owner  string           `json:"owner"`
 	Repo   string           `json:"repo"`
@@ -199,6 +200,16 @@ type State struct {
 	// writes reads it: not the snapshot (Hash), not settlementReady and not the settlement. It is
 	// left out of a record that holds none.
 	Waiting map[string]Check `json:"waiting_checks,omitempty"`
+	// Excluded holds, by check-run id, the name of each check run that stood for its name in
+	// Checks and left it once its suite turned out to be one GitHub does not count for the pull
+	// request (standInstead). A settlement may have named such a run, so every later settlement
+	// names each one (Summary.ExcludedCheckRuns): a consumer that orders a name's runs by id then
+	// takes the lower id that stands in its place, or no run of that name at all, rather than
+	// keeping the excluded run as the newer one. An event never changes, so an entry is never
+	// taken out. Neither the snapshot (Hash) nor settlementReady reads it: a run joins it only
+	// when it leaves Checks, which moves the snapshot anyway. It is left out of a record that
+	// holds none.
+	Excluded map[string]string `json:"excluded_checks,omitempty"`
 	// Statuses holds the newest terminal commit status of each context, keyed by context
 	// (recordStatus), and is left out of a record that holds none.
 	Statuses       map[string]Status `json:"statuses,omitempty"`
@@ -221,10 +232,10 @@ type State struct {
 	// commit statuses drops Statuses the same way, at its next write of the record, and the
 	// reconcile writes them back only once GitHub's answer for the head changes, since a pass
 	// writes nothing while the head's fingerprint holds. A listener or Dispatch writer of a release
-	// before suite events drops SuiteEvents, Waiting and each check's SuiteID and AppID the same
-	// way, and keeps the newest check run of each name whatever started its run, as every release
-	// before did; the first pass of a Dispatch of this release reads every head again and writes the
-	// events back (cireconcile).
+	// before suite events drops SuiteEvents, Waiting, Excluded and each check's SuiteID and AppID
+	// the same way, and keeps the newest check run of each name whatever started its run, as every
+	// release before did; the first pass of a Dispatch of this release reads every head again and
+	// writes the events back (cireconcile).
 	Schema int `json:"schema,omitempty"`
 }
 
@@ -475,11 +486,11 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 }
 
 // Writer is the CI record bucket as a process that only writes it holds it: exactly Record,
-// RecordSuite, RecordStatus and HasRecord, and no way to reach the store behind it. Everything
-// else on Store belongs to the listener's store and would panic here: the cache, the summary loop,
-// Ping, Rewatch, StopWatch, EndWatch, WaitForCacheReady and the settlement transitions all go
-// through the watcher a writer has not got, so the type a caller is given offers none of them
-// rather than a comment telling it which to leave alone.
+// RecordSuite, RecordRunEvent, RecordStatus and HasRecord, and no way to reach the store behind
+// it. Everything else on Store belongs to the listener's store and would panic here: the cache,
+// the summary loop, Ping, Rewatch, StopWatch, EndWatch, WaitForCacheReady and the settlement
+// transitions all go through the watcher a writer has not got, so the type a caller is given
+// offers none of them rather than a comment telling it which to leave alone.
 type Writer struct {
 	store *Store
 }
@@ -520,17 +531,41 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 	return &Writer{store: s}, nil
 }
 
-// Record folds one check observation into the head's record and reports whether that changed it:
-// an observation the record already holds, or one its own rules refuse as older, changes nothing
-// and is no news for a caller counting what a pass did.
-func (w *Writer) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+// Recorded is what a writer's Record and RecordSuite answer for the observation they wrote.
+type Recorded struct {
+	// Changed says the observation changed the head's record: an observation the record already
+	// holds, or one its own rules refuse as older, changes nothing and is no news for a caller
+	// counting what a pass did.
+	Changed bool
+	// EventUnknown says the record, once written, holds no event for the workflow run of the
+	// observation's check suite (State.SuiteEvents), or the observation names no suite, and the
+	// observation is of GitHub Actions or names no App: the record counts it, as it counted every
+	// check run before it read events (standingOf). It is false for another App's observation,
+	// which is counted whatever started it, and for one whose suite's event the record holds.
+	EventUnknown bool
+}
+
+// Record folds one check observation into the head's record and answers whether that changed it
+// and whether the record holds the event of the run's suite (Recorded).
+func (w *Writer) Record(ctx context.Context, observation contracts.CIObservation) (Recorded, error) {
 	return w.store.record(ctx, observation)
 }
 
-// RecordSuite folds one check_suite observation into the head's record and reports whether that
-// changed it, as Record does.
-func (w *Writer) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+// RecordSuite folds one check_suite observation into the head's record and answers what Record
+// answers.
+func (w *Writer) RecordSuite(ctx context.Context, observation contracts.CIObservation) (Recorded, error) {
 	return w.store.recordSuite(ctx, observation)
+}
+
+// RecordRunEvent folds into the head's record the event that started the workflow run of one check
+// suite (observation.SuiteID, observation.RunEvent) and nothing else of the suite, and reports
+// whether that changed the record (recordRunEvent): a suite GitHub does not count leaves the record
+// with its check runs, as the listener's workflow_run webhook makes it leave. It is how Dispatch's
+// CI reconcile records the event of a suite still running, whose suite and check runs it does not
+// record. An observation with no suite or no event is refused with an error before anything is
+// read.
+func (w *Writer) RecordRunEvent(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+	return w.store.recordRunEvent(ctx, observation)
 }
 
 // RecordStatus folds one commit status into the head's record and reports whether that changed
@@ -800,24 +835,37 @@ func (s *Store) WaitForCacheReady(ctx context.Context) error {
 // Record folds one check observation into the per-commit state via CAS, waiting for it no longer
 // than ctx allows (update). It answers the error alone, which is the shape webhook.CIRecorder
 // takes and all the webhook handler has a use for; a writer's Record also answers whether the
-// observation changed the record.
+// observation changed the record and whether the record holds its suite's event (Recorded).
 func (s *Store) Record(ctx context.Context, observation contracts.CIObservation) error {
 	_, err := s.record(ctx, observation)
 	return err
 }
 
-// record is the one body both forms of Record share, and reports whether the observation changed
-// the head's record. Which run stands for each name is applyCheckRun's rule; a change of the
-// head's checks re-arms the head (touch), and a change of what the record holds of runs that do
-// not stand, or of a run's suite and App alone, does not.
-func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+// record is the one body both forms of Record share, and answers whether the observation changed
+// the head's record and whether the record holds the event of the run's suite (Recorded). Which
+// run stands for each name is applyCheckRun's rule; a change of the head's checks re-arms the head
+// (touch), and a change of what the record holds of runs that do not stand, or of a run's suite
+// and App alone, does not.
+//
+// The mutation sets eventUnknown on the goroutine that writes its batch, at each apply, so the
+// last value is the one the written record holds. It is read only when update answers no error,
+// which it does only after that write is done: on this goroutine, or after the batch's writer
+// sent this caller its outcome. A caller that update answers an error reads nothing, so a write
+// that lands after its caller left races no read.
+func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (Recorded, error) {
+	var eventUnknown bool
+	changed, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		changed, moved := st.applyCheckRun(observation)
 		if moved {
 			touch(st)
 		}
+		eventUnknown = st.standingOf(observation.AppID, observation.SuiteID) == unknown
 		return changed
 	})
+	if err != nil {
+		return Recorded{}, err
+	}
+	return Recorded{Changed: changed, EventUnknown: eventUnknown}, nil
 }
 
 // RecordSuite folds a check_suite observation into the per-commit state, waiting for it no longer
@@ -827,19 +875,22 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 	return err
 }
 
-// recordSuite is the one body both forms of RecordSuite share, and reports whether the
-// observation changed the head's record. It keeps the observation's run count only for a suite
-// that is not completed (Suite.RunCount), so a completed suite is written as it was before the
-// count, and an observation that repeats the stored suite, its count included, changes nothing.
-// The event of the suite's workflow run, when the observation carries it, is recorded first
-// (learnRunEvent), and a suite GitHub does not count for the pull request is not recorded at all.
-func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+// recordSuite is the one body both forms of RecordSuite share, and answers what record answers,
+// and how record reads it. It keeps the observation's run count only for a suite that is not
+// completed (Suite.RunCount), so a completed suite is written as it was before the count, and an
+// observation that repeats the stored suite, its count included, changes nothing. The event of
+// the suite's workflow run, when the observation carries it, is recorded first (learnRunEvent),
+// and a suite GitHub does not count for the pull request is not recorded at all.
+func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (Recorded, error) {
+	var eventUnknown bool
+	changed, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		changed, moved := st.learnRunEvent(observation.SuiteID, observation.RunEvent)
 		if moved {
 			touch(st)
 		}
-		if st.standingOf(observation.AppID, observation.SuiteID) == uncounted {
+		standing := st.standingOf(observation.AppID, observation.SuiteID)
+		eventUnknown = standing == unknown
+		if standing == uncounted {
 			return changed
 		}
 		if st.Suites == nil {
@@ -864,6 +915,10 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 		touch(st)
 		return true
 	})
+	if err != nil {
+		return Recorded{}, err
+	}
+	return Recorded{Changed: changed, EventUnknown: eventUnknown}, nil
 }
 
 // RecordRunEvent folds the event that started a workflow run of the pull request into the

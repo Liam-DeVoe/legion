@@ -11,31 +11,43 @@ import (
 type standing int
 
 const (
-	// counted: GitHub evaluates it for the pull request. A check run of any App but GitHub Actions
-	// is, whatever started it.
+	// counted: GitHub's rollup of the pull request holds it. A check run of any App but GitHub
+	// Actions is, whatever started it.
 	counted standing = iota
 	// unknown: it is of GitHub Actions, or of no App the observation named, and the record does not
 	// hold the event that started its suite's workflow run, or it names no suite at all. The record
 	// counts it, as it counted every check run before it read events, until it learns the event.
 	unknown
-	// uncounted: it is of a workflow run whose event GitHub does not evaluate for a pull request, a
-	// workflow_dispatch run of the pull request's branch among them. The record holds no such check
-	// run in Checks and no such suite in Suites, so it takes no part in the head's checks, its
-	// settlement (settlementReady, terminal), its snapshot (Hash) or its quiet period.
+	// uncounted: it is of a workflow run whose event GitHub does not count for a pull request
+	// (EventCounted), a workflow_dispatch run of the pull request's branch among them. The record
+	// holds no such check run in Checks and no such suite in Suites, so it takes no part in the
+	// head's checks, its settlement (settlementReady, terminal), its snapshot (Hash) or its quiet
+	// period.
 	uncounted
 )
 
-// evaluatedForPullRequest reports whether GitHub evaluates the check runs of a workflow run that
-// event started for a pull request: GitHub's documented list in "Troubleshooting required status
-// checks", section "Checks from some workflow jobs are not evaluated"
-// (https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
-// A merge queue's merge_group runs are not on the list; the store keys no merge queue commit.
-func evaluatedForPullRequest(event string) bool {
+// EventCounted reports whether GitHub's rollup of a pull request counts the check runs of a GitHub
+// Actions workflow run that event started, which every event but two does. The two were measured
+// on cybermonklabs/legion against GitHub's own statusCheckRollup of the pull request at that head:
+// workflow_dispatch (#3513 at a368687e, 2026-11-21: the dispatched run's ci-ok is not in the
+// rollup, the pull_request run's is) and pull_request_review_comment (#2167 at 57f64b53: of four
+// pr-title runs only the two of pull_request_review suites are in the rollup).
+//
+// GitHub documents six events whose runs it evaluates for a pull request, in "Troubleshooting
+// required status checks", section "Checks from some workflow jobs are not evaluated"
+// (https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks):
+// push, pull_request, pull_request_review, pull_request_target, deployment and
+// deployment_status. That list is not the whole: the rollup counts the runs of a `dynamic` suite,
+// which CodeQL's default setup makes (#2803 at aa4cd30f holds a required ci-ok in one, #2725 at
+// 48308c23 fails on one). So the rule names the events measured as not counted rather than the
+// events documented as counted: an event left out wrongly would make a red head read green, and
+// one counted wrongly keeps only what the store did before it read events.
+func EventCounted(event string) bool {
 	switch event {
-	case "push", "pull_request", "pull_request_review", "pull_request_target", "deployment", "deployment_status":
-		return true
+	case "workflow_dispatch", "pull_request_review_comment":
+		return false
 	}
-	return false
+	return true
 }
 
 // standingOf is the standing of a check run or check suite of the App appID in the suite suiteID,
@@ -54,7 +66,7 @@ func (st *State) standingOf(appID, suiteID string) standing {
 	switch {
 	case !known:
 		return unknown
-	case evaluatedForPullRequest(event):
+	case EventCounted(event):
 		return counted
 	}
 	return uncounted
@@ -82,7 +94,7 @@ func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
 		st.SuiteEvents = map[string]string{}
 	}
 	st.SuiteEvents[suiteID] = event
-	if evaluatedForPullRequest(event) {
+	if EventCounted(event) {
 		for name, check := range st.Checks {
 			if check.SuiteID == suiteID {
 				st.dropWaiting(name)
@@ -225,8 +237,16 @@ func (st *State) wait(check Check) bool {
 
 // standInstead puts in place of the check that stands for name, which has turned out uncounted,
 // the newest run waiting for that name, or leaves the name with no check when none waits. A counted
-// run that comes to stand stands for good, so what still waits for the name is dropped.
+// run that comes to stand stands for good, so what still waits for the name is dropped. The run
+// that leaves is kept among the record's excluded runs (State.Excluded), which every later
+// settlement names, since a settlement may have named it; a check of no run id was named by none.
 func (st *State) standInstead(name string) {
+	if leaving := st.Checks[name]; leaving.CheckRunID != 0 {
+		if st.Excluded == nil {
+			st.Excluded = map[string]string{}
+		}
+		st.Excluded[waitingKey(leaving.CheckRunID)] = name
+	}
 	var next Check
 	nextID := ""
 	for id, check := range st.Waiting {

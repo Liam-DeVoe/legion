@@ -8,6 +8,7 @@ import (
 	"hash/maphash"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +19,13 @@ import (
 const (
 	// pullsPerQuery is the open pull requests one query reads. Twenty heads, each with up to
 	// thirty check suites and sixty check runs in each of them, is the page size that keeps one
-	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch maps: the
-	// largest head Legion has run carries 32 runs over 7 suites, and twenty of those is about
-	// 200 KiB of JSON. A page that does come back past the limit is read over REST instead
-	// (walk.restPage), so the size is a budget rather than a promise.
+	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch maps: a head of
+	// 7 suites and 32 runs is about 10 KiB of JSON, and twenty of those about 200 KiB. A head one
+	// of whose suites holds more runs than runsPerQuery is read over REST, with the events of its
+	// suites taken from this answer (queryHead.events): cybermonklabs/legion's ci.yaml suite held
+	// 59 runs on #3513's head on 2026-11-21, one short of the bound, and each re-run of a job adds
+	// one. A page that does come back past the limit is read over REST instead (walk.restPage), so
+	// the size is a budget rather than a promise.
 	pullsPerQuery = 20
 
 	// suitesPerQuery and runsPerQuery are the check suites of one head, and the check runs of
@@ -74,8 +78,9 @@ const (
 // a workflow_dispatch run of the pull request's branch is not counted, and its check runs share
 // the pull request's own check names. No REST listing of a head's checks carries it, so a head
 // read over REST records no event, and the CI store counts that head's suites as it did before
-// it read events (record's line names them). The field is an object rather than a connection, so
-// it costs the query no point, and a suite of another App answers it null.
+// it read events, unless it holds the event from the run's own webhook (record names each suite
+// it holds none for). The field is an object rather than a connection, so it costs the query no
+// point, and a suite of another App answers it null.
 //
 // `rateLimit` costs nothing and is charged nothing, and is read in the same answer rather than
 // in a query of its own: the pass's line reports the points its queries spent, and a point count
@@ -185,6 +190,13 @@ type queryHead struct {
 	// at every pass says which of the three it is. A head read over REST is read paged and
 	// conditional on the ETags the pass kept, so nothing is lost by it but the round trips.
 	overflow string
+	// events is, for a head the query could not answer whole only because it holds more suites or
+	// more runs in a suite than one query asks for, the event that started the workflow run of
+	// each suite the query did answer with one (workflowRun.event), by suite id, and nil
+	// otherwise. No REST listing of a head's checks carries an event, so the pass records these
+	// before the head's REST listings (record), and the CI store judges that head's check runs by
+	// them rather than counting every one of them.
+	events map[string]string
 	// fingerprint is the hash of the objects above, taken as they were mapped (mappedObject),
 	// and zero for a head the query could not answer whole. It is what the ETag of a listing is
 	// to a REST read: a head whose fingerprint is the one the pass already holds is written
@@ -386,6 +398,7 @@ func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) que
 	}
 	if commit.CheckSuites.PageInfo.HasNextPage {
 		head.overflow = fmt.Sprintf("the head has more than %d check suites", suitesPerQuery)
+		head.events = suiteEvents(commit.CheckSuites.Nodes)
 		return head
 	}
 	runs := 0
@@ -396,6 +409,7 @@ func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) que
 		}
 		if suite.CheckRuns.PageInfo.HasNextPage {
 			head.overflow = fmt.Sprintf("a check suite of the head has more than %d check runs", runsPerQuery)
+			head.events = suiteEvents(commit.CheckSuites.Nodes)
 			return head
 		}
 		runs += len(suite.CheckRuns.Nodes)
@@ -440,6 +454,24 @@ func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) que
 	}
 	head.fingerprint = fingerprintOf(&sum)
 	return head
+}
+
+// suiteEvents is the event of each suite of nodes whose workflow run GitHub answered, by the
+// suite's id as the webhook's check_suite.id spells it, and nil where it answered none: the
+// events a head read over REST is given from the query that could not answer it whole
+// (queryHead.events).
+func suiteEvents(nodes []graphQLSuite) map[string]string {
+	var events map[string]string
+	for _, suite := range nodes {
+		if suite.WorkflowRun == nil || suite.WorkflowRun.Event == "" || suite.DatabaseID <= 0 {
+			continue
+		}
+		if events == nil {
+			events = make(map[string]string, len(nodes))
+		}
+		events[strconv.FormatInt(suite.DatabaseID, 10)] = suite.WorkflowRun.Event
+	}
+	return events
 }
 
 // statusObject is one commit status the query answered, in the shape GitHub's REST listing of the
@@ -640,10 +672,11 @@ func fingerprintOf(sum *maphash.Hash) uint64 {
 //
 // An entry against a check suite's workflowRun field, or a field under it, costs that suite its
 // event alone and is no refusal of the head: the suite answers workflowRun null, the CI store
-// counts its runs as it did before it read events, and the pass names the suite (record). Reading
-// a head's checks over REST would recover no event, since no REST listing of them carries one.
-// What GitHub answers for an installation without Actions read was not measured; a null with no
-// entry reads the same way.
+// counts its runs as it did before it read events unless it holds the event from the run's own
+// webhook, and the pass names the suite at WARN where it holds none (record). Reading a head's
+// checks over REST would recover no event, since no REST listing of them carries one. What
+// GitHub answers for an installation without Actions read was not measured; a null with no entry
+// reads the same way.
 func refusedPulls(errors []graphQLError) (refused map[int]struct{}, statuses map[int][]graphQLError, whole bool) {
 	if len(errors) == 0 {
 		// Almost every answer GitHub gives carries no error at all, and a nil map answers the

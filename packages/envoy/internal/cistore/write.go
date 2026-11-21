@@ -196,13 +196,18 @@ type boundWrite struct {
 	// bound, zero where it dropped none, and droppedFor the refusal they were dropped for.
 	dropped    int
 	droppedFor error
+	// droppedWaiting is how many waiting check runs (State.Waiting) the record dropped to keep a
+	// check within its bound, zero where it dropped none, and droppedWaitingFor the refusal they
+	// were dropped for.
+	droppedWaiting    int
+	droppedWaitingFor error
 }
 
 // warn logs what gave way at the bound, each line naming head: one WARN line for each of the
 // batch's statuses that gave way, and one line for the record's own statuses it dropped, with
 // how many. write calls it once the write lands, or at once when there is nothing to write.
 func (w boundWrite) warn(logger *logging.Logger, head State) {
-	if len(w.refusedStatuses) == 0 && w.dropped == 0 {
+	if len(w.refusedStatuses) == 0 && w.dropped == 0 && w.droppedWaiting == 0 {
 		return
 	}
 	attrs := []slog.Attr{
@@ -219,6 +224,10 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 		logger.Warn("ci record dropped its commit statuses to keep a check within its bound",
 			append(attrs, slog.Int("statuses", w.dropped), slog.String("error", w.droppedFor.Error()))...)
 	}
+	if w.droppedWaiting > 0 {
+		logger.Warn("ci record dropped its waiting check runs to keep a check within its bound",
+			append(attrs, slog.Int("waiting", w.droppedWaiting), slog.String("error", w.droppedWaitingFor.Error()))...)
+	}
 }
 
 // atBounds is the write of b to key's record when the record it would write, b applied whole,
@@ -232,6 +241,14 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 //   - Where the rest still passes a bound and the record holds statuses, the rest is applied once
 //     more, to the record without its statuses: where that fits it is written so, the record's
 //     statuses dropped, with one WARN line naming the head and how many it dropped.
+//   - Where that still passes a bound and the record, the batch applied, holds check runs waiting
+//     to stand for a name (State.Waiting), it is applied once more and written without them, its
+//     statuses dropped as above, where that fits, with one WARN line naming the head and how many
+//     waiting runs it dropped. A waiting run is no check of the head and the settlement names none:
+//     it is kept only so a run that lost to a run of a suite whose event is not known yet can stand
+//     if that suite turns out not to count, so it never costs the head its settlements. Without it
+//     such a name is left with no check once that suite turns out not to count, until its counted
+//     run is observed again.
 //   - Otherwise the record is written as it was, marked Overflowed, as a record with no status to
 //     give way always was (one already Overflowed is not written again), and the write answers the
 //     refusal.
@@ -243,25 +260,31 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 func (s *Store) atBounds(key string, stored func() (State, error), existing bool, b *batch, refused error) (boundWrite, error) {
 	bounded := boundWrite{refusedStatuses: b.statuses(), refusedFor: refused}
 	// fit applies b, without the statuses it carries, to the record as read, the record's own
-	// statuses dropped first when drop is set. It answers the record to write, nil where b then
-	// changes nothing, or the bound's refusal (bus.ErrTooLarge) where the result still passes a
-	// bound.
-	fit := func(drop bool) ([]byte, error) {
+	// statuses dropped first when drop is set, and the waiting runs of the result dropped after
+	// when dropWaiting is set. It answers the record to write, nil where b then changes nothing,
+	// how many waiting runs it dropped, or the bound's refusal (bus.ErrTooLarge) where the result
+	// still passes a bound.
+	fit := func(drop, dropWaiting bool) ([]byte, int, error) {
 		st, err := stored()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		hash, generation := st.Hash(), st.Generation
 		if drop {
 			st.Statuses = nil
 		}
 		if !b.apply(&st, false) {
-			return nil, nil
+			return nil, 0, nil
 		}
-		return sealRecord(key, &st, existing, hash, generation)
+		waiting := 0
+		if dropWaiting {
+			waiting, st.Waiting = len(st.Waiting), nil
+		}
+		buf, err := sealRecord(key, &st, existing, hash, generation)
+		return buf, waiting, err
 	}
 	if len(bounded.refusedStatuses) > 0 {
-		buf, err := fit(false)
+		buf, _, err := fit(false, false)
 		if err == nil {
 			bounded.buf = buf
 			return bounded, nil
@@ -276,7 +299,7 @@ func (s *Store) atBounds(key string, stored func() (State, error), existing bool
 		return boundWrite{}, err
 	}
 	if held := len(st.Statuses); held > 0 {
-		buf, err := fit(true)
+		buf, _, err := fit(true, false)
 		if err == nil {
 			if buf != nil {
 				bounded.dropped, bounded.droppedFor = held, refused
@@ -287,6 +310,19 @@ func (s *Store) atBounds(key string, stored func() (State, error), existing bool
 		if !errors.Is(err, bus.ErrTooLarge) {
 			return boundWrite{}, err
 		}
+		refused = err
+	}
+	buf, waiting, err := fit(len(st.Statuses) > 0, true)
+	switch {
+	case err == nil && waiting > 0:
+		if held := len(st.Statuses); held > 0 && buf != nil {
+			bounded.dropped, bounded.droppedFor = held, refused
+		}
+		bounded.buf, bounded.droppedWaiting, bounded.droppedWaitingFor = buf, waiting, refused
+		return bounded, nil
+	case err != nil && !errors.Is(err, bus.ErrTooLarge):
+		return boundWrite{}, err
+	case err != nil:
 		refused = err
 	}
 	bounded.refused = refused

@@ -196,12 +196,19 @@ func TestAWorkflowDispatchRunsCheckDoesNotReplaceThePullRequestRunsCheck(t *test
 	if strings.Join(summary.Failed.Checks, ",") != countedCheckRun || summary.Passed.Count != 0 {
 		t.Fatalf("the settlement passed %v and failed %v, want ci-ok failing alone", summary.Passed.Checks, summary.Failed.Checks)
 	}
+	// The dispatched run's event came before its run, so the record never counted the run, and no
+	// settlement can have named it: none is excluded.
+	if len(summary.ExcludedCheckRuns) != 0 {
+		t.Fatalf("the settlement names excluded check runs %+v, want none: the record never counted the dispatched run", summary.ExcludedCheckRuns)
+	}
 }
 
 // The same deliveries in the reverse order leave the same ci-ok: the dispatched run's success
 // comes first, before its event, so the store counts it as it counts any run whose suite's event it
 // does not know; the pull_request run's failure, the lower id, then waits to stand in its place, and
-// stands once the dispatched run's event says GitHub does not count that run.
+// stands once the dispatched run's event says GitHub does not count that run. The settlement then
+// names the dispatched run among its excluded check runs, since a settlement could have named it
+// while it stood, and in no other part.
 func TestTheReverseOrderLeavesThePullRequestRunsCheck(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -218,6 +225,11 @@ func TestTheReverseOrderLeavesThePullRequestRunsCheck(t *testing.T) {
 		countedPost(t, handler, event, body)
 	}
 	requireCountedCheck(t, store, countedNumber, "in the reverse order")
+	summary := renderSummary(getState(t, store, countedOwner, countedRepo, strconv.Itoa(countedNumber), countedSHA))
+	if want := []CheckRunRef{{Name: countedCheckRun, ID: dispatchCheck}}; !slices.Equal(summary.ExcludedCheckRuns, want) {
+		t.Fatalf("the settlement names excluded check runs %+v, want %+v, the dispatched run the record counted before its event", summary.ExcludedCheckRuns, want)
+	}
+	assertCheckRuns(t, summary.CheckRuns, map[string]uint64{countedCheckRun: pullRunCheck})
 }
 
 // Which ci-ok the head holds does not depend on the order the two check runs and the two runs'

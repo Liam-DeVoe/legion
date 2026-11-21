@@ -130,9 +130,9 @@ type CIObservation struct {
 }
 
 // GithubActionsAppID is the id of the GitHub Actions App on github.com, the App every check run
-// of a workflow job is created by. GitHub evaluates such a check run for a pull request only when
-// its workflow run was started by one of a few events; a check run of any other App is evaluated
-// whatever started it.
+// of a workflow job is created by. Whether GitHub counts such a check run for a pull request
+// depends on the event that started its workflow run (cistore.EventCounted); a check run of any
+// other App is counted whatever started it.
 const GithubActionsAppID = "15368"
 
 // GithubCIObservations extracts one CI observation per associated PR. Both
