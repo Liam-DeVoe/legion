@@ -122,6 +122,23 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   Any other session's broker token gets `403` with the reason `token_not_admitted`, logged as `listener: edge listener refused a broker token`.
   A read-only token, and a request with no broker token, get `401` before any handler runs: the listener's verifier refuses a read-only token as no session's.
 
+- **Behind Google's load balancer**: the edge is reached through Google's global external Application Load Balancer, so every request comes from one of its proxies, in `35.191.0.0/16` or `130.211.0.0/22`.
+  From those ranges the edge reads its caller's address from the second-to-last entry of the one `X-Forwarded-For` line the balancer writes, and keys the broker token's introspection bucket on it (a burst of 20, then five a second, per address and process: `brokertoken.DefaultAddressLimit`); an IPv6 caller is keyed by its `/64`.
+  A request from those ranges with no `X-Forwarded-For`, more than one line, a line of one entry, or an entry there that is no IP address gets `400` before the broker is asked anything, logged as `listener: edge request without the address Google's load balancer forwards`.
+  A request from any other address is keyed on its connection, as on every other listener, and its `X-Forwarded-For` chooses nothing (`edgeCallerAddress`, `cmd/listener/edge_forwarded.go`).
+  The `400` body is the listener's plain error (`listenerwire.APIError`), since no project rule refused the request.
+
+- **Health**: `GET /readyz` takes no credential and answers `503 {"status":"starting"}` until `/v1` serves, and `200 {"status":"serving"}` once it does; it reads nothing else (`readyzHandler`).
+  The load balancer's health check reads it.
+  `/healthz` is unchanged for its other callers: it answers `200 {"status":"starting"}` from the listener's first answer, before `/v1` serves, so a balancer that read it would send requests to a pod that answers them `503`.
+
+- **A `503` and the balancer's retry**: Google's balancer sends a request that carries no body once more after a `502`, `503` or `504`, with the same headers, its DPoP proof among them, and a proof is good for one request.
+  So the listener answers every `503` it can before it checks or records the proof: the closed `/v1` gate answers before any credential is read (`startingGate.ahead`, `v1API`), and a broker or a spent-proof store that did not answer ends the check before the proof is recorded.
+  A `503` a route answers after the proof was recorded, to a request with no body, gives the proof back: the listener deletes the record that request's own presentation wrote, and only that record, before it writes the `503` (`proofReleasingWriter`).
+  The balancer's retry is then served, and a proof presented again after a request it served is still refused as a replay.
+  A request with a body keeps its proof spent whatever its status, because a proof signs the method, the URL and the token but not the body; the balancer does not retry it, and the client sends it again with a fresh proof.
+  Two cases still answer the balancer's retry `401`: a spent-proof store that did not answer while its write of the proof landed, and a release whose delete did not reach the bucket in its second (`proofReleaseBudget`), which a bus that did not answer the route makes likely; the second logs `listener: a 503 could not give its request's DPoP proof back`.
+
 - **Topics**: a registration follows only the session's own agent subject, the topics of the token's projects, and the GitHub topics of one repository each that the repository answer of those projects names.
   The `403` of a refused registration lists each refused topic, with the reason `repository_not_in_project` when each is a GitHub topic and `topic_not_in_project` otherwise, and nothing of the registration is stored (`edgeTopicHold`).
   The topics the session's interest record already holds, which another listener may have stored under a token of other projects, are held to the same rule at each registration, a registration planned again after a conflict included.
@@ -152,7 +169,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
 
-Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
+Every refusal of a project rule above has the body `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
 The edge's send and read rules read that record, and no answer of the API carries it.
