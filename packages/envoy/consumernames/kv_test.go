@@ -493,3 +493,79 @@ func TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict(t *testin
 		})
 	}
 }
+
+// answeringRequester answers every request with reply, as a server would.
+type answeringRequester struct{ reply string }
+
+func (r answeringRequester) Request(context.Context, *natsgo.Msg) (*natsgo.Msg, error) {
+	return &natsgo.Msg{Data: []byte(r.reply)}, nil
+}
+
+// A replicated stream answers a conditional write that meets another in flight on the same key with
+// 10164, "wrong last sequence" (nats-server's checkMsgHeadersPreClusteredProposal), where one copy
+// answers 10071: both mean the record changed under the write, so both are ErrConflict, and Names
+// reads the record again. The control is another refusal, which stays an error of its own.
+func TestTheKVStoreReadsEitherWrongLastSequenceAnswerAsAConflict(t *testing.T) {
+	for code, description := range map[int]string{10071: "wrong last sequence: 5", 10164: "wrong last sequence"} {
+		store := NewKVStore(SessionBucket, answeringRequester{fmt.Sprintf(`{"error":{"code":400,"err_code":%d,"description":%q}}`, code, description)})
+		if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); !errors.Is(err, ErrConflict) {
+			t.Errorf("a write answered %d = %v, want ErrConflict", code, err)
+		}
+	}
+	// Control: a refusal that is no wrong last sequence is no conflict.
+	store := NewKVStore(SessionBucket, answeringRequester{`{"error":{"code":503,"err_code":10008,"description":"jetstream temporarily unavailable"}}`})
+	if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); err == nil || errors.Is(err, ErrConflict) {
+		t.Fatalf("a write answered 10008 = %v, want an error that is no conflict", err)
+	}
+}
+
+// Two writers racing on one key of a three-copy bucket, at the revision both read, end each round
+// with one write and one ErrConflict, whichever of the server's two answers the loser gets.
+func TestTwoWritersRacingOnAThreeCopyBucketEndWithOneWriteAndOneConflict(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	ctx := context.Background()
+	admin := testnats.Connect(t, cluster.URL())
+	t.Cleanup(admin.Close)
+	if _, err := CreateSessionBucket(ctx, admin, 3, StoreState{Cutover: CutoverDone}); err != nil {
+		t.Fatal(err)
+	}
+	writer := func() *KVStore {
+		conn := testnats.Connect(t, cluster.URL())
+		t.Cleanup(conn.Close)
+		return NewKVStore(SessionBucket, ConnRequester{conn})
+	}
+	first, second := writer(), writer()
+	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {
+		t.Fatal(err)
+	}
+	for round := range 50 {
+		_, revision, err := first.Read(ctx, "ses-race")
+		if err != nil {
+			t.Fatalf("round %d: read: %v", round, err)
+		}
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for _, store := range []*KVStore{first, second} {
+			go func() {
+				<-start
+				_, err := store.Write(ctx, "ses-race", Record{Start: uint64(round + 2)}, revision)
+				results <- err
+			}()
+		}
+		close(start)
+		var wrote, conflicts int
+		for range 2 {
+			switch err := <-results; {
+			case err == nil:
+				wrote++
+			case errors.Is(err, ErrConflict):
+				conflicts++
+			default:
+				t.Fatalf("round %d: a racing write answered %v, want a write or ErrConflict", round, err)
+			}
+		}
+		if wrote != 1 || conflicts != 1 {
+			t.Fatalf("round %d: %d writes and %d conflicts, want one of each", round, wrote, conflicts)
+		}
+	}
+}
