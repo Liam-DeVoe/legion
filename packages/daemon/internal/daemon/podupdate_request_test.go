@@ -373,6 +373,80 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T)
 	}
 }
 
+// A round this daemon ended is no round for the controller's request to answer or to open over
+// again while a claim of the issue still records it (podUpdateEnded).
+// The end is posted to each member's machine, and a machine in a relaunch takes it only once the
+// relaunch is done, so its claim keeps the round until then. The request reads the issue as that
+// end leaves it, as the sweep does (podUpdateSweep.asEnded): where no other round is left, it is
+// refused 409 POD_CHANGING, naming the ended round, and it posts nothing, opens nothing and charges
+// nothing. Once that machine has taken the end, the same request opens a new round over the pod
+// the claims record.
+//
+// Here the round's pod goes for a failure of its own while the implementer's machine relaunches it
+// into the pod in its place (holdRelaunch), as TestARoundOverAGonePodThatLostWorkWritesOnce has it:
+// the sweep ends the round, the tester takes the end, and the implementer's claim keeps the round
+// behind its relaunch.
+//
+// The negative control is the request reading the group as it stands (no asEnded): the
+// implementer's record of the ended round is the round open over the pod the tester records, and
+// the request answers that round 200 where this test wants it refused.
+func TestPodUpdateTheControllerAsksForIsRefusedWhileARoundThisDaemonEndedIsStillRecorded(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.settleAll()
+
+	release := rig.holdRelaunch(claim.RoleImplementer, false, podUpdateReplacementPod)
+	rig.podGone()
+	rig.awaitSwept(claim.RoleTester, "the end of the round over the gone pod to reach the tester",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if round := rig.storedRound(claim.RoleImplementer); round != podUpdateRound {
+		t.Fatalf("the implementer's claim records round %q, want %s: its machine is relaunching and has not taken the end", round, podUpdateRound)
+	}
+	rig.s.podUpdateEndedMu.Lock()
+	ended := rig.s.podUpdateEnded[podUpdateIssue]
+	rig.s.podUpdateEndedMu.Unlock()
+	if ended != podUpdateRound {
+		t.Fatalf("this daemon keeps %q as the ended round of %s, want %s", ended, podUpdateIssue, podUpdateRound)
+	}
+	openedBefore, _ := charged(rig.s)
+
+	refusal := route.refused(podUpdateIssue, http.StatusConflict, "POD_CHANGING")
+	if want := "the update round " + podUpdateRound + " of " + podUpdateIssue + " has ended"; !strings.Contains(refusal, want) {
+		t.Errorf("the refusal says %q, want it to say %q", refusal, want)
+	}
+	if opened, inFlight := charged(rig.s); !opened.Equal(openedBefore) || len(inFlight) != 0 {
+		t.Fatalf("the refused request charged an opening at %v, in flight %v, want this daemon's last opening at %v and nothing in flight",
+			opened, inFlight, openedBefore)
+	}
+	rig.awaitPosted(claim.RoleTester)
+	if c := rig.claimOf(claim.RoleTester); c.UpdateRound != "" {
+		t.Fatalf("the tester records round %q after the refused request, want none: the request posted nothing", c.UpdateRound)
+	}
+
+	// The implementer's relaunch comes up in the pod in the gone pod's place, and its machine
+	// takes the end queued behind it, with nothing of the refused request after the end. The
+	// tester's process ends with the gone pod too, and comes back beside it.
+	release()
+	rig.awaitPosted(claim.RoleImplementer)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
+		t.Fatalf("the implementer records round %q once its machine took what was posted to it, want none", c.UpdateRound)
+	}
+	rig.displacedInto(claim.RoleTester, podUpdateReplacementPod)
+
+	next := supervise.PodRound(podUpdateReplacementPod)
+	route.answered(podUpdateIssue, api.PodUpdateResponse{Round: next, Reasons: requestedPodUpdateReasons, Opened: true})
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		if c := rig.awaitRound(role, next); c.UpdateReasons != requestedPodUpdateReasons {
+			t.Errorf("the %s records the reasons %q, want %q", role, c.UpdateReasons, requestedPodUpdateReasons)
+		}
+	}
+}
+
 // storedRound is the round each claim of issue records in the store, by role: what a daemon that
 // boots now restores.
 func (r *fleetRig) storedRound(issue string) map[claim.Role]string {
