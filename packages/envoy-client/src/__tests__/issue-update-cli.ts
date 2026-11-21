@@ -3,7 +3,6 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // The real `dispatch` CLI run against one fake Dispatch that records what it was sent, for the
 // rows that check how `dispatch issue-update` writes a nullable field (`--clear-assignee` in
@@ -101,7 +100,6 @@ export function useIssueUpdateCli(
     requests.length = 0;
     stateDir = makeDirectory();
     resetAdviceMemory();
-    forgetKeyedLayerMemory();
   });
 
   return {
