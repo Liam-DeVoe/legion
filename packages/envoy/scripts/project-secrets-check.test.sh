@@ -93,8 +93,10 @@ JSON
 trap 'exit 0' TERM INT
 echo "dev-stack: broker http://127.0.0.1:5101" >&2
 # Each path goes out with printf %q, as the real banner prints it, so a run under a TMPDIR whose
-# name holds a space or a quote holds the driver to reading each line as a shell does.
-cat <<BANNER
+# name holds a space or a quote holds the driver to reading each line as a shell does. The banner
+# goes out in one write, as the real one does: the driver reads it once "dev-stack: ready." shows,
+# and written in parts it could read the first part alone.
+banner="$(cat <<BANNER
 
 dev-stack: ready.
 
@@ -106,8 +108,9 @@ dev-stack: ready.
   export DEV_STACK_ISSUER_URL=http://127.0.0.1:5103
   export DEV_STACK_METADATA_SCRIPT=$(printf %q "$work/dev-metadata.py")
 BANNER
+)"
 if [ "$scenario" != empty-banner ]; then
-  cat <<BANNER
+  banner+=$'\n'"$(cat <<BANNER
   export DEV_STACK_PRIV_PROJECT=PRIV
   export DEV_STACK_PRIV_OWNER=carol@example.com
   export DEV_STACK_PRIV_SERVICE=legion-priv
@@ -121,8 +124,9 @@ if [ "$scenario" != empty-banner ]; then
   export DEV_STACK_AIRLOCK_BOUND_URL=https://priv.airlock.test
   export DEV_STACK_AIRLOCK_CA_CERT_FILE=$(printf %q "$work/ca.crt")
 BANNER
+)"
 fi
-cat <<BANNER
+banner+=$'\n'"$(cat <<BANNER
 
   export AGENT_SECRETS_MACHINE_IDENTITY=metadata
   export AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine
@@ -133,6 +137,8 @@ cat <<BANNER
 
   databases:  dev_stack_broker_$suffix and dev_stack_dispatch_$suffix on postgres://tester@127.0.0.1:5999
 BANNER
+)"
+printf '%s\n' "$banner"
 while :; do
   "$real_sleep" 1 &
   wait "$!" || true
