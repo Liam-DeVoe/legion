@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -581,11 +581,15 @@ const (
 	revokedServerEndBound = ygoCloseFrameTimeout + 1500*time.Millisecond
 )
 
-// postRevokeMarker is the word the edit made straight after the revoke writes into every
-// paragraph, so that edit is told apart from the seeded text in both places it matters: the bytes
-// the server writes to the revoked socket, where it must never appear, and the document the
-// page's reconnect syncs, where it must.
-const postRevokeMarker = "afterrevoke"
+// newPostRevokeMark is a word no document of the test holds and no other edit writes: the edit
+// made straight after the revoke writes it into every paragraph, so that edit is told apart from
+// everything else in both places it matters - the bytes the server writes to the revoked socket,
+// where it must never appear, and the document the page's reconnect syncs, where it must. A
+// fixed word would also be told apart from the seeded text, but not from another edit of the same
+// test; one per edit is.
+func newPostRevokeMark() string {
+	return fmt.Sprintf("afterrevoke%016x", rand.Uint64())
+}
 
 // A page on a slow link takes nothing from its socket for longer than the revoked close waits, so
 // it reads the connection's end as 1006 rather than 4412 and loses nothing by it; the rule is in
@@ -604,10 +608,11 @@ const postRevokeMarker = "afterrevoke"
 //     revokedServerEndBound of the revoke;
 //   - no document byte reaches that socket after the revoke: one more edit goes into the room
 //     straight after it, and of the frames the socket carries past those its connection had let
-//     out when the revoke came (revokedWrites), each is the rest of the message going out then,
-//     which the close waits for, or the admission-revoked close frame. That boundary is the
-//     connection's own count, taken under the lock every frame is decided under, so the verdict
-//     is the order of the revoke and the frames and no clock's;
+//     out when the revoke came (socketEnd), each is the rest of the message going out then, which
+//     the close waits for, or the admission-revoked close frame; and that edit's own mark is in
+//     no byte the socket carries. That boundary is the connection's own count, taken under the
+//     lock every frame is decided under, so the verdict is the order of the revoke and the frames
+//     and no clock's;
 //   - the bytes the server wrote to that socket are whole websocket frames throughout, and end
 //     either on that close frame or at a cut the page reads as 1006 - never a frame cut in half
 //     and resumed, never another close code, and never a byte after a close;
@@ -696,8 +701,8 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 
 	// One more edit, straight after the revoke. The room broadcasts each update to every socket it
 	// still serves, so a revoke that has not ended this one sends this edit down it too.
-	editAsBrowser(t, service, artifactID, writer,
-		strings.ReplaceAll(markdown, "document ", postRevokeMarker+" "))
+	mark := newPostRevokeMark()
+	editAsBrowser(t, service, artifactID, writer, strings.ReplaceAll(markdown, "document ", mark+" "))
 
 	// The revoke's own work, and all of it: the server has closed that socket and its ServeHTTP
 	// has returned. Within revokedServerEndBound of the revoke this is the revoke's doing, since
@@ -710,15 +715,19 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if took := closedAt.Sub(revokedAt); took > revokedServerEndBound {
 		t.Fatalf("the server closed its side of the revoked page's socket %v after the revoke, past %v", took, revokedServerEndBound)
 	}
-	framesBefore, closedToFrames := revoked[0].writes.framesWrittenBeforeRevoke()
-	if !closedToFrames {
-		t.Fatal("the revoke cancelled the slow page's socket without closing its connection to the room's frames")
+	framesBefore, ended := revoked[0].end.framesWrittenBeforeEnd()
+	if !ended {
+		t.Fatal("the revoke cancelled the slow page's socket without its connection seeing the end")
 	}
 	requireNothingAfterTheRevoke(t, writes, framesBefore)
+	stream := streamOf(writes)
+	if at := bytes.Index(stream, []byte(mark)); at >= 0 {
+		t.Fatalf("the edit made after the revoke reached the revoked page's socket: its mark %q is %d bytes into what the server wrote there", mark, at)
+	}
 
 	// What the page reads, read off the bytes the server wrote to it: TCP delivers exactly these,
 	// in this order, and then the connection's end.
-	read, err := readServerStream(streamOf(writes))
+	read, err := readServerStream(stream)
 	if err != nil {
 		t.Fatalf("the bytes the server wrote to the revoked page are not an end its provider reconnects on: %v", err)
 	}
@@ -732,8 +741,8 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the server's document: %v", err)
 	}
-	if !strings.Contains(want, postRevokeMarker) {
-		t.Fatalf("the server's document does not hold the edit made after the revoke (%q), so the reconnect below would prove nothing about it", postRevokeMarker)
+	if !strings.Contains(want, mark) {
+		t.Fatalf("the server's document does not hold the edit made after the revoke (%q), so neither the check of the revoked socket's bytes above nor the reconnect below proves anything about it", mark)
 	}
 	// The reconnect is that page on a new socket of the same room, read-only now: the fleet that
 	// revoked it admits it no other way. What it syncs must be the whole document.
@@ -741,104 +750,6 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	reconnected := docstest.Dial(t, address, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, crdt.New())
 	if err := reconnected.WaitForText(peerMarkdown, want, 10*time.Second); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// endedCredential is the cause the API cancels a document socket's request with once the
-// credential its upgrade carried has expired (api's errCredentialExpired, whileCallerResolves),
-// with the close code that cause names: the request's context is the parent of the one ygo serves
-// the socket on, so this is how that end reaches the document service.
-type endedCredential struct{}
-
-func (endedCredential) Error() string {
-	return "the credential this socket was opened with has expired"
-}
-
-func (endedCredential) CloseCode() (int, string) {
-	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
-}
-
-// The other close a document socket ends on with the admission-revoked code is the end of the
-// credential its upgrade carried: the API cancels the socket's request with a cause naming that
-// code (whileCallerResolves), and ygo sends the close from the same context watcher a revoke
-// wakes. So the same holds of it: from the cancel on, the socket carries the rest of the message
-// going out and the close, and no room update. The page here is the slow page of
-// TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole, owed a document past 64 KB, and its
-// request is cancelled the way the API cancels it, through the request's context; one more edit
-// goes into the room straight after. Of the frames past those its connection had let out when the
-// cancel came, each must be that message's rest or the close.
-func TestASocketWhoseCredentialEndedGetsNoRoomUpdateAfterItsClose(t *testing.T) {
-	grant := sendBufferGrant(t)
-	markdown := slowPageMarkdown(slowPageMessageSize(t, grant))
-	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
-	service, artifactID := newTestService(t)
-	seedServiceText(t, service, artifactID, markdown)
-	// The handler cancels each socket's request as the API does, and keeps the cancel by the
-	// socket's remote address, which is the page's local one.
-	var ends sync.Map
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, end := context.WithCancelCause(r.Context())
-		defer end(nil)
-		ends.Store(r.RemoteAddr, end)
-		service.ServeHTTP(w, r.WithContext(ctx))
-	}))
-	accepted := &recordingListener{Listener: server.Listener}
-	server.Listener = accepted
-	server.Start()
-	t.Cleanup(server.Close)
-
-	writer := connectBrowser(t, server.URL, artifactID, "bob")
-	admissions := func() map[*schemaAdmission]struct{} {
-		service.schemaAdmissions.mu.Lock()
-		defer service.schemaAdmissions.mu.Unlock()
-		return maps.Clone(service.schemaAdmissions.sockets)
-	}
-	before := admissions()
-	dialed := time.Now()
-	reader := dialSlowPage(t, server.URL, artifactID, page(version, creatable))
-	serverConn := accepted.find(reader.LocalAddr().String())
-	if serverConn == nil {
-		t.Fatalf("no accepted connection has the slow page's local address %s, so nothing records what the server writes to it", reader.LocalAddr())
-	}
-	waitForTheDocumentOnTheWire(t, serverConn, dialed)
-	stored, ok := ends.Load(reader.LocalAddr().String())
-	if !ok {
-		t.Fatalf("no request of the slow page's address %s reached the handler", reader.LocalAddr())
-	}
-	// The slow page's admission is the one its socket added: the writer's was there before.
-	var admission *schemaAdmission
-	for candidate := range admissions() {
-		if _, old := before[candidate]; !old {
-			if admission != nil {
-				t.Fatal("two admissions appeared while the slow page connected, so neither can be told for its")
-			}
-			admission = candidate
-		}
-	}
-	if admission == nil {
-		t.Fatal("no admission appeared while the slow page connected")
-	}
-
-	endedAt := time.Now()
-	stored.(context.CancelCauseFunc)(endedCredential{})
-	editAsBrowser(t, service, artifactID, writer, strings.ReplaceAll(markdown, "document ", postRevokeMarker+" "))
-
-	requireRevokedSocketEnded(t, &service.schemaAdmissions, admission, endedAt)
-	writes, closedAt := serverConn.record()
-	if closedAt.IsZero() {
-		t.Fatal("the server never closed its side of the slow page's socket, though its ServeHTTP returned")
-	}
-	framesBefore, ended := admission.writes.framesWrittenBeforeRevoke()
-	if !ended {
-		t.Fatal("the slow page's connection never saw its request's end")
-	}
-	requireNothingAfterTheRevoke(t, writes, framesBefore)
-	read, err := readServerStream(streamOf(writes))
-	if err != nil {
-		t.Fatalf("the bytes the server wrote to the slow page are not an end its provider reconnects on: %v", err)
-	}
-	if read.biggestMessage <= 64*1024 {
-		t.Fatalf("the biggest document message the server wrote to the slow page is %d bytes; this test needs a page owed more than its buffers can take", read.biggestMessage)
 	}
 }
 

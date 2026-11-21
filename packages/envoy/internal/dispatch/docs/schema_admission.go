@@ -102,10 +102,10 @@ type schemaAdmission struct {
 	// the peer that cause's close frame and close the connection (sjawhar/ygo
 	// provider/websocket/server.go, ServeHTTP's context watcher).
 	cancel context.CancelCauseFunc
-	// writes is what the socket's connection lets out (revoked_writes.go): once the socket's
-	// request context has ended, only the message going out and the close, whenever the watcher
-	// runs.
-	writes *revokedWrites
+	// end is the socket's end as its connection keeps it (socket_end.go): once the socket's
+	// context or its request's has ended, the connection lets out only the message going out and
+	// the close, and the page's messages reach ygo as nothing, whenever the watcher runs.
+	end *socketEnd
 }
 
 // schemaAdmissions is the admission of every document socket this process serves, from authorize
@@ -150,9 +150,10 @@ func (a *schemaAdmissions) writable(admission *schemaAdmission, room, token stri
 
 // revokeUnless closes every writable socket that fleet no longer admits: it cancels the socket's
 // request context with errSchemaRevoked, on which ygo sends the peer that close frame and closes
-// the connection. The cancel closes the socket's connection to every frame but the message already
-// going out and the close frame before it returns (revokedWrites), so no room update ygo writes
-// once this has returned reaches a revoked socket, however late ygo's context watcher runs. The
+// the connection. The cancel ends the socket's connection to every frame but the message already
+// going out and the close frame, and to every message the page sends, before it returns
+// (socketEnd), so no room update ygo writes once this has returned reaches a revoked socket, and no
+// edit its page sends after it reaches the room, however late ygo's context watcher runs. The
 // admission stays here, marked revoked, until its own ServeHTTP removes it, so its token is
 // answered read-only from then on and a later pass leaves it as it is: its connection is closing.
 // It returns the sockets it closed.

@@ -103,25 +103,35 @@ const (
 	// limitSkipping: an awareness message past maxAwarenessMessageBytes; its bytes are discarded
 	// and ygo is given an awareness message naming no client in its place.
 	limitSkipping
+	// limitRefusing: a message the page began once the socket had ended (socketEnd); its bytes
+	// are discarded and ygo is given nothing in its place.
+	limitRefusing
 )
 
 // awarenessLimitWriter is a document socket's response writer: the connection ygo's websocket
 // upgrade hijacks through it is an awarenessLimitConn, which holds the socket to
-// maxAwarenessClientsPerSocket awareness clients. The upgrade reads the socket either through
-// that connection or through the hijacked buffered reader, whichever gorilla this build
-// resolves: v1.5.3 resets that reader onto the connection the hijack returned
-// (server.go:330-341, bufioReaderSize), while the v1.5.4 pre-release the workspace builds keeps
-// it on the connection underneath (server.go:192-195), where the filter would never see a frame.
-// So Hijack resets the reader onto the filter itself, which holds whichever of the two reads it.
+// maxAwarenessClientsPerSocket awareness clients, over a socketEndConn, which keeps the socket's
+// end (socket_end.go) on what ygo writes, as the filter keeps it on what the page sends. The
+// upgrade reads the socket either through that connection or through the hijacked buffered
+// reader, whichever gorilla this build resolves: v1.5.3 resets that reader onto the connection the
+// hijack returned (server.go:330-341, bufioReaderSize), while the v1.5.4 pre-release the workspace
+// builds keeps it on the connection underneath (server.go:192-195), where the filter would never
+// see a frame. So Hijack resets the reader onto the filter itself, which holds whichever of the two
+// reads it.
 type awarenessLimitWriter struct {
 	http.ResponseWriter
 	room string
+	// end is the socket's end; nil keeps none (a writer no ServeHTTP made).
+	end *socketEnd
 }
 
 func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	conn, buffers, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err != nil {
 		return nil, nil, err
+	}
+	if w.end != nil {
+		conn = &socketEndConn{Conn: conn, end: w.end}
 	}
 	// What the HTTP server read past the request and has not handed on - a client that sent a
 	// frame without waiting for the upgrade's answer - is the socket's first bytes, and the
@@ -132,7 +142,7 @@ func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		head, _ := buffers.Reader.Peek(held)
 		pending = bytes.Clone(head)
 	}
-	filtered := newAwarenessLimitConn(conn, w.room, pending)
+	filtered := newAwarenessLimitConn(conn, w.room, pending, w.end)
 	buffers.Reader.Reset(filtered)
 	return filtered, buffers, nil
 }
@@ -142,10 +152,12 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 
 // awarenessLimitConn is a document socket's connection under ygo's websocket reader. It reads the
 // frames the socket's peer sends and hands ygo an awareness message holding only the clients the
-// socket may hold; every other message reaches ygo as it arrived.
+// socket may hold; a message begun once the socket has ended (end), none at all; and every other
+// message as it arrived.
 type awarenessLimitConn struct {
 	net.Conn
 	room string
+	end  *socketEnd
 	// live is the awareness clients this socket holds now: a client announced takes a place and a
 	// client taken away gives it back, so a socket that announces and removes one client at a
 	// time is never refused.
@@ -167,13 +179,14 @@ type awarenessLimitConn struct {
 }
 
 // newAwarenessLimitConn is the filter over conn, reading pending - what the upgrade's hijack
-// held of the socket already (Hijack) - before conn itself.
-func newAwarenessLimitConn(conn net.Conn, room string, pending []byte) *awarenessLimitConn {
+// held of the socket already (Hijack) - before conn itself, and keeping end on what the page
+// sends (nil keeps none).
+func newAwarenessLimitConn(conn net.Conn, room string, pending []byte, end *socketEnd) *awarenessLimitConn {
 	var source io.Reader = conn
 	if len(pending) > 0 {
 		source = io.MultiReader(bytes.NewReader(pending), conn)
 	}
-	return &awarenessLimitConn{Conn: conn, room: room, live: make(map[uint64]struct{}), src: bufio.NewReader(source)}
+	return &awarenessLimitConn{Conn: conn, room: room, end: end, live: make(map[uint64]struct{}), src: bufio.NewReader(source)}
 }
 
 // Read hands ygo the rewritten stream: it reads whole frames from the socket until it has bytes
@@ -210,6 +223,12 @@ func (c *awarenessLimitConn) readFrame() error {
 	opcode := header[0] & 0x0f
 	final := header[0]&finalFrame != 0
 	starts := opcode == gws.BinaryMessage
+	if (starts || opcode == gws.TextMessage) && c.mode == limitIdle && payload >= 0 && c.end.refusesMessage() {
+		// The socket has ended: a message the page begins now, binary or text (ygo reads either),
+		// reaches ygo as nothing, and so do the frames that continue it.
+		slog.Debug("dispatch: drop a message a document socket's page began after the socket ended", "room", c.room)
+		return c.refuse(payload, final)
+	}
 	if payload < 0 || header[1]&maskedFrame == 0 || (!starts && opcode != continuationFrame) || starts == (c.mode != limitIdle) {
 		// A control frame, a text frame, a frame a client left unmasked, a frame out of order or
 		// one whose length does not fit an int64: ygo's own reader answers each as it does today,
@@ -229,6 +248,8 @@ func (c *awarenessLimitConn) readFrame() error {
 		return nil
 	case limitSkipping:
 		return c.skip(payload, final)
+	case limitRefusing:
+		return c.refuse(payload, final)
 	case limitAwareness:
 		return c.collect(payload, final)
 	default:
@@ -321,6 +342,19 @@ func (c *awarenessLimitConn) skip(n int64, final bool) error {
 	if final {
 		c.mode = limitIdle
 		c.writeAwareness(nil)
+	}
+	return nil
+}
+
+// refuse reads n more bytes of a message the page began after the socket ended, and the frames
+// after it, and hands ygo none of it.
+func (c *awarenessLimitConn) refuse(n int64, final bool) error {
+	c.mode = limitRefusing
+	if _, err := io.CopyN(io.Discard, c.src, n); err != nil {
+		return err
+	}
+	if final {
+		c.mode = limitIdle
 	}
 	return nil
 }
