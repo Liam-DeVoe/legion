@@ -449,6 +449,18 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
 			applied, want-1)
 	}
+	// The copy of Dispatch's issues the first boot fills from a listing (R16 of
+	// dispatch://INFRA-3320): the root and each issue under it, as Dispatch shows them. Every
+	// decision of the sweep reads its chains from it.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
+		for _, shape := range shapes {
+			seedCopyRow(t, tx, shape.key, root.Key, issues[shape.key].DispatchStatus, 1)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
+	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had
 	// handed work is at entry 1, the work of that entry is the task of the start row the issue

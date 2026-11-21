@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -751,15 +752,16 @@ func seedIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 }
 
 // seedCopyTx writes the copy's row of issue as a reading of Dispatch does
-// (record.Store.PutDispatchIssue): the parent the record names and the status Dispatch last showed
-// it in (DispatchStatus, else Status), at a sequence above every value the copy holds of it, so
-// the row reads as the record does whatever was written before. A fixture that names no parent
+// (record.Store.PutDispatchIssue): the parent the record names, the status Dispatch last showed
+// it in (DispatchStatus, else Status) and the legion label every issue Legion records carries on
+// its chain (R26 of dispatch://INFRA-3320), at a sequence above every value the copy holds of it,
+// so the row reads as the record does whatever was written before. A fixture that names no parent
 // but a tree other than the issue's own key states that the issue stands under that tree's root,
 // and its row says so.
 func seedCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
 	t.Helper()
 	var seq int64
-	if err := tx.QueryRow(t.Context(), `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`,
+	if err := tx.QueryRow(t.Context(), `select coalesce(max(greatest(status_seq, parent_seq, labels_seq)), 0) from dispatch_issues where key = $1`,
 		issue.Key).Scan(&seq); err != nil {
 		t.Fatalf("read the copy's sequences of %s: %v", issue.Key, err)
 	}
@@ -774,7 +776,7 @@ func seedCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
 		parent = issue.Tree
 	}
 	if err := record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: issue.Key, Project: issue.Project,
-		Seq: seq + 1, Status: record.Carry(status), Parent: record.Carry(parent)}); err != nil {
+		Seq: seq + 1, Status: record.Carry(status), Parent: record.Carry(parent), Labels: record.Carry([]string{dispatch.LegionLabel})}); err != nil {
 		t.Fatalf("seed the copy's row of %s: %v", issue.Key, err)
 	}
 }

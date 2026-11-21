@@ -547,6 +547,14 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	holdSlot(t, rig.pool, rig.issue.Key)
 	records := record.NewStore()
 	engine := entryEngine(t)
+	// The copy of Dispatch's issues holds the root, so its chain is known and the admission pass
+	// reads it as a running gate root (R16 of dispatch://INFRA-3320).
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		seedCopyRow(t, tx, rig.issue.Key, "", rig.issue.Status, 1)
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
+	}
 
 	// The implementer's completion is held to an open pull request on the issue's branch
 	// (workflow's TriggerImplementationReady), which the record holds here as the opened webhook

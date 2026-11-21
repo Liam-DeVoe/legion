@@ -2,7 +2,9 @@ package workflow
 
 import "github.com/sjawhar/legion/daemon/internal/phase"
 
-// TriggerKind names the observation that can advance a workflow phase.
+// TriggerKind names the observation that can advance a workflow phase. TriggerPullRequestMerged
+// moves no row: the merge queues the close (closeMerged), and the issue leaves merging only when
+// Dispatch shows it done (closeLanded), where the name ends the merge step.
 type TriggerKind string
 
 const (
@@ -19,15 +21,14 @@ const (
 	TriggerBackward            TriggerKind = "backward"
 )
 
-// EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
-// issue's close alone (Engine.leave): a phase worker stays live from its role's first assignment
-// until its issue closes, so no row that only moves the issue between phases suspends anyone.
+// EffectKind identifies the durable outbox consequences selected by a row. No row stops a worker:
+// a phase worker stays live from its role's first assignment until its issue closes (Engine.leave),
+// so no row that only moves the issue between phases suspends anyone.
 type EffectKind string
 
 const (
-	EffectSuspend EffectKind = "suspend"
-	EffectStart   EffectKind = "start"
-	EffectNotice  EffectKind = "notice"
+	EffectStart  EffectKind = "start"
+	EffectNotice EffectKind = "notice"
 )
 
 // Snapshot is the record state a row guard reads. Guards are pure and contain no side effects.
@@ -65,9 +66,6 @@ var Table = append([]Row{
 	{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 	{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 	{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
-	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
-	// GitHub's merge of the pull request as the phase's own terminating fact.
-	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice}},
 }, backwardRows()...)
 
 // backwardRows is the edge from every phase back to each phase before it. Like every other row,

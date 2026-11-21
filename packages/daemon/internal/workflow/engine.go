@@ -480,6 +480,13 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		if fact.Status == "done" && issue.PendingClose != nil {
 			return intake.Result{}, e.closeLanded(ctx, tx, *issue)
 		}
+		// The record holds the status the issue left for, as admission's observation of the event
+		// writes it after this handler, so every read of the issue in this fact — its leave, and
+		// the settle that ends the step it ran (SettleFact, runOver) — reads it out of work.
+		issue.Status = fact.Status
+		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
 		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
 	}
 	return intake.Result{}, e.backInWork(ctx, tx, *issue, fact)
@@ -529,32 +536,49 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 const releaseReason = "the issue was set to todo while its phase was held"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
-// does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
-// since a phase ends only by its completion (the `legion` tool's `handoff_complete`) and a tree
-// only by the architect's sign-off. Any other session on the root of a running tree — one holding
-// its admission slot, or one waiting on a person, whose tree stays live and which keeps its slot
-// — another tree's agent, or one outside Legion that took the issue for its own, has no part
-// in the tree it would end or park, so the tree's architect is told who wrote what. Either way the
-// workflow does not react: the observation is recorded with the status kept (keepStatus), and the
-// daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
-// carry no session (intake.DispatchIssue.ActorSession): they are the workflow's to act on.
+// does not act on. A session holding a claim of an issue whose gate root is the issue's own on the
+// Dispatch chain (record.Chains.GateTree, Store.SessionClaimsOf) is an agent of its tree, never a
+// human move, since a phase ends only by its completion (the `legion` tool's `handoff_complete`)
+// and a tree only by the architect's sign-off. Any other session on a gate root that runs
+// (record.TreeRuns) — one holding its admission slot, or one waiting on a person, whose tree
+// stays live and which keeps its slot — another tree's agent, or one outside Legion that took the
+// issue for its own, has no part in the tree it would end or park, so the tree's architect is told
+// who wrote what. Either way the workflow does not react: the observation is recorded with the
+// status kept (keepStatus), and the daemon re-asserts its own status through the outbox. A
+// person's move and the daemon's own write carry no session (intake.DispatchIssue.ActorSession):
+// they are the workflow's to act on. So is any write on an issue on whose Dispatch chain no issue
+// carries the legion label (legionOnChain): its status is anyone's to write (R26 of
+// dispatch://INFRA-3320).
 func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.ActorSession == "" {
 		return false, nil
 	}
-	agent, err := e.store.SessionClaimsTree(ctx, tx, issue.Tree, fact.ActorSession)
+	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	if err != nil {
+		return false, err
+	}
+	if !legionOnChain(chains, issue.Key) {
+		e.logOnCommit(ctx, "workflow: a session wrote the status of an issue on whose chain no issue carries the legion label; the daemon re-asserts nothing",
+			"issue", issue.Key, "session", fact.ActorSession, "wrote", fact.Status)
+		return false, nil
+	}
+	gateRoot := chains.GateRoot(issue.Key)
+	// The issue's own claims count whatever the chain reads, a chain with no gate root included.
+	tree := []string{issue.Key}
+	if gateRoot != "" {
+		tree = append(tree, chains.GateTree(gateRoot)...)
+	}
+	agent, err := e.store.SessionClaimsOf(ctx, tx, tree, fact.ActorSession)
 	if err != nil {
 		return false, err
 	}
 	if !agent {
 		// Whether the write lands on the root of a tree that is running now, by the one rule every
-		// reader of that question asks (record.TreeRunning, record.TreeRuns): its lifecycle stands
-		// open under the workflow's own authority and it is not itself waiting in the line for its
-		// run to be opened. It is the lifecycle rather than a slot because a slot counts one issue at
-		// work now, and a running tree holds none of its own while every issue in it waits in the
-		// line. A root waiting for its slot runs nothing: where no tree runs, an outside session's
-		// write is a person's move, which is the whole of the question.
-		waiting := claim.IsTreeRoot(issue.Key, issue.Tree) && issue.AwaitingPerson()
+		// reader of that question asks (record.TreeRunning, record.TreeRuns): it is in Legion's work
+		// and not itself waiting in the line for its run to be opened. A root waiting for its slot
+		// runs nothing: where no tree runs, an outside session's write is a person's move, which is
+		// the whole of the question.
+		waiting := gateRoot == issue.Key && issue.AwaitingPerson()
 		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
 			return false, err
 		}
@@ -2281,13 +2305,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from
-// finished, with its worker's handoff. Two moves tell it nothing (a notice of no kind, which notice
-// drops): its own sign-off, whose only recipient would be the architect that just acted, and the
-// merge that closes the issue, whose close tells the architect above a child child-closed itself
-// (leave) and closes the child's own architect with its other claims, and suspends a root's
-// architect with the rest of its tree. A third move names no role: the gate's opening, the one move
-// out of admitted (Table), whose role is the architect. A phase-finished names the worker whose
-// phase ended, and admitted has none: its role is an architect, the role that reads this notice.
+// finished, with its worker's handoff. Its own sign-off tells it nothing (a notice of no kind,
+// which notice drops), since its only recipient would be the architect that just acted; the
+// merge's close is no transition (closeMerged, closeLanded), and its leave tells the architect
+// above a child child-closed itself. One move names no role: the gate's opening, the one move out
+// of admitted (Table), whose role is the architect. A phase-finished names the worker whose phase
+// ended, and admitted has none: its role is an architect, the role that reads this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
@@ -2301,7 +2324,7 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
-	case TriggerSignOff, TriggerPullRequestMerged:
+	case TriggerSignOff:
 		return record.Notice{}
 	}
 	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}

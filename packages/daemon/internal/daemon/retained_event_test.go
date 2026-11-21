@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -147,7 +148,9 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			}
 			run, cancel := context.WithCancel(ctx)
 			done := make(chan error, 1)
-			go func() { done <- consumers.Run(run, engine, admission) }()
+			// The daemon's own handler order (workflow.go): the copy first, so the engine reads the
+			// chain and the labels this very event writes.
+			go func() { done <- consumers.Run(run, blockers.NewMirror(records, "LEGION"), engine, admission) }()
 			t.Cleanup(func() {
 				cancel()
 				if err := <-done; err != nil {

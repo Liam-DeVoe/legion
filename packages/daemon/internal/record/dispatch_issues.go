@@ -219,22 +219,22 @@ func (s *Postgres) ChainRows(ctx context.Context, tx pgx.Tx, project string, ext
 			select key from issues where project = $1 and phase <> 'done'
 			union select key from dispatch_issues where project = $1 and status = 'todo'
 			union select unnest($2::text[])
-		), walk (key, depth, parent, status, present, path) as (
-			select s.key, 0, d.parent, d.status, d.key is not null, array[s.key]
+		), walk (key, depth, parent, status, labels, present, path) as (
+			select s.key, 0, d.parent, d.status, d.labels, d.key is not null, array[s.key]
 			from starts s left join dispatch_issues d on d.key = s.key
 			union all
-			select w.parent, w.depth + 1, d.parent, d.status, d.key is not null, w.path || w.parent
+			select w.parent, w.depth + 1, d.parent, d.status, d.labels, d.key is not null, w.path || w.parent
 			from walk w left join dispatch_issues d on d.key = w.parent
 			where w.present and w.parent is not null and w.depth < $3 and w.parent <> all(w.path)
 		)
-		select key, min(depth), coalesce(parent, ''), coalesce(status, ''), present
-		from walk group by key, parent, status, present order by key`, project, extra, MaxChainLinks+1)
+		select key, min(depth), coalesce(parent, ''), coalesce(status, ''), coalesce(labels, '{}'), present
+		from walk group by key, parent, status, labels, present order by key`, project, extra, MaxChainLinks+1)
 	if err != nil {
 		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
 	}
 	read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ChainRow, error) {
 		var chained ChainRow
-		err := row.Scan(&chained.Key, &chained.Depth, &chained.Parent, &chained.Status, &chained.Present)
+		err := row.Scan(&chained.Key, &chained.Depth, &chained.Parent, &chained.Status, &chained.Labels, &chained.Present)
 		return chained, err
 	})
 	if err != nil {

@@ -136,7 +136,9 @@ func workflowTransitionRequired(from phase.Phase, trigger TriggerKind) bool {
 	case TriggerRetroCompleted:
 		return from == phase.Retro
 	case TriggerPullRequestMerged:
-		return from == phase.Merging
+		// The merge queues the close (closeMerged) and moves no row; the issue leaves merging at
+		// Dispatch's done (closeLanded).
+		return false
 	case TriggerSignOff:
 		return from == phase.Accepting
 	case TriggerBackward:

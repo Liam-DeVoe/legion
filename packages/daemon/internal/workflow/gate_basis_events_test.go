@@ -581,12 +581,15 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 		accept func(t *testing.T, pool *pgxpool.Pool)
 		act    string
 	}{
+		// The daemon moved it into retro while the board still shows needs_review: the record is
+		// what answers.
 		{"the daemon records it in retro", func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "T",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", DispatchStatus: "needs_review", Rank: "T",
 				HandedOver: true, LastDispatchSeq: 1})
 		}, "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
-		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { seedMirror(t, pool, basisAncestor, "done") },
+		// Above the sequence of the copy row the live ancestor's seed wrote.
+		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { mirrorChild(t, pool, basisAncestor, "", "done", 5) },
 			"Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -616,10 +619,10 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 // ends it, with the root's architect told why and the step closed on the root's own document with
 // no basis.
 func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
-	ancestorAt := func(at phase.Phase, status string, labelled bool) func(*testing.T, *pgxpool.Pool) {
+	ancestorAt := func(at phase.Phase, status, shown string, labelled bool) func(*testing.T, *pgxpool.Pool) {
 		return func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: at, Generation: 1, Status: status, Rank: "T",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: at, Generation: 1, Status: status, DispatchStatus: shown, Rank: "T",
 				HandedOver: labelled, LastDispatchSeq: 1})
 		}
 	}
@@ -628,10 +631,13 @@ func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
 		leave func(t *testing.T, pool *pgxpool.Pool)
 		act   string
 	}{
-		{"the daemon records it in retro", ancestorAt(phase.Retro, "retro", true), "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
-		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { seedMirror(t, pool, basisAncestor, "done") },
+		// The daemon moved it into retro while the board still shows needs_review: the record is
+		// what answers.
+		{"the daemon records it in retro", ancestorAt(phase.Retro, "retro", "needs_review", true), "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
+		// Above the sequence of the copy row the live ancestor's seed wrote.
+		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { mirrorChild(t, pool, basisAncestor, "", "done", 5) },
 			"Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
-		{"the daemon records it without the legion label", ancestorAt(phase.Planning, "in_progress", false), "LEGION-100 no longer carries the legion label."},
+		{"the daemon records it without the legion label", ancestorAt(phase.Planning, "in_progress", "in_progress", false), "LEGION-100 no longer carries the legion label."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, _, apply := registeredPending(t)

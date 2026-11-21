@@ -14,15 +14,16 @@ import (
 // made, and the chain is unknown (R16 of dispatch://INFRA-3320).
 const MaxChainLinks = 32
 
-// ChainRow is one row of the copy a chain read reached (Store.ChainRows): Key's parent and status
-// as the copy holds them, "" for no parent, and Depth, the fewest links above a key the read
+// ChainRow is one row of the copy a chain read reached (Store.ChainRows): Key's parent, status and
+// labels as the copy holds them, "" for no parent, and Depth, the fewest links above a key the read
 // started from that Key stands at, 0 for such a key itself. Present is false where the copy holds
-// no row of Key, a link no chain can be read past; Parent and Status are then "".
+// no row of Key, a link no chain can be read past; Parent, Status and Labels are then empty.
 type ChainRow struct {
 	Key     string
 	Depth   int
 	Parent  string
 	Status  string
+	Labels  []string
 	Present bool
 }
 
@@ -181,6 +182,12 @@ func (c *Chains) Status(key string) (string, bool) {
 		return "", false
 	}
 	return row.Status, true
+}
+
+// Labels is the labels of key as the copy holds them, empty where the read holds no present row of
+// key. A caller never writes into them.
+func (c *Chains) Labels(key string) []string {
+	return c.rows[key].Labels
 }
 
 // Chain is key's links from its parent up as the copy holds them, and whether the chain is known:

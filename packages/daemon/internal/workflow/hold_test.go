@@ -331,9 +331,11 @@ func TestAnEscalationCarriesTheArchitectsReason(t *testing.T) {
 	}
 }
 
-// A held root moved out of the workflow ends its hold, and an escalation with it: its tree lingers
-// with the root's phase done and no hold reason, so the state never shows a closed root escalated.
-func TestAClosedRootEndsItsHoldAndItsEscalation(t *testing.T) {
+// A held root a person moves out of Legion's work keeps its run (R20 of dispatch://INFRA-3320): its
+// phase, its hold and the escalation on it stay, which the state shows as facts of the root's own
+// record, and nothing lingers. A todo on it later releases the hold as on any held issue
+// (releaseHeldRoot).
+func TestAStoppedRootKeepsItsHoldAndItsEscalation(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Planning}, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -343,21 +345,23 @@ func TestAClosedRootEndsItsHoldAndItsEscalation(t *testing.T) {
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "root-backlog", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("move the root to backlog: %v", err)
 	}
-	var held bool
-	if err := pool.QueryRow(ctx, "select held_from is not null from issues where key = $1", "LEGION-208").Scan(&held); err != nil {
+	var heldFrom, holdReason, status string
+	if err := pool.QueryRow(ctx, "select held_from, hold_reason, status from issues where key = $1", "LEGION-208").Scan(&heldFrom, &holdReason, &status); err != nil {
 		t.Fatalf("read the root: %v", err)
 	}
-	if got, reason := projectedHold(t, pool, "LEGION-208"); got != phase.Done || reason != "" || held {
-		t.Fatalf("after the backlog move the state reads phase %s hold reason %q, held from a phase %t; want done, none, and not held", got, reason, held)
+	if heldFrom != string(phase.Planning) || holdReason != "escalated" || status != "backlog" {
+		t.Fatalf("the root's record after the backlog move holds it from %q for %q at %s, want from planning for escalated at backlog", heldFrom, holdReason, status)
 	}
-	assertOutboxCount(t, pool, "linger_close", 1)
+	if got, reason := projectedHold(t, pool, "LEGION-208"); got != phase.Held || reason != "escalated" {
+		t.Fatalf("after the backlog move the state reads phase %s hold reason %q, want held and escalated", got, reason)
+	}
+	assertOutboxCount(t, pool, "linger_close", 0)
 }
 
-// A held child keeps its hold when its tree closes, escalation included, since the tree's
-// re-admission leaves it held and the escalation still unanswered. While the tree lingers or is
-// closed, the escalation waits on nobody, so the state the controller reads at every start shows
-// the child held with no hold reason.
-func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testing.T) {
+// A held child keeps its hold when its root stops, escalation included: a stop of the issue above
+// it changes nothing of it (R20 of dispatch://INFRA-3320), so the state the controller reads at
+// every start shows it held and escalated, as its record holds it.
+func TestAnEscalatedChildKeepsItsHoldWhenItsRootStops(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	root, from := "LEGION-208", phase.Implementing
@@ -367,13 +371,13 @@ func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testin
 		t.Fatalf("escalate the child: %v", err)
 	}
 	if got, reason := projectedHold(t, pool, "LEGION-209"); got != phase.Held || reason != "escalated" {
-		t.Fatalf("in a running tree the state reads the child's phase %s hold reason %q, want held and escalated", got, reason)
+		t.Fatalf("under a running root the state reads the child's phase %s hold reason %q, want held and escalated", got, reason)
 	}
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "root-backlog", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("move the root to backlog: %v", err)
 	}
-	if got, reason := projectedHold(t, pool, "LEGION-209"); got != phase.Held || reason != "" {
-		t.Fatalf("with its tree closed the state reads the child's phase %s hold reason %q, want held and none", got, reason)
+	if got, reason := projectedHold(t, pool, "LEGION-209"); got != phase.Held || reason != "escalated" {
+		t.Fatalf("with its root stopped the state reads the child's phase %s hold reason %q, want held and escalated", got, reason)
 	}
 	var heldFrom, holdReason string
 	if err := pool.QueryRow(ctx, "select held_from, hold_reason from issues where key = $1", "LEGION-209").Scan(&heldFrom, &holdReason); err != nil {

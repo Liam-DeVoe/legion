@@ -890,6 +890,14 @@ func (d *chainDaemon) seed(token string) {
 		slots := 0
 		for _, row := range d.rows {
 			seedCopyRow(t, tx, row.key, row.parent, row.status, chainSeq, row.blockedBy...)
+			if row.labelled {
+				// The copy holds the label as Dispatch shows it (R26 of dispatch://INFRA-3320 reads it
+				// on the chain).
+				if err := record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: row.key, Project: projectOf(row.key),
+					Seq: chainSeq, Labels: record.Carry([]string{dispatch.LegionLabel})}); err != nil {
+					return err
+				}
+			}
 			if row.phase == "" {
 				continue
 			}
@@ -1039,8 +1047,12 @@ func (d *chainDaemon) repairs(answer func(key, label, value string)) {
 	ctx := context.Background()
 	for _, row := range d.rows {
 		for _, writer := range slices.Sorted(maps.Keys(row.repairs)) {
+			var labels []string
+			if row.labelled {
+				labels = []string{dispatch.LegionLabel}
+			}
 			fact := intake.DispatchIssue{Key: row.key, Seq: chainSeq + 1, Type: "issue.updated", Status: "backlog", Title: row.key, Parent: row.parent,
-				Rank: rankOf(row.key), HandedOver: row.labelled, ActorSession: sessionOf(writer), ResolvedRepo: chainRepo, Blockers: row.blockedBy}
+				Rank: rankOf(row.key), HandedOver: row.labelled, Labels: labels, ActorSession: sessionOf(writer), ResolvedRepo: chainRepo, Blockers: row.blockedBy}
 			answer(row.key, repairLabel(writer), d.undone(func(tx pgx.Tx) string {
 				if _, err := intake.ApplyFact(ctx, rolledBack{tx}, "chain-decisions", "repair:"+row.key+":"+writer, fact, d.handlers...); err != nil {
 					return "the fact failed: " + err.Error()

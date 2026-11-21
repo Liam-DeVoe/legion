@@ -24,7 +24,8 @@ func srMove(key, status string, seq int64) intake.DispatchIssue {
 // of dispatch://INFRA-4730): the same generation, the same sessions, the phase's worker started at
 // the next entry with the phase's resume task, among the work that came back, and every other claim
 // that has run started again in its own session. A parent in awaiting_children keeps the start it
-// holds through the stop and the return, and starts no worker on its return.
+// holds through the stop and the return, and starts no worker on its return (R13); nor does the
+// return of an issue above a waiting parent start any role of that parent (R11).
 func TestAnIssueBackInWorkResumesItsPhaseAtANewEntry(t *testing.T) {
 	t.Run("an issue in implementing", func(t *testing.T) {
 		const key = "LEGION-500"
@@ -104,6 +105,34 @@ func TestAnIssueBackInWorkResumesItsPhaseAtANewEntry(t *testing.T) {
 		}
 		if starts := pwWorkerStarts(t, pool, key); len(starts) != 0 {
 			t.Fatalf("the returned parent's worker starts = %+v, want none while its child is open", starts)
+		}
+	})
+	t.Run("the return of an issue above a waiting parent starts no role of it", func(t *testing.T) {
+		const above, key = "LEGION-530", "LEGION-531"
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		spSeedParent(t, pool, above, phase.Implementing, true, func(issue *record.Issue) { issue.LastDispatchSeq = 1 })
+		held := "Continue " + key + ". Issue: " + key + ". Phase: implementing."
+		spWaiting(t, pool, key, phase.Implementing, held, "children of "+key+" were open", func(issue *record.Issue) {
+			issue.Tree, issue.Parent, issue.LastDispatchSeq = above, new(above), 1
+		})
+		seedMirrorChild(t, pool, "LEGION-532", "todo", key)
+
+		apply(t, pool, admission, "above-to-backlog", srMove(above, "backlog", 2), admission.engine)
+		apply(t, pool, admission, "above-back-to-todo", srMove(above, "todo", 3), admission.engine)
+
+		// The issue above came back into work at the phase it stood in; its own open child, the
+		// waiting parent, holds its start (R9), which is no part of this case.
+		if back := issue(t, pool, above); !record.InLegionsWork(back) || back.Generation != 1 {
+			t.Fatalf("the issue above after its return = phase %s, status %s, generation %d; want it back in Legion's work at generation 1: the case's premise",
+				back.Phase, back.Status, back.Generation)
+		}
+		waiting := issue(t, pool, key)
+		if waiting.Phase != phase.AwaitingChildren || waiting.ChildrenWait == nil || waiting.ChildrenWait.Task != held {
+			t.Fatalf("the waiting parent = phase %s, held start %+v; want awaiting_children holding its start", waiting.Phase, waiting.ChildrenWait)
+		}
+		if starts := pwWorkerStarts(t, pool, key); len(starts) != 0 {
+			t.Fatalf("the waiting parent's worker starts after the return above it = %+v, want none while its child is open", starts)
 		}
 	})
 }
