@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -328,28 +327,29 @@ func TestARestoreTakesKeysWrittenWithARevision(t *testing.T) {
 	require.Equal(t, original, restored)
 }
 
-// walkRequests calls each with the sequence of every STREAM.MSG.GET of the bucket's stream the
-// server receives, as the admin sees each request.
-func (r *rig) walkRequests(t *testing.T, each func(seq uint64)) {
+// captureWalk makes a stream that captures the walk's STREAM.MSG.GET requests of the bucket's
+// stream and republishes each onto the bucket's key, inside the server, so a get stores a message
+// in the bucket before the walk can ask for its sequence; at most captures of them (0 for every
+// one), the stream refusing each past them. It returns the stream's name.
+func (r *rig) captureWalk(t *testing.T, key string, captures int64) string {
 	t.Helper()
-	sub, err := r.admin.Subscribe("$JS.API.STREAM.MSG.GET.KV_"+bucket, func(msg *nats.Msg) {
-		var body struct {
-			Seq uint64 `json:"seq"`
-		}
-		if json.Unmarshal(msg.Data, &body) == nil {
-			each(body.Seq)
-		}
-	})
+	const name = "WALK_GETS"
+	gets := "$JS.API.STREAM.MSG.GET.KV_" + bucket
+	config := &nats.StreamConfig{Name: name, Subjects: []string{gets}, NoAck: true, Storage: nats.MemoryStorage,
+		RePublish: &nats.RePublish{Source: gets, Destination: "$KV." + bucket + "." + key}}
+	if captures > 0 {
+		config.MaxMsgs, config.Discard = captures, nats.DiscardNew
+	}
+	_, err := r.js.AddStream(config)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	require.NoError(t, r.admin.Flush())
+	return name
 }
 
 // A key rewritten while the walk runs is in the copy, with its new value: the bucket holds 2,000
-// keys, one value each, and when the walk asks for sequence 10 the admin rewrites s-01500, which
-// stores it again at sequence 2,001 and removes sequence 1,500 before the walk reaches it. The
-// walk reads the stream's info again after it ends, walks on to the new last_seq, and records that
-// one in the manifest.
+// keys, one value each, and the walk's first get rewrites s-01500 (captureWalk, once), which stores
+// it again at sequence 2,001 and removes sequence 1,500 long before the walk reaches it. The walk
+// reads the stream's info again after it ends, walks on to the new last_seq, and records that one
+// in the manifest.
 //
 // Run by hand, the control is the single pass, one info read: the copy holds 1,999 records, none of
 // s-01500, and the test fails naming it.
@@ -361,31 +361,24 @@ func TestAKeyRewrittenDuringTheWalkIsInTheCopy(t *testing.T) {
 		_, err := kv.Put(fmt.Sprintf("s-%05d", index+1), []byte("v1"))
 		require.NoError(t, err)
 	}
-	var rewritten atomic.Bool
-	r.walkRequests(t, func(seq uint64) {
-		if seq == 10 && rewritten.CompareAndSwap(false, true) {
-			_, err := kv.Put("s-01500", []byte("v2"))
-			if err != nil {
-				t.Errorf("rewrite s-01500: %v", err)
-			}
-		}
-	})
+	captured := r.captureWalk(t, "s-01500", 1)
 
 	dir := filepath.Join(t.TempDir(), "copy")
 	manifest, err := kvrecords.Write(t.Context(), r.operator, bucket, dir, r.key)
 	require.NoError(t, err)
-	require.True(t, rewritten.Load(), "the walk never asked for sequence 10, so nothing was rewritten")
+	gets, err := r.js.StreamInfo(captured)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, gets.State.Msgs, "the walk's first get rewrote nothing")
+	stored, err := r.js.GetLastMsg("KV_"+bucket, "$KV."+bucket+".s-01500")
+	require.NoError(t, err)
+	require.EqualValues(t, 2001, stored.Sequence)
 	_, records, err := kvrecords.Read(dir, r.keys)
 	require.NoError(t, err)
 	last := slices.IndexFunc(records, func(record kvrecords.Record) bool { return record.Key == "s-01500" })
 	require.GreaterOrEqual(t, last, 0, "the copy holds no record of s-01500, rewritten during the walk (%d records, last_seq %d)", len(records), manifest.LastSeq)
-	require.Equal(t, "v2", string(records[last].Data))
+	require.Equal(t, string(stored.Data), string(records[last].Data), "the copy holds s-01500's old value")
 	require.EqualValues(t, 2001, records[last].Seq)
 	require.Len(t, records, 2000)
-	entry, err := kv.Get("s-01500")
-	require.NoError(t, err)
-	require.Equal(t, "v2", string(entry.Value()))
-	require.EqualValues(t, 2001, entry.Revision())
 	require.EqualValues(t, 2001, manifest.LastSeq, "the manifest's last_seq is not the walk's final one")
 }
 
@@ -445,10 +438,11 @@ func TestAMessageStoredUnderAForeignSubjectIsListedNotCopied(t *testing.T) {
 	require.Len(t, restore, 3)
 }
 
-// A walk that cannot catch the stream fails naming its bound and writes nothing: from the walk's
-// first STREAM.MSG.GET on, the admin puts new keys one after another until the walk returns, as
-// fast as the walk gets them, so each pass finds about as many new messages as it walked, and the
-// stream's last_seq still moves after the walk's tenth pass.
+// A walk that cannot catch the stream fails naming its bound and writes nothing: every get of the
+// walk stores one more message in the bucket's stream (captureWalk, with no limit). The bucket
+// starts with 1,000 keys, so each pass finds about as many new messages as it walked, far more
+// than the few republishes still in flight when it reads the stream's info, and the stream's
+// last_seq still moves after the walk's tenth pass.
 //
 // Run by hand, the control is the walk with no bound: it never ends, and the test fails at its
 // one-minute deadline, naming no bound.
@@ -456,36 +450,18 @@ func TestAWalkThatCannotCatchTheStreamFailsNamingItsBound(t *testing.T) {
 	r := newRig(t)
 	kv, err := r.js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
 	require.NoError(t, err)
-	for index := range 20 {
+	for index := range 1000 {
 		_, err := kv.Put(fmt.Sprintf("s-%05d", index+1), []byte("v1"))
 		require.NoError(t, err)
 	}
-	stop, stopped := make(chan struct{}), make(chan struct{})
-	var started atomic.Bool
-	r.walkRequests(t, func(uint64) {
-		if !started.CompareAndSwap(false, true) {
-			return
-		}
-		go func() {
-			defer close(stopped)
-			for put := 1; ; put++ {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				_, _ = kv.Put(fmt.Sprintf("s-new-%07d", put), []byte("new"))
-			}
-		}()
-	})
+	captured := r.captureWalk(t, "s-moved", 0)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	dir := filepath.Join(t.TempDir(), "copy")
 	_, err = kvrecords.Write(ctx, r.operator, bucket, dir, r.key)
-	close(stop)
-	require.True(t, started.Load(), "the walk sent no get, so nothing was written during it")
-	<-stopped
-	require.Error(t, err, "the walk ended though the stream never stopped moving")
+	moved, infoErr := r.js.StreamInfo(captured)
+	require.NoError(t, infoErr)
+	require.Error(t, err, "the walk ended though the stream never stopped moving (%d gets captured)", moved.State.Msgs)
 	require.ErrorContains(t, err, "10 passes", "the walk's error does not name its bound")
 	_, statErr := os.Stat(dir)
 	require.ErrorIs(t, statErr, fs.ErrNotExist, "the walk past its bound left a copy")
