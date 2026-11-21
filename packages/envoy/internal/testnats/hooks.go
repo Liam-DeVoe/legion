@@ -446,7 +446,9 @@ type Hold struct {
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 
 // Reached waits up to 30 seconds for the hold to be reached, and returns the event that reached
-// it, its goroutine parked there. It fails t, naming the point and the matches, when none did.
+// it. That event's goroutine is parked at the hold until Release, unless the hold had been
+// released before it was reached, when the event went on. It fails t, naming the point and the
+// matches, when none did.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
 	select {
