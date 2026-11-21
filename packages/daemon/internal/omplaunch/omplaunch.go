@@ -169,19 +169,15 @@ func WithPrefix(prefix []string, invocation string) string {
 	return shellprefix.Command(prefix) + " " + invocation
 }
 
-// PrefixShown is prefix as a line, a refusal or the state's settings show it: its program's name
-// (prefix[0] without its directory) and how many arguments follow, never an argument, since a
-// prefix such as `env NAME=<token> …` or a proxy wrapper handed a URL with a password carries a
-// credential in its arguments. A first word holding "=" (a variable a shell sets before the
-// program) is a NAME=value word too, and shows as one. An empty prefix shows as nothing.
+// PrefixShown is prefix as a line, a refusal or the state's settings show it: its program
+// (programShown) and how many arguments follow, never an argument, since a prefix such as
+// `env NAME=<token> …` or a proxy wrapper handed a URL with a password carries a credential in its
+// arguments. An empty prefix shows as nothing.
 func PrefixShown(prefix []string) []string {
 	if len(prefix) == 0 {
 		return nil
 	}
-	program := filepath.Base(prefix[0])
-	if strings.Contains(prefix[0], "=") {
-		program = "(a NAME=value word)"
-	}
+	program := programShown(prefix[0])
 	switch rest := len(prefix) - 1; rest {
 	case 0:
 		return []string{program}
@@ -201,6 +197,47 @@ func WithPrefixShown(prefix []string, invocation string) string {
 	}
 	return strings.Join(PrefixShown(prefix), " ") + " " + invocation
 }
+
+// ProgramNotShown stands for a launch prefix's first word that has no command's shape.
+const ProgramNotShown = "(a first word that is not shown)"
+
+// programShown is word, a launch prefix's first word, as PrefixShown names it: a NAME=value word
+// (assignment) as one, and otherwise its base name when that has a command's shape
+// (commandShaped), or ProgramNotShown: a credential pasted where the program goes, a path's last
+// part included (`/opt/bin/<token>`), is no command's name, and the launch it names cannot run,
+// so the boot gate's refusal would print it.
+func programShown(word string) string {
+	if _, ok := assignment(word); ok {
+		return "(a NAME=value word)"
+	}
+	if base := filepath.Base(word); commandShaped(base) {
+		return base
+	}
+	return ProgramNotShown
+}
+
+// commandName is a command's name: letters, digits, ".", "_", "+" and "-", from a letter or a
+// digit, 64 characters at most.
+var commandName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
+// commandShaped reports whether name has a command's shape: commandName's, holding no run of 8 or
+// more hexadecimal digits (a hex key) and no run of 10 or more letters and digits that holds a
+// digit (a token). `env`, `nice`, `python3.12` and `omp-proxy-wrapper` have it.
+func commandShaped(name string) bool {
+	if !commandName.MatchString(name) || hexRun.MatchString(name) {
+		return false
+	}
+	for _, run := range alphanumericRun.FindAllString(name, -1) {
+		if strings.ContainsAny(run, "0123456789") {
+			return false
+		}
+	}
+	return true
+}
+
+// hexRun is a run of 8 or more hexadecimal digits, and alphanumericRun one of 10 or more letters
+// and digits.
+var hexRun, alphanumericRun = regexp.MustCompile(`[0-9A-Fa-f]{8,}`), regexp.MustCompile(`[A-Za-z0-9]{10,}`)
 
 // MaskedPrefixWord is the shortest text of the launch prefix PrefixMasked takes out of a launch's
 // output: a shorter one (a flag, `--`, a short name) is too common to replace without rewriting

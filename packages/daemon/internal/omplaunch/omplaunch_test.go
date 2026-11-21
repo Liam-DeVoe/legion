@@ -319,8 +319,10 @@ func TestPrefixMaskedKeepsALineSharingTheProgramsDirectory(t *testing.T) {
 
 // PrefixShown names the prefix's program, without its directory, and how many arguments follow,
 // never an argument: a made-up token set with env, and a made-up proxy URL with a password, are
-// the arguments here. A first word that is a NAME=value word shows as one. WithPrefixShown puts
-// those words before the invocation, which holds no credential.
+// the arguments here. A first word that is a NAME=value word shows as one, and one that has no
+// command's shape, a made-up token pasted where the program goes, bare or as a path's last part,
+// shows as ProgramNotShown. WithPrefixShown puts those words before the invocation, which holds no
+// credential.
 func TestPrefixShownNamesNoArgument(t *testing.T) {
 	const token = "madeUpPrefixToken0123456789"
 	invocation := "/usr/bin/mise x 'github:sjawhar/oh-my-pi@18' -- omp"
@@ -334,6 +336,11 @@ func TestPrefixShownNamesNoArgument(t *testing.T) {
 		{"env setting a token", []string{"/usr/bin/env", "OMP_TOKEN=" + token}, []string{"env", "(1 argument, not shown)"}},
 		{"a proxy wrapper handed a URL", []string{"proxywrap", "--upstream", "https://legion:" + token + "@proxy.example", "--"}, []string{"proxywrap", "(3 arguments, not shown)"}},
 		{"a NAME=value first word", []string{"OMP_TOKEN=" + token, "omp-wrapper"}, []string{"(a NAME=value word)", "(1 argument, not shown)"}},
+		{"a versioned program", []string{"/usr/local/bin/python3.12", "-m", "wrap"}, []string{"python3.12", "(2 arguments, not shown)"}},
+		{"a token where the program goes", []string{token, "--flag"}, []string{ProgramNotShown, "(1 argument, not shown)"}},
+		{"a path ending in a token", []string{"/opt/bin/" + token}, []string{ProgramNotShown}},
+		{"a hex key where the program goes", []string{"deadbeefcafe4bad"}, []string{ProgramNotShown}},
+		{"a base64 key and its padding where the program goes", []string{token + "=="}, []string{ProgramNotShown}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := PrefixShown(tc.prefix)
