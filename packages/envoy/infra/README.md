@@ -4043,24 +4043,31 @@ hold's row in the secrets broker's Postgres holds and the auth service reads at 
 phase holds the one before it, and every phase subscribes `_INBOX_envoy_operator.>` alone, so an
 operator connects with that inbox prefix:
 
-- `released`, no hold, and the grant whenever the auth service cannot read the row: `$JS.API.INFO`;
-  the infos of `ENVOY_NOTIFICATIONS`, `KV_envoy_session_consumers` and each copied bucket
-  (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`);
-  each copied bucket's snapshot and the acknowledgements of its chunks, so a backup needs no hold;
-  the stored-message get of `KV_envoy_session_consumers` and the consumer names and infos of
-  `ENVOY_NOTIFICATIONS`; and the create and info of `ENVOY_MEASURE`, its one mutation, of the one
-  stream no client depends on;
+- `released`, no hold, and the grant whenever the auth service cannot read the row, which is reads
+  only: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`, `KV_envoy_session_consumers` and each
+  copied bucket (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`,
+  `envoy_ci_state`); the stored-message get of `KV_envoy_session_consumers`, the consumer names and
+  infos of `ENVOY_NOTIFICATIONS`, and the info of `ENVOY_MEASURE`. Its one backup is a records-only
+  copy of `KV_envoy_session_consumers`, its messages read one by one with that get
+  (`internal/bus/kvrecords`, format `envoy-kv-records-v1`), each with its sequence, subject,
+  headers, time and data. A restore from it writes each message again, so it cannot reproduce the
+  stream's `last_seq`. No snapshot and no stream create is in `released`: nats-server checks a
+  snapshot's deliver subject for its syntax alone and sends every chunk there from the stream's own
+  sender, and a create carries a republish or a source of the caller's choosing, so either writes
+  any subject, a protected bucket's key among them;
 - `prepare`, a hold being prepared while every client is still admitted: also
   `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*`, which raises the consumers' inactive thresholds
   (one subject serves a consumer's create and its update, so it admits a named create too), and the
   infos of `KV_legion_agents`, `KV_envoy_dpop_proofs` and `KV_envoy_webhook_redelivery`;
 - `held`, a hold set, while only the operator should be connected: also the barrier
   stream `ENVOY_HOLD_BARRIER`'s create and delete; `STREAM.LIST`, `STREAM.NAMES` and
-  `CONSUMER.LIST.*`; the consumer delete on `ENVOY_NOTIFICATIONS`; the session consumers' records,
-  their bucket's create and restore; each copied bucket's create, update, delete and restore with
-  its chunks, and its barrier key `$KV.<bucket>.hold.barrier.*`; the create and update of
-  `ENVOY_NOTIFICATIONS` and every other bucket; every stream's and consumer's delete; and the
-  snapshot and restore of every other protected stream.
+  `CONSUMER.LIST.*`; the consumer delete on `ENVOY_NOTIFICATIONS`; the create of `ENVOY_MEASURE`;
+  the session consumers' records, their bucket's create, snapshot and restore; each copied bucket's
+  create, update, delete, snapshot and restore with its chunks, and its barrier key
+  `$KV.<bucket>.hold.barrier.*`; the create and update of `ENVOY_NOTIFICATIONS` and every other
+  bucket; every stream's and consumer's delete; and the snapshot and restore of every other
+  protected stream. Every snapshot, and so every backup of a copied bucket (`envoy-infra buckets
+  backup`), is taken under a hold.
 
 No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance`.
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
@@ -4068,14 +4075,22 @@ a subject nothing else uses, so the probe only shows whether the hub admits a co
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
-shell it runs in, requests no credential, and lists every principal that is not a person and can
-mint the operator ServiceAccount's token, run or enter a pod as it, mint its Google service
-account's token, make a namespace of the same name on another cluster of the project or of the
-workload pool's fleet, or write the writer hold's tables beside the broker's routes. It reads code
-first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1
-naming each principal and right, or 2 naming each step it could not read. `--report <file>` writes
-the same as JSON. `scripts/operator-token-minters.test.sh` runs every plant and control against a
-fake `kubectl`, `gcloud`, `curl` and `agent-secrets`.
+shell it runs in, requests no credential, and lists each principal that is not a person and can
+mint the token of a guarded ServiceAccount (the operator's, the secrets broker's, and each
+`--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, mint
+the operator's Google service account's token, make a guarded namespace on another cluster of the
+project or of the workload pool's fleet, register a cluster to that fleet, set IAM policy over any
+of these, or write the writer hold's tables beside the broker's routes, and each principal that can
+become one of those: through IAM impersonation, reported as the chain, or in Kubernetes by running,
+entering or minting the token of a ServiceAccount that holds such a right. On each cluster it
+reviews every ServiceAccount outside the system namespaces, each Google identity the cluster's
+bindings name, and anyone unauthenticated; a Group other than Kubernetes' system groups is never a
+finding while GKE's Google Groups for RBAC is off. It reads code first (`--rbac-render`,
+`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
+right, or 2 naming each step it could not read, a run that stopped mid-way included.
+`--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that
+run's or none. `scripts/operator-token-minters.test.sh` runs every plant and control against a fake
+`kubectl`, `gcloud`, `curl` and `agent-secrets`.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

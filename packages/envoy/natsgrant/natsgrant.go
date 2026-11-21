@@ -494,33 +494,47 @@ const OperatorInbox = "_INBOX_envoy_operator"
 const HoldBarrierStream = "ENVOY_HOLD_BARRIER"
 
 // sessionConsumerRecordsBucket is the bucket that records each listener session consumer's name
-// (envoy-infra consumer-names), which the operator reads outside a hold and rewrites inside one.
+// (envoy-infra consumer-names), which the operator reads outside a hold, message by message, and
+// snapshots and rewrites inside one.
 const sessionConsumerRecordsBucket = "envoy_session_consumers"
 
 // measureStream is the measurement job's stream, the one stream no client depends on, which the
-// operator may create outside a hold (envoy-infra streams ensure).
+// operator creates only inside a hold (envoy-infra streams ensure): a create carries a
+// configuration of the caller's choosing, whose republish or source can write any subject.
 const measureStream = "ENVOY_MEASURE"
 
-// copiedBuckets are the buckets envoy-infra buckets copies: their backup is a read, taken
-// outside a hold, and their streams are made, changed, removed and restored only inside one.
+// copiedBuckets are the buckets envoy-infra buckets copies: their infos are read outside a hold,
+// and their streams are snapshotted, made, changed, removed and restored only inside one, since a
+// snapshot delivers its chunks to a subject its requester chooses.
 func copiedBuckets() []string {
 	return []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket, bus.CIStateBucket}
 }
 
-// otherDeclaredStreams are the protected streams that are not copied buckets and not the session
-// consumers' records: the notification stream and every other bucket the build names. The prepare
-// operator reads their infos, and the held operator makes, changes and restores them.
-func otherDeclaredStreams() []string {
-	return []string{bus.Stream, kvStream + bus.LegionAgentBucket, kvStream + bus.DPoPProofBucket, kvStream + bus.WebhookRedeliveryBucket}
+// otherProtectedBuckets are the protected buckets that are neither copied buckets nor the session
+// consumers' records. The prepare operator reads their infos, and the held operator makes, changes
+// and restores them.
+func otherProtectedBuckets() []string {
+	return []string{kvStream + bus.LegionAgentBucket, kvStream + bus.DPoPProofBucket, kvStream + bus.WebhookRedeliveryBucket}
 }
 
-// operatorReleased is the operator's publish list outside a hold: JetStream's account info, the
-// read-only infos of the notification stream, the session consumers' records and each copied
-// bucket, the backup of each copied bucket (its snapshot request and the acknowledgements of its
-// chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT and $JS.SNAPSHOT.ACK), consumer-names
-// status's reads (the records walked by sequence, the notification stream's consumer names and
-// infos), and the create and info of ENVOY_MEASURE. Its one mutation is that create of the one
-// unprotected stream: a backup only reads.
+// otherDeclaredStreams are the protected streams that are not copied buckets and not the session
+// consumers' records: the notification stream and the other protected buckets. The held operator
+// makes, changes and restores them.
+func otherDeclaredStreams() []string {
+	return append([]string{bus.Stream}, otherProtectedBuckets()...)
+}
+
+// operatorReleased is the operator's publish list outside a hold, which is reads only: JetStream's
+// account info; the infos of the notification stream, the session consumers' records and each
+// copied bucket; consumer-names status's reads, the records read message by message with
+// STREAM.MSG.GET and the notification stream's consumer names and infos; and the info of
+// ENVOY_MEASURE. Its one backup is that walk of the session consumers' records
+// (internal/bus/kvrecords): a records-only copy, each message's sequence, subject, headers, time
+// and data, which a restore writes again, so it cannot reproduce the stream's last_seq. A snapshot
+// (STREAM.SNAPSHOT) and a stream create are held's: nats-server checks a snapshot's deliver subject
+// for its syntax alone (jetstream_api.go, jsStreamSnapshotRequest) and sends every chunk to it from
+// the stream's own sender, and a create carries a republish or a source of the caller's choosing,
+// so either writes any subject, a protected bucket's key among them.
 func operatorReleased() []string {
 	publish := []string{
 		jsAPI + "INFO",
@@ -530,14 +544,10 @@ func operatorReleased() []string {
 	for _, bucket := range copiedBuckets() {
 		publish = append(publish, jsAPI+"STREAM.INFO."+kvStream+bucket)
 	}
-	for _, bucket := range copiedBuckets() {
-		publish = append(publish, jsAPI+"STREAM.SNAPSHOT."+kvStream+bucket, "$JS.SNAPSHOT.ACK."+kvStream+bucket+".>")
-	}
 	return append(publish,
 		jsAPI+"STREAM.MSG.GET."+kvStream+sessionConsumerRecordsBucket,
 		jsAPI+"CONSUMER.NAMES."+bus.Stream,
 		jsAPI+"CONSUMER.INFO."+bus.Stream+".*",
-		jsAPI+"STREAM.CREATE."+measureStream,
 		jsAPI+"STREAM.INFO."+measureStream,
 	)
 }
@@ -550,7 +560,7 @@ func operatorReleased() []string {
 // states the residual.
 func operatorPrepare() []string {
 	publish := append(operatorReleased(), jsAPI+"CONSUMER.CREATE."+bus.Stream+".*")
-	for _, stream := range otherDeclaredStreams()[1:] {
+	for _, stream := range otherProtectedBuckets() {
 		publish = append(publish, jsAPI+"STREAM.INFO."+stream)
 	}
 	return publish
@@ -558,11 +568,12 @@ func operatorPrepare() []string {
 
 // operatorHeld is prepare's list, then the writes the hold makes while every other client is
 // refused: the barrier stream's create and delete; the stream and consumer lists the writer census
-// reads; the retired consumer names' delete; the session consumers' records, their bucket's create
-// and restore; each copied bucket's create, update, delete and restore with its chunks, and its
-// per-bucket barrier key; envoy-infra streams update's creates and updates of every protected
-// stream; the census's removals of every undeclared stream and consumer; and the snapshot and
-// restore of every other protected stream.
+// reads; the retired consumer names' delete; the create of ENVOY_MEASURE (envoy-infra streams
+// ensure); the session consumers' records, their bucket's create, snapshot and restore; each copied
+// bucket's create, update, delete, snapshot and restore with its chunks, and its per-bucket barrier
+// key; envoy-infra streams update's creates and updates of every protected stream; the census's
+// removals of every undeclared stream and consumer; and the snapshot and restore of every other
+// protected stream. Every snapshot is here, since its requester chooses where its chunks go.
 func operatorHeld() []string {
 	publish := append(operatorPrepare(),
 		jsAPI+"STREAM.CREATE."+HoldBarrierStream,
@@ -571,8 +582,11 @@ func operatorHeld() []string {
 		jsAPI+"STREAM.NAMES",
 		jsAPI+"CONSUMER.LIST.*",
 		jsAPI+"CONSUMER.DELETE."+bus.Stream+".*",
+		jsAPI+"STREAM.CREATE."+measureStream,
 		kvSubjects+sessionConsumerRecordsBucket+".>",
 		jsAPI+"STREAM.CREATE."+kvStream+sessionConsumerRecordsBucket,
+		jsAPI+"STREAM.SNAPSHOT."+kvStream+sessionConsumerRecordsBucket,
+		"$JS.SNAPSHOT.ACK."+kvStream+sessionConsumerRecordsBucket+".>",
 		jsAPI+"STREAM.RESTORE."+kvStream+sessionConsumerRecordsBucket,
 		"$JS.SNAPSHOT.RESTORE."+kvStream+sessionConsumerRecordsBucket+".*",
 	)
@@ -582,6 +596,8 @@ func operatorHeld() []string {
 			jsAPI+"STREAM.CREATE."+stream,
 			jsAPI+"STREAM.UPDATE."+stream,
 			jsAPI+"STREAM.DELETE."+stream,
+			jsAPI+"STREAM.SNAPSHOT."+stream,
+			"$JS.SNAPSHOT.ACK."+stream+".>",
 			jsAPI+"STREAM.RESTORE."+stream,
 			"$JS.SNAPSHOT.RESTORE."+stream+".*",
 			kvSubjects+bucket+".hold.barrier.*",
@@ -613,10 +629,21 @@ func operatorHeld() []string {
 // OperatorPhasePrepare's while a hold is prepared, and OperatorPhaseHeld's, the full list, while a
 // hold is set. Each phase's list holds the one before it. A phase outside the three is answered
 // with released's, the least. Every phase subscribes the operator's own inbox prefix
-// (OperatorInbox) alone, and names only $JS. and _INBOX_envoy_operator. subjects and the copied
-// buckets' $KV. barrier keys, so NamesSystemSubject is false for each. The server installs a
-// connection's permissions at its authorization, so a process that changes the phase reconnects to
-// be given the new phase's grant.
+// (OperatorInbox) alone, and names only $JS. and _INBOX_envoy_operator. subjects, the session
+// consumers' records' $KV. keys and the copied buckets' $KV. barrier keys, so NamesSystemSubject
+// is false for each. The server installs a connection's permissions at its authorization, so a
+// process that changes the phase reconnects to be given the new phase's grant.
+//
+// Two residuals of prepare's consumer create on the notification stream, which held keeps. A push
+// consumer whose deliver subject is a protected bucket's key subject stores a foreign message in
+// that bucket's stream only while some client holds a subscription on exactly that subject: the
+// server activates a push consumer only on such a subscription (nats-server v2.15.1
+// server/sublist.go:186-193), and delivers its messages under their own subjects to every matching
+// subscriber, the bucket's stream among them (server/stream.go:8620-8621). No
+// grant here subscribes a $KV. subject (TestNoGrantSubscribesAKeySubject); a hub's static admin
+// user with > would, which is the admin's trust. And the prepare operator can read every
+// notification through a push consumer delivering to its own inbox, which held already allows the
+// same identity by a snapshot.
 func Operator(phase OperatorPhase) Permissions {
 	var publish []string
 	switch phase {

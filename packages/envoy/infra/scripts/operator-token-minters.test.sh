@@ -4,8 +4,9 @@
 #
 # Proves operator-token-minters.sh's verdicts without a cluster or a cloud. A plant on a real
 # cluster or project needs RoleBinding and IAM writes, which no identity this check runs as holds,
-# so every plant and every control of the check runs here, against a fake kubectl, gcloud and
-# agent-secrets put first on PATH. The fakes answer from one world of files this test writes:
+# so every plant and every control of the check runs here, against a fake kubectl, gcloud, curl and
+# agent-secrets put first on PATH (operator-token-minters/test-fakes.sh writes them). The fakes
+# answer from one world of files this test writes:
 #
 #   - kubectl answers a SubjectAccessReview as the RBAC authorizer does, from the world's grants
 #     (each a subject, a verb, an API group, a resource and subresource, a namespace or none for
@@ -72,13 +73,62 @@
 #        holding the namespace envoy-operator exits 1 naming the cluster; a fleet the API answers
 #        empty exits 0 and says so; a listing with an unreachable location, a refused listing, a
 #        member whose credentials are refused, and a project's cluster list gcloud says is
-#        incomplete each exit 2 with UNKNOWN; --pool-project naming another pool cannot read clean.
+#        incomplete each exit 2 with UNKNOWN; --pool-project naming another pool cannot read clean;
+#   (s)  a binding subject on a fleet member: grade-ci, a Google service account, bound to
+#        cluster-admin on a GKE member in another project exits 1 naming grade-ci and create
+#        namespaces; a person's email bound the same way, and a Group bound the same way, exit 0;
+#        a refused list of bindings exits 2 with UNKNOWN;
+#   (t)  grade-ci holding roles/container.admin on that member's project exits 1, since GKE
+#        authorizes IAM beside RBAC;
+#   (u)  a binding subject on the operator's own cluster: grade-ci bound to create the operator's
+#        token exits 1;
+#   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
+#        and right, on an IAM finding and on an RBAC finding;
+#   (w)  two guarded pairs (--guarded envoy-route/envoy-route-password-reader beside the
+#        operator's): grade-ci bound to cluster-admin on a fleet member is reported for both;
+#   (x)  a ServiceAccount on a fleet member that can create pods, and nothing else, in the
+#        operator's namespace is reported, naming the operator's pair;
+#   (y)  the same in the route password reader's namespace, naming that pair;
+#   (z)  the fixture testdata/operator-token-minters-report.json is this script's --report from a
+#        world with an IAM finding, grade-ci's RBAC findings and an UNKNOWN, run_at fixed; the row
+#        fails when the committed file differs (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and
+#        OPERATOR_MINTERS_FIXTURE names another file to compare, as the row's control does);
+#   (aa) a second cluster of the project named operator-cluster, in us-east1, holding the namespace
+#        envoy-operator, is a finding with --location us-central1, and UNKNOWN without it;
+#   (ab) the broker's pair is guarded: an agent ServiceAccount that may create pods in the broker's
+#        namespace, or create the broker ServiceAccount's token, and another cluster of the pool
+#        holding the broker's namespace, each exit 1;
+#   (ac) on the operator's cluster, ci/runner, outside the agent namespaces, with create pods in
+#        envoy-operator, and with cluster-admin, each exits 1;
+#   (ad) container.replicationControllers.create and update and container.nodes.proxy, each held on
+#        the project by an agent's Google service account, exit 1 (their RBAC rights are row b's);
+#   (ae) a CI account holding roles/gkehub.admin on the pool project exits 1;
+#   (af) a render binding the Group cluster-admins@example.com to cluster-admin exits 0: a Group
+#        other than the system ones is no finding in the code step, as in the live steps;
+#   (ag) an agent's Google service account holding roles/iam.serviceAccountTokenCreator on a holder
+#        of roles/container.admin is a finding naming the chain, through one service account and
+#        through two;
+#   (ah) a holder of roles/resourcemanager.projectIamAdmin is a finding, and so is a holder of each
+#        of iam.serviceAccounts.setIamPolicy, secretmanager.secrets.setIamPolicy,
+#        resourcemanager.organizations.setIamPolicy and iam.roles.update over a checked resource;
+#   (ai) a ServiceAccount that can become ci/runner, which can create pods in envoy-operator, by
+#        each of create pods, create serviceaccounts/token, impersonate, create pods/exec and get
+#        secrets in ci, is a finding naming the chain;
+#   (aj) the Group system:unauthenticated bound to create namespaces on another cluster is a
+#        finding for anyone unauthenticated;
+#   (ak) create on a custom resource (sandboxes.agents.x-k8s.io) in envoy-operator is a finding,
+#        create on Kubernetes' own leases is not, and a discovery that cannot be read is UNKNOWN;
+#   (al) a run that stops mid-way leaves an UNKNOWN report, never the old one, and a usage error
+#        leaves none;
+#   (am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it, beside two that
+#        match.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
 # OPERATOR_MINTERS_TEST_ROWS="b p" runs those rows alone, as a control run by hand does, and
-# OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against. The rows of one
-# plant per item ((b), (d), (e), (f)) run up to 8 at a time, each in a world of its own.
+# OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
+# directory operator-token-minters/ beside it, whose parts it sources. The rows of one plant per
+# item ((b), (d), (e), (f)) run up to 8 at a time, each in a world of its own.
 # CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
@@ -101,6 +151,14 @@ readonly control_gsa=envoy-operator-control@example-project.iam.gserviceaccount.
 readonly broker=secrets-broker@example-project.iam.gserviceaccount.com
 readonly worker_gsa=worker@example-project.iam.gserviceaccount.com
 readonly ci_gsa=ci-runner@example-project.iam.gserviceaccount.com
+readonly grade_ci=grade-ci@example-grade.iam.gserviceaccount.com
+readonly grade_res="//cloudresourcemanager.googleapis.com/projects/example-grade"
+readonly applier=applier@example-project.iam.gserviceaccount.com
+readonly applier_res="//iam.googleapis.com/projects/example-project/serviceAccounts/applier@example-project.iam.gserviceaccount.com"
+readonly relay=relay@example-project.iam.gserviceaccount.com
+readonly relay_res="//iam.googleapis.com/projects/example-project/serviceAccounts/relay@example-project.iam.gserviceaccount.com"
+readonly route_pair=envoy-route/envoy-route-password-reader
+readonly fixture="${OPERATOR_MINTERS_FIXTURE:-$script_dir/testdata/operator-token-minters-report.json}"
 readonly wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator/envoy-operator]"
 readonly control_wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator-control/envoy-operator]"
 readonly broker_wi_member="serviceAccount:example-project.svc.id.goog[secrets-broker/secrets-broker]"
@@ -113,250 +171,9 @@ readonly sql_res="//sqladmin.googleapis.com/projects/$project/instances/example-
 readonly signing_res="//secretmanager.googleapis.com/projects/$number/secrets/hold-signing-example"
 readonly bucket_res="//storage.googleapis.com/projects/_/buckets/example-state"
 
-# fake writes the fake command $1 from the body on stdin, after the header every fake shares: the
-# world directory it reads, which each run names in OPERATOR_MINTERS_WORLD.
-fake() {
-  { printf '#!/usr/bin/env bash\nset -euo pipefail\nworld="${OPERATOR_MINTERS_WORLD:?the test names the world in OPERATOR_MINTERS_WORLD}"\n' && cat; } >"$fake_bin/$1"
-  chmod +x "$fake_bin/$1"
-}
-
-# --- Fake gcloud. Every flag the check passes is --name=value or a bare --name, and the words
-# before the first flag are the command. ---
-fake gcloud <<'EOF'
-read -r project <"$world/project"
-read -r number <"$world/number"
-words=()
-declare -A flag=()
-for arg in "$@"; do
-  case "$arg" in
-    --*=*) name="${arg%%=*}"; flag[${name#--}]="${arg#*=}" ;;
-    --*) flag[${arg#--}]=true ;;
-    *) words+=("$arg") ;;
-  esac
-done
-refuse() { echo "ERROR: (gcloud.$1) PERMISSION_DENIED: $2" >&2; exit 1; }
-case "${words[*]}" in
-  "iam roles describe "*)
-    role="${words[3]}"
-    [ ! -e "$world/refuse-describe" ] || refuse iam.roles.describe "Permission 'iam.roles.get' denied on resource (or it may not exist)."
-    if ! jq -e --arg r "$role" 'has($r)' "$world/roles.json" >/dev/null; then
-      echo "ERROR: (gcloud.iam.roles.describe) NOT_FOUND: The role named $role was not found." >&2
-      exit 1
-    fi
-    jq --arg r "$role" '{name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]}' "$world/roles.json"
-    ;;
-  "projects describe $project")
-    jq -n --arg p "$project" --arg n "$number" \
-      '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
-    ;;
-  "projects get-ancestors $project")
-    jq -n --arg p "$project" '[{id: $p, type: "project"}, {id: "100", type: "organization"}]'
-    ;;
-  "container clusters list")
-    [ "${flag[project]:-}" = "$project" ] || { echo "fake gcloud: clusters list of project ${flag[project]:-none}" >&2; exit 2; }
-    [ ! -e "$world/refuse-clusters" ] || refuse container.clusters.list "Required \"container.clusters.list\" permission(s) for \"projects/$project\"."
-    [ ! -e "$world/missing-zones" ] || echo "WARNING: The following zones did not respond: us-west1-b. List results may be incomplete." >&2
-    cat "$world/clusters.json"
-    ;;
-  "container clusters get-credentials "*)
-    # A cluster of the project's own list, or a GKE member of the fleet, in the project named.
-    cluster="${words[3]}"
-    jq -e --arg c "$cluster" --arg l "${flag[location]:-}" --arg p "${flag[project]:-}" --arg project "$project" --slurpfile fleet "$world/fleet.json" \
-      '($p == $project and any(.[]; .name == $c and .location == $l))
-       or any($fleet[0].memberships[]; .gke == {project: $p, location: $l, cluster: $c})' "$world/clusters.json" >/dev/null ||
-      { echo "ERROR: (gcloud.container.clusters.get-credentials) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
-    [ ! -e "$world/refuse-credentials-$cluster" ] ||
-      refuse container.clusters.get-credentials "Required \"container.clusters.get\" permission(s) for \"projects/${flag[project]:-}/locations/${flag[location]:-}/clusters/$cluster\"."
-    [ -n "${KUBECONFIG:-}" ] || { echo "fake gcloud: get-credentials with no KUBECONFIG would write the caller's own kubeconfig" >&2; exit 2; }
-    printf 'cluster: %s\n' "$cluster" >"$KUBECONFIG"
-    echo "Fetching cluster endpoint and auth data." >&2
-    ;;
-  "container fleet memberships get-credentials "*)
-    # A member of the fleet that is no GKE cluster, through the Connect gateway.
-    id="${words[4]}"
-    [ "${flag[project]:-}" = "$(jq -r .project "$world/fleet.json")" ] || { echo "fake gcloud: membership get-credentials in project ${flag[project]:-none}" >&2; exit 2; }
-    member="$(jq -c --arg id "$id" --arg l "${flag[location]:-}" 'first(.memberships[] | select(.id == $id and .location == $l and (has("gke") | not))) // empty' "$world/fleet.json")"
-    [ -n "$member" ] || { echo "ERROR: (gcloud.container.fleet.memberships.get-credentials) NOT_FOUND: membership $id in ${flag[location]:-} not found" >&2; exit 1; }
-    [ "$(jq -r '.refuse // false' <<<"$member")" != true ] ||
-      refuse container.fleet.memberships.get-credentials "Permission 'gkehub.gateway.generateCredentials' denied on 'projects/$number/locations/${flag[location]:-}/memberships/$id'"
-    [ -n "${KUBECONFIG:-}" ] || { echo "fake gcloud: get-credentials with no KUBECONFIG would write the caller's own kubeconfig" >&2; exit 2; }
-    printf 'cluster: %s\n' "$(jq -r .cluster <<<"$member")" >"$KUBECONFIG"
-    echo "A new kubeconfig entry has been generated and set as the current context." >&2
-    ;;
-  "auth print-access-token")
-    [ ! -e "$world/refuse-token" ] || { echo "ERROR: (gcloud.auth.print-access-token) You do not currently have an active account selected." >&2; exit 1; }
-    echo example-access-token
-    ;;
-  "asset analyze-iam-policy")
-    [ "${flag[show-response]:-}" = true ] || { echo "fake gcloud: without --show-response gcloud prints its own summary, which this fake does not render" >&2; exit 2; }
-    scope=""
-    for kind in organization folder project; do
-      [ -z "${flag[$kind]:-}" ] || scope="$kind/${flag[$kind]}"
-    done
-    [ ! -e "$world/refuse-analyze" ] || refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '//cloudresourcemanager.googleapis.com/${scope/\//s/}' (or it may not exist)."
-    jq -n --arg scope "$scope" --arg res "${flag[full-resource-name]:-}" --arg perms "${flag[permissions]:-}" \
-      --arg project_res "//cloudresourcemanager.googleapis.com/projects/$project" \
-      --arg org_res "//cloudresourcemanager.googleapis.com/organizations/100" \
-      --arg expand_groups "${flag[expand-groups]:-}${flag[output-group-edges]:-}" --arg expand_roles "${flag[expand-roles]:-}" \
-      --arg explored "$([ -e "$world/not-explored" ] && echo false || echo true)" \
-      --arg empty "$([ -e "$world/empty-analysis" ] && echo true || echo false)" \
-      --slurpfile iam "$world/iam.json" --slurpfile roles "$world/roles.json" --slurpfile groups "$world/groups.json" '
-      ($perms | split(",")) as $asked
-      | [ $iam[0][]
-          | select(.attached == $res or .attached == $project_res or (.attached == $org_res and $scope == "organization/100"))
-          | . as $b
-          | ([($roles[0][$b.role] // [])[] | select(. as $p | any($asked[]; . == $p))]) as $held
-          | select(($held | length) > 0 and $empty != "true")
-          | ([$b.members[] | select(startswith("group:")) | . as $g | ($groups[0][$g] // [])[] | {sourceNode: $g, targetNode: .}]) as $edges
-          | {
-              attachedResourceFullName: $b.attached,
-              iamBinding: {role: $b.role, members: $b.members},
-              accessControlLists: [{
-                resources: [{fullResourceName: $res}],
-                accesses: (if $expand_roles == "true" then [$held[] | {permission: .}] else [{role: $b.role}] end)
-              }],
-              identityList: (if $expand_groups == "truetrue"
-                then {identities: ([$b.members[], $edges[].targetNode] | unique | map({name: .})), groupEdges: $edges}
-                else {identities: ($b.members | map({name: .}))} end),
-              fullyExplored: true
-            } ] as $results
-      | {mainAnalysis: {analysisQuery: {scope: ($scope | sub("/"; "s/")), resourceSelector: {fullResourceName: $res}},
-                        analysisResults: $results, fullyExplored: ($explored == "true")},
-         fullyExplored: ($explored == "true")}'
-    ;;
-  *)
-    echo "fake gcloud: unexpected call: gcloud $*" >&2
-    exit 2
-    ;;
-esac
-EOF
-
-# --- Fake kubectl: the cluster is the one the kubeconfig get-credentials wrote names. ---
-fake kubectl <<'EOF'
-kubeconfig=""
-args=()
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --kubeconfig) kubeconfig="$2"; shift 2 ;;
-    *) args+=("$1"); shift ;;
-  esac
-done
-[ -n "$kubeconfig" ] || { echo "fake kubectl: called without --kubeconfig, so it would reach the caller's own cluster" >&2; exit 2; }
-read -r _ cluster <"$kubeconfig"
-dir="$world/clusters/$cluster"
-[ -d "$dir" ] || { echo "fake kubectl: no cluster $cluster" >&2; exit 2; }
-forbidden() {
-  echo "Error from server (Forbidden): $1 is forbidden: User \"reader@example-project.iam.gserviceaccount.com\" cannot $2 at the cluster scope: requires one of [\"$3\"] permission(s)." >&2
-  exit 1
-}
-case "${args[*]}" in
-  "create -f - -o json")
-    [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
-    jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" '
-      def answer:
-        .spec as $s | ($s.resourceAttributes // {}) as $a
-        | ($s.user // "") as $user | ($s.groups // []) as $groups
-        | [ $grants[0][]
-            | select(
-                (if .subject.kind == "ServiceAccount" then $user == "system:serviceaccount:\(.subject.namespace):\(.subject.name)"
-                 elif .subject.kind == "Group" then (.subject.name as $name | any($groups[]; . == $name))
-                 else $user == .subject.name end)
-                and .verb == ($a.verb // "") and .group == ($a.group // "") and .resource == ($a.resource // "")
-                and .subresource == ($a.subresource // "")
-                and (.namespace == null or .namespace == ($a.namespace // ""))
-                and (.name == null or .name == ($a.name // "")))
-            | .binding ] as $by
-        | (($masters == "on" and any($groups[]; . == "system:masters"))) as $master
-        | . + {status: (if $master then {allowed: true, reason: "RBAC: allowed by ClusterRoleBinding \"cluster-admin\" of ClusterRole \"cluster-admin\" to Group \"system:masters\""}
-                        elif ($by | length) > 0 then {allowed: true, reason: "RBAC: allowed by \($by[0])"}
-                        else {allowed: false} end)};
-      if .kind == "List" then .items |= map(answer) else answer end'
-    ;;
-  "get serviceaccounts --all-namespaces -o json")
-    [ ! -e "$dir/refuse-list" ] || forbidden serviceaccounts 'list resource "serviceaccounts" in API group ""' container.serviceAccounts.list
-    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))}]}' "$dir/serviceaccounts.json"
-    ;;
-  "get namespace "*" -o name")
-    namespace="${args[2]}"
-    if grep -qxF -- "$namespace" "$dir/namespaces"; then
-      echo "namespace/$namespace"
-    else
-      echo "Error from server (NotFound): namespaces \"$namespace\" not found" >&2
-      exit 1
-    fi
-    ;;
-  *)
-    echo "fake kubectl: unexpected call: kubectl ${args[*]}" >&2
-    exit 2
-    ;;
-esac
-EOF
-
-# --- Fake agent-secrets: `secret show NAME --json`, as its failures print on stderr: a line naming
-# the sign-in first, then the refusal (read from legion-envoy-v30.43.0 on 2026-11-21, which words a
-# missing secret as gRPC's own `rpc error: code = NotFound` where the current source writes
-# `GetSecret answered NotFound`; old-words picks the first wording). ---
-fake agent-secrets <<'EOF'
-[ "$#" -eq 4 ] && [ "$1 $2 $4" = "secret show --json" ] || { echo "fake agent-secrets: unexpected call: agent-secrets $*" >&2; exit 2; }
-signed_in="agent-secrets secret show: using the active gcloud account (gcloud configuration example): reader@example-project.iam.gserviceaccount.com"
-if [ -e "$world/refuse-secret-show" ]; then
-  printf '%s\n' "$signed_in" "agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012" >&2
-  exit 1
-fi
-if [ ! -e "$world/secrets/$3.json" ]; then
-  if [ -e "$world/old-words" ]; then
-    printf '%s\n' "$signed_in" "agent-secrets secret show: rpc error: code = NotFound desc = Secret [projects/123456789012/secrets/agent-secrets-$3] not found.; looked in GCP Secret Manager project 123456789012" >&2
-  else
-    printf '%s\n' "$signed_in" "agent-secrets secret show: Secret Manager GetSecret answered NotFound (its message is not printed); looked in GCP Secret Manager project 123456789012" >&2
-  fi
-  exit 1
-fi
-cat "$world/secrets/$3.json"
-EOF
-
-# --- Fake curl: the GKE Hub API's GET projects/<p>/locations/-/memberships, as v1 answers it
-# (ListMembershipsResponse: resources, nextPageToken, unreachable), one membership a page, the
-# unreachable locations on the first page alone. The bearer token must come in through the
-# configuration curl reads on stdin (-K -), never on the command line. ---
-fake curl <<'EOF'
-config="$(cat)"
-url="" token=""
-for ((i = 1; i <= $#; i++)); do
-  arg="${!i}"
-  case "$arg" in
-    --data-urlencode)
-      i=$((i + 1))
-      kv="${!i}"
-      [ "${kv%%=*}" != pageToken ] || token="${kv#*=}"
-      ;;
-    --max-time | -K) i=$((i + 1)) ;;
-    -*) ;;
-    *) url="$arg" ;;
-  esac
-done
-[[ "$*" != *example-access-token* ]] || { echo "fake curl: the access token is on the command line" >&2; exit 2; }
-# The scheme is held apart from the fake token so no line of this file reads as a credential.
-scheme=Bearer
-[[ "$config" == *"header = \"Authorization: $scheme example-access-token\""* ]] || { echo "fake curl: no bearer token on stdin" >&2; exit 2; }
-fleet_project="$(jq -r .project "$world/fleet.json")"
-if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
-  project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
-  printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' \
-    "'gkehub.memberships.list'" "'projects/${project_of%%/*}/locations/-/memberships'"
-  echo "curl: (22) The requested URL returned error: 403" >&2
-  exit 22
-fi
-jq --argjson at "${token:-0}" '
-  . as $w
-  | ($w.memberships | length) as $n
-  | {resources: [$w.memberships[$at] // empty | {
-       name: "projects/\($w.project)/locations/\(.location)/memberships/\(.id)",
-       uniqueId: "uid-\(.id)", state: {code: "READY"},
-       endpoint: (if .gke then {gkeCluster: {resourceLink: "//container.googleapis.com/projects/\(.gke.project)/locations/\(.gke.location)/clusters/\(.gke.cluster)"}}
-                  else {kubernetesMetadata: {kubernetesApiServerVersion: "v1.33.0"}} end)}]}
-  + (if $at + 1 < $n then {nextPageToken: "\($at + 1)"} else {} end)
-  + (if $at == 0 and (($w.unreachable // []) | length) > 0 then {unreachable: $w.unreachable} else {} end)' "$world/fleet.json"
-EOF
+# The fakes, written into $fake_bin.
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-fakes.sh
+. "$script_dir/operator-token-minters/test-fakes.sh"
 
 # --- The world. ---
 
@@ -382,6 +199,7 @@ subject_grant() {
 }
 sa_subject() { jq -nc --arg ns "$1" --arg n "$2" '{kind: "ServiceAccount", namespace: $ns, name: $n}'; }
 group_subject() { jq -nc --arg n "$1" '{kind: "Group", name: $n}'; }
+user_subject() { jq -nc --arg n "$1" '{kind: "User", name: $n}'; }
 # iam ATTACHED ROLE MEMBER...: one IAM binding.
 iam() {
   local attached="$1" role="$2"
@@ -421,8 +239,9 @@ readonly container_admin=(
   container.clusterRoles.bind container.clusterRoles.escalate container.clusters.get container.clusters.impersonate
   container.cronJobs.create container.cronJobs.update container.daemonSets.create container.daemonSets.update
   container.deployments.create container.deployments.update container.jobs.create container.jobs.update
-  container.namespaces.create container.pods.attach container.pods.create container.pods.exec container.pods.get
+  container.namespaces.create container.nodes.proxy container.pods.attach container.pods.create container.pods.exec container.pods.get
   container.pods.portForward container.pods.update container.replicaSets.create container.replicaSets.update
+  container.replicationControllers.create container.replicationControllers.update
   container.roleBindings.create container.roleBindings.update container.roles.bind container.roles.escalate
   container.secrets.get container.secrets.list container.serviceAccounts.create container.serviceAccounts.createToken
   container.statefulSets.create container.statefulSets.update container.subjectAccessReviews.create
@@ -455,7 +274,9 @@ build_world() {
 
   local owner_perms=("${container_admin[@]}" iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken
     iam.serviceAccounts.signJwt iam.serviceAccounts.signBlob iam.serviceAccounts.actAs iam.serviceAccounts.implicitDelegation
-    iam.serviceAccountKeys.create cloudsql.users.create cloudsql.users.update secretmanager.versions.access storage.objects.get)
+    iam.serviceAccountKeys.create cloudsql.users.create cloudsql.users.update secretmanager.versions.access storage.objects.get
+    gkehub.memberships.create gkehub.memberships.update resourcemanager.projects.setIamPolicy resourcemanager.folders.setIamPolicy
+    resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy secretmanager.secrets.setIamPolicy iam.roles.update)
   echo '{}' >"$world/roles.json"
   role roles/container.admin "${container_admin[@]}"
   role roles/owner "${owner_perms[@]}"
@@ -475,6 +296,22 @@ build_world() {
   role roles/storage.objectViewer resourcemanager.projects.get resourcemanager.projects.list storage.objects.get storage.objects.list
   role roles/container.serviceAgent container.pods.create container.pods.update container.serviceAccounts.createToken container.secrets.get
   role roles/viewer container.pods.get resourcemanager.projects.get storage.objects.list
+  # Its names checked against `gcloud iam roles describe roles/gkehub.admin` on 2026-11-21.
+  role roles/gkehub.admin gkehub.memberships.create gkehub.memberships.delete gkehub.memberships.get gkehub.memberships.list \
+    gkehub.memberships.update resourcemanager.projects.get
+  # The IAM writers' roles, each name checked against `gcloud iam roles describe` on 2026-11-21, cut
+  # to the permission the check names and a few beside it.
+  role roles/resourcemanager.projectIamAdmin resourcemanager.projects.get resourcemanager.projects.getIamPolicy \
+    resourcemanager.projects.setIamPolicy
+  role roles/resourcemanager.folderIamAdmin resourcemanager.folders.get resourcemanager.folders.getIamPolicy \
+    resourcemanager.folders.setIamPolicy
+  role roles/resourcemanager.organizationAdmin resourcemanager.organizations.get resourcemanager.organizations.getIamPolicy \
+    resourcemanager.organizations.setIamPolicy
+  role roles/iam.serviceAccountAdmin iam.serviceAccounts.create iam.serviceAccounts.get iam.serviceAccounts.getIamPolicy \
+    iam.serviceAccounts.setIamPolicy
+  role roles/secretmanager.admin secretmanager.secrets.get secretmanager.secrets.getIamPolicy secretmanager.secrets.setIamPolicy \
+    secretmanager.versions.access
+  role roles/iam.roleAdmin iam.roles.create iam.roles.get iam.roles.list iam.roles.update
 
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
@@ -646,7 +483,8 @@ if row a; then
   for step in "permission names" "code: RBAC" "code: IAM" "live: RBAC on operator-cluster" "live: GKE IAM on project $project" \
     "live: minters of $gsa" "live: minters of the broker account $broker" "live: hold writers: Cloud SQL users of example-instance" \
     "live: hold writers: Secret example-db/broker-db-login" "live: hold writers: the broker program's state in gs://example-state" \
-    "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR"; do
+    "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR" \
+    "live: who can register a cluster to the fleet of project $project" "live: who can set IAM on organizations/100"; do
     want_text "PASS $step: " "a clean world's $step"
   done
   want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here" \
@@ -701,6 +539,12 @@ rbac_rights=(
   "update|batch|cronjobs||envoy-operator|=update cronjobs.batch in envoy-operator"
   "get||secrets||envoy-operator|=get secrets in envoy-operator"
   "list||secrets||envoy-operator|=list secrets in envoy-operator"
+  "watch||secrets||envoy-operator|=watch secrets in envoy-operator"
+  "create||replicationcontrollers||envoy-operator|=create replicationcontrollers in envoy-operator"
+  "patch||replicationcontrollers||envoy-operator|=patch replicationcontrollers in envoy-operator"
+  "update||replicationcontrollers||envoy-operator|=update replicationcontrollers in envoy-operator"
+  "create||nodes|proxy|||=create nodes/proxy cluster-wide"
+  "get||nodes|proxy|||=get nodes/proxy cluster-wide"
 )
 rbac_right_row() {
   local right="${1#*=}" verb group resource sub namespace name
@@ -780,7 +624,7 @@ if row g; then
   add_cluster other-cluster us-east1
   run
   want_status 0 "a second cluster whose system namespaces alone may make namespaces"
-  want_text "PASS live: Workload Identity on other-cluster: " "a clean second cluster"
+  want_text "PASS live: Workload Identity on example-project/us-east1/other-cluster: " "a clean second cluster"
   passed "(g) a second cluster whose system namespaces alone may make namespaces and ServiceAccounts exits 0"
 
   base_world
@@ -788,7 +632,7 @@ if row g; then
   echo envoy-operator >>"$world/clusters/other-cluster/namespaces"
   run
   want_status 1 "the namespace envoy-operator on a second cluster"
-  want_text "FINDING cluster:other-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa" \
+  want_text "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa" \
     "the namespace envoy-operator on a second cluster"
   passed "(g) the namespace envoy-operator on a second cluster exits 1 naming the cluster"
 
@@ -797,7 +641,7 @@ if row g; then
   echo envoy-operator-control >>"$world/clusters/other-cluster/namespaces"
   run --namespace envoy-operator-control --gsa "$control_gsa"
   want_status 1 "the scratch namespace on a second cluster"
-  want_text "FINDING cluster:other-cluster: namespace envoy-operator-control exists there" "the scratch namespace on a second cluster"
+  want_text "FINDING cluster:example-project/us-east1/other-cluster: namespace envoy-operator-control exists there" "the scratch namespace on a second cluster"
   passed "(g) the scratch namespace envoy-operator-control made on a second cluster exits 1 naming the cluster (the plan's control)"
 
   base_world
@@ -805,7 +649,7 @@ if row g; then
   subject_grant other-cluster "$(sa_subject apps deployer)" create "" namespaces "" "" ""
   run
   want_status 1 "a ServiceAccount outside the system namespaces that may make a namespace"
-  want_line "FINDING system:serviceaccount:apps:deployer: create namespaces cluster-wide on cluster other-cluster" "apps/deployer making namespaces"
+  want_line "FINDING system:serviceaccount:apps:deployer: create namespaces cluster-wide on cluster example-project/us-east1/other-cluster" "apps/deployer making namespaces"
   passed "(g) a ServiceAccount outside the system namespaces of a second cluster that may make a namespace exits 1 naming the cluster"
 fi
 
@@ -942,8 +786,10 @@ if row m; then
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
   jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["findings", "run_at", "unknown"] and all(.findings[]; keys == ["principal", "right"]) and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings and unknown: $(jq -c . "$report")"
+  jq -e 'keys == ["findings", "run_at", "unknown"]
+    and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
+    and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at) and unknown: $(jq -c . "$report")"
   passed "(m) --report writes run_at, findings and unknown, with the stubbed UNKNOWN step under unknown"
 fi
 
@@ -1180,6 +1026,434 @@ if row r; then
     "--pool-project other-pool"
   want_text "UNKNOWN live: Workload Identity: the fleet of project other-pool: the GKE Hub API refused the listing" "--pool-project other-pool"
   passed "(r) --pool-project naming another pool than the operator's member names cannot read clean"
+fi
+
+# A GKE member of the fleet in another project, example-grade, whose cluster is grade-cluster.
+grade_member() {
+  make_cluster grade-cluster
+  add_member '{"id": "grade", "location": "global", "gke": {"project": "example-grade", "location": "us-east1", "cluster": "grade-cluster"}}'
+}
+# cluster_admin CLUSTER SUBJECT: the built-in cluster-admin role bound to SUBJECT there.
+cluster_admin() { subject_grant "$1" "$2" "*" "*" "*" "*" "" ""; }
+grade_step="live: Workload Identity on fleet member grade (cluster example-grade/us-east1/grade-cluster)"
+
+# --- (s) The binding subjects of a fleet member's cluster. ---
+if row s; then
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+  run
+  want_status 1 "grade-ci bound to cluster-admin on a fleet member"
+  want_line "FINDING serviceAccount:$grade_ci: create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster" \
+    "grade-ci bound to cluster-admin on a fleet member"
+  passed "(s) a Google service account bound to cluster-admin on a fleet member in another project exits 1 naming it and create namespaces"
+
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(user_subject alice@example.com)"
+  run
+  want_status 0 "a person bound to cluster-admin on a fleet member"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a person bound to cluster-admin on a fleet member: a finding"
+  want_text "PASS $grade_step: " "a person bound to cluster-admin on a fleet member"
+  passed "(s) a person's email bound to cluster-admin on a fleet member stays allowed"
+
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(group_subject grade-admins@example.com)"
+  run
+  want_status 0 "a Group bound to cluster-admin on a fleet member"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a Group bound to cluster-admin on a fleet member: a finding"
+  passed "(s) a Group bound to cluster-admin on a fleet member is no finding"
+
+  base_world
+  grade_member
+  : >"$world/clusters/grade-cluster/refuse-bindings"
+  run
+  want_status 2 "a fleet member whose bindings cannot be listed"
+  want_text "UNKNOWN $grade_step: the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings" \
+    "a fleet member whose bindings cannot be listed"
+  passed "(s) a fleet member whose bindings cannot be listed exits 2 with UNKNOWN naming the permission"
+fi
+
+# --- (t) IAM on a fleet member's own project. ---
+if row t; then
+  base_world
+  grade_member
+  iam "$grade_res" roles/container.admin "serviceAccount:$grade_ci"
+  run
+  want_status 1 "grade-ci holding roles/container.admin on a fleet member's project"
+  want_line "FINDING serviceAccount:$grade_ci: container.namespaces.create, container.serviceAccounts.create, container.pods.create on $grade_res through roles/container.admin, granted at $grade_res" \
+    "grade-ci holding roles/container.admin on a fleet member's project"
+  passed "(t) a Google service account holding roles/container.admin on a fleet member's project exits 1 naming it"
+fi
+
+# --- (u) The binding subjects of the operator's own cluster. ---
+if row u; then
+  base_world
+  subject_grant operator-cluster "$(user_subject "$grade_ci")" create "" serviceaccounts token envoy-operator envoy-operator
+  run
+  want_status 1 "grade-ci bound to create the operator's token on its cluster"
+  want_line "FINDING serviceAccount:$grade_ci: create serviceaccounts/token envoy-operator in envoy-operator" \
+    "grade-ci bound to create the operator's token on its cluster"
+  passed "(u) a Google service account bound on the operator's own cluster to create its token exits 1 naming it"
+fi
+
+# --- (v) The report's parts of each finding, for a reader matching principal and role. ---
+if row v; then
+  base_world
+  iam "$project_res" roles/container.admin "serviceAccount:$ci_gsa"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods exec envoy-operator ""
+  run --report "$temporary_dir/report.json"
+  want_status 1 "an IAM and an RBAC finding"
+  report="$temporary_dir/report.json"
+  # Every finding carries every field, each of its type.
+  missing="$(jq -r '.findings[] as $f
+    | ((["principal", "right", "role", "resource", "granted_at"][] as $k
+        | select(($f[$k] | type) != "string") | "\($f.principal) has no \($k)"),
+       (select(($f.permissions | type) != "array") | "\($f.principal) has no permissions list"))' "$report" | paste -sd ';' | sed 's/;/; /g')"
+  [ -z "$missing" ] || fail "the report's findings lack fields: $missing"
+  jq -e --arg p "serviceAccount:$ci_gsa" --arg res "$project_res" 'any(.findings[]; .principal == $p and .role == "roles/container.admin"
+      and .resource == $res and .granted_at == $res and (.permissions | index("container.serviceAccounts.createToken") != null))' "$report" >/dev/null ||
+    fail "the IAM finding's parts are not principal, roles/container.admin, $project_res and its permissions: $(jq -c --arg p "serviceAccount:$ci_gsa" '[.findings[] | select(.principal == $p)]' "$report")"
+  jq -e 'any(.findings[]; .principal == "system:serviceaccount:legion:worker" and .role == "create pods/exec in envoy-operator"
+      and .resource == "cluster:operator-cluster" and .permissions == ["create pods/exec in envoy-operator"]
+      and (.granted_at | startswith("RBAC: allowed by")))' "$report" >/dev/null ||
+    fail "the RBAC finding's parts are not its label, cluster:operator-cluster and the API server's reason: $(jq -c '[.findings[] | select(.principal == "system:serviceaccount:legion:worker")]' "$report")"
+  passed "(v) the report's findings carry role, resource, permissions and granted_at, on an IAM finding and on an RBAC finding"
+fi
+
+# A fleet member that is no GKE cluster, edge, on the cluster edge-cluster.
+edge_member() {
+  make_cluster edge-cluster
+  add_member '{"id": "edge", "location": "global", "cluster": "edge-cluster"}'
+}
+
+# --- (w) Two guarded pairs, both reported for grade-ci's cluster-admin on a fleet member. ---
+if row w; then
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+  run --guarded "$route_pair"
+  want_status 1 "grade-ci bound to cluster-admin on a fleet member, two guarded pairs"
+  for right in "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator" "create pods in envoy-operator, guarding envoy-operator/envoy-operator" \
+    "create serviceaccounts in envoy-route, guarding $route_pair" "create pods in envoy-route, guarding $route_pair"; do
+    want_line "FINDING serviceAccount:$grade_ci: $right on cluster example-grade/us-east1/grade-cluster" \
+      "grade-ci bound to cluster-admin on a fleet member, two guarded pairs"
+  done
+  passed "(w) grade-ci bound to cluster-admin on a fleet member is reported for both guarded pairs"
+fi
+
+# --- (x) Pod create alone, in the operator's namespace, on a fleet member. ---
+if row x; then
+  base_world
+  edge_member
+  subject_grant edge-cluster "$(sa_subject apps deployer)" create "" pods "" envoy-operator ""
+  run
+  want_status 1 "a ServiceAccount that may create pods in envoy-operator on a fleet member"
+  want_line "FINDING system:serviceaccount:apps:deployer: create pods in envoy-operator, guarding envoy-operator/envoy-operator on fleet member $project/global/edge" \
+    "a ServiceAccount that may create pods in envoy-operator on a fleet member"
+  [ "$(count_prefix 'FINDING ')" -eq 1 ] || fail "a ServiceAccount that may create pods in envoy-operator on a fleet member: want that one finding"
+  passed "(x) a ServiceAccount that may create pods, and nothing else, in the operator's namespace on a fleet member exits 1 naming the pair"
+fi
+
+# --- (y) Pod create alone, in the route password reader's namespace, on a fleet member. ---
+if row y; then
+  base_world
+  edge_member
+  subject_grant edge-cluster "$(sa_subject apps deployer)" create "" pods "" envoy-route ""
+  run --guarded "$route_pair"
+  want_status 1 "a ServiceAccount that may create pods in envoy-route on a fleet member"
+  want_line "FINDING system:serviceaccount:apps:deployer: create pods in envoy-route, guarding $route_pair on fleet member $project/global/edge" \
+    "a ServiceAccount that may create pods in envoy-route on a fleet member"
+  [ "$(count_prefix 'FINDING ')" -eq 1 ] || fail "a ServiceAccount that may create pods in envoy-route on a fleet member: want that one finding"
+  passed "(y) a ServiceAccount that may create pods, and nothing else, in the route password reader's namespace on a fleet member exits 1 naming that pair"
+fi
+
+# --- (z) The report fixture: a fresh --report, run_at fixed, must equal the committed file. ---
+if row z; then
+  base_world
+  iam "$project_res" roles/container.admin "serviceAccount:$ci_gsa"
+  grade_member
+  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+  : >"$world/refuse-secret-show"
+  run --guarded "$route_pair" --report "$temporary_dir/fixture-run.json"
+  want_status 1 "the fixture's world"
+  # run_at is the one field a run's clock sets; the fixture fixes it at the epoch, so no reader
+  # takes it for a time something happened.
+  jq '.run_at = "1970-01-01T00:00:00Z"' "$temporary_dir/fixture-run.json" >"$temporary_dir/fixture-fresh.json"
+  jq -e 'any(.findings[]; .role | startswith("roles/")) and any(.findings[]; (.principal | startswith("serviceAccount:grade-ci@")) and (.granted_at | startswith("RBAC: ")))
+      and (.unknown | length) > 0' "$temporary_dir/fixture-fresh.json" >/dev/null ||
+    fail "the fixture's world gave no IAM finding, no RBAC finding of grade-ci, or no UNKNOWN: $(jq -c . "$temporary_dir/fixture-fresh.json")"
+  # An RBAC finding's permissions are its one label, whole, though a guarded label holds a comma.
+  split="$(jq -r '.findings[] | select(.granted_at | startswith("RBAC: ")) | select(.permissions != [.role]) | "\(.role): \(.permissions)"' "$temporary_dir/fixture-fresh.json")"
+  [ -z "$split" ] || fail "an RBAC finding's permissions are not its label, whole: $split"
+  if [ "${OPERATOR_MINTERS_WRITE_FIXTURE:-}" = 1 ]; then
+    mkdir -p "$(dirname "$fixture")"
+    cp "$temporary_dir/fixture-fresh.json" "$fixture"
+    echo "wrote $fixture"
+  fi
+  [ -f "$fixture" ] || fail "no fixture at $fixture: run with OPERATOR_MINTERS_WRITE_FIXTURE=1 to write it"
+  cmp -s "$fixture" "$temporary_dir/fixture-fresh.json" ||
+    fail "the fixture $fixture differs from a fresh run (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it): $(diff "$fixture" "$temporary_dir/fixture-fresh.json" | sed -n '1,20p' || true)"
+  passed "(z) the committed report fixture equals a fresh --report of its world"
+fi
+
+# add_sa CLUSTER NAMESPACE NAME: one more ServiceAccount, and its namespace, on a cluster's world.
+add_sa() {
+  edit "$world/clusters/$1/serviceaccounts.json" '. + [{namespace: $ns, name: $n}]' --arg ns "$2" --arg n "$3"
+  grep -qxF -- "$2" "$world/clusters/$1/namespaces" || echo "$2" >>"$world/clusters/$1/namespaces"
+}
+# add_cluster_at NAME LOCATION: a second cluster of one name, in the project's list, whose world is
+# clusters/<name>@<location>.
+add_cluster_at() {
+  edit "$world/clusters.json" '. + [{name: $n, location: $l, status: "RUNNING"}]' --arg n "$1" --arg l "$2"
+  make_cluster "$1@$2"
+}
+
+# --- (aa) The operator's cluster by name and location. ---
+if row aa; then
+  base_world
+  add_cluster_at operator-cluster us-east1
+  echo envoy-operator >>"$world/clusters/operator-cluster@us-east1/namespaces"
+  run --location us-central1
+  want_status 1 "a second operator-cluster holding envoy-operator, --location us-central1"
+  want_line "FINDING cluster:$project/us-east1/operator-cluster: namespace envoy-operator exists there, so its ServiceAccount envoy-operator/envoy-operator acts as $gsa through the workload pool $project.svc.id.goog" \
+    "a second operator-cluster holding envoy-operator, --location us-central1"
+  [ "$(count_prefix 'FINDING ')" -eq 1 ] || fail "a second operator-cluster holding envoy-operator: want that one finding, the operator's own cluster not read as another"
+  passed "(aa) a second cluster named operator-cluster elsewhere, holding envoy-operator, is a finding with --location"
+
+  base_world
+  add_cluster_at operator-cluster us-east1
+  echo envoy-operator >>"$world/clusters/operator-cluster@us-east1/namespaces"
+  run
+  want_status 2 "a second operator-cluster, no --location"
+  want_line "UNKNOWN live: clusters: --cluster operator-cluster names 2 clusters of the project (in us-central1, us-east1), and no --location says which is the operator's, so none of them is read" \
+    "a second operator-cluster, no --location"
+  want_text "UNKNOWN live: Workload Identity on $project/us-east1/operator-cluster: it has --cluster's name" "a second operator-cluster, no --location"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a second operator-cluster, no --location: a finding"
+  passed "(aa) two clusters named operator-cluster and no --location read UNKNOWN, and neither as the operator's"
+fi
+
+# --- (ab) The broker's pair, guarded as the operator's. ---
+if row ab; then
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" secrets-broker ""
+  run
+  want_status 1 "an agent ServiceAccount that may create pods in secrets-broker"
+  want_line "FINDING system:serviceaccount:legion:worker: create pods in secrets-broker" "an agent ServiceAccount that may create pods in secrets-broker"
+  passed "(ab) an agent ServiceAccount that may create pods in the broker's namespace exits 1"
+
+  base_world
+  add_cluster other-cluster us-east1
+  echo secrets-broker >>"$world/clusters/other-cluster/namespaces"
+  run
+  want_status 1 "another cluster of the pool holding secrets-broker"
+  want_line "FINDING cluster:$project/us-east1/other-cluster: namespace secrets-broker exists there, so its ServiceAccount secrets-broker/secrets-broker acts as the broker account $broker through the workload pool $project.svc.id.goog" \
+    "another cluster of the pool holding secrets-broker"
+  passed "(ab) another cluster of the pool holding the broker's namespace exits 1"
+
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" serviceaccounts token secrets-broker secrets-broker
+  run
+  want_status 1 "an agent ServiceAccount that may create the broker's token"
+  want_line "FINDING system:serviceaccount:legion:worker: create serviceaccounts/token secrets-broker in secrets-broker" \
+    "an agent ServiceAccount that may create the broker's token"
+  passed "(ab) an agent ServiceAccount that may create the broker ServiceAccount's token exits 1"
+fi
+
+# --- (ac) Every ServiceAccount of the operator's cluster, not only the agents'. ---
+if row ac; then
+  base_world
+  add_sa operator-cluster ci runner
+  subject_grant operator-cluster "$(sa_subject ci runner)" create "" pods "" envoy-operator ""
+  run
+  want_status 1 "ci/runner with create pods in envoy-operator"
+  want_line "FINDING system:serviceaccount:ci:runner: create pods in envoy-operator" "ci/runner with create pods in envoy-operator"
+  passed "(ac) ci/runner, outside the agent namespaces, with create pods in envoy-operator exits 1"
+
+  base_world
+  add_sa operator-cluster ci runner
+  cluster_admin operator-cluster "$(sa_subject ci runner)"
+  run
+  want_status 1 "ci/runner with cluster-admin"
+  want_line "FINDING system:serviceaccount:ci:runner: create serviceaccounts/token envoy-operator in envoy-operator" "ci/runner with cluster-admin"
+  passed "(ac) ci/runner, outside the agent namespaces, with cluster-admin exits 1"
+fi
+
+# --- (ad) The new container.* permissions, through IAM. ---
+new_container_row() {
+  base_world
+  role "projects/$project/roles/only.$1" "$1"
+  iam "$project_res" "projects/$project/roles/only.$1" "serviceAccount:$worker_gsa"
+  run
+  want_status 1 "$1 held by $worker_gsa"
+  want_line "FINDING serviceAccount:$worker_gsa: $1 on $project_res through projects/$project/roles/only.$1, granted at $project_res" "$1 held by $worker_gsa"
+}
+if row ad; then
+  each new_container_row container.replicationControllers.create container.replicationControllers.update container.nodes.proxy
+  passed "(ad) container.replicationControllers.create and update and container.nodes.proxy, each held by an agent's Google service account, exit 1"
+fi
+
+# --- (ae) Who can register a cluster to the pool's fleet. ---
+if row ae; then
+  base_world
+  iam "$project_res" roles/gkehub.admin "serviceAccount:$ci_gsa"
+  run
+  want_status 1 "a CI account holding roles/gkehub.admin"
+  want_line "FINDING serviceAccount:$ci_gsa: gkehub.memberships.create, gkehub.memberships.update on $project_res through roles/gkehub.admin, granted at $project_res" \
+    "a CI account holding roles/gkehub.admin"
+  passed "(ae) a CI account holding roles/gkehub.admin on the pool project exits 1"
+fi
+
+# --- (af) One rule for Groups: a Group other than the system ones is no finding in the code step. ---
+if row af; then
+  base_world
+  edit "$world/render.json" '.items += [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+    metadata: {name: "admins", namespace: "envoy-operator"},
+    roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
+    subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "Group", name: "cluster-admins@example.com"}]}]'
+  run
+  want_status 0 "a render binding the Group cluster-admins@example.com to cluster-admin"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "a render binding the Group cluster-admins@example.com to cluster-admin: a finding"
+  passed "(af) a render binding a Group other than the system ones to cluster-admin exits 0, as the live steps judge it"
+fi
+
+# --- (ag) IAM impersonation: who can become a holder holds what it holds. ---
+if row ag; then
+  base_world
+  iam "$project_res" roles/container.admin "serviceAccount:$applier"
+  iam "$applier_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$worker_gsa"
+  run
+  want_status 1 "an agent's Google service account minting the tokens of a container.admin holder"
+  want_text "FINDING serviceAccount:$worker_gsa: container.serviceAccounts.createToken," "an agent's account minting a holder's tokens"
+  want_text " on $project_res: serviceAccount:$worker_gsa -> impersonates serviceAccount:$applier (roles/iam.serviceAccountTokenCreator) -> roles/container.admin, granted at $project_res" \
+    "an agent's account minting a holder's tokens"
+  passed "(ag) an agent's Google service account holding roles/iam.serviceAccountTokenCreator on a holder is a finding naming the chain"
+
+  base_world
+  iam "$project_res" roles/container.admin "serviceAccount:$applier"
+  iam "$applier_res" roles/iam.serviceAccountUser "serviceAccount:$relay"
+  iam "$relay_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$worker_gsa"
+  run
+  want_status 1 "an agent's Google service account two links from a container.admin holder"
+  want_text " on $project_res: serviceAccount:$worker_gsa -> impersonates serviceAccount:$relay (roles/iam.serviceAccountTokenCreator) -> impersonates serviceAccount:$applier (roles/iam.serviceAccountUser) -> roles/container.admin, granted at $project_res" \
+    "an agent's account two links from a holder"
+  passed "(ag) a chain through two service accounts is followed to its outermost principal"
+fi
+
+# --- (ah) Who can write IAM policy over a checked resource holds every permission there. ---
+iam_writer_row() {
+  local permission="${1%%=*}" resource="${1#*=}"
+  base_world
+  role "projects/$project/roles/only.$permission" "$permission"
+  iam "$resource" "projects/$project/roles/only.$permission" "serviceAccount:$worker_gsa"
+  run
+  want_status 1 "$permission held by $worker_gsa on $resource"
+  want_line "FINDING serviceAccount:$worker_gsa: $permission on $resource through projects/$project/roles/only.$permission, granted at $resource" \
+    "$permission held by $worker_gsa on $resource"
+}
+if row ah; then
+  base_world
+  iam "$project_res" roles/resourcemanager.projectIamAdmin "serviceAccount:$ci_gsa"
+  run
+  want_status 1 "a CI account holding roles/resourcemanager.projectIamAdmin"
+  want_line "FINDING serviceAccount:$ci_gsa: resourcemanager.projects.setIamPolicy on $project_res through roles/resourcemanager.projectIamAdmin, granted at $project_res" \
+    "a CI account holding roles/resourcemanager.projectIamAdmin"
+  passed "(ah) a holder of roles/resourcemanager.projectIamAdmin is a finding"
+
+  each iam_writer_row "iam.serviceAccounts.setIamPolicy=$gsa_res" "secretmanager.secrets.setIamPolicy=$signing_res" \
+    "resourcemanager.organizations.setIamPolicy=$org_res" "iam.roles.update=$project_res"
+  passed "(ah) a holder of each IAM-writing permission over a checked resource is a finding"
+fi
+
+# --- (ai) Who can become a ServiceAccount with a finding holds what it holds. ---
+become_row() {
+  local verb resource sub name
+  IFS='|' read -r verb resource sub name <<<"${1%%=*}"
+  base_world
+  add_sa operator-cluster ci runner
+  add_sa operator-cluster deploy bot
+  subject_grant operator-cluster "$(sa_subject ci runner)" create "" pods "" envoy-operator ""
+  subject_grant operator-cluster "$(sa_subject deploy bot)" "$verb" "" "$resource" "$sub" ci "$name"
+  run
+  want_status 1 "deploy/bot with ${1#*=} in ci"
+  want_line "FINDING system:serviceaccount:deploy:bot: ${1#*=} in ci, so it can become system:serviceaccount:ci:runner, which can create pods in envoy-operator" \
+    "deploy/bot with ${1#*=} in ci"
+}
+if row ai; then
+  each become_row "create|pods||=create pods" "create|serviceaccounts|token|runner=create serviceaccounts/token runner" \
+    "impersonate|serviceaccounts||runner=impersonate serviceaccounts runner" "create|pods|exec|=create pods/exec" "get|secrets||=get secrets"
+  passed "(ai) a ServiceAccount that can become one with a finding, by each of the five ways in its namespace, is a finding naming the chain"
+fi
+
+# --- (aj) Anyone unauthenticated, on every cluster. ---
+if row aj; then
+  base_world
+  add_cluster other-cluster us-east1
+  subject_grant other-cluster "$(group_subject system:unauthenticated)" create "" namespaces "" "" ""
+  run
+  want_status 1 "system:unauthenticated may create namespaces on another cluster"
+  want_line "FINDING user:system:anonymous: create namespaces cluster-wide on cluster $project/us-east1/other-cluster" \
+    "system:unauthenticated may create namespaces on another cluster"
+  passed "(aj) the Group system:unauthenticated bound to create namespaces on another cluster is a finding"
+fi
+
+# --- (ak) Custom resources in a guarded namespace, from the API server's discovery. ---
+if row ak; then
+  base_world
+  echo sandboxes.agents.x-k8s.io >"$world/clusters/operator-cluster/api-resources"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create agents.x-k8s.io sandboxes "" envoy-operator ""
+  run
+  want_status 1 "legion/worker with create on sandboxes in envoy-operator"
+  want_line "FINDING system:serviceaccount:legion:worker: create sandboxes.agents.x-k8s.io in envoy-operator" \
+    "legion/worker with create on sandboxes in envoy-operator"
+  passed "(ak) create on a custom resource in a guarded namespace is a finding"
+
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create coordination.k8s.io leases "" envoy-operator ""
+  run
+  want_status 0 "legion/worker with create on Kubernetes' own leases in envoy-operator"
+  passed "(ak) create on a resource of Kubernetes' own groups is no custom resource"
+
+  base_world
+  : >"$world/clusters/operator-cluster/refuse-api-resources"
+  run
+  want_status 2 "a discovery that cannot be read whole"
+  want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of namespaced resources could not be read whole" \
+    "a discovery that cannot be read whole"
+  passed "(ak) a discovery that cannot be read whole reads UNKNOWN"
+fi
+
+# --- (al) A report is this run's or none. ---
+if row al; then
+  base_world
+  report="$temporary_dir/old-report.json"
+  echo '{"run_at": "2000-01-01T00:00:00Z", "findings": [], "unknown": []}' >"$report"
+  : >"$world/clusters/operator-cluster/garbage-serviceaccounts"
+  run --report "$report"
+  want_status 2 "a run that stops mid-way"
+  want_text "UNKNOWN run: the run stopped before its end" "a run that stops mid-way"
+  [ -s "$report" ] || fail "a run that stops mid-way left no report"
+  jq -e '.run_at != "2000-01-01T00:00:00Z" and any(.unknown[]; .step == "run")' "$report" >/dev/null ||
+    fail "a run that stops mid-way left this report, not its own UNKNOWN one: $(jq -c . "$report")"
+  passed "(al) a run that stops mid-way leaves its own UNKNOWN report, not the old one"
+
+  echo '{"run_at": "2000-01-01T00:00:00Z", "findings": [], "unknown": []}' >"$report"
+  run --report "$report" --no-such-flag
+  want_status 2 "a usage error"
+  [ ! -e "$report" ] || fail "a usage error left the old report: $(cat "$report")"
+  passed "(al) a usage error leaves no report"
+fi
+
+# --- (am) Each --agent-namespace pattern matches something, or reads UNKNOWN. ---
+if row am; then
+  base_world
+  mapfile -t args < <(args_without --agent-namespace)
+  run_only "${args[@]}" --agent-namespace legion --agent-namespace agent-sessions --agent-namespace 'legion-*-session'
+  want_status 2 "a mistyped --agent-namespace beside two that match"
+  want_line "UNKNOWN live: RBAC on operator-cluster: --agent-namespace legion-*-session matches no namespace that holds a ServiceAccount, so the agents it was to name are not reviewed as agents" \
+    "a mistyped --agent-namespace beside two that match"
+  passed "(am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nats-io/nats-server/v2/server"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -227,11 +227,12 @@ func TestTheGrantTableNamesEveryGrant(t *testing.T) {
 	}
 }
 
-// The buckets envoy-infra buckets copies, whose backup the operator takes outside a hold and whose
-// streams it makes, changes, removes and restores only inside one.
+// The buckets envoy-infra buckets copies, whose infos the operator reads outside a hold and whose
+// streams it snapshots, makes, changes, removes and restores only inside one.
 var copiedBuckets = []string{"envoy_interests", "envoy_roles", "envoy_sessions", "envoy_known_sessions", "envoy_ci_state"}
 
-// operatorReleased is Operator(OperatorPhaseReleased)'s publish list as the plan writes it.
+// operatorReleased is Operator(OperatorPhaseReleased)'s publish list: reads only, no snapshot and
+// no stream create, each of which writes a subject its requester chooses.
 func operatorReleased() []string {
 	publish := []string{
 		"$JS.API.INFO",
@@ -241,14 +242,10 @@ func operatorReleased() []string {
 	for _, b := range copiedBuckets {
 		publish = append(publish, "$JS.API.STREAM.INFO.KV_"+b)
 	}
-	for _, b := range copiedBuckets {
-		publish = append(publish, "$JS.API.STREAM.SNAPSHOT.KV_"+b, "$JS.SNAPSHOT.ACK.KV_"+b+".>")
-	}
 	return append(publish,
 		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
 		"$JS.API.CONSUMER.NAMES.ENVOY_NOTIFICATIONS",
 		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*",
-		"$JS.API.STREAM.CREATE.ENVOY_MEASURE",
 		"$JS.API.STREAM.INFO.ENVOY_MEASURE",
 	)
 }
@@ -263,7 +260,8 @@ func operatorPrepare() []string {
 	)
 }
 
-// operatorHeld is Operator(OperatorPhaseHeld)'s publish list as the plan writes it.
+// operatorHeld is Operator(OperatorPhaseHeld)'s publish list as the plan writes it, with every
+// snapshot and the create of ENVOY_MEASURE, which released held before.
 func operatorHeld() []string {
 	publish := append(operatorPrepare(),
 		"$JS.API.STREAM.CREATE.ENVOY_HOLD_BARRIER",
@@ -272,8 +270,11 @@ func operatorHeld() []string {
 		"$JS.API.STREAM.NAMES",
 		"$JS.API.CONSUMER.LIST.*",
 		"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.*",
+		"$JS.API.STREAM.CREATE.ENVOY_MEASURE",
 		"$KV.envoy_session_consumers.>",
 		"$JS.API.STREAM.CREATE.KV_envoy_session_consumers",
+		"$JS.API.STREAM.SNAPSHOT.KV_envoy_session_consumers",
+		"$JS.SNAPSHOT.ACK.KV_envoy_session_consumers.>",
 		"$JS.API.STREAM.RESTORE.KV_envoy_session_consumers",
 		"$JS.SNAPSHOT.RESTORE.KV_envoy_session_consumers.*",
 	)
@@ -282,6 +283,8 @@ func operatorHeld() []string {
 			"$JS.API.STREAM.CREATE.KV_"+b,
 			"$JS.API.STREAM.UPDATE.KV_"+b,
 			"$JS.API.STREAM.DELETE.KV_"+b,
+			"$JS.API.STREAM.SNAPSHOT.KV_"+b,
+			"$JS.SNAPSHOT.ACK.KV_"+b+".>",
 			"$JS.API.STREAM.RESTORE.KV_"+b,
 			"$JS.SNAPSHOT.RESTORE.KV_"+b+".*",
 			"$KV."+b+".hold.barrier.*",
@@ -332,6 +335,9 @@ func TestOperatorIsExactly(t *testing.T) {
 		for _, entry := range got.Publish {
 			require.Contains(t, want, entry, "Operator(%s) publishes %q, which the plan's list does not hold", phase, entry)
 		}
+		for _, entry := range want {
+			require.Contains(t, got.Publish, entry, "Operator(%s) does not publish %q, which the plan's list holds", phase, entry)
+		}
 		require.Equal(t, natsgrant.Permissions{Publish: want, Subscribe: inbox}, got, "Operator(%s)", phase)
 	}
 	require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseReleased), natsgrant.Operator("paused"),
@@ -370,20 +376,20 @@ var streamConfigurationCalls = []string{
 }
 
 // streamConfigurationEntries are the entries of publish that can reach a stream configuration
-// call, by nats-server's own reading of two subjects (server.SubjectsCollide).
+// call, by nats-server's own reading of two subjects (natsserver.SubjectsCollide).
 func streamConfigurationEntries(publish []string) []string {
 	return streamWriters(natsgrant.Permissions{Publish: publish})
 }
 
 // streamWriters are the publish allow entries of p through which a stream configuration call is
-// still allowed: an entry that reaches the call (server.SubjectsCollide) where no deny entry
-// covers the whole call (server.SubjectMatchesFilter), as nats-server applies a deny after the
+// still allowed: an entry that reaches the call (natsserver.SubjectsCollide) where no deny entry
+// covers the whole call (natsserver.SubjectMatchesFilter), as nats-server applies a deny after the
 // allow list.
 func streamWriters(p natsgrant.Permissions) []string {
 	var entries []string
 	for _, entry := range p.Publish {
 		if slices.ContainsFunc(streamConfigurationCalls, func(call string) bool {
-			return server.SubjectsCollide(entry, call) && !slices.ContainsFunc(p.PublishDeny, func(deny string) bool { return server.SubjectMatchesFilter(call, deny) })
+			return natsserver.SubjectsCollide(entry, call) && !slices.ContainsFunc(p.PublishDeny, func(deny string) bool { return natsserver.SubjectMatchesFilter(call, deny) })
 		}) {
 			entries = append(entries, entry)
 		}
@@ -456,4 +462,27 @@ func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 	answered.Subscribe[0], answered.PublishDeny[0] = "changed", "changed"
 	require.Equal(t, "_INBOX.>", wide.Subscribe[0], "ForCallout's subscribe list is the grant's own")
 	require.Equal(t, "$JS.API.STREAM.PURGE.X", wide.PublishDeny[0], "ForCallout's deny list is the grant's own")
+}
+
+// No grant the package builds subscribes a subject a KV bucket's key can have, by NATS's own
+// wildcard rules (nats-server's SubjectMatchesFilter), so a $KV.>, a *.> or a > is caught as a
+// literal is. A push consumer of ENVOY_NOTIFICATIONS, which the prepare and held operator can
+// create, becomes active only while some client subscribes exactly its deliver subject
+// (nats-server v2.15.1 server/sublist.go:186-193), and then delivers each message under its own
+// subject to every matching subscriber (server/stream.go:8620-8621), the bucket's stream, which
+// captures $KV.<bucket>.>, among them: measured on one server, a notification was stored inside
+// KV_envoy_sessions. A subscribe of a key subject in any grant would be that client.
+func TestNoGrantSubscribesAKeySubject(t *testing.T) {
+	const key = "$KV.envoy_sessions.k"
+	for name, grant := range grantTable(t) {
+		for _, entry := range grant.Subscribe {
+			fields := strings.Fields(entry)
+			require.NotEmpty(t, fields, "%s subscribes a blank entry", name)
+			require.False(t, natsserver.SubjectMatchesFilter(key, fields[0]),
+				"%s subscribes %q, which matches the key subject %s", name, entry, key)
+		}
+	}
+	for _, pattern := range []string{"$KV.>", "$KV.*.>", ">", "*.>", "$KV.envoy_sessions.*", key} {
+		require.True(t, natsserver.SubjectMatchesFilter(key, pattern), "the matcher misses %q", pattern)
+	}
 }
