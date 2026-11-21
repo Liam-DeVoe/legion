@@ -2,6 +2,7 @@ import type { MeInboxEntry, MeInboxResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import {
   answerAsk,
+  createAgentMessage,
   createAsk,
   createBroadcast,
   createComment,
@@ -41,16 +42,43 @@ import { asUser } from "./users";
  * project.
  */
 
-/** The person whose reads the comparison is planted a mismatch in, and who reads the page. */
+/** The person whose reads the comparison is planted a mismatch in, and who reads the comparison
+ *  page. */
 const reader = "alice";
 /** Somebody else, who writes in the reader's threads and holds no row of their own. */
 const other = "bob";
 /** The person the first comparison does not reach. */
 const excluded = "carol";
+/** A person a reference can name. A reference names a person by their login as Dispatch stores
+ *  one, an email lowercased (`dispatch://person/<login>`), and no bare login, so `alice` and
+ *  `bob`, the harness's own logins, are nobody a mention reaches. Dev sign-in records any login
+ *  it is given, so this one signs in as they do. */
+const named = "person-1@example.com";
 
 /** The links of the comment reply chain at the outbox walk's bound, the depth
  *  `internal/dispatch/inboxcompare`'s ChainLinks copies. */
 const chainLinks = 32;
+
+/** Holds that the one read ties `login` to the comment `commentId` by a mention: the comment's
+ *  mention of them landed as a mentions tuple into their person. Every row that asserts something
+ *  of a mention reads this first, so a text grammar that leaves the comment naming nobody fails
+ *  here, with that cause named, rather than as a row the page happens not to list. */
+async function expectMentioned(login: string, commentId: string): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const read = await getMeInbox({ kind: "mentions" }, { login });
+        const entry = (read.entries ?? []).find(
+          (candidate) => candidate.node.kind === "comment" && candidate.node.id === commentId
+        );
+        return entry?.relations?.map(({ direction, kind }) => `${kind} ${direction}`) ?? [];
+      },
+      {
+        message: `the one read ties ${login} to comment ${commentId} by its mention of them (a reference names a person by an email-shaped login alone)`,
+      }
+    )
+    .toContain("mentions inbound");
+}
 
 /** The corpus the comparison reads: what c-one-list seeds, and the shapes the gate requires
  *  beside it, every one through the API as a person and a session write it but the reply chain,
@@ -95,8 +123,17 @@ async function seedCorpus(): Promise<{ issue: string }> {
   );
   // An ask the reader answered, with the session's reply in its thread.
   await seedAskThread(issue.key, "Ship on Friday?", "Friday it is.");
-  // A comment by somebody else that names the reader, and one the reader wrote themselves.
-  await createComment(issue.key, { body: `person:${reader}, please read this.` }, { login: other });
+  // A comment by somebody else that names a person by the address the text grammar reads
+  // (`dispatch://person/<login>`), and one the reader wrote themselves. The address names an
+  // email-shaped login alone, so the person named is one who signs in under one (`named`), and the
+  // comparison reaches them as it reaches every person the database holds.
+  await sessionCookie(named);
+  const mention = await createComment(
+    issue.key,
+    { body: `dispatch://person/${named}, please read this.` },
+    { login: other }
+  );
+  await expectMentioned(named, mention.id);
   await createComment(issue.key, { body: "A note to myself." });
   // A thread on the closed issue the reader wrote in and has already read.
   const read = await createComment(closed.key, { body: "Are the notes final?" });
@@ -275,38 +312,52 @@ async function toggleType(page: Page, label: string): Promise<void> {
 }
 
 test("the inbox lists everything that reached a person in one list", async ({ browser }) => {
+  // The page reads as a person a reference can name (`named`), so the mention below reaches
+  // them; every write of theirs is made as them.
+  const asReader = { login: named };
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release checklist" });
-  const closed = await createIssue({ project: "CORE", title: "Old rollout notes" });
+  await createProject({ key: "CORE", name: "Core" }, asReader);
+  const issue = await createIssue({ project: "CORE", title: "Release checklist" }, asReader);
+  const closed = await createIssue({ project: "CORE", title: "Old rollout notes" }, asReader);
   // An open ask a session asks on the first issue, which waits on the reader, its assignee.
-  await patchIssue(issue.key, { assignee: reader });
+  await patchIssue(issue.key, { assignee: named }, asReader);
   const ask = await createAsk(issue.key, { question: "Approve the release window?" }, asSession());
   // A comment thread the reader started, with the session's reply under it.
-  const comment = await seedCommentThread(
+  const comment = await createComment(issue.key, { body: "Is the checklist complete?" }, asReader);
+  await createComment(
     issue.key,
-    "Is the checklist complete?",
-    "Two items are still open."
+    { body: "Two items are still open.", reply_to: comment.id },
+    asSession()
   );
   // An issue message thread the reader started, with somebody else's reply under it.
-  const message = await createMessage(issue.key, { body: "Who owns the rollback step?" });
+  const message = await createMessage(issue.key, { body: "Who owns the rollback step?" }, asReader);
   await createMessage(
     issue.key,
     { body: "I own the rollback step.", in_reply_to: message.id },
     { login: other }
   );
   // A direct message to the session, with that session's reply.
-  const direct = await seedAgentThread({
-    body: "Please check the staging gate.",
-    replies: ["The staging gate is open."],
-  });
-  // A comment by somebody else that names the reader, and one the reader wrote themselves.
+  const direct = (
+    await createAgentMessage(
+      THREAD_SESSION.session_id,
+      { body: "Please check the staging gate.", delivery: "btw" },
+      asReader
+    )
+  ).id;
+  await replyToMessageDelivery(
+    direct,
+    { attempt: 1, body: "The staging gate is open." },
+    sessionActor()
+  );
+  // A comment by somebody else that names the reader by the address the text grammar reads
+  // (`dispatch://person/<login>`), and one the reader wrote themselves.
   const mention = await createComment(
     issue.key,
-    { body: `person:${reader}, please read the checklist.` },
+    { body: `dispatch://person/${named}, please read the checklist.` },
     { login: other }
   );
-  const own = await createComment(issue.key, { body: "A note to myself." });
+  await expectMentioned(named, mention.id);
+  const own = await createComment(issue.key, { body: "A note to myself." }, asReader);
   // On the second issue, closed: a thread the reader wrote in and has read. Its shape is
   // somebody else's root and the reader's reply under it, with nothing written after: today's
   // Inbox lists a thread of the reader's from the first write somebody else makes after theirs,
@@ -316,13 +367,13 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     { body: "Are the rollout notes final?" },
     { login: other }
   );
-  await createComment(closed.key, { body: "They are final.", reply_to: closedRoot.id });
-  await markThreadRead(closedRoot.id, new Date().toISOString());
-  await patchIssue(closed.key, { status: "done" });
+  await createComment(closed.key, { body: "They are final.", reply_to: closedRoot.id }, asReader);
+  await markThreadRead(closedRoot.id, new Date().toISOString(), asReader);
+  await patchIssue(closed.key, { status: "done" }, asReader);
 
-  const alice = await asUser(browser, reader);
+  const context = await asUser(browser, named);
   try {
-    const page = await alice.newPage();
+    const page = await context.newPage();
     // Every read of the one read the page sends, to read what it asked for.
     const oneReads: URL[] = [];
     page.on("request", (request: Request) => {
@@ -342,7 +393,7 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     // among the asks.
     const rows = {
       ask: ask.id,
-      comment: replyRowId(comment),
+      comment: replyRowId(comment.id),
       direct: agentRowId(direct),
       message: replyRowId(message.id),
     };
@@ -376,7 +427,7 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       {
         author: THREAD_SESSION.title,
         firstLine: "Is the checklist complete?",
-        href: (href) => href === refOf(comment) && href.includes(comment),
+        href: (href) => href === refOf(comment.id) && href.includes(comment.id),
         id: rows.comment,
       },
       {
@@ -436,27 +487,30 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       .poll(async () => (await listedRows(page)).sort())
       .toEqual([rows.comment, rows.message].sort());
   } finally {
-    await alice.close();
+    await context.close();
   }
 });
 
 test("an answered ask stays in the threads a person takes part in", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Rollout gates" });
-  await patchIssue(issue.key, { assignee: reader });
+  // The reader is a person a reference can name (`named`), so the mention below reaches them;
+  // every write of theirs is made as them.
+  const asReader = { login: named };
+  await createProject({ key: "CORE", name: "Core" }, asReader);
+  const issue = await createIssue({ project: "CORE", title: "Rollout gates" }, asReader);
+  await patchIssue(issue.key, { assignee: named }, asReader);
   const asked = (question: string) =>
     createAsk(issue.key, { options: [{ label: "Yes" }, { label: "No" }], question }, asSession());
   const answeredByReader = await asked("Open the gate on Monday?");
   const answeredByOther = await asked("Keep the old gate?");
   const retracted = await asked("Freeze the schedule?");
   const declined = await asked("Page the on-call?");
-  await answerAsk(answeredByReader.id, { expected_edited_at: null, selected: ["Yes"] });
+  await answerAsk(answeredByReader.id, { expected_edited_at: null, selected: ["Yes"] }, asReader);
   await answerAsk(
     answeredByOther.id,
     { expected_edited_at: null, selected: ["No"] },
     { login: other }
   );
-  await answerAsk(retracted.id, { expected_edited_at: null, selected: ["Yes"] });
+  await answerAsk(retracted.id, { expected_edited_at: null, selected: ["Yes"] }, asReader);
   // No route retracts an answer: an answered ask is closed, a resolve takes only an open one, and
   // an issue's reopen opens again only the asks its close withdrew. So the seed answers the third
   // ask through the API, which appends its ask.answered event and its answer tuples, and then
@@ -467,9 +521,9 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     set answer = null, state = 'resolved',
         resolution = jsonb_build_object(
           'kind', 'retracted', 'reason', 'The schedule moved.', 'at', now(),
-          'actor', jsonb_build_object('kind', 'user', 'id', ${sqlLiteral(reader)}))
+          'actor', jsonb_build_object('kind', 'user', 'id', ${sqlLiteral(named)}))
     where id = ${sqlLiteral(retracted.id)}::uuid`);
-  await declineAsk(declined.id, { note: "Not mine to call." });
+  await declineAsk(declined.id, { note: "Not mine to call." }, asReader);
   // A thread the reader wrote in and has read, on the same issue: somebody else's root, the
   // reader's reply under it, nothing written after, so today's Inbox does not list it.
   const thread = await createComment(
@@ -477,14 +531,20 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     { body: "Is the gate log kept?" },
     { login: other }
   );
-  await createComment(issue.key, { body: "It is kept.", reply_to: thread.id });
-  await markThreadRead(thread.id, new Date().toISOString());
-  // The thread the reader was only mentioned in, and never wrote in, is the mention case: it
-  // lands with the mention tuples (dispatch://INFRA-1152's T13), beside the thread above.
-  await patchIssue(issue.key, { status: "done" });
+  await createComment(issue.key, { body: "It is kept.", reply_to: thread.id }, asReader);
+  await markThreadRead(thread.id, new Date().toISOString(), asReader);
+  // A thread the reader was only mentioned in, and never wrote in: somebody else's comment that
+  // names them by address. Its mention lands as a mentions tuple into their person.
+  const mentioned = await createComment(
+    issue.key,
+    { body: `dispatch://person/${named}, the gate log moved.` },
+    { login: other }
+  );
+  await expectMentioned(named, mentioned.id);
+  await patchIssue(issue.key, { status: "done" }, asReader);
 
   // The one read asked as a caller, for the threads the reader takes part in.
-  const taking = await getMeInbox({ kind: "participates_in" }, { login: reader });
+  const taking = await getMeInbox({ kind: "participates_in" }, asReader);
   const tied = (kind: string, id: string) =>
     (taking.entries ?? []).find((entry) => entry.node.kind === kind && entry.node.id === id);
   const asks = [answeredByReader, answeredByOther, retracted, declined];
@@ -506,9 +566,9 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
 
   // The page lists neither thread: these are answers of the read for its callers, and the Inbox
   // lists the rows it lists today, which are the rows its own read answered.
-  const alice = await asUser(browser, reader);
+  const context = await asUser(browser, named);
   try {
-    const page = await alice.newPage();
+    const page = await context.newPage();
     const answered = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/v1/me/inbox" &&
@@ -522,7 +582,11 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     await expect(page.getByTestId("inbox-list"), "the Inbox page drew its list").toBeAttached();
     await expect.poll(async () => (await listedRows(page)).sort()).toEqual([...drawn].sort());
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(thread.id));
+    expect(drawn, "the rows the page draws").not.toContain(replyRowId(mentioned.id));
+    for (const absent of [replyRowId(thread.id), replyRowId(mentioned.id)]) {
+      await expect(page.locator(`[data-inbox-row="${absent}"]`), absent).toHaveCount(0);
+    }
   } finally {
-    await alice.close();
+    await context.close();
   }
 });

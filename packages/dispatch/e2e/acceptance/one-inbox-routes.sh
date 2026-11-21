@@ -42,9 +42,10 @@
 #                     /api/v1/me/replies for its threads and the one read nothing with no opt-in,
 #                     and the one read for them with the address's one=1 or the preference
 #                     inbox.one_read.
-#   read_then_mention a thread the person wrote in and read, and one they were only mentioned in:
-#                     GET /api/v1/me/replies' default unread state answers neither, and the one
-#                     read answers both.
+#   read_then_mention a reader of the section's own, with the email-shaped login a person reference
+#                     names: a thread they wrote in and read, and one they were only mentioned in,
+#                     its mentions tuple to them read in the store first: GET /api/v1/me/replies'
+#                     default unread state answers neither, and the one read answers both.
 #
 # The corpus the gate runs over is the server's own seed and what the run writes through the API
 # beside it: an open ask that waits on the person, a comment thread, an issue message thread and an
@@ -204,11 +205,12 @@ request() {
     "$address" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
 }
 
-# sign_in LOGIN: signs LOGIN in through the server's dev sign-in into LOGIN's jar.
+# sign_in LOGIN [SECTION]: signs LOGIN in through the server's dev sign-in into LOGIN's jar; a
+# failure is SECTION's, setup's where none is named.
 sign_in() {
   curl -sS -o /dev/null -c "$work/jar-$1" "$base/auth/_dev/signin?login=$(q "$1")" \
-    2>"$work/curl" || fail setup "sign $1 in" "curl: $(<"$work/curl")"
-  grep -q dsession "$work/jar-$1" || fail setup "sign $1 in" "the dev sign-in route left no session cookie"
+    2>"$work/curl" || fail "${2:-setup}" "sign $1 in" "curl: $(<"$work/curl")"
+  grep -q dsession "$work/jar-$1" || fail "${2:-setup}" "sign $1 in" "the dev sign-in route left no session cookie"
 }
 
 # psql_do SECTION WHAT SQL: runs SQL, which answers nothing the run reads.
@@ -924,31 +926,50 @@ default_section() {
 
 # --- read_then_mention -------------------------------------------------------------------------
 
+# The section's reader is a person of its own with an email-shaped login: a person reference,
+# dispatch://person/<login>, names a login only in the form Dispatch stores one, an email
+# (text/refs.go, personLoginPattern), so the dev sign-in's bare logins, alice and bob, can be
+# mentioned by nobody. The reader signs in here, after every section that counts the people the
+# database holds, so no earlier section reads them.
 read_then_mention_section() {
-  local section=read_then_mention read mention replied
-  post "$section" "$person writes a thread" "$person" "/api/v1/issues/$issue/comments" '{"body": "Are the notes final?"}'
+  local section=read_then_mention read mention replied reader="reader-mention-$stamp@example.test"
+  sign_in "$reader" "$section"
+  pass "$section" "signed $reader in, a person a reference can name"
+  post "$section" "$reader writes a thread" "$reader" "/api/v1/issues/$issue/comments" '{"body": "Are the notes final?"}'
   read="$id"
   post "$section" "$other replies in it" "$other" "/api/v1/issues/$issue/comments" \
     "$(jq -cn --arg r "$read" '{body: "They are.", reply_to: $r}')"
   # Read through the reply's own moment, which the answer to its write carries: a mark taken from
   # the clock, at a second's precision, can fall a fraction of a second before the reply.
   replied="$(jq -er '.created_at' "$work/body")" || fail "$section" "read the reply's moment" "$(body)"
-  request "$person" PUT "/api/v1/me/threads/$read/read" "$(jq -cn --arg t "$replied" '{read_through: $t}')"
-  [[ "$status" == 204 ]] || fail "$section" "$person reads the thread" "HTTP $status: $(body)"
-  pass "$section" "$person read the thread through its reply's moment, $replied"
-  post "$section" "$other mentions $person in a thread of their own" "$other" "/api/v1/issues/$issue/comments" \
-    "$(jq -cn --arg p "$person" '{body: ("person:" + $p + ", please read this.")}')"
+  request "$reader" PUT "/api/v1/me/threads/$read/read" "$(jq -cn --arg t "$replied" '{read_through: $t}')"
+  [[ "$status" == 204 ]] || fail "$section" "$reader reads the thread" "HTTP $status: $(body)"
+  pass "$section" "$reader read the thread through its reply's moment, $replied"
+  post "$section" "$other mentions $reader in a thread of their own" "$other" "/api/v1/issues/$issue/comments" \
+    "$(jq -cn --arg p "$reader" '{body: ("dispatch://person/" + $p + ", please read this.")}')"
   mention="$id"
-  request "$person" GET /api/v1/me/replies
+  # The mention is a mentions tuple out of the comment to the person's node, written by the
+  # comment's own write; without it the one read has nothing to answer, so its absence is named
+  # here as its own cause rather than read later as a missing entry.
+  query "$section" "read the mention's tuple" "
+    select coalesce((select asserted::text from graph_tuples
+                     where from_kind = 'comment' and from_id = '$mention' and kind = 'mentions'
+                       and to_kind = 'person' and to_id = '$reader'
+                     order by seq desc limit 1), 'none')"
+  [[ "$answer" == true ]] ||
+    fail "$section" "$other's comment states a mentions tuple to person:$reader" \
+      "its latest such tuple reads '$answer': the body's dispatch://person/$reader names nobody by the reference grammar (text/refs.go)"
+  pass "$section" "$other's comment comment:$mention states mentions>person:$reader"
+  request "$reader" GET /api/v1/me/replies
   [[ "$status" == 200 ]] || fail "$section" "read GET /api/v1/me/replies" "HTTP $status: $(body)"
   jq -e --arg a "$read" --arg b "$mention" 'all(.rows[]; .thread_id != $a and .thread_id != $b)' "$work/body" >/dev/null ||
     fail "$section" "GET /api/v1/me/replies' unread state answers neither thread" "$(jq -c '[.rows[].thread_id]' "$work/body")"
   pass "$section" "GET /api/v1/me/replies' default unread state answers neither thread"
-  one_read "$person"
-  holds "comment:$read" || fail "$section" "the one read answers the thread $person wrote in and read" "no entry comment:$read"
-  pass "$section" "the one read answers the thread $person wrote in and read"
-  holds "comment:$mention" || fail "$section" "the one read answers the thread $person was only mentioned in" "no entry comment:$mention"
-  pass "$section" "the one read answers the thread $person was only mentioned in"
+  one_read "$reader"
+  holds "comment:$read" || fail "$section" "the one read answers the thread $reader wrote in and read" "no entry comment:$read"
+  pass "$section" "the one read answers the thread $reader wrote in and read"
+  holds "comment:$mention" || fail "$section" "the one read answers the thread $reader was only mentioned in" "no entry comment:$mention"
+  pass "$section" "the one read answers the thread $reader was only mentioned in"
 }
 
 # --- the run -----------------------------------------------------------------------------------
