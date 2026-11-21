@@ -336,9 +336,13 @@ cleanup() {
   done
   if [ "$CREATED_DB" = true ]; then
     # Best-effort: cleanup runs on every exit path and must never itself fail, even if the server
-    # is already gone or the drop fails for some other reason.
-    admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null || true
-    echo "dev-broker: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    # is already gone or the drop fails for some other reason. It says which way the drop went, so
+    # a database a failed drop leaves behind is named and not called dropped.
+    if admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null; then
+      echo "dev-broker: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    else
+      echo "dev-broker: could not drop this instance's database $DB_NAME in $POSTGRES_WHERE; drop it by hand" >&2
+    fi
   fi
   echo "dev-broker: workdir kept at $WORK_DIR (rm -rf it once its helper has stopped)" >&2
 }

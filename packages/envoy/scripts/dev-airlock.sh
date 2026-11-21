@@ -329,9 +329,13 @@ cleanup() {
     fi
   done
   if [ "$CREATED_DB" = true ]; then
-    # Best-effort: cleanup runs on every exit path and must never itself fail.
-    admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null || true
-    echo "dev-airlock: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    # Best-effort: cleanup runs on every exit path and must never itself fail. It says which way
+    # the drop went, so a database a failed drop leaves behind is named and not called dropped.
+    if admin_psql -c "drop database if exists ${DB_NAME};" 2>/dev/null; then
+      echo "dev-airlock: dropped this instance's database $DB_NAME in $POSTGRES_WHERE" >&2
+    else
+      echo "dev-airlock: could not drop this instance's database $DB_NAME in $POSTGRES_WHERE; drop it by hand" >&2
+    fi
   fi
   echo "dev-airlock: workdir kept at $WORK_DIR (rm -rf it once nothing reads it)" >&2
 }

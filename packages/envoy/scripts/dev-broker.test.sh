@@ -114,6 +114,10 @@ if [[ -n "${DEV_BROKER_TEST_CREATE_FAILS:-}" && "$*" == *"create database"* ]]; 
   echo 'ERROR:  database already exists' >&2
   exit 1
 fi
+if [[ -n "${DEV_BROKER_TEST_DROP_FAILS:-}" && "$*" == *"drop database"* ]]; then
+  echo 'psql: error: connection to server failed: Connection refused' >&2
+  exit 2
+fi
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1 query=""
   [[ "$url" == *\?* ]] && query=${url#*\?}
@@ -797,6 +801,28 @@ if [[ "$create_status" -eq 0 ]] || ! grep -q 'create database dev_broker_' "$doc
   exit 1
 fi
 printf 'PASS: a run whose create database fails drops no database\n'
+
+# --- A run whose drop database fails (the server gone before its cleanup ran) says so, and
+# never claims a drop that did not happen: the database is still there for someone to drop. ---
+export DEV_BROKER_TEST_DROP_FAILS=1
+run_instance 1 "$log1" "$docker_calls1" "$curl_calls1" "$admin_url"
+unset DEV_BROKER_TEST_DROP_FAILS
+if ! wait_for_ready "$log1"; then
+  cat "$log1" >&2
+  echo "FAIL: the run whose drop will fail never reached ready" >&2
+  exit 1
+fi
+kill -TERM "${instance_pid[1]}"
+wait "${instance_pid[1]}" 2>/dev/null || true
+instance_pid[1]=""
+drop_db=$(grep -o 'drop database if exists dev_broker_[a-z0-9]*' "$docker_calls1" | head -n 1 | awk '{print $NF}')
+if [[ -z "$drop_db" ]] || grep -q "dropped this instance's database" "$log1" \
+  || ! grep -qF "could not drop this instance's database ${drop_db}" "$log1"; then
+  cat "$log1" "$docker_calls1" >&2
+  echo "FAIL: a run whose drop database failed must say it could not drop ${drop_db:-its database}, and never that it dropped it" >&2
+  exit 1
+fi
+printf 'PASS: a run whose drop database fails says so and names the database left behind\n'
 
 # --- A dispatch-pg on another image than dev-postgres.sh's pinned one (an older script's
 # postgres:16) is refused through dev-postgres.sh before this run creates a database or starts a
