@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -158,4 +159,21 @@ func TestAnAskSourceThatIsNoIDIsRefused(t *testing.T) {
 			t.Errorf("GET /api/v2/asks?source=%s answered %d %s, want 400 INVALID_QUERY", source, response.Code, response.Body.String())
 		}
 	}
+}
+
+// GET /api/v2/priorities carries each listed description's display tree under `Dispatch-Trees: 1`,
+// as GET /api/v1/priorities does since #4835
+// (TestAPriorityDescriptionNested4000DeepReadsBackAsATreeOfItsOwnText), so a page that reads the
+// /api/v2 list parses no description either, and a read without the header carries none (treeAt).
+// The description is emphasis nested 4,000 deep, the shape that cost the browser's parser the
+// square of its depth: its tree is every character of it as text.
+func TestAV2PriorityListCarriesEachDescriptionsTree(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	written := strings.Repeat("*a ", 4_000) + "b" + strings.Repeat(" c*", 4_000)
+	priorityTreesRequest(t, handler, http.MethodPost, "/api/v1/priorities",
+		map[string]any{"id": "nested-deep", "title": "Nested deep", "description": written}, http.StatusCreated)
+
+	// The store starts with no priority (newTestHandlerWithStore), so the one created is item 0.
+	requireTextTree(t, "the /api/v2 listing",
+		model.DisplayTree(treeAt(t, handler, "/api/v2/priorities", "items.0.description_tree")), written)
 }

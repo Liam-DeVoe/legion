@@ -205,10 +205,11 @@ type Deps struct {
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
 	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
-	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
-	// serves from the moment it enters the route's handler chain, as the access-log line times
-	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
-	// none.
+	// AnswersLatency times each answers read this process serves, GET
+	// /api/v1/agents/{session_id}/answers and GET /api/v2/agents/{session_id}/answers alike
+	// (sessionAnswersRoute, sessionAnswersV2Route), from the moment it enters the route's handler
+	// chain, as the access-log line times it (routeHandler), for the keyword fill's pause, which
+	// shares it (textversions); nil times none.
 	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.

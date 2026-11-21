@@ -90,10 +90,12 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition
 // artifactUploadRefusals is what the descriptions of the three uploads say of the bodies they
 // refuse, moreInput the cases of 400 ARTIFACT_INPUT an upload answers beyond the three every
 // upload does, each led by a comma ("" for none), so the one clause of that code names them all.
+// ARTIFACT_ROLE_NAME is not among them: artifactUploadText's sentence on the role documents, which
+// every upload's description carries, names it with its status.
 func artifactUploadRefusals(moreInput string) string {
 	return "A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 " +
 		"INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing " +
-		"document's name" + moreInput + "), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no " +
+		"document's name" + moreInput + "), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no " +
 		"file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB."
 }
 
