@@ -122,7 +122,6 @@ var exampleServices = []config.NATSService{
 	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
-	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -243,7 +242,6 @@ func TestRefusals(t *testing.T) {
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
-		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
