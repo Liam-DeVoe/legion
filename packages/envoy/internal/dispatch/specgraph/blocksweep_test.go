@@ -35,7 +35,7 @@ import (
 // those that it refuses (sweepFloors).
 func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	bases := sweepBases(t)
+	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "texts", bases)
 	floorsCover(t, "attributes", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {

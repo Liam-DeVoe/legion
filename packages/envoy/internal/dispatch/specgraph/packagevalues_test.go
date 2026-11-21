@@ -6,34 +6,52 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
-// writerCalled is the one guard of what a writer of a sweep or of a base can reach, which
-// changedFile, filesWritten and editTree each call with the writer's builder and the call of the
-// writer: it takes a copy of each variable of the package (packageValuesNow), then builds the
-// writer (build), then calls it (call), then compares each variable with its copy
-// (packageValuesKept), and gives what call gave. Each of the three takes a builder, not a writer,
-// so no code of a writer runs before the copy; and call turns what the writer gives and what it
-// leaves (its tree, its files, its copy of the change) into bytes of the caller's own before the
-// compare, so no code of a writer runs after it: the type of what call gives is plain data
-// (plainType), with no interface, function, channel or pointer, where a method of a value that the
-// writer left, such as its MarshalJSON, could run. So a writer that changes a variable of the
-// package, in the code that builds it, in the call, or in a method of a value that it leaves in
-// what it gives, fails by name, as one that changes a table of the reader (relationKinds, slug,
-// ...) would change the verdict of each later input.
-func writerCalled[W, R any](t *testing.T, name string, build func() W, call func(W) R) R {
+// writerCalled is the one guard of what code other than the reader can reach of what the reader
+// and the sweeps read: a writer of a sweep or of a base, which changedFile, filesWritten and
+// editTree each call it with, and the sweeps' setup, which setUp calls it with. who names the
+// writer or the setup ("a writer of results.json"). It takes a copy of each variable of the
+// package (packageValuesNow), then builds the writer (build), then calls it (call), then compares
+// each variable with its copy (packageValuesKept), and gives what call gave. Each caller hands it
+// a builder, not a writer, so no code of a writer runs before the copy; and call turns what the
+// writer gives and what it leaves (its tree, its files, its copy of the change, the bases that the
+// setup built) into bytes of the caller's own before the compare, so no code of a writer runs after
+// it: the type of what call gives is plain data (plainType), with no interface, function, channel
+// or pointer, where a method of a value that the writer left, such as its MarshalJSON, could run.
+// So a writer or a setup that changes a variable of the package, in the code that builds it, in
+// the call, or in a method of a value that it leaves in what it gives, fails by name, as one that
+// changes a table of the reader (relationKinds, slug, ...) would change the verdict of each later
+// input. Code that changes one outside every such call fails the test process by name (TestMain).
+func writerCalled[W, R any](t *testing.T, who string, build func() W, call func(W) R) R {
 	t.Helper()
 	if at, plain := plainType(reflect.TypeFor[R](), "", map[reflect.Type]bool{}); !plain {
-		t.Fatalf("the guard of a writer of %s hands back a %v, whose %s is no plain data, so a method of a value that the writer left there could run after the compare", name, reflect.TypeFor[R](), at)
+		t.Fatalf("the guard of %s hands back a %v, whose %s is no plain data, so a method of a value that the writer left there could run after the compare", who, reflect.TypeFor[R](), at)
 	}
 	values := packageValuesNow()
 	got := call(build())
-	packageValuesKept(t, name, values)
+	packageValuesKept(t, who, values)
 	return got
+}
+
+// TestMain copies each variable of the package (packageValuesNow) before the first test of the
+// process runs, and compares each with its copy after the last one has ended, so that code that
+// changes one outside every call of the guard (writerCalled), such as the code of a test, a
+// cleanup or a goroutine, fails the process by the variable's name, whatever its tests say.
+func TestMain(m *testing.M) {
+	start := packageValuesNow()
+	code := m.Run()
+	for _, changed := range packageValuesChanged("the test process", start) {
+		fmt.Println("TestMain: " + changed)
+		code = max(code, 1)
+	}
+	os.Exit(code)
 }
 
 // plainType is whether a value of the type t is plain data, on which no method that a writer
@@ -202,16 +220,26 @@ func packageValuesNow() []packageValue {
 }
 
 // packageValuesKept fails the test unless each variable of the package holds what before, the copy
-// that packageValuesNow took before a writer of the file name was built, holds, so that a writer
-// that changes one, for a later call of its own sweep or for a test that runs beside it, fails by
-// name.
-func packageValuesKept(t *testing.T, name string, before []packageValue) {
+// that packageValuesNow took before who (a writer, or the sweeps' setup) was built, holds, so that
+// a writer that changes one, for a later call of its own sweep or for a test that runs beside it,
+// fails by name.
+func packageValuesKept(t *testing.T, who string, before []packageValue) {
 	t.Helper()
+	if changed := packageValuesChanged(who, before); len(changed) > 0 {
+		t.Fatal(strings.Join(changed, "\n"))
+	}
+}
+
+// packageValuesChanged is a line for each variable of the package that holds now another value
+// than before, the copy that packageValuesNow took before who ran, holds, by its name.
+func packageValuesChanged(who string, before []packageValue) []string {
+	var changed []string
 	for i, now := range packageValuesNow() {
 		if !reflect.DeepEqual(now.value, before[i].value) {
-			t.Fatalf("a writer of %s changed %s, a value of the package: it holds %.300s after the writer ran, where it held %.300s", name, now.name, fmt.Sprintf("%+v", now.value), fmt.Sprintf("%+v", before[i].value))
+			changed = append(changed, fmt.Sprintf("%s changed %s, a value of the package: it holds %.300s after it ran, where it held %.300s", who, now.name, fmt.Sprintf("%+v", now.value), fmt.Sprintf("%+v", before[i].value)))
 		}
 	}
+	return changed
 }
 
 // Each variable of the package is in the copy that the guard of the writers takes

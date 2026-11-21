@@ -54,7 +54,7 @@ type treeEdit func(tree any) any
 func editTree(t *testing.T, fsys fstest.MapFS, name string, build func() treeEdit) {
 	t.Helper()
 	before := cloneFiles(fsys)
-	data := writerCalled(t, name, build, func(edit treeEdit) []byte { return encodeTree(t, edit(fileTree(t, fsys, name))) })
+	data := writerCalled(t, "a writer of "+name, build, func(edit treeEdit) []byte { return encodeTree(t, edit(fileTree(t, fsys, name))) })
 	fsys[name] = &fstest.MapFile{Data: data}
 	filesRead(t, before, fsys, map[string][]byte{name: data}, nil)
 }
@@ -279,7 +279,7 @@ func changedFile(t *testing.T, base fstest.MapFS, name string, want treeChange, 
 	t.Helper()
 	meant := want.meant(t, base, name)
 	before := want.copied(t)
-	written := writerCalled(t, name, build, func(write treeWriter) writtenChange {
+	written := writerCalled(t, "a writer of "+name, build, func(write treeWriter) writtenChange {
 		handed := want.copied(t)
 		data := encodeTree(t, write(fileTree(t, base, name), handed))
 		return writtenChange{data: data, place: slices.Clone(handed.place), value: encodeTree(t, handed.value)}
@@ -353,7 +353,7 @@ type fileWriter func(fsys fstest.MapFS)
 func filesWritten(t *testing.T, base fstest.MapFS, written map[string][]byte, build func() fileWriter) fstest.MapFS {
 	t.Helper()
 	before := cloneFiles(base)
-	files := writerCalled(t, fmt.Sprintf("the files %q", slices.Sorted(maps.Keys(written))), build, func(write fileWriter) map[string][]byte {
+	files := writerCalled(t, fmt.Sprintf("a writer of the files %q", slices.Sorted(maps.Keys(written))), build, func(write fileWriter) map[string][]byte {
 		handed := cloneFiles(base)
 		write(handed)
 		return filesOf(t, handed)

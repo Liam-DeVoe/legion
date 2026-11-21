@@ -111,7 +111,7 @@ func notRepoPaths(path string) []string {
 // reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	bases := sweepBases(t)
+	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "tree", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
@@ -292,7 +292,7 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // means, built before its writer runs (refusalAdded, refusalRead).
 func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
-	bases := sweepBases(t)
+	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "refusals", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
@@ -456,7 +456,7 @@ type addableRecords struct {
 // reads unknown, planted_on_outside_history.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	bases := sweepBases(t)
+	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
 	floorsCover(t, "members", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {

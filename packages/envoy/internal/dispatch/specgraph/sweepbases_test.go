@@ -17,6 +17,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph/specgraphtest"
 )
 
+// setUp is the bases that setup, the setup of a sweep, builds, built inside the one guard of what
+// the reader reads (writerCalled) as the bytes of each file of each base, copied inside the guard's
+// call (filesOf): so the setup, the code of its writers and of what it calls among it, fails by
+// name where it changes a variable of the package, as a writer does, and no object that the setup
+// built is a base that a sweep reads. Each sweep reads its bases through it.
+func setUp(t *testing.T, who string, setup func(*testing.T) map[string]fstest.MapFS) map[string]fstest.MapFS {
+	t.Helper()
+	built := writerCalled(t, who, func() func(*testing.T) map[string]fstest.MapFS { return setup }, func(setup func(*testing.T) map[string]fstest.MapFS) map[string]map[string][]byte {
+		files := map[string]map[string][]byte{}
+		for name, fsys := range setup(t) {
+			files[name] = filesOf(t, fsys)
+		}
+		return files
+	})
+	bases := make(map[string]fstest.MapFS, len(built))
+	for name, files := range built {
+		bases[name] = filesFS(files)
+	}
+	return bases
+}
+
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
 // and twenty shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
