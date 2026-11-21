@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -194,4 +196,101 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	if change != texts.ChangeBeneathAccepted || ancestor != "LEGION-208" {
 		t.Fatalf("the child-status notice names change %q under accepted ancestor %q, want %q under LEGION-208", change, ancestor, texts.ChangeBeneathAccepted)
 	}
+}
+
+// The texts the daemon sends an architect about children still in the workflow tell it how a child
+// leaves: by the architect's own status write in Dispatch (record.EndChildRule), and never by an
+// operation the daemon no longer serves or by the old word for the move (dispatch://INFRA-3178 R6).
+// The sign_off and close_root refusals and the pr-merged notice also say that a status the
+// architect wrote counts only once the daemon has taken it, because the Dispatch event that carries
+// it can reach the daemon after the architect calls again. The children-first notice ends a child,
+// released or not, by the same write. Each row holds only that much of the wording. The pr-merged
+// and children-first notices are records whose facts are fields and whose steps are the
+// architect's prompt's (dispatch://INFRA-3686), so their rows read what that prompt says of them:
+// the rules for ending a child and the notice's own paragraph (architectPromptOn).
+func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		lag  bool
+		text func(t *testing.T) string
+	}{
+		{"sign_off", true, func(t *testing.T) string {
+			pool := migratedPool(t)
+			seedAccepting(t, pool)
+			seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Implementing, "in_progress")
+			result := signOffNow(t, pool, "signoff-held", "LEGION-208")
+			if result.Refusal == nil || result.Refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" {
+				t.Fatalf("sign-off with an issue beneath = %+v, want SIGNOFF_CHILD_IN_WORKFLOW", result.Refusal)
+			}
+			return result.Refusal.Message
+		}},
+		{"close_root", true, func(t *testing.T) string {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
+			seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Planning, "in_progress")
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "close-held", intake.CloseRoot{Issue: "LEGION-208", Reason: "moot"},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			if err != nil || result.Refusal == nil || result.Refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" {
+				t.Fatalf("close_root with an issue beneath = %+v, %v; want SIGNOFF_CHILD_IN_WORKFLOW", result.Refusal, err)
+			}
+			return result.Refusal.Message
+		}},
+		{"pr-merged", true, func(t *testing.T) string {
+			rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
+			for _, notice := range architectNotices(t, rig.pool) {
+				if notice.Kind == "pr-merged" {
+					if notice.Reason != "" {
+						t.Fatalf("the pr-merged notice carries the reason %q, want its facts as fields and its steps in the architect's prompt", notice.Reason)
+					}
+					return architectPromptOn(t, "A `pr-merged` notice")
+				}
+			}
+			t.Fatalf("no pr-merged notice after a merge that waits for LEGION-209")
+			return ""
+		}},
+		{"children-first", false, func(t *testing.T) string {
+			return architectPromptOn(t, "A `children-first` notice")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.text(t)
+			if !strings.Contains(text, "dispatch issue-update") || !strings.Contains(text, "--status done") {
+				t.Errorf("the %s text %q does not name the architect's status write (dispatch issue-update … --status done)", tc.name, text)
+			}
+			if strings.Contains(strings.ToLower(text), "park") {
+				t.Errorf("the %s text %q names a removed operation or the old word for the move", tc.name, text)
+			}
+			if tc.lag && (!strings.Contains(text, "has not taken yet") || !strings.Contains(text, "read_record")) {
+				t.Errorf("the %s text %q does not say that a status the daemon has not taken yet counts only once read_record shows it", tc.name, text)
+			}
+		})
+	}
+}
+
+// architectPromptOn is what the architects' common prompt part (go/architect-common.md) says of a
+// notice whose steps are the prompt's: the paragraph that opens the rules for ending a child, the
+// numbered list of those rules, and the paragraph of the notice, which opens with opening.
+func architectPromptOn(t *testing.T, opening string) string {
+	t.Helper()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	body, err := os.ReadFile(composer.Part("architect-common.md"))
+	if err != nil {
+		t.Fatalf("read the architects' common prompt part: %v", err)
+	}
+	var said []string
+	for _, paragraph := range strings.Split(string(body), "\n\n") {
+		paragraph = strings.TrimSpace(paragraph)
+		if strings.HasPrefix(paragraph, "You end a child") || strings.HasPrefix(paragraph, "1. ") || strings.HasPrefix(paragraph, opening) {
+			said = append(said, paragraph)
+		}
+	}
+	if len(said) != 3 {
+		t.Fatalf("the architects' common prompt part holds %d of the paragraph that opens the rules for ending a child, their list and the paragraph opening %q, want the three",
+			len(said), opening)
+	}
+	return strings.Join(said, "\n\n")
 }

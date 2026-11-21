@@ -607,8 +607,10 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 }
 
 // assertWaitNotice checks that the architect was told the close waits exactly once: one pr-merged
-// notice, naming the pull request and waiting, the keys the close is waiting for. The architect's
-// other notices — a child's close or park among them — are not this one's business.
+// notice, naming the pull request and waiting, the keys the close is waiting for, with no reason,
+// since the steps main's sentence gave (a status the daemon has not taken yet, the rule that ends
+// a child) are the architect's prompt's. The architect's other notices — a child's close or its
+// move out of the workflow among them — are not this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice

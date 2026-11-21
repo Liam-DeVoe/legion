@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -146,9 +147,10 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	var told any = ChildClosedNotice(issue.Key)
+	left := leftBehind(issue, pr, members)
+	var told any = ChildClosedNotice(issue.Key, left)
 	if status != "done" {
-		told = ChildLeftNotice(issue.Key, status)
+		told = ChildLeftNotice(issue.Key, status, left)
 	}
 	if err := e.notice(ctx, tx, issue.Key, told); err != nil {
 		return err
@@ -183,9 +185,10 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 }
 
 // ChildLeftNotice is the child-status notice of issue, a child that left the workflow with status
-// other than done (texts.ChangeLeft).
-func ChildLeftNotice(issue, status string) texts.ChildStatusRecord {
-	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue}, Change: texts.ChangeLeft, Status: status}
+// other than done (texts.ChangeLeft), and what that move leaves behind (leftBehind).
+func ChildLeftNotice(issue, status string, left texts.LeftBehind) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue}, Change: texts.ChangeLeft, Status: status,
+		LeftBehind: left}
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
@@ -196,6 +199,29 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
+}
+
+// leftBehind is what child's move out of the workflow (leave) leaves for the architect above it to
+// act on, which the child-closed or child-status notice of that move names (texts.LeftBehind,
+// dispatch://INFRA-3178/spec R4). The first is the child's pull request while it is open: the
+// daemon closes no pull request, and a merge of it later closes nothing (merged). The second is
+// each recorded issue under the child that is not done, with its status, in key order: the move
+// ends the child alone, so an issue under it in the workflow runs on, and one out of the workflow
+// stays out (record.Beneath, over members, the tree's records). A child with nothing to name
+// leaves both out.
+func leftBehind(child record.Issue, pr *record.PullRequest, members []record.Issue) texts.LeftBehind {
+	var left texts.LeftBehind
+	if pr != nil && pr.State == record.PullRequestOpen {
+		left.OpenPullRequest = pullRequestRef(*pr)
+	}
+	under := record.Beneath(child, members)
+	slices.SortFunc(under, func(a, b record.Issue) int { return strings.Compare(a.Key, b.Key) })
+	for _, member := range under {
+		if member.Status != record.DoneStatus {
+			left.UnderNotDone = append(left.UnderNotDone, texts.NotDoneIssue{Key: member.Key, Status: member.Status})
+		}
+	}
+	return left
 }
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under

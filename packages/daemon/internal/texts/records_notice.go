@@ -286,9 +286,31 @@ type CarriedGateOpenedRecord struct {
 }
 
 // ChildClosedRecord is the notice that a child is done (workflow's leave and closeMerged). The
-// issue is the child.
+// issue is the child. A child that left the workflow done (leave) names what it leaves behind
+// (LeftBehind); a child of a lingering tree that closed at its merge (closeMerged) names nothing
+// more.
 type ChildClosedRecord struct {
 	NoticeHead
+	LeftBehind
+}
+
+// LeftBehind is what a child's move out of the workflow leaves for the architect above it to act
+// on (workflow's leave, dispatch://INFRA-3178/spec R4): the child's pull request while it is open,
+// as owner/name#n, since the daemon closes no pull request and a merge of it later closes nothing,
+// and each recorded issue under the child that is not done, with its status, in key order, since
+// the move ends the child alone: an issue under it in the workflow runs on, and one out of the
+// workflow stays out. The record holds no state that says a pull request is in the merge queue
+// (the daemon hears only GitHub's removal from it), so the notice cannot say so.
+type LeftBehind struct {
+	OpenPullRequest string         `json:"open_pull_request,omitempty"`
+	UnderNotDone    []NotDoneIssue `json:"under_not_done,omitempty"`
+}
+
+// NotDoneIssue is one issue under a child that left the workflow, which is not done: its key and
+// its status.
+type NotDoneIssue struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
 }
 
 // The words of why a reparented root stays a tree of its own (ChildStatusRecord.StaysOwn), one for
@@ -304,19 +326,21 @@ const (
 // ChildStartedNotice, ChildUnderAcceptedParentNotice, JoinedTheTreeNotice and ReparentedNotice):
 // the change (a Change word, which the urgency rule reads), the tree it runs under, every issue it
 // waited on, the root of the closed tree it came from (absent for the admission queue), the status
-// it left with, the ancestor whose reviewed head the daemon accepted, and, for a reparented root,
-// the root, its new Dispatch parent and why it stays a tree of its own (a StaysOwn word).
+// it left with and what that move leaves behind (LeftBehind), the ancestor whose reviewed head the
+// daemon accepted, and, for a reparented root, the root, its new Dispatch parent and why it stays a
+// tree of its own (a StaysOwn word).
 type ChildStatusRecord struct {
 	NoticeHead
-	Change           string   `json:"change"`
-	Child            string   `json:"child,omitempty"`
-	Tree             string   `json:"tree,omitempty"`
-	WaitedOn         []string `json:"waited_on,omitempty"`
-	FromTree         string   `json:"from_tree,omitempty"`
-	Status           string   `json:"status,omitempty"`
-	AcceptedAncestor string   `json:"accepted_ancestor,omitempty"`
-	Parent           string   `json:"parent,omitempty"`
-	StaysOwn         string   `json:"stays_own,omitempty"`
+	Change   string   `json:"change"`
+	Child    string   `json:"child,omitempty"`
+	Tree     string   `json:"tree,omitempty"`
+	WaitedOn []string `json:"waited_on,omitempty"`
+	FromTree string   `json:"from_tree,omitempty"`
+	Status   string   `json:"status,omitempty"`
+	LeftBehind
+	AcceptedAncestor string `json:"accepted_ancestor,omitempty"`
+	Parent           string `json:"parent,omitempty"`
+	StaysOwn         string `json:"stays_own,omitempty"`
 }
 
 // ChildrenFirstRecord is the notice that a parent's own first phase waits for its open children

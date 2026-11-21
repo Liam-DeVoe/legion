@@ -22,6 +22,10 @@ body: |-
   lose the full stop the daemon's sentence adds after words that end with none, so words of one
   line that end with one `.` lose that `.` too, since the two read alike. A session-forgotten
   notice says why the session was forgotten (`launcher_lookup: failed`, `resumed_by_id: false`).
+  The notice of a child that left the workflow (`child-closed`, or `child-status` with
+  `change: left`) names its open pull request (`open_pull_request`) and each issue under it that is
+  not done, with its status (`under_not_done`), and the rules for ending a child that the
+  `pr-merged` and `children-first` notices carried on main are in the architect's prompt.
   The task of every look of a production check states that a requirement only the deploy can show
   that the look observes as not met is a fail (`not_met_requirement: fail`), and the last look's
   task also states the rest of the rule of its verdict beside `last: true`

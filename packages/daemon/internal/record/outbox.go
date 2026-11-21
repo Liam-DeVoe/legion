@@ -580,6 +580,11 @@ type Notice struct {
 	StaysOwn         string   `json:"stays_own,omitempty"`
 	// Children is every open child a children-first notice names.
 	Children []texts.OpenChildFacts `json:"children,omitempty"`
+	// What a child's move out of the workflow leaves behind (child-closed, and a child-status of a
+	// child that left): its open pull request and each issue under it that is not done
+	// (texts.LeftBehind).
+	OpenPullRequest string               `json:"open_pull_request,omitempty"`
+	UnderNotDone    []texts.NotDoneIssue `json:"under_not_done,omitempty"`
 	// Why a released child is not recorded (child-release-stalled).
 	Stall         string                  `json:"stall,omitempty"`
 	Ancestor      string                  `json:"ancestor,omitempty"`

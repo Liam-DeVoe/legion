@@ -224,9 +224,22 @@ func (b *goldenBuild) notices(r goldenRendering) {
 			goldenWant("issue", root, "version", version, "actor", person, "ref", "dispatch://"+from+"/spec", "at", r.at(72)))
 	}
 
-	// child-closed and child-status in each change.
+	// child-closed and child-status in each change. A child that left the workflow (leave) names its
+	// open pull request and each issue under it that is not done; a child of a lingering tree that
+	// closed at its merge (closeMerged) names nothing more.
 	child := r.key(110)
-	b.notice(r, "closed", arch, workflow.ChildClosedNotice(child), goldenWant("issue", child))
+	left := texts.LeftBehind{OpenPullRequest: fmt.Sprintf("%s#%d", r.repo, 300+r.n),
+		UnderNotDone: []texts.NotDoneIssue{{Key: r.key(117), Status: []string{"in_progress", "todo"}[r.n-1]}, {Key: r.key(118), Status: "backlog"}}[:r.n]}
+	leftWant := func(pairs ...any) map[string]string {
+		want := goldenWant(append(pairs, "open_pull_request", left.OpenPullRequest, "under_not_done#", len(left.UnderNotDone))...)
+		for i, issue := range left.UnderNotDone {
+			want[fmt.Sprintf("under_not_done[%d].key", i)] = issue.Key
+			want[fmt.Sprintf("under_not_done[%d].status", i)] = issue.Status
+		}
+		return want
+	}
+	b.notice(r, "closed", arch, workflow.ChildClosedNotice(child, left), leftWant("issue", child))
+	b.notice(r, "merged", arch, workflow.ChildClosedNotice(child, texts.LeftBehind{}), goldenWant("issue", child))
 	b.notice(r, "todo", arch, workflow.ChildReenteredNotice(child, r.key(99)), goldenWant("issue", child, "change", texts.ChangeTodo, "tree", r.key(99)))
 	waited := []string{r.key(111), r.key(112)}[:r.n]
 	b.notice(r, "started", arch, workflow.ChildStartedNotice(child, r.key(99), waited),
@@ -237,8 +250,8 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", child, "change", texts.ChangeJoined, "tree", r.key(99), "from_tree", r.key(114)))
 	b.notice(r, "reparented", arch, workflow.ReparentedNotice(r.key(99), r.key(115), r.key(116), []string{texts.StaysOwnRan, texts.StaysOwnOperator}[r.n-1]),
 		goldenWant("issue", r.key(99), "change", texts.ChangeReparented, "child", r.key(115), "parent", r.key(116)))
-	b.notice(r, "left", arch, workflow.ChildLeftNotice(child, []string{"icebox", "backlog"}[r.n-1]),
-		goldenWant("issue", child, "change", texts.ChangeLeft, "status", []string{"icebox", "backlog"}[r.n-1]))
+	b.notice(r, "left", arch, workflow.ChildLeftNotice(child, []string{"icebox", "backlog"}[r.n-1], left),
+		leftWant("issue", child, "change", texts.ChangeLeft, "status", []string{"icebox", "backlog"}[r.n-1]))
 
 	// children-first: a parent with 30 open children.
 	{

@@ -3,9 +3,11 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -13,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A child leaving the workflow ends only the child: the shipped daemon lingers the closed issue's
@@ -253,5 +256,159 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 				t.Fatalf("pull request %s with the issue in %s, want %s in %s", state, current, tc.want, tc.phase)
 			}
 		})
+	}
+}
+
+// The notice that tells the architect above a child that the child left the workflow names the
+// child and the status it left with, and names beside them what the move leaves for that architect
+// to act on (dispatch://INFRA-3178/spec R4, texts.LeftBehind): the child's pull request while it is
+// open, since the daemon closes no pull request, and each recorded issue under the child that is
+// not done, with its status and in key order, since the move ends the child alone. A pull request
+// that merged or closed, an issue under the child that is done and an issue outside the child's
+// subtree are not named, and a child with nothing to name leaves both fields out.
+func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone(t *testing.T) {
+	member := func(key, parent string, at phase.Phase, status string) record.Issue {
+		return record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION",
+			Title: key, Parent: &parent, Phase: at, Generation: 7, Status: status, Rank: "V", LastDispatchSeq: 1}
+	}
+	under := []record.Issue{
+		member("LEGION-210", "LEGION-209", phase.Implementing, "in_progress"),
+		member("LEGION-211", "LEGION-209", phase.Done, "backlog"),
+		member("LEGION-212", "LEGION-209", phase.Done, "done"),
+		member("LEGION-213", "LEGION-210", phase.Admitted, "todo"),
+		member("LEGION-214", "LEGION-208", phase.Implementing, "in_progress"),
+	}
+	const open = "sjawhar/legion#43"
+	for _, tc := range []struct {
+		name   string
+		status string
+		// pr is the state of the child's pull request #43, "" for none.
+		pr    record.PullRequestState
+		under []record.Issue
+		kind  record.NoticeKind
+		// openPR and notDone are the facts the notice names beside the child and its status.
+		openPR  string
+		notDone []texts.NotDoneIssue
+	}{
+		{name: "an open pull request", status: "done", pr: record.PullRequestOpen, kind: "child-closed", openPR: open},
+		{name: "issues under it", status: "done", under: under, kind: "child-closed",
+			notDone: []texts.NotDoneIssue{{Key: "LEGION-210", Status: "in_progress"}, {Key: "LEGION-211", Status: "backlog"}, {Key: "LEGION-213", Status: "todo"}}},
+		{name: "an open pull request and an issue under it", status: "triage", pr: record.PullRequestOpen, under: under[:1], kind: "child-status",
+			openPR: open, notDone: []texts.NotDoneIssue{{Key: "LEGION-210", Status: "in_progress"}}},
+		{name: "nothing to name beside a closed pull request", status: "backlog", pr: record.PullRequestClosed, under: under[2:3], kind: "child-status"},
+		{name: "nothing to name beside a merged pull request", status: "done", pr: record.PullRequestMerged, under: under[4:], kind: "child-closed"},
+		{name: "nothing to name at all", status: "icebox", kind: "child-status"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			seedIssue(t, pool, member("LEGION-209", "LEGION-208", phase.Implementing, "in_progress"))
+			for _, issue := range tc.under {
+				seedIssue(t, pool, issue)
+			}
+			if tc.pr != "" {
+				seedPR(t, pool, record.PullRequest{State: tc.pr, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", MergeSHA: "merge-43", Failing: []string{}})
+			}
+			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
+			kind := "issue.updated"
+			if tc.status == record.DoneStatus {
+				kind = "issue.closed"
+			}
+			move := intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: kind, Status: tc.status, Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"}
+			if result, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-moves", move, engine, admissionStub{}); err != nil || result.Refusal != nil {
+				t.Fatalf("ApplyFact = %#v, %v", result, err)
+			}
+			var told []record.Notice
+			for _, notice := range architectNotices(t, pool) {
+				if notice.Kind == "child-closed" || notice.Kind == "child-status" {
+					told = append(told, notice)
+				}
+			}
+			if len(told) != 1 || told[0].Kind != tc.kind || told[0].Issue != "LEGION-209" || told[0].Reason != "" ||
+				told[0].OpenPullRequest != tc.openPR || !slices.Equal(told[0].UnderNotDone, tc.notDone) {
+				t.Fatalf("the notices of the child's move to %s = %+v, want one %s of LEGION-209 naming the open pull request %q and the issues not done under it %+v",
+					tc.status, told, tc.kind, tc.openPR, tc.notDone)
+			}
+			if wantStatus := map[record.NoticeKind]string{"child-status": tc.status}[tc.kind]; told[0].Status != wantStatus || tc.kind == "child-status" && told[0].Change != texts.ChangeLeft {
+				t.Fatalf("the %s of the child's move to %s names change %q and status %q, want the status it left with", tc.kind, tc.status, told[0].Change, told[0].Status)
+			}
+		})
+	}
+}
+
+// A child its owning architect, or a person, closed done while its pull request was open leaves
+// that pull request open: the daemon changes no pull request. Here the child awaited its merge,
+// so its pull request may stand in the merge queue, and the queue merges it after the close. That
+// merge is recorded, with its merge commit, and the architect is told pr-merged, as for the merge
+// of any issue that does not await it (merged), and nothing else is written: the child is not
+// closed again, no status is written to Dispatch, so the child is not reopened, no claim is
+// stopped or started, and no production check opens (dispatch://INFRA-3178/spec R4). The record
+// is the same whoever wrote the done, so a person's done stands in for the owner's here.
+func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
+	pool := migratedPool(t)
+	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
+	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
+	done := intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"}
+	if result, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-done", done, engine, admissionStub{}); err != nil || result.Refusal != nil {
+		t.Fatalf("ApplyFact done = %#v, %v", result, err)
+	}
+	// Admission records the done's status beneath the engine (admit's recordObservation), and the
+	// stub here records nothing, so the test writes that observation as admission would.
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		store := record.NewStore()
+		child, err := store.Issue(t.Context(), tx, "LEGION-209")
+		if err != nil || child == nil {
+			t.Fatalf("read the child after its done: %+v, %v", child, err)
+		}
+		child.Status, child.DispatchStatus, child.LastDispatchSeq = record.DoneStatus, record.DoneStatus, done.Seq
+		return store.PutIssue(t.Context(), tx, *child)
+	})
+	var childPhase phase.Phase
+	var childStatus string
+	if err := pool.QueryRow(context.Background(), "select phase, status from issues where key = 'LEGION-209'").Scan(&childPhase, &childStatus); err != nil || childPhase != phase.Done || childStatus != record.DoneStatus {
+		t.Fatalf("the child after its done = %s/%s, %v; want done/done: this test proves nothing", childPhase, childStatus, err)
+	}
+	var last int64
+	if err := pool.QueryRow(context.Background(), "select coalesce(max(id), 0) from outbox").Scan(&last); err != nil {
+		t.Fatalf("read the last outbox row: %v", err)
+	}
+
+	merge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43", HeadSHA: "head-43"}
+	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", merge, engine, admissionStub{}); err != nil || result.Refusal != nil {
+		t.Fatalf("ApplyFact merge = %#v, %v", result, err)
+	}
+
+	var pr *record.PullRequest
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		pr, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-209")
+		return err
+	})
+	if pr == nil || pr.State != record.PullRequestMerged || pr.MergeSHA != "merge-43" {
+		t.Fatalf("the child's pull request after the merge = %+v, want it recorded merged at merge-43", pr)
+	}
+	if err := pool.QueryRow(context.Background(), "select phase, status from issues where key = 'LEGION-209'").Scan(&childPhase, &childStatus); err != nil || childPhase != phase.Done || childStatus != record.DoneStatus {
+		t.Fatalf("the child after the merge = %s/%s, %v; want done/done as the done left it", childPhase, childStatus, err)
+	}
+	rows, err := pool.Query(context.Background(), "select kind, coalesce(payload->>'kind', ''), coalesce(payload->>'reason', '') from outbox where id > $1 order by id", last)
+	if err != nil {
+		t.Fatalf("read the rows the merge added: %v", err)
+	}
+	type added struct{ kind, notice, reason string }
+	got, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (added, error) {
+		var a added
+		return a, row.Scan(&a.kind, &a.notice, &a.reason)
+	})
+	if err != nil {
+		t.Fatalf("collect the rows the merge added: %v", err)
+	}
+	want := []added{{kind: "notice", notice: "pr-merged", reason: "pull request #43 merged while LEGION-209 was in done, not merging"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the rows the merge added = %+v, want the pr-merged notice alone, %+v", got, want)
+	}
+	if check := productionCheck(t, pool, "LEGION-209"); check != nil {
+		t.Fatalf("the production check of the child = %+v, want none: its done came before the merge", check)
 	}
 }

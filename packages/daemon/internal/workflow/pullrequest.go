@@ -515,7 +515,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.notice(ctx, tx, issue.Key, ChildClosedNotice(issue.Key)); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, ChildClosedNotice(issue.Key, texts.LeftBehind{})); err != nil {
 			return nil, err
 		}
 	}
@@ -560,9 +560,10 @@ func PRClosedUnmergedNotice(issue string, pr record.PullRequest, at phase.Phase)
 		Phase: at}
 }
 
-// ChildClosedNotice is the child-closed notice of issue, a child that is done.
-func ChildClosedNotice(issue string) texts.ChildClosedRecord {
-	return texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue}}
+// ChildClosedNotice is the child-closed notice of issue, a child that is done, and what its move
+// out of the workflow leaves behind (leftBehind): nothing for a child that closed at its merge.
+func ChildClosedNotice(issue string, left texts.LeftBehind) texts.ChildClosedRecord {
+	return texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue}, LeftBehind: left}
 }
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge

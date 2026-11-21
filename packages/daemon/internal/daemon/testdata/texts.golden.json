@@ -2759,12 +2759,58 @@
       "summary": "child-closed on ALPHA-1110",
       "payload": {
         "kind": "child-closed",
-        "issue": "ALPHA-1110"
+        "issue": "ALPHA-1110",
+        "open_pull_request": "alpha-works/alpha-tower#301",
+        "under_not_done": [
+          {
+            "key": "ALPHA-1117",
+            "status": "in_progress"
+          }
+        ]
       }
     },
     {
       "kind": "child-closed",
       "variant": "closed",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2110",
+      "summary": "child-closed on BRAVO-2110",
+      "payload": {
+        "kind": "child-closed",
+        "issue": "BRAVO-2110",
+        "open_pull_request": "bravo-labs/bravo-yard#302",
+        "under_not_done": [
+          {
+            "key": "BRAVO-2117",
+            "status": "todo"
+          },
+          {
+            "key": "BRAVO-2118",
+            "status": "backlog"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "child-closed",
+      "variant": "merged",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1110",
+      "summary": "child-closed on ALPHA-1110",
+      "payload": {
+        "kind": "child-closed",
+        "issue": "ALPHA-1110"
+      }
+    },
+    {
+      "kind": "child-closed",
+      "variant": "merged",
       "sample": 2,
       "reader": "architect",
       "form": "notice",
@@ -2855,7 +2901,14 @@
         "kind": "child-status",
         "issue": "ALPHA-1110",
         "status": "icebox",
-        "change": "left"
+        "change": "left",
+        "open_pull_request": "alpha-works/alpha-tower#301",
+        "under_not_done": [
+          {
+            "key": "ALPHA-1117",
+            "status": "in_progress"
+          }
+        ]
       }
     },
     {
@@ -2871,7 +2924,18 @@
         "kind": "child-status",
         "issue": "BRAVO-2110",
         "status": "backlog",
-        "change": "left"
+        "change": "left",
+        "open_pull_request": "bravo-labs/bravo-yard#302",
+        "under_not_done": [
+          {
+            "key": "BRAVO-2117",
+            "status": "todo"
+          },
+          {
+            "key": "BRAVO-2118",
+            "status": "backlog"
+          }
+        ]
       }
     },
     {
