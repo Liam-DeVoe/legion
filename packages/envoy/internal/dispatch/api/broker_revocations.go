@@ -106,10 +106,11 @@ func RunBrokerRevocations(ctx context.Context, pass func(context.Context) time.T
 // it records and replaces no account, and pays only what a sign-in recorded while the binding
 // held, which ends a replaced account's broker credentials beside a build without the binding too.
 //
-// Each pass first catches up the replacements of an address's account the database kept while the
-// account binding was off (catchUpAccountBindings), broker or none, so a revocation that catch-up
-// owes is paid in the same pass; while one is kept and the binding is off, the pass asks for the
-// next within accountBindingCatchUpPoll.
+// Each pass first catches up what the account binding did not revoke while it was off
+// (catchUpAccountBindings), broker or none: the replacements of an address's account the database
+// kept then, and the personal tokens the binding refuses that outlived the address's recording. So
+// a revocation that catch-up owes is paid in the same pass; while an address has something to catch
+// up and the binding is off, the pass asks for the next within accountBindingCatchUpPoll.
 func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 	pending := s.catchUpAccountBindings(ctx)
 	next := s.payOwedBrokerCredentials(ctx)
@@ -121,31 +122,34 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 	return next
 }
 
-// accountBindingCatchUpPoll is how often the revocation loop reads the fleet again while a
-// replacement kept while the account binding was off waits for it to hold
-// (catchUpAccountBindings): the longest a replaced account's broker credentials stand once the
-// binding holds, when no sign-in of the address catches it up first. Its tokens are refused from
-// the moment the binding holds (tokenAccountReplaced).
+// accountBindingCatchUpPoll is how often the revocation loop reads the fleet again while an
+// address has something to catch up and the account binding is off (catchUpAccountBindings): the
+// longest a replaced account's broker credentials stand once the binding holds, when no sign-in of
+// the address catches it up first, and the longest a token minted while it was off by a token the
+// binding refuses acts then. The binding refuses a kept replacement's tokens from the moment it
+// holds (tokenAccountReplaced).
 const accountBindingCatchUpPoll = 10 * time.Second
 
-// catchUpAccountBindings catches up, for each address with a replacement of its account the
-// database kept while the account binding was off (store.AccountBindingReplacementAddresses), what
-// the binding owes it, each in a transaction of its own under the address's lock
-// (store.CatchUpAccountBindingOf): the personal tokens made since are revoked, a broker revocation
-// of each replaced account is recorded when a broker is configured, and the address's rows are
-// deleted, so one address is caught up once. It stops at the first address it finds the binding
-// off for, since the fleet is then off for every address, and answers whether any replacement is
-// still kept. A deployment whose sign-in records no account keeps none. Each address caught up is
-// logged at WARN; a read or write that fails is logged at ERROR, and the replacement is kept for
-// the next pass.
+// catchUpAccountBindings catches up, for each address the account binding has something to catch
+// up for (store.AccountBindingCatchUpAddresses: a replacement of its account the database kept
+// while the binding was off, or a personal token the binding refuses that outlived its recording),
+// what the binding owes it, each in a transaction of its own under the address's lock
+// (store.CatchUpAccountBindingOf): the personal tokens a sign-in with the binding on would have
+// revoked are revoked, a broker revocation of each replaced account is recorded when a broker is
+// configured, and the address's kept rows are deleted, so one address is caught up once. It stops at
+// the first address it finds the binding off for, since the fleet is then off for every address,
+// and answers whether any address still has something to catch up. A deployment whose sign-in
+// records no account holds no credential to an account, and catches nothing up. Each address caught
+// up is logged at WARN; a read or write that fails is logged at ERROR, and the address is tried
+// again at the next pass.
 func (s *server) catchUpAccountBindings(ctx context.Context) (pending bool) {
 	if s.deps.Store == nil || s.deps.SignInIssuer == "" {
 		return false
 	}
-	emails, err := store.AccountBindingReplacementAddresses(ctx, s.deps.Store.Pool)
+	emails, err := store.AccountBindingCatchUpAddresses(ctx, s.deps.Store.Pool)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read the replacements kept while the account binding was off; the next pass reads them again", "error", err)
+			slog.Error("dispatch: read what the account binding has to catch up; the next pass reads it again", "error", err)
 		}
 		return true
 	}
@@ -157,7 +161,7 @@ func (s *server) catchUpAccountBindings(ctx context.Context) (pending bool) {
 		held, caught, err := store.CatchUpAccountBindingOf(ctx, s.deps.Store.Pool, email, issuer)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Error("dispatch: catch up a replacement kept while the account binding was off; the next pass tries again", "email", email, "error", err)
+				slog.Error("dispatch: catch up what the account binding did not revoke while it was off; the next pass tries again", "email", email, "error", err)
 			}
 			pending = true
 			continue

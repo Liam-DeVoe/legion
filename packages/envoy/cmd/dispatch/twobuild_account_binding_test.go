@@ -324,16 +324,18 @@ func owedSubjects(t *testing.T, database *store.Store) []string {
 //     token (it records a, and people records c), the two tokens a's token minted in the overlap
 //     through either build, b's and c's own (each records none and was made after a kept
 //     replacement). Its revocation loop catches the kept replacements up: those four tokens are
-//     revoked, a's token, which records an account, is left as it is, the broker is owed a's and
-//     b's revocations, and nothing stays kept. c's cookie then mints a token that records c, which
-//     acts, and d's sign-in revokes the address's tokens and owes c's revocation, the row's control
-//     that it can see the binding replace.
+//     revoked, and so is a's token, which the binding refuses and which a later build without the
+//     binding would admit again; the broker is owed a's and b's revocations, and nothing stays
+//     kept. c's cookie then mints a token that records c, which acts, and d's sign-in revokes the
+//     address's tokens and owes c's revocation, the row's control that it can see the binding
+//     replace.
 //
 // Controls, run by hand: AccountBindingHoldsSQL answering true (the gate removed) fails step 2,
 // naming the state the previous build leaves unchecked; account_binding_fleet_read reading
 // server_processes alone fails step 2 too, the window before the previous build registers; the
 // trigger people_account_binding_replacement dropped (the catch-up removed) fails step 4, where
-// the tokens a's token minted in the overlap act.
+// the tokens a's token minted in the overlap act; and CatchUpAccountBinding's refused-token sweep
+// removed fails step 4 at a's token, left live.
 func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.T) {
 	build := openPreviousBuild(t)
 	if reason, skip, err := accountBindingRowSkip(previousBuildAccountBinding(t, build)); err != nil {
@@ -481,8 +483,8 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 			t.Errorf("%s: the catch-up left %s live; want every token that records no account made since the first kept replacement revoked. %s", after, name, bindingState(t, database))
 		}
 	}
-	if _, revoked := tokenRecord(t, database, "token-a"); revoked {
-		t.Errorf("%s: the catch-up revoked token-a, which records account-a; want it left as it is. %s", after, bindingState(t, database))
+	if _, revoked := tokenRecord(t, database, "token-a"); !revoked {
+		t.Errorf("%s: the catch-up left token-a live, which records account-a and which a later build without the binding would admit again; want it revoked. %s", after, bindingState(t, database))
 	}
 	tokenC2 := mintToken(t, current, sessionC, "token-c2")
 	if subject, _ := tokenRecord(t, database, "token-c2"); subject != "account-c" {

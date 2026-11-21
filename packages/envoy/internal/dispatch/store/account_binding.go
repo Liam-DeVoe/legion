@@ -98,41 +98,85 @@ const keepAccountChangeSQL = `
 
 // AccountBindingCatchUp is what one catch-up of an address did (CatchUpAccountBinding): the
 // accounts its kept changes replaced, in the order they were replaced; whether one of them was the
-// address's first recording, which replaced none; how many of its personal tokens it revoked; the
-// accounts it recorded a broker revocation of; and the account that holds the address, which each
-// revocation names as the holder.
+// address's first recording, which replaced none; whether a personal token the binding refuses
+// outlived the address's recording (RefusedLive, refusedTokenOutlivedSQL); how many of its personal
+// tokens it revoked; the accounts it recorded a broker revocation of; and the account that holds
+// the address, which each revocation names as the holder.
 type AccountBindingCatchUp struct {
 	Replaced       []string
 	FirstRecording bool
+	RefusedLive    bool
 	TokensRevoked  int64
 	Owed           []string
 	Holder         string
 }
 
-// Found reports whether the catch-up found a kept change to catch up.
+// Found reports whether the catch-up found anything to catch up.
 func (c AccountBindingCatchUp) Found() bool {
-	return len(c.Replaced) > 0 || c.FirstRecording
+	return len(c.Replaced) > 0 || c.FirstRecording || c.RefusedLive
 }
 
-// CatchUpAccountBinding catches up, in tx, the changes of email's Google account the database kept
-// while the account binding was off (account_binding_replacements, migration 20261121121717),
-// doing what the sign-ins that made them would have done with the binding on: for a caller that
-// holds email's lock (addressLockSQL) and read the binding as holding in tx (AccountBindingHolds).
-// email is the address as people.email holds it.
+// refusedTokenOutlivedSQL is the aggregate, over the rows refusedTokenSweepFromSQL reads (an
+// address's people row, people, joined to each of its personal tokens, t), that a token the
+// binding refuses outlived the address's recording: one refused by its own recorded account or its
+// creation time (api.tokenAccountReplaced's first two arms: it records an account people no longer
+// records, however and whenever it was minted, or it records none and was made before
+// people.sub_recorded_at) that is live, or was revoked after that recording and so was live after
+// it. While a build without the binding was in the fleet, every build admitted it then, so it may
+// have acted, minted personal tokens that record no account and approved machine logins that record
+// none; and while it stays live, every later such time admits it again.
+const refusedTokenOutlivedSQL = `bool_or(((t.subject is not null and t.subject <> people.sub)
+			or (t.subject is null and people.sub_recorded_at is not null and t.created_at < people.sub_recorded_at))
+		and (t.revoked_at is null or t.revoked_at > people.sub_recorded_at))`
+
+// otherAccountTokenLiveSQL is the aggregate, over the same rows, that a live personal token of the
+// address records an account other than people's, or none: what revokeOtherAccountsTokensSQL
+// revokes.
+const otherAccountTokenLiveSQL = `bool_or(t.revoked_at is null and t.subject is distinct from people.sub)`
+
+// refusedTokenSweepFromSQL is the rows refusedTokenOutlivedSQL and otherAccountTokenLiveSQL read:
+// every personal token of each address that records a Google account (people.sub set), joined to
+// its people row by the owner in the form people.email holds (canonical_login), as
+// revokeAddressTokensSQL compares owners. agent_tokens keeps no link from a token to the credential
+// that minted it, so a token's descendants are read by what they record and when they were made.
+const refusedTokenSweepFromSQL = `
+	from people join agent_tokens t on canonical_login(t.owner) = people.email
+	where people.sub is not null`
+
+// CatchUpAccountBinding catches up, in tx, what the account binding did not revoke at email while
+// it was off, doing what a sign-in with the binding on would have done: for a caller that holds
+// email's lock (addressLockSQL) and read the binding as holding in tx (AccountBindingHolds). email
+// is the address as people.email holds it. It catches up two things.
 //
-// It revokes every personal token of email that records no account and was made at or after the
-// earliest kept change, whichever build minted it and whichever account's credential did, the
-// holder's own included: none of them can be told from one a credential from before the change
-// minted. For a kept first recording it also revokes every token that records an account other
-// than the holder's or none, as a first recording does (revokeOtherAccountsTokens). When issuer is
-// set (WithBrokerRevocations: a broker is configured), it records a broker revocation
-// (recordBrokerRevocationSQL) of each account replaced, or recorded by a token it revoked, that
-// does not hold email now, naming the holder, after it settles what is still owed for the holder
-// (settleReclaimedBrokerRevocationsSQL), as a sign-in does; an account that took the address back
-// holds it, and is owed nothing. It deletes the address's rows, so a second catch-up finds none and
-// does nothing. A token that records the holder's account is left as it is, and so, outside a first
-// recording, is one that records another: the binding refuses it once the account it records no
-// longer holds the address (api.tokenAccountReplaced).
+// The changes of email's Google account the database kept while the binding was off
+// (account_binding_replacements, migration 20261121121717): it revokes every personal token of
+// email that records no account and was made at or after the earliest kept change, whichever build
+// minted it and whichever account's credential did, the holder's own included: none of them can be
+// told from one a credential from before the change minted. For a kept first recording it also
+// revokes every token that records an account other than the holder's or none, as a first
+// recording does (revokeOtherAccountsTokens). It deletes the address's rows, so a second catch-up
+// finds none and does nothing.
+//
+// A personal token the binding refuses that outlived the address's recording
+// (refusedTokenOutlivedSQL): the binding refuses it while it holds, but every build admits it
+// while a build without the binding is in the fleet, so it can act and mint again then, and
+// whatever it minted then records no account and was made after the recording, which the binding
+// admits as the holder's. So while any token of email that records an account other than the
+// holder's, or none, is live (otherAccountTokenLiveSQL), it revokes every such token, as a first
+// recording does (revokeOtherAccountsTokens): the refused tokens themselves, which no build admits
+// once revoked, so no later such time admits them again, and every token recording no account made
+// since the recording, which is everything they could have minted, the holder's own overlap mints
+// included (they mint again). A token that records the holder's account is left as it is.
+//
+// When issuer is set (WithBrokerRevocations: a broker is configured), it records a broker
+// revocation (recordBrokerRevocationSQL) of each account replaced, or recorded by a token of email
+// (otherAccountsSQL), that does not hold email now, naming the holder, after it settles what is
+// still owed for the holder (settleReclaimedBrokerRevocationsSQL), as a sign-in does; an account
+// that took the address back holds it, and is owed nothing. The broker ends every credential such
+// an account holds under the address, and every one recording no account, a machine login whose
+// approval named none included. A token recording no account names no account to owe, so an
+// address whose refused tokens all record none, and no token of which records another account,
+// owes the broker nothing.
 func CatchUpAccountBinding(ctx context.Context, tx pgx.Tx, email, issuer string) (AccountBindingCatchUp, error) {
 	var caught AccountBindingCatchUp
 	rows, err := tx.Query(ctx, `
@@ -162,27 +206,45 @@ func CatchUpAccountBinding(ctx context.Context, tx pgx.Tx, email, issuer string)
 	if err := rows.Err(); err != nil {
 		return caught, fmt.Errorf("read the account changes of %q kept while the account binding was off: %w", email, err)
 	}
-	if kept == 0 {
-		return caught, nil
+	var owed []string
+	if kept > 0 {
+		if err := tx.QueryRow(ctx, `select coalesce(sub, '') from people where email = $1`, email).Scan(&caught.Holder); err != nil {
+			return caught, fmt.Errorf("read the Google account %q records: %w", email, err)
+		}
+		revoked, err := tx.Exec(ctx, `
+			update agent_tokens set revoked_at = now()
+			where canonical_login(owner) = $1 and revoked_at is null and subject is null and created_at >= $2`, email, earliest)
+		if err != nil {
+			return caught, fmt.Errorf("revoke the personal tokens of %q made since an account change kept while the account binding was off: %w", email, err)
+		}
+		caught.TokensRevoked = revoked.RowsAffected()
+		owed = caught.Replaced
+		if caught.FirstRecording && caught.Holder != "" {
+			others, accounts, err := revokeOtherAccountsTokens(ctx, tx, email, caught.Holder)
+			if err != nil {
+				return caught, err
+			}
+			caught.TokensRevoked += others
+			owed = append(slices.Clone(owed), accounts...)
+		}
 	}
-	if err := tx.QueryRow(ctx, `select coalesce(sub, '') from people where email = $1`, email).Scan(&caught.Holder); err != nil {
-		return caught, fmt.Errorf("read the Google account %q records: %w", email, err)
+	var holder string
+	if err := tx.QueryRow(ctx, `
+		select coalesce(`+refusedTokenOutlivedSQL+` and `+otherAccountTokenLiveSQL+`, false), coalesce(min(people.sub), '')`+
+		refusedTokenSweepFromSQL+` and people.email = $1`, email).Scan(&caught.RefusedLive, &holder); err != nil {
+		return caught, fmt.Errorf("read whether a personal token of %q the account binding refuses outlived its recording: %w", email, err)
 	}
-	revoked, err := tx.Exec(ctx, `
-		update agent_tokens set revoked_at = now()
-		where canonical_login(owner) = $1 and revoked_at is null and subject is null and created_at >= $2`, email, earliest)
-	if err != nil {
-		return caught, fmt.Errorf("revoke the personal tokens of %q made since an account change kept while the account binding was off: %w", email, err)
-	}
-	caught.TokensRevoked = revoked.RowsAffected()
-	owed := caught.Replaced
-	if caught.FirstRecording && caught.Holder != "" {
-		others, accounts, err := revokeOtherAccountsTokens(ctx, tx, email, caught.Holder)
+	if caught.RefusedLive {
+		caught.Holder = holder
+		others, accounts, err := revokeOtherAccountsTokens(ctx, tx, email, holder)
 		if err != nil {
 			return caught, err
 		}
 		caught.TokensRevoked += others
 		owed = append(slices.Clone(owed), accounts...)
+	}
+	if !caught.Found() {
+		return caught, nil
 	}
 	for _, subject := range owed {
 		if subject != caught.Holder && !slices.Contains(caught.Owed, subject) {
@@ -195,23 +257,24 @@ func CatchUpAccountBinding(ctx context.Context, tx pgx.Tx, email, issuer string)
 		}
 		for _, account := range caught.Owed {
 			if _, err := tx.Exec(ctx, recordBrokerRevocationSQL, email, issuer, account, caught.Holder); err != nil {
-				return caught, fmt.Errorf("record the broker revocation of %q owed for an account change kept while the account binding was off: %w", email, err)
+				return caught, fmt.Errorf("record the broker revocation of %q owed for an account change the account binding did not revoke for: %w", email, err)
 			}
 		}
 	} else {
 		caught.Owed = nil
 	}
-	if _, err := tx.Exec(ctx, `delete from account_binding_replacements where email = $1`, email); err != nil {
-		return caught, fmt.Errorf("delete the account changes of %q kept while the account binding was off: %w", email, err)
+	if kept > 0 {
+		if _, err := tx.Exec(ctx, `delete from account_binding_replacements where email = $1`, email); err != nil {
+			return caught, fmt.Errorf("delete the account changes of %q kept while the account binding was off: %w", email, err)
+		}
 	}
 	return caught, nil
 }
 
-// CatchUpAccountBindingOf catches up email's kept replacements in a transaction of its own
-// (CatchUpAccountBinding), after it takes email's lock and reads whether the binding holds, as a
-// sign-in does: held is false, and nothing is written, while a build without the binding is in the
-// fleet. The revocation loop runs it for every address with a kept replacement
-// (AccountBindingReplacementAddresses).
+// CatchUpAccountBindingOf catches up email in a transaction of its own (CatchUpAccountBinding),
+// after it takes email's lock and reads whether the binding holds, as a sign-in does: held is
+// false, and nothing is written, while a build without the binding is in the fleet. The revocation
+// loop runs it for every address AccountBindingCatchUpAddresses answers.
 func CatchUpAccountBindingOf(ctx context.Context, pool *Pool, email, issuer string) (held bool, caught AccountBindingCatchUp, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -233,16 +296,27 @@ func CatchUpAccountBindingOf(ctx context.Context, pool *Pool, email, issuer stri
 	return true, caught, nil
 }
 
-// AccountBindingReplacementAddresses answers every address with a replacement kept while the
-// account binding was off (account_binding_replacements), the earliest kept first.
-func AccountBindingReplacementAddresses(ctx context.Context, pool *Pool) ([]string, error) {
-	rows, err := pool.Query(ctx, `select email from account_binding_replacements group by email order by min(replaced_at)`)
+// AccountBindingCatchUpAddresses answers every address the account binding has something to catch
+// up for (CatchUpAccountBinding): one with an account change kept while it was off
+// (account_binding_replacements), and one with a live personal token that records an account other
+// than the holder's or none while a token the binding refuses outlived its recording
+// (refusedTokenOutlivedSQL and otherAccountTokenLiveSQL), the earliest change or recording first.
+// The second reads every personal token once, in one join with people.
+func AccountBindingCatchUpAddresses(ctx context.Context, pool *Pool) ([]string, error) {
+	rows, err := pool.Query(ctx, `
+		select email from (
+			select email, replaced_at as since from account_binding_replacements
+			union all
+			select people.email, min(people.sub_recorded_at)`+refusedTokenSweepFromSQL+`
+			group by people.email
+			having `+refusedTokenOutlivedSQL+` and `+otherAccountTokenLiveSQL+`
+		) due group by email order by min(since) nulls last, email`)
 	if err != nil {
-		return nil, fmt.Errorf("read the addresses with a replacement kept while the account binding was off: %w", err)
+		return nil, fmt.Errorf("read the addresses the account binding has something to catch up for: %w", err)
 	}
 	emails, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("read the addresses with a replacement kept while the account binding was off: %w", err)
+		return nil, fmt.Errorf("read the addresses the account binding has something to catch up for: %w", err)
 	}
 	return emails, nil
 }

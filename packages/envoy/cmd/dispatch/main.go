@@ -1233,9 +1233,11 @@ func main() {
 	// recorded waits, on a process without, for the first pass of a process that has one. The owed
 	// revocations are on /metrics, each series read from the table when a scrape asks for it, so one
 	// the broker never confirms shows whichever process recorded it (envoy-dispatch
-	// clear-broker-revocation settles it). Each pass also catches up the replacements of an
-	// address's account the database kept while the account binding was off, broker or none, once
-	// the binding holds (store.CatchUpAccountBindingOf), which each such replacement wakes it for.
+	// clear-broker-revocation settles it). Each pass also catches up, broker or none, once the
+	// account binding holds, the replacements of an address's account the database kept while it
+	// was off, which each such replacement wakes it for, and the personal tokens the binding refuses
+	// that outlived their address's recording (store.CatchUpAccountBindingOf), which it reads the
+	// fleet for every 10 seconds while the binding is off.
 	go api.RunBrokerRevocations(ctx, background.RevokeBrokerCredentials, brokerRevocationsWake)
 	api.RegisterBrokerRevocationMetrics(met, database.Pool)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A

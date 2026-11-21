@@ -217,8 +217,9 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // (keepAccountChangeSQL, account_binding_replacements, migration 20261121121717), by the reading
 // it revoked nothing on, so the binding catches it up once it holds; the database's trigger keeps
 // the change a build without the binding makes. A sign-in that finds the binding holding catches
-// up the address's kept changes first (CatchUpAccountBinding, logged at WARN), then deletes the
-// one the trigger may keep for its own change, which it revokes and owes itself.
+// the address up first (CatchUpAccountBinding, logged at WARN: its kept changes, and the tokens the
+// binding refuses that outlived its recording), then deletes the one the trigger may keep for its
+// own change, which it revokes and owes itself.
 //
 // A restricted sign-in (an account outside the Workspace) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
@@ -341,13 +342,15 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	return nil
 }
 
-// LogAccountBindingCatchUp logs, at WARN, a catch-up of email's account changes kept while the
-// account binding was off (CatchUpAccountBinding), by a sign-in or by the revocation loop: the
-// accounts they replaced, whether one was the address's first recording, how many personal tokens
-// it revoked, the accounts it owes the broker a revocation of, and the holder.
+// LogAccountBindingCatchUp logs, at WARN, a catch-up of what the account binding did not revoke at
+// email while it was off (CatchUpAccountBinding), by a sign-in or by the revocation loop: the
+// accounts its kept changes replaced, whether one was the address's first recording, whether a
+// personal token the binding refuses outlived the address's recording, how many personal tokens it
+// revoked, the accounts it owes the broker a revocation of, and the holder.
 func LogAccountBindingCatchUp(email string, caught AccountBindingCatchUp) {
-	slog.Warn("dispatch: the account binding holds and caught up the account changes of the address made while it was off: it revoked the personal tokens of the address a sign-in with the binding on would have, and owes the broker a revocation of each account they replaced",
-		"email", email, "replaced_subjects", caught.Replaced, "first_recording", caught.FirstRecording, "tokens_revoked", caught.TokensRevoked, "owed", caught.Owed, "holder", caught.Holder)
+	slog.Warn("dispatch: the account binding holds and caught up what it did not revoke at the address while it was off: it revoked the personal tokens of the address a sign-in with the binding on would have, and owes the broker a revocation of each account they replaced",
+		"email", email, "replaced_subjects", caught.Replaced, "first_recording", caught.FirstRecording, "refused_live", caught.RefusedLive,
+		"tokens_revoked", caught.TokensRevoked, "owed", caught.Owed, "holder", caught.Holder)
 }
 
 // addressLockSQL takes the advisory lock on $1, an address, in the form people.email holds it

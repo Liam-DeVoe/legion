@@ -438,9 +438,10 @@ func owedSubjects(t *testing.T, s *Store, email string) []string {
 // build and account-c replaces account-b through a build without the binding (its sign-in's
 // update of sub, spelled here), and between them tokens recording no account are made. While the
 // binding is off the catch-up writes nothing. Once it holds, it revokes every token of the address
-// that records no account made since the first replacement, leaves the token that records
-// account-a, owes the broker a revocation of account-a and of account-b, each naming account-c as
-// the holder, and deletes the kept rows; a second catch-up does nothing.
+// that records no account made since the first replacement, and the token that records account-a,
+// which the binding refuses and which a later build without the binding would admit again; owes the
+// broker a revocation of account-a and of account-b, each naming account-c as the holder; and
+// deletes the kept rows; a second catch-up does nothing.
 //
 // Control, run by hand: with the trigger people_account_binding_replacement dropped, account-c's
 // replacement through a build without the binding is not kept (account-b's, this build's
@@ -478,7 +479,7 @@ func TestAReplacementMadeWhileTheBindingIsOffIsCaughtUpOnceItHolds(t *testing.T)
 	if err != nil || !held {
 		t.Fatalf("the catch-up once the binding holds answered held %t, %v", held, err)
 	}
-	want := AccountBindingCatchUp{Replaced: []string{"account-a", "account-b"}, TokensRevoked: 2, Owed: []string{"account-a", "account-b"}, Holder: "account-c"}
+	want := AccountBindingCatchUp{Replaced: []string{"account-a", "account-b"}, RefusedLive: true, TokensRevoked: 3, Owed: []string{"account-a", "account-b"}, Holder: "account-c"}
 	if !reflect.DeepEqual(caught, want) {
 		t.Errorf("the catch-up did %+v; want %+v", caught, want)
 	}
@@ -487,8 +488,8 @@ func TestAReplacementMadeWhileTheBindingIsOffIsCaughtUpOnceItHolds(t *testing.T)
 			t.Errorf("the catch-up left %s, which records no account and was made after a kept replacement, live; want it revoked", name)
 		}
 	}
-	if _, revoked := tokenState(t, database.Pool, tokenA); revoked {
-		t.Error("the catch-up revoked token-a, which records account-a; want it left as it is")
+	if _, revoked := tokenState(t, database.Pool, tokenA); !revoked {
+		t.Error("the catch-up left token-a live, which records account-a and which a later build without the binding would admit again; want it revoked")
 	}
 	var holders []string
 	rows, err := database.Pool.Query(ctx, `select holder_subject from broker_revocations where email = $1 order by recorded_at`, email)
@@ -606,9 +607,9 @@ func holdUnboundPublish(t *testing.T, s *Store) pgx.Tx {
 // the sign-in read it and before the trigger reads. In each case the sign-in keeps the change and
 // wakes the revocation loop, and once the binding holds (the arrival rolled back, or committed
 // and aged out, or the process gone) the catch-up revokes the token recording no account made in
-// the overlap and owes the broker the replaced account, naming the holder. A first recording made
-// during an arrival is kept too, and its catch-up revokes and owes as a first recording with the
-// binding on does.
+// the overlap and the token recording the replaced account, and owes the broker the replaced
+// account, naming the holder. A first recording made during an arrival is kept too, and its
+// catch-up revokes and owes as a first recording with the binding on does.
 //
 // Controls, run by hand: with SignInSubject's keepAccountChangeSQL removed, every case keeps
 // nothing and fails at "kept"; with only its notification removed, every case fails at
@@ -692,7 +693,7 @@ func TestASignInThatReadsTheBindingOffKeepsItsChangeWhateverTheTriggerReads(t *t
 			people := brokerPeople(database)
 			const email = "kept-by-the-sign-in@example.com"
 			var before string
-			want := AccountBindingCatchUp{Replaced: []string{"account-a"}, TokensRevoked: 1, Owed: []string{"account-a"}, Holder: "account-b"}
+			want := AccountBindingCatchUp{Replaced: []string{"account-a"}, RefusedLive: true, TokensRevoked: 2, Owed: []string{"account-a"}, Holder: "account-b"}
 			wantKept := []string{"account-a"}
 			if c.firstRecording {
 				if _, err := database.Pool.Exec(ctx, `insert into people (email) values ($1)`, email); err != nil {
@@ -746,6 +747,9 @@ func TestASignInThatReadsTheBindingOffKeepsItsChangeWhateverTheTriggerReads(t *t
 			}
 			if _, revoked := tokenState(t, database.Pool, overlap); !revoked {
 				t.Error("the catch-up left the token made in the overlap, which records no account, live; want it revoked")
+			}
+			if _, revoked := tokenState(t, database.Pool, before); !revoked {
+				t.Error("the catch-up left the token from before the change live; want it revoked")
 			}
 			if got := owedSubjects(t, database, email); !slices.Equal(got, want.Owed) {
 				t.Errorf("once the binding holds the broker is owed the revocations of %q; want %q", got, want.Owed)
