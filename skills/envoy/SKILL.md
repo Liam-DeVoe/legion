@@ -79,15 +79,9 @@ A Dispatch issue is `dispatch.issue.<KEY>.>`, and a Dispatch document `dispatch.
 ## Roles and team topics
 
 - Publish to a role with `envoy_publish(topic="notifications.role.<role>", ...)`. Never subscribe to a role topic: the listener forwards a role message to its holder only.
-  `envoy_role_get(role=...)` names the holder.
+  `envoy_role_get(role=...)` names the holder, its `holder_state` and its `last_seen`. Use it in a Legion pod too: the pod's shell holds no credential for the listener, so a `curl` of the role route is refused.
 - When no live session holds the role, Envoy keeps the message for one hour (`kept_until`) and hands it to the next session that holds the role live.
   Neither a kept answer nor a publish error releases the claim: an `unresponsive` holder keeps its role.
-- From a shell with no Envoy tools, such as one in a Legion pod, read a role's holder in bash (the `<(...)` keeps the token out of `curl`'s arguments):
-
-  ```sh
-  curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$ENVOY_TOKEN_FILE")") "$ENVOY_URL/v1/roles/<role>" | jq -c '{holder, holder_state, reason, error}'
-  ```
-
 - A team subscribes to `notifications.team.<name>.>`, and any member publishes to `notifications.team.<name>.all`. A session that subscribes later gets nothing published before.
 - Read `skill://envoy/references/roles.md` when a role you held is gone after a resume, fork or restart, or when `envoy_role_set` is refused.
 - In a Legion pane the plugin claims your role for you. Read `skill://envoy/references/legion.md` before you claim, release or publish to a role there, or when a Legion role message fails.

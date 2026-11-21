@@ -1319,7 +1319,7 @@ const legionPaused = z.object({
  * the one `wakesWaiting` is optional for: the route strips both for a caller below 178, read the
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither.
- * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
+ * `dispatchCredential` is the daemon's Dispatch credential and the one count of the Dispatch
  * tokens its launches hand out, written only under `dispatch_token_broker` (contract 207); the
  * route strips it for a caller below 207, read the same way (`api.stateFor`,
  * `withoutDispatchCredential`). */
