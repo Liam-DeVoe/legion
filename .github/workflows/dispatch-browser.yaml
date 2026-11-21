@@ -90,8 +90,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 720 + 120 + 120 + 524 = 1,484 s, 24 min 44 s, rounded up to the 25 minutes below.
-    timeout-minutes: 25
+    # 720 + 120 + 120 + 565 = 1,525 s, 25 min 25 s, rounded up to the 26 minutes below.
+    timeout-minutes: 26
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -571,8 +571,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-quarantine-jobs-budget
-    # 540 + 120 + 120 + 524 + 1 = 1,305 s: its own 9-minute browser step, the shard job's others.
-    timeout-minutes: 22
+    # 540 + 120 + 120 + 565 + 1 = 1,346 s: its own 9-minute browser step, the shard job's others.
+    timeout-minutes: 23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
