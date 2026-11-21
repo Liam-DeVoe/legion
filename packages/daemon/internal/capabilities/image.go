@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
@@ -31,6 +32,10 @@ type Image struct {
 	// program and how many arguments follow (omplaunch.WithPrefixShown), never an argument, which
 	// can carry a credential. Empty, the refusals name Launch, which then holds no prefix.
 	Shown string
+	// Prefix is the daemon's launch prefix in Launch, whose words, and each NAME=value word's
+	// value, every check's output is quoted without (omplaunch.PrefixMasked): a prefix that
+	// refuses or fails can echo a credential it carries. Nil when Launch holds no prefix.
+	Prefix []string
 	// Env is the environment the checks run under (PATH, PUPPETEER_EXECUTABLE_PATH, HOME,
 	// OMP_PROFILE, PI_CONFIG_FILES, …): the one the pod's Oh My Pi starts with, after the pod
 	// baseline and the operator's pod env shaped it. A binary is looked up on Env's PATH, never
@@ -573,7 +578,8 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
 	timedOut := errors.Is(cause, errCommandTimeout)
-	r := ran{stdout: stdout.String(), stderr: stderr.String(), cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
+	r := ran{stdout: omplaunch.PrefixMasked(stdout.String(), img.Prefix), stderr: omplaunch.PrefixMasked(stderr.String(), img.Prefix),
+		cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
 	case killed() && timedOut:
 		r.err = fmt.Errorf("timed out after %s", budget)

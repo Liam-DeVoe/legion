@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -847,5 +849,43 @@ func TestStateStringIsTheProbeLine(t *testing.T) {
 	state := State{Name: Browser, Status: StatusPresent, Detail: "x"}
 	if want := "probe-image: capability browser: present (x)"; state.String() != want {
 		t.Errorf("State.String() = %q, want %q", state.String(), want)
+	}
+}
+
+// A check's output is quoted without the words of the daemon's launch prefix, nor the value of a
+// NAME=value word (omplaunch.PrefixMasked): a prefix that fails can echo the credential it carries.
+// The token is made up; the command echoes the word and the value as such a prefix would.
+func TestACheckQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
+	const value = "madeUpPrefixToken0123456789"
+	img := Image{Prefix: []string{"env", "OMP_TOKEN=" + value}, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+	r := img.run(context.Background(), "sh", "-c", `echo "OMP_TOKEN=`+value+` refused: `+value+`" >&2; exit 1`)
+	if got := r.failure(); strings.Contains(got, value[:10]) || !strings.Contains(got, "<prefix word 1> refused: <prefix word 1>") {
+		t.Fatalf("the check quoted %q, want the prefix's word and value as <prefix word 1>", got)
+	}
+}
+
+// ReadModelFallback's and CheckOverlays' refusals, which run the daemon's own launch under tmux,
+// quote a failing launch prefix's output without its words: a wrapper handed a made-up token as
+// `--token=<token>` that echoes its argument and exits 3, as a refusing proxy would.
+func TestTheLaunchChecksQuoteNoWordOfTheLaunchPrefix(t *testing.T) {
+	const token = "madeUpPrefixToken0123456789"
+	dir := t.TempDir()
+	wrapper := filepath.Join(dir, "madeup-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\necho \"wrapper: refusing $1\" >&2\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	overlay := filepath.Join(dir, "overlay.yml")
+	if err := os.WriteFile(overlay, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefix := []string{wrapper, "--token=" + token}
+	img := Image{Launch: omplaunch.WithPrefix(prefix, "omp"), Shown: omplaunch.WithPrefixShown(prefix, "omp"), Prefix: prefix,
+		Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+	_, fallbackErr := ReadModelFallback(context.Background(), img)
+	refused, overlaysErr := CheckOverlays(context.Background(), img, []string{overlay}, []string{overlay})
+	for name, got := range map[string]string{"ReadModelFallback": fmt.Sprint(fallbackErr), "CheckOverlays": refused + fmt.Sprint(overlaysErr)} {
+		if strings.Contains(got, token[:10]) || !strings.Contains(got, "wrapper: refusing <prefix word 1>") {
+			t.Errorf("%s quoted %q, want the prefix's argument as <prefix word 1>", name, got)
+		}
 	}
 }
