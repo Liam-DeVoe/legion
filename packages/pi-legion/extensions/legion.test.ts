@@ -7211,7 +7211,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
     expect(await beforeAgentStart({ prompt: "task" }, context)).toEqual({
       message: {
         customType: "legion-workspace-recreated",
-        content: expect.stringContaining("it holds what was pushed to legion/REPO-43"),
+        content: expect.stringContaining("from what was pushed to legion/REPO-43"),
         display: true,
         details: { id },
       },
