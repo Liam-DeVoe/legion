@@ -218,9 +218,24 @@ func encodeLine(record Record) ([]byte, error) {
 	})
 }
 
+// lineFields are the names of line's six fields, each of which a line must hold, and hold as other
+// than null.
+var lineFields = []string{"seq", "subject", "key", "time", "headers", "data"}
+
 // decodeLine is the record raw, one line of records.jsonl, holds, its time and data decoded and
-// nothing else checked.
+// nothing else checked. It refuses a line that leaves out one of lineFields, or gives it as null,
+// naming the field: decoded into line alone, such a line would read as the field's zero, a line
+// with no data as an empty value.
 func decodeLine(raw []byte) (Record, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Record{}, err
+	}
+	for _, name := range lineFields {
+		if value, ok := fields[name]; !ok || string(value) == "null" {
+			return Record{}, fmt.Errorf("it holds no %q", name)
+		}
+	}
 	var entry line
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		return Record{}, err
