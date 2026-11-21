@@ -34,17 +34,19 @@ unknown() {
   echo "UNKNOWN $step: $reason"
 }
 pass() { echo "PASS $1: $2"; }
-# write_report: --report, when it is named, from the findings and the UNKNOWNs so far.
+# write_report: --report, when it is named, from the findings, the UNKNOWNs so far and the run's
+# allowances (allowances_json, in operator-token-minters.sh).
 write_report() {
   [ -n "$REPORT" ] || return 0
   printf '%s\n' ${FINDINGS[@]+"${FINDINGS[@]}"} >"$WORK/findings"
   printf '%s\n' ${UNKNOWNS[@]+"${UNKNOWNS[@]}"} >"$WORK/unknown"
-  jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile unknown "$WORK/unknown" '{
+  jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile unknown "$WORK/unknown" --argjson allowances "$(allowances_json)" '{
     run_at: $run_at,
     findings: [$findings | split("\n")[] | select(length > 0) | split("\t")
       | {principal: .[0], right: .[1], role: .[2], resource: .[3],
          permissions: ((.[4] // "") | split("\u001f") | map(select(length > 0))), granted_at: (.[5] // "")}],
-    unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}]}' >"$WORK/report.json"
+    unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}],
+    allowances: $allowances}' >"$WORK/report.json"
   cp "$WORK/report.json" "$REPORT"
 }
 # crash_report STATUS: on_exit's work for a run that stopped before its end.

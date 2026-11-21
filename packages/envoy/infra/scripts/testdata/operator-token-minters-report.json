@@ -3,7 +3,7 @@
   "findings": [
     {
       "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
-      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update, container.certificateSigningRequests.approve, container.clusters.update, container.secrets.create on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.replicationControllers.create, container.replicationControllers.update, container.nodes.proxy, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create, container.mutatingWebhookConfigurations.create, container.mutatingWebhookConfigurations.update, container.validatingWebhookConfigurations.create, container.validatingWebhookConfigurations.update, container.certificateSigningRequests.approve, container.clusters.update, container.secrets.create, container.secrets.update, container.namespaces.update, container.serviceAccounts.update on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
       "role": "roles/container.admin",
       "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
       "permissions": [
@@ -47,7 +47,10 @@
         "container.validatingWebhookConfigurations.update",
         "container.certificateSigningRequests.approve",
         "container.clusters.update",
-        "container.secrets.create"
+        "container.secrets.create",
+        "container.secrets.update",
+        "container.namespaces.update",
+        "container.serviceAccounts.update"
       ],
       "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
     },
@@ -58,6 +61,16 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch namespaces cluster-wide"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
@@ -183,6 +196,26 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
       "role": "bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -253,6 +286,26 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
       "role": "bind roles.rbac.authorization.k8s.io in envoy-route, guarding envoy-route/envoy-route-password-reader",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -318,6 +371,26 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "create pods in secrets-broker, guarding secrets-broker/secrets-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in secrets-broker, guarding secrets-broker/secrets-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in secrets-broker, guarding secrets-broker/secrets-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
@@ -1203,6 +1276,16 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "escalate roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
       "role": "escalate roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -1618,6 +1701,16 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "create secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch secrets in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
@@ -2043,6 +2136,16 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch secrets in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
       "role": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -2117,5 +2220,6 @@
       "step": "admin tag of ENVOY_OPERATOR",
       "reason": "agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012"
     }
-  ]
+  ],
+  "allowances": []
 }

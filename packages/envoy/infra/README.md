@@ -4200,16 +4200,18 @@ cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says i
 IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the projects the check reads
 (`--project`, the pool project and each fleet member's project) are allowed; another project's
 agent is a finding naming its project number, and another Google service agent the deployment
-needs is named with `--service-agent <email>`. Admission power
+needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserviceaccount.com`,
+which takes no other address. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster reads UNKNOWN. It
 reads code first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing
 found, 1 naming each principal and right, or 2 naming each step it could not read, a run that
 stopped mid-way included.
-`--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that
-run's or none. `scripts/operator-token-minters.test.sh` runs every plant and control against a fake
-`kubectl`, `gcloud`, `curl` and `agent-secrets`.
+`--report <file>` writes the same as JSON, with each allowance the run was given (`--service-agent`,
+`--rbac-only-member`, `--fleet none`) under `allowances`, and is deleted when a run starts, so a
+report is that run's or none. `scripts/operator-token-minters.test.sh` runs every plant and control
+against a fake `kubectl`, `gcloud`, `curl` and `agent-secrets`.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

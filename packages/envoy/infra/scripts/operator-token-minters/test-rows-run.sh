@@ -17,8 +17,8 @@
 #   (l)  the admin tag: ENVOY_OPERATOR shown without "admin": "true", no such secret, and the scratch
 #        secret ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field;
 #        a session that cannot show it reads UNKNOWN;
-#   (m)  --report writes run_at, findings and unknown, with a stubbed UNKNOWN step listed under
-#        unknown;
+#   (m)  --report writes run_at, findings, unknown and allowances ([] for a run given none), with a
+#        stubbed UNKNOWN step listed under unknown;
 #   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
 #        and right, on an IAM finding and on an RBAC finding;
 #   (z)  the fixture testdata/operator-token-minters-report.json is this script's --report from a
@@ -30,7 +30,10 @@
 #   (ba) a get-ancestors answer of [] reads UNKNOWN, and so does another cluster that lists no
 #        ServiceAccount outside its system namespaces though a binding names a subject there;
 #   (bc) a copy of the script missing output.sh, or missing analysis.jq, prints "UNKNOWN run" naming
-#        it, writes that to --report, and exits 2 before any step runs.
+#        it, writes that to --report, and exits 2 before any step runs;
+#   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
+#        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
+#        allowances.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -184,11 +187,11 @@ if row m; then
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
   jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["findings", "run_at", "unknown"]
+  jq -e 'keys == ["allowances", "findings", "run_at", "unknown"] and .allowances == []
     and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
     and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at) and unknown: $(jq -c . "$report")"
-  passed "(m) --report writes run_at, findings and unknown, with the stubbed UNKNOWN step under unknown"
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), unknown and an empty allowances: $(jq -c . "$report")"
+  passed "(m) --report writes run_at, findings, unknown and allowances, with the stubbed UNKNOWN step under unknown"
 fi
 
 # --- (v) The report's parts of each finding, for a reader matching principal and role. ---
@@ -314,4 +317,32 @@ missing_part_row() {
 if row bc; then
   each missing_part_row output.sh analysis.jq
   passed "(bc) a copy missing output.sh or analysis.jq prints UNKNOWN run naming it, reports it, and exits 2"
+fi
+
+# --- (cj) The allowances: --service-agent names a Google service agent alone, and every allowance a
+# run is given (--service-agent, --rbac-only-member, --fleet none) is written into --report, so a
+# reader can hold each to what was accepted. ---
+allowance_row() {
+  local report="$temporary_dir/allowances.json"
+  base_world
+  case "$1" in
+    not-an-agent)
+      run --service-agent "$worker_gsa"
+      want_status 2 "--service-agent naming an agent's own account"
+      want_text "operator-token-minters: --service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com, not $worker_gsa" \
+        "--service-agent naming an agent's own account"
+      ;;
+    written)
+      edge_member
+      edit "$world/fleet.json" '.memberships = [.memberships[] | select(.id == "edge")]'
+      run --report "$report" --service-agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --rbac-only-member edge --fleet none
+      jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" '.allowances == [
+          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"}]' "$report" >/dev/null ||
+        fail "the report does not hold the three allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
+      ;;
+  esac
+}
+if row cj; then
+  each allowance_row not-an-agent written
+  passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given is written into --report"
 fi
