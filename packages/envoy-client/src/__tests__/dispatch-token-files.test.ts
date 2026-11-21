@@ -26,7 +26,7 @@ import { type FakeDispatchCall, startFakeDispatch } from "../../test/fake-dispat
 import { runDispatchCli } from "../dispatch-cli";
 import { activeDispatchSettings } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchClient } from "../dispatch-http";
 import { sessionDispatchSettings, sessionSettings } from "../session-settings";
 import { brokerStandIns } from "./broker-stand-ins";
 
@@ -38,7 +38,6 @@ const KEY_FILE = "DISPATCH_BROKER_DPOP_KEY_FILE";
 beforeEach(() => {
   // Each command is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 /** Dispatch's refusal of a write under a read-only token, worded as its gate words it. */
