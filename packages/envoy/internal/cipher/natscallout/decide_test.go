@@ -553,7 +553,7 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 				want Decision
 			}{
 				{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}},
-				{"a listener", serviceRequest("listener-token"), Decision{Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}},
+				{"a listener", serviceRequest("listener-token"), Decision{Name: "listener/example-hub", Grant: natsgrant.ForCallout(natsgrant.Listener("example-hub")), Expires: now.Add(time.Hour)}},
 				{"the hold probe", serviceRequest("probe-token"), Decision{Name: "probe/" + probeAccount, Grant: natsgrant.HoldProbe(), Expires: now.Add(time.Hour)}},
 			}
 			for _, other := range others {
