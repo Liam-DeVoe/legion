@@ -20,6 +20,10 @@ body: |-
   commits, again until the broker confirms (table `machine_login_revocations`, migration
   20261120150130); a login they approve after the owner puts them back survives it. The removal
   never waits on the broker, and a removal from a list that does not name the person owes nothing.
+  `/metrics` carries `envoy_dispatch_machine_login_revocations_owed` and
+  `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, so a revocation the broker never
+  confirms shows; the runbook's recovery of a broker database restored alone owes again each such
+  revocation settled since the backup.
 time: 2026-11-20T10:37:31Z
 custom:
     Issue: restricted-agent-tokens-named
