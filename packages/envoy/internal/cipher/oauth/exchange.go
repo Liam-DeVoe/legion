@@ -461,7 +461,11 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // library stores the token, so the stored row, the introspection's jkt and the answer's token type
 // all follow the holder's key. Its expiry is bounded by its subject's (subjectBound), and its
 // answer names no credential.
-func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
+//
+// trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
+// the library has validated the request, before the exchange decides anything, and a *Refusal it
+// answers is written as that refusal. Nil runs nothing.
+func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade func(context.Context, map[string]any) error) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
 		p.writeError(ctx, w, nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
@@ -479,6 +483,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjectTokenType := request.GetRequestForm().Get(FormSubjectTokenType)
+	if subjectTokenType == tokenTypeAccessToken && trade != nil {
+		if err := trade(ctx, session.GetSubjectToken()); err != nil {
+			var refused *Refusal
+			if errors.As(err, &refused) {
+				WriteRefusal(w, refused)
+				return
+			}
+			p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
+			return
+		}
+	}
 	read := oauthstore.NarrowedRequest(request)
 	if read {
 		// Before anything below can move the session's access-token expiry, which for a machine
