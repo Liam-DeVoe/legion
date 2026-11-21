@@ -97,9 +97,10 @@ func InactiveThresholdFor(recordLife, reapInterval, sweepInterval time.Duration)
 // sessionConsumerPrefix begins the name of every session consumer (SessionConsumerName).
 const sessionConsumerPrefix = "s-"
 
-// ErrConsumerNotGranted is wrapped, with the server's refusal (ErrPublishDenied), by a session
-// consumer call the connection's NATS user may not make: a hub whose grant predates session
-// consumers refuses their info, create and delete. The listener refuses such a session's
+// ErrConsumerNotGranted is wrapped, with the server's refusal (ErrPublishDenied), by a consumer API
+// call of this package (consumerRequest) the connection's NATS user may not make: a hub whose grant
+// predates session consumers refuses their info, create and delete, and the adoption check's read
+// of a candidate (ConsumerAdoptable) the same way. The listener refuses such a session's
 // registration 503 no_grant and writes nothing - no interest row, no session entry - logging one
 // WARN for the episode and then answering for ten minutes without a further server call.
 var ErrConsumerNotGranted = errors.New("bus: the NATS user may not manage session consumers")
@@ -860,7 +861,7 @@ func (s *SessionConsumers) eachListedConsumer(ctx context.Context, each func(*je
 			Consumers []*jetstream.ConsumerInfo `json:"consumers"`
 			Error     *jetstream.APIError       `json:"error"`
 		}
-		if err := s.consumerRequest(ctx, "$JS.API.CONSUMER.LIST."+Stream, struct {
+		if err := s.client.consumerRequest(ctx, "$JS.API.CONSUMER.LIST."+Stream, struct {
 			Offset int `json:"offset"`
 		}{offset}, &page); err != nil {
 			return err
@@ -1185,7 +1186,7 @@ func (s *SessionConsumers) upsert(ctx context.Context, name string, config jetst
 		Action string                    `json:"action"`
 	}{Stream: Stream, Config: &config, Action: action}
 	var response consumerResponse
-	if err := s.consumerRequest(ctx, consumerAPI("CREATE", name), request, &response); err != nil {
+	if err := s.client.consumerRequest(ctx, consumerAPI("CREATE", name), request, &response); err != nil {
 		return nil, err
 	}
 	if response.Error != nil {
@@ -1203,7 +1204,7 @@ func (s *SessionConsumers) upsert(ctx context.Context, name string, config jetst
 // info reads consumer name, or returns ErrSessionConsumerNotFound.
 func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
 	var response consumerResponse
-	if err := s.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
+	if err := s.client.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
 		return nil, err
 	}
 	if response.Error != nil {
@@ -1220,7 +1221,7 @@ func (s *SessionConsumers) delete(ctx context.Context, name string) error {
 	var response struct {
 		Error *jetstream.APIError `json:"error"`
 	}
-	if err := s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response); err != nil {
+	if err := s.client.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response); err != nil {
 		return err
 	}
 	if response.Error != nil && response.Error.ErrorCode != jetstream.JSErrCodeConsumerNotFound {
@@ -1230,10 +1231,11 @@ func (s *SessionConsumers) delete(ctx context.Context, name string) error {
 }
 
 // consumerRequest sends request, JSON or nothing when nil, to a consumer API subject and decodes the
-// answer into response. A request the server refuses under the connection's grant is
-// ErrConsumerNotGranted. On a client with a marker gate (GateOnMarker) a request the gate does not
-// admit on the connection it would go out on is ErrMarkerUnread, unsent.
-func (s *SessionConsumers) consumerRequest(ctx context.Context, subject string, request, response any) error {
+// answer into response. It is every consumer API request of this package: the session consumers'
+// and the adoption check's (ConsumerAdoptable). A request the server refuses under the connection's
+// grant is ErrConsumerNotGranted. On a client with a marker gate (GateOnMarker) a request the gate
+// does not admit on the connection it would go out on is ErrMarkerUnread, unsent.
+func (c *Client) consumerRequest(ctx context.Context, subject string, request, response any) error {
 	var data []byte
 	if request != nil {
 		var err error
@@ -1241,7 +1243,7 @@ func (s *SessionConsumers) consumerRequest(ctx context.Context, subject string, 
 			return err
 		}
 	}
-	reply, err := s.client.requestGated(ctx, &nats.Msg{Subject: subject, Data: data})
+	reply, err := c.requestGated(ctx, &nats.Msg{Subject: subject, Data: data})
 	if errors.Is(err, ErrPublishDenied) {
 		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
 	}

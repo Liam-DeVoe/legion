@@ -2,7 +2,6 @@ package bus
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -78,7 +77,8 @@ func replyInbox(subject string) bool {
 	return ok && token != "" && !strings.ContainsAny(token, ".*> ")
 }
 
-// ConsumerAdoptable reads consumer name of the stream on c, gated as every consumer call is, and
+// ConsumerAdoptable reads consumer name of the stream on c, as every consumer API request of this
+// package is sent (consumerRequest: gated, and a grant's refusal is ErrConsumerNotGranted), and
 // refuses it as consumernames.ErrUnexpectedConsumer, naming it and each such setting, when it is
 // not as its family's create makes it in a setting no correction in place reaches (adoptedConfig):
 // push is set for a family that creates push consumers delivering to a reply inbox (the listener's
@@ -86,16 +86,12 @@ func replyInbox(subject string) bool {
 // own error, never a refusal. A family's consumernames.Config.Adopt asks here; the settings an
 // update changes are the family's to correct in place after it.
 func (c *Client) ConsumerAdoptable(ctx context.Context, name string, push bool) error {
-	reply, err := c.requestGated(ctx, &nats.Msg{Subject: consumerAPI("INFO", name)})
-	if err != nil {
-		return err
-	}
 	var response struct {
 		Config adoptedConfig       `json:"config"`
 		Error  *jetstream.APIError `json:"error"`
 	}
-	if err := json.Unmarshal(reply.Data, &response); err != nil {
-		return fmt.Errorf("bus: read the answer of consumer %s's info: %w", name, err)
+	if err := c.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
+		return err
 	}
 	if response.Error != nil {
 		return fmt.Errorf("bus: read consumer %s: %w", name, response.Error)
