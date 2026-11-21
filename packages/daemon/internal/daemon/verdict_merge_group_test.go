@@ -1,27 +1,138 @@
 package daemon
 
 import (
+	"context"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// groupConcluded fails the test unless GitHub holds exactly one legion-verdict run on group, made
-// by the one App and concluding want, and the store records that run as the daemon's own write.
-func groupConcluded(t *testing.T, rig *verdictRig, group, want string) {
+// groupConcluded fails the test unless the fake GitHub holds exactly one legion-verdict run on
+// group, made by the one App and concluding want, and the store records that run as the daemon's
+// own write.
+func groupConcluded(t *testing.T, github *verdictGitHub, pool *store.Pool, group, want string) {
 	t.Helper()
-	runs := rig.github.legionRuns(group)
+	runs := github.legionRuns(group)
 	if len(runs) != 1 || runs[0].Conclusion != want || runs[0].App != verdictAppSlug {
 		t.Fatalf("legion-verdict runs on %s = %+v, want one of the one App concluding %s", group, runs, want)
 	}
-	if recorded := verdictWrites(t, rig.pool, group); len(recorded) != 1 || recorded[0].GitHubID != runs[0].ID ||
+	if recorded := verdictWrites(t, pool, group); len(recorded) != 1 || recorded[0].GitHubID != runs[0].ID ||
 		recorded[0].Kind != store.VerdictWriteCheckRun || string(recorded[0].Conclusion) != want {
 		t.Fatalf("the store records %+v on %s, want the one check run %d concluding %s", recorded, group, runs[0].ID, want)
 	}
+}
+
+// mergeGroup is GitHub's merge_group event of acme/widgets' pull request number at the group's
+// commit group, as intake decodes it.
+func mergeGroup(action string, number int, group string) intake.MergeGroup {
+	return intake.MergeGroup{Repo: "acme/widgets", Number: number, Action: action, HeadSHA: group}
+}
+
+// C4 (R6): a merge group's checks_requested, applied through the merge group's handler, writes
+// legion-verdict on the group's commit from its pull request's verdict at the pull request's head:
+// success where that verdict stands, failure where it does not (the reviewer asked for changes),
+// and its destroyed writes nothing.
+func TestLegionVerdictMergeGroup(t *testing.T) {
+	rig := func(t *testing.T) *verdictRig {
+		t.Helper()
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+		rig.w.handlers = append(rig.w.handlers, mergeGroupHandler{w: rig.w})
+		return rig
+	}
+	t.Run("checks_requested where the verdict stands", func(t *testing.T) {
+		rig := rig(t)
+		rig.approvedAndWritten(t)
+		rig.apply(t, mergeGroup("checks_requested", 86, "group-86"))
+		rig.written(t)
+		groupConcluded(t, rig.github, rig.pool, "group-86", "success")
+	})
+	t.Run("checks_requested where the verdict does not stand", func(t *testing.T) {
+		rig := rig(t)
+		rig.apply(t, reviewerVerdict("changes", "code", 1))
+		rig.written(t)
+		rig.apply(t, mergeGroup("checks_requested", 86, "group-86"))
+		rig.written(t)
+		groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
+	})
+	t.Run("destroyed", func(t *testing.T) {
+		rig := rig(t)
+		rig.approvedAndWritten(t)
+		rig.apply(t, mergeGroup("destroyed", 86, "group-86"))
+		rig.written(t)
+		if runs := rig.github.legionRuns("group-86"); len(runs) != 0 {
+			t.Fatalf("legion-verdict runs on group-86 = %+v, want none: a destroyed group asks for no check", runs)
+		}
+		if recorded := verdictWrites(t, rig.pool, "group-86"); len(recorded) != 0 {
+			t.Fatalf("the store records %+v on group-86, want no write", recorded)
+		}
+	})
+}
+
+// verdictBootTokens is the token source a boot takes (loginTokens), whose verdict token is the one
+// the fake GitHub of the writer's rigs takes for a write of legion-verdict (verdictBearer).
+type verdictBootTokens struct{ loginTokens }
+
+func (verdictBootTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return roleTokens{}.VerdictToken(ctx, owner)
+}
+
+// The workflow runtime the boot builds (openWorkflow) applies the merge group's handler with the
+// rest of its handlers: a checks_requested of a verdict repository's pull request, applied through
+// them, writes legion-verdict on the group's commit. Pull request 90 is recorded as an outside
+// pull request with no review, so its verdict does not stand and the group gets failure.
+func TestMergeGroupHandlerIsRegistered(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if servedBootCall(t, w, r, "CAPTURE") {
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(board.Close)
+	github := newVerdictGitHub()
+	serve := github.serve(t)
+	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		// The boot reads the mapped repository's own name and default branch.
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets" {
+			_, _ = io.WriteString(w, `{"full_name":"acme/widgets","default_branch":"main"}`)
+			return
+		}
+		serve(w, r)
+	}})
+	cfg := config.Config{
+		Project: "CAPTURE", DispatchURL: board.URL, AdmissionCap: 1, Projects: map[string]config.Project{"CAPTURE": {}},
+		VerdictRepositories: []config.VerdictRepository{widgetsEntry},
+	}
+	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
+		slog.New(slog.DiscardHandler), verdictBootTokens{loginTokens{login: verdictAppLogin}}, api, nil, time.Now)
+	if err != nil {
+		t.Fatalf("open the workflow: %v", err)
+	}
+	run, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	go w.writeVerdicts(run)
+
+	applyFact(t, pool, "github", "outside-90", outsideOpened, w.handlers...)
+	applyFact(t, pool, "github", "merge-group-90", mergeGroup("checks_requested", 90, "group-90"), w.handlers...)
+	testwait.Eventually(t, "the writer of legion-verdict to hold no write", func() bool { return w.verdicts.idle() })
+	groupConcluded(t, github, pool, "group-90", "failure")
 }
 
 // A write queued on a merge group's commit (queueMergeGroupWrite) decides the pull request at the
@@ -35,7 +146,7 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		rig.approvedAndWritten(t)
 		rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
 		rig.written(t)
-		groupConcluded(t, rig, "group-86", "success")
+		groupConcluded(t, rig.github, rig.pool, "group-86", "success")
 	})
 	t.Run("a Legion head that moved past its verdict", func(t *testing.T) {
 		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
@@ -44,13 +155,13 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		rig.written(t)
 		rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
 		rig.written(t)
-		groupConcluded(t, rig, "group-86", "failure")
+		groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
 	})
 	t.Run("a Legion head with no verdict", func(t *testing.T) {
 		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 		rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
 		rig.written(t)
-		groupConcluded(t, rig, "group-86", "failure")
+		groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
 		if runs := rig.github.legionRuns("code"); len(runs) != 0 {
 			t.Fatalf("legion-verdict runs on the pull request's head code = %+v, want none: the group's write writes on the group alone", runs)
 		}
@@ -62,7 +173,7 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		rig.written(t)
 		rig.w.queueMergeGroupWrite(widgets, 90, "group-90", false)
 		rig.written(t)
-		groupConcluded(t, rig, "group-90", "success")
+		groupConcluded(t, rig.github, rig.pool, "group-90", "success")
 	})
 	t.Run("a repository no entry names", func(t *testing.T) {
 		writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry})

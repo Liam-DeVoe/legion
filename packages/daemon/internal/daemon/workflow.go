@@ -531,9 +531,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// when they look. Neither could write it itself: the engine returns early on an event whose
 	// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case. The
-	// verdict facts run last: they record what the workflow does not, the outside pull requests
-	// and every review a verdict reads, in the same transaction (verdictFacts).
-	w.handlers, w.appLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission, w.verdictFacts()}, appLogin
+	// verdict facts run after them: they record what the workflow does not, the outside pull
+	// requests and every review a verdict reads, in the same transaction (verdictFacts). The merge
+	// group's handler, last, asks for legion-verdict on a group's commit (mergeGroupHandler).
+	w.handlers, w.appLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission, w.verdictFacts(), mergeGroupHandler{w: w}}, appLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
