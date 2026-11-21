@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
@@ -1170,14 +1171,6 @@ func TestWithNoOperatorEntryNothingChanges(t *testing.T) {
 	requireAsBefore(t, held, exampleServices, rows)
 }
 
-// waitForGauge waits for envoy_broker_hold_unknown to read want.
-func waitForGauge(t *testing.T, registry *metrics.Registry, want string) {
-	t.Helper()
-	testwait.WithinPolling(t, 10*time.Second, 20*time.Millisecond, "envoy_broker_hold_unknown "+want, func() bool {
-		return holdUnknownGauge(t, registry) == want
-	})
-}
-
 // outcomes counts connections the storm made, refused and admitted, from a moment the test marks.
 type outcomes struct {
 	admitted, refused atomic.Int64
@@ -1249,27 +1242,47 @@ func TestAPostgresOutageRefusesOnlyWhileItLasts(t *testing.T) {
 
 	time.Sleep(time.Second)
 	proxy.Cut()
-	waitForGauge(t, r.registry, "1")
+	// The outage is marked by Postgres's own answer through the relay, not by the view's gauge: a
+	// view that hid the outage would hide it from the gauge too.
+	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "Postgres unreachable through the cut relay", func() bool {
+		return postgresAnswers(proxy.URL()) != nil
+	})
 	phase.Store(1)
 	seen := r.decisions.count(operatorName)
 	operator := r.connectOperator(t, hourLong(operatorAccount))
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, seen), natsgrant.OperatorPhaseReleased)
 	operator.Close()
-	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "connections refused during the outage", func() bool {
-		return during.refused.Load() >= 8
+	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "connections during the outage", func() bool {
+		return during.refused.Load()+during.admitted.Load() >= 8
 	})
 	phase.Store(3)
 	require.Zero(t, during.admitted.Load(), "a listener or a session was admitted while the hold's Postgres was down (%d refused)", during.refused.Load())
 	require.Positive(t, refusedFor(t, r.registry, labelHoldUnknown), "no refusal was counted hold_unknown")
+	require.Equal(t, "1", holdUnknownGauge(t, r.registry), "envoy_broker_hold_unknown during the outage")
 
 	proxy.Restore()
-	waitForGauge(t, r.registry, "0")
+	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "Postgres answering through the restored relay", func() bool {
+		return postgresAnswers(proxy.URL()) == nil
+	})
 	phase.Store(2)
 	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "connections admitted after the outage", func() bool {
 		return after.admitted.Load() >= 8
 	})
 	phase.Store(3)
 	require.Zero(t, after.refused.Load(), "a client was refused after the hold's Postgres answered again (%d admitted)", after.admitted.Load())
+	require.Equal(t, "0", holdUnknownGauge(t, r.registry), "envoy_broker_hold_unknown after the outage")
+}
+
+// postgresAnswers connects to dsn on a connection of its own and pings it, within a second.
+func postgresAnswers(dsn string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return conn.Ping(ctx)
 }
 
 // connectSessionOnce connects to url as s with no reconnect, outside a test's goroutine.
