@@ -18,6 +18,7 @@ import {
   type Leak,
   literally,
   memberCookie,
+  memberLogin,
   passed,
   routesFileOf,
   stopFakes,
@@ -26,7 +27,12 @@ import {
   verdictOf,
   withoutTools,
 } from "./restricted-sweep-fake";
-import { proxyReads, sha256Hex } from "./restricted-sweep-index";
+import {
+  deliverySeconds,
+  proxyReads,
+  runnerLiveSeconds,
+  sha256Hex,
+} from "./restricted-sweep-index";
 
 afterAll(stopFakes);
 
@@ -35,9 +41,9 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
   const someRows = ["/api/v1/inbox", "/api/v1/issues/{key}/comments", appInstallation];
   /** The route index a run of `someRows` reads, as `sweep` writes it, and its SHA-256. */
   const someRowsSha256 = sha256Hex(routesFileOf(someRows));
-  /** The shortest live window a runner reads, which leaves the writer's delivery bound (15 s) of
-   *  it before its feed closes. */
-  const runnerLiveSeconds = 30;
+  /** A write's line: when its comment was asked for, when its direct message was answered, and the
+   *  ids of both. */
+  const writeLine = String.raw`write \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ [0-9a-f-]{36} [0-9a-f-]{36}`;
 
   /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
    *  browser's person alone, so its reads can fail only with the full member's cookie, which the
@@ -55,7 +61,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     const run = await sweep(leaks, {
       env: {
         SWEEP_MODE: "fills",
-        SWEEP_MEMBER: "bob@outside.example",
+        SWEEP_MEMBER: memberLogin,
         SWEEP_FILLS_FILE: file,
         SWEEP_FULL_COOKIE: withoutCookie ? undefined : fullCookie,
         SWEEP_RESTRICTED_COOKIE: undefined,
@@ -127,22 +133,23 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
   test(
     "fills mode writes the full member's half, makes no request as the member, and writes no credential",
     async () => {
-      const { code, file, fullRequests, memberPaths, stdout } = await fills();
+      const { code, file, fullRequests, memberPaths, origin, stdout } = await fills();
       expect(verdictOf(stdout)).toStartWith("FILLS: ");
       expect(code, stdout).toBe(0);
       expect(memberPaths).toEqual([]);
       expect(fullRequests).toBeGreaterThan(0);
       const text = readFileSync(file, "utf8");
       const lines = text.trimEnd().split("\n");
-      expect(lines[0]).toBe("restricted-sweep-fills\t3");
+      expect(lines[0]).toBe("restricted-sweep-fills\t4");
       expect(lines).toContain("project\tTGT");
-      expect(lines.filter((line) => /^origin\thttp:\/\/127\.0\.0\.1:\d+$/.test(line))).toHaveLength(
-        1
-      );
+      // The origin the fills were made at, a private one where they are made apart, by its SHA-256
+      // alone: the fills may travel as a workflow's input.
+      expect(lines).toContain(`origin_sha256\t${sha256Hex(origin)}`);
+      expect(text).not.toContain(origin);
       // The route index the fills were made from, and the deployment they were made at.
       expect(lines).toContain(`routes\t${someRowsSha256}`);
       expect(lines.filter((line) => /^deployment\t[0-9a-f]{64}$/.test(line))).toHaveLength(1);
-      expect(lines).toContain("member\tbob@outside.example");
+      expect(lines).toContain(`member\t${memberLogin}`);
       expect(lines).toContain("own\tOWN");
       expect(lines).toContain(`going_run\t${tgt.goingRun}`);
       expect(lines).toContain(`issue_title\t${tgt.title}`);
@@ -154,7 +161,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(lines).toContain(`named\tperson ${tgt.person}`);
       expect(lines).toContain(`named\tconversation ${tgt.session}/${tgt.conversationFile}`);
       expect(lines).toContain("can_fail\tGET /api/v1/issues/{key}/comments");
-      for (const shape of proxyReads)
+      for (const shape of proxyReads())
         expect(lines).toContain(`can_fail\tGET /api/github/rest/repos/{owner}/{repo}/${shape}`);
       expect(lines).toContain(`can_fail\tGET ${appInstallation}`);
       expect(lines).toContain("can_fail\t/ws/live agent view of {session_id}");
@@ -167,29 +174,27 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
 
   // A runner's log is public: it names the fills' origin, a private one, and the member's login by
   // digests, and none of the names the fills hold - the project's repository, its people, its
-  // conversation's file.
+  // conversation's file. Whether the agent view can fail was read when the fills were made, and
+  // the session may answer otherwise since, so its line says when.
   test(
     "a runner with those fills and no full member's credential passes, names no private name, and prints a live window that leaves the writer's delivery bound",
     async () => {
-      const { file } = await fills();
-      const fillsOrigin = /^origin\t(\S+)$/m.exec(readFileSync(file, "utf8"))?.[1] ?? "";
-      expect(fillsOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      const { file, origin: fillsOrigin } = await fills();
       const { code, fullRequests, stdout } = await runner(file);
       expect(fullRequests).toBe(0);
       const digestOf = (text: string) => sha256Hex(text).slice(0, 12);
-      const member = "bob@outside.example";
       expect(stdout).toContain(
-        `\nmember  a restricted member TGT's access list does not name, whose login's SHA-256 starts ${digestOf(member)}\n`
+        `\nmember  a restricted member TGT's access list does not name, whose login's SHA-256 starts ${digestOf(memberLogin)}\n`
       );
       expect(stdout).toMatch(
         new RegExp(
-          `^fills {3}of TGT for the login whose SHA-256 starts ${digestOf(member)}, made -?\\d+ s ago at the origin whose SHA-256 starts ${digestOf(fillsOrigin)}: \\d+ values, \\d+ rows that can fail$`,
+          `^fills {3}of TGT for the login whose SHA-256 starts ${digestOf(memberLogin)}, made -?\\d+ s ago at the origin whose SHA-256 starts ${digestOf(fillsOrigin)}: \\d+ values, \\d+ rows that can fail$`,
           "m"
         )
       );
       for (const name of [
         fillsOrigin,
-        member,
+        memberLogin,
         tgt.repository,
         tgt.person,
         `${tgt.session}/${tgt.conversationFile}`,
@@ -202,14 +207,14 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         );
       expect(window, stdout).not.toBeNull();
       expect(Date.parse(window?.[2] ?? "") - Date.parse(window?.[1] ?? "")).toBe(
-        (runnerLiveSeconds - 15) * 1000
+        (runnerLiveSeconds - deliverySeconds) * 1000
       );
       expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/issues\/\{key\}\/comments: 404 \(can fail\)$/m);
       expect(stdout).toContain(
         `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
       );
       expect(stdout).toContain(
-        "\nok      /ws/live agent view of {session_id}: no one answers for it (can fail)\n"
+        "\nok      /ws/live agent view of {session_id}: no one answers for it (could fail when the fills were made)\n"
       );
       expect(verdictOf(stdout)).toMatch(
         new RegExp(
@@ -294,7 +299,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     async () => {
       const { code, file, stdout } = await fills([], { withoutCookie: true });
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: no fills were written");
-      for (const shape of proxyReads) {
+      for (const shape of proxyReads()) {
         expect(stdout).toContain(
           `\n  GET /api/github/rest/repos/{owner}/{repo}/${shape}: the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
         );
@@ -316,7 +321,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       const { code, stdout } = await runner(file);
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        "\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 503, but SWEEP_FILLS_FILE holds no full member's read of it that could fail\n"
+        "\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 503, as a repository the App is not installed on, but SWEEP_FILLS_FILE holds no full member's read of it that could fail\n"
       );
       expect(verdictOf(stdout)).toBe(
         "UNKNOWN: nothing reached the member, but this run did not prove it, for the 1 reasons above"
@@ -480,18 +485,21 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
 
   // Each write is a comment on the write issue and a direct message to the fills' session of the
   // project, and is delivered once the full member's own feed is sent both, within the delivery
-  // bound a runner's window leaves.
+  // bound a runner's window leaves. Its line names when it began, before its comment was asked
+  // for, and when it ended, once its direct message was answered: the join holds the whole write
+  // inside a runner's window, so a comment committed before the member's feed subscribed counts
+  // for no window.
   test(
-    "a writer prints each write delivered to the full member's own feed, and exits 0",
+    "a writer prints each write, from before its comment to after its direct message, delivered to the full member's own feed, and exits 0",
     async () => {
       const { file } = await fills();
       const { code, stdout } = await writer(file, "3");
       const writes = stdout.split("\n").filter((line) => line.startsWith("write "));
       expect(writes.length, stdout).toBeGreaterThan(0);
       for (const line of writes) {
-        expect(line).toMatch(
-          /^write \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ [0-9a-f-]{36} [0-9a-f-]{36} delivered$/
-        );
+        expect(line).toMatch(new RegExp(`^${writeLine} delivered$`));
+        const [, began = "", ended = ""] = line.split(" ");
+        expect(began <= ended, line).toBe(true);
       }
       expect(stdout).toContain(
         `\nwriter  a comment on ${tgt.issue} and a direct message to ${tgt.session} every 1 s for 3 s, each held to the full member's own feed for 5 s\n`
@@ -513,7 +521,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       const { file } = await fills();
       const { code, stdout } = await writer(file, "1", undefined, "20");
       expect(stdout).toContain(
-        `\nwriter  a comment on ${tgt.issue} and a direct message to ${tgt.session} every 20 s for 1 s, each held to the full member's own feed for 15 s\n`
+        `\nwriter  a comment on ${tgt.issue} and a direct message to ${tgt.session} every 20 s for 1 s, each held to the full member's own feed for ${deliverySeconds} s\n`
       );
       expect(code, stdout).toBe(0);
     },
@@ -526,7 +534,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     async () => {
       const { file } = await fills();
       const { code, stdout } = await writer(file, "1", "another event of the project");
-      expect(stdout).toMatch(/^write \S+ [0-9a-f-]{36} [0-9a-f-]{36} not delivered$/m);
+      expect(stdout).toMatch(new RegExp(`^${writeLine} not delivered$`, "m"));
       expect(verdictOf(stdout)).toMatch(/^WRITER: \d+ writes, \d+ not delivered/);
       expect(code).toBe(1);
     },

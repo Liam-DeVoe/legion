@@ -2,12 +2,12 @@
 # shellcheck disable=SC2154,SC2034 # restricted-sweep.sh sources this file: it sets what this reads, and reads what this sets
 # The fills file of the restricted sweep (restricted-sweep.sh sources this file, beside it): what
 # fills mode writes of the full member's half and a runner or a writer reads, each line of it
-# written and read here. It defines functions alone, over the entry script's `work`, `project`,
-# `origin`, `member`, `fills_file`, `routes_sha256`, the row's `can` and `ft`, and every name
-# `fill_names` lists.
+# written and read here. It defines functions and the format's two constants, over the entry
+# script's `work`, `project`, `origin`, `member`, `fills_file`, `routes_sha256`, the row's `can`
+# and `ft`, and every name `fill_names` lists.
 
 # The format's version: a runner refuses fills of another.
-readonly fills_version=3
+readonly fills_version=4
 # The fills a whole file holds, each a variable of the sweep by the same name, which the lookup
 # sets: the objects of the project it found, and the values a runner fills its rows with. Fills
 # mode writes no file where one is empty, and a runner or a writer refuses fills that lack one.
@@ -59,7 +59,7 @@ deployment_of() {
 
 # read_fills: the fills SWEEP_FILLS_FILE names, every one, read before the first request, so fills
 # the run cannot read stop it before it reaches the deployment. It sets every name of fill_names,
-# fills_member, fills_origin, fills_deployment, fills_age and fills_own, and writes the found
+# fills_member, fills_origin_sha256, fills_deployment, fills_age and fills_own, and writes the found
 # values, the names a line prints by their kind, the rows that can fail and each row's full
 # member's status to the run's `values`, `named`, `can-fail` and `full-status`. A runner refuses
 # fills made from another route index than its own (routes.txt, by its SHA-256): they judged other
@@ -73,12 +73,12 @@ read_fills() {
   [ "$first" = "restricted-sweep-fills	$fills_version" ] ||
     unknown "SWEEP_FILLS_FILE holds no fills of this sweep's version $fills_version: its first line is $(printf '%s' "$first" | cut -c1-60)"
   : >"$work/fills-own"
-  fills_member='' fills_origin='' fills_deployment=''
+  fills_member='' fills_origin_sha256='' fills_deployment=''
   while IFS='	' read -r name value || [ -n "${name:-}" ]; do
     case $name in
       restricted-sweep-fills) ;;
       project) fills_project=$value ;;
-      origin) fills_origin=$value ;;
+      origin_sha256) fills_origin_sha256=$value ;;
       routes) fills_routes=$value ;;
       deployment) fills_deployment=$value ;;
       made_at) made_at=$value ;;
@@ -109,7 +109,7 @@ read_fills() {
   [ "$fills_age" -le 3300 ] ||
     unknown "SWEEP_FILLS_FILE was made $((fills_age / 60)) minutes ago, past 55: its question's run is kept an hour, read only by its asker"
   [ -n "$fills_member" ] || unknown 'SWEEP_FILLS_FILE names no member'
-  [ -n "$fills_origin" ] || unknown 'SWEEP_FILLS_FILE names no origin it was made at'
+  is_sha256 "$fills_origin_sha256" || unknown 'SWEEP_FILLS_FILE names the origin it was made at by no SHA-256'
   lacking=''
   for name in $fill_names; do [ -n "${!name}" ] || lacking="$lacking $name"; done
   [ -z "$lacking" ] || unknown "SWEEP_FILLS_FILE lacks fills that whole fills hold:$lacking"
@@ -128,7 +128,9 @@ write_fills() {
     unknown "GET /api/v1/projects with SWEEP_FULL_TOKEN gives no creation time of each of the member's own projects, which tells the deployment, so no fills were written"
   put restricted-sweep-fills "$fills_version"
   put project "$project"
-  put origin "$origin"
+  # The origin by its SHA-256 alone: a runner names it by that, and the fills may be a public
+  # workflow's input where they were made at a private origin.
+  put origin_sha256 "$(printf '%s' "$origin" | sha256_of)"
   put routes "$routes_sha256"
   put deployment "$deployment"
   put made_at "$(date -u +%s)"

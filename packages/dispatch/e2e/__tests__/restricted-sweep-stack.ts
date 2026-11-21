@@ -31,7 +31,12 @@ import { fileURLToPath } from "node:url";
 
 import { startStacks, stopStacks } from "../harness-pool";
 import { sqlAt } from "../psql";
-import { dispatchPackage, readCheckFile, sweepScript } from "./restricted-sweep-index";
+import {
+  dispatchPackage,
+  readCheckFile,
+  runnerLiveSeconds,
+  sweepScript,
+} from "./restricted-sweep-index";
 
 /** The migrations that give a build restricted members, which write `member_kind`. */
 const migrations = "packages/envoy/internal/dispatch/store/migrations/*.up.sql";
@@ -676,9 +681,10 @@ function sweep(origin: string, project: string, credentials: Credentials): Promi
 
 /** The split of `project` against `origin`, as `SplitRuns` says: the fills, written under
  *  `scratch`, then the writer, writing every second from the fills, and the runner, which holds no
- *  full member's credential; the writer is stopped once the runner ends. The runner's window is
- *  20 s, so a write the writer makes each second falls inside it whatever a busy machine holds one
- *  write up by. */
+ *  full member's credential; the writer is stopped once the runner ends. The runner reads its feed
+ *  for the shortest time a runner takes (`runnerLiveSeconds`), and its window ends the writer's
+ *  delivery bound (`deliverySeconds`) before its feed closes, so a write the writer makes each
+ *  second falls inside the window whatever a busy machine holds one write up by. */
 async function split(
   origin: string,
   project: string,
@@ -719,8 +725,8 @@ async function split(
       SWEEP_RESTRICTED_COOKIE: credentials.cookie,
       SWEEP_MEMBER_SESSION: ownSession,
       SWEEP_FILLS_FILE: file,
-      // The shortest window a runner reads: it leaves the writer's 15 s delivery bound of it.
-      SWEEP_LIVE_SECONDS: "30",
+      // The shortest window a runner reads: it leaves the writer's delivery bound of it.
+      SWEEP_LIVE_SECONDS: String(runnerLiveSeconds),
     });
     runnerDone.resolve();
     return { fills, runner, writer: await writer };

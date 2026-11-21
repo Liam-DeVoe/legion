@@ -2,10 +2,13 @@
 # shellcheck disable=SC2154,SC2034 # restricted-sweep.sh sources this file: it sets what this reads, and reads what this sets
 # The restricted sweep's helpers (restricted-sweep.sh sources this file, beside it): what every
 # part of the run reads and writes through - its requests, the lines it prints and records, and
-# the tests of a status. It defines functions alone; they read the entry script's `work`,
-# `origin`, `pace`, `call_seconds` and `project`.
+# the tests of a status. It defines functions, the writer's delivery bound and the request tally a
+# run starts at zero; they read the entry script's `work`, `origin`, `pace`, `call_seconds`,
+# `project` and `write_issue`.
 
 is_count() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
+# is_sha256 TEXT: whether TEXT is a SHA-256 in lower-case hex.
+is_sha256() { [ "${#1}" = 64 ] && case $1 in *[!0-9a-f]*) return 1 ;; esac; }
 is_seconds() { case $1 in '' | *[!0-9.]* | .* | *. | *.*.*) return 1 ;; esac; }
 holds_line_break() { case $1 in *$'\n'* | *$'\r'*) return 0 ;; esac; return 1; }
 
@@ -113,8 +116,10 @@ alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
 
 # The sweep's writes, each to the file it names: a comment on SWEEP_WRITE_ISSUE, and a direct
 # message that names no issue, both as the server reads them (`delivery` is how the listener hands
-# a message to its session: `btw`, beside the session's own turn). Each says what it is and when
-# it was written.
+# a message to its session: `btw`, a note it takes at its next turn, beside its own). Each says it
+# is the sweep's probe and when it was written. A writer sends the project's session one direct
+# message a write, SWEEP_WRITE_SECONDS / SWEEP_WRITE_EVERY of them (40 by default); no route
+# deletes one.
 comment_request() {
   jq -cn --arg b "restricted-sweep: a probe of who is sent this comment live, written $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
     '{body: $b, actor: {kind: "session", id: "restricted-sweep"}}' >"$1" ||
@@ -123,6 +128,16 @@ comment_request() {
 message_request() {
   jq -cn --arg b "restricted-sweep: a probe of who is sent this direct message live, written $(date -u +%Y-%m-%dT%H:%M:%SZ)." \
     '{body: $b, delivery: "btw"}' >"$1" || unknown 'could not write the live direct message request'
+}
+# post_comment: the full member's comment on SWEEP_WRITE_ISSUE, as post_as answers it.
+post_comment() {
+  comment_request "$work/comment.json"
+  post_as full "/api/v1/issues/$write_issue/comments" "$work/comment.json"
+}
+# post_message WHO SESSION: WHO's direct message to SESSION, as post_as answers it.
+post_message() {
+  message_request "$work/message.json"
+  post_as "$1" "/api/v1/agents/$(uri "$2")/messages" "$work/message.json"
 }
 
 utc_of() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }

@@ -340,8 +340,8 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     async () => {
       const { stdout } = await sweep([], { rows: ["/api/v1/whoami"] });
       expect(failures(stdout)).toEqual([]);
-      expect(proxyReads.length).toBeGreaterThan(0);
-      for (const shape of proxyReads) {
+      expect(proxyReads().length).toBeGreaterThan(0);
+      for (const shape of proxyReads()) {
         expect(stdout).toContain(
           `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 503, as a repository the App is not installed on (can fail)\n`
         );
@@ -362,7 +362,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         proxyReadsCookies: true,
         rows: ["/api/v1/whoami"],
       });
-      for (const shape of proxyReads) {
+      for (const shape of proxyReads()) {
         expect(stdout).toContain(
           `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 503, as a repository the App is not installed on (can fail)\n`
         );
@@ -384,14 +384,14 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         rows: ["/api/v1/whoami"],
       });
       expect(failures(stdout)).toEqual([]);
-      for (const shape of proxyReads) {
+      for (const shape of proxyReads()) {
         expect(stdout).toContain(
-          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, but the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
         );
       }
       expect(stdout).not.toContain("PASS");
       expect(verdictOf(stdout)).toBe(
-        `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads.length} reasons above`
+        `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads().length} reasons above`
       );
       expect(code).toBe(2);
     },
@@ -450,6 +450,53 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       );
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
       expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // The proxy passes GitHub's own status through, and GitHub answers 403 to an App that lacks a
+  // permission. A full member answered that 403 shows no read that could fail: the member, on a
+  // build with no read check, is answered the same 403, which the member's half takes as a
+  // refusal. Any other answer the full member is given, a 404 among them, is one the member's
+  // half FAILs, so the read can fail there.
+  const forbidden = {
+    message: "Resource not accessible by integration",
+    documentation_url: "https://docs.github.com/rest",
+  };
+  test(
+    "a full member answered 403 for the project's repository by the GitHub proxy leaves the read UNKNOWN, though the member is answered 403 too",
+    async () => {
+      const target = `/api/github/rest/repos/${tgt.repository}/pulls/1`;
+      const { code, stdout } = await sweep([at(target, 403, forbidden)], {
+        ...served,
+        full: [at(target, 403, forbidden)],
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        `\nUNKNOWN GET ${pulls}: the member is answered 403, but the full member is answered 403 for TGT's repository, which GitHub answers an App that lacks a permission and the member's half takes as a refusal, so the read could not fail\n`
+      );
+      expect(stdout).not.toMatch(new RegExp(`^ok {6}GET ${literally(pulls)}:`, "m"));
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the full member answered 404 there, the member's 403 holds.
+  test(
+    "a full member answered 404 for the project's repository by the GitHub proxy makes the read one that can fail, and the member's 403 holds",
+    async () => {
+      const target = `/api/github/rest/repos/${tgt.repository}/pulls/1`;
+      const { code, stdout } = await sweep([at(target, 403, forbidden)], {
+        ...served,
+        full: [at(target, 404, { message: "Not Found" })],
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(`\nok      GET ${pulls}: 403 (can fail)\n`);
+      expect(verdictOf(stdout)).toBe(passed);
+      expect(code, stdout).toBe(0);
     },
     rowLimit("short")
   );
@@ -692,7 +739,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       expect(failures(stdout)).toEqual([]);
       expect(stdout).not.toContain(`\nok      GET ${appInstallation}:`);
       expect(stdout).toContain(
-        `\nUNKNOWN GET ${appInstallation}: the member is answered 200, as a missing one is, but the full member is answered TGT's object as a missing one is (200), so the row could not fail\n`
+        `\nUNKNOWN GET ${appInstallation}: the member is answered 200, as a missing one is answered, but the full member is answered TGT's object as a missing one is (200), so the row could not fail\n`
       );
       expect(verdictOf(stdout)).toBe(
         "UNKNOWN: nothing reached the member, but this run did not prove it, for the 1 reasons above"

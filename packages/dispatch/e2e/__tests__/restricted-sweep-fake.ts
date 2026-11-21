@@ -65,8 +65,11 @@ export const tgt = {
 };
 /** The member's own session, in OWN, which the live check's control message is sent to. */
 export const ownSession = "ses-own-worker";
+/** The restricted member's login, which whoami answers the member's cookie and OWN's access list
+ *  names. */
+export const memberLogin = "bob@outside.example";
 /** A repository both TGT's first issue and OWN's resolve to, under `sharedRepo`. */
-export const sharedRepository = "acme/shared-repo";
+const sharedRepository = "acme/shared-repo";
 const scheme = "fake-ref://";
 const tgtValues = Object.values(tgt);
 /** The values the sweep fills a path with on its missing side, which name nothing. */
@@ -194,7 +197,7 @@ function lookup(target: string, fake: FakeShape): unknown {
     "/api/v1/whoami": { kind: "agent", owner: "carol@example.com" },
     "/api/v1/projects": [ownProject(fake), { key: "TGT", created_at: "2026-01-02T00:00:00Z" }],
     "/api/v1/projects/TGT/access": { project: "TGT", people: [] },
-    "/api/v1/projects/OWN/access": { project: "OWN", people: ["bob@outside.example"] },
+    "/api/v1/projects/OWN/access": { project: "OWN", people: [memberLogin] },
     "/api/v1/issues?project=TGT&limit=50": { issues },
     "/api/v1/issues?project=OWN&limit=50": { issues: [ownIssue] },
     "/api/v1/issues/OWN-1/comments": [],
@@ -283,7 +286,7 @@ function notInstalledOn(repository: string): Response {
 }
 
 /** A fake Dispatch on a port of its own, with `leaks` planted for the restricted member. */
-export function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
+function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
   const feed = fake.feed ?? {};
   const memberPaths: string[] = [];
   // Every request the full member's credential made: a runner must make none.
@@ -368,7 +371,7 @@ export function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         if (target === "/api/v1/whoami") {
           return Response.json({
             kind: "user",
-            login: "bob@outside.example",
+            login: memberLogin,
             member_kind: "restricted",
           });
         }
@@ -498,13 +501,14 @@ export interface RunShape extends FakeShape {
   readonly bound?: BoundName;
 }
 
-/** What one run of the sweep answered, the paths of every request the member sent, and how many
- *  requests the full member's credential made. */
+/** What one run of the sweep answered, the paths of every request the member sent, how many
+ *  requests the full member's credential made, and the fake's origin. */
 export interface SweptRun {
   readonly code: number;
   readonly stdout: string;
   readonly memberPaths: readonly string[];
   readonly fullRequests: number;
+  readonly origin: string;
 }
 
 /** One run of the sweep against a fake with `leaks` planted. */
@@ -545,6 +549,7 @@ export async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promi
     code: run.code,
     fullRequests: fake.fullRequests(),
     memberPaths: fake.memberPaths,
+    origin: fake.origin,
     stdout: run.stdout,
   };
 }

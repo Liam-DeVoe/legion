@@ -98,7 +98,7 @@ runner_projects() {
       unknown "SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills $(short_digest "$fills_deployment"), here $(short_digest "$here"))"
   fi
   printf 'fills   of %s for the login whose SHA-256 starts %s, made %s s ago at the origin whose SHA-256 starts %s: %s values, %s rows that can fail\n' \
-    "$project" "$(login_digest "$member")" "$fills_age" "$(short_digest "$(printf '%s' "$fills_origin" | sha256_of)")" \
+    "$project" "$(login_digest "$member")" "$fills_age" "$(short_digest "$fills_origin_sha256")" \
     "$(wc -l <"$work/values" | tr -d ' ')" "$(wc -l <"$work/can-fail" | tr -d ' ')"
 }
 
@@ -243,8 +243,8 @@ lookup() {
   need near-copy-check "$near_copy" "GET /api/v1/near-copy-checks?project=$project lists none"
   # A person and a session belong to no project, but the routes that name them are filled with
   # ones that worked in the project, which every project of the deployment has.
-  [ -n "$person" ] || printf 'person: no comment, ask, message or handoff of the first %s issues names a person\n' "$scanned" >>"$work/missing"
-  [ -n "$session" ] || printf 'session: no comment, ask, message or handoff of the first %s issues names a session\n' "$scanned" >>"$work/missing"
+  [ -n "$person" ] || missing_kind person "no comment, ask, message or handoff of the first $scanned issues names a person"
+  [ -n "$session" ] || missing_kind session "no comment, ask, message or handoff of the first $scanned issues names a session"
   printf 'found   person %s, session %s, priority %s, broadcast %s, delivery run %s\n' \
     "${person:-none}" "${session:-none}" "${priority:-none}" "${broadcast:-none}" "${delivery_run:-none}"
   # The member's own projects, which the document socket's control reads too. Fills mode, with no
@@ -255,8 +255,7 @@ lookup() {
     while read -r other; do
       call full "/api/v1/projects/$(uri "$other")/access" "$work/body"
       if [ "$status" != 200 ]; then
-        printf 'own projects: the full member is answered %s for the access list of %s, so the sweep cannot tell whether it names %s\n' \
-          "$status" "$other" "$member" >>"$work/missing"
+        missing_kind 'own projects' "the full member is answered $status for the access list of $other, so the sweep cannot tell whether it names $member"
         continue
       fi
       ! names_member "$work/body" || printf '%s\n' "$other" >>"$work/own"
@@ -275,8 +274,7 @@ lookup() {
     [ "$status" != 200 ] || seen_in "$work/body" >>"$work/seen-actors"
     call full "/api/v1/issues?project=$own&limit=50" "$work/own-issues"
     if [ "$status" != 200 ]; then
-      printf 'actor: the full member is answered %s for the issues of %s, a project the member sees, so the sweep cannot tell its sessions, people and repositories from %s'"'"'s\n' \
-        "$status" "$own" "$project" >>"$work/missing"
+      missing_kind actor "the full member is answered $status for the issues of $own, a project the member sees, so the sweep cannot tell its sessions, people and repositories from $project's"
       continue
     fi
     seen_in "$work/own-issues" >>"$work/seen-actors"

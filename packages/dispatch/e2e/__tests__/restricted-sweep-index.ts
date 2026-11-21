@@ -13,15 +13,17 @@ export const sweepScript = fileURLToPath(
   new URL("../acceptance/restricted-sweep.sh", import.meta.url)
 );
 /** The sweep's fills part, which lists the fills whole fills hold (`fill_names`). */
-export const fillsPart = fileURLToPath(
+const fillsPart = fileURLToPath(
   new URL("../acceptance/restricted-sweep-fills.sh", import.meta.url)
 );
+/** The sweep's helpers part, which sets the writer's delivery bound (`delivery_seconds`). */
+const libPart = fileURLToPath(new URL("../acceptance/restricted-sweep-lib.sh", import.meta.url));
 /** The sweep's rows part, which names the GitHub proxy's answer for a repository the App is not
  *  installed on (`not_installed_code`). */
 export const judgePart = fileURLToPath(
   new URL("../acceptance/restricted-sweep-judge.sh", import.meta.url)
 );
-export const routeIndex = fileURLToPath(
+const routeIndex = fileURLToPath(
   new URL("../../../envoy/internal/dispatch/api/testdata/routes.txt", import.meta.url)
 );
 /** The GitHub proxy's source, whose `readable` expression names the only reads it forwards. */
@@ -62,9 +64,21 @@ export const fillNames: readonly string[] = (() => {
   return (listed[1] ?? "").split(/\s+/).filter((name) => name !== "");
 })();
 
+/** How long a writer waits at most for a write to reach the full member's feed, as the helpers
+ *  part sets it (`delivery_seconds`), and so how long before its feed closes a runner's live window
+ *  ends. */
+export const deliverySeconds: number = (() => {
+  const set = /^readonly delivery_seconds=(\d+)$/m.exec(readFileSync(libPart, "utf8"));
+  if (set === null) throw new Error(`${libPart} sets no delivery_seconds`);
+  return Number(set[1]);
+})();
+/** The shortest live window a runner reads (SWEEP_LIVE_SECONDS): it leaves the delivery bound of
+ *  it before its feed closes, and holds that long again for a write to fall inside it. */
+export const runnerLiveSeconds = 2 * deliverySeconds;
+
 /** The GitHub proxy reads the script makes, after `/api/github/rest/repos/{owner}/{repo}/`, as it
- *  lists them (SWEEP_LIST_PROXY=1, exit 4). */
-export const proxyReads: readonly string[] = (() => {
+ *  lists them (SWEEP_LIST_PROXY=1, exit 4): asked of the script each time, never at import. */
+export function proxyReads(): readonly string[] {
   const listed = Bun.spawnSync(["bash", sweepScript], {
     cwd: dispatchPackage,
     env: { PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), SWEEP_LIST_PROXY: "1" },
@@ -78,4 +92,4 @@ export const proxyReads: readonly string[] = (() => {
     );
   }
   return reads;
-})();
+}

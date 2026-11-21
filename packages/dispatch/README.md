@@ -1003,8 +1003,10 @@ SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-
 Where no full member's credential may be, as on a public runner, the sweep splits in three. Fills
 mode (`SWEEP_MODE=fills`), where the full member's token is, does the full member's half: the
 lookup, the question and each row's can-fail call, and writes them to `SWEEP_FILLS_FILE` (ASCII
-`name<TAB>value` lines, version 3, at most 40 KiB, no credential, the origin they were made at and
-the target issue's title among them, as the search rows' text). It names the route index it was
+`name<TAB>value` lines, version 4, at most 40 KiB). The fills hold no credential. They hold the
+target issue's title (the search rows' text), the member's login and the names of the project's
+repository, its people and its conversation's file, and the origin they were made at by its
+SHA-256 alone (`origin_sha256`). It names the route index it was
 made from by its SHA-256 (`routes`), and the deployment by the SHA-256 of the key and creation
 time of each of the member's own projects (`deployment`), which tell one deployment from another
 and read the same at its private origin and its public one; fills mode and a runner each refuse a
@@ -1016,22 +1018,30 @@ the member's login in `SWEEP_MEMBER`, and reads the member's own projects as the
 lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's
 half with the member's cookie alone, refuses a full member's credential, and refuses fills of
 another project, made from another route index than its own, older than 55 minutes, lacking a fill
-whole fills hold, or made at another deployment; it names the origin they were made at, and the
-member's login, by the first 12 digits of their SHA-256 alone. Those digits keep the value itself
-out of the log; they do not hide a login or a host name someone can guess, whose SHA-256 anyone
-can take and compare. A row the fills hold no line of,
+whole fills hold, made at another deployment, or naming their origin by no SHA-256; it names the
+origin they were made at, and the member's login, by the first 12 digits of their SHA-256 alone.
+Those digits keep the value itself out of the log; they do not hide a login or a host name
+someone can guess, whose SHA-256 anyone can take and compare. A row the fills hold no line of,
 from fills made from another API document, was never asked of the full member: the member's
 answer still FAILs it where it holds a row of the project, and otherwise the row is `UNKNOWN`,
-never `blind`. A runner reads the member's live feed over a window it prints,
+never `blind`. The agent view's line says `(could fail when the fills were made)`: whether the
+project's session answers is read then, and may have changed since. A runner reads the member's
+live feed over a window it prints,
 `live window <W0> <W1>` (UTC), whose end leaves the writer's 15 s delivery bound before the feed
 closes, so `SWEEP_LIVE_SECONDS` is at least 30 on a runner; it writes the member's own direct
 message alone. Writer mode (`SWEEP_MODE=writer`) runs beside it with the full member's token and
 cookie and the fills: every `SWEEP_WRITE_EVERY` seconds it comments on `SWEEP_WRITE_ISSUE` and sends
 the fills' session of the project a direct message, and prints
-`write <UTC> <comment id> <message id> delivered`, or `not delivered`, as both reach the full
-member's own feed within `SWEEP_WRITE_EVERY` seconds (at least 5, at most that 15) or do not. The
-runner's live check holds only once a delivered write falls strictly inside its window, which
-whoever ran both joins. The verdict is always a run's last line.
+`write <began> <ended> <comment id> <message id> delivered`, or `not delivered`, as both reach the
+full member's own feed within `SWEEP_WRITE_EVERY` seconds (at least 5, at most that 15) or do not;
+`<began>` is read before the comment is asked for and `<ended>` once the direct message is
+answered (UTC). The runner's live check holds only once a delivered write falls strictly inside
+its window, `<began>` after W0 and `<ended>` before W1, which whoever ran both joins: a comment
+committed before the member's feed subscribed counts for no window. The writer sends the
+project's session `SWEEP_WRITE_SECONDS / SWEEP_WRITE_EVERY` direct messages (40 by default), each a
+`btw` note that says it is the sweep's probe, which a live session takes at its next turn; no route
+deletes a direct message, so a shorter `SWEEP_WRITE_SECONDS`, one that covers the runner's window,
+sends fewer. The verdict is always a run's last line.
 
 ```bash
 SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_FULL_TOKEN=... \
@@ -1051,7 +1061,9 @@ as does a GitHub proxy read or the app-installation row that cannot fail. A prox
 only where the full member's read of the project's repository is answered and a missing one's is
 the proxy's own answer for a repository the App is not installed on (503
 `GITHUB_TOKEN_UNAVAILABLE`); any other 5xx on either side, a rate limit or an outage, is no
-answer. `PASS` (exit 0) needs every GET row filled and called, every kind of object found, at
+answer, and a full member's 403, which GitHub answers an App that lacks a permission and the
+member's half takes as a refusal, is no read that could fail. `PASS` (exit 0) needs every GET row
+filled and called, every kind of object found, at
 least one row that can fail and every socket control held; `FAIL` (exit 1) names each answer that
 gave the member a row of the project and, in its verdict, the first; everything that proved
 nothing, a project the full member finds nothing of among them, is `UNKNOWN` (exit 2). A `FAIL`

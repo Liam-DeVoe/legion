@@ -96,24 +96,32 @@
 #                credential. The live check reads the member's feed over a window it prints
 #                (`live window <W0> <W1>`, UTC), and writes the member's own direct message alone:
 #                it holds only once a writer's delivered write falls strictly inside that window,
-#                which whoever ran both joins. W1 leaves the writer's 15 s delivery bound before
-#                the feed closes, so SWEEP_LIVE_SECONDS is at least 30 on a runner.
+#                begun after W0 and ended before W1, which whoever ran both joins. W1 leaves the
+#                writer's 15 s delivery bound before the feed closes, so SWEEP_LIVE_SECONDS is at
+#                least 30 on a runner. The agent view's line says it could fail when the fills
+#                were made: whether the project's session answers may have changed since.
 #   writer       SWEEP_MODE=writer, beside a runner's run, with the fills: the full member's own
 #                feed open, and every SWEEP_WRITE_EVERY s for SWEEP_WRITE_SECONDS one write, a
 #                comment on SWEEP_WRITE_ISSUE and a direct message to the fills' session of the
-#                project, and one line a write, `write <UTC> <comment id> <message id> delivered`
-#                or `... not delivered`, for whether that feed was sent both within
-#                SWEEP_WRITE_EVERY s, at least 5 and at most the 15 a runner's window leaves.
-#                Exit 0 only when every write was.
+#                project, and one line a write,
+#                `write <began> <ended> <comment id> <message id> delivered` or `... not
+#                delivered`, for whether that feed was sent both within SWEEP_WRITE_EVERY s, at
+#                least 5 and at most the 15 a runner's window leaves: it began (UTC) before the
+#                comment was asked for, and ended once the direct message was answered, so a
+#                comment committed before the member's feed subscribed falls in no window. It sends
+#                the project's session SWEEP_WRITE_SECONDS / SWEEP_WRITE_EVERY direct messages (40
+#                by default), each a `btw` note a live session takes at its next turn; no route
+#                deletes one. Exit 0 only when every write was.
 #
 # The fills file is ASCII, one `name<TAB>value` line a fill, its first line
-# `restricted-sweep-fills<TAB>3`, then `project`, `origin` (where the fills were made), `routes`
-# (the SHA-256 of the route index they were made from), `deployment` (the SHA-256 of the key and
-# creation time of each of the member's own projects, which tells one deployment from another and
-# reads the same at its private origin and its public one) and `made_at` (Unix seconds). It holds
-# no credential: the project's object ids and keys, its repository, the member's login and own
-# projects, the found values that mark a row (ids, the project's own sessions and people, the
-# reference prefix, and the target issue's title, which the search rows take as their text), one
+# `restricted-sweep-fills<TAB>4`, then `project`, `origin_sha256` (the SHA-256 of the origin the
+# fills were made at, a private one where they are made apart), `routes` (the SHA-256 of the route
+# index they were made from), `deployment` (the SHA-256 of the key and creation time of each of
+# the member's own projects, which tells one deployment from another and reads the same at its
+# private origin and its public one) and `made_at` (Unix seconds). It holds no credential: the
+# project's object ids and keys, its repository, the member's login and own projects, the found
+# values that mark a row (ids, the project's own sessions and people, the reference prefix, and
+# the target issue's title, which the search rows take as their text), one
 # `named<TAB><kind> <value>` a found value that is a name a line prints by its kind alone (the
 # project's repository, a person of it, a file of its conversation), one `can_fail<TAB><row>` a
 # row whose full-member half can fail, and one `full_status<TAB><status> <row>` a row. Fills mode
@@ -121,11 +129,12 @@
 # must (a GitHub proxy read, a route held to a missing object's answer). A runner refuses fills
 # that are absent, empty, of another version or project, made from another route index than its
 # own, older than 55 minutes (the question's run is kept an hour and read only by its asker),
-# that lack a fill whole fills hold, or that were made at another deployment, and names the origin
-# they were made at, and the member's login, by the first 12 digits of their SHA-256 alone. Those
-# digits keep the value itself out of the log; they do not hide a login or a host name someone can
-# guess, whose SHA-256 anyone can take and compare. Fills mode and a runner each refuse a list of
-# projects that gives no creation time of each of the member's own, which tells no deployment.
+# that lack a fill whole fills hold, that name their origin by no SHA-256, or that were made at
+# another deployment, and names the origin they were made at, and the member's login, by the first
+# 12 digits of their SHA-256 alone. Those digits keep the value itself out of the log; they do not
+# hide a login or a host name someone can guess, whose SHA-256 anyone can take and compare. Fills
+# mode and a runner each refuse a list of projects that gives no creation time of each of the
+# member's own, which tells no deployment.
 #
 # Inputs, each refused by name when missing or malformed (the mode each is read in, in brackets):
 #   SWEEP_ORIGIN             [all] the deployment's origin, https://<host>[:<port>]; http:// only

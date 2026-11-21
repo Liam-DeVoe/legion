@@ -3,8 +3,9 @@
 # The restricted sweep's rows (restricted-sweep.sh sources this file, beside it): the rule that
 # says whether an answer holds a row of the project, the masking two answers are compared under,
 # and each kind of row in its two halves, the full member's and the member's, which one driver
-# (`row`) runs as the run's mode has it. It defines functions and constants alone; they read the
-# entry script's fills, `mode`, `project`, `routes`, `openapi` and the run's files.
+# (`row`) runs as the run's mode has it. It defines functions, its constants and the tallies a
+# run starts at zero; they read the entry script's fills, `mode`, `project`, `routes`, `openapi` and
+# the run's files.
 
 # wildcards_of PATTERN prints the name of each {wildcard} of PATTERN, one per line.
 wildcards_of() {
@@ -218,13 +219,9 @@ alike() {
 }
 
 # lines_into NAME TEXT: the array NAME, of TEXT's lines that are not empty.
-lines_into() {
-  local -a lines=()
-  IFS=$'\n' read -r -d '' -a lines <<<"$2" || :
-  eval "$1=(\${lines[@]+\"\${lines[@]}\"})"
-}
+lines_into() { IFS=$'\n' read -r -d '' -a "$1" <<<"$2" || :; }
 
-live=0 blind=0 judged=0 unfilled=0 in_fills=1 can_text=''
+live=0 blind=0 judged=0 unfilled=0 in_fills=1 must_fail=0 can_text=''
 # counted CAN: counts the row as one that can fail (CAN 1) or a blind one, and sets can_text to
 # which, for the row's line.
 counted() {
@@ -238,12 +235,33 @@ counted() {
   fi
 }
 
+# unfailable: whether the row in hand is of a kind whose rule compares the member's answer with a
+# missing object's (as_missing, proxy: `must_fail`) and cannot fail: the full member was answered
+# alike for both, so the member's answer then says nothing either way, and the row is UNKNOWN.
+unfailable() { [ "$must_fail" = 1 ] && [ "$can" = 0 ]; }
+
 # held LABEL TEXT: the row LABEL kept the project from the member, as TEXT says, and whether it
-# can fail. A runner's row its fills hold no line of (`in_fills` 0) proved nothing by it, so it
-# is UNKNOWN for the row's `why` in place of an ok line.
+# can fail. A runner's row its fills hold no line of (`in_fills` 0), or a row that is unfailable,
+# proved nothing by it, so it is UNKNOWN for the row's `why` in place of an ok line.
 held() {
-  [ "$in_fills" = 1 ] || { unproven "$1: $why"; return 0; }
-  printf 'ok      %s: %s (%s)\n' "$1" "$2" "$can_text"
+  if [ "$in_fills" = 0 ]; then
+    unproven "$1: $why"
+  elif unfailable; then
+    unproven "$1: the member is answered $2, but $why"
+  else
+    printf 'ok      %s: %s (%s)\n' "$1" "$2" "$can_text"
+  fi
+}
+
+# member_marker LABEL FILE VALUE...: masked_marker over the member's answer FILE, the row LABEL's;
+# where the answer could not be masked, it was not read for rows, and the row is UNKNOWN, naming
+# it: it returns 1.
+member_marker() {
+  local label=$1
+  shift
+  masked_marker "$@" && return 0
+  unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
+  return 1
 }
 
 # row KIND LABEL ARGS...: the row LABEL, of KIND, with ARGS. Its full member's half,
@@ -252,17 +270,16 @@ held() {
 # rule reads; a runner reads can and ft from the fills instead. A control that failed leaves the
 # run UNKNOWN, naming the read, and the member's half is not run: the row observed nothing, so it
 # is counted neither as a row that can fail nor as a blind one. Fills mode keeps the row's half
-# (put_row) or, where a row of a kind whose rule compares the member's answer with a missing
-# object's (as_missing, proxy) cannot fail, leaves the run UNKNOWN (no file): the full member was
-# answered alike for both, so the member's answer then says nothing either way. Every other mode
-# then runs the member's half, `KIND_member LABEL ARGS...`. A runner's row its fills hold no line
-# of was never asked of the full member (the fills were made from another API document; another
-# route index read_fills refuses): its member's half runs all the same, so a row of the project in
-# the answer FAILs, but nothing else the answer says proves the row, which `held` leaves UNKNOWN,
-# never blind.
+# (put_row) or, where the row is unfailable, leaves the run UNKNOWN (no file). Every other mode
+# then runs the member's half, `KIND_member LABEL ARGS...`, whose `held` makes an unfailable row
+# UNKNOWN too. A runner's row its fills hold no line of was never asked of the full member (the
+# fills were made from another API document; another route index read_fills refuses): its
+# member's half runs all the same, so a row of the project in the answer FAILs, but nothing else
+# the answer says proves the row, which `held` leaves UNKNOWN, never blind.
 row() {
-  local kind=$1 label=$2 must_fail=0
+  local kind=$1 label=$2
   shift 2
+  must_fail=0
   case $kind in as_missing | proxy) must_fail=1 ;; esac
   can=0 ft=- why='' control_failed='' in_fills=1 can_text=''
   if [ "$mode" = runner ]; then
@@ -284,7 +301,7 @@ row() {
   fi
   counted "$can"
   if [ "$mode" = fills ]; then
-    if [ "$can" = 0 ] && [ "$must_fail" = 1 ]; then
+    if unfailable; then
       unproven "$label: $why"
       return
     fi
@@ -348,10 +365,7 @@ filled_member() {
   fi
   # The answer is read for rows before it is compared with anything, so an answer alike for a
   # missing object, a filter the server ignored, excuses none.
-  if ! masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"}; then
-    unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
-    return
-  fi
+  member_marker "$label" "$work/rt" ${t_list[@]+"${t_list[@]}"} || return 0
   if [ -n "$marker" ]; then
     if is_refusal "$rt"; then
       fail "$label: the refusal $rt holds $(shown "$marker"), a row of $project"
@@ -451,16 +465,11 @@ as_missing_member() {
     unproven "$label: the member is answered $rt, and $rm for a missing one, which no rule judges"
     return
   fi
-  if ! masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"}; then
-    unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
-    return
-  fi
+  member_marker "$label" "$work/rt" ${t_list[@]+"${t_list[@]}"} || return 0
   if [ -n "$marker" ]; then
     fail "$label: the member is answered $rt holding $(shown "$marker"), a row of $project"
   elif ! alike "$rt" "$work/rt" "$rm" "$work/rm" ${both_list[@]+"${both_list[@]}"}; then
     fail "$label: the member is answered $rt for $project's object, otherwise than a missing one answered $rm"
-  elif [ "$can" = 0 ]; then
-    unproven "$label: the member is answered $rt, as a missing one is, but $why"
   else
     held "$label" "$rt, as a missing one is answered"
   fi
@@ -479,8 +488,11 @@ proxy_answer() { is_judgeable "$1" || not_installed "$1" "$2"; }
 # same read of one the App is not installed on (MISSING, the repository's name in NAME's place).
 # The member must be answered as that missing one is, its name masked, or refused 403; any other
 # answer told the member what the App reads of the project's repository. It can fail only where
-# the full member's read of the project's repository is answered and the missing one's is the
-# proxy's answer for a repository the App is not installed on. The proxy reads the browser's
+# the full member's read of the project's repository is answered, other than 403, and the missing
+# one's is the proxy's answer for a repository the App is not installed on. The proxy passes
+# GitHub's own status through, and GitHub answers 403 to an App that lacks a permission: the
+# member, on a build with no read check, is answered that 403 too, which their half takes as a
+# refusal, so a full member's 403 is no read that could fail. The proxy reads the browser's
 # person alone, so the full member reads as SWEEP_FULL_COOKIE's person; without it the full
 # member's read is answered as no one's, and cannot fail.
 proxy_full() {
@@ -495,6 +507,8 @@ proxy_full() {
     why="the full member is answered $ft for $project's repository as for one the App is not installed on ($fm), so the read could not fail: $cookie_why"
   elif ! is_judgeable "$ft"; then
     control_failed=1 why="the full member is answered $ft for $project's repository, which no rule judges, so its control was not read"
+  elif [ "$ft" = 403 ]; then
+    why="the full member is answered 403 for $project's repository, which GitHub answers an App that lacks a permission and the member's half takes as a refusal, so the read could not fail"
   else
     can=1
   fi
@@ -508,16 +522,12 @@ proxy_member() {
   if ! proxy_answer "$rt" "$work/rt" || ! proxy_answer "$rm" "$work/rm"; then
     unproven "$label: the member is answered $rt, and $rm for a repository the App is not installed on, which no rule judges"
   elif alike "$rt" "$work/rt" "$rm" "$work/rm" "$name" no-such-repo; then
-    if [ "$can" = 0 ]; then
-      unproven "$label: the member is answered $rt, but $why"
-    else
-      held "$label" "$rt, as a repository the App is not installed on"
-    fi
-  elif [ "$rt" = 403 ] && ! masked_marker "$work/rt" "$name"; then
-    unproven "$label: the member's answer could not be masked, so it was not read for rows of $project"
-  elif [ "$rt" = 403 ] && [ -z "$marker" ]; then
-    if [ "$can" = 0 ]; then
-      unproven "$label: the member is answered $rt, but $why"
+    held "$label" "$rt, as a repository the App is not installed on"
+  elif [ "$rt" = 403 ]; then
+    # A refusal of the project's repository alone, read for rows of the project first.
+    member_marker "$label" "$work/rt" "$name" || return 0
+    if [ -n "$marker" ]; then
+      fail "$label: the member is answered $rt for $project's repository, where one the App is not installed on is answered $rm"
     else
       held "$label" 403
     fi
@@ -563,6 +573,10 @@ agent_view_full() {
 }
 agent_view_member() {
   local label=$1 answer
+  # Whether the view can fail a runner reads from the fills: the project's session answered the
+  # full member when they were made, and may answer otherwise since, which the member's view cannot
+  # tell, so the line says when.
+  [ "$mode" != runner ] || [ "$can" != 1 ] || can_text='could fail when the fills were made'
   agent_answer restricted "$work/agent-member" "$2"
   answer=$(head -n 1 "$work/agent-member" | cut -d ' ' -f 1-2)
   refusal_body "$work/agent-member" "$work/agent-body"

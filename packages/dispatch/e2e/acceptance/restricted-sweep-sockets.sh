@@ -68,15 +68,13 @@ doc_socket() {
 # which the full member's own feed must be sent and the member's must not. Each failed write ends
 # the check at once rather than waiting out a window that would prove nothing.
 live_writes() {
-  comment_request "$work/comment.json"
-  post_as full "/api/v1/issues/$write_issue/comments" "$work/comment.json"
+  post_comment
   written=$posted
   if [ -z "$written" ]; then
     live_result="the full member's comment on $write_issue answered $status: $(head_of "$work/body")"
     return
   fi
-  message_request "$work/message.json"
-  post_as "$full_browser" "/api/v1/agents/$(uri "$dm_session")/messages" "$work/message.json"
+  post_message "$full_browser" "$dm_session"
   written_message=$posted
   [ -n "$written_message" ] ||
     live_result="the full member's direct message to $dm_session answered $status: $(head_of "$work/body")"
@@ -89,10 +87,12 @@ live_writes() {
 # full member's feed open over the same window, which must be sent both (its control). A runner
 # holds no full member's credential: it reads the member's feed alone and prints the window it
 # read (`live window <W0> <W1>`, UTC, whole seconds), and its silence is proven only by a
-# writer's write delivered strictly inside that window. W1 leaves the writer's delivery bound
-# (delivery_seconds) before the window's end, so a write the writer saw delivered inside the
-# window reached the feeds while the member's was open; the entry script refuses a runner a
-# window that leaves less than that bound again. A refused upgrade is named by its status alone.
+# writer's write delivered strictly inside that window, begun after W0 and ended before W1. W0 is
+# read once the member's feed subscribed, so a write begun after it was committed after the feed
+# subscribed. W1 leaves the writer's delivery bound (delivery_seconds) before the window's end, so
+# a write the writer saw delivered inside the window reached the feeds while the member's was
+# open; the entry script refuses a runner a window that leaves less than that bound again. A
+# refused upgrade is named by its status alone.
 live_socket() {
   local watcher_restricted watcher_full='' ready_started observation_started window_start elapsed
   local restricted_exit full_exit feed pid refused_upgrade marker first_line frames own_message=''
@@ -133,8 +133,7 @@ live_socket() {
     # The member's own direct message, inside the window, to a feed that subscribed; a refused
     # upgrade has no feed to send it to.
     if [ -e "$work/ready-restricted" ]; then
-      message_request "$work/own-message.json"
-      post_as restricted "/api/v1/agents/$(uri "$member_session")/messages" "$work/own-message.json"
+      post_message restricted "$member_session"
       own_message=$posted
       [ -n "$own_message" ] ||
         live_result="the member's direct message to their own session $member_session answered $status"

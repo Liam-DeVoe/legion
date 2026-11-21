@@ -178,9 +178,9 @@ describe("a runner's fills", () => {
    *  the lines `without` names, each line of `more` after them. */
   const made = (madeAt: number, more: readonly string[] = [], without: readonly string[] = []) =>
     [
-      "restricted-sweep-fills\t3",
+      "restricted-sweep-fills\t4",
       "project\tTGT",
-      "origin\thttp://127.0.0.1:9",
+      `origin_sha256\t${"a".repeat(64)}`,
       `routes\t${routeIndexSha256}`,
       `deployment\t${"d".repeat(64)}`,
       `made_at\t${madeAt}`,
@@ -222,13 +222,13 @@ describe("a runner's fills", () => {
     ["an empty file", () => "", {}, "UNKNOWN: SWEEP_FILLS_FILE is empty"],
     [
       "fills of another version",
-      () => "restricted-sweep-fills\t2\nproject\tTGT\n",
+      () => "restricted-sweep-fills\t3\nproject\tTGT\n",
       {},
-      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 3",
+      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 4",
     ],
     [
       "fills of another project",
-      () => "restricted-sweep-fills\t3\nproject\tOWN\n",
+      () => "restricted-sweep-fills\t4\nproject\tOWN\n",
       {},
       "UNKNOWN: SWEEP_FILLS_FILE holds the fills of project OWN, not of TGT",
     ],
@@ -249,6 +249,12 @@ describe("a runner's fills", () => {
       () => made(now(), [], ["deployment"]),
       {},
       "UNKNOWN: SWEEP_FILLS_FILE names no deployment it was made at",
+    ],
+    [
+      "fills that name their origin by no SHA-256",
+      () => made(now(), ["origin_sha256\thttp://127.0.0.1:9"], ["origin_sha256"]),
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE names the origin it was made at by no SHA-256",
     ],
     [
       "fills older than 55 minutes",
@@ -365,7 +371,7 @@ test(
         .replace(/\[0-9A-Fa-f\]\{\d+,\d+\}/, "{sha}")
     );
     // The workflow-runs read carries the one commit its query must name.
-    expect(proxyReads).toEqual(
+    expect(proxyReads()).toEqual(
       forwarded.map((path) => (path === "actions/runs" ? "actions/runs?head_sha={sha}" : path))
     );
   },
@@ -684,7 +690,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(stdout).toMatch(
         /^ok {6}GET \/api\/v1\/github\/app-installation\/\{owner\}\/\{repo\}: 200, as a missing one is answered \(can fail\)$/m
       );
-      for (const shape of proxyReads) {
+      for (const shape of proxyReads()) {
         expect(stdout).toMatch(
           new RegExp(
             `^ok {6}GET /api/github/rest/repos/\\{owner\\}/\\{repo\\}/${literally(shape)}: .*\\(can fail\\)$`,
@@ -762,8 +768,9 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
   // The split, as the outside acceptance runs it: the fills written where the full member's token
   // is, a runner with the member's cookie alone, and a writer beside it, stopped by its pid once
   // the runner ends. The runner's live check holds only once a write the writer saw delivered
-  // falls strictly inside the window the runner read, which this row joins as the acceptance's
-  // tailnet leg does: as `YYYY-MM-DDTHH:MM:SSZ` strings.
+  // falls strictly inside the window the runner read, from before its comment was asked for to
+  // after its direct message was answered, which this row joins as the acceptance's tailnet leg
+  // does: as `YYYY-MM-DDTHH:MM:SSZ` strings.
   test(
     "split into fills and a runner with no full member's credential, the run passes, and a delivered write falls inside its window",
     async () => {
@@ -790,12 +797,14 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       const writes = (writer?.stdout ?? "").split("\n").filter((line) => line.startsWith("write "));
       expect(writes.length, writer?.stdout).toBeGreaterThan(0);
       const delivered = writes.filter((line) =>
-        /^write \S+ [0-9a-f-]{36} [0-9a-f-]{36} delivered$/.test(line)
+        /^write \S+ \S+ [0-9a-f-]{36} [0-9a-f-]{36} delivered$/.test(line)
       );
       expect(delivered, writer?.stdout).toEqual(writes);
+      // A write counts only where it began after the member's feed subscribed, so its comment was
+      // committed after it too, and ended before the window's end.
       const inside = delivered
-        .map((line) => line.split(" ")[1] ?? "")
-        .filter((stamp) => stamp > w0 && stamp < w1);
+        .map((line) => line.split(" "))
+        .filter(([, began = "", ended = ""]) => began > w0 && ended < w1);
       expect(inside.length, `${writer?.stdout}\nwindow ${w0} ${w1}`).toBeGreaterThan(0);
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })

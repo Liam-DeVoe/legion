@@ -3056,11 +3056,12 @@ GATES = [
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
          "document every committed recording's body is held to, which this job's test step runs"),
         (f"{ENVOY}/internal/dispatch/api/testdata/routes.txt",
-         "packages/dispatch/e2e/__tests__/restricted-sweep-index.ts:14-16 (the new URL at :15), which "
-         "restricted-sweep.test.ts and restricted-sweep-judging.test.ts import, and e2e/acceptance/restricted-sweep.sh, "
-         "which both run: the route index the sweep walks row by row"),
+         "packages/dispatch/e2e/__tests__/restricted-sweep-index.ts:26-28 (the new URL at :27), which "
+         "restricted-sweep-fake.ts, restricted-sweep.test.ts, restricted-sweep-judging.test.ts and "
+         "restricted-sweep-split.test.ts import (restricted-sweep-sockets.test.ts through the fake), and "
+         "e2e/acceptance/restricted-sweep.sh, which they run: the route index the sweep walks row by row"),
         (f"{ENVOY}/internal/dispatch/githubapi/proxy.go",
-         "packages/dispatch/e2e/__tests__/restricted-sweep-index.ts:18-20, the new URL at :19, which restricted-sweep.test.ts "
+         "packages/dispatch/e2e/__tests__/restricted-sweep-index.ts:30-32, the new URL at :31, which restricted-sweep.test.ts "
          "imports: the GitHub proxy's readable expression, which the sweep's proxy reads are held to"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),

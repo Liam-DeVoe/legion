@@ -479,11 +479,13 @@ so that read is this gate's (ci_job_reads.py's dispatch_ui).
 ## dispatch_ui: The route index and the GitHub proxy's expression the restricted sweep's tests read
 
 The route index, `packages/envoy/internal/dispatch/api/testdata/routes.txt`, which
-`e2e/__tests__/restricted-sweep.test.ts` and `restricted-sweep-judging.test.ts` read, holding
+`e2e/__tests__/restricted-sweep.test.ts`, `restricted-sweep-judging.test.ts`,
+`restricted-sweep-split.test.ts` and the fake they share, `restricted-sweep-fake.ts`, read
+(`restricted-sweep-sockets.test.ts` through that fake), holding
 `e2e/acceptance/restricted-sweep.sh`'s kinds and calls to it (that script reads it row by row);
 and the GitHub proxy's `readable` expression, `githubapi/proxy.go`, which
-`restricted-sweep.test.ts` reads and holds the sweep's proxy reads to. Both suites run in this
-job's test step.
+`restricted-sweep.test.ts` reads and holds the sweep's proxy reads to. Each of those suites runs
+in this job's test step.
 
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
