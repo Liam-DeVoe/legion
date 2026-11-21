@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -166,4 +167,27 @@ func startingSelectionHealth(ctx context.Context, client *bus.Client) map[string
 		"reason":         reason,
 		"consumer_names": string(consumernames.ModeFresh),
 	}
+}
+
+// hookStallHealth is /healthz's answer for the bus's reconnect hooks stalled for stall, past
+// bus.RepairGrace (healthzHandler, below every 503 check), whose last failure was hookErr: the
+// dependency it names, its error and the fields beside it. The stall is the KV watch rebuild's,
+// unless its last failure is the fixed mode's read of the cutover marker (bus.ErrMarkerRead),
+// which runs after the rebuild: then the caches are current, and the answer names the "cutover
+// marker read" with the selection bucket and the sentinel's key, so neither the answer nor the
+// paging alarm sends an operator to watchers that are fine.
+func hookStallHealth(stall time.Duration, hookErr error) (dependency string, err error, extra map[string]interface{}) {
+	dependency, step := "KV watch rebuild", "rebuild"
+	if errors.Is(hookErr, bus.ErrMarkerRead) {
+		dependency, step = "cutover marker read", "read"
+		extra = map[string]interface{}{"bucket": consumernames.SessionBucket, "key": consumernames.SentinelKey}
+	}
+	err = fmt.Errorf("no %s has succeeded for %s", step, stall.Round(time.Second))
+	if hookErr != nil {
+		// The last failure says what is broken; the stall, for how long. A run still in flight
+		// past the grace has no error of its own, and writeDependencyHealth needs one, so then the
+		// stall is the whole report.
+		err = fmt.Errorf("%w (%w)", hookErr, err)
+	}
+	return dependency, err, extra
 }

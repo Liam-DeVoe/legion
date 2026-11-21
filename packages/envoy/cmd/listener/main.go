@@ -669,18 +669,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], starting *atomic.Pointer
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
 		if stall, hookErr := d.client.HookStall(); stall >= bus.RepairGrace {
-			dependency, step, extra := "KV watch rebuild", "rebuild", map[string]interface{}(nil)
-			if errors.Is(hookErr, bus.ErrMarkerRead) {
-				dependency, step = "cutover marker read", "read"
-				extra = map[string]interface{}{"bucket": consumernames.SessionBucket, "key": consumernames.SentinelKey}
-			}
-			stalled := fmt.Errorf("no %s has succeeded for %s", step, stall.Round(time.Second))
-			if hookErr != nil {
-				// The last failure says what is broken; the stall, for how long. A run still in
-				// flight past the grace has no error of its own, and writeDependencyHealth needs
-				// one, so then the stall is the whole report.
-				stalled = fmt.Errorf("%w (%w)", hookErr, stalled)
-			}
+			dependency, stalled, extra := hookStallHealth(stall, hookErr)
 			writeDependencyHealthWith(w, dependency, stalled, false, extra)
 			return
 		}
