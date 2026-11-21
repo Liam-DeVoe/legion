@@ -118,11 +118,15 @@ func NewHubAdmission(conns []*bus.Client) *HubAdmission {
 // SetListeners gives the admission the listener workloads that serve its hubs
 // (DISPATCH_PRIVATE_LISTENERS) and the client that reads their replicas, which presents Dispatch's
 // own credential; nil is http.DefaultClient. The proof reads every replica but a loopback one over
-// https, so the credential and the answer never cross a network in the clear; the client's
-// transport is the one that verifies the replica's certificate. The proof reads through a copy of
-// the client that follows no redirect, so a replica's 3xx is its answer, and fails it: what the
-// address a redirect names answers is no read of the replica, and a transport that adds the
-// credential would send it there too.
+// https, so the credential and the answer never cross a network in the clear. That needs a
+// listener that serves ReadinessPath over TLS, which none does at this head (cmd/listener serves
+// no TLS), so every read off loopback fails until the change that adds the route serves it so. It
+// also needs a client that verifies each replica: by its workload's name (a ServerName per request,
+// since one client reads every workload) or by a certificate that carries each pod's address, and
+// never with InsecureSkipVerify. The proof reads through a copy of the client that follows no
+// redirect, so a replica's 3xx is its answer, and fails it: what the address a redirect names
+// answers is no read of the replica, and a transport that adds the credential would send it there
+// too.
 // Until it is called, and after a call that gives no workload, every proof fails with
 // ErrNoListenerInventory. A new inventory sets Ready false and the report to unknown until a
 // proof under it ends, and wakes Run for that proof. It needs a non-nil admission: a deployment
