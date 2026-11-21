@@ -18,6 +18,12 @@
 // is written on it, so it cannot merge.
 package verdict
 
+import (
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
 // CheckName is the name of the required check the daemon writes, as a check run and, over a commit
 // status of the same name another writer of the one App left, as a commit status.
 const CheckName = "legion-verdict"
@@ -68,12 +74,16 @@ type Reviewer struct {
 }
 
 // Review is one review of the pull request, delivered by webhook: the head it read, its author,
-// whether its author is a person (an account of type User with write access), and its state.
+// whether its author is a person (an account of type User with write access), its state, and
+// GitHub's id of it and when GitHub says it was submitted, by which it is ordered among the
+// author's reviews (record.ReviewOrder).
 type Review struct {
-	Head   string
-	Author string
-	Person bool
-	State  string
+	Head        string
+	Author      string
+	Person      bool
+	State       string
+	GitHubID    int64
+	SubmittedAt time.Time
 }
 
 // Inputs is what the daemon recorded of one head of a verdict repository's pull request.
@@ -91,8 +101,9 @@ type Inputs struct {
 	// the head ("" for none).
 	SideReviews bool
 	Side        string
-	// Reviews is every review of the pull request the daemon recorded, oldest first; only those at
-	// Head are read.
+	// Reviews is every review of the pull request the daemon recorded, in the order it recorded
+	// them, which can differ from GitHub's when a delivery comes again later; only those at Head
+	// are read, and each author's last is taken by GitHub's order (later).
 	Reviews []Review
 }
 
@@ -140,7 +151,10 @@ func passes(in Inputs) bool {
 func personsAt(in Inputs) (refused, approved bool) {
 	last := map[string]Review{}
 	for _, review := range in.Reviews {
-		if review.Head == in.Head && deciding(review.State) && !isCIReviewer(in, review.Author) {
+		if review.Head != in.Head || !deciding(review.State) || isCIReviewer(in, review.Author) {
+			continue
+		}
+		if kept, ok := last[review.Author]; !ok || later(review, kept) {
 			last[review.Author] = review
 		}
 	}
@@ -154,13 +168,26 @@ func personsAt(in Inputs) (refused, approved bool) {
 // ciReviewerAt is the state of the entry's ci_reviewer's last deciding review at the head, "" for
 // none.
 func ciReviewerAt(in Inputs) string {
-	state := ""
+	var kept Review
+	found := false
 	for _, review := range in.Reviews {
-		if review.Head == in.Head && deciding(review.State) && isCIReviewer(in, review.Author) {
-			state = review.State
+		if review.Head == in.Head && deciding(review.State) && isCIReviewer(in, review.Author) && (!found || later(review, kept)) {
+			kept, found = review, true
 		}
 	}
-	return state
+	return kept.State
+}
+
+// later is whether review replaces kept as its author's last: GitHub submitted it after kept
+// (record.ReviewOrder), or neither is ordered before the other and the daemon recorded it after.
+func later(review, kept Review) bool {
+	return !order(kept).After(order(review))
+}
+
+// order is where review falls among the pull request's reviews: when GitHub says it was
+// submitted, then GitHub's id of it.
+func order(review Review) record.ReviewOrder {
+	return record.ReviewOrder{SubmittedAt: review.SubmittedAt, ID: review.GitHubID}
 }
 
 // isCIReviewer is whether author is the entry's ci_reviewer. A Legion head has none: the CI

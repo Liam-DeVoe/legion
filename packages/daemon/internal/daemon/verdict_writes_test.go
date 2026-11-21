@@ -437,6 +437,22 @@ func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {
 	}
 }
 
+// A person's approval delivered after their later request for changes lifts nothing: intake can
+// apply a review late (a nak, a redelivery), so each author's last review is the one GitHub
+// submitted last (record.ReviewOrder), not the one the daemon recorded last, and the run the
+// refusal turned to failure stays at failure.
+func TestLegionVerdictAnApprovalDeliveredLateLiftsNoLaterRefusal(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	run := rig.approvedAndWritten(t)
+	rig.apply(t, personsReview(2, "changes_requested"))
+	rig.written(t)
+	rig.apply(t, personsReview(1, "approved"))
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d left at failure", runs, run.ID)
+	}
+}
+
 // C2: on a Legion head with the tester's pass and no reviewer verdict, a person's approval at H
 // writes nothing: only the reviewer's verdict approves a head a Legion issue owns.
 func TestLegionVerdictPersonsApprovalWritesNothingOnALegionHead(t *testing.T) {

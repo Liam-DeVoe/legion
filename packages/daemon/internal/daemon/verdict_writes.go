@@ -425,8 +425,9 @@ func outsideInputs(ctx context.Context, tx pgx.Tx, entry config.VerdictRepositor
 	return in, err
 }
 
-// reviewsOf is every review of the pull request the daemon recorded, oldest first, as a verdict
-// reads them.
+// reviewsOf is every review of the pull request the daemon recorded, in the order it recorded them,
+// as a verdict reads them: each with GitHub's id and submission time, by which verdict.Decide takes
+// each author's last.
 func reviewsOf(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int) ([]verdict.Review, error) {
 	recorded, err := store.VerdictReviewsTx(ctx, tx, repository, number)
 	if err != nil {
@@ -434,7 +435,8 @@ func reviewsOf(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, num
 	}
 	reviews := make([]verdict.Review, 0, len(recorded))
 	for _, r := range recorded {
-		reviews = append(reviews, verdict.Review{Head: r.Head, Author: r.Author, Person: r.AuthorCanWrite, State: r.State})
+		reviews = append(reviews, verdict.Review{Head: r.Head, Author: r.Author, Person: r.AuthorCanWrite, State: r.State,
+			GitHubID: r.GitHubID, SubmittedAt: r.SubmittedAt})
 	}
 	return reviews, nil
 }

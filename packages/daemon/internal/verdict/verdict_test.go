@@ -1,6 +1,9 @@
 package verdict
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // The heads of these cases: H the head decided, H1 the commit of a tester's pass that a reviewer's
 // verdict at H carries there, H0 any other commit.
@@ -23,6 +26,13 @@ func refusedBy(author string, person bool, at string) Review {
 
 func commentedBy(author string, person bool, at string) Review {
 	return Review{Head: at, Author: author, Person: person, State: "commented"}
+}
+
+// submitted is review as GitHub numbered it and submitted it, minute minutes past ten: what orders
+// each author's reviews (record.ReviewOrder), whatever order the daemon recorded them in.
+func submitted(review Review, id int64, minute int) Review {
+	review.GitHubID, review.SubmittedAt = id, time.Date(2026, 11, 20, 10, minute, 0, 0, time.UTC)
+	return review
 }
 
 // passAtH and approveAtH are a Legion head's two halves of a verdict at H.
@@ -62,6 +72,8 @@ func TestDecideIsR4sTable(t *testing.T) {
 			Reviews: []Review{refusedBy("a-writer", true, h), approvedBy("another-writer", true, h)}}, Failure},
 		{"a Legion head: a comment after a request for changes lifts nothing", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
 			Reviews: []Review{refusedBy("a-writer", true, h), commentedBy("a-writer", true, h)}}, Failure},
+		{"a Legion head: an approval recorded after the same person's later refusal lifts nothing", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
+			Reviews: []Review{submitted(refusedBy("a-writer", true, h), 12, 5), submitted(approvedBy("a-writer", true, h), 11, 1)}}, Failure},
 		{"a Legion head: a request for changes at another head refuses nothing here", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
 			Reviews: []Review{refusedBy("a-writer", true, h0)}}, Success},
 		{"a Legion head: an account with no write access refuses nothing", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
@@ -86,6 +98,10 @@ func TestDecideIsR4sTable(t *testing.T) {
 			Reviews: []Review{refusedBy(ciReviewer, false, h), approvedBy(ciReviewer, false, h)}}, Success},
 		{"an outside head: a person's request for changes after the CI reviewer's approval", Inputs{Head: h, CIReviewer: ciReviewer,
 			Reviews: []Review{approvedBy(ciReviewer, false, h), refusedBy("a-writer", true, h)}}, Failure},
+		{"an outside head: the CI reviewer's approval recorded after its later request for changes", Inputs{Head: h, CIReviewer: ciReviewer,
+			Reviews: []Review{submitted(refusedBy(ciReviewer, false, h), 22, 5), submitted(approvedBy(ciReviewer, false, h), 21, 1)}}, Failure},
+		{"an outside head: a person's approval recorded after their later request for changes", Inputs{Head: h,
+			Reviews: []Review{submitted(refusedBy("a-writer", true, h), 32, 5), submitted(approvedBy("a-writer", true, h), 31, 1)}}, Failure},
 		{"an outside head: the CI reviewer's approval of another head", Inputs{Head: h, CIReviewer: ciReviewer, Reviews: []Review{approvedBy(ciReviewer, false, h0)}}, None},
 		{"an outside head: a bot that is not the CI reviewer", Inputs{Head: h, CIReviewer: ciReviewer,
 			Reviews: []Review{approvedBy("another-bot[bot]", false, h), refusedBy("another-bot[bot]", false, h)}}, None},
