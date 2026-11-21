@@ -7,7 +7,14 @@
 #   cluster.sh up --namespace NS --storage-class SC --dispatch-commit SHA --pg-major 16|18
 #                 --production-repo OWNER/REPO [--pg-volume 100Gi] [--listener-image REF]
 #                 [--stored-order-source SHA | --stored-order-checker-commit SHA]
-#                 [--browsertype-commit SHA]
+#                 [--browsertype-commit SHA] [--listener-without-oidc]
+#       --listener-without-oidc (off by default) renders the listener without ENVOY_OIDC_ISSUER,
+#       ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS and ENVOY_DISPATCH_PRINCIPAL, and Dispatch without
+#       ENVOY_ACCOUNT_TOKEN_FILE, for a namespace whose pods cannot reach the cluster's token issuer
+#       (loadtest's NetworkPolicy lets them reach only each other and DNS, and a listener that
+#       cannot discover its issuer does not start). Dispatch then makes no send for a role route,
+#       which only the replay needs, so replay-prepare and replay refuse such a run. state.json
+#       records listener_without_oidc true.
 #       Refuses, before it creates anything, a commit with no ghcr.io envoy:<commit> image (naming
 #       the newest first-parent ancestor that has one), a --pg-major other than the production
 #       repository's dispatch/main.go databaseVersion, an image tag that does not resolve to a
@@ -674,7 +681,7 @@ apply_manifest() {
   err=$RUN_DIR/tmp/apply-$name.err
   mkdir -p -- "$RUN_DIR/tmp"
   for try in 1 2 3 4 5; do
-    if render_manifest "$MANIFESTS/$name" "${values[@]}" | kube "$@" >/dev/null 2>"$err"; then
+    if render_manifest "$MANIFESTS/$name" "${values[@]}" | without_oidc_env | kube "$@" >/dev/null 2>"$err"; then
       return 0
     fi
     if ! grep -q 'the object has been modified' "$err" || ((try == 5)); then break; fi
@@ -3485,10 +3492,35 @@ down_run() {
   kube get "$COPY_KINDS" -l "$RUN_LABEL=$RUN" 2>&1
 }
 
+# without_oidc_env: a rendered manifest on standard input, with the env entries
+# --listener-without-oidc drops (WITHOUT_OIDC_ENV, each a `- name:` line and its one `value:`
+# line) taken out when state.json records listener_without_oidc, and unchanged otherwise. Fails
+# when such an entry's next line is not its value, so no entry is half removed.
+WITHOUT_OIDC_ENV=(ENVOY_OIDC_ISSUER ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ACCOUNTS ENVOY_DISPATCH_PRINCIPAL ENVOY_ACCOUNT_TOKEN_FILE)
+without_oidc_env() {
+  if [ "$(state '.listener_without_oidc // false')" != true ]; then
+    cat
+    return
+  fi
+  awk -v names=" ${WITHOUT_OIDC_ENV[*]} " '
+    skip { skip = 0; if ($1 != "value:") bad = 1; next }
+    $1 == "-" && $2 == "name:" && index(names, " " $3 " ") { skip = 1; next }
+    { print }
+    END { if (bad || skip) exit 1 }'
+}
+
+# refuse_without_oidc CMD: die, naming --listener-without-oidc, when the run was made with it:
+# CMD (replay-prepare or replay) needs Dispatch's sends for role routes, which that run cannot
+# make.
+refuse_without_oidc() {
+  [ "$(state '.listener_without_oidc // false')" != true ] ||
+    die "$1: run $RUN was made with --listener-without-oidc, so the listener verifies no projected token and Dispatch makes no send for a role route, which the replay's role-routed issues need; make the replay's run without it, in a namespace whose pods reach the cluster's token issuer"
+}
+
 # ---- subcommands ----------------------------------------------------------------------------------
 
 cmd_up() {
-  parse "namespace storage-class dispatch-commit pg-major production-repo pg-volume listener-image stored-order-source stored-order-checker-commit browsertype-commit" "" "$@"
+  parse "namespace storage-class dispatch-commit pg-major production-repo pg-volume listener-image stored-order-source stored-order-checker-commit browsertype-commit" "listener-without-oidc" "$@"
   positional 0 "no positional arguments"
   trap up_exit EXIT
   up_run
@@ -3627,6 +3659,10 @@ up_run() {
     state_set '.browsertype = {commit: $c, sha256: $s}' --arg c "$bt_commit" --arg s "$(sha256_of "$BROWSERTYPE_BIN")"
   fi
 
+  if [ -n "${OPT[listener-without-oidc]:-}" ]; then
+    state_set '.listener_without_oidc = true'
+    note "--listener-without-oidc: the listener runs without ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS and ENVOY_DISPATCH_PRINCIPAL, and Dispatch without ENVOY_ACCOUNT_TOKEN_FILE: no send for a role route, and replay-prepare and replay refuse this run"
+  fi
   note "installing the copy in $NS"
   apply_manifest secrets.yaml.tmpl
   apply_manifest postgres.yaml
@@ -3815,6 +3851,7 @@ cmd_replay_prepare() {
     die "replay-prepare: LOADTEST_REPLAY_ISSUE is not set: set it to the issue the replay's parts are file artifacts of (the manifest names none); refusing before it touches the copy"
   [ -z "$from_dir" ] || [ -d "$from_dir" ] || die "replay-prepare: --from-dir $from_dir is not a directory"
   use_run
+  refuse_without_oidc replay-prepare
   replay_prepare_run "$manifest" "$from_dir"
 }
 
@@ -3822,6 +3859,7 @@ cmd_replay() {
   parse "namespace run from to typing-peers typing-rate typing-docs" "typing" "$@"
   positional 1 "NAME"
   use_run
+  refuse_without_oidc replay
   typing_parse
   run_replay "${POS[0]}" "${OPT[from]:-0}" "${OPT[to]:-39m}" replay
 }

@@ -1359,6 +1359,42 @@ jq -e --arg s "$(sha256sum <"$prebuilt/envoy-dispatch-2" | cut -d' ' -f1)" '.sto
 unset LOADTEST_CLUSTER_LOADGEN LOADTEST_CLUSTER_CHECKER
 pass "up copies prebuilt loadgen and checker binaries in place of their go builds, and state.json records the checker as prebuilt; redeploy installs a prebuilt checker for the commit it deploys"
 
+# ---- --listener-without-oidc ----------------------------------------------------------------------
+
+oidc_env=(ENVOY_OIDC_ISSUER ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ACCOUNTS ENVOY_DISPATCH_PRINCIPAL ENVOY_ACCOUNT_TOKEN_FILE)
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up without --listener-without-oidc exited $RC: $(tail -5 "$tmp/out")"
+for name in "${oidc_env[@]}"; do
+  [ "$(grep -c -- "^ *- name: $name\$" "$fake/applied.yaml")" = 1 ] || fail "the default render does not keep $name once"
+done
+default_lines=$(wc -l <"$fake/applied.yaml")
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+jq -e 'has("listener_without_oidc") | not' "$run_dir/state.json" >/dev/null || fail "state.json of a default run records listener_without_oidc"
+pass "the default render keeps the listener's OIDC settings and Dispatch's account token file"
+
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --listener-without-oidc
+((RC == 0)) || fail "up --listener-without-oidc exited $RC: $(tail -5 "$tmp/out")"
+for name in "${oidc_env[@]}"; do
+  ! grep -q -- "^ *- name: $name\$" "$fake/applied.yaml" || fail "--listener-without-oidc left $name in the render"
+done
+for name in ENVOY_API_TOKEN ENVOY_TOKEN ENVOY_URL NATS_URLS; do
+  grep -q -- "^ *- name: $name\$" "$fake/applied.yaml" || fail "--listener-without-oidc dropped $name, which it must keep"
+done
+(($(wc -l <"$fake/applied.yaml") == default_lines - 2 * ${#oidc_env[@]})) ||
+  fail "--listener-without-oidc removed other than the five entries' ten lines: $default_lines lines by default, $(wc -l <"$fake/applied.yaml") with it"
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+jq -e '.listener_without_oidc == true' "$run_dir/state.json" >/dev/null || fail "state.json does not record listener_without_oidc"
+pass "up --listener-without-oidc drops the listener's OIDC settings and principal and Dispatch's account token file, and nothing else"
+
+run_cluster replay --namespace "$ns" r1
+((RC != 0)) || fail "replay ran on a run made with --listener-without-oidc"
+grep -qF -- "replay: run $(jq -r .run "$run_dir/state.json") was made with --listener-without-oidc" "$tmp/out" ||
+  fail "replay's refusal does not name --listener-without-oidc: $(tail -3 "$tmp/out")"
+! grep -q '^replay-r1 ' "$fake/runner-starts" 2>/dev/null || fail "replay started a loadgen run before refusing"
+pass "replay refuses a run made with --listener-without-oidc, naming the setting"
+
 # ---- (c) the whole path, and -n on every kubectl call ------------------------------------------------
 
 reset_fake

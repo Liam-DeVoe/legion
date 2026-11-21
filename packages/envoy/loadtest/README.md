@@ -3233,6 +3233,15 @@ and those columns stay empty for its steps.
 
 - **A namespace.** `--namespace` names it on every subcommand. There is no default: a Legion pod's
   own namespace is `builds`. Every `kubectl` call names the namespace.
+- **The cluster's token issuer, reachable from the namespace, or `up --listener-without-oidc`.**
+  The copy's listener verifies Dispatch's projected token against the cluster's issuer
+  (`ENVOY_OIDC_ISSUER`), so it does not start where its pod cannot reach that issuer. `loadtest`'s
+  NetworkPolicy lets its pods reach only each other and DNS. `up --listener-without-oidc`, off by
+  default, renders the listener without `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`,
+  `ENVOY_OIDC_ACCOUNTS` and `ENVOY_DISPATCH_PRINCIPAL`, and Dispatch without
+  `ENVOY_ACCOUNT_TOKEN_FILE`, and records `listener_without_oidc: true` in `state.json`. Dispatch
+  then makes no send for a role route. The synthetic steps make none, and the replay's
+  role-routed issues need them, so `replay-prepare` and `replay` refuse such a run.
 - **These rights in the namespace.** Check each row with `kubectl -n <ns> auth can-i <verb>
   <resource>`:
 
