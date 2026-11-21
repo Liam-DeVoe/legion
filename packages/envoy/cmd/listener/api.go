@@ -929,7 +929,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
 // session it names. The Claude Code /clear handoff still deregisters its predecessor, since it
-// does so while it is still that session.
+// does so while it is still that session. A Legion daemon's own token (daemonCaller) is the one
+// exception, and only for the clean stop, a request naming if_not_registered_after: the session
+// it stops is a role's whose process ended, never the daemon's own, and the shared bearer it
+// replaces makes that stop for any session. Its unconditional delete, and a delete naming a client
+// instance alone, are held to its own session like every other token's.
 //
 // A delete that removed an entry this listener's cache held moves the session's known-session
 // record on, keeping its topics (session.KnownSessions.TouchWithin, which writes whatever the
@@ -949,9 +953,15 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
 			return
 		}
-		if refusal := sessionNotBound(r, logger, sessionID); refusal != "" {
-			writeJSONError(w, http.StatusForbidden, refusal, "session_id")
-			return
+		// The daemon's clean stop is decided before sessionNotBound, which logs every refusal it
+		// makes, so the stop it admits writes no line calling it another session's act.
+		_, daemon := daemonCaller(r)
+		cleanStop := daemon && strings.TrimSpace(r.URL.Query().Get("if_not_registered_after")) != ""
+		if !cleanStop {
+			if refusal := sessionNotBound(r, logger, sessionID); refusal != "" {
+				writeJSONError(w, http.StatusForbidden, refusal, "session_id")
+				return
+			}
 		}
 		conditions := session.DeleteConditions{ClientInstanceID: strings.TrimSpace(r.URL.Query().Get("client_instance_id"))}
 		if asked := strings.TrimSpace(r.URL.Query().Get("if_not_registered_after")); asked != "" {
