@@ -23,13 +23,12 @@ body: |-
   changes to or from `read`. `GET /api/v1/whoami` names `read` among the scopes of every read-only
   token, and its cut.
 
-  A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub the same questions as
-  a writer's read made at the same moment, and gives the same answer. It stores nothing: it keeps
-  GitHub's answers in the process's memory, which is empty after a restart, at most 1,024 of them
-  in each of its two memories. A memory logs one WARN when it first drops an answer at that bound,
-  and the metric `envoy_dispatch_read_only_answers_dropped_total` counts every drop. Once a read-only
-  caller's reads name more commits than that, the answers a memory drops are read from GitHub again
-  on every read-only read, where a writer's stored rows answer them.
+  A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub exactly what a
+  writer's read made at the same moment asks, and gives the same answer. It stores nothing and keeps
+  nothing after its request: it reads the writers' claims, holds and default-branch cache without
+  writing them. So each read-only read asks GitHub as a writer's read at that moment would, one
+  pulls read for each result commit that no stored head and no writer's claim covers, on the same
+  GitHub App installation's rate limit.
 time: 2026-11-20T02:56:20Z
 custom:
   Issue: pr4557
