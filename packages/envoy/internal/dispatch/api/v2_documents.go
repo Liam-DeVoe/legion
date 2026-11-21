@@ -63,18 +63,19 @@ const artifactSlugText = "slug=<slug or file name> keeps the artifacts at that s
 	"file name, as dispatch://<owner>/artifact/<slug> names one: one row, or more where one document's file name is " +
 	"another's slug or documents share a file name."
 
-// artifactUploadText is what the descriptions of the three uploads say alike.
+// artifactUploadText is what the descriptions of the three uploads say alike before the refusals
+// of a body (artifactUploadRefusals).
 const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or " +
 	"multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown " +
 	"file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its " +
 	"bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is " +
 	"that artifact's next version. An upload that replaces a document the owner already holds names the token of the " +
 	"version it replaces, precondition {document}, the whole-document token include=text answers (a multipart " +
-	"upload's precondition field holds the same JSON object): one that names none is 400 PRECONDITION_REQUIRED, and a " +
-	"token behind the live document is 409 PRECONDITION_FAILED, whose current names the live token and the number of " +
-	"the version the document stands at; both write nothing. A precondition naming blocks, or on an upload stored as a " +
-	"file, is 400 INVALID_PRECONDITION, and one on a first upload of a name, which replaces no version, is 409 " +
-	"PRECONDITION_FAILED. " +
+	"upload's precondition field holds the same JSON object): one that names none is 400 PRECONDITION_REQUIRED, " +
+	"writing nothing. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming " +
+	"in current the live token and the number of the version the document stands at, and a precondition on a first " +
+	"upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is " +
+	"400 INVALID_PRECONDITION. " +
 	"An issue's plan, Verification document and decisions document are always documents: a file or an image under " +
 	"the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, " +
 	"decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored " +
@@ -82,11 +83,17 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition
 	"are. " +
 	"Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own " +
 	"fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and " +
-	"version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither " +
-	"JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT " +
-	"(primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, " +
-	"ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 " +
-	"REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB."
+	"version the version the upload wrote, for a new artifact and for a new version alike."
+
+// artifactUploadRefusals is what the descriptions of the three uploads say of the bodies they
+// refuse, moreInput the cases of 400 ARTIFACT_INPUT an upload answers beyond the three every
+// upload does, each led by a comma ("" for none), so the one clause of that code names them all.
+func artifactUploadRefusals(moreInput string) string {
+	return "A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 " +
+		"INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing " +
+		"document's name" + moreInput + "), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no " +
+		"file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB."
+}
 
 // v2DocumentRows are the document routes: rows 5; 4; 9; 10, 15 and 29; 11; 12; 13; 14; 16;
 // 18; 19; 20, 89 and 161; 22; 23; 24; 25; 26 and 32; 27; 28; 30, 91 and 164; 6, 31, 92 and 165; 85,
@@ -117,9 +124,10 @@ func (s *server) v2DocumentRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/agents/{session_id}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed " +
 				"dispatch://agent/<session_id>/artifact/<slug>. " + artifactUploadText + " A conversation holds files and " +
-				"images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT. No event is " +
-				"appended. A caller whose credential proves a session of its own uploads only into that session: any other " +
-				"session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID.",
+				"images only. " + artifactUploadRefusals(", a markdown document, as JSON content or a text/markdown file") +
+				" No event is appended. A caller whose credential proves a session of its own uploads only into that " +
+				"session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 " +
+				"INVALID_SESSION_ID.",
 			Handler:  s.uploadAgentArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
@@ -377,15 +385,14 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/reviews", Auth: authAny, Versions: onlyV2,
 			Description: "Approve or request changes on a document {state: approved or changes_requested, reason?, version?} " +
-				"(the person and approve scopes); changes_requested needs a reason (400 REASON_REQUIRED), and any other state " +
-				"is 400 INVALID_REVIEW. The review records the document's latest settled version, or, with an approval ask " +
+				"(the person and approve scopes); changes_requested needs a reason (400 REASON_REQUIRED), and any other " +
+				"state, or a version that is an integer below 1, is 400 INVALID_REVIEW (a version that is no integer 400 " +
+				"INVALID_JSON). The review records the document's latest settled version, or, with an approval ask " +
 				"open, the version that ask names for it, and then answers that ask, preserving its thread, and reviews every " +
 				"document it named, each at the version it names. version is the version the caller read, a guard: a review " +
 				"that would record another is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing " +
-				"written, and a version that is an integer below 1 is 400 INVALID_REVIEW (one that is no integer 400 " +
-				"INVALID_JSON). Answers 201 the review of " +
-				"this document. 409 NO_VERSION, 409 ISSUE_CLOSED, 400 NOT_DOCUMENT, 400 CAP_EXCEEDED for a reason past the " +
-				"bound, 404 ARTIFACT_NOT_FOUND.",
+				"written. Answers 201 the review of this document. 409 NO_VERSION, 409 ISSUE_CLOSED, 400 NOT_DOCUMENT, 400 " +
+				"CAP_EXCEEDED for a reason past the bound, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.createArtifactReviewV2,
 			Resource: "reviews", Kind: kindCollection, Key: "{id}",
 			Body:        requestBody{Kind: bodyJSON, Type: artifactReviewV2Input{}},
@@ -490,9 +497,9 @@ func (s *server) v2DocumentRows() []routeRow {
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
-			Description: "Upload an issue document or file. " + artifactUploadText + " The write's advice rides the answer. " +
-				"409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one that does not exist, both answered before " +
-				"the body is read.",
+			Description: "Upload an issue document or file. " + artifactUploadText + " " + artifactUploadRefusals("") +
+				" The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one " +
+				"that does not exist, both answered before the body is read.",
 			Handler:  s.uploadIssueArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
@@ -524,7 +531,8 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "Upload a project document or file, which no issue holds; its events are its own. " +
-				artifactUploadText + " 404 PROJECT_NOT_FOUND for a project that does not exist.",
+				artifactUploadText + " " + artifactUploadRefusals("") + " 404 PROJECT_NOT_FOUND for a project that does " +
+				"not exist.",
 			Handler:  s.uploadProjectArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},

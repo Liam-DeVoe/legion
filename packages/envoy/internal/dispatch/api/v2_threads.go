@@ -92,9 +92,9 @@ func (s *server) v2ThreadRows() []routeRow {
 			Description: "Edit a comment's body {body, base_revision?, blocks?}, which needs the person scope and is the " +
 				"comment's author's alone (403 NOT_AUTHOR otherwise). The dashboard editor also sends blocks ([{id, from}], " +
 				"from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v2/comments/{id}?" +
-				"include=blocks gave, so each block keeps its id; without them the ids follow the text, and blocks without " +
-				"base_revision is 400 INVALID_COMMENT. Answers the comment and appends comment.edited. 400 INVALID_COMMENT for " +
-				"an empty body, 400 CAP_EXCEEDED past a bound, 409 ISSUE_CLOSED on a closed issue, 404 COMMENT_NOT_FOUND.",
+				"include=blocks gave, so each block keeps its id; without them the ids follow the text. Answers the comment " +
+				"and appends comment.edited. 400 INVALID_COMMENT for an empty body or blocks without base_revision, 400 " +
+				"CAP_EXCEEDED past a bound, 409 ISSUE_CLOSED on a closed issue, 404 COMMENT_NOT_FOUND.",
 			Handler:  s.editCommentV2,
 			Resource: "comments", Kind: kindItem, Key: "{id}",
 			Body:        requestBody{Kind: bodyJSON, Type: editCommentInput{}},
@@ -107,10 +107,10 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/comments/{id}/deliveries", Auth: authAny, Versions: onlyV2,
 			Description: "Retry delivering one of a comment's mentions {delivery, target?}: a new attempt in the mode delivery " +
-				"names (btw, aside or steer; 400 MENTION_INPUT otherwise) to the target, one of the comment's mentions, which " +
-				"a comment of several mentions must name (400 MENTION_INPUT). A bearer names its session in actor. Answers 201 " +
-				"the attempt as its send settled; a comment with no mentions is 404 COMMENT_NOT_FOUND, as is an id no comment " +
-				"has.",
+				"names (btw, aside or steer) to the target, one of the comment's mentions, which a comment of several " +
+				"mentions must name; another mode, and no target on a comment of several mentions, are 400 MENTION_INPUT. A " +
+				"bearer names its session in actor. Answers 201 the attempt as its send settled; a comment with no mentions " +
+				"is 404 COMMENT_NOT_FOUND, as is an id no comment has.",
 			Handler:  s.createCommentDeliveryV2,
 			Resource: "deliveries", Kind: kindCollection, Key: "{attempt}",
 			Body:  requestBody{Kind: bodyJSON, Type: createCommentDeliveryInput{}},
@@ -122,12 +122,13 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/comments/{id}/replies", Auth: authBearer, Versions: onlyV2,
 			Description: "The mentioned session's answer to one delivery attempt of a comment {actor, attempt, target?, " +
-				"body | error, reply_to_block?}, under a bearer credential (a cookie caller is 403 REPLY_FORBIDDEN): the " +
-				"session names itself in actor, and the attempt, of the mention target names (required where the comment has " +
-				"several mentions, 400 MENTION_INPUT), must be that session's own (403 REPLY_FORBIDDEN, as is a body naming " +
-				"neither or both of body and error). For a mention of a role (role:<name>), the role's live holder, as the " +
-				"Envoy listener names it, may answer the attempt too; a listener that does not answer is 503 " +
-				"ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal. A body is stored as a reply in " +
+				"body | error, reply_to_block?}, under a bearer credential: the session names itself in actor, and the " +
+				"attempt, of the mention target names (required where the comment has several mentions, 400 " +
+				"MENTION_INPUT), must be that session's own; a cookie caller, an attempt that is not that session's own and " +
+				"a body naming neither or both of body and error are 403 REPLY_FORBIDDEN. For a mention of a role " +
+				"(role:<name>), the role's live holder, as the Envoy listener names it, may answer the attempt too; a " +
+				"listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a " +
+				"refusal. A body is stored as a reply in " +
 				"the comment's thread, its reply_to_block naming one block of the comment it answers, and marks the attempt " +
 				"sent; answers 201 the reply with ask_waiting_on, and appends comment.answered. An attempt already answered " +
 				"posts nothing and answers 200 the stored reply. An error marks the attempt failed and answers 200 the " +
@@ -154,9 +155,10 @@ func (s *server) v2ThreadRows() []routeRow {
 				"reply or ask thread's comment is 400 INVALID_COMMENT). {state: accepted} accepts a suggestion, which needs " +
 				"the person scope: its replacement is applied to the live document and a version is named after the comment, " +
 				"and the answer carries lost, whether the document already lacks the accepted text (null when the check " +
-				"reached no verdict); an unanchored suggestion is 400 INVALID_SUGGESTION, and an anchor the document no longer " +
-				"holds is recorded orphaned and refused. {state: rejected} rejects a suggestion, which needs the person scope, " +
-				"and removes its mark. Accepting or rejecting a comment with no suggestion is 400 INVALID_SUGGESTION. A " +
+				"reached no verdict); an anchor the document no longer holds is recorded orphaned and refused. {state: " +
+				"rejected} rejects a suggestion, which needs the person scope, and removes its mark. Accepting an " +
+				"unanchored suggestion, and accepting or rejecting a comment with no suggestion, are 400 " +
+				"INVALID_SUGGESTION. A " +
 				"suggestion already accepted or rejected is a thread resolved by whoever decided it: accepting, rejecting or " +
 				"resolving it is 409 ALREADY_ACTIONED, but for the body equal to its state from the person who decided it. A " +
 				"body equal to the comment's present state, from the caller who set it, answers 200 and writes nothing (an " +
@@ -259,8 +261,8 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPut, Pattern: "/messages/{id}/deliveries/{attempt}/state", Auth: authBearer, Versions: onlyV2,
 			Description: "The attempt's session records that it took the message as its user's own turn {state: accepted, " +
-				"actor}, under a bearer credential (a cookie caller is 403 ACCEPT_FORBIDDEN): the session names itself in " +
-				"actor, and another session's attempt is 403 ACCEPT_FORBIDDEN. One compare-and-set: only a direct message to " +
+				"actor}, under a bearer credential, the session naming itself in actor: a cookie caller and another " +
+				"session's attempt are 403 ACCEPT_FORBIDDEN. One compare-and-set: only a direct message to " +
 				"that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose " +
 				"root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON) themselves, " +
 				"not an agent for them (409 ACCEPT_WRITTEN_BY_AGENT), sent as a Send or an Aside (409 " +
@@ -287,11 +289,12 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/messages/{id}/replies", Auth: authBearer, Versions: onlyV2,
 			Description: "The targeted session's answer to one delivery attempt of a message {actor, attempt, body | error, " +
-				"in_reply_to_block?}, under a bearer credential (a cookie caller is 403 REPLY_FORBIDDEN): the session names " +
-				"itself in actor, and the attempt must be its own (403 REPLY_FORBIDDEN, as is a body naming neither or both of " +
-				"body and error). For an attempt sent for a route to a role (role:<name>), the role's live holder, as the " +
-				"Envoy listener names it, may answer it too; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a " +
-				"failed read of the attempt is 500, never a refusal. A body is posted as the session's reply in the message's " +
+				"in_reply_to_block?}, under a bearer credential: the session names itself in actor, and the attempt must be " +
+				"its own; a cookie caller, an attempt that is not its own and a body naming neither or both of body and " +
+				"error are 403 REPLY_FORBIDDEN. For an attempt sent for a route to a role (role:<name>), the role's live " +
+				"holder, as the Envoy listener names it, may answer it too; a listener that does not answer is 503 " +
+				"ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. A body is posted as the " +
+				"session's reply in the message's " +
 				"conversation, its in_reply_to_block naming one block of the message it answers, and marks the attempt sent; " +
 				"answers 201 the reply and appends message.answered. Once the attempt is answered, follow_up=true posts other " +
 				"text as the session's follow-up, threaded under its first reply (201); with follow_up=false (the default), or " +
@@ -451,9 +454,10 @@ func (s *server) v2ThreadRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/issues/{key}/handoffs", Auth: authBearer, Versions: onlyV2,
 			Description: fmt.Sprintf("Record a session's handoff for one phase of an issue {actor, phase, body}, under a "+
 				"bearer credential (a cookie caller is 403 HANDOFF_FORBIDDEN): the session names itself in actor (400 "+
-				"ACTOR_KIND otherwise), phase is a lowercase slug (%s, 400 HANDOFF_INPUT otherwise), and body is one JSON "+
-				"object as a string (400 HANDOFF_INPUT otherwise) of at most %d bytes (413 CAP_EXCEEDED), stored exactly as "+
-				"sent. The record is the phase's next version, from 1; a closed issue is 409 ISSUE_CLOSED. Answers 201 {id, "+
+				"ACTOR_KIND otherwise), phase is a lowercase slug (%s), and body is one JSON object as a string of at most "+
+				"%d bytes (413 CAP_EXCEEDED), stored exactly as sent; a phase that is not such a slug, or a body that is "+
+				"not one JSON object as a string, is 400 HANDOFF_INPUT. The record is the phase's next version, from 1; a "+
+				"closed issue is 409 ISSUE_CLOSED. Answers 201 {id, "+
 				"issue_key, phase, version, author, created_at} and appends handoff.recorded {handoff_id, phase, version}, "+
 				"which never carries the body. 404 ISSUE_NOT_FOUND.", contracts.HandoffPhasePattern, contracts.DispatchHandoffBodyMax),
 			Handler:  s.createIssueHandoffV2,

@@ -82,11 +82,11 @@ func (s *server) v2ProjectRows() []routeRow {
 			Description: fmt.Sprintf("Create a project {key, name, default_assignee?}, a bearer naming its session in "+
 				"actor. Every project names a default assignee, %s. default_assignee is the email of a person who has "+
 				"signed in, and a call that names none takes the person creating the project, else the person its "+
-				"credential acts for. A credential that acts for nobody and names no default_assignee is 400 "+
-				"INVALID_PROJECT; a login nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a "+
-				"project key, an empty name, a name holding a control "+
-				"character or a bidi embedding, override or isolate, or a name with no visible character is 400 "+
-				"INVALID_PROJECT; a name over %d characters is 400 CAP_EXCEEDED; a key that already exists is 409 "+
+				"credential acts for. A login nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED. A credential that "+
+				"acts for nobody and names no default_assignee, a key that is not a project key, an empty name, a name "+
+				"holding a control character or a bidi embedding, override or isolate, or a name with no visible "+
+				"character is 400 INVALID_PROJECT; a name over %d characters is 400 CAP_EXCEEDED; a key that already "+
+				"exists is 409 "+
 				"PROJECT_EXISTS. A credential scoped to one project is refused, since a project belongs to the deployment. "+
 				"Answers 201 the project with the default_assignee the create stored, and appends project.created.",
 				projectDefaultAssigneeText, contracts.ProjectNameMax),
@@ -99,19 +99,19 @@ func (s *server) v2ProjectRows() []routeRow {
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/projects/{key}", Auth: authAny, Versions: onlyV2,
-			Description: "Change a project {default_assignee?, gated_steps?}, a bearer naming its session in actor; a body " +
-				"that names neither is 400 INVALID_PROJECT. default_assignee moves " + projectDefaultAssigneeText + " to " +
-				"another person, the email of a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends " +
-				"settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null " +
-				"included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and a blank one is 400 " +
-				"INVALID_PROJECT, since a project always names a person and the default cannot be cleared (null leaves it " +
-				"as it stands). gated_steps publishes the " +
+			Description: "Change a project {default_assignee?, gated_steps?}, a bearer naming its session in actor. " +
+				"default_assignee moves " + projectDefaultAssigneeText + " to another person, the email of a person who has " +
+				"signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends settings.project_default_assignee.updated " +
+				"naming both people; a body naming default_assignee at all, null included, needs the person scope (403 " +
+				"OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a person, the default cannot be " +
+				"cleared (null leaves it as it stands). gated_steps publishes the " +
 				"design-gate steps the Legion deployment that serves the project gates, a list of decisions, criteria and " +
 				"spec in the order it gates them or [] for none, which needs no scope: the deployment's daemon writes it at " +
-				"every boot. A step that is none of the three or is named twice is 400 INVALID_PROJECT, and the list the " +
-				"project already holds changes nothing and appends no event; another list appends project.updated. Both " +
-				"fields are written in one transaction. Answers the project as GET /api/v2/projects lists it, with " +
-				"default_assignee where the patch named it. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+				"every boot. The list the project already holds changes nothing and appends no event; another list " +
+				"appends project.updated. A body that names neither field, a blank default_assignee, and a step that is " +
+				"none of the three or is named twice are 400 INVALID_PROJECT. Both fields are written in one " +
+				"transaction. Answers the project as GET /api/v2/projects lists it, with default_assignee where the patch " +
+				"named it. 404 PROJECT_NOT_FOUND for a project that does not exist.",
 			Handler:  s.patchProjectV2,
 			Resource: "projects", Kind: kindItem, Key: "{key}",
 			Body:  requestBody{Kind: bodyJSON, Type: patchProjectV2Input{}},
@@ -201,12 +201,13 @@ func (s *server) v2ProjectRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/projects/{key}/architecture-syncs", Auth: authAny, Versions: onlyV2,
 			Description: "Import a project's architecture sources now {repos?}: repos names the sources to import, each " +
-				"owner/name (400 SOURCE_INPUT for one that is not, 404 SOURCE_NOT_FOUND, naming it, for one the project has " +
-				"no source from, before any is imported), and absent or [] imports every source of the project (404 " +
-				"SOURCE_NOT_FOUND for a project with none). Each source is imported whatever another's import did, and each " +
-				"failure - an access failure, a credential or branch problem, included - is on its own row's last_error, " +
-				"the previous projection kept up; a named source removed while the sync runs is 404 SOURCE_NOT_FOUND, naming " +
-				"it, once the sources before it are imported. An import stores the source's sync bookkeeping and, on a change, its " +
+				"owner/name (400 SOURCE_INPUT for one that is not), and absent or [] imports every source of the project. " +
+				"Each source is imported whatever another's import did, and each failure - an access failure, a " +
+				"credential or branch problem, included - is on its own row's last_error, the previous projection kept " +
+				"up. 404 SOURCE_NOT_FOUND answers three cases: a named source the project has no source from, naming it, " +
+				"before any is imported; a named source removed while the sync runs, naming it, once the sources before " +
+				"it are imported; and absent or [] on a project with none. An import stores the source's sync " +
+				"bookkeeping and, on a change, its " +
 				"components, and appends architecture.synced or architecture.sync_failed only when the source's state " +
 				"changes. Answers 200 {items, total, limit, offset}, every source imported in the order they were added: " +
 				architectureSourceText + ". 404 PROJECT_NOT_FOUND for a project that does not exist.",
@@ -313,14 +314,14 @@ func (s *server) v2ProjectRows() []routeRow {
 			Method: http.MethodPut, Pattern: "/repositories/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
 			Description: "Map a GitHub repository to a project {project, default?, renamed_to?}, a bearer naming its " +
 				"session in actor; the repository is read lowercase with one trailing .git trimmed, and its owner and name " +
-				"are held to the characters GitHub allows: a name that is . or .. or empty or longer than 100 characters, " +
-				"so read, is 400 INVALID_REPO_PROJECT. default true makes it the project's " +
+				"are held to the characters GitHub allows, the name, so read, never . or .. or empty or longer than 100 " +
+				"characters. default true makes it the project's " +
 				"one default, demoting the one before, and absent keeps the mapping's own while its project is unchanged. " +
 				"renamed_to is the owner/name this repository is called today, which every comparison of a repository " +
 				"canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair the path's " +
 				"rule refuses, a pair naming this repository, one naming a repository that is itself renamed, or one on a " +
-				"repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT, as a project that is not a " +
-				"key is. A mapping issues name " +
+				"repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT, as are a path that rule " +
+				"refuses and a project that is not a key. A mapping issues name " +
 				"as their repository moves like any other, since an issue's own repository needs no mapping; 404 NOT_FOUND " +
 				"for a project that does not exist. Each mapping the write changes appends settings.repo_project.updated on " +
 				"its project, and a moved one deleted true on the project it left. A mapping records no setter, so a PUT " +
@@ -373,10 +374,10 @@ func (s *server) v2ProjectRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/priorities", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("Write one priority {id?, title, description?, owner?}, a bearer naming its session "+
-				"in actor: title is required, and a title with nothing in it or over %d characters is 400 PRIORITY_INPUT; id "+
-				"defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single "+
-				"hyphens, one over %d characters, none and any (the issue listing's keywords), and a title no slug can be "+
-				"written from are each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new "+
+				"in actor: title is required, and id defaults to the title written as a slug; a title with nothing in it "+
+				"or over %d characters, an id that is no slug of lowercase letters, digits and single hyphens, one over %d "+
+				"characters, none and any (the issue listing's keywords), and a title no slug can be written from are "+
+				"each 400 PRIORITY_INPUT; an id the store already holds is 409 PRIORITY_EXISTS. The new "+
 				"priority takes the last place of the order. A credential scoped to one project is refused, since a "+
 				"priority belongs to none. Answers 201 the priority.", contracts.IssueTitleMax, priorityIDMax),
 			Handler:  s.createPriorityV2,

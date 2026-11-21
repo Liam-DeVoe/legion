@@ -115,16 +115,17 @@ func (s *server) v2MiscRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/reference-targets", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("What many dispatch:// references point at, in one read: ref=<dispatch ref> once per "+
-				"reference, at most %d of them; none is 400 INVALID_REFERENCE, and more than that 400 CAP_EXCEEDED naming the "+
-				"cap. One member per ref in the request's order (a reference named twice answered twice), each {ref, kind, "+
+				"reference, at most %d of them; more than that is 400 CAP_EXCEEDED naming the cap. One member per ref in "+
+				"the request's order (a reference named twice answered twice), each {ref, kind, "+
 				"name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target "+
 				"in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, "+
 				"a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it "+
 				"writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree "+
 				"on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references "+
 				"kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read "+
-				"by the block's kind as GET /api/v1/reference-targets reads it. A reference the grammar cannot read is 400 "+
-				"INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a "+
+				"by the block's kind as GET /api/v1/reference-targets reads it. No ref is 400 INVALID_REFERENCE, as is a "+
+				"reference the grammar cannot read, naming it; one that reads but names nothing is answered gone, never "+
+				"refused. An item id or a "+
 				"block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference "+
 				"names, as GET /api/v2/references resolves its to=, and ref still echoes it as written: a prefix that nothing "+
 				"carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: "+
@@ -550,10 +551,10 @@ var searchResultsV2Description = fmt.Sprintf("Full-text search q= across issues,
 	"keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped "+
 	"degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then "+
 	"recency, then id. limit 1 to %d (default %d) and offset; {items, total, limit, offset, reachable, took_ms, "+
-	"degraded?, query, filters}. A q under 2 characters is 400 INVALID_QUERY and one over %d characters 400 "+
-	"CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or "+
-	"INVALID_NUMBER_PROJECT, a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR, and a from "+
-	"not before to 400 INVALID_QUERY.", contracts.SearchKindDepth, searchBroadenWords, searchMaxLimit,
+	"degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over "+
+	"%d characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or "+
+	"INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR.",
+	contracts.SearchKindDepth, searchBroadenWords, searchMaxLimit,
 	searchDefaultLimit, contracts.SearchQueryMax)
 
 // searchResultsV2Query is GET /api/v2/search-results's query.

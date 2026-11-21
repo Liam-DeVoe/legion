@@ -150,11 +150,11 @@ func (s *server) v2LogRows() []routeRow {
 				"dismissed, what they have dismissed out of it, newest dismissal first. Position, of state=dismissed alone: " +
 				"dismissed_at,thread_id, each bound <RFC3339 time>,<thread id>, the position of a row a page answered: " +
 				"after keeps the rows dismissed after that row, oldest dismissal first, and before the rows dismissed before " +
-				"it, newest first where no after is given (after or before under any other state is 400 INVALID_QUERY; one " +
-				"that is no time and thread id, and an after above the newest dismissal, are 400 POSITION_INVALID naming the " +
-				"parameter and dismissed_at,thread_id). issue=<key> or " +
-				"artifact=<document id> narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is " +
-				"then in no answer. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact " +
+				"it, newest first where no after is given (an after or a before that is no time and thread id, and an after " +
+				"above the newest dismissal, are 400 POSITION_INVALID naming the parameter and dismissed_at,thread_id). " +
+				"issue=<key> or artifact=<document id> narrows to one owner, and an agent row, which has neither, is then in " +
+				"no answer; both, and an after or a before under a state other than dismissed, are 400 INVALID_QUERY. " +
+				"limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact " +
 				"count of both kinds the filters keep, and null under state=dismissed, which is read a page at a time from a " +
 				"position, as the global event log is, rather than counted; as_of the database time of the one read-only " +
 				"repeatable-read snapshot " +
