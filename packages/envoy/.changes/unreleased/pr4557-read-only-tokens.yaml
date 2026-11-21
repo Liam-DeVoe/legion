@@ -35,10 +35,13 @@ body: |-
   read. A poll every N seconds of a read that makes R of them costs R × 3600 / N an hour against
   the installation's limit (at least 5,000 an hour), and while a limit is recorded the client
   sends nothing on that installation's token for any caller. Nothing caps a read-only caller's
-  reads. The undo is ending the poll, or ending the token: revoking a personal token or the
-  sign-in a narrowed token came from, or, for a read entry's token or one narrowed from a Google
-  machine's identity, taking the entry out of the broker's settings and waiting for the token to
-  expire, at most `BROKER_ACCESS_TOKEN_SECONDS` after its trade.
+  reads. The undo is ending the poll, or ending the token: revoking a personal token, or the
+  sign-in or the dev box's machine login a narrowed token came from; or, for a read entry's token
+  and one narrowed from a pod's, a GitHub workflow's or a Google machine's identity, which no
+  person's revoke ends, taking its entry out of the broker's settings and waiting for the token to
+  expire, at most `BROKER_ACCESS_TOKEN_SECONDS` after its trade. Dispatch stops serving a broker
+  token at most ten seconds after the broker ends it: it reuses a live answer for
+  `ciphertoken.AffirmativeCacheTTL`, five seconds, after an introspection that may take five.
 time: 2026-11-20T02:56:20Z
 custom:
   Issue: pr4557

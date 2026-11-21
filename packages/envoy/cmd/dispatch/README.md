@@ -246,7 +246,17 @@ A poll every N seconds of an issue whose read makes R of those reads costs R × 
 When GitHub answers a request as rate-limited, the client records the limit until `Retry-After`, else `X-RateLimit-Reset` where no request is left, else a minute, and at most an hour (`githubapp.Client.request`), and until then it sends no request on that installation's token for any caller in any process (`githubapp.Client.send`; the App's own installation lookups and token mints are not held).
 While it holds, a writer's read-through finds the repository unreadable, an answer the process then keeps for five minutes, or, where the process's answer for the repository is fresh, is refused after its claim, which then holds the commit off for five minutes (`delivery.CommitPullReadStaleAfter`); a check CI proves answers `unread` (`github_unreadable`); the CI reconcile's pass ends at the limit; and each step of the delivery reconcile is refused.
 No cap bounds a read-only caller's reads.
-The undo is to end the poll, or to end the read-only token: `DELETE /api/v1/me/agent-tokens/{id}` for a personal one, which answers `401 TOKEN_REVOKED` from the next request, the person's sign-in revoke (`POST /api/v1/signins/{id}/revoke`) for one the broker narrowed from that sign-in, which Dispatch stops serving within about ten seconds (`ciphertoken.AffirmativeCacheTTL`, five seconds, and a check in flight); and, for a read entry's token (`BROKER_EXCHANGE_READ_ACCOUNTS`) or a token narrowed from a Google machine's identity token, which no person's revoke ends, taking the entry out of the broker's settings, which the broker reads when it starts, and waiting for the token to expire: the broker's access tokens live at most `BROKER_ACCESS_TOKEN_SECONDS` (900 by default), and a narrowed token no longer than the token it was traded from.
+The undo is to end the poll, or to end the read-only token, by its kind:
+
+- A personal token: `DELETE /api/v1/me/agent-tokens/{id}`, which answers `401 TOKEN_REVOKED` from the next request.
+
+- One the broker narrowed from a person's sign-in: the sign-in's revoke (`POST /api/v1/signins/{id}/revoke`).
+
+- One narrowed from a dev box's machine login: that login's revoke (`POST /api/v1/machine-logins/{id}/revoke`), which ends its launcher credential and with it every read token traded from the login's access token (`oauthstore.NarrowedLive`).
+
+- A read entry's token, or one narrowed from a pod's, a GitHub workflow's or a Google machine's identity token, which no person's revoke ends: taking its entry out of the broker's settings (`BROKER_EXCHANGE_READ_ACCOUNTS`, `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or `BROKER_VM_EXCHANGE_ACCOUNTS`), which the broker reads when it starts, so a restart refuses its next trade, and waiting for the token to expire: the broker's access tokens live at most `BROKER_ACCESS_TOKEN_SECONDS` (900 by default), and a narrowed token no longer than the token it was traded from.
+
+Dispatch stops serving a broker token at most ten seconds after the broker ends it: Dispatch reuses a live answer for `ciphertoken.AffirmativeCacheTTL`, five seconds, from the introspection that gave it, and an introspection already in flight when the token ends may take `introspectTimeout`, five seconds, to finish.
 A limit already recorded ends at its own time.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers a read-only broker token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries a read-only token as they answer any other caller, and none of the five makes a write for it.
