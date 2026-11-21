@@ -10,10 +10,11 @@
 //
 // An IAP deployment's Dispatch puts a deadline on every answer that a person is not held
 // (not_held_until). The gate serves such an answer, fresh, cached or kept, until its deadline and
-// not at it, and keeps the deadline in person_standing with its answer. Its broker sets
-// BROKER_HOLD_REQUIRES_DEADLINE (Config.RequireDeadline), under which a not-held answer naming no
-// deadline is not served, and nor is a person of whom no answer is kept while Dispatch cannot be
-// asked.
+// not at it, by its own clock, and never Dispatch's unavailable answer, whose deadline is its own
+// as_of, whatever its clock says; it keeps the deadline in person_standing with its answer. Its
+// broker sets BROKER_HOLD_REQUIRES_DEADLINE (Config.RequireDeadline), under which a not-held
+// answer naming no deadline is not served, and nor is a person of whom no answer is kept while
+// Dispatch cannot be asked.
 //
 // A caller asks before it opens a database transaction or takes a lock, as projectaccess
 // requires of every caller: Check asks Dispatch and writes person_standing itself.
@@ -169,9 +170,10 @@ func (g *Gate) Check(ctx context.Context, person string) error {
 // failureMemory unless the caller itself hung up.
 //
 // A held answer, fresh or kept, is ErrHeld whatever deadline it carries. A not-held answer, fresh,
-// cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so, under
-// RequireDeadline, is a not-held answer naming no deadline and a person of whom no answer is kept
-// while Dispatch cannot be asked; none of these is logged or counted as served.
+// cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so is
+// Dispatch's unavailable answer, whose deadline is its own as_of, whatever the gate's clock says;
+// under RequireDeadline, so is a not-held answer naming no deadline and a person of whom no answer
+// is kept while Dispatch cannot be asked; none of these is logged or counted as served.
 func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error) {
 	if g == nil {
 		return time.Time{}, nil
@@ -212,13 +214,16 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 }
 
 // notHeld is the check of a not-held answer for person whose deadline is until (the zero time for
-// none), by the gate's clock: served until it, or ErrUncheckable at or past it, and, under
-// RequireDeadline, ErrUncheckable for an answer naming none.
-func (g *Gate) notHeld(person string, until time.Time) (time.Time, error) {
+// none), given as of asOf, the database time of Dispatch's read the answer rests on: served until
+// until by the gate's clock, or ErrUncheckable at or past it; ErrUncheckable for Dispatch's
+// unavailable answer, until equal to asOf (identity.Standing writes a person it cannot confirm so),
+// whatever the gate's clock says, so a broker whose clock is behind Dispatch's database serves no
+// such person; and, under RequireDeadline, ErrUncheckable for an answer naming none.
+func (g *Gate) notHeld(person string, until, asOf time.Time) (time.Time, error) {
 	switch {
 	case until.IsZero() && g.requireDeadline:
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUncheckable, person, errNoDeadline)
-	case !until.IsZero() && !until.After(g.now()):
+	case !until.IsZero() && (until.Equal(asOf) || !until.After(g.now())):
 		return time.Time{}, fmt.Errorf("%w: %s: %w, %s", ErrUncheckable, person, ErrDeadlinePassed, until.UTC().Format(time.RFC3339Nano))
 	}
 	return until, nil
@@ -260,7 +265,7 @@ func (g *Gate) answered(ctx context.Context, person string, answer projectaccess
 		writeErr = g.writeUnwritten(ctx, person)
 	}
 	if !answer.Held {
-		return g.notHeld(person, answer.NotHeldUntil)
+		return g.notHeld(person, answer.NotHeldUntil, answer.AsOf)
 	}
 	g.mu.Lock()
 	_, unkept := g.unwritten[person]
@@ -307,7 +312,7 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 	}
 	if found {
 		var err error
-		if until, err = g.notHeld(person, until); err != nil {
+		if until, err = g.notHeld(person, until, answeredAt); err != nil {
 			return time.Time{}, fmt.Errorf("%w, by Dispatch's last answer while it could not be asked (%w)", err, cause)
 		}
 	}

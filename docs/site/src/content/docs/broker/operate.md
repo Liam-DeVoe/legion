@@ -1117,8 +1117,12 @@ Dispatch gave; and the three of the deadline below.
 **The deadline.** Behind Identity-Aware Proxy, Dispatch puts a deadline on every answer that a
 person is not held (`not_held_until`, its last active Directory answer plus 24 hours). The broker
 keeps it with the answer (migration `0044`) and serves a not-held answer, fresh, cached or kept,
-only before it: at it, every new call is `503 HOLD_UNCHECKABLE` ("Dispatch's answer that they are
-not held has passed its deadline"), and the airlock cuts a call it carries. Introspection passes
+only before it, by its own clock: at it, every new call is `503 HOLD_UNCHECKABLE` ("Dispatch's
+answer that they are not held has passed its deadline"), and the airlock cuts a call it carries.
+Dispatch answers a person it cannot confirm, with no active answer in 24 hours or no row at all,
+with `not_held_until` equal to the answer's own `as_of`, and the broker refuses that answer the
+same way whatever its own clock says, so a broker clock behind Dispatch's database serves no such
+person. Introspection passes
 the deadline on, and Dispatch and the Envoy listener answer a token past it
 `503 BROKER_UNAVAILABLE` with `Retry-After: 60`. The broker of such a deployment sets
 `BROKER_HOLD_REQUIRES_DEADLINE=true`, which also refuses, with `503 HOLD_UNCHECKABLE`, a not-held

@@ -106,6 +106,44 @@ func TestHoldGateEnforcesNotHeldUntil(t *testing.T) {
 	wantServedUntil(t, until, err, ada, renewed, "once Dispatch answers a new active answer with a later deadline")
 }
 
+// TestHoldGateReadsAnUnavailableAnswerByDispatchsTimes (c-iap-deadline): Dispatch answers a
+// person it cannot confirm (no active Workspace Directory answer in 24 hours, or no row) with
+// not_held_until equal to as_of, both its database's time. The gate reads that from the answer's
+// two times, whatever its own clock says: with the broker's clock five minutes behind Dispatch's,
+// the unavailable answer is hold.ErrUncheckable fresh and, Dispatch stopped, kept. A not-held
+// answer whose deadline is ahead of its as_of is still judged by the gate's clock: under the same
+// skew it is served until that deadline, which the gate answers.
+//
+// Control: judge the unavailable answer by the gate's clock alone (as before); the broker behind
+// Dispatch serves ada until her as_of, and the test fails naming the fresh answer.
+func TestHoldGateReadsAnUnavailableAnswerByDispatchsTimes(t *testing.T) {
+	ctx := t.Context()
+	databaseURL := storetest.URL(t)
+	st := openStore(t, databaseURL)
+	// Every rig's clock starts at the same instant: Dispatch's as_of is five minutes after it.
+	asOf := newRig("http://127.0.0.1:1", projectaccesstest.StaticAccount("token"), st).clock.read().Add(5 * time.Minute)
+	answer := func(until time.Time) string {
+		return `{"person":"` + ada + `","member_kind":"full","held":false,"as_of":"` + asOf.Format(time.RFC3339Nano) +
+			`","not_held_until":"` + until.Format(time.RFC3339Nano) + `"}`
+	}
+
+	unavailable := newRig(answering(t, http.StatusOK, answer(asOf)), projectaccesstest.StaticAccount("token"), st)
+	until, err := unavailable.gate.CheckUntil(ctx, ada)
+	wantUncheckable(t, until, err, ada, lapsedReason, "from Dispatch's unavailable answer, the broker's clock five minutes behind its as_of")
+	if _, kept, keptUntil, found := standingUntil(t, st, ada); !found || !kept.Equal(asOf) || keptUntil == nil || !keptUntil.Equal(asOf) {
+		t.Fatalf("person_standing for %s keeps as_of %v and deadline %v (found %t), want both %v", ada, kept, keptUntil, found, asOf)
+	}
+
+	stopped := newRig(answering(t, http.StatusServiceUnavailable, ""), projectaccesstest.StaticAccount("token"), openStore(t, databaseURL))
+	until, err = stopped.gate.CheckUntil(ctx, ada)
+	wantUncheckable(t, until, err, ada, lapsedReason, "with Dispatch stopped, from the kept unavailable answer, the broker's clock five minutes behind its as_of")
+
+	ahead := asOf.Add(24 * time.Hour)
+	served := newRig(answering(t, http.StatusOK, answer(ahead)), projectaccesstest.StaticAccount("token"), storetest.Open(t))
+	until, err = served.gate.CheckUntil(ctx, ada)
+	wantServedUntil(t, until, err, ada, ahead, "from a not-held answer whose deadline is 24 hours after its as_of, the broker's clock behind")
+}
+
 // TestHoldGateKeepsAHeldAnswerPastItsDeadline (c-iap-deadline): a held answer is hold.ErrHeld
 // before and after any deadline, fresh or kept, and never hold.ErrUncheckable. Ada, not held until
 // T, is then held by Dispatch: her check past T is held from Dispatch's answer and, Dispatch
