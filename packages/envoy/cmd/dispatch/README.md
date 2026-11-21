@@ -65,6 +65,16 @@ Each item below names a variable, then its purpose.
   The auth service answers with Dispatch's grant for the account its `BROKER_NATS_SERVICES` entry lists, and that user expires with the token, so the connection moves to a later token ten minutes before the one it presented lapses.
   Either set beside any other NATS credential variable refuses startup naming both.
 
+- `ENVOY_CONSUMER_NAMES`, `ENVOY_STREAMS_OPERATOR_MADE`
+
+  `ENVOY_CONSUMER_NAMES` is how the delivery intakes name the consumers of their two durables, `delivery-events` and `delivery-jobs` (`delivery.IntakeNaming`): `fixed`, the default, keeps each durable's one fixed name, and `fresh` gives each creation a name of its own, `<durable>~<generation>` (Running more than one process, below).
+  It is read once, at start, and only a restart changes it; a NATS or database reconnect never does.
+  Before the server first connects to NATS it writes one line, `dispatch: consumer names`, with `mode` (`fixed` or `fresh`) and `streams_operator_made`, the value of `ENVOY_STREAMS_OPERATOR_MADE` exactly as given (empty when unset), so a deploy's mode check reads both from a process whose bus never answers; this release reads `ENVOY_STREAMS_OPERATOR_MADE` for that line alone (`logConsumerNames`).
+  `/healthz` reports the mode as `consumer_names`.
+  `fixed` writes nothing to the `intake_consumers` table and reads its sentinel row alone, at three points: at start, where a row reading `done` refuses the start naming the setting (`delivery.CheckNamingMode`); before each take-over, under that durable's consumer lease and before it deletes or creates anything, where `done` stops the take-over and makes the process exit (`heldDurable.fixedNamesAllowed`); and after each reconnect of its database or NATS, where `done` makes the process exit (`delivery.WatchFixedMarker`).
+  A missing table or row is no marker; a database it cannot reach, a read Postgres refuses (42501) or a row it cannot read is read again until it answers, and a take-over refuses meanwhile, so a fixed process never runs over a marker it has not read.
+  `fresh` needs Dispatch to connect through the auth service (`NATS_SERVICE_TOKEN_FILE` or `NATS_SERVICE_GOOGLE_AUDIENCE`): a hub's static Dispatch user is granted no generation, whatever its connections are named.
+
 - `DISPATCH_TEST_HOOKS`
 
   Set to `1` to mount test-only routes: `POST /api/v1/live/_test/disconnect` closes every open live socket with 1012 (restart), and `POST /api/v1/live/_test/rotate` closes every one with 4001 (`max age`);
@@ -975,12 +985,23 @@ What the two processes share, and what each keeps to itself:
   a subscription its client sends again after a reconnect gets nothing.
   It runs whole under that durable's own Postgres consumer lease, which the reconciliation of the build before holds takes too, so no two processes change one durable at once.
   A durable bound by a build before holds, which binds by lookup and holds nothing, is left to that build until it lets go (`delivery/held_durable.go`, `heldDurable`).
-  That take-over deletes one fixed name and creates it again, which `ENVOY_CONSUMER_NAMES=fixed`, the default, keeps.
-  `ENVOY_CONSUMER_NAMES=fresh` replaces the durable's current consumer with a new physical one instead, `<durable>~<generation>`, created once and never again, behind the durable's row in `intake_consumers` (`delivery/fresh_names.go`, `consumernames.Names`):
+  That take-over deletes one fixed name, `delivery-events` or `delivery-jobs`, and creates it again, which `ENVOY_CONSUMER_NAMES=fixed`, the default, keeps.
+  `ENVOY_CONSUMER_NAMES=fresh` replaces the durable's current consumer with a new physical one instead, `<durable>~<generation>` (a NATS NUID), created once and never again, behind the durable's row in `intake_consumers` (`delivery/fresh_names.go`, `consumernames.Names`):
   nats-server can leave a deleted consumer's late state write in the next consumer of the same name, which then skips messages after a restart, and a fresh name leaves that write in a directory no consumer reads.
-  The take-over reserves its replace in the row, connects for the new generation (`dispatch-intake/<durable>/<generation>/<old generation>`, which the NATS auth service grants that generation's calls alone, so `fresh` needs Dispatch to connect through the auth service), saves the start at the old consumer's ack floor + 1, subscribes and creates the new one, publishes it, and deletes the old; an interrupted one is finished by the next holder's take-over, and a connect the auth service does not answer stops it before anything is deleted.
-  The check every five seconds also records the current's ack floor in the row and deletes retired generations (`dispatch-cleanup/<durable>/<generation>`) under the consumer lease.
-  Until the row's cutover marker reads `done`, which the cutover writes, a `fresh` process takes neither durable over and says so at ERROR.
+  The take-over reserves its replace in the row, connects for the new generation, saves the start at the old consumer's ack floor + 1 (or the hold's own start where that is lower), subscribes and creates the new one, publishes it, and deletes the old; a current this take-over created, or a candidate an interrupted one left and this one adopted, is kept and bound at its own deliver subject.
+  An interrupted take-over is finished by the next holder's.
+  The intake's own connection (`dispatch-intake`, `dispatch-job-intake`) then only reads the stream: each generation's calls, its deliveries and their acknowledgements go on a connection named for it, which the NATS auth service grants by that name (`natsgrant.ParseDispatchConnection`), so `fresh` needs Dispatch to connect through the auth service:
+
+  - `dispatch-intake/<durable>/<generation>[/<old generation>]`, a take-over's: `$JS.API.CONSUMER.INFO`, `$JS.API.CONSUMER.CREATE` (with the filter subject after the name) and `$JS.ACK` of `<durable>~<generation>`, and `$JS.API.CONSUMER.INFO` and `$JS.API.CONSUMER.DELETE` of `<durable>~<old generation>`.
+  - `dispatch-cleanup/<durable>/<generation>`, the check's: `$JS.API.CONSUMER.INFO` and `$JS.API.CONSUMER.DELETE` of that one retired generation.
+  - `listener-intake/<machine id>/<generation>[/<old generation>]` and `listener-cleanup/<machine id>/<generation>`, the envoy-listener's beside Dispatch, which holds Dispatch's credential: the calls of the two forms above, in that order, on `listener-<machine id>~<generation>`, its create without the filter subject, and only when the name's machine id is the one the auth service's entry grants.
+  - Every Dispatch connection, whatever its name, also holds the fixed names' calls, and, for that listener, the selection bucket's `$JS.API.STREAM.INFO.KV_envoy_session_consumers` and `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and the write of its own record's key alone.
+
+  `durable` is `delivery-events` or `delivery-jobs`, and each generation is 1 to 64 letters and digits: any other name is granted the fixed names alone.
+  A generation's connection the auth service does not admit within 5 seconds ends the take-over before anything is deleted, and until a probe connection (`dispatch-admission`, granted the fixed names alone) is admitted again no take-over reserves another candidate, so an outage does not grow the row's retired list.
+  Each of these connections, and the intake's own, refuses a consumer call made while NATS is cut rather than hold it until the reconnect (the bus turns nats.go's reconnect buffer off), so no call whose check passed before a cut is sent after it.
+  The check every five seconds also records the current's ack floor in the row and deletes retired generations under the consumer lease.
+  Until the row's cutover marker reads `done`, which the cutover writes, a `fresh` process takes neither durable over and says so at ERROR; `envoy_dispatch_durable_names_total` counts each step (Routes, `/metrics`, below).
 
 - A delivery a process left behind is sent by another.
   A direct message's first attempt is written in the transaction that stores it, and a request's own send outlives a cut connection.
