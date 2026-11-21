@@ -4036,7 +4036,8 @@ func slotOfToken(token claim.Token, role claim.Role) claim.Role {
 // reroleWaitsForCredential is the fence the start of an entry that re-roles its claim, token,
 // carries where the claim's slot in the issue's live pod runs a launcher of an image before the
 // credential wait (runtime.IssuePodRoles' SlotWaitsForCredential): that launcher starts a child at
-// once, though the re-role has just written the new role's credential into the slot (Task A1g3),
+// once, though the re-role has just written the new role's credential into the slot (the sandbox
+// runtime's writeLaunchCredential),
 // so the child would act as the App its gh files held, the earlier role's, until the next refresh
 // and the kubelet's sync. It answers a wait, whose text begins with pods.StartWaitsForPodPrefix and
 // which is runtime.ErrAwaitsPodUpdate too, as roleWaitsForItsPod's is, and the row tries again on

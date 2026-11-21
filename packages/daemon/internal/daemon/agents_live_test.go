@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The live proof's driver of one key across roles (slice 6a): the owner of an issue gives the steps
+// The live proof's driver of one key across roles: the owner of an issue gives the steps
 // `implementer:a tester:a reviewer`, and a person reads with the real `dispatch` CLI that steps 1 and
 // 2 ran in one agent and step 3 in another. scripts/e2e/agents.sh builds this driver with `-tags
 // e2e` and owns the nats-server and the PostgreSQL it runs against.
@@ -45,7 +45,7 @@ func TestAgentsLive(t *testing.T) {
 	})
 }
 
-// oneKeyRead walks the walk's issue through steps (walkOneKey), holds its step records to slice 6a's
+// oneKeyRead walks the walk's issue through steps (walkOneKey), holds its step records to the key's
 // (oneKeyHolds), and holds that `dispatch steps --issue <KEY>`, run as the person, prints the agent
 // of each step as the records name it: one agent for steps 1 and 2 when keyed, two when not, and
 // another for step 3.

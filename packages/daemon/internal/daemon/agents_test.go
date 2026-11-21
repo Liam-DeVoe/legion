@@ -1,4 +1,4 @@
-// The whole-daemon tests of one key across roles (slice 6a): the owner of a real issue gives the
+// The whole-daemon tests of one key across roles: the owner of a real issue gives the
 // steps `implementer:a tester:a reviewer`, and steps 1 and 2 run in one agent and one session. Each
 // runs the whole daemon over real PostgreSQL, NATS and Dispatch, a fake runtime and a fake GitHub
 // (ownerStepsRig), and each pane follows its claim as Oh My Pi's plugin does: a relaunch of the
@@ -164,7 +164,7 @@ func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
 	}
 }
 
-// oneKeyPlan is the plan of slice 6a's try, and oneKeyControlPlan the same with the key taken off
+// oneKeyPlan is the plan of one key across two roles, and oneKeyControlPlan the same with the key taken off
 // step 2.
 var (
 	oneKeyPlan        = []string{"implementer:a", "tester:a", "reviewer"}
@@ -222,7 +222,7 @@ func (r *ownerStepsRig) walkOneKey(steps []string, keyed bool) [3]stepRecordRead
 	return records
 }
 
-// oneKeyHolds says whether the records of the walk's three steps are slice 6a's: step 1 is
+// oneKeyHolds says whether the records of the walk's three steps are one key's: step 1 is
 // `…-implementer`'s, step 3 `…-reviewer`'s in a session of its own, and steps 1 and 2 name one
 // agent and one session when keyed, and two agents and two sessions when not, step 2 then
 // `…-tester`'s. The error names the first record that is not.

@@ -37,7 +37,7 @@ func (r credentialWaitRuntime) SlotWaitsForCredential(_ string, slot claim.Role)
 }
 
 // A re-role writes the new role's credential into its claim's slot of the live pod and starts the
-// generation once the slot's launcher holds it (Task A1g3). A launcher of an image before that
+// generation once the slot's launcher holds it (the sandbox runtime's writeLaunchCredential). A launcher of an image before that
 // wait starts the child at once, acting as the App its gh files held, the earlier role's, until the
 // next refresh and the kubelet's sync. So the start of the tester's entry for key a's agent,
 // `…-implementer`, whose stored role is the implementer, waits on its row where the pod's

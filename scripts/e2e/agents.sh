@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The live proof that one key of an owner's plan is one agent in one session across roles (slice 6a).
+# The live proof that one key of an owner's plan is one agent in one session across roles.
 # The driver (packages/daemon/internal/daemon/agents_live_test.go, which this script builds with
 # `-tags e2e`) builds and starts the real Dispatch server from this checkout's packages/envoy on a
 # database of its own, boots the whole daemon with dispatch_url at it, has the owner of each of two
