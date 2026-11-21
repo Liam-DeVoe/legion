@@ -3400,7 +3400,7 @@ The kinds are:
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks that holds no row, no node and no unmarked row.
-A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
+A database that is not a store of this build holds no kind to read: where `graph_nodes` does not exist, or a migration this binary embeds is not yet applied (an earlier release's store, before this build migrates it), the census prints `census: store absent (<reason>)` and refuses, since it read nothing; with `--sizing` it runs the growth pass all the same and exits 0.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
 

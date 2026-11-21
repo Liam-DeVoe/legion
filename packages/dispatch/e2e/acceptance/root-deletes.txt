@@ -17,6 +17,6 @@ compat-objects	decisions_artifact_id and the Decisions read's `document` and `de
 contract-read-side	The read side of DocumentRoleSchema and of ProjectSchema.gated_steps (GATED_STEPS) holding `decisions`	No server answers `decisions`
 steps-write-admits	The gated-steps write admitting `decisions`, and the design-gates write admitting and dropping it	No page and no daemon of the release before is served; TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt, TestADesignGateRowOfTheDecisionsStepIsIgnored
 heading-keep	Keep on a heading of an unconverted decisions document	decisions_documents() answers no document; TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired, TestNoReadReachesTheDecisionsDocument
-decisions-documents-fn	The SQL function decisions_documents(boolean)	decisions_documents() answers no document
+decisions-documents-fn	The SQL function decisions_documents()	decisions_documents() answers no document
 design-gate-rows	The design_gates rows of the step `decisions`, in Dispatch and in the daemon, and the daemon's readmitted_approvals rows of that step, which every read leaves out	No row holds `decisions`; TestADesignGateRowOfTheDecisionsStepIsIgnored, TestADecisionsGateRowIsIgnored
 decisions-step	The decisions step (its phases 1 and 3) and /healthz's decisions_step_owed	decisions_step_owed reads zero in production, which the root's architect reads before the root's pull request merges (H3); TestNoReadReachesTheDecisionsDocument

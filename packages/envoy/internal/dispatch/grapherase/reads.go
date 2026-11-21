@@ -343,8 +343,8 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
 // the node. A value tuple is listed without its value, which can be text. Of an ask's node or a
-// block's, it also keeps the writers its authored_by, decided_by and answered_by tuples name
-// (Erasure.Writers), which the record of the run holds once those tuples go.
+// block's, it also keeps the writers its authored_by, decided_by, answered_by, removed_by and
+// kept_by tuples name (Erasure.Writers), which the record of the run holds once those tuples go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
@@ -389,9 +389,10 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 }
 
 // writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
-// toKind, names who wrote, answered or removed that node: an ask's authored_by, answered_by,
-// decided_by or removed_by, or a decision's decided_by or a reading's authored_by, into a person or
-// a session. A comment's authored_by is not one: no record of an erase holds a comment's author.
+// toKind, names who wrote, answered, removed or kept that node: an ask's authored_by, answered_by,
+// decided_by or removed_by, or a decision's decided_by or kept_by (a person's Keep, which writes
+// the keeper's node) or a reading's authored_by, into a person or a session. A comment's
+// authored_by is not one: no record of an erase holds a comment's author.
 func writesTheNode(nodeKind, kind, toKind string) bool {
 	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
 		return false
@@ -401,14 +402,14 @@ func writesTheNode(nodeKind, kind, toKind string) bool {
 		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy ||
 			kind == graphstore.TupleRemovedBy
 	case refs.BlockNodeKind:
-		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy
+		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy || kind == refs.TupleKeptBy
 	}
 	return false
 }
 
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without
 // them (every required single-column reference into a projected table), and the whole text of
-// its block at every version.
+// its block at every version and its block's Keep (decision_keeps).
 func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", e.Kind, e.ID))
 	for _, held := range graphstore.ProjectedTables {
@@ -444,13 +445,18 @@ func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		}
 	}
 	if read.document != nil {
-		var count int64
-		if err := tx.QueryRow(ctx, `select count(*) from document_block_texts where artifact_id = $1::uuid and block_id = $2`,
-			read.document.artifact, read.blockID).Scan(&count); err != nil {
-			return fmt.Errorf("count the texts of %s:%s: %w", e.Kind, e.ID, err)
+		var texts, keeps int64
+		if err := tx.QueryRow(ctx, `
+			select (select count(*) from document_block_texts where artifact_id = $1::uuid and block_id = $2),
+			       (select count(*) from decision_keeps where artifact_id = $1::uuid and block_id = $2)`,
+			read.document.artifact, read.blockID).Scan(&texts, &keeps); err != nil {
+			return fmt.Errorf("count the texts and the Keep of %s:%s: %w", e.Kind, e.ID, err)
 		}
-		if count > 0 {
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete document_block_texts: %d row(s) of %s", count, e.ID))
+		if texts > 0 {
+			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete document_block_texts: %d row(s) of %s", texts, e.ID))
+		}
+		if keeps > 0 {
+			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete decision_keeps: %d row(s) of %s", keeps, e.ID))
 		}
 	}
 	return nil
