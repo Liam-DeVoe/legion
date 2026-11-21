@@ -3035,6 +3035,7 @@ A pod replaced for any other reason in the same relaunch
 — installs nothing: it comes up on the configured image, whose copies the boot gate already holds to the daemon's contract.
 An issue pod merely running another image is replaced by no relaunch at all, stale-plugin or not:
 it is drift, and the update round replaces it once every role in it has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound ("Pinning a release that drops what a running pod still uses" above).
+A reviewer is the one role the lane relaunches in no pod on another image than the configured one: a reviewer starts only in a pod on the configured image, so the lane leaves a stale reviewer there to that pod's update round, and still relaunches the pod's other roles in place (`staleForTheLane`, [The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The controller's pod, which no round covers, is replaced by any relaunch that installs nothing.
 An install failure ends the child before Oh My Pi starts;
 the launcher reports it gone, the daemon charges it as a launch failure, and the claim is retried until the budget ends it in a `worker-died`.
@@ -4739,6 +4740,7 @@ Its `LEGION_WORKSPACE` is its own clone of the issue, `/legion/reviews/<owner>/<
 a `git clone --no-checkout --no-hardlinks` of the issue's shared clone, origin's branches as the shared clone records them, origin set to GitHub with the shared clone's credential helper, a detached checkout of the issue's branch at origin (else the default branch the reviewer is told as `LEGION_DEFAULT_BRANCH`), and jj colocated with it (`workspace.ProvisionReviewClone`).
 At each later start of the reviewer the clone is brought to the head the shared clone then records, from the shared clone's objects and with no network, the reviewer's earlier writes kept in a change of their own.
 Each start then reads the clone's checked-out `HEAD` and refuses to start the reviewer, naming both commits, when it is not the head the clone was brought to.
+Only the worker image of this release makes that clone, so a reviewer starts only in an issue pod on the configured image, and a pod on another image is replaced by its update round before the reviewer starts there ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 Every git of that work reads no global or system configuration and runs no fsmonitor or hook.
 Every other role's role-init covers `/legion/reviews` with an empty memory filesystem of its own, so no other role sees the clone or writes it, and what such a role writes there never reaches the volume.
 The reviewer's agent is told `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and the five pairs above followed by `core.fsmonitor=false` and `core.hooksPath=/dev/null` (`gitConfigEnvFor`, `manifest.go`);
@@ -6279,6 +6281,7 @@ A key the file leaves out is no limit at all, and there is no default:
 one change to the pod template drifts every pod of the project at once, and the first sweep after it would otherwise ask every worker of the fleet to stop what it is doing and push.
 Neither limit ends a round, pauses one, or holds back the message of one that is open:
 the gate stands only where a new round would open, so a change reaches a few pods first and the rest as those finish.
+A round a reviewer's start opens is the one opening neither limit holds back (below).
 Only an ask that reached a worker is charged against either limit, since an issue with no claim to ask opens no round and holds no slot.
 An issue a limit holds back is refreshed by the stale-plugin lane as any other is ("Contract discipline" above):
 that lane relaunches one process at a time under a gate of its own, holds no pod round open over the issue, and has nothing to do with the slot the issue waits for.
@@ -6286,6 +6289,18 @@ Nothing of that pace is in the store, because neither key decides a round, so a 
 The sweep opens every round of its tick before it makes any pod replacement, and makes those replacements in key order after its walk over the issues (`replacePodForRound`):
 a replacement waits its pod out and a sweep interval at worst, so one made where it is decided would hold every issue behind it in the walk for those minutes, and the limit a minute would open one round per slow sweep rather than the rounds a minute the project asks for.
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
+
+A reviewer starts only in an issue pod that runs the configured image (`reviewer_pod.go` in `packages/daemon/internal/daemon`).
+The reviewer works in a clone of its own with a git that runs no program a configuration names ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), an image of an earlier release makes no such clone, and the boot's image probe holds the configured image to this daemon's contract, so a pod on any other image is replaced before a reviewer starts in it.
+Before the daemon starts or relaunches a reviewer's process, it reads the image of the issue's live pod (`IssuePodImage`, `internal/runtime/sandbox/podimage.go`);
+a Sandbox that is suspended or holds no live pod has none, since the launch then makes a fresh pod on the configured image.
+Where the pod runs another image, the daemon starts no reviewer: the launch's own check refuses it as a wait (`CheckLaunch`), so a start row runs again on its backoff, and that refusal opens the pod's update round at the next orphan sweep (one minute at most), whatever the two limits above hold, with `reviewer start` first among its reasons, or joins the round already open over the pod.
+The round needs no other role's process in the pod: where no claim of the issue records a process there, the daemon replaces the pod through the issue's Sandbox (`ReplaceIssuePod`, `internal/runtime/sandbox/podimage.go`) once no claim the round asks is left unanswered, or at the round's bound, while no operator's suspension and no project's pause holds it.
+The round asks every role in the pod to push and answer as any round does, and the reviewer starts in the pod that the first launch after the replacement makes.
+The daemon logs `supervise: the issue pod is replaced before its reviewer starts, because it runs an image other than the configured one` once for each such pod, at info, with `issue`, `pod`, `image` and `configured_image`.
+A reviewer process already running in such a pod is not stopped for this, and it is handed no new task there, whichever backend runs it (`DeliveryWaits`, `sendPending`): the task waits, the pod's round opens as for a start, and the reviewer gets the task once it runs in the new pod.
+The stale-plugin lane relaunches no reviewer in place there either ("Contract discipline" above).
+Under `runtime: tmux` none of this applies: a pane runs on the daemon's own host, whose reviewer clone the daemon makes itself.
 
 A round that outlives its bound is told to the project's controller once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
 an operator's suspension of a claim the round asks, a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.

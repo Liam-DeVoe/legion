@@ -224,12 +224,17 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		log:     log,
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
+		// The reviewer's start check, as openSupervision wires it: the fake reads no pod's image,
+		// so it holds nothing until a test hands it a reading (readsPodImages).
+		reviewerPods:    newReviewerPods(rt, log),
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		Runtime: rt, Conns: conns, Store: s.reviewerPods.gate(st), Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		// The reviewer's task hold, as openSupervision wires it (reviewerPods.holdsTask).
+		DeliveryWaits: s.reviewerPods.holdsTask,
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,
@@ -550,24 +555,30 @@ func (r *podUpdateRig) endTurn(role claim.Role, delivery string) {
 func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 	r.t.Helper()
 	token := r.tokens[role]
-	m, ok := r.sup.Machine(token)
-	if !ok {
-		r.t.Fatalf("%s is not supervised", role)
-	}
+	r.launchable(role)
 	conn := fake.NewConn()
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
-	// A claim the boot restored with no process of its own is launch_uncertain until its release
-	// settles it, which is what the daemon's own unfinished-launch path does before it launches
-	// (launchUnfinishedClaim).
+	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.handle(role, supervise.RequestSpawn{Claim: token})
+	r.registerInto(role, pod)
+}
+
+// launchable is role's machine, ready for a launch: a claim the boot restored with no process of
+// its own is launch_uncertain until its release settles it, which is what the daemon's own
+// unfinished-launch path does before it launches (launchUnfinishedClaim).
+func (r *podUpdateRig) launchable(role claim.Role) *supervise.Machine {
+	r.t.Helper()
+	m, ok := r.sup.Machine(r.tokens[role])
+	if !ok {
+		r.t.Fatalf("%s is not supervised", role)
+	}
 	if r.claimOf(role).State == supervise.StateLaunchUncertain {
 		if _, err := m.ReleaseUncertainLaunch(r.ctx); err != nil {
 			r.t.Fatalf("release the %s's unfinished launch: %v", role, err)
 		}
 	}
-	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
-	r.handle(role, supervise.RequestSpawn{Claim: token})
-	r.registerInto(role, pod)
+	return m
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the

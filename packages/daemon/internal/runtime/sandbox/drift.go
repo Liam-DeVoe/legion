@@ -424,35 +424,51 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 		return err
 	}
 	name := k.Locator.Sandbox.Name
+	replaced, err := r.replaceRoundPod(ctx, name, k.Locator.Sandbox.PodUID, string(k.Claim), due)
+	if err != nil || !replaced {
+		return err
+	}
+	r.log.Info("sandbox runtime: the pod of a finished update round is replaced", "sandbox", name, "pod", k.Locator.Sandbox.PodUID, "claim", k.Claim)
+	return nil
+}
+
+// replaceRoundPod is the act both of a round's replacements make (ReplacePod, through a claim's
+// locator, and ReplaceIssuePod, through the issue's Sandbox when no claim records a process in
+// the pod): under the launch turn of the Sandbox named name, it finds that Sandbox running and
+// pod its own (viewOf), asks due last, one statement before the write, and then suspends the
+// Sandbox naming pod under the round's own mark (suspendDisplacing, roundReplacement) and waits
+// the pod out. It reports whether it replaced the pod: a Sandbox that is absent or suspended, or
+// whose pod is another, has no pod of this round to end, and nothing is written. who names the
+// claim or the issue its errors are of; due's own error is returned as it is.
+func (r *Runtime) replaceRoundPod(ctx context.Context, name, pod, who string, due func(context.Context) error) (bool, error) {
 	release, err := r.lockPod(ctx, name)
 	if err != nil {
-		return fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", k.Claim, err)
+		return false, fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", who, err)
 	}
 	defer release()
 	s, err := r.storedSandbox(name)
 	if err != nil {
-		return fmt.Errorf("replace %s's pod: %w", k.Claim, err)
+		return false, fmt.Errorf("replace %s's pod: %w", who, err)
 	}
 	if s == nil || s.mode() == modeSuspended {
-		return nil
+		return false, nil
 	}
 	// The pod the Sandbox owns, as every other reader of the two together takes it (viewOf): a
 	// same-named pod it does not own is some earlier Sandbox's, and no pod of this round.
 	v := r.viewOf(name, s)
-	if v.pod == nil || string(v.pod.UID) != k.Locator.Sandbox.PodUID {
-		return nil
+	if v.pod == nil || string(v.pod.UID) != pod {
+		return false, nil
 	}
 	if err := due(ctx); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := r.suspendDisplacing(ctx, s, v.pod.UID, roundReplacement); err != nil {
-		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", k.Claim, err)
+		return false, fmt.Errorf("replace %s's pod: suspend its sandbox: %w", who, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
-		return fmt.Errorf("replace %s's pod: wait out its pod: %w", k.Claim, err)
+		return false, fmt.Errorf("replace %s's pod: wait out its pod: %w", who, err)
 	}
-	r.log.Info("sandbox runtime: the pod of a finished update round is replaced", "sandbox", name, "pod", v.pod.UID, "claim", k.Claim)
-	return nil
+	return true, nil
 }
 
 // podKindFor is the kind of pod a claim of role runs in, the one decision a launch makes from its

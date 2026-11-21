@@ -68,6 +68,12 @@ import (
 // Neither ends a round, pauses one, or holds back the ask of one: the gate stands only where
 // a new round would open, so a change reaches a few pods first and the rest as those finish.
 //
+// A pod a reviewer's start waits on is the one exception to both (reviewer_pod.go): a reviewer
+// starts only in a pod on the configured image, so where its start found the issue's pod on
+// another, the sweep opens that pod's round at the sweep that reads the start, whatever the
+// limits hold, and names `reviewer start` first among its reasons. A round already open over the
+// pod is joined rather than opened again.
+//
 // A pod a project's pause holds (store's project_pause_pod_holds, decision 12 of
 // dispatch://INFRA-3759) is neither replaced nor given a round: the pause kept the pod and the
 // work on its disk for its stopped roles. A round over it waits as it waits for an operator's
@@ -91,6 +97,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		byIssue[c.Issue] = append(byIssue[c.Issue], c)
 	}
 	slices.Sort(issues)
+	s.reviewerPods.keepOnly(issues)
 	holds, err := s.podPauseHolds(ctx, claims, now)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -263,6 +270,11 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	}
 	open := openPodRound(group)
 	if pod == "" {
+		// A held reviewer start opens and carries a round over the pod it was held for though no
+		// claim records a process there (reviewerPodlessRound).
+		if s.reviewerPodlessRound(ctx, issue, group, open, clock) {
+			return nil
+		}
 		if open != "" {
 			s.podlessRound(ctx, issue, group, open, clock)
 		}
@@ -305,6 +317,12 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	}
 	if reading != podRead {
 		return nil
+	}
+	// A reviewer's start the launch held for this pod's image (reviewerPods.check) opens its round
+	// as a drift does, under a reason of its own: the start waits on the replacement.
+	reviewerStart := open == "" && s.reviewerPods.waitsFor(issue, pod)
+	if reviewerStart {
+		reasons = append([]string{reviewerStartReason}, reasons...)
 	}
 	if len(reasons) == 0 && open == "" {
 		// A pod that has drifted from nothing, with no round open over it, needs no replacement:
@@ -354,8 +372,10 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// posted again too, as that same opening rather than a new one, and no limit holds that post
 	// back either (podUpdateSweep.reposts): it is in a round for the sweep's record, and nothing
 	// more is charged for it.
+	//
+	// A round a reviewer's start opens is held back by neither limit: the reviewer waits on it.
 	opening := open == "" && !sweep.reposts(issue, round)
-	if opening && sweep.holds(issue) {
+	if opening && !reviewerStart && sweep.holds(issue) {
 		return nil
 	}
 	if open == "" {

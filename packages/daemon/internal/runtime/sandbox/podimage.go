@@ -1,6 +1,13 @@
 package sandbox
 
-import "github.com/sjawhar/legion/daemon/internal/runtime"
+import (
+	"context"
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
 
 var _ runtime.IssuePodReader = (*Runtime)(nil)
 
@@ -32,6 +39,70 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 	}
 	_, drifted := imageDrift(pod, r.image)
 	return !drifted
+}
+
+// PodImage is the image a live issue pod runs, as IssuePodImage reads it: the pod's uid, the
+// image it runs, and the image this runtime launches every container with now. The pod runs
+// another image than the configured one where the two differ.
+type PodImage struct {
+	Pod, Image, Configured string
+}
+
+// IssuePodImage is the image the live pod of issue's Sandbox runs, read from the stores the
+// runtime already watches, as IssuePodRunsConfiguredImage reads it: Image is the first container
+// of the pod that runs another image than the configured one (imageDrift), and the configured
+// image where none does. The daemon reads it before it starts a reviewer in that pod
+// (internal/daemon's reviewerPods), because a reviewer starts only in a pod on the configured
+// image.
+//
+// live is false where the Sandbox holds no pod a launch would keep, read as relaunch reads its
+// own `live`: no Sandbox, a suspended one, no pod of its own, a pod that ended, whose init
+// container failed, or that its node has not started past the boot timeout (neverStarted). A
+// launch then makes a fresh pod on the configured image, so no pod of another image is there to
+// start a role in.
+//
+// The Sandbox is taken as the informer holds it (storedObject), as PodDrift and IssuePod take it,
+// with no decode: the stale-plugin lane and every state read ask this of each stale reviewer.
+func (r *Runtime) IssuePodImage(issue string) (PodImage, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return PodImage{}, false
+	}
+	u, err := r.storedObject(name)
+	if err != nil || u == nil {
+		return PodImage{}, false
+	}
+	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
+		return PodImage{}, false
+	}
+	pod := r.storedPod(name)
+	_, initExit := failedInit(pod)
+	if _, _, stuck := neverStarted(pod, r.now(), r.bootTimeout); !ownedBy(pod, u.GetUID()) || terminal(pod) || initExit != nil || stuck {
+		return PodImage{}, false
+	}
+	image := r.image
+	if other, drifted := imageDrift(pod, r.image); drifted {
+		image = other
+	}
+	return PodImage{Pod: string(pod.UID), Image: image, Configured: r.image}, true
+}
+
+// ReplaceIssuePod ends pod, the live pod of issue's Sandbox, for an update round that no claim
+// records a process in that pod for: ReplacePod's act (replaceRoundPod), keyed by the issue and
+// the pod's uid rather than by a claim's locator. A Sandbox that is absent or suspended, or whose
+// pod is another, has no pod of this round to end, and nothing is written. The first launch after
+// it provisions a fresh pod from the configuration.
+func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, pod string, due func(context.Context) error) error {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return fmt.Errorf("replace %s's pod: %w", issue, err)
+	}
+	replaced, err := r.replaceRoundPod(ctx, name, pod, issue, due)
+	if err != nil || !replaced {
+		return err
+	}
+	r.log.Info("sandbox runtime: the pod of a finished update round no claim ran a process in is replaced", "sandbox", name, "pod", pod, "issue", issue)
+	return nil
 }
 
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox

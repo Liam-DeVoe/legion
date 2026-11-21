@@ -405,6 +405,11 @@ func TestReviewerGitReadsNoRepositoryConfiguration(t *testing.T) {
 			if probe := strings.TrimSpace(outputs[strings.Join(commands[len(commands)-1], " ")]); probe != probeValue {
 				t.Fatalf("the reviewer's git read the -c in front of its subcommand as %q, want %q", probe, probeValue)
 			}
+			// The value the reviewer's git reads, and not only the absence of a planted hook:
+			// core.hooksPath is /dev/null, under which no hook is ever found.
+			if hooksPath := strings.TrimSpace(runReview(t, env, reviewDir, [][]string{{"config", "core.hooksPath"}})["config core.hooksPath"]); hooksPath != "/dev/null" {
+				t.Errorf("the reviewer's git config core.hooksPath printed %q, want /dev/null", hooksPath)
+			}
 			if ran := markersLeft(t, markers); len(ran) > 0 {
 				t.Errorf("the reviewer's git in its clone ran the planted %v: %v", ran, outputs)
 			}

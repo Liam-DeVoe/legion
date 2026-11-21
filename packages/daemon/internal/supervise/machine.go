@@ -894,6 +894,12 @@ type Deps struct {
 	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
 	// any decision in flight (Machine.View). nil holds no delivery back.
 	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
+	// DeliveryWaits says whether c's pending task waits, unsent, for a reason of the daemon's
+	// that nothing of the claim records: a reviewer works only in an issue pod on the configured
+	// image, so a task for a reviewer whose pod runs another image waits for the pod that
+	// replaces it (internal/daemon's reviewerPods). The task stays pending and charged nothing,
+	// and the next decision asks again (sendPending). nil holds no delivery back.
+	DeliveryWaits func(c Claim) bool
 	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
 	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
 	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
