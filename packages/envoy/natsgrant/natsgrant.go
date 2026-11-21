@@ -8,6 +8,7 @@
 package natsgrant
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -157,73 +158,124 @@ func ListenerHost(machineID string) Permissions {
 const edgeInboxPrefix = "_INBOX_envoy_edge_"
 
 // EdgeInboxPrefix is the inbox prefix of every connection the edge listener of machine machineID
-// makes (cmd/listener in edge mode, nats.CustomInboxPrefix): _INBOX_envoy_edge_<machine id>, a
-// space in the machine id a hyphen, as the listener's durable and queue group name it. So its
-// request replies and its push consumers' deliveries arrive under a prefix of its own, which Edge
-// subscribes in place of every reply inbox, and one edge replica reads no other replica's replies.
-// The prefix is one subject token for a machine id that is one, as an edge-listener entry of
-// BROKER_NATS_SERVICES requires.
+// makes (cmd/listener in edge mode, nats.CustomInboxPrefix): _INBOX_envoy_edge_<machine id>. So
+// its request replies and its push consumers' deliveries arrive under a prefix of its own, which
+// Edge subscribes in place of every reply inbox, and one edge machine is delivered no other
+// machine's replies. Edge refuses a machine id that is not one subject token, so no machine's
+// prefix covers another's.
 func EdgeInboxPrefix(machineID string) string {
-	return edgeInboxPrefix + strings.ReplaceAll(machineID, " ", "-")
+	return edgeInboxPrefix + machineID
+}
+
+// EdgeRelayReplyPrefix is the receipt family of the edge listener of machine machineID:
+// bus.RelayReplyPrefix followed by the machine id, under which its session relay names a relay
+// frame's receipt subject (the prefix, a dot and a token of its own). Edge subscribes only its own
+// machine's family, so no edge machine subscribes another machine's receipts, and since it can
+// change no stream's subjects, no stream it reads captures them. It publishes every edge
+// machine's (bus.RelayReplyPrefix): the listener serving a session's relay socket may be another
+// edge machine than the one holding the session's consumer, and it publishes the receipt on the
+// owner's family. So one edge machine can forge a receipt for another machine's frame, which adds
+// nothing past the reach Edge already leaves it: it can update or delete any consumer of the
+// stream. Edge refuses a machine id that is not one subject token, so no machine's family covers
+// another's.
+func EdgeRelayReplyPrefix(machineID string) string {
+	return bus.RelayReplyPrefix + machineID
 }
 
 // Edge is the grant of an edge listener's own NATS user as machine machineID, serving projects:
 // the listener that serves an outside person's sessions, which no session and no other listener
-// shares. It is Listener's set with these changes and no other. projects must be a list
-// oauthwire.ValidProjects takes, as ENVOY_EDGE_PROJECTS and an edge-listener entry of
-// BROKER_NATS_SERVICES are read: project keys, sorted, each once. Any other list is refused naming
-// why, since a key that is no one subject token (a wildcard, a dot) would widen the role subjects
-// it names to other projects'.
+// shares. It is Listener's set with these changes and no other. machineID must be one subject
+// token (SessionToken), and projects a non-empty list oauthwire.ValidProjects takes, as
+// ENVOY_EDGE_PROJECTS and an edge-listener entry of BROKER_NATS_SERVICES are read: project keys,
+// sorted, each once. Anything else is refused naming why before any subject is built: a key or a
+// machine id that is no one subject token would widen the subjects it names to other projects' or
+// other machines', and an empty list would render a grant of the whole consumer and key-value
+// reach serving no project.
 //
 // Publish, in place of every notification topic, this list and no other notification topic:
 //   - the agent subjects (contracts.AgentTopicPrefix): a send;
 //   - the role subjects of each project, in the form that names the project
 //     (contracts.RoleTopicPrefix + project): a role message;
 //   - the relay subjects (bus.DeliverSubjectPrefix): a frame to a session whose consumer it holds;
-//   - the relay receipts (bus.RelayReplyPrefix);
+//   - every edge machine's relay receipts (bus.RelayReplyPrefix), which the listener serving a
+//     session's relay socket publishes a frame's receipt on, on the family of the machine that
+//     holds the session's consumer (EdgeRelayReplyPrefix): the relay socket of #4658
+//     (cmd/listener's relay_socket.go). No program at this head publishes one;
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
 //     role subjects: a failed delivery's report, and an unheld role's refusal.
 //
 // So a direct publish of the edge's reaches no Dispatch, GitHub, Slack, team or Legion event, no
-// role message of another project or in the form that names none, nothing on the kept role lane
-// (bus.KeptTopicPrefix, its copies and drain cursors, which only a listener that takes the role
-// lane writes), no exception of any other topic and no reply to another client's request. It holds
-// no create or update of the stream, so it cannot change the stream's configuration: its start
-// reads the stream and refuses when it is missing. The rest of Listener's publish list stays as it
-// is: the stream's info and stored-message get, its durable's calls, JetStream's account info, the
-// KV calls of every bucket of bus.ListenerBuckets, the interest bucket's purge and the session
-// consumers' calls.
+// other project's role lane and no role lane in the form that names no project, nothing on the
+// kept role lane (bus.KeptTopicPrefix, its copies and drain cursors, which only a listener that
+// takes the role lane writes), no exception of any other topic and no reply to another client's
+// request. A message on a role lane of its own project that names a role of another project is
+// the shared listeners' role lane to refuse. It holds no create or update of the stream or of any
+// bucket's stream, so it cannot change any stream's configuration - its subjects, its limits, or a
+// republish. On the hub's image a republish to a $JS.API. subject reaches that subject's
+// subscribers and the JetStream API takes no action on it
+// (TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI). Its start reads the stream and
+// refuses when it is
+// missing, and opens each bucket by finding it (bus.EnsureKeyValue): a bucket the server lacks,
+// or holds at fewer copies than the deployment's count, ends the start naming the bucket's create
+// or raise the server refused. The rest of Listener's publish list stays as it is: the stream's
+// info and stored-message get, its durable's calls, JetStream's account info, the KV calls of
+// every bucket of bus.ListenerBuckets but its stream's create and update, the interest bucket's
+// purge and the session consumers' calls.
 //
-// Subscribe: its own inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so the server
-// delivers it no other client's replies; every session's relay subject (bus.DeliverSubject), which
-// the replica serving a session's relay socket subscribes for that session; and the relay receipts
-// (bus.RelayReplyPrefix). It subscribes no role lane, so it takes no share of any project's role
-// messages: a shared listener resolves a role's holder and forwards the message to the holder's
-// agent subject, which the holder's session consumer delivers. Its lists name no agent stream
-// subject. nats-server (2.15.1) admits a subscription to notifications.envoy.deliver.> under the
-// allow entry notifications.envoy.deliver.*, and delivers it a subject of two tokens past the
-// prefix: no Envoy program publishes one, since bus.DeliverSubject names a session by one token.
+// Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
+// the server delivers it no other client's replies; every session's relay subject
+// (bus.DeliverSubject), which the listener serving a session's relay socket subscribes for that
+// session; and its own machine's relay receipts (EdgeRelayReplyPrefix), which its session relay
+// takes its receipts under once #4658 names them there. Both subscriptions are #4658's: at this
+// head no program makes either, and the edge's session relay names its receipts under its inbox
+// prefix, which no session's grant publishes (Session publishes _INBOX.>), so at this head alone
+// no session answers an edge listener's relay frame over NATS. It subscribes no role lane, so it
+// takes no share of any project's role messages: a shared listener resolves a role's holder and
+// forwards the message to the holder's agent subject, which the holder's session consumer
+// delivers. Its lists name no agent stream subject. nats-server (2.15.1) admits a subscription to
+// notifications.envoy.deliver.> under the allow entry notifications.envoy.deliver.*, and delivers
+// it a subject of two tokens past the prefix: no Envoy program publishes one, since
+// bus.DeliverSubject names a session by one token.
 //
-// What the lists do not hold back, which TestTheEdgeGrantsConsumerCallsReachPastItsPublishList
-// pins on the hub's image:
+// What the lists do not hold back, which TestTheEdgeGrantsConsumerCallsReachPastItsPublishList and
+// TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI pin on the hub's image:
 //   - The session consumers' calls name the consumer by *, since each session's consumer is named
 //     for its session (bus.SessionConsumerName). A NATS wildcard matches a whole token and a
 //     consumer name is one token, so no permission can hold these calls to the edge's own
 //     consumers: the edge can create, update (a create with the update action), delete, read and
 //     pull any consumer of the stream, every other listener's durable, Dispatch's and every
 //     session's consumer among them, and so take another listener's push deliveries.
-//   - nats-server checks a push consumer's deliver subject against no permission, only that it is
-//     a subject the stream does not carry. So through a consumer it creates, the edge can put any
-//     message it stored, or any message of the stream, on any subject the stream does not carry:
-//     every project's role lanes and their exception lanes, any reply inbox, and the agent stream
-//     subjects. The stream-carried families stay closed to it: a deliver subject the stream
-//     carries is refused as a cycle.
+//   - nats-server checks a push consumer's deliver subject against no permission, only that the
+//     stream does not carry it, and delivers only where a client subscribes. A delivery is sent
+//     under the message's own stream subject, not the deliver subject: each subscription that
+//     matches the deliver subject receives it, and it reads as a message of the stream's subject.
+//     So through a consumer it creates, the edge can hand any message it stored, or any message of
+//     the stream, to any subscriber of any subject the stream does not carry: every project's role
+//     lanes and their exception lanes, any reply inbox, and the agent stream subjects. A deliver
+//     subject the stream carries is refused as a cycle. The JetStream API's import sees the stream
+//     subject, not $JS.API., so a delivery to a stream delete, purge or update, or to a bucket's
+//     stream delete, takes no action. A stream whose subjects take the deliver subject - another
+//     stream of the account, a key-value bucket's stream among them - stores the delivery under
+//     its stream subject, as a message of that stream and never as a key, and counts it toward
+//     that stream's limits. That is the one write this route has, and it needs some other client
+//     to subscribe the deliver subject, since the edge subscribes none a stream takes.
+//   - Its KV calls include a consumer on each bucket's stream (CONSUMER.CREATE.KV_<bucket>.>),
+//     and that stream does not carry the notification subjects, so such a consumer can deliver a
+//     bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept and resume subjects
+//     wherever a client subscribes them: the cycle refusal holds only for the notification
+//     stream's own consumers.
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
 //     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs.
 func Edge(machineID string, projects []string) (Permissions, error) {
+	if !SessionToken(machineID) {
+		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q is not one subject token", machineID)
+	}
+	if len(projects) == 0 {
+		return Permissions{}, errors.New("natsgrant: the edge serves no project")
+	}
 	if err := oauthwire.ValidProjects(projects); err != nil {
 		return Permissions{}, fmt.Errorf("natsgrant: the edge's projects %q are no list of project keys: %w", projects, err)
 	}
@@ -231,6 +283,9 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 		bus.NotificationTopicPrefix + ">",
 		jsAPI + "STREAM.CREATE." + bus.Stream,
 		jsAPI + "STREAM.UPDATE." + bus.Stream,
+	}
+	for _, bucket := range bus.ListenerBuckets() {
+		removed = append(removed, jsAPI+"STREAM.CREATE."+kvStream+bucket, jsAPI+"STREAM.UPDATE."+kvStream+bucket)
 	}
 	publish := []string{contracts.AgentTopicPrefix + ">"}
 	for _, project := range projects {
@@ -252,7 +307,7 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 	}
 	return Permissions{
 		Publish:   publish,
-		Subscribe: []string{EdgeInboxPrefix(machineID) + ".>", bus.DeliverSubjectPrefix + "*", bus.RelayReplyPrefix + ">"},
+		Subscribe: []string{EdgeInboxPrefix(machineID) + ".>", bus.DeliverSubjectPrefix + "*", EdgeRelayReplyPrefix(machineID) + ".>"},
 	}, nil
 }
 

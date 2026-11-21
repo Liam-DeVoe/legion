@@ -6,9 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
 )
 
@@ -218,6 +222,36 @@ type roleLane struct {
 	client    *bus.Client
 	forwards  *roleForwarder
 	stopWatch func()
+}
+
+// startRoleLane opens the listener's role lane: a core-NATS queue subscription on a connection of
+// its own with finite pending limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes;
+// bus.ConnectRoleLane), in the queue group every listener shares, or this machine's group on a hub
+// whose grant predates it, whose messages handler takes. During a rolling deploy the task being
+// replaced is a member too, and NATS hands each role message to one member of a group, so opening
+// the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
+// errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
+//
+// An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
+// takes no share of any project's role messages. A shared listener resolves a role's holder, an
+// edge session's among them, and forwards the message to the holder's agent subject, which the
+// holder's session consumer delivers. Its lane holds the forwards alone.
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger) (roleLane, error) {
+	if edge != nil {
+		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
+		return roleLane{forwards: forwards}, nil
+	}
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler)
+	if err != nil {
+		return roleLane{}, err
+	}
+	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", queue))
+	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
+		return int64(client.SlowConsumers())
+	})
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	go watchRoleLaneSlowConsumers(watchCtx, client, logger, roleLaneSlowConsumerInterval)
+	return roleLane{client: client, forwards: forwards, stopWatch: stopWatch}, nil
 }
 
 // drain ends the role lane at shutdown: it drains the lane's client within timeout, so the handler

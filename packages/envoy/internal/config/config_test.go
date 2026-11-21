@@ -262,3 +262,18 @@ func TestHostName(t *testing.T) {
 		}
 	}
 }
+
+// ENVOY_EDGE_PROJECTS holds at most 16 project keys, as a broker token's list does: a seventeenth
+// refuses the start naming the variable, and sixteen start it.
+func TestEdgeProjectsRefuseMoreKeysThanATokenCarries(t *testing.T) {
+	keys := []string{"AA", "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "AO", "AP", "AQ"}
+	t.Setenv(EdgeProjectsEnvVar, strings.Join(keys, ","))
+	if _, err := loadWith(t, nil); err == nil || !strings.Contains(err.Error(), EdgeProjectsEnvVar) {
+		t.Fatalf("seventeen keys: error %v, want a refusal naming %s", err, EdgeProjectsEnvVar)
+	}
+	t.Setenv(EdgeProjectsEnvVar, strings.Join(keys[:16], ","))
+	service, err := loadWith(t, nil)
+	if err != nil || len(service.EdgeProjects) != 16 {
+		t.Fatalf("sixteen keys: EdgeProjects %q, error %v; want all sixteen", service.EdgeProjects, err)
+	}
+}

@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
@@ -1126,6 +1125,20 @@ func main() {
 
 	// Metrics registry — /metrics available during startup (like /healthz).
 	met := metrics.New()
+	// An edge listener (ENVOY_EDGE_PROJECTS) holds itself to its own NATS grant from its first
+	// connection on (edgeGrant): every connection names its inboxes under its machine's prefix, the
+	// main client reads the stream and owns none, no role lane opens, no wake report is published,
+	// and its delivery handlers keep no role message and publish no exception on a lane the grant
+	// leaves out. Every other listener has none (edge nil).
+	var edge *edgeGrant
+	if len(cfg.EdgeProjects) > 0 {
+		grant, err := newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+		if err != nil {
+			logger.Error("edge listener grant refused", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		edge = grant
+	}
 	messagesReceived := met.NewCounter("envoy_messages_received_total", "Total messages received by the listener")
 	messagesDelivered := met.NewCounter("envoy_messages_delivered_total", "Total message delivery attempts")
 	messagesNAKed := met.NewCounter("envoy_messages_naked_total", "Total messages NAK'd for retry")
@@ -1208,7 +1221,7 @@ func main() {
 	// (listenerStreamOptions), and leaves as it is a stream that a newer build stamped with a
 	// higher generation (bus.ConnectOwningStream). An edge listener owns no stream: it reads it,
 	// and its start ends here when the server has none (connectListenerBus).
-	client, err := connectListenerBus(cfg)
+	client, err := connectListenerBus(cfg, edge)
 	if err != nil {
 		// Named, because this step and the two below it are the whole of the start-up between the
 		// listening line and "webhooks open", and each one can end it with a bare error: a reader
@@ -1494,18 +1507,10 @@ func main() {
 	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
 	// this configuration by value, so every seam of it must be set before they are built. An edge
 	// listener reports none: its grant may not publish the wake topic (natsgrant.Edge), and the
-	// shared listeners report every wake. It holds its delivery handlers to that grant instead: no
-	// kept role lane, and no delivery exception on a lane the grant leaves out (edgeGrant).
+	// shared listeners report every wake.
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
 	var wakes *wakeReporter
-	var edge *edgeGrant
-	if edgeMode(cfg) {
-		if edge, err = newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met); err != nil {
-			logger.Error("edge listener grant refused", slog.String("error", err.Error()))
-			client.Conn.Close()
-			os.Exit(1)
-		}
-	} else {
+	if edge == nil {
 		wakes = newWakeReporter(wakesCtx, client)
 	}
 
@@ -1562,35 +1567,12 @@ func main() {
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
-	// The role lane is a core-NATS queue subscription on a connection of its own with finite pending
-	// limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes; bus.ConnectRoleLane), in the queue
-	// group every listener shares, or this machine's group on a hub whose grant predates it. During a
-	// rolling deploy the task being replaced is a member too, and NATS hands each role message to one
-	// member of a group, so opening the lane before the durable binds forwards no message twice.
-	//
-	// An edge listener opens none: its grant subscribes no role lane (natsgrant.Edge), so it takes
-	// no share of any project's role messages. A shared listener resolves a role's holder, an edge
-	// session's among them, and forwards the message to the holder's agent subject, which the
-	// holder's session consumer delivers.
-	var roleLaneClient *bus.Client
-	lane := roleLane{forwards: roleForwards}
-	if edgeMode(cfg) {
-		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
-	} else {
-		var roleQueue string
-		roleLaneClient, roleQueue, err = bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
-		if err != nil {
-			logger.Error("core role subscription failed", slog.String("error", err.Error()))
-			client.Conn.Close()
-			os.Exit(1)
-		}
-		logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", roleQueue))
-		met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
-			return int64(roleLaneClient.SlowConsumers())
-		})
-		roleLaneWatchCtx, roleLaneWatchCancel := context.WithCancel(context.Background())
-		go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
-		lane = roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
+	// The role lane (startRoleLane); an edge listener opens none.
+	lane, err := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger)
+	if err != nil {
+		logger.Error("core role subscription failed", slog.String("error", err.Error()))
+		client.Conn.Close()
+		os.Exit(1)
 	}
 	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
 		return int64(roleForwards.outstanding())
@@ -1610,7 +1592,7 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, listenerConnectOptions(cfg)...)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, edge.connectOptions()...)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1630,8 +1612,8 @@ func main() {
 	// own, as the main client's but for its name, whose slow consumers stay off the main
 	// connection's last error (confirmPublished reads it); every other listener serves none.
 	var sockets *relaySockets
-	if edgeMode(cfg) {
-		socketsClient, err := bus.Connect(cfg.NATSURLs, append(listenerConnectOptions(cfg), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+	if edge != nil {
+		socketsClient, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
 		if err != nil {
 			logger.Error("relay socket connection failed: an edge listener serves its sessions' sockets on it", slog.String("error", err.Error()))
 			relays.stop(context.Background())
@@ -1677,7 +1659,7 @@ func main() {
 	sessionLive, _ := sessions.Windows()
 	ready := &listenerDeps{
 		client:       client,
-		roleLane:     roleLaneClient,
+		roleLane:     lane.client,
 		consumers:    delivery,
 		registry:     registry,
 		sessions:     sessions,
@@ -1867,7 +1849,7 @@ func main() {
 	// it releases nothing: this is the positive signal that lets release run at all. It shares
 	// summaryCtx, which the shutdown cancels. An edge listener reports no wake, so it says
 	// nothing here either.
-	if !edgeMode(cfg) {
+	if edge == nil {
 		startListenerReadyReports(summaryCtx, client, logger, listenerReadyInterval)
 	}
 

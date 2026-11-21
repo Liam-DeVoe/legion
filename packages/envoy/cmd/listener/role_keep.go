@@ -682,9 +682,9 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 // (roles.ValidClaimKey), which it keeps nothing for.
 var errRoleNotKeepable = errors.New("no claim can be keyed by this role, so nothing is kept for it")
 
-// errEdgeKeepsNothing is keepForNextHolder's answer on an edge listener, whose grant publishes no
-// kept role lane (natsgrant.Edge), so it keeps nothing for any role.
-var errEdgeKeepsNothing = errors.New("an edge listener keeps nothing for a role's next holder: its grant publishes no kept role lane")
+// errEdgeKeepsNothing is keepForNextHolder's answer at an edge listener, which keeps nothing: its
+// grant publishes no kept role lane (natsgrant.Edge).
+var errEdgeKeepsNothing = errors.New("an edge listener keeps no role message: its grant publishes no kept role lane")
 
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
 // whose holder it could not read, and reports whether it was kept. reason is why, as the lane's

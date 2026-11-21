@@ -1661,9 +1661,7 @@ envoy_go:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
-  # Its natslive step runs cmd/listener's natslive tests, so its test build reads the
-  # fixtures cmd/listener's untagged tests read (api_test.go), which this job must then
-  # run as well (check-ci-filters.sh's rule 15).
+  # why: .github/ci-notes/ci.md#envoy_go-its-natslive-step-runs-cmdlisteners-natslive-tests
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
