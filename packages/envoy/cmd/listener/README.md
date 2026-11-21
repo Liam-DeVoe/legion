@@ -267,8 +267,10 @@ The listener state bucket's grant refusal ends nothing either: the pod delivers 
 `/healthz` takes no credential and answers within 5 s (`healthzDeadline`): a check that has not answered by then makes the answer `503 {"status":"unhealthy"}`.
 
 - `503 {"status":"starting"}`:
-  Until the pod can serve: NATS connected, with broker access tokens configured the spent-proof bucket open, the webhook and `/v1` gates open, the receive loop started, with an OIDC issuer or a Google audience configured each issuer's discovery succeeded, and the interest copy's first read of its bucket since the process started complete (`interestCopyRead`).
-  An issuer that does not answer keeps the pod here, up and retrying, and so do a NATS that does not answer, an answer from its cluster's state and a grant that refuses the spent-proof bucket ("Start" above); it never exits for any of them.
+  Until the pod can serve: NATS connected, with broker access tokens configured the spent-proof bucket open, the webhook and `/v1` gates open, the receive loop started, and the interest copy's first read of its bucket since the process started complete (`interestCopyRead`).
+  A NATS that does not answer keeps the pod here, up and retrying, and so do an answer from its cluster's state and a grant that refuses the spent-proof bucket ("Start" above); it never exits for any of them.
+  An identity token issuer it has not read yet keeps it nowhere: the pod becomes ready, reads the issuer in the background, and answers that issuer's tokens `503` with `Retry-After: 1` and the code `identity_unchecked` until it has read it (`refuseIdentityToken`), a check made in `apiAuth` before any route runs.
+  Every answer, `starting` included, carries `oidc` and `google`: `false` until the listener has read that issuer, `true` after, `null` for a pair not configured; they never decide the status (`issuer_health.go`).
   The start waits at most 30 s for the interest watcher and opens `/v1` when that wait runs out too, or once the watcher's first scan timed out, so `/v1` serves the routes that do not need the interest copy while `GET /v1/interests/` still answers `503` `refilling`:
   the pod stays here until that first read completes.
   Only the first read gates readiness.

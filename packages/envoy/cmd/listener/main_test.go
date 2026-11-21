@@ -118,24 +118,22 @@ func TestStartingGateLogsEachRefusedRequest(t *testing.T) {
 	}
 }
 
-// /healthz answers 503 "starting" until main publishes the listener's dependencies, on a listener
-// configured with an OIDC issuer until the issuer's discovery has succeeded, and until the
+// /healthz answers 503 "starting" until main publishes the listener's dependencies, and until the
 // interest copy's first read has completed, so a readiness probe sends a pod no traffic before it
-// can serve.
+// can serve. An identity token issuer the listener has not read yet holds nothing back: the pod
+// serves everything else, and answers that issuer's tokens 503 itself (refuseIdentityToken).
 func TestHealthzAnswersStartingUntilTheListenerIsReady(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		deps     *listenerDeps
-		verifier *apiVerifier
+		name string
+		deps *listenerDeps
 	}{
 		{name: "dependencies not published"},
-		{name: "OIDC discovery not succeeded", deps: &listenerDeps{}, verifier: newAPIVerifier("https://oidc.eks.example/id/CLUSTER", "envoy")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var state atomic.Pointer[listenerDeps]
 			state.Store(tc.deps)
 			rr := httptest.NewRecorder()
-			healthzHandler(&state, tc.verifier).ServeHTTP(rr, httptest.NewRequest("GET", "/healthz", nil))
+			healthzHandler(&state, nil).ServeHTTP(rr, httptest.NewRequest("GET", "/healthz", nil))
 			if rr.Code != http.StatusServiceUnavailable {
 				t.Fatalf("expected 503, got %d", rr.Code)
 			}
@@ -153,8 +151,8 @@ func TestHealthzAnswersStartingUntilTheListenerIsReady(t *testing.T) {
 	}
 }
 
-// serveHealthz serves one /healthz request over state, on a listener with no OIDC issuer, and
-// returns its status and body.
+// serveHealthz serves one /healthz request over state, on a listener with no identity token
+// issuer, and returns its status and body.
 func serveHealthz(state *atomic.Pointer[listenerDeps]) (int, map[string]any) {
 	recorder := httptest.NewRecorder()
 	healthzHandler(state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))

@@ -279,7 +279,7 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		// main publishes what /healthz reads once /v1 is open and the receive loop has started.
 		var published atomic.Pointer[listenerDeps]
 		published.Store(deps)
-		mux.Handle("/healthz", healthzHandler(&published))
+		mux.Handle("/healthz", healthzHandler(&published, nil))
 	}
 	rig.handler = mux
 	return rig

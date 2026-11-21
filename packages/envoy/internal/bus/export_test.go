@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -45,4 +46,17 @@ func WithBeforeRequestFlush(before func()) ConnectOption {
 func RequireLostWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
 	t.Helper()
 	requireLostWithTheConnection(t, relay, conn, what, call)
+}
+
+// WithRequestExpiry has each Request's timeout fire when the channel expiry returns for it does,
+// in place of a timer at the request's deadline; a nil channel keeps that timer. The func expiry
+// returns beside it, when not nil, runs once the Request has settled a flush that returned before
+// its timeout fired, on the Request's own goroutine: a test that fires the timeout from it has the
+// Request settle the flush first, every time. A Request whose timeout fires while its flush has
+// not returned waits for the flush, which its deadline still bounds, so a test that fires the
+// timeout at once and gives the Request a long deadline has the flush's verdict in the answer
+// however late the scheduler runs the flush. It is compiled into the package's tests only; no
+// production connect can set it.
+func WithRequestExpiry(expiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.requestExpiry = expiry })
 }

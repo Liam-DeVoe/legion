@@ -2,12 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,8 +15,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const (
@@ -32,7 +33,7 @@ func TestAPIAuth(t *testing.T) {
 
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
-	verifier := discoveredAPIVerifier(t, issuer)
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	serviceToken := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 
@@ -194,7 +195,7 @@ func TestAPIAuth(t *testing.T) {
 				request.Header.Set("Authorization", tc.authorize)
 			}
 
-			var configured *apiVerifier
+			var configured *oidc.LazyVerifier
 			if tc.oidc {
 				configured = verifier
 			}
@@ -347,7 +348,8 @@ func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount
 }
 
 func TestValidateListenerAPIAuth(t *testing.T) {
-	verifier := newAPIVerifier("https://oidc.eks.example/id/CLUSTER", listenerTestAudience)
+	issuer := oidctest.New(t)
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 
 	cases := []struct {
@@ -635,42 +637,19 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 	}
 }
 
-// discoveredAPIVerifier is the /v1 verifier of a listener whose discovery of issuer has succeeded.
-func discoveredAPIVerifier(t *testing.T, issuer *oidctest.Issuer) *apiVerifier {
-	t.Helper()
-	verifier := newAPIVerifier(issuer.URL(), listenerTestAudience)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	verifier.discover(ctx, logging.NewWithWriter("test-machine", io.Discard))
-	if !verifier.ready() {
-		t.Fatalf("discovery of %s did not succeed", issuer.URL())
-	}
-	return verifier
-}
-
-// Until the issuer's discovery succeeds, /v1 answers 503 "service starting" to every request,
-// the shared token's included, and logs each refusal as the starting gates do; the exempt paths
-// pass. Discovery is retried, and once the issuer answers it, both bearers are served.
-func TestAPIAuthAnswersServiceStartingUntilDiscoverySucceeds(t *testing.T) {
+// While the issuer's discovery fails, /v1 serves the shared token and the exempt paths, and answers
+// a projected token 503 with Retry-After: 1, since the listener could not check it: never 401, and
+// never "service starting" to every request. Discovery is tried again, and once the issuer answers
+// it, the projected token is admitted with nothing restarted.
+func TestAPIAuthServesWhileDiscoveryFailsAndAdmitsTheTokenOnceItSucceeds(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
 	serviceToken := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	verifier := newAPIVerifier(issuer.URL(), listenerTestAudience)
 	var logged cmdtest.LockedBuffer
-	logger := logging.NewWithWriter("test-machine", &logged)
-	ctx, cancel := context.WithCancel(context.Background())
-	discovered := make(chan struct{})
-	go func() {
-		defer close(discovered)
-		verifier.discover(ctx, logger)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-discovered
-	})
-	handler := apiAuth(listenerAPIAuth{token: "expected-token", verifier: verifier, logger: logger}, next)
+	auth := listenerAPIAuth{token: "expected-token", verifier: oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience), logger: logging.NewWithWriter("test-machine", &logged)}
+	handler := apiAuth(auth, next)
 	serve := func(path, bearer string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -679,40 +658,31 @@ func TestAPIAuthAnswersServiceStartingUntilDiscoverySucceeds(t *testing.T) {
 		return recorder
 	}
 
-	waitFor(t, 10*time.Second, "a failed discovery to be logged", func() bool {
-		return strings.Contains(logged.String(), "listener API oidc discovery failed; retrying")
-	})
-	for _, bearer := range []string{"expected-token", serviceToken} {
-		if recorder := serve("/v1/sessions", bearer); recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "{\"error\":\"service starting\"}\n" {
-			t.Fatalf("/v1 before discovery = %d %q, want 503 service starting", recorder.Code, recorder.Body.String())
-		}
+	if recorder := serve("/v1/sessions", serviceToken); recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" {
+		t.Fatalf("a projected token while discovery fails = %d (Retry-After %q) %q, want 503 with Retry-After: 1", recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
 	}
-	if !strings.Contains(logged.String(), `"msg":"request refused while starting"`) || !strings.Contains(logged.String(), `"gate":"oidc"`) {
-		t.Fatalf("the refusal was not logged:\n%s", logged.String())
+	if recorder := serve("/v1/sessions", "expected-token"); recorder.Code != http.StatusNoContent {
+		t.Fatalf("the shared token while discovery fails = %d %q, want it served", recorder.Code, recorder.Body.String())
 	}
 	if recorder := serve("/healthz", ""); recorder.Code != http.StatusNoContent {
-		t.Fatalf("/healthz before discovery = %d, want the exempt path passed on", recorder.Code)
+		t.Fatalf("/healthz while discovery fails = %d, want the exempt path passed on", recorder.Code)
 	}
 
 	issuer.FailDiscovery(0)
-	select {
-	case <-discovered:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("discovery did not succeed within 10 s of the issuer answering:\n%s", logged.String())
-	}
-	for _, bearer := range []string{"expected-token", serviceToken} {
-		if recorder := serve("/v1/sessions", bearer); recorder.Code != http.StatusNoContent {
-			t.Fatalf("/v1 after discovery = %d %q, want it served", recorder.Code, recorder.Body.String())
-		}
+	waitFor(t, 15*time.Second, "the projected token to be admitted once the issuer answers", func() bool {
+		return serve("/v1/sessions", serviceToken).Code == http.StatusNoContent
+	})
+	if !auth.verifier.Discovered() {
+		t.Fatalf("the projected token was admitted, but the verifier does not report its issuer read:\n%s", logged.String())
 	}
 }
 
-// A listener that takes Google identities waits for Google's discovery as it waits for its
-// cluster issuer's, rather than ending its start: until that discovery succeeds, /v1 answers 503
-// "service starting" to every request, the shared token's and a listed Google identity's
-// included, and /healthz answers 503 "starting" with the listener's dependencies published, though
-// the projected-token verifier beside it is discovered. Once it succeeds, both are served.
-func TestAPIAuthAndHealthzWaitForGoogleDiscovery(t *testing.T) {
+// A listener that takes Google identities serves while Google's discovery fails, as it does while
+// its cluster issuer's does: /v1 serves the shared token and a projected token beside it, and
+// answers a listed account's Google identity token 503 with Retry-After: 1 until Google's issuer
+// answers, then admits it. /healthz's "google" field reads false until then and true after, beside
+// "oidc", which is true once the projected token has been checked.
+func TestAPIAuthAndHealthzServeWhileGoogleDiscoveryFails(t *testing.T) {
 	cluster := newClusterIssuer(t)
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
@@ -720,101 +690,96 @@ func TestAPIAuthAndHealthzWaitForGoogleDiscovery(t *testing.T) {
 	claims["email"], claims["email_verified"] = listenerGoogleAccount, true
 	googleToken := issuer.Mint(t, key, claims)
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	google := &googleIdentities{audience: listenerGoogleAudience, verifier: newAPIVerifier(issuer.URL(), listenerGoogleAudience), accounts: []string{listenerGoogleAccount}}
+	google := &googleIdentities{audience: listenerGoogleAudience, verifier: oidc.NewLazyVerifier(issuer.URL(), listenerGoogleAudience), accounts: []string{listenerGoogleAccount}}
 	var logged cmdtest.LockedBuffer
-	logger := logging.NewWithWriter("test-machine", &logged)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		google.verifier.discover(ctx, logger)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-	auth := listenerAPIAuth{token: "expected-token", verifier: cluster.verifier, google: google, logger: logger}
+	auth := listenerAPIAuth{token: "expected-token", verifier: cluster.verifier, google: google, logger: logging.NewWithWriter("test-machine", &logged)}
 	handler := apiAuth(auth, served)
 	serve := func(bearer string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, bearerRequest("/v1/sessions", "Bearer "+bearer))
 		return recorder
 	}
-
-	waitFor(t, 10*time.Second, "a failed discovery to be logged", func() bool {
-		return strings.Contains(logged.String(), "listener API oidc discovery failed; retrying")
-	})
-	for _, bearer := range []string{"expected-token", googleToken} {
-		if recorder := serve(bearer); recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "{\"error\":\"service starting\"}\n" {
-			t.Fatalf("/v1 before Google's discovery = %d %q, want 503 service starting", recorder.Code, recorder.Body.String())
+	var starting atomic.Pointer[listenerDeps]
+	healthz := healthzHandler(&starting, func(health *listenerwire.Health) { issuerHealthFields(auth, health) })
+	wantIssuers := func(oidcRead, googleRead bool) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		healthz.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		var body listenerwire.Health
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.OIDC == nil || body.Google == nil || *body.OIDC != oidcRead || *body.Google != googleRead {
+			t.Fatalf("/healthz = %s (%v), want oidc %t and google %t", recorder.Body.String(), err, oidcRead, googleRead)
 		}
 	}
-	var state atomic.Pointer[listenerDeps]
-	state.Store(&listenerDeps{})
-	recorder := httptest.NewRecorder()
-	healthzHandler(&state, auth.verifiers()...).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"status":"starting"`) {
-		t.Fatalf("/healthz before Google's discovery = %d %s, want 503 starting", recorder.Code, recorder.Body.String())
+
+	for name, bearer := range map[string]string{"the shared token": "expected-token", "a projected token": cluster.token(t, listenerTestSubject)} {
+		if recorder := serve(bearer); recorder.Code != http.StatusNoContent {
+			t.Fatalf("%s while Google's discovery fails = %d %q, want it served", name, recorder.Code, recorder.Body.String())
+		}
 	}
+	if recorder := serve(googleToken); recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" {
+		t.Fatalf("a Google identity token while Google's discovery fails = %d (Retry-After %q) %q, want 503 with Retry-After: 1", recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
+	}
+	wantIssuers(true, false)
 
 	issuer.FailDiscovery(0)
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("discovery did not succeed within 10 s of the issuer answering:\n%s", logged.String())
-	}
-	for _, bearer := range []string{"expected-token", googleToken} {
-		if recorder := serve(bearer); recorder.Code != http.StatusNoContent {
-			t.Fatalf("/v1 after Google's discovery = %d %q, want it served", recorder.Code, recorder.Body.String())
-		}
-	}
-	if !discovered(auth.verifiers()) {
-		t.Fatal("/healthz still waits for a discovery after both succeeded")
-	}
+	waitFor(t, 15*time.Second, "the Google identity token to be admitted once Google's issuer answers", func() bool {
+		return serve(googleToken).Code == http.StatusNoContent
+	})
+	wantIssuers(true, true)
 }
 
-// An issuer that keeps failing discovery is read again 1 s after the first failure, then after a
-// wait twice the last one, never more than 30 s apart.
-func TestOIDCDiscoveryRetriesBackOffFromOneSecondToThirty(t *testing.T) {
-	var waits []time.Duration
-	for wait := oidcDiscoveryFirstRetry; len(waits) < 8; wait = nextDiscoveryRetry(wait) {
-		waits = append(waits, wait)
-	}
-	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second}
-	if !slices.Equal(waits, want) {
-		t.Fatalf("discovery retry waits = %v, want %v", waits, want)
-	}
-}
-
-// A listener whose OIDC issuer does not answer discovery at start stays up and unready: /healthz
-// answers 503 "starting" and /v1 503 "service starting" while it retries, though NATS is up and its
-// stores are open; once the issuer answers, /healthz answers 200 and /v1 serves.
+// A listener whose OIDC issuer does not answer discovery at start, and that takes no Google
+// identity, comes up ready and serves while it tries again: /healthz answers 200 with "oidc" false
+// and "google" null, /v1 serves the shared token, and a projected token is answered 503 with
+// Retry-After, though NATS is up and its stores are open. Once the issuer answers, the projected
+// token is admitted and "oidc" reads true, with no restart.
 func TestAListenerWhoseOIDCIssuerFailsAtStartServesOnceItAnswers(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.PublishKey(t, "listener-test-key")
+	key := issuer.PublishKey(t, "listener-test-key")
+	projected := issuer.Mint(t, key, issuer.Claims(listenerTestSubject, listenerTestAudience))
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), testnats.URL(t), "box-oidc",
 		"ENVOY_OIDC_ISSUER="+issuer.URL(), "ENVOY_OIDC_AUDIENCE="+listenerTestAudience)
-	listener.WaitForOutput(t, "listener API oidc discovery failed; retrying", "envoy-listener ready (NATS connected)")
+	listener.WaitForOutput(t, discoveryFailedLine)
+	listener.waitHealthy(t)
+	wantHealthz := func(oidcRead bool) {
+		t.Helper()
+		status, body := callListener(t, listener.port, http.MethodGet, "/healthz", "")
+		var health listenerwire.Health
+		if err := json.Unmarshal([]byte(body), &health); err != nil || status != http.StatusOK || health.OIDC == nil || *health.OIDC != oidcRead || !strings.Contains(body, `"google":null`) {
+			t.Fatalf("/healthz = %d %s (%v), want 200 with oidc %t and google null", status, body, err, oidcRead)
+		}
+	}
+	callProjected := func() *http.Response {
+		t.Helper()
+		request := mustRequest(t, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(listener.port)+"/v1/sessions")
+		request.Header.Set("Authorization", "Bearer "+projected)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("GET /v1/sessions: %v", err)
+		}
+		_ = response.Body.Close()
+		return response
+	}
 
-	if status, body := callListener(t, listener.port, http.MethodGet, "/healthz", ""); status != http.StatusServiceUnavailable || !strings.Contains(body, `"status":"starting"`) {
-		t.Fatalf("/healthz while discovery fails = %d %s, want 503 starting", status, body)
+	wantHealthz(false)
+	if status, body := callListener(t, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusOK {
+		t.Fatalf("/v1 on the shared token while discovery fails = %d %s, want 200", status, body)
 	}
-	if status, body := callListener(t, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusServiceUnavailable || !strings.Contains(body, "service starting") {
-		t.Fatalf("/v1 while discovery fails = %d %s, want 503 service starting", status, body)
-	}
-	select {
-	case <-listener.Exited:
-		t.Fatalf("the listener exited while discovery failed:\n%s", listener.Output.String())
-	default:
+	if response := callProjected(); response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") == "" {
+		t.Fatalf("a projected token while discovery fails = %d (Retry-After %q), want 503 with Retry-After", response.StatusCode, response.Header.Get("Retry-After"))
 	}
 
 	issuer.FailDiscovery(0)
-	listener.waitHealthy(t)
-	if status, body := callListener(t, listener.port, http.MethodGet, "/healthz", ""); status != http.StatusOK {
-		t.Fatalf("/healthz once the issuer answers = %d %s, want 200", status, body)
-	}
-	if status, body := callListener(t, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusOK {
-		t.Fatalf("/v1 once the issuer answers = %d %s, want 200", status, body)
+	answering := time.Now()
+	waitFor(t, 45*time.Second, "a projected token to be admitted once the issuer answers", func() bool {
+		return callProjected().StatusCode == http.StatusOK
+	})
+	t.Logf("a projected token was admitted %s after the issuer began to answer discovery", time.Since(answering).Round(time.Millisecond))
+	wantHealthz(true)
+	select {
+	case <-listener.Exited:
+		t.Fatalf("the listener exited while it waited for its issuer:\n%s", listener.Output.String())
+	default:
 	}
 }

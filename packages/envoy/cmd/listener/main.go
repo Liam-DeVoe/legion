@@ -523,10 +523,9 @@ type healthAnswer struct {
 
 // healthzHandler is the listener's /healthz, the readiness answer of every pod of a machine id. It
 // answers 503 "starting" until main publishes deps, which it does once NATS is connected, the
-// webhook and /v1 gates are open and the receive loop has started; on a listener configured with
-// an OIDC issuer or a Google audience, until each issuer's discovery has succeeded (verifiers,
-// listenerAPIAuth.verifiers); and until the interest copy has completed its first read of its
-// bucket since the process started (interestCopyRead), which a later read of it does not undo.
+// webhook and /v1 gates are open and the receive loop has started, and until the interest copy has
+// completed its first read of its bucket since the process started (interestCopyRead), which a
+// later read of it does not undo.
 // Then it answers 200 "healthy" once every dependency answers, naming this pod's "role": "active"
 // while it receives the durable (it holds the lease and is subscribed, or it runs without a lease
 // and receives), with the durable's lag (num_pending, num_ack_pending), or "standby" otherwise,
@@ -628,7 +627,11 @@ type healthAnswer struct {
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers dependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
-func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifier) http.HandlerFunc {
+//
+// Every answer, starting, healthy, degraded and unhealthy alike, also carries the fields issuers
+// sets (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil sets neither,
+// which leaves both null. Those fields never decide the status (writeHealth).
+func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func(*listenerwire.Health)) http.HandlerFunc {
 	// The latch of the interest copy's first read (interestCopyRead): main builds this handler once,
 	// so it lasts as long as the process.
 	var interestsRead atomic.Bool
@@ -636,7 +639,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifie
 		ctx, cancel := context.WithTimeout(r.Context(), healthzDeadline)
 		defer cancel()
 		answered := make(chan healthAnswer, 1)
-		go func() { answered <- listenerHealth(ctx, deps.Load(), &interestsRead, verifiers...) }()
+		go func() { answered <- listenerHealth(ctx, deps.Load(), &interestsRead) }()
 		var answer healthAnswer
 		select {
 		case answer = <-answered:
@@ -647,16 +650,15 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifie
 			}}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(answer.code)
-		_ = json.NewEncoder(w).Encode(answer.body)
+		writeHealth(w, answer, issuers)
 	}
 }
 
 // listenerHealth runs /healthz's checks over d, nil until main publishes it, within ctx, its bus
 // checks within healthzBudget of it. interestsRead is the handler's latch of the interest copy's
 // first read (interestCopyRead).
-func listenerHealth(ctx context.Context, d *listenerDeps, interestsRead *atomic.Bool, verifiers ...*apiVerifier) healthAnswer {
-	if d == nil || !discovered(verifiers) || !interestCopyRead(d, interestsRead) {
+func listenerHealth(ctx context.Context, d *listenerDeps, interestsRead *atomic.Bool) healthAnswer {
+	if d == nil || !interestCopyRead(d, interestsRead) {
 		return healthAnswer{http.StatusServiceUnavailable, listenerwire.Health{Status: listenerwire.HealthStarting}}
 	}
 	unhealthy := func(body listenerwire.Health) healthAnswer {
@@ -874,6 +876,20 @@ func carryReport(response *listenerwire.Health, dependency string, err error) {
 	}
 	response.Status = listenerwire.HealthDegraded
 	response.Error = reported
+}
+
+// writeHealth writes answer as one /healthz answer, with the fields issuers sets added
+// (issuerHealthFields; nil sets neither, which leaves both null). Those fields are reports beside
+// the answer and never decide its status, which the answer carries before they are set: a
+// listener whose issuer cannot be read serves everything else, so a probe that failed on it would
+// take that service away for an outage the listener serves through, as Dispatch's service_tokens
+// field does not.
+func writeHealth(w http.ResponseWriter, answer healthAnswer, issuers func(*listenerwire.Health)) {
+	if issuers != nil {
+		issuers(&answer.body)
+	}
+	w.WriteHeader(answer.code)
+	_ = json.NewEncoder(w).Encode(answer.body)
 }
 
 // dependencyUnavailable is the `error` field a /healthz answer gives for a dependency, so the
@@ -1661,6 +1677,14 @@ func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweep
 	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
 }
 
+// processStart is when this process started, as near as the program can read it: Go initialises
+// package variables before main runs. /metrics serves it as envoy_listener_start_time_seconds, and
+// the listener logs it beside its old-form counter (startLegacySubjectsLog), so a reader of two
+// readings of one counter can tell a counter a restart reset from one that did not move
+// (packages/envoy/scripts/legacy-subjects-gate.sh compares envoy_listener_legacy_subjects_total
+// across two readings 72 hours apart, and a listener outside a cluster has no pod to show it).
+var processStart = time.Now()
+
 func main() {
 	instance, err := listenerInstance()
 	if err != nil {
@@ -1698,19 +1722,35 @@ func main() {
 		log.Fatal(err)
 	}
 	// Dispatch's own principal is read beside the bearers it is proved by, so a value no
-	// credential this listener takes could prove refuses the start before any issuer is asked.
+	// credential this listener takes could prove refuses the start.
 	dispatchPrincipal, err := resolveListenerDispatchPrincipal(os.Getenv, oidcIssuer, oidcAccounts, googleAccounts)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Each issuer's discovery runs in the background until it succeeds (apiVerifier.discover): /v1
-	// answers 503 "service starting" and /healthz "starting" meanwhile, so an issuer that does not
-	// answer at start leaves the listener up and unready instead of ending it.
-	apiVerifier := newAPIVerifier(oidcIssuer, oidcAudience)
+	// Neither issuer is read here. Each verifier reads its issuer's discovery document in the
+	// background from now on (oidc.LazyVerifier.Run: at once, then again 5 to 30 s after each
+	// failure, logging a failure at most once a minute) and when a token needs it, the request
+	// waiting for it and then for the key set within identityBudget. So a listener started while
+	// the cluster's issuer or Google's cannot be read serves everything that does not need that
+	// issuer, the shared token,
+	// an open /v1, /healthz, /metrics and the webhooks, and answers a token of that issuer 503
+	// until it is read (refuseIdentityToken); /healthz's oidc and google fields and the
+	// envoy_listener_oidc_issuer_discovered gauge report which issuers it has read
+	// (issuer_health.go). A start that read them first exited when either read failed, and a
+	// listener of one replica restarted during either outage then served nobody. Each Run ends
+	// once its issuer is read; while it is not, it runs until the process ends, holding nothing
+	// a shutdown has to stop.
+	var apiVerifier *oidc.LazyVerifier
+	if oidcIssuer != "" {
+		apiVerifier = oidc.NewLazyVerifier(oidcIssuer, oidcAudience)
+		go apiVerifier.Run(context.Background())
+	}
 	// A Google identity token's issuer is Google itself, so only its audience is a setting.
 	var googleCallers *googleIdentities
 	if googleAudience != "" {
-		googleCallers = &googleIdentities{audience: googleAudience, verifier: newAPIVerifier(oidc.GoogleIssuer, googleAudience), accounts: googleAccounts}
+		googleVerifier := oidc.NewLazyVerifier(oidc.GoogleIssuer, googleAudience)
+		go googleVerifier.Run(context.Background())
+		googleCallers = &googleIdentities{audience: googleAudience, verifier: googleVerifier, accounts: googleAccounts}
 	}
 	// The broker-token settings are read here, beside the bearers' own, so a
 	// half-configured one refuses the start before anything is bound. Its verifier is built
@@ -1744,11 +1784,6 @@ func main() {
 		log.Fatal(err)
 	}
 	logger.Info(describeSenderLimit(senderMessageLimit))
-	for _, verifier := range apiAuthConfig.verifiers() {
-		if verifier != nil {
-			go verifier.discover(context.Background(), logger)
-		}
-	}
 
 	// Load webhook config (fast — env var reads only).
 	webhookCfg, err := webhook.LoadWebhookConfig()
@@ -1797,7 +1832,15 @@ func main() {
 	sessionsReaped := met.NewCounter("envoy_sessions_reaped_total", "Session records deleted at the gone horizon with no clean stop")
 	sessionStoredAfterLastSeen := met.NewCounter("envoy_session_messages_stored_after_last_seen_total", "Messages the stream held for a reaped session, stored after its last registration; not a count of unread messages, since the listener keeps no read receipt")
 	sendsToUnresponsive := met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
-	legacySubjects := met.NewCounter("envoy_listener_legacy_subjects_total", "Names a caller gave in their old form, without the project the rename put into them, by kind: an interest a registration named, a role a claim named")
+	legacySubjects := met.NewCounter(legacySubjectsMetric, "Names a caller gave in their old form, without the project the rename put into them, by kind: an interest a registration named, a role a claim named, a role a publish, the role lane or a holder lookup named (role_read)")
+	// The start-time gauge names this listener's machine (ENVOY_MACHINE_ID) in its one label, so a
+	// reader holds the page it read to the machine it meant to read: legacy-subjects-gate.sh takes
+	// an outside listener's machine from the operator's --listener <machine>=<url>, and a URL
+	// serving another listener would otherwise answer for it. Both are this pod's own: the counter
+	// counts the names this pod read, and the gauge is this process's start, so the active pod and
+	// each standby of one machine serve pages of their own under the same machine label.
+	startSample := []metrics.GaugeSample{{Labels: [][2]string{{"machine", cfg.MachineID}}, Value: processStart.Unix()}}
+	met.NewGaugeSetFunc(startTimeMetric, "When this listener process started, in Unix seconds, under its machine: every counter on this page counts from that moment", func() []metrics.GaugeSample { return startSample })
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic fan-outs skipped for a session past the live window; the message is stored for the session either way")
 	// The kept role lanes' outcomes, none labelled by role: a deployment sees unboundedly many
 	// role tokens, and each would be a series of its own for the process's life.
@@ -1821,7 +1864,9 @@ func main() {
 
 	// /healthz is always reachable, before NATS setup as well as after it, and answers 503
 	// "starting" until the listener is ready and its interest copy has completed its first read.
-	mux.HandleFunc("/healthz", healthzHandler(&deps, apiAuthConfig.verifiers()...))
+	// Every answer carries the identity token issuers' fields (issuerHealthFields), which never
+	// decide its status.
+	mux.HandleFunc("/healthz", healthzHandler(&deps, func(health *listenerwire.Health) { issuerHealthFields(apiAuthConfig, health) }))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness
@@ -1836,10 +1881,8 @@ func main() {
 	// The webhook and /v1 routes answer 503 "service starting" until their dependencies are open
 	// (the two /v1 list reads the refilling answer, startingGate), each behind its own gate: the
 	// webhooks once NATS and, for the GitHub route, the CI store are (Phase 5), /v1 once the
-	// interest and session caches are too (Phase 6) and, with an OIDC issuer or a Google audience
-	// configured, each issuer's discovery has succeeded (apiAuth answers that wait itself). Neither
-	// waits for the durable consumer, which only /healthz reads. The webhook paths reach their gate
-	// bare, /v1 through apiAuth.
+	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
+	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
 	hooks := webhookRoutes(webhookCfg)
 	for _, hook := range hooks {
@@ -1847,6 +1890,7 @@ func main() {
 	}
 	// Serve /v1/* on the listener port for local plugin registration.
 	apiAuthConfig.requests = newListenerRequests(met)
+	registerIssuerGauge(met, apiAuthConfig)
 	apiAuthConfig.route = v1Gate.route
 	v1Handler := apiAuth(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
@@ -2569,6 +2613,13 @@ func main() {
 	// It runs under the wake reports' own lifetime, which the shutdown ends (parts.stopWakes).
 	startListenerReadyReports(wakesCtx, client, logger, listenerReadyInterval)
 
+	// Phase 6b4: Log the old-form counter and the start-time gauge, now and every
+	// legacySubjectsLogInterval, for legacy-subjects-gate.sh's reader of a listener in a cluster,
+	// who may read this pod's log and not its /metrics (startLegacySubjectsLog). Every pod of the
+	// machine logs its own, the standby included, since each counts only the names it read. It
+	// runs under the wake reports' lifetime, which the shutdown ends (parts.stopWakes).
+	startLegacySubjectsLog(wakesCtx, logger, met, legacySubjectsLogInterval)
+
 	// Phase 6c: Keep transient JetStream timeouts observable without restarting
 	// the listener. Terminal watcher/consumer failures are rebuilt immediately;
 	// after three failed recovery intervals, SIGTERM enters the bounded shutdown
@@ -2653,8 +2704,9 @@ type listenerLoops struct {
 // listenerParts are the parts of a started listener that shut down: server is the /v1 HTTP server,
 // client the main bus connection, lane the role lane, delivery the session-consumer connection,
 // relays the relay of its consumers (nil when it does not run), caches the KV caches whose
-// watchers are retired last, and stopWakes ends the wake reports still retrying and the liveness
-// report (wakeReporter, startListenerReadyReports).
+// watchers are retired last, and stopWakes ends the wake reports still retrying, the liveness
+// report and the old-form counter's log line (wakeReporter, startListenerReadyReports,
+// startLegacySubjectsLog).
 type listenerParts struct {
 	server   *http.Server
 	client   *bus.Client

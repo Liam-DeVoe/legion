@@ -29,9 +29,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A listener whose ENVOY_OIDC_ACCOUNTS names no account — a list emptied by mistake — refuses to
@@ -125,28 +127,85 @@ func TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem(t *testing.
 	}
 }
 
-// A listener that takes Google identities whose issuer does not answer discovery at start stays
-// up and unready, as one whose cluster issuer does not
-// (TestAListenerWhoseOIDCIssuerFailsAtStartServesOnceItAnswers). Each failed read logs a WARN that
-// names Google's issuer and the wait before the next read. While the listener retries, /healthz
-// answers 503 "starting" and /v1 answers 503 "service starting", to the shared token and to a
-// listed account's Google identity token alike. Once the issuer answers, the next read of the
-// retry schedule discovers it: /healthz answers 200 and /v1 serves both credentials. The binary is
-// the production one, unchanged, so what runs is main's own wiring of Google's issuer, reaching a
-// stand-in the way it would reach Google (googleIssuerStandIn).
+// A fresh listener pod whose issuer answers discovery and its key set at once accepts Dispatch's
+// identity token from the moment it is ready: the real Dispatch client, holding only its projected
+// token, makes its first call the moment the real binary's /healthz first answers 200, and that
+// call is answered 200 on the identity token inside the client's own 5 s window, any
+// identity_unchecked 503 it meets along the way tried again as the client does (Client.do). The
+// row logs the time from that first 200 to the accepted call, which is what a Dispatch call
+// made at a new pod's readiness waits: the listener reads its issuer in the background from its
+// start (oidc.LazyVerifier.Run), and the key set at the first token.
+func TestAFreshListenerAcceptsDispatchsIdentityTokenAtReadinessInsideItsWindow(t *testing.T) {
+	issuer := oidctest.New(t)
+	key := issuer.PublishKey(t, "listener-readiness-key")
+	tokenFile := filepath.Join(t.TempDir(), "listener-account-token")
+	if err := os.WriteFile(tokenFile, []byte(issuer.Mint(t, key, issuer.Claims(listenerListedSubject, listenerTestAudience))+"\n"), 0o600); err != nil {
+		t.Fatalf("write the account token: %v", err)
+	}
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), testnats.URL(t), "identity-at-readiness",
+		"ENVOY_OIDC_ISSUER="+issuer.URL(), "ENVOY_OIDC_AUDIENCE="+listenerTestAudience)
+	base := "http://127.0.0.1:" + strconv.Itoa(listener.port)
+
+	var ready time.Time
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		response, err := http.Get(base + "/healthz")
+		if err == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				ready = time.Now()
+				break
+			}
+		}
+		select {
+		case <-listener.Exited:
+			t.Fatalf("the listener exited before it was ready:\n%s", listener.Output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener's /healthz never answered 200 within 60s:\n%s", listener.Output.String())
+		}
+	}
+	client := dispatchenvoy.New(base, dispatchenvoy.WithAccountTokenFile(tokenFile))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := client.ListInterests(ctx)
+	took := time.Since(ready)
+	t.Logf("the first identity call at readiness was accepted %s after /healthz first answered 200", took.Round(time.Millisecond))
+	if err != nil {
+		t.Fatalf("Dispatch's first call at readiness = %v after %s, want it answered 200 on its identity token\n%s", err, took, listener.Output.String())
+	}
+	if window := 5 * time.Second; took >= window {
+		t.Fatalf("Dispatch's first call at readiness took %s, want it inside the client's window of %s", took, window)
+	}
+	_, metrics := do(t, mustRequest(t, http.MethodGet, base+"/metrics"))
+	if !strings.Contains(metrics, `envoy_listener_requests_total{credential="oidc",`) {
+		t.Fatalf("/metrics counts no admission on the identity token:\n%s", metrics)
+	}
+}
+
+// A listener that takes Google identities whose issuer does not answer discovery at start comes up
+// ready and serves while it tries again, as one whose cluster issuer does not
+// (TestAListenerWhoseOIDCIssuerFailsAtStartServesOnceItAnswers). It logs a failed discovery that
+// names Google's issuer and carries the stand-in's refusal. While the issuer does not answer,
+// /healthz answers 200 with "google" false and "oidc" null, /v1 serves the shared token, and a
+// listed account's Google identity token is answered 503 with Retry-After: 1, never 401. Once the
+// issuer answers, a read discovers it with no restart: the Google identity token is admitted,
+// "google" reads true, and the success is logged once. The binary is the production one,
+// unchanged, so what runs is main's own wiring of Google's issuer, reaching a stand-in the way it
+// would reach Google (googleIssuerStandIn).
 func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T) {
 	google := startGoogleIssuerStandIn(t)
 	googleToken := google.token(t, listenerGoogleAccount)
+	started := time.Now()
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), testnats.URL(t), "google-issuer-start",
 		append(google.env(), "ENVOY_OIDC_GOOGLE_AUDIENCE="+listenerGoogleAudience, "ENVOY_OIDC_GOOGLE_ACCOUNTS="+listenerGoogleAccount)...)
-	// failedRead is the WARN of a discovery read of Google's issuer that reached the stand-in and
-	// that the stand-in failed. It names the wait before the next read.
-	failedRead := func(record map[string]any) bool {
-		wait, _ := record["retry_in"].(string)
-		reason, _ := record["error"].(string)
-		return record["issuer"] == oidc.GoogleIssuer && wait != "" && strings.Contains(reason, googleStandInUnavailable)
+	// failedReads counts the lines of a discovery read of Google's issuer that reached the stand-in
+	// and that the stand-in failed: each names the issuer and carries the stand-in's body. The
+	// listener logs one at most once a minute, however often it reads (oidc.LazyVerifier.Run).
+	failedReads := func() int {
+		return countLines(listener.Output.String(), discoveryFailedLine, "issuer="+oidc.GoogleIssuer, googleStandInUnavailable)
 	}
-	for deadline := time.Now().Add(30 * time.Second); countRecords(listener, "listener API oidc discovery failed; retrying", failedRead) == 0; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(30 * time.Second); failedReads() == 0; time.Sleep(20 * time.Millisecond) {
 		select {
 		case <-listener.Exited:
 			// Exited closes only once the output is whole, so this read is final.
@@ -156,75 +215,61 @@ func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T)
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the listener logged no failed discovery of %s with a retry_in and the stand-in's 503 within 30s; the stand-in failed %d discovery reads and the proxy was asked for %v:\n%s",
+			t.Fatalf("the listener logged no failed discovery of %s carrying the stand-in's 503 within 30s; the stand-in failed %d discovery reads and the proxy was asked for %v:\n%s",
 				oidc.GoogleIssuer, google.failedReads(), google.connects(), listener.Output.String())
 		}
 	}
-	listener.WaitForOutput(t, "envoy-listener ready (NATS connected)")
+	listener.waitHealthy(t)
 
-	v1 := func(bearer string) (int, string) {
+	base := "http://127.0.0.1:" + strconv.Itoa(listener.port)
+	call := func(bearer string) *http.Response {
 		t.Helper()
-		request := mustRequest(t, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(listener.port)+"/v1/sessions")
+		request := mustRequest(t, http.MethodGet, base+"/v1/sessions")
 		request.Header.Set("Authorization", "Bearer "+bearer)
-		return do(t, request)
-	}
-	bearers := []struct{ name, token string }{
-		{"the shared token", listenerTestToken},
-		{"a listed account's Google identity token", googleToken},
-	}
-	if status, body := callListener(t, listener.port, http.MethodGet, "/healthz", ""); status != http.StatusServiceUnavailable || !strings.Contains(body, `"status":"starting"`) {
-		t.Fatalf("/healthz while Google's discovery fails = %d %s, want 503 starting", status, body)
-	}
-	for _, bearer := range bearers {
-		if status, body := v1(bearer.token); status != http.StatusServiceUnavailable || !strings.Contains(body, "service starting") {
-			t.Fatalf("/v1 with %s while Google's discovery fails = %d %s, want 503 service starting", bearer.name, status, body)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("GET /v1/sessions: %v", err)
 		}
+		_ = response.Body.Close()
+		return response
+	}
+	wantGoogleHealth := func(read bool) {
+		t.Helper()
+		status, body := callListener(t, listener.port, http.MethodGet, "/healthz", "")
+		var health listenerwire.Health
+		if err := json.Unmarshal([]byte(body), &health); err != nil || status != http.StatusOK || health.Google == nil || *health.Google != read || !strings.Contains(body, `"oidc":null`) {
+			t.Fatalf("/healthz = %d %s (%v), want 200 with google %t and oidc null", status, body, err, read)
+		}
+	}
+
+	wantGoogleHealth(false)
+	if response := call(listenerTestToken); response.StatusCode != http.StatusOK {
+		t.Fatalf("/v1 with the shared token while Google's discovery fails = %d, want 200:\n%s", response.StatusCode, listener.Output.String())
+	}
+	if response := call(googleToken); response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" {
+		t.Fatalf("/v1 with a listed account's Google identity token while Google's discovery fails = %d (Retry-After %q), want 503 with Retry-After: 1:\n%s",
+			response.StatusCode, response.Header.Get("Retry-After"), listener.Output.String())
+	}
+
+	// Once the stand-in answers, the next read discovers Google's issuer: a token that finds no
+	// read failed in the last few seconds starts one, and the background reads go on meanwhile.
+	failed := google.answer()
+	waitFor(t, 45*time.Second, "a listed account's Google identity token to be admitted once Google's issuer answers", func() bool {
+		return call(googleToken).StatusCode == http.StatusOK
+	})
+	wantGoogleHealth(true)
+	output := listener.Output.String()
+	if succeeded := countLines(output, "oidc: discovered the issuer", "issuer="+oidc.GoogleIssuer); succeeded != 1 {
+		t.Fatalf("the listener logged %d successful discoveries of %s, want 1:\n%s", succeeded, oidc.GoogleIssuer, output)
+	}
+	if most := 1 + int(time.Since(started)/time.Minute); failedReads() > most {
+		t.Fatalf("the listener logged %d failed discoveries of %s for the %d reads the stand-in failed in %s, want at most %d, one a minute:\n%s",
+			failedReads(), oidc.GoogleIssuer, failed, time.Since(started).Round(time.Second), most, output)
 	}
 	select {
 	case <-listener.Exited:
-		t.Fatalf("the listener exited while Google's discovery failed:\n%s", listener.Output.String())
+		t.Fatalf("the listener exited while it waited for Google's issuer:\n%s", listener.Output.String())
 	default:
-	}
-
-	// The stand-in failed `failed` reads before answer, the last of them before this call, and that
-	// read logged the wait before the next one: oidcDiscoveryFirstRetry after the first failure,
-	// doubled after each later one up to oidcDiscoveryMaxRetry (apiVerifier.discover). So the next
-	// read, which the stand-in answers, starts within that wait of this call. readSlack is for that
-	// read and for the /healthz poll after it: a loopback CONNECT, a TLS handshake and one small
-	// document take milliseconds on an idle machine, and this bound gives them seconds on a loaded
-	// one.
-	const readSlack = 10 * time.Second
-	failed := google.answer()
-	wait := oidcDiscoveryFirstRetry
-	for range failed - 1 {
-		wait = nextDiscoveryRetry(wait)
-	}
-	bound := wait + readSlack
-	for deadline := time.Now().Add(bound); ; time.Sleep(100 * time.Millisecond) {
-		status, body := callListener(t, listener.port, http.MethodGet, "/healthz", "")
-		if status == http.StatusOK {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("/healthz %s after the issuer answered = %d %s, want 200: the stand-in failed %d discovery reads, so the next read was due within %s:\n%s",
-				bound, status, body, failed, wait, listener.Output.String())
-		}
-	}
-	listener.WaitForOutput(t, "listener API oidc discovery succeeded")
-	if succeeded := countRecords(listener, "listener API oidc discovery succeeded", func(record map[string]any) bool {
-		return record["issuer"] == oidc.GoogleIssuer
-	}); succeeded != 1 {
-		t.Fatalf("the listener logged %d successful discoveries of %s, want 1:\n%s", succeeded, oidc.GoogleIssuer, listener.Output.String())
-	}
-	if warned := countRecords(listener, "listener API oidc discovery failed; retrying", failedRead); warned != failed {
-		t.Fatalf("the listener logged %d failed discoveries of %s, want one for each of the %d reads the stand-in failed:\n%s",
-			warned, oidc.GoogleIssuer, failed, listener.Output.String())
-	}
-	listener.waitHealthy(t)
-	for _, bearer := range bearers {
-		if status, body := v1(bearer.token); status != http.StatusOK {
-			t.Fatalf("/v1 with %s once the issuer answers = %d %s, want 200:\n%s", bearer.name, status, body, listener.Output.String())
-		}
 	}
 }
 

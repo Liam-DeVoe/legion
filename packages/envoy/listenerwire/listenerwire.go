@@ -60,9 +60,10 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
-// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
-// request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling, a send's or publish's 503 that may have
+// stored the message, CodeMaybeStored, and the 503 of an identity token the listener could not
+// check, CodeIdentityUnchecked); every other answer leaves it out. Expected names the request
+// fields the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
@@ -70,9 +71,8 @@ type APIError struct {
 }
 
 // ServiceStarting is the error of the 503 APIError a listener pod answers while it starts: every
-// /v1 and webhook route until the pod serves them, every /v1 route while an identity-token
-// verifier's discovery has not succeeded, and a broker access token's check until the pod can
-// introspect one. A caller sends the request again; a client classes it by its status alone.
+// /v1 and webhook route until the pod serves them, and a broker access token's check until the pod
+// can introspect one. A caller sends the request again; a client classes it by its status alone.
 const ServiceStarting = "service starting"
 
 // SenderRateLimited is the 429 a send or a publish gets when the sending session's count on the
@@ -95,6 +95,14 @@ type SenderRateLimited struct {
 // have landed, and a repeat under the same idempotency key is recognised - and not as a send that
 // stored nothing. Every other 503 of those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeIdentityUnchecked is the code of the 503 a /v1 request gets when the listener could not check
+// its identity token: it has not read the token's issuer's discovery document or key set within the
+// check's budget, from its start while that issuer cannot be read or during a key rotation. The
+// answer carries Retry-After: 1, and it is given before any route runs, so the request did nothing
+// and the same request made again after that wait is no repeat; it is answered once the listener
+// has read the issuer.
+const CodeIdentityUnchecked = "identity_unchecked"
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
@@ -257,6 +265,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its
@@ -689,8 +702,9 @@ const (
 )
 
 // Health is the body of every GET /healthz answer, the readiness answer of each listener pod of a
-// machine id. A 503 starting answer carries Status alone, and an answer about one failed
-// dependency Status and Error alone; every other answer carries the pod's Role and the fields
+// machine id. Every answer carries Google and OIDC, which report and never decide its status. A
+// 503 starting answer carries Status beside them alone, and an answer about one failed dependency
+// Status and Error beside them alone; every other answer carries the pod's Role and the fields
 // below that apply to it. The fields are declared in the alphabetical order of their JSON names,
 // which is the order encoding/json wrote the keys of the map this answer was before it was a
 // struct, so the answer's bytes did not change; a new field keeps that order. A group of fields
@@ -706,11 +720,18 @@ type Health struct {
 	// Error names what made the answer degraded or unhealthy, each report a degraded answer
 	// carries after the one before it.
 	Error string `json:"error,omitempty"`
+	// Google is whether the listener has read the discovery document of Google's issuer, which its
+	// Google identity tokens are checked against: false until it has, when it answers each of them
+	// 503, true after, and null on a listener that takes no Google identity token.
+	Google *bool `json:"google"`
 	// Lease says that the listener's NATS user may not use the listener state bucket, so it
 	// delivers without a lease.
 	Lease string `json:"lease,omitempty"`
 	// DurableLag is the active pod's durable consumer lag, when its read answered.
 	*DurableLag
+	// OIDC is the same for the issuer of the ENVOY_OIDC_ISSUER pair, which the listener's projected
+	// service-account tokens are checked against: null on a listener that takes none.
+	OIDC *bool `json:"oidc"`
 	// Receive is what a pod that holds the lease and does not receive yet waits for.
 	Receive string `json:"receive,omitempty"`
 	// ReceiveFailingMS is how long a pod that holds the lease, or runs without one, has failed to

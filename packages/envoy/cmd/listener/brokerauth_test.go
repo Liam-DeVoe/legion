@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -669,7 +670,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker.Says(token, sessionAnswer("ses_elsewhere", "ada@example.com", caller.JKT()))
 
 	issuer := oidctest.New(t)
-	verifier := discoveredAPIVerifier(t, issuer)
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	bound := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -680,7 +681,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		shared     string
-		verifier   *apiVerifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 	}{
 		{
