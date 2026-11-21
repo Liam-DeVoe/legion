@@ -145,23 +145,34 @@ func baseStates(t *testing.T, base fs.FS) map[string]string {
 	return whole
 }
 
-// sweepCount is what a sweep read: the inputs that it built, and of those that sweepAgainst
-// derived, how many the reader or the derivation refused, how many read as the base, how many read
-// another state, and how many of those moved a state toward true by a right that the sweep gives,
-// with what each of them changed. The floors (atFloor) count the inputs derived, not those built,
-// so that a sweep that skips an input that it built fails by name.
+// sweepCount is what a sweep read: the inputs that it built, and of those that sweepAgainst judged,
+// comparing each one's states with what the sweep wants of them, how many the reader or the
+// derivation refused, how many read as the base, how many read another state with no state moved
+// toward true or with a state moved by the input's right, how many of those moved a state toward
+// true by a right, with what each of them changed, and the kind of each input judged, in the order
+// of the inputs: 'r' read, 'x' refused (kinds). An input that fails the comparison fails the test
+// and is counted nowhere. So the floors (atFloor), which count the inputs judged and the digest of
+// their kinds, fail by name where the sweep skips an input that it built and where it stops judging
+// an input that moves a state toward true.
 type sweepCount struct {
 	inputs, refused, same, moved, byRight int
 	rights                                []string
+	kinds                                 []byte
 }
 
 // sweepAgainst derives each input and compares its states with those of base: an input that moves a
 // state toward true fails the test, unless the input has a right to it. A right with allowed covers
-// only the places where the input reads the state that allowed holds there. An input whose files
-// are base's (sameFiles) fails the test too: its writer wrote nothing, and it would read as base and
-// pass. So does an input whose files are those of an earlier input of the list, byte for byte
-// (inputKey): the sweep would read one case twice and the case that it means not at all, as when a
-// writer or a table turned one input into another.
+// only the places where the input reads the state that allowed holds there. Two rights name no
+// place, so an input that has one is judged by its right alone: a repository path of a tree written
+// " " (pathOfOneSpace), whose tree then changed at a path that a tie covers, so the carry of each
+// result across that commit ends, at each subject after it; and a parent left out of an approved
+// block (parentLeftOut), whose statement then sits at the top of the tree, so the statement above
+// it loses it, which can leave that one and each above it met. The places that such an input may
+// move are those that the derivation itself reaches from its change, so a list of them would be a
+// second derivation. An input whose files are base's (sameFiles) fails the test too: its writer
+// wrote nothing, and it would read as base and pass. So does an input whose files are those of an
+// earlier input of the list, byte for byte (inputKey): the sweep would read one case twice and the
+// case that it means not at all, as when a writer or a table turned one input into another.
 func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
 	whole := baseStates(t, base)
@@ -182,10 +193,11 @@ func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCou
 		switch {
 		case err != nil:
 			n.refused++
+			n.kinds = append(n.kinds, 'x')
 		case maps.Equal(got, whole):
 			n.same++
+			n.kinds = append(n.kinds, 'r')
 		default:
-			n.moved++
 			toward := towardTrue(whole, got)
 			if in.right != "" && in.allowed != nil {
 				beyond := maps.Clone(got)
@@ -197,9 +209,13 @@ func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCou
 			}
 			switch {
 			case len(toward) == 0:
+				n.moved++
+				n.kinds = append(n.kinds, 'r')
 			case in.right != "":
+				n.moved++
 				n.byRight++
 				n.rights = append(n.rights, in.what)
+				n.kinds = append(n.kinds, 'r')
 			default:
 				t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
 			}
