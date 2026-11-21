@@ -73,6 +73,11 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	type varzTwin = struct {
 		ServerName string `json:"server_name"`
 	}
+	type embedderTwin = struct {
+		Identity string `json:"identity"`
+		Place    string `json:"place"`
+		Model    string `json:"model"`
+	}
 	for _, h := range []redacttest.Holder{
 		{
 			Name:     "loadtest.seedError",
@@ -98,6 +103,17 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			}{code},
 			Same:     varzTwin{redacttest.Code},
 			Exported: varzTwin{redacttest.Code},
+		},
+		{
+			Name: "loadtest.dispatchCoverage.readCoverage.embedder",
+			Kind: "fields",
+			Boxed: struct {
+				Identity redact.RemoteText `json:"identity"`
+				Place    redact.RemoteText `json:"place"`
+				Model    redact.RemoteText `json:"model"`
+			}{code, code, code},
+			Same:     embedderTwin{redacttest.Code, redacttest.Code, redacttest.Code},
+			Exported: embedderTwin{redacttest.Code, redacttest.Code, redacttest.Code},
 		},
 		{
 			Name:     "loadtest.reqRec",

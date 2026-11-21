@@ -317,6 +317,10 @@
         "test": "print-loadtest.checkNATSServerName.varz"
       },
       {
+        "holder": "(github.com/sjawhar/envoy/loadtest.dispatchCoverage).readCoverage struct{Identity redact.RemoteText \"json:\\\"identity\\\"\"; Place redact.RemoteText \"json:\\\"place\\\"\"; Model redact.RemoteText \"json:\\\"model\\\"\"}",
+        "test": "print-loadtest.dispatchCoverage.readCoverage.embedder"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLError",
         "test": "print-cireconcile.graphQLError"
       },
@@ -5827,6 +5831,20 @@
       "production": "loadtest heapLive: a heap profile without inuse_space or inuse_objects is refused naming none of its sample types"
     },
     {
+      "id": "loadtest-answer-members-embed-record",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheEmbeddingGatesRecordNamesTheEmbedderAsTheRuleReadsIt",
+      "production": "loadtest dispatchCoverage.readCoverage: the embedder's identity, place and model held as redact.RemoteText with the read's record, so the gate's record (coverageRecord) names them as the rule reads them"
+    },
+    {
+      "id": "print-loadtest.dispatchCoverage.readCoverage.embedder",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.dispatchCoverage.readCoverage.embedder",
+      "production": "(github.com/sjawhar/envoy/loadtest.dispatchCoverage).readCoverage struct{Identity redact.RemoteText \"json:\\\"identity\\\"\"; Place redact.RemoteText \"json:\\\"place\\\"\"; Model redact.RemoteText \"json:\\\"model\\\"\"}: every printer at every placement"
+    },
+    {
       "id": "cireconcile-answer-words-errors",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cireconcile",
@@ -8529,6 +8547,11 @@
       "site": "loadtest heapLive: the profile's own sample type names printed raw by valueIndex's refusal",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-heap-sample-types"
+    },
+    {
+      "site": "loadtest seed-finish: the coverage report's embedder identity, place and model, decoded into plain strings and written raw to the -embed-progress record",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-embed-record"
     },
     {
       "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",
