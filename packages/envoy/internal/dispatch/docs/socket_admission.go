@@ -286,6 +286,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := actor
 	reader.Viewer = &viewer
+	// The room's read follows the session content rule for a session's file, which reads the
+	// listener's lists only while their stored answer is fresh (refreshRosterForReader).
+	s.refreshRosterForReader(r.Context(), reader)
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room, reader)
 	if err != nil {
 		refuseHiddenRoom(w)

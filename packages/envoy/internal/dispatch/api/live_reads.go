@@ -111,8 +111,10 @@ func (s *server) sessionContentHiddenFrom(ctx context.Context, reader model.Acto
 // fetched once when it has gone stale), since the rule reads a listener list only from a stored
 // answer that has not passed its expires_at, and judges a session of an expired answer by its ties
 // alone. A refresh that fails leaves the stored answer as it was, expired, so the rule judges by
-// the ties: it fails closed. The live agent view's asks and the document sockets' asks before each
-// batch read through it.
+// the ties: it fails closed. Every resolution of a reader that does not see every object runs it
+// (readerFor), so each request, and each re-check of a live socket's reader, refreshes the answer
+// before it reads; the live agent view's asks and the document service's reads of its rooms
+// (docs.Service.SetRosterRefresh) run it too.
 func (s *server) refreshRosterForContent(ctx context.Context) {
 	if _, err := s.readRouteRoster(ctx); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: refresh the listener's sessions before the session content rule reads them; the rule reads an expired answer as no list", "error", err)
