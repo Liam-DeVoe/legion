@@ -584,8 +584,9 @@ credential), `none_broker_token` (that listener, taking no broker token, admitti
 presents one, unverified), `oidc`, `google` or `broker` — and by `path`, the route that served it.
 A request admitted on the shared token, with no credential or on an unverified broker token also
 logs a warning, at most once a minute each, naming the route and the caller's address, so callers
-that still use one of them can be found and moved to a credential the listener verifies. Every listener pod of a machine counts and warns of what it admits itself, the standby as the
-active one, so a census reads every pod's `/metrics`.
+that still use one of them can be found and moved to a credential the listener verifies. Every
+listener pod of a machine counts and warns of what it admits itself, the standby as the active
+one, so a census reads every pod's `/metrics`.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the

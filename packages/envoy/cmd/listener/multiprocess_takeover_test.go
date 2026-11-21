@@ -1265,6 +1265,17 @@ func mpReceiving(t *testing.T, pod *mpPod, within time.Duration) time.Time {
 // (sessionRelays.settleStoppedFrames).
 const mpDecisionGrace = 100 * time.Millisecond
 
+// mpReceiveHoldBound bounds how long a row may hold a pod's receive connection (mpLaneRelay.cut,
+// which stops its bytes both ways and leaves its sockets open) and have the pod take the hold for
+// a slow link. That connection pings its server every second and reads itself lost at the ping
+// that would put a third unanswered one out (bus.WithSilentCutDetection, listenerStreamOptions):
+// two seconds at the soonest after the first ping the hold leaves unanswered, which the pod sent
+// at most a round trip through the relay before the hold began. A receive connection read lost
+// reconnects, and is lost receive for the pod's lease (leaseReceiveLost), neither of which a row
+// that only holds the connection is about. The 100 ms under those two seconds is for that round
+// trip and for the answer after the heal.
+const mpReceiveHoldBound = 1900 * time.Millisecond
+
 // The rule a pod that delivered without a lease stops forwarding by once its join reads another
 // pod's record (durableReceiver.joinTerm): from that decision on, nothing it takes is forwarded or
 // acked. One frame to each session is in the first pod's hands across the decision - the session
@@ -1278,10 +1289,13 @@ const mpDecisionGrace = 100 * time.Millisecond
 // reaches its session exactly once, and none more than twice: the grace is the relays' stop
 // behind the decision's line, 1.03 ms at most across 10 runs, and a margin for the publisher's
 // stamp (mpDecisionGrace). A message published inside it may be one the first pod took before its
-// relays stopped, which comes twice as the repeat above does.
+// relays stopped, which comes twice as the repeat above does. The holder's restart deletes each
+// consumer and creates it again, which must come after the consumer's state is stored
+// (awaitSessionConsumerStored), so the row holds the holder's receive connection until it is: the
+// holder cannot read the first pod's binding gone, and restart, before.
 func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *testing.T) {
 	row := mpStartLateGrantRow(t, "late_fence", mpStartPod)
-	b := mpStartLateGrantHolder(t, row)
+	b := mpStartLateGrantHolderWith(t, row, mpStartPodBehindLanes)
 	var held []<-chan struct{}
 	for _, sessionID := range row.sessions {
 		held = append(held, row.serving.withhold(sessionID))
@@ -1295,9 +1309,23 @@ func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *
 	}
 	granted := row.grant.grant(t)
 	joined := mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
-	// pod-b's restart at the ack floor once pod-a's subscription goes recreates these consumers.
-	// That subscription goes relayFormerSettle after the decision (joinTerm), past the settle of
-	// pod-a's relays, each of which logs its hand-over as its last act on its consumer (relayNATS).
+	// pod-b's restart at the ack floor deletes these consumers and creates them again, so each must
+	// be stored before it (awaitSessionConsumerStored), once pod-a's relay of it has handed its
+	// frames back, its last act on the consumer (relayNATS). The cut of pod-b's receive connection
+	// holds the restart until then. pod-b restarts the consumers as it subscribes
+	// (durableReceiver.begin), after the poll of the durable that reads its binding gone
+	// (awaitUnbound), and that poll is answered on this connection; the cut holds its bytes both
+	// ways, sockets open, until the heal below, while pod-b's lease renews on a connection of its
+	// own. The binding goes with pod-a's subscription, relayFormerSettle after the decision
+	// (joinTerm) and past the settle of pod-a's relays, so a cut made before then holds every
+	// answer that reads it gone.
+	heal := b.lanes.cut(mpReceiveConnection(b.instance))
+	cut := time.Now()
+	t.Cleanup(heal)
+	if late := cut.Sub(joined); late >= relayFormerSettle {
+		t.Fatalf("pod-b's receive connection was cut %s after pod-a's decision, not within relayFormerSettle (%s), when pod-a's subscription may have gone: pod-b may have read the binding gone before the consumers were stored",
+			late.Round(time.Millisecond), relayFormerSettle)
+	}
 	whole, failed := relayHandOverLines(relayCancelTermEnded)
 	for _, sessionID := range row.sessions {
 		mpEventually(t, 10*time.Second, row.a.instance+"'s relay of "+sessionID+" to hand its frames back", func() bool {
@@ -1310,6 +1338,11 @@ func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *
 			return false
 		})
 		awaitSessionConsumerStored(t, row.publisher.client.Conn, sessionID)
+	}
+	heal()
+	if hold := time.Since(cut); hold >= mpReceiveHoldBound {
+		t.Fatalf("pod-b's receive connection was held %s, not within mpReceiveHoldBound (%s): pod-b may have read it lost, reconnected and lost receive for its lease",
+			hold.Round(time.Millisecond), mpReceiveHoldBound)
 	}
 	mpReceiving(t, b, 30*time.Second)
 	mpWaitActive(t, b, 10*time.Second)

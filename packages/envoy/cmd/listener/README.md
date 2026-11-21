@@ -17,8 +17,8 @@ Every pod of a machine id, active or standby:
 
 - serves `/v1`, `/healthz`, `/metrics` and the webhook routes;
 
-- authenticates `/v1` by the same settings and counts what it admits in its own `envoy_listener_requests_total` (`apiauth.go`), warning once a minute of its own shared-token and credential-less admissions;
-  a census of the shared token or the open `/v1` therefore reads every pod's `/metrics`, never one pod's;
+- authenticates `/v1` by the same settings and counts what it admits in its own `envoy_listener_requests_total` (`apiauth.go`), warning once a minute of its own shared-token, credential-less and unverified broker-token admissions;
+  a census of the shared token, the open `/v1` or an unverified broker token therefore reads every pod's `/metrics`, never one pod's;
 
 - is a member of the role lane's core-NATS queue group `envoy-listener-<machine id>`;
   NATS hands each message of a queue group to one member, so no role message is delivered by two pods;
