@@ -8668,13 +8668,24 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	last := ids[len(ids)-1]
 	url := databaseURLOf(t, database)
 
-	first := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	// The first process's connections carry a name of their own, which the wait after its kill
+	// reads: pools with no name of their own, the lease pool the fill writes through among them,
+	// take it from the URL (store.Pool's openSeparateLocked copies the shared pool's config).
+	first := startDispatchProcessWith(t, url+"&application_name="+killedKeywordFillProcess,
+		dispatchOptions{SigningKey: multiprocessSigningKey})
 	firstHolder := keywordFillHolder(t, first, time.Minute)
 	// Four batches of 500 events, out of forty.
 	waitUntil(t, 2*time.Minute, "the first process to write four batches", func() bool {
 		return textversionstest.Cursor(t, database) >= ids[1999]
 	})
+	if named := sessionsNamed(t, database, killedKeywordFillProcess); len(named) == 0 {
+		t.Fatalf("no session of the first process is named %s, so the wait after its kill would read nothing", killedKeywordFillProcess)
+	}
 	first.kill(t)
+	// A batch the process sent before it died can still commit after the kill: its statements and
+	// its COMMIT may already sit with its backend, which runs them before it reads the closed
+	// socket. So the cursor the process left is read once every backend of its has ended.
+	waitForSessionsToEnd(t, database, killedKeywordFillProcess, killedSessionsEndWithin)
 	left := textversionstest.Cursor(t, database)
 	if left >= last {
 		t.Fatalf("the first process was killed at cursor %d, past the last event %d: it had caught up already", left, last)
@@ -8704,6 +8715,52 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 			left, kept, got)
 	}
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
+}
+
+// killedKeywordFillProcess is the application_name of the connections of the process
+// TestTheKeywordFillContinuesFromItsCursorInANewProcess kills, and killedSessionsEndWithin bounds
+// the wait for those sessions to end after the kill.
+const (
+	killedKeywordFillProcess = "keyword-fill-killed"
+	killedSessionsEndWithin  = time.Minute
+)
+
+// sessionsNamed reads the sessions of this test's database whose application_name is name, each
+// as its pid, state, wait event, transaction start and query, for a failure to print.
+func sessionsNamed(t *testing.T, database *store.Store, name string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select format('pid %s %s, wait %s, transaction since %s: %s', pid, coalesce(state, ''),
+		       coalesce(wait_event_type || '/' || wait_event, 'none'), coalesce(xact_start::text, 'none'),
+		       left(query, 200))
+		from pg_stat_activity where datname = current_database() and application_name = $1 order by pid
+	`, name)
+	if err != nil {
+		t.Fatalf("read the sessions named %s: %v", name, err)
+	}
+	sessions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the sessions named %s: %v", name, err)
+	}
+	return sessions
+}
+
+// waitForSessionsToEnd waits up to within for every session of this test's database named name to
+// end, and fails naming each one still there when it does not, so a stuck backend says what holds
+// it rather than holding the package to its timeout.
+func waitForSessionsToEnd(t *testing.T, database *store.Store, name string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		left := sessionsNamed(t, database, name)
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s after the kill, %d session(s) named %s remain:\n%s", within, len(left), name, strings.Join(left, "\n"))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // A holder frozen with its connections open - a long garbage collection pause, a host that stops
