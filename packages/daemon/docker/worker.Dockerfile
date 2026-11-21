@@ -411,8 +411,11 @@ COPY .omp-pin /omp-pin
 # `gh@<version>` (ARG GH_TOOL), each release's tag is `v` and that version, as the notices stage
 # reads them too, and a pin of another shape fails here rather than fetch an address it does not
 # name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
-# it: bin/omp. The three digests are declared here, after the layers above, so a bump of one
-# rebuilds this layer alone.
+# it: bin/omp. Each fetch refuses by the tool's name and the address it read: a digest ARG that is
+# no 64-hex sha256, a download curl did not complete (a 404, a truncated body), or an archive
+# whose sha256 is not the pinned one, so the log says which of the three failed and why, though
+# BuildKit marks every line of this RUN. The three digests are declared here, after the layers
+# above, so a bump of one rebuilds this layer alone.
 ARG OMP_SHA256
 ARG JJ_SHA256
 ARG GH_SHA256
@@ -425,16 +428,19 @@ RUN set -eu; \
     omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; omp_tag="v${omp_pin##*@}"; \
     jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
     gh_version="${GH_TOOL#gh@}"; \
+    fetch() { \
+      tool=$1; arg=$2; want=$3; url=$4; file=$5; \
+      printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
+      curl -fsSLo "$file" "$url" || { echo "tools: $tool: the archive did not download from $url (curl exit $?)" >&2; exit 1; }; \
+      got=$(sha256sum "$file"); got=${got%% *}; \
+      [ "$got" = "$want" ] || { echo "tools: $tool: the archive from $url has sha256 $got, and ARG $arg pins $want" >&2; exit 1; }; \
+      echo "tools: $tool: $url, sha256 $got"; \
+    }; \
     asset() { printf 'https://github.com/%s/releases/download/%s/%s' "$1" "$2" "$3"; }; \
     t=/tmp/tools; mkdir -p "$t" /opt/omp /opt/tools; \
-    curl -fsSLo "$t/omp.tar.gz" "$(asset "$omp_repo" "$omp_tag" "omp-${omp_tag}-linux-x64.tar.gz")"; \
-    curl -fsSLo "$t/jj.tar.gz" "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")"; \
-    curl -fsSLo "$t/gh.tar.gz" "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")"; \
-    printf '%s  %s\n' \
-      "$OMP_SHA256" "$t/omp.tar.gz" \
-      "$JJ_SHA256" "$t/jj.tar.gz" \
-      "$GH_SHA256" "$t/gh.tar.gz" > "$t/SHA256SUMS"; \
-    sha256sum --check --strict "$t/SHA256SUMS"; \
+    fetch omp OMP_SHA256 "$OMP_SHA256" "$(asset "$omp_repo" "$omp_tag" "omp-${omp_tag}-linux-x64.tar.gz")" "$t/omp.tar.gz"; \
+    fetch jj JJ_SHA256 "$JJ_SHA256" "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")" "$t/jj.tar.gz"; \
+    fetch gh GH_SHA256 "$GH_SHA256" "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")" "$t/gh.tar.gz"; \
     tar -xzf "$t/omp.tar.gz" -C /opt/omp --strip-components=1 --no-same-owner; \
     tar -xzf "$t/jj.tar.gz" -C "$t" --no-same-owner ./jj; \
     tar -xzf "$t/gh.tar.gz" -C "$t" --no-same-owner "gh_${gh_version}_linux_amd64/bin/gh"; \
