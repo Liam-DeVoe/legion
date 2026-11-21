@@ -717,6 +717,27 @@ func TestLegionVerdictAMergeStateReadWaitsOnItsWriteForOneBoundAtMost(t *testing
 	}
 }
 
+// A write asked for on a repository no verdict entry names, under the name a record keeps or the
+// one GitHub serves it under now, is queued for nothing: it would write nothing, and the issue's
+// merge-state reads would wait on it. One the entries name under its serving name is queued.
+func TestLegionVerdictQueuesNoWriteOnARepositoryItsEntriesDoNotName(t *testing.T) {
+	served := newRepositories("CAPTURE", transferredCapture)
+	served.set([]mappedRepository{{Repo: ghrepo.MustParse("cybermonklabs/widgets"), Default: true}}, nil)
+	writer := newVerdictWriter([]config.VerdictRepository{{Repository: ghrepo.MustParse("cybermonklabs/widgets")}})
+	w := &workflowRuntime{verdicts: writer, repositories: served, log: slog.New(slog.DiscardHandler)}
+	w.queueVerdictWrite("CAPTURE-1", "acme/gadgets", 86, "code")
+	if !writer.idle() {
+		t.Fatal("a write on acme/gadgets, which no entry names, is queued; want none")
+	}
+	if ended, err := writer.await(canceledContext(), "CAPTURE-1"); err != nil || !ended {
+		t.Fatalf("CAPTURE-1's read waits (%v, %v) on a write on a repository no entry names", ended, err)
+	}
+	w.queueVerdictWrite("CAPTURE-1", "acme/widgets", 86, "code")
+	if target, ok := writer.next(); !ok || target.repository.String() != "acme/widgets" || target.head != "code" {
+		t.Fatalf("the writer took %+v, %v; want the write on acme/widgets, which GitHub serves as the entry's cybermonklabs/widgets", target, ok)
+	}
+}
+
 // canceledContext is a context already ended.
 func canceledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())

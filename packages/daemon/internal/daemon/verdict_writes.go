@@ -225,8 +225,9 @@ func (v *verdictWriter) markForeign(repository string, number int, issue string)
 // write of legion-verdict on head of pull request number of repo for the writer (writeVerdicts),
 // with issue's merge-state reads held until it ends. It is called on a fact's commit, and before the
 // same commit asks for a read (workflow's askVerdictWrite), so the read waits for the write. A
-// repository name that does not parse is logged and asks nothing; a runtime with no writer asks
-// nothing.
+// repository no verdict entry names (verdictEntry) asks nothing, since its write would write
+// nothing and its issue's reads would wait on it; so does a repository name that does not parse,
+// which is logged, and a runtime with no writer.
 func (w *workflowRuntime) queueVerdictWrite(issue, repo string, number int, head string) {
 	if w.verdicts == nil {
 		return
@@ -236,7 +237,19 @@ func (w *workflowRuntime) queueVerdictWrite(issue, repo string, number int, head
 		w.log.Warn("verdict: a write of legion-verdict names no repository, so nothing is written", "repository", repo, "pull_request", number, "head", head, "error", err)
 		return
 	}
+	if _, ok := w.verdictEntry(repository); !ok {
+		return
+	}
 	w.verdicts.add(verdictTarget{issue: issue, repository: repository, number: number, head: head})
+}
+
+// verdictEntry is the verdict_repositories entry that names repository, under the name a record
+// keeps or the one GitHub serves it under now (repositories.serving), and whether one does.
+func (w *workflowRuntime) verdictEntry(repository ghrepo.Repository) (config.VerdictRepository, bool) {
+	if entry, ok := w.verdicts.entry(repository.String()); ok {
+		return entry, true
+	}
+	return w.verdicts.entry(w.repositories.serving(repository).String())
 }
 
 // writeVerdicts makes each write queueVerdictWrite queued, one at a time and oldest first, until
@@ -267,15 +280,12 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 // refusal stands, and nothing where neither does, so the head cannot merge (spec R4). It writes
 // only on a repository its verdict_repositories names, and on a legion/<KEY> head only of its own
 // project: another project's issue branch is that project's daemon's to write, and is logged once
-// per pull request. A repository is named under the name GitHub serves it under now
-// (repositories.serving) as well as the one a record keeps. It creates its own check run or
-// updates the one its record holds, and writes its conclusion over each run and status of the one
-// App its record does not hold (spec R19, writeDecided).
+// per pull request. A repository is named under the name GitHub serves it under now as well as the
+// one a record keeps (verdictEntry). It creates its own check run or updates the one its record
+// holds, and writes its conclusion over each run and status of the one App its record does not
+// hold (spec R19, writeDecided).
 func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
-	entry, ok := w.verdicts.entry(repository.String())
-	if !ok {
-		entry, ok = w.verdicts.entry(w.repositories.serving(repository).String())
-	}
+	entry, ok := w.verdictEntry(repository)
 	if !ok {
 		return nil
 	}
