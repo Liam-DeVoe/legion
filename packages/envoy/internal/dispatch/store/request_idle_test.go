@@ -37,12 +37,13 @@ func readIdleBound(t *testing.T, ctx context.Context, q idleBoundReader) time.Du
 // The connections of every pool whose transactions take the locks a request's write waits on, and
 // none of which sits idle longer by design, carry the bound this package computes - one cold read,
 // the rollback that ends the transaction after it, and a margin (RequestIdleInTransactionTimeout):
-// the request pool's, the background loops', the outbox's and the rooms' appends'. The pools that
-// take nothing a request's write waits on carry none, wrapped (Live, TextTrees) and separate
-// (Rooms, Leases) alike: a room load, a live reader, a lease and the display tree fill may sit in
-// a transaction for as long as their own work takes. The settlements and compaction pools carry
-// none either; their writes bound their own transactions (docs' rows hold those).
-func TestTheIdleBoundIsOnTheRequestBackgroundOutboxAndRoomAppendsConnections(t *testing.T) {
+// the request pool's, the background loops', the outbox's, the rooms' appends' and the
+// settlements'. The pools that take nothing a request's write waits on carry none, wrapped (Live,
+// TextTrees) and separate (Leases) alike: a live reader, a lease and the display tree fill may sit
+// in a transaction for as long as their own work takes. The rooms and compaction pools carry none
+// either, since a load's or a compaction's fold may sit idle in its transaction for longer; their
+// takers of a document's lock bound their own transactions (docs' rows hold those).
+func TestTheIdleBoundIsOnTheRequestBackgroundOutboxRoomAppendsAndSettlementsConnections(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 
@@ -57,6 +58,10 @@ func TestTheIdleBoundIsOnTheRequestBackgroundOutboxAndRoomAppendsConnections(t *
 	roomAppends, err := database.Pool.RoomAppends()
 	if err != nil {
 		t.Fatalf("open the room-appends pool: %v", err)
+	}
+	settlements, err := database.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
 	}
 	rooms, err := database.Pool.Rooms()
 	if err != nil {
@@ -87,6 +92,7 @@ func TestTheIdleBoundIsOnTheRequestBackgroundOutboxAndRoomAppendsConnections(t *
 		{BackgroundPool, background},
 		{OutboxPool, outbox},
 		{RoomAppendsPool, roomAppends},
+		{SettlementsPool, settlements},
 	} {
 		if got := readIdleBound(t, ctx, bounded.q); got != RequestIdleInTransactionTimeout {
 			t.Errorf("the %s pool's connection carries %s = %v, want the computed %v (%v cold read + %v rollback + margin)",
@@ -165,6 +171,46 @@ func TestPostgresEndsABackgroundTransactionLeftIdlePastItsBound(t *testing.T) {
 
 	requireEndedByPostgres(t, ctx, database, "background", loop, loopPID, bound)
 	requireKept(t, ctx, database, "rooms", load, loadPID)
+}
+
+// Postgres ends a settlements-pool transaction left idle past that same bound, and the document's
+// advisory lock it took goes with it. A settlement's pass and the block-id backfill's store take a
+// document's lock on that pool, which a request writing the document waits on only to the write
+// lock bound and is refused past it, so one orphaned with its connection would refuse those
+// requests until Postgres noticed its socket was gone. The lock is the one docs' lockDocumentRoom
+// takes, taken here as that statement takes it.
+func TestPostgresEndsASettlementsTransactionLeftIdlePastItsBoundAndItsDocumentLockGoes(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	const document = "the settlements row's document"
+	shortenIdleBound(t, bound)
+	database := openTestStore(t)
+	ctx := context.Background()
+
+	settlements, err := database.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
+	}
+	settling, err := settlements.Begin(WithTransactionTracking(ctx))
+	if err != nil {
+		t.Fatalf("begin the settlements transaction: %v", err)
+	}
+	defer settling.Rollback(ctx)
+	settlingPID := backendPID(t, ctx, settling)
+	if _, err := settling.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, document); err != nil {
+		t.Fatalf("take the document's lock: %v", err)
+	}
+
+	time.Sleep(10 * bound)
+
+	requireEndedByPostgres(t, ctx, database, "settlements", settling, settlingPID, bound)
+	// Tried at transaction level, so the statement's own end gives it back.
+	var taken bool
+	if err := database.Pool.QueryRow(ctx, `select pg_try_advisory_xact_lock(hashtext($1))`, document).Scan(&taken); err != nil {
+		t.Fatalf("try the document's lock: %v", err)
+	}
+	if !taken {
+		t.Fatal("the document's lock is still held once Postgres ended the idle settlements transaction that took it")
+	}
 }
 
 // shortenIdleBound has the pools opened from here on carry bound in place of production's

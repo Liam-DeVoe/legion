@@ -248,8 +248,9 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *store.RawPool, r
 // the sweep's list (doc_compaction_owed) when no row stands above the fold point.
 //
 // Its transaction's first statement bounds its own idle time (store.BoundIdleInTransaction): it
-// takes the document's advisory lock, which every request writing the document waits on with no
-// lock_timeout, so one orphaned with its connection would hold that lock until Postgres noticed.
+// takes the document's advisory lock, which every request writing the document waits on until the
+// write lock bound runs out (store.LockWithinBound), so one orphaned with its connection would hold
+// that lock, refusing those requests, until Postgres noticed.
 // The compaction pool's connections carry no bound of their own, because a compaction's read
 // (readCompaction) may sit idle in its transaction for longer while it folds a large log.
 func (p *PgVersioned) writeCompaction(ctx context.Context, pool *store.RawPool, room string, wait bool, folded compactFold) (compactResult, error) {

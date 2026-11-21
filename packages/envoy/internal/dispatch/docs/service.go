@@ -225,6 +225,11 @@ type Service struct {
 	// before it checks the document it read is still the room's. Nil outside tests; tests use it to
 	// fail the room in that window.
 	afterSettleLock func(room string)
+	// duringReplacedHistoryCheck runs inside the room-sync catch-up's confirmation of a replaced
+	// history (historyReplacedUnderLock), once its transaction has bounded its idle time and taken
+	// the document's lock and before it reads the stored history's bounds. Nil outside tests;
+	// tests read the transaction's own settings there.
+	duringReplacedHistoryCheck func(room string, tx pgx.Tx)
 	// beforeAwarenessWatch is given a room's awareness before the relay registers its own
 	// observer on it (awarenessRelay.watchRoomAwareness). Nil outside tests; tests use it to put
 	// an observer of their own ahead of the relay's, since ygo fires a room's update observers in
@@ -2541,7 +2546,10 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 	// backfill is a command's, no request's, and on the request pool, whose every transaction
 	// carries the write lock bound, a holder past that bound refused the stamp's store 55P03 and
 	// the backfill abandoned the stamp (INFRA-592). It stores one document at a time, so it holds
-	// at most one of that pool's connections.
+	// at most one of that pool's connections. That pool's connections carry the request pool's
+	// idle-in-transaction bound (store.RequestIdleInTransactionTimeout), and the statements below
+	// run one after another, so a transaction orphaned with its connection and this lock is ended
+	// by Postgres rather than left refusing every request that writes the document.
 	ledger := &Ledger{service: s, ownTx: true}
 	storeCtx := withRoomCursor(withLedger(ctx, ledger), cursor)
 	settlements, err := s.store.Pool.Settlements()

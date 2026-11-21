@@ -829,6 +829,104 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	}
 }
 
+// backgroundHeldDeadline is the deadline TestAShutdownThatGivesUpOnItsBackgroundWorkStillStopsTheIntakes
+// gives its shutdown in place of production's 27 s (shutdownContext), so the row waits seconds for
+// the background stage it holds to run the deadline out.
+const backgroundHeldDeadline = 3 * time.Second
+
+// A shutdown whose background work - a keyed handler, a detached delivery, a live socket - is still
+// running at its deadline gives up on that work there, and must still have stopped the GitHub
+// intakes within the same deadline: their NATS clients closed and their holds released, so a
+// standby takes each durable over at once. Their stop began at the signal, and shutdown waits for
+// it beside the background work. Waited for only once the background work had ended, it was never
+// asked for on this path, and main's deferred stop only cancels once shutdown has run
+// (stopIntakesOnExit), so the clients stayed open to the exit and a hold whose hand-back the close
+// would have settled lapsed at its TTL instead.
+func TestAShutdownThatGivesUpOnItsBackgroundWorkStillStopsTheIntakes(t *testing.T) {
+	database := storetest.Open(t)
+	seedDeliverySettings(t, database)
+	_, natsURL := testnats.Start(t)
+	// The publisher owns the stream, as the server's does, so the intakes bind their durables.
+	publisher, err := bus.ConnectOwningStream([]string{natsURL})
+	if err != nil {
+		t.Fatalf("connect the publisher: %v", err)
+	}
+	t.Cleanup(publisher.Close)
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "[]")
+	}))
+	t.Cleanup(github.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var clients []*bus.Client
+	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
+		client, err := bus.Connect([]string{natsURL}, bus.WithName(name))
+		if err == nil {
+			mu.Lock()
+			clients = append(clients, client)
+			mu.Unlock()
+		}
+		return client, err
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, github.URL), events.NewBroker(), nil)
+	if err != nil {
+		t.Fatalf("start the intakes: %v", err)
+	}
+	t.Cleanup(stopIntakes)
+	holdNames := make([]string, 0, len(deliveryDurables))
+	for _, durable := range deliveryDurables {
+		holdNames = append(holdNames, "delivery-intake-"+durable)
+	}
+	holds := func() int {
+		var held int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from duty_holds where name = any($1)`, holdNames).Scan(&held); err != nil {
+			t.Fatalf("read the intakes' holds: %v", err)
+		}
+		return held
+	}
+	waitUntil(t, 30*time.Second, "both intakes to hold and bind their durables", func() bool {
+		for _, durable := range deliveryDurables {
+			if info, err := publisher.JS().ConsumerInfo(bus.Stream, durable); err != nil || !info.PushBound {
+				return false
+			}
+		}
+		return holds() == len(holdNames)
+	})
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	server := &http.Server{Handler: http.NotFoundHandler()}
+	// The signal: the process context ends, and with it the intakes' Runs begin their stop.
+	cancel()
+	stopping, stopped := context.WithTimeout(context.Background(), backgroundHeldDeadline)
+	defer stopped()
+	began := time.Now()
+	shutdown(stopping, server, documentService, database.Pool, func() { <-release }, stopIntakes, func(context.Context) {}, nil)
+	if returned := time.Since(began); returned > backgroundHeldDeadline+time.Second {
+		t.Errorf("shutdown returned %v after it began with its background work held, want within its %v deadline and a second",
+			returned, backgroundHeldDeadline)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(clients) != len(deliveryDurables) {
+		t.Fatalf("the intakes connected %d NATS clients, want one per durable (%d)", len(clients), len(deliveryDurables))
+	}
+	for _, client := range clients {
+		if conn := client.Connection(); conn != nil && !conn.IsClosed() {
+			t.Errorf("an intake's NATS client (%s) is still open after a shutdown that gave up on its background work: the intakes' stop was never waited for",
+				conn.Opts.Name)
+		}
+	}
+	if held := holds(); held != 0 {
+		t.Errorf("%d of the intakes' holds outlived a shutdown that gave up on its background work, want each released", held)
+	}
+}
+
 // testGitHubApp is a GitHub App client signing with a key of the test's own and asking baseURL.
 func testGitHubApp(t *testing.T, baseURL string) *githubapp.Client {
 	t.Helper()

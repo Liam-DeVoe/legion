@@ -14,6 +14,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Room catch-up is what a process does with the durable change another process announces
@@ -238,6 +240,15 @@ func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (a
 // every transaction carries the write lock bound, a holder past that bound refused it 55P03
 // (INFRA-592). The lane runs one catch-up at a time, so this holds at most one of that pool's
 // connections and leaves the rest to the loads (store.RoomsPoolSize).
+//
+// The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction), as a
+// compaction's write does (writeCompaction): the document's lock is one every request writing the
+// document waits on until the write lock bound runs out (store.LockWithinBound), and a room's
+// appends wait on with no bound, so one orphaned with its connection would hold it, refusing those
+// requests and stalling those appends, until Postgres noticed. The rooms pool's connections carry
+// no bound of their own, because a load's read-only transaction on that pool sits idle for longer
+// by design: it waits there for a fold slot, and past foldBufferBytes it folds the rows it streams
+// inside it (foldRead).
 func (s *Service) historyReplacedUnderLock(ctx context.Context, room string, live *crdt.Doc) (bool, error) {
 	cursor := s.cursorOf(live)
 	if cursor == nil {
@@ -252,8 +263,14 @@ func (s *Service) historyReplacedUnderLock(ctx context.Context, room string, liv
 		return false, err
 	}
 	defer tx.Rollback(ctx)
+	if err := store.BoundIdleInTransaction(ctx, tx); err != nil {
+		return false, err
+	}
 	if err := lockDocumentRoom(ctx, tx, room); err != nil {
 		return false, err
+	}
+	if s.duringReplacedHistoryCheck != nil {
+		s.duringReplacedHistoryCheck(room, tx)
 	}
 	through := cursor.heldThrough()
 	var low, high int64

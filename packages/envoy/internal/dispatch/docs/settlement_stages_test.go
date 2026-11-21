@@ -163,14 +163,13 @@ func TestSettlementTakeCopiesTheRoomsTreeAndRendersIt(t *testing.T) {
 	}
 }
 
-// begin opens the pass's transaction with its own idle time bounded as a request connection's is:
-// its first statement sets idle_in_transaction_session_timeout to
-// store.RequestIdleInTransactionTimeout for that transaction alone (store.BoundIdleInTransaction),
+// A settlement pass's transaction runs with its idle time bounded as a request connection's is:
+// inside it, idle_in_transaction_session_timeout reads store.RequestIdleInTransactionTimeout,
 // since the transaction takes the owner row and the document lock every request writing the
-// document waits on. The bound is the transaction's and not the settlements pool's: a fold's
-// read-only transaction on that pool, as the settlement's warm-up load reads in (loadStored),
-// carries none, on the very connection the settlement's transaction ran on once it has ended.
-func TestSettlementBeginBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+// document waits on. The bound is the settlements pool's own (store.Pool.Settlements): every
+// connection of that pool carries it, outside any transaction too, since nothing on that pool sits
+// idle in a transaction for longer by design.
+func TestASettlementPassRunsUnderTheSettlementsPoolsIdleBound(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context.\n")
@@ -185,14 +184,15 @@ func TestSettlementBeginBoundsItsOwnTransactionsIdleTime(t *testing.T) {
 		t.Errorf("the settlement's transaction reads idle_in_transaction_session_timeout = %v, want %v",
 			got, store.RequestIdleInTransactionTimeout)
 	}
-	pid := transactionPID(t, ctx, pass.tx)
-	// Committed rather than rolled back, though it wrote nothing: a rollback undoes even a
-	// session-wide SET made inside the transaction, so only a commit shows the bound was the
-	// transaction's own.
-	if err := pass.tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the settlement's transaction: %v", err)
+	var pooled time.Duration
+	if err := settle.settlements.QueryRow(context.Background(),
+		`select current_setting('idle_in_transaction_session_timeout')::interval`).Scan(&pooled); err != nil {
+		t.Fatalf("read the settlements pool's idle bound: %v", err)
 	}
-	requireFoldsCarryNoIdleBound(t, settle.settlements, pid)
+	if pooled != store.RequestIdleInTransactionTimeout {
+		t.Errorf("a settlements-pool connection carries idle_in_transaction_session_timeout = %v, want %v: the bound is the pool's",
+			pooled, store.RequestIdleInTransactionTimeout)
+	}
 }
 
 // idleSetting is idle_in_transaction_session_timeout as tx reads it inside itself

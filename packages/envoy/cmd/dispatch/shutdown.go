@@ -24,11 +24,12 @@ const stopGrace = 30 * time.Second
 // the ordered shutdown is over: closing the pools once nothing is in use (milliseconds), writing
 // the log lines still buffered (logs.Flush, bounded by logFlushTimeout, 2 s), which main does as
 // shutdown returns, the stops main defers, and the process's exit. None of those stops waits for
-// the intakes' stop, which shutdown has already waited for or given up on (stopIntakesOnExit), so
-// a process that gives up at the deadline still says why and exits on its own, rather than being
-// killed mid-line. The one deferred stop that can still wait is the close of the server's own
-// publisher or agent-stream NATS client, which waits for its connection's lock (bus.Client.Close)
-// as an intake's close does; the lines shutdown logged are written before it.
+// the intakes' stop, which shutdown has already waited for or given up on at its deadline, whichever
+// stage it ended at (stopIntakesOnExit), so a process that gives up at the deadline still says why
+// and exits on its own, rather than being killed mid-line. The one deferred stop that can still
+// wait is the close of the server's own publisher or agent-stream NATS client, which waits for its
+// connection's lock (bus.Client.Close) as an intake's close does; the lines shutdown logged are
+// written before it.
 const shutdownMargin = 3 * time.Second
 
 // documentReserve is the least of the shutdown's deadline the document service gets: the HTTP drain
@@ -134,26 +135,28 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 //  3. waitBackground waits for every keyed handler and detached delivery, the delivery hub, every
 //     live socket and the subscriptions they ran to finish their lifetime-driven shutdown.
 //  4. waitIntakes waits for the GitHub intakes to finish their stop (delivery.StartIntakes' stop),
-//     which began at the signal, beside the HTTP drain and the document shutdown: a message in its
-//     handler finishes and is acknowledged, or is given up and handed back to NATS, delivery's
-//     intakeStopBudget (15 s) after the signal at the latest, the one deadline of that stop, which
-//     counts from the signal and which a take-over under way at the signal spends rather than
-//     extends. Each intake then releases its hold through the lease pool once its hand-backs have
-//     reached the server, so another process takes its durable over at once. A hand-back still
-//     pending then is settled when waitIntakes closes each intake's NATS client through its
-//     durable, sent in its close flush or dropped with the connection; waitIntakes then waits for
-//     its finalizer to release the hold through the lease pool. That normally ends well inside
-//     this shutdown's deadline. One exception can outlive it: Client.Close waits for nats.go's
-//     connection lock, which a write can hold until its one-minute write deadline, then a
-//     finalizer can spend up to intakeHoldRenew (5 s) releasing its hold. shutdown stops waiting
-//     at the deadline then, and the process exits without that stop: main's deferred stop of the
-//     intakes only cancels once shutdown has run (stopIntakesOnExit). The exit is as safe as the
-//     kubelet's kill: it ends the connection and the renewal, the hold lapses, and a hand-back
-//     still waiting for the lock never reaches the server. It comes before the pools close because
-//     nothing else keeps them open for a handler: one waiting on GitHub holds no connection, so
-//     stage 5 finds the pools idle, and its writes would fail on a closed pool once GitHub
-//     answered, with its message acknowledged all the same. A hold's finalizer has already
-//     released its hold before waitIntakes returns.
+//     which began at the signal, beside the HTTP drain and the document shutdown. shutdown runs it
+//     beside waitBackground, so the intakes' stop is waited for on every path past the document
+//     service, one that gives up on the background work at the deadline included; it logs then
+//     whether the intakes had finished. In that stop a message in its handler finishes and is
+//     acknowledged, or is given up and handed back to NATS, delivery's intakeStopBudget (15 s)
+//     after the signal at the latest, the one deadline of that stop, which counts from the signal
+//     and which a take-over under way at the signal spends rather than extends. Each intake then
+//     releases its hold through the lease pool once its hand-backs have reached the server, so
+//     another process takes its durable over at once. A hand-back still pending then is settled
+//     when waitIntakes closes each intake's NATS client through its durable, sent in its close
+//     flush or dropped with the connection; waitIntakes then waits for its finalizer to release the
+//     hold through the lease pool. That normally ends well inside this shutdown's deadline. One
+//     exception can outlive it: Client.Close waits for nats.go's connection lock, which a write can
+//     hold until its one-minute write deadline, then a finalizer can spend up to intakeHoldRenew
+//     (5 s) releasing its hold. shutdown stops waiting at the deadline then, and the process exits
+//     without that stop: main's deferred stop of the intakes only cancels once shutdown has run
+//     (stopIntakesOnExit). The exit is as safe as the kubelet's kill: it ends the connection and the
+//     renewal, the hold lapses, and a hand-back still waiting for the lock never reaches the
+//     server. It comes before the pools close because nothing else keeps them open for a handler:
+//     one waiting on GitHub holds no connection, so stage 5 finds the pools idle, and its writes
+//     would fail on a closed pool once GitHub answered, with its message acknowledged all the same.
+//     A hold's finalizer has already released its hold before waitIntakes returns.
 //  5. It waits until every request has answered and no connection of writePools is in use.
 //  6. It waits for the events outbox to stop, so its last batch is recorded and its publisher
 //     hold released through the pools before they close (waitForOutbox); a process with no
@@ -194,22 +197,29 @@ func shutdown(ctx context.Context, server *http.Server, documentService *docs.Se
 	if err := documentService.Shutdown(documentCtx); err != nil {
 		slog.Warn("dispatch: shutdown document service", "error", err)
 	}
-	background := make(chan struct{})
+	// The intakes' stop began at the signal, so it is waited for beside the background work, within
+	// the same deadline (stage 4): a shutdown that gives up on the background work at the deadline
+	// has given the intakes' stop that whole deadline too, and says whether it finished.
+	background, intakes := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(background)
 		waitBackground()
+	}()
+	go func() {
+		defer close(intakes)
+		waitIntakes()
 	}()
 	select {
 	case <-background:
 	case <-ctx.Done():
 		slog.Warn("dispatch: exit with background work still running at the shutdown deadline")
+		select {
+		case <-intakes:
+		default:
+			slog.Warn("dispatch: exit with the GitHub intakes still stopping at the shutdown deadline")
+		}
 		return
 	}
-	intakes := make(chan struct{})
-	go func() {
-		defer close(intakes)
-		waitIntakes()
-	}()
 	select {
 	case <-intakes:
 	case <-ctx.Done():

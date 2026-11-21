@@ -618,10 +618,10 @@ func acquireTracerOf(tracer pgx.QueryTracer) *acquireTracer {
 }
 
 // idleInTransactionParam is the session setting Postgres ends an idle transaction by, which the
-// connections of the request, background, outbox and room-appends pools carry (configurePool),
-// and the transactions of a settlement's write, a compaction's write and the compaction sweep's
-// removal of a document from its list set for themselves (BoundIdleInTransaction), all at one
-// value (RequestIdleInTransactionTimeout).
+// connections of the request, background, outbox, room-appends and settlements pools carry
+// (configurePool), and the transactions of a compaction's write, the compaction sweep's removal of
+// a document from its list and the room-sync catch-up's confirmation of a replaced history set for
+// themselves (BoundIdleInTransaction), all at one value (RequestIdleInTransactionTimeout).
 const idleInTransactionParam = "idle_in_transaction_session_timeout"
 
 // lockTimeoutParam is the session setting Postgres refuses a statement's wait for a lock by once
@@ -669,25 +669,33 @@ func configurePool(config *pgxpool.Config, name string, bound time.Duration) *ac
 	// pool's configuration is a copy of the request pool's (Pool.newSeparate), so each pool sets
 	// the setting here or deletes it.
 	//
-	// The request, background, outbox and room-appends pools carry it on every connection,
-	// since none of their transactions sits idle longer by design. A request's longest wait is
-	// one cold read (RequestIdleInTransactionTimeout). A background writer does its slow work - a
-	// GitHub or listener call, a document read - before it begins its transaction
+	// The request, background, outbox, room-appends and settlements pools carry it on every
+	// connection, since none of their transactions sits idle longer by design. A request's longest
+	// wait is one cold read (RequestIdleInTransactionTimeout). A background writer does its slow
+	// work - a GitHub or listener call, a document read - before it begins its transaction
 	// (task progress, block-index and reference-excerpt reconciliation, the edit-notice sweep, a
 	// pull request's heads, the delivery resume's claims and settles), and the two that wait
 	// inside one wait within a bound of their own below this one: the issue ask repair's document
 	// writes wait out at most one cold read at a time, as a request's do, and the fleet build
 	// announcer's publishes are bounded at ten seconds each and thirty a pass. The outbox and a
-	// room's appends hold a batch's few round trips. The settlements and compaction pools carry none,
-	// though their writes take those locks: each also runs a fold's repeatable-read read, which
-	// may sit idle in its transaction for longer while it folds a large stored history, so a
-	// settlement's write, a compaction's write and the compaction sweep's removal of a document
-	// from its list each bound their own transaction instead (BoundIdleInTransaction). The rooms
-	// pool's loads are read-only, and the live, leases, horizon, text-trees, registry, listen and
-	// health pools take nothing a request's write waits on, so none of them carries it. A
-	// connection string that sets the parameter itself is replaced either way.
+	// room's appends hold a batch's few round trips. The settlements pool's two transactions both
+	// take a document's lock - a settlement's pass and the block-id backfill's store of a stamp - and
+	// each waits inside it for no longer than the settlement's own deadline, or its finish bound
+	// once it has written into its room; nothing else on that pool opens a transaction (a lease, its
+	// give-back, the removal check, the mark sweep's read and the display trees' store are statements
+	// of their own), and a settlement's warm-up loads its room on the rooms pool. The compaction pool
+	// carries none, though its writes take those locks: it also runs a fold's repeatable-read read,
+	// which may sit idle in its transaction for longer while it folds a large stored history, so a
+	// compaction's write and the compaction sweep's removal of a document from its list each bound
+	// their own transaction instead (BoundIdleInTransaction). The rooms pool carries none for the
+	// same reason - a load's read-only transaction there waits for a fold slot and folds a large
+	// history inside it - so its one taker of a document's lock, the room-sync catch-up's
+	// confirmation of a replaced history (historyReplacedUnderLock), bounds its own transaction too.
+	// The live, leases, horizon, text-trees, registry, listen and health pools take nothing a
+	// request's write waits on, so none of them carries it. A connection string that sets the
+	// parameter itself is replaced either way.
 	switch name {
-	case RequestsPool, BackgroundPool, OutboxPool, RoomAppendsPool:
+	case RequestsPool, BackgroundPool, OutboxPool, RoomAppendsPool, SettlementsPool:
 		config.ConnConfig.RuntimeParams[idleInTransactionParam] = idleInTransactionSetting()
 	default:
 		delete(config.ConnConfig.RuntimeParams, idleInTransactionParam)

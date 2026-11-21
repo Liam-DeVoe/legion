@@ -1121,8 +1121,8 @@ func main() {
 		waitIntakes = stopIntakes
 		// A stop before serving (the admission wait, below) returns without shutdown, and a panic
 		// before serving unwinds past it, so the intakes are stopped here too. Once shutdown has run
-		// it has waited for them within its deadline, or given up on them there, and this only
-		// cancels.
+		// it has waited for them within its deadline, or given up on them there, at whichever stage it
+		// ended (it waits for them beside its background stage), and this only cancels.
 		defer func() { stopIntakesOnExit(cancel, waitIntakes, shutdownRan) }()
 	} else {
 		slog.Info("dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs")
@@ -1285,11 +1285,13 @@ func defaultDataDir() (string, error) {
 // newHTTPServer or joinRegistry -- would otherwise wait here forever, with the panic unprinted and
 // the intake still consuming. On every other way out the context has already ended, and the cancel
 // does nothing. Once shutdown has run it has waited for the intakes' stop within its one deadline,
-// or given up on it there, and logged so; a wait here would wait for that same stop (waitIntakes is
-// a sync.OnceFunc, so a second call waits for the first) past the deadline and the margin the exit
-// is kept (shutdownMargin), until the runtime's kill. A stop that has not finished by then leaves
-// each hold it still keeps where it is: the exit ends the hold's renewal with its connection, and
-// the hold lapses at its TTL, as it would at the kill.
+// or given up on it there, and logged so: it starts that wait beside its wait for the background
+// work, so one that gives up on the background work at the deadline has given the intakes' stop
+// that same deadline. A wait here would wait for that same stop (waitIntakes is a sync.OnceFunc,
+// so a second call waits for the first) past the deadline and the margin the exit is kept
+// (shutdownMargin), until the runtime's kill. A stop that has not finished by then leaves each hold
+// it still keeps where it is: the exit ends the hold's renewal with its connection, and the hold
+// lapses at its TTL, as it would at the kill.
 func stopIntakesOnExit(cancel context.CancelFunc, waitIntakes func(), afterShutdown bool) {
 	cancel()
 	if afterShutdown {

@@ -590,24 +590,20 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 // the settlements pool too (treePool), once the commit has given the transaction's connection
 // back, so the store takes no connection admission counts for requests (commitSettlement).
 //
-// The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction). It
-// takes the document owner's lock, which every request writing the document waits on until the
-// owner lock's wait runs out, and the document's advisory lock, which such a request waits on until
-// the write lock bound runs out, so one orphaned with its connection would hold them, refusing
-// those requests, until Postgres noticed; the
-// settlements pool's connections carry no bound of their own, because the settlement's warm-up load
-// folds on that pool in a read that may sit idle for longer. A transaction it could not bound is
-// rolled back here.
+// The transaction runs under the idle-in-transaction bound every settlements-pool connection
+// carries (store.RequestIdleInTransactionTimeout, the request pool's). It takes the document
+// owner's lock, which every request writing the document waits on until the owner lock's wait runs
+// out, and the document's advisory lock, which such a request waits on until the write lock bound
+// runs out, so one orphaned with its connection would hold them, refusing those requests, until
+// Postgres noticed. No wait inside it outlasts that bound by design: what it waits for before it
+// writes into its room is bounded by the settlement's deadline (settlementTimeout), and what it
+// has left after by settlementFinishBound.
 func (p *settlementPass) begin(parent context.Context) (context.Context, error) {
 	ledger := &Ledger{service: p.service, ownTx: true, treePool: p.settlements}
 	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), p.cursor)
 	tx, err := p.settlements.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin document transaction: %w", err)
-	}
-	if err := store.BoundIdleInTransaction(ctx, tx); err != nil {
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		return nil, err
 	}
 	// Settlement decides everything before it writes anything: every write of the stages after
 	// take goes through write and queues on this ledger, and the queue runs back to back right

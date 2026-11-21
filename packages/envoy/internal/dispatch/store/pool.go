@@ -867,12 +867,13 @@ const requestIdleMargin = 5 * time.Second
 // RequestIdleInTransactionTimeout is the idle_in_transaction_session_timeout every request-pool
 // connection carries: the longest a request transaction may sit idle by design, plus the bound on
 // the rollback that ends it, plus a margin - computed from those three, so a raised cold-read
-// bound raises this with it. The background, outbox and room-appends pools' connections carry the
-// same bound, and a settlement's write, a compaction's write and the compaction sweep's removal
-// of a document from its list set it for their own transaction
-// (configurePool says why those and no others, BoundIdleInTransaction): each of those
-// transactions does its slow work before it begins and then runs its statements one after
-// another, so the one bound serves them all and no second one is kept.
+// bound raises this with it. The background, outbox, room-appends and settlements pools'
+// connections carry the same bound, and a compaction's write, the compaction sweep's removal of a
+// document from its list and the room-sync catch-up's confirmation of a replaced history set it for
+// their own transaction (configurePool says why those and no others, BoundIdleInTransaction): each
+// of those transactions does its slow work before it begins, or within a bound below this one, and
+// then runs its statements one after another, so the one bound serves them all and no second one
+// is kept.
 //
 // Postgres is the only thing that can end an orphaned request transaction: one whose pgx
 // connection was abandoned, and whose close reached Postgres late or not at all, holds the rows
@@ -891,10 +892,10 @@ var requestIdleInTransaction = RequestIdleInTransactionTimeout
 // (RequestIdleInTransactionTimeout), for tx alone: set_config's third argument makes it local to
 // the transaction, so the connection carries nothing once tx ends. It is the first statement of a
 // transaction that takes a lock a request's write waits on, on a pool whose connections carry no
-// bound because another of its transactions - a fold's read - legitimately sits idle for longer:
-// a settlement's write on the settlements pool, and a compaction's write and the compaction
-// sweep's removal of a document from its list (docs' forgetCompactionCandidate) on the compaction
-// pool.
+// bound because another of its transactions - a fold's read - legitimately sits idle for longer: a
+// compaction's write and the compaction sweep's removal of a document from its list (docs'
+// forgetCompactionCandidate) on the compaction pool, and the room-sync catch-up's confirmation of a
+// replaced history (docs' historyReplacedUnderLock) on the rooms pool.
 func BoundIdleInTransaction(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select set_config($1, $2, true)`, idleInTransactionParam, idleInTransactionSetting()); err != nil {
 		return fmt.Errorf("bound the transaction's idle time: %w", err)

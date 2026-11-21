@@ -273,7 +273,10 @@ var ErrPoolClosed = errors.New("connection pool is closed")
 // was replaced before it closes the room (historyReplacedUnderLock in internal/dispatch/docs).
 // That is no request's work, so it waits for the lock until the holder lets go, on a connection
 // that carries no lock bound, where the request pool's would refuse it at the write lock bound;
-// RoomsPoolSize says why the loads keep their connections.
+// RoomsPoolSize says why the loads keep their connections. Its transaction bounds its own idle
+// time (BoundIdleInTransaction), since every request writing the document waits on that lock; the
+// pool's connections carry no idle bound, because a load's read-only transaction here may sit
+// idle for longer while it waits for a fold slot or folds a large history (configurePool).
 func (p *Pool) Rooms() (*RawPool, error) {
 	return p.separate(RoomsPool, RoomsPoolSize)
 }
@@ -748,7 +751,11 @@ const settlementsPoolSize = 4
 // block-id backfill a subcommand runs stores each document's stamp here too, as a settlement
 // stores a repair (backfillBlockIDs in internal/dispatch/docs), one document at a time: it waits
 // for the document's lock until the holder lets go, where the request pool's write lock bound
-// would refuse it.
+// would refuse it. Its connections carry the request pool's idle-in-transaction bound
+// (RequestIdleInTransactionTimeout, configurePool): its two transactions, a settlement's pass and
+// the backfill's store, both take the document's lock every request writing the document waits
+// on, and neither sits idle longer by design; its other work is statements outside any
+// transaction, and a settlement's warm-up loads its room on the rooms pool.
 func (p *Pool) Settlements() (*Pool, error) {
 	return p.wrapped(SettlementsPool, settlementsPoolSize)
 }

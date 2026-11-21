@@ -153,12 +153,12 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 // connections waits on - a write forking a document no room holds (coldFork) is inside its
 // transaction, and ygo's room load is waited on by every caller of that room - so a load that
 // asked the request pool for a connection would wait for one only those callers can release. A
-// caller that names a pool has made that argument for its own: a settlement reads on the
-// settlements pool, which has a connection for every settlement that holds a slot
-// (settlementWorkers), and a cold read's fold on the request pool's connections that admission
-// never hands out, which is where the work a handler leaves running belongs
-// (foldDocument). Keeping them off the rooms pool is what keeps a room's load from queueing behind
-// the reads of requests (INFRA-592).
+// caller that names a pool has made that argument for its own: a cold read's fold on the request
+// pool's connections that admission never hands out, which is where the work a handler leaves
+// running belongs (foldDocument). Keeping it off the rooms pool is what keeps a room's load from
+// queueing behind the reads of requests (INFRA-592). A settlement's warm-up names the settlements
+// pool for its reads (settleRoomWithin), but ygo hands a room's load no context
+// (servicePersistenceAdapter.LoadDoc), so that load reads the rooms pool, as every room load does.
 func loadTxSource(ctx context.Context, pool *store.Pool) (txSource, error) {
 	if named, ok := ctx.Value(queryPoolKey{}).(*store.Pool); ok {
 		return named, nil
