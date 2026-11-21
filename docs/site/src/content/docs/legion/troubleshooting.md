@@ -929,9 +929,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
-  not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
-  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
-  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
+  not deliver to the failed architect, the reviewer's notice of the `approve` that moved an issue
+  into `accepting` among them, so the catch-up's reason names each issue of the tree waiting in
+  `accepting` for the architect's acceptance; no worker runs there, and nothing else would wake the
+  architect for it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -1385,86 +1386,56 @@ These arrive as messages on the Dispatch issue:
   of the issue's current phase and the implementer, and judges none of them. Re-run a check that
   failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
   holds the merge under the base branch's own required checks.
-- **A review round that no review decides.** Legion's reviewer must approve the head or request
-  changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
-  for the decision. Only the review App or an account with write access to the repository decides a
-  round, so an approval or request for changes from anyone else leaves it undecided too. A review
-  from the review App decides a round only when it comes from the reviewer's own session: the
-  daemon reads the review's Legion footer
-  (`<!-- legion: {"session":"…","phase":"review","head":"…","entry":"…"} -->`) and requires the
-  session it names to match the session recorded on the reviewer's claim. That footer also names
-  the head the
-  review read, and a review the review App submitted decides the round only when that head is the
-  pull request's current head, compared exactly, whether the daemon heard of the review from its
-  webhook or read it from GitHub's list. GitHub rewrites a review's `commit_id` to the current
-  head, so its record of a review can name a head the review never saw, and no clock tells a force
-  push that puts an earlier head back from the arrival of that head the first time; the footer is
-  the review's own word for the code it read. A review-App review whose footer names another head,
-  or none, is set aside and decides nothing, logged at warn as `workflow: a review decides nothing:
-  footer names <sha>, not the head <sha>` or `… footer names no head`, with `footer_head` and
-  `head`; the reason is kept on the reviewer's row and named in the stuck notice the architect
-  gets, and the remedy is the reviewer submitting again at the head it read, which it takes from
-  `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
-  that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
-  as `workflow: a review decides nothing: a person's review read from the list`. A review-App
-  review with no footer at all, whose footer is not valid JSON (an unquoted placeholder left in
-  it, say), or whose
-  footer names another session (the controller's, an architect's), is set aside and decides
-  nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
-  a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and
-  `body_truncated`. The reviewer's session is the one the claims record holds for the claim the
-  daemon starts the reviewer under, in its first round as in every later one: recorded when the
-  reviewer's agent registers, it stays on the claim through later rounds, releases and relaunches.
-  While that claim records no session, or has no row - from the creation of the reviewer's claim
-  until its agent registers, and again after its session is forgotten until the next one
-  registers - a review-App review decides nothing and moves no commit, whoever submitted it,
-  logged at warn as `workflow: a review of the review App waits: the reviewer's claim records
-  no session, so the next read of the pull request's reviews judges it again`. That read, which
-  the daemon makes when a role of the issue hands off and when it starts, judges the review again
-  by the session recorded then.
-  Envoy caps review bodies at 2048 runes, so the daemon restores a truncated review-App body from
-  GitHub before reading its footer; a review it cannot restore (no review id) stays set aside with
-  `body_truncated=true`. The remedy for this stall: the reviewer re-submits its review with the
-  footer naming its own session. The daemon reads the author's permission from GitHub before it
-  applies the review: an account GitHub answers `404` for, or a `403` that is not its rate limit,
-  has no write access, and stands so for five minutes; write access is read again for every review.
-  Any other failed read is retried, a rate limit once the wait GitHub names has passed, and while
-  that wait stands the daemon reads nothing from GitHub. The daemon logs each review that decides
-  nothing for permission reasons as `workflow: a review decides nothing: its author is neither the
-  review App nor an account with write access to the repository`, with the author's login, and logs
-  a permission it read as no write access with GitHub's own answer. A `403` that is not a rate limit
-  is logged at error as `workflow: GitHub refuses the review App's installation a review author's
-  repository permission`, naming the installation's owner: the review App's installation cannot
-  read the repository's collaborators, so until it can, no review but the review App's decides a
-  round.
+- **A review round that no verdict decides.** Legion's reviewer ends its round with its verdict,
+  `approve` or `changes`, in its completion of reviewing, on the head its `review` handoff names;
+  the daemon records that verdict as the round's decision at that head and writes `legion-verdict`
+  there. The daemon refuses a reviewer's completion with no verdict (`REVIEWER_VERDICT_REQUIRED`)
+  or with no head (`VERDICT_COMMIT_REQUIRED`), so a round its reviewer completed with no verdict is
+  one whose completion the daemon recorded before it took the reviewer's verdict. The architect is
+  told with `review-stuck`, the issue stays in `needs_review`, and the remedy is the reviewer's
+  verdict on the head: it writes its `review` handoff again for that head and completes again. No
+  review on GitHub stands in for the verdict on a head a Legion issue owns. A review written with
+  the one App's token decides nothing, whoever wrote it, logged at warn as `workflow: a review
+  decides nothing: the one App wrote it, and no review of the App decides a round`; the reviewer
+  posts its findings as a `COMMENT` review, which decides nothing either. A person's approval
+  decides nothing on such a head. A person's request for changes, delivered by its webhook,
+  refuses the head on the `commit_id` that event carried when its author is an account of type
+  `User` with write access to the repository; the daemon reads no list of a pull request's
+  reviews, since GitHub's list moves each review's `commit_id` to the current head. Before it
+  applies a person's request for changes, the daemon reads the author's permission from GitHub
+  with its own read token: an account GitHub answers `404` for, or a `403` that is not its rate
+  limit, has no write access, and stands so for five minutes; write access is read again for every
+  review. Any other failed read is retried, a rate limit once the wait GitHub names has passed, and
+  while that wait stands the daemon reads nothing from GitHub. The daemon logs each review that
+  decides nothing for permission reasons as `workflow: a review decides nothing: its author is no
+  account of type User with write access to the repository`, with the author's login, and logs a
+  permission it read as no write access with GitHub's own answer. A `403` that is not a rate limit
+  is logged at error as `workflow: GitHub refuses the App's read token a review author's repository
+  permission, so the review decides nothing; while the installation may not read the repository's
+  collaborators, no person's review decides a round`, naming the installation's owner.
 - **A review round stuck on an approval of an earlier head.** The architect is told `the reviewer
   approved <sha> on pull request #<n>, which does not approve head <sha>: a push since may have
-  changed code, so only an APPROVE of <head> or a REQUEST_CHANGES ends the round`. The approval
-  counts for the head it names and no other, since any push may change code, and a push on its way
-  from that head leaves it undecided until the new head arrives. The remedy is the reviewer's
-  approval of the head itself, which ends the round once the record reaches that head and GitHub
-  reports that head one the issue may advance on.
+  changed code, so only the reviewer's verdict of head <head> - its completion of reviewing with
+  verdict approve or changes, commit <head> and a handoff record written since - or a person's
+  request for changes ends the round`. The reviewer's `approve` counts for the head it names and
+  no other, since any push may change code, and a push on its way from that head leaves it
+  undecided until the new head arrives. The remedy is the reviewer's verdict on the head itself,
+  which ends the round once the record reaches that head and GitHub reports that head one the
+  issue may advance on.
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
-  commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
-  footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
-  an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
-  round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
-  included, and the reviewer writes the number of the newest such sentence of its session into the
-  footer in quotes, `"entry":"<n>"`. The daemon reads a positive whole number written as a JSON
-  number (`"entry":7`) or as a string of digits (`"entry":"7"`); any other value, such as an
-  unfilled `"<entry>"`, an empty string, zero or `null`, reads as no entry and costs nothing else,
-  since the footer's session and head are still read. A review whose footer names no entry, or
-  another one, such as a review of a round before a new generation or a carried hand-over's
-  promotion entered the reviewer again, decides its round as any other and leaves the commit where
-  it stands; so does a person's review. The next round then reads from an older commit, or the
-  whole change where none stands, and a new generation clears the commit, so its first round reads
-  the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
-  holds.
+  commit to the head. The commit is the one the reviewer's newest verdict named in its completion of
+  reviewing, and a verdict moves it only while the reviewer's phase row holds the task of an entry.
+  Each task the reviewer gets in its round ends with that entry, `Review entry: <n>.`, the task of a
+  wake that brought its pod back included, and the daemon holds each completion to the entry its
+  claim serves: a completion of an entry raised since is refused (`HANDOFF_STALE_ENTRY`) and moves
+  nothing. A `COMMENT` review, a person's review and a verdict the reviewer sends past review with
+  `review_verdict` leave the commit where it stands. A new generation clears the commit, so its
+  first round reads the whole change.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
-  the base forward while the issue stays in `merging`, and the merger merges the new head once the
-  reviewer's approval of it is on the pull request. And it enqueues nothing on a merge-queue base whose
+  the base forward while the issue stays in `merging`, asks the reviewer for its verdict on the new
+  head, and the merger merges the new head once `legion-verdict` at it is `success`. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1546,8 +1517,9 @@ names both heads. A completion of the phase the issue stands in that names a hea
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review the reviewer is asked to read the merge and approve the new head. A red check
-sends nothing back from anywhere.
+before. Past review the reviewer is asked for its verdict on the new head, which it sends with
+`review_verdict`, and so it is on every other push past review. A red check sends nothing back
+from anywhere.
 
 The pull request's state as the daemon sees it:
 
@@ -1664,7 +1636,7 @@ While a GitHub event waits, or was lost on its way, nothing comes round to make 
 timer. The daemon's read of an issue's pull request
 ([Running Legion](/legion/legion/running-legion/#the-github-apps)) is the backstop, and it runs
 at the daemon's start and after every handoff: it records the open pull request GitHub lists on
-the issue's branch, and applies a head, a review or an approval-carrying push GitHub shows. An
+the issue's branch, and applies the head GitHub shows and its merge state; it reads no review. An
 event that waits for a phase no handoff is coming for waits for the consumer to catch up.
 
 ## An architect is told `pull-request-missing`
@@ -1685,8 +1657,8 @@ notice comes once per handoff commit, from whichever read finds it first.
 
 ## GitHub, NATS and the Secrets Broker
 
-- **`github_app_not_installed: <role> not installed on <owner>`.** Install that GitHub App (the
-  implement or the review App) on the repository's owner.
+- **`github_app_not_installed: the App is not installed on <owner>`.** Install the GitHub App on
+  the repository's owner.
 - **`NATS refused the daemon a permission: its NATS user lacks that grant`** (an error line with
   the `operation` and `subject`). The daemon's NATS user is missing a grant;
   [Envoy](/legion/dispatch/envoy/) lists the subjects it needs. A daemon can boot healthy and
@@ -1704,9 +1676,8 @@ notice comes once per handoff commit, from whichever read finds it first.
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
   consumer has stalled ([GitHub events wait](#github-events-wait)). The daemon's read of an
   issue's pull request, at its start and after every handoff, still records the pull request
-  GitHub lists, applies a lost head, review or approval-carrying push, and tells an architect
-  `pull-request-missing`, so an issue whose next handoff lands does not wait for the backlog to
-  drain.
+  GitHub lists, applies a lost head, and tells an architect `pull-request-missing`, so an issue
+  whose next handoff lands does not wait for the backlog to drain.
 - **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
   that says where the settlement stopped. Each line names the head and the generation, and the
   publish line and the drop lines also name the snapshot, so a drop line matches the publish line

@@ -26,7 +26,7 @@ reaches every repository of those owners.`); that sentence is missing only when 
 carries no repository at all.
 Use plain `gh` for GitHub operations.
 `LEGION_GH_OWNERS_DIR` holds one directory for each GitHub owner your role's App is installed on, one more for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for your issue's own owner.
-Each directory holds one token of your role's own App, the implement App for the implementer and the merger and the review App for every other role, minted on that owner's installation.
+Each directory holds one token of your role's App, the one GitHub App every Legion role acts as, with your role's own permissions, minted on that owner's installation.
 A token reaches every repository that installation holds, and the daemon makes it reach no less.
 The account that installs the App decides that set.
 Every directory's token is asked for with the same permissions, your role's own, and no directory holds a read-only token: your token writes in every repository your role's App reaches, whichever owner holds it, as it writes in your issue's own.

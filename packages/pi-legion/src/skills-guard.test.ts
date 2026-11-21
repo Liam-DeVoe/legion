@@ -163,12 +163,12 @@ test("no skill or prompt promises an update round no daemon can open", () => {
   }
 });
 
-// The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a
-// pull request's state, and nothing anywhere in the sweep's roots may still claim the controller
-// (or any role) cannot read GitHub. The commands live in the two references SKILL.md sends the
-// controller to (its session and its triage), so SKILL.md must link both, and the strings are
-// read from those three files only.
-test("the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential", () => {
+// The controller's `gh` acts as the one App every Legion role acts as (LEGION-668): the skill must
+// say how it checks a pull request's state, and nothing anywhere in the sweep's roots may still
+// claim the controller (or any role) cannot read GitHub. The commands live in the two references
+// SKILL.md sends the controller to (its session and its triage), so SKILL.md must link both, and
+// the strings are read from those three files only.
+test("the controller skill reads pull requests as the one App, and nothing says the controller holds no GitHub credential", () => {
   const controllerDir = path.join(staged, "legion-controller");
   const entry = readFileSync(path.join(controllerDir, "SKILL.md"), "utf8");
   for (const reference of ["session.md", "triage.md"]) {

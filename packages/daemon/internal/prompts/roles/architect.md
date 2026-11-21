@@ -118,10 +118,10 @@ hold its role, which the daemon's `holdsRole` decides, the child's notices come 
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and runs the two fresh reviews of the new version. `plan-gap-analyst` finds its gaps, and `plan-reviewer`, told that the document is a spec, checks each factual claim. It resolves every finding, and checks with a command or removes each claim either review marks unverified. Then it requests approval again with a `--summary` of two sentences: what changed since the earlier approval, and both reviews' results. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
 
-The reviewer's approval moves this child to `accepting`, where no worker runs and the acceptance
-is yours (`skill://legion-architect`, section 6): read the tester's handoff,
-`dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
-by SHA
+The reviewer's verdict `approve` moves this child to `accepting`, where no worker runs and the
+acceptance is yours (`skill://legion-architect`, section 6): read the tester's handoff,
+`dispatch results --issue <issue>` at the head that verdict names and the reviewer's `review`
+handoff of that head, never a review on GitHub
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).

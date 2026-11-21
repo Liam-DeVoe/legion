@@ -15,9 +15,11 @@ instructions, or open a `dispatch ask` naming the missing instruction.
 Read, against the goal, every check and every requirement:
 
 1. the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the approved head;
-3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
-   (`skill://legion-worker/references/merge-gate.md`);
+2. `dispatch results --issue <issue>`: whether a pass stands for each check at the head the
+   reviewer's verdict names;
+3. the reviewer's verdict: the `approve` its completion sent, which `phase-finished` carries, at
+   the head its `review` handoff names (`dispatch handoff-read --issue <issue> --phase review`),
+   never a review on GitHub, which decides nothing;
 4. each claim of the reviewer's prose, against the code at that head;
 5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI
    (*A conflicting head*, below).
@@ -83,22 +85,22 @@ holds the phase makes the `request_backward_move`. When the merger reports:
 A head that conflicts with its base keeps the issue in its phase. The daemon asks the implementer
 to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in
 `skill://legion-worker/references/conflicts-and-rewrites.md`). A conflict it does not act on yet
-is recorded: the tester and the reviewer go on at that head, an approval of it ends the review
-round, and the daemon acts when the issue enters `accepting`. When it asks outside
+is recorded: the tester and the reviewer go on at that head, the reviewer's `approve` of it ends
+the review round, and the daemon acts when the issue enters `accepting`. When it asks outside
 `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head,
 the base and why; in `implementing` no notice comes. You start nothing for the merge.
 
-Past review, the daemon also asks the reviewer to read the merge and approve the new head by its
-SHA, or request changes. In `accepting`, wait for that approval of the new head before
-`sign_off`, and send the issue back with `request_backward_move` when the reviewer requests
-changes.
+Past review, every push, a forward merge among them, has the daemon ask the reviewer for its
+verdict on the new head, which it sends with `review_verdict`. In `accepting`, wait for its
+`approve` of the new head before `sign_off`, and send the issue back with `request_backward_move`
+when its verdict is `changes`. An `approve` that carries no tester's pass to the new head moves
+the issue back to `testing` by itself.
 
 ## A review thread GitHub will not resolve
 
-Only the pull request author's App resolves a thread, so the implementer resolves them all. When
-GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's
-message, for a person to resolve it, with the options resolved and could not. The merger does not
-complete while it is open.
+The implementer resolves every thread. When GitHub refuses its `resolveReviewThread`, open a
+`dispatch ask` with the thread's URL and GitHub's message, for a person to resolve it, with the
+options resolved and could not. The merger does not complete while it is open.
 
 ## The close
 
