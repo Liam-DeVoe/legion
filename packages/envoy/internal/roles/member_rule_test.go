@@ -63,8 +63,7 @@ func TestTheMemberRuleDecidesWhatASessionSees(t *testing.T) {
 	// A record without the restricted claim reads as restricted: its session gets only its list;
 	// control: the same record marked a full member's gets PUB.
 	old := session.SessionEntry{Projects: []string{"PRIV"}}
-	full := false
-	marked := session.SessionEntry{Projects: []string{"PRIV"}, Restricted: &full}
+	marked := session.SessionEntry{Projects: []string{"PRIV"}, Restricted: new(false)}
 	if sees(t, old.Projects, old.IsRestricted(), "PUB") {
 		t.Error("a session whose record carries no restricted claim gets PUB, which it does not list")
 	}

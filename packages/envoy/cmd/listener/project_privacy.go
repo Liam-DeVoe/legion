@@ -503,11 +503,8 @@ type registrantScope struct {
 // registrantOf is r's registrantScope: its broker token's list and restricted claim, or no list
 // and false for a registration that presented no broker token, which no member list holds.
 func registrantOf(r *http.Request) registrantScope {
-	restricted := false
-	if caller, ok := brokerCaller(r); ok {
-		restricted = caller.Restricted
-	}
-	return registrantScope{projects: registeringProjects(r), restricted: &restricted}
+	caller, _ := brokerCaller(r)
+	return registrantScope{projects: registeringProjects(r), restricted: new(caller.Restricted)}
 }
 
 // scopeDecision is one request's privacy decisions: its caller's scope, and the one privacy read

@@ -807,7 +807,10 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)
 	name, _ := session.Extra[ClaimSession].(string)
-	session.Extra[ClaimRestricted] = p.memberRestricted(ctx, subjectTokenType, person)
+	// One answer of the person's member kind per trade, which the restricted claim and the list's
+	// check (projectaccess.ListAllowed) share, so a trade asks Dispatch the kind once.
+	access := memberKindOnce(p.exchange.Projects)
+	session.Extra[ClaimRestricted] = memberRestricted(ctx, access, subjectTokenType, person)
 	if person == "" {
 		return nil
 	}
@@ -819,7 +822,6 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	if err != nil {
 		return oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
 	}
-	access := p.exchange.Projects
 	if scope == oauthwire.ProjectScopeNamed {
 		if access == nil {
 			return nil
@@ -882,15 +884,52 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 // answers the person a full member (projectaccess.MemberFull); true for every other answer - a
 // restricted member, a person Dispatch holds no row for, a kind it could not be asked, and a broker
 // with no check configured - so a token whose person's kind is not known sees only its own list.
-func (p *Provider) memberRestricted(ctx context.Context, subjectTokenType, person string) bool {
+func memberRestricted(ctx context.Context, access projectaccess.Access, subjectTokenType, person string) bool {
 	if person == "" || subjectTokenType == oauthwire.SubjectTokenTypePerson {
 		return false
 	}
-	if p.exchange.Projects == nil {
+	if access == nil {
 		return true
 	}
-	kind, err := p.exchange.Projects.MemberKind(ctx, person)
+	kind, err := access.MemberKind(ctx, person)
 	return err != nil || kind != projectaccess.MemberFull
+}
+
+// oneKindAsk is a projectaccess.Access that asks Dispatch each person's member kind once, and
+// answers every later ask of the same trade from that first answer, its error included.
+type oneKindAsk struct {
+	access projectaccess.Access
+	kinds  map[string]kindAnswer
+}
+
+type kindAnswer struct {
+	kind string
+	err  error
+}
+
+// memberKindOnce wraps access for one trade, or is nil for a broker with no check configured.
+func memberKindOnce(access projectaccess.Access) projectaccess.Access {
+	if access == nil {
+		return nil
+	}
+	return &oneKindAsk{access: access, kinds: map[string]kindAnswer{}}
+}
+
+func (o *oneKindAsk) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	return o.access.Access(ctx, project, person)
+}
+
+func (o *oneKindAsk) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return o.access.States(ctx, projects)
+}
+
+func (o *oneKindAsk) MemberKind(ctx context.Context, person string) (string, error) {
+	if answer, asked := o.kinds[person]; asked {
+		return answer.kind, answer.err
+	}
+	kind, err := o.access.MemberKind(ctx, person)
+	o.kinds[person] = kindAnswer{kind: kind, err: err}
+	return kind, err
 }
 
 // claimSession claims the session name decide wrote onto session for the principal it decided,

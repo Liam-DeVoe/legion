@@ -144,7 +144,7 @@ func (r *outboxRig) register(t *testing.T, holder string, projects ...string) {
 // person restricted or a full member.
 func (r *outboxRig) registerAs(t *testing.T, holder string, restricted bool, projects ...string) {
 	t.Helper()
-	record, err := json.Marshal(session.SessionEntry{UpdatedAt: time.Now().UnixMilli(), Projects: append([]string{}, projects...), Restricted: &restricted})
+	record, err := json.Marshal(session.SessionEntry{UpdatedAt: time.Now().UnixMilli(), Projects: append([]string{}, projects...), Restricted: new(restricted)})
 	if err != nil {
 		t.Fatalf("encode %s's record: %v", holder, err)
 	}

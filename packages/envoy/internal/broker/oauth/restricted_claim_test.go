@@ -55,8 +55,7 @@ func TestTheExchangeMintsTheRestrictedClaimFromTheMemberKind(t *testing.T) {
 		{"a person's sign-in", oauthwire.SubjectTokenTypePerson, "outside@example.com", kinds, false},
 		{"a token naming no person", oauthwire.SubjectTokenTypeKubernetes, "", kinds, false},
 	} {
-		provider := &Provider{exchange: ExchangeConfig{Projects: row.access}}
-		if got := provider.memberRestricted(context.Background(), row.tokenType, row.person); got != row.want {
+		if got := memberRestricted(context.Background(), memberKindOnce(row.access), row.tokenType, row.person); got != row.want {
 			t.Errorf("%s: restricted = %v, want %v", row.name, got, row.want)
 		}
 	}
@@ -66,15 +65,14 @@ func TestTheExchangeMintsTheRestrictedClaimFromTheMemberKind(t *testing.T) {
 // restricted claim (a token an earlier broker minted) as a restricted member's, so it sees only its
 // list; the claim false is a full member's, and true a restricted member's.
 func TestAnAbsentRestrictedClaimReadsAsRestricted(t *testing.T) {
-	no, yes := false, true
 	for _, row := range []struct {
 		name   string
 		answer oauthwire.Introspection
 		want   bool
 	}{
 		{"absent", oauthwire.Introspection{Active: true}, true},
-		{"false", oauthwire.Introspection{Active: true, Restricted: &no}, false},
-		{"true", oauthwire.Introspection{Active: true, Restricted: &yes}, true},
+		{"false", oauthwire.Introspection{Active: true, Restricted: new(false)}, false},
+		{"true", oauthwire.Introspection{Active: true, Restricted: new(true)}, true},
 	} {
 		if got := row.answer.IsRestricted(); got != row.want {
 			t.Errorf("%s: IsRestricted = %v, want %v", row.name, got, row.want)

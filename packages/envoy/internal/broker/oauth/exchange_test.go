@@ -266,9 +266,11 @@ func TestAPodExchangesItsTokenForOneThatIntrospects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Introspect: %v", err)
 	}
+	// No check is configured, so the broker cannot know its person a full member: the token is
+	// minted restricted (ClaimRestricted).
 	want := oauthwire.Introspection{
 		Active: true, Session: "implementer-g1", Person: person, ProjectScope: oauthwire.ProjectScopeNamed,
-		Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key),
+		Projects: []string{project}, Restricted: new(true), ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key),
 		ExpiresAt: answer.ExpiresAt,
 	}
 	if !reflect.DeepEqual(answer, want) {
@@ -307,7 +309,7 @@ func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	answer := f.introspected(t, f.exchanged(t, f.readPodForm(t), key))
-	want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: readSession, Service: readService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+	want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: readSession, Service: readService, ProjectScope: "none", Restricted: new(false), ExpiresAt: answer.ExpiresAt}
 	if !reflect.DeepEqual(answer, want) {
 		t.Errorf("Introspect = %+v, want %+v", answer, want)
 	}
@@ -432,13 +434,13 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 	}{
 		{name: "a pod of a fixed-session account",
 			token: f.exchanged(t, exchangeForm(f.podTokenOf(t, daemonAccount, "pod-uid-daemon"), oauthwire.SubjectTokenTypeKubernetes, ""), key),
-			want:  oauthwire.Introspection{Active: true, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			want:  oauthwire.Introspection{Active: true, Session: daemonSession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, Restricted: new(true), ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a run of a fixed-session workflow",
 			token: f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", deploy), oauthwire.SubjectTokenTypeGitHub, deploySession), key),
-			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			want:  oauthwire.Introspection{Active: true, Session: deploySession, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, Restricted: new(true), ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 		{name: "a dev box session",
 			token: f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key),
-			want:  oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
+			want:  oauthwire.Introspection{Active: true, Session: "ada-devbox", Person: person, ProjectScope: oauthwire.ProjectScopePerson, Restricted: new(true), ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := f.introspected(t, c.token)

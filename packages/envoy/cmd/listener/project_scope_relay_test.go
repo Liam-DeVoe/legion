@@ -56,7 +56,7 @@ func (r *privacyRig) memberToken(session string, restricted bool, projects ...st
 	token := "member-token-of-" + session
 	answer := sessionAnswer(session, "member@example.com", r.caller.JKT())
 	answer.Projects = slices.Sorted(slices.Values(projects))
-	answer.Restricted = &restricted
+	answer.Restricted = new(restricted)
 	r.broker.Says(token, answer)
 	return token
 }
@@ -161,8 +161,7 @@ func TestARestartWhileFramesAreHeldMarksTheGap(t *testing.T) {
 		t.Run(fmt.Sprintf("held marker %v", marked), func(t *testing.T) {
 			rig := newPrivacyRig(t, true)
 			sessionID := fmt.Sprintf("ses_restart_held_%v", marked)
-			full := false
-			if err := rig.deps.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{}, Restricted: &full, Held: marked}); err != nil {
+			if err := rig.deps.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{}, Restricted: new(false), Held: marked}); err != nil {
 				t.Fatalf("write the predecessor's record: %v", err)
 			}
 			standIn := rig.session(t, sessionID, false, nil)
@@ -319,17 +318,16 @@ func TestRolesSetRefusesAProjectTheTokenDoesNotSee(t *testing.T) {
 	for _, required := range []bool{true, false} {
 		t.Run(fmt.Sprintf("required %v", required), func(t *testing.T) {
 			rig := newPrivacyRig(t, required)
-			full, restricted := false, true
 			for _, row := range []struct {
 				name, sessionID, role string
 				restricted            *bool
 				projects              []string
 				refused               bool
 			}{
-				{"a restricted member listing INFRA", "ses_claim_restricted_infra", "PUB.reviewer-a", &restricted, []string{"INFRA"}, true},
+				{"a restricted member listing INFRA", "ses_claim_restricted_infra", "PUB.reviewer-a", new(true), []string{"INFRA"}, true},
 				{"a token listing INFRA with no restricted claim", "ses_claim_unmarked_infra", "PUB.reviewer-b", nil, []string{"INFRA"}, true},
-				{"a full member listing INFRA", "ses_claim_full_infra", "PUB.reviewer-c", &full, []string{"INFRA"}, false},
-				{"a restricted member listing PUB", "ses_claim_restricted_pub", "PUB.reviewer-d", &restricted, []string{"PUB"}, false},
+				{"a full member listing INFRA", "ses_claim_full_infra", "PUB.reviewer-c", new(false), []string{"INFRA"}, false},
+				{"a restricted member listing PUB", "ses_claim_restricted_pub", "PUB.reviewer-d", new(true), []string{"PUB"}, false},
 			} {
 				token := rig.personToken(row.sessionID, row.projects...)
 				if row.restricted != nil {
