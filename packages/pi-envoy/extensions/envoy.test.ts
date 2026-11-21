@@ -23682,37 +23682,51 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
 
     envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
-    const subscribing = fixture.tools
-      .find((tool) => tool.name === "envoy_subscribe")
-      ?.execute("", { topics: ["notifications.github.sjawhar.legion.pr.1.>"] });
-    // Real time: the registration has to be on the wire before the shutdown starts waiting it out.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The shutdown waits for the registration in flight within its 250 ms (`SHUTDOWN_SETTLE_MS`),
+    // and its 1 s deadline (`SHUTDOWN_DEADLINE_MS`) is what the DELETE has to reach the wire in:
+    // both are timers of this process, so the row runs on the test's clock (`onPassClock`), where
+    // the 250 ms ends before the 1 s whatever the host's speed and the work after it runs on real
+    // turns, which move no clock. On the real clock a host starved long enough brought both timers
+    // due in one batch, and the handler returned before the DELETE was sent: 1 run in 20 at the 96
+    // rung, in a Job of the cluster's `builds` namespace where row A's runs averaged 51.2 s.
+    await onPassClock(async (clock) => {
+      await clock.run(
+        "the start",
+        fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"))
+      );
+      const subscribing = fixture.tools
+        .find((tool) => tool.name === "envoy_subscribe")
+        ?.execute("", { topics: ["notifications.github.sjawhar.legion.pr.1.>"] });
+      // The registration reaches the wire on real turns, with the clock held.
+      await clock.hold(() => registrations === 2);
+      expect(registrations).toBe(2);
 
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
+      const shutdown = fixture.handlers.get("session_shutdown")?.(
+        {},
+        sessionContext("ses_shutdown")
+      );
+      if (shutdown === undefined) throw new Error("session_shutdown handler was not registered");
+      // The clock moves 10 ms at a time, each step held on real turns, until the handler ends,
+      // within the 2 s Oh My Pi gives it.
+      await clock.stepping("the shutdown", shutdown, 2_000);
 
-    // The DELETE is on the wire at all, which the five-second settle inside a one-second deadline
-    // never managed. That the handler's own waits end inside the 2 s Oh My Pi gives it is read on
-    // the test's clock by "session_shutdown resolves within its budget when drain hangs on a dead
-    // connection"; this row reads only that the DELETE was sent.
-    expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
+      // The DELETE is on the wire at all, which the five-second settle inside a one-second
+      // deadline never managed. That the handler's own waits end inside the 2 s Oh My Pi gives it
+      // is read on the test's clock by "session_shutdown resolves within its budget when drain
+      // hangs on a dead connection"; this row reads only that the DELETE was sent.
+      expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
 
-    registration.resolve(
-      response({
-        session_id: "ses_shutdown",
-        machine_id: "test",
-        dir: "/tmp",
-        topics: ["notifications.agent.ses_shutdown"],
-      })
-    );
-    await subscribing;
-    // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
-    // waits out a registration that never settles. Measured on this two-CPU pod from bun's junit
-    // reporter: 570 / 578 / 627 ms (min/median/max over 5 idle runs) and 5_922 / 13_072 / 19_279
-    // ms over 20 runs under 96 busy loops, 48 per CPU. At the base the row carried no limit of its
-    // own, so bun's 5 s default applied, inside that loaded cost. 120_000 is six times 19_279 ms
-    // (115_673 ms), rounded up, and still well inside the pi-envoy job's `timeout-minutes: 10`
-    // (.github/workflows/ci.yaml).
+      registration.resolve(
+        response({
+          session_id: "ses_shutdown",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: ["notifications.agent.ses_shutdown"],
+        })
+      );
+      await clock.run("the subscribe", subscribing);
+    });
+    // MEASUREMENT-PROVISIONAL
   }, 120_000);
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
