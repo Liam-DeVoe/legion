@@ -107,7 +107,6 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 // publish is sessionID's worker: it publishes the holder's queued forwards in order, hands each
 // one's wait to a goroutine of its own, and ends once the queue is empty.
 func (f *roleForwarder) publish(sessionID string) {
-	subject := contracts.LegacyAgentSubject(sessionID)
 	for {
 		f.mu.Lock()
 		queue := f.queues[sessionID]
@@ -121,6 +120,7 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.queues[sessionID] = queue[1:]
 		f.mu.Unlock()
 
+		subject := f.cfg.roleForwardSubject(forward)
 		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
 		if err != nil {
 			f.finish(forward, err)
@@ -148,6 +148,17 @@ func (f *roleForwarder) outstanding() int {
 // were.
 func (f *roleForwarder) wait(ctx context.Context) bool {
 	return waitWithin(ctx, &f.pending)
+}
+
+// roleForwardSubject is the holder's agent subject a forward is published on: in the required
+// privacy mode the one under the role message's project (contracts.AgentSendTopic), so the relay
+// decides the forward as that project's frame; in the all-public mode the form it always had.
+func (cfg listenerDeliveryHandlerConfig) roleForwardSubject(forward roleForward) string {
+	if !cfg.privacy.isRequired() {
+		return contracts.LegacyAgentSubject(forward.sessionID)
+	}
+	project, _ := contracts.SubjectProject(forward.item.Topic)
+	return contracts.AgentSendTopic(project, forward.sessionID)
 }
 
 // startRoleForward is forwardRole over client: every forward is stored-only
