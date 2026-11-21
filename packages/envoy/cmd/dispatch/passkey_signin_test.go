@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -670,8 +671,8 @@ func TestTurningPasskeysOffTellsThePersonWhy(t *testing.T) {
 // cookie and body alike, is 400 CEREMONY_EXPIRED and signs nobody in, even for a passkey whose
 // signature counter stays 0, which the counter check cannot tell from a first use.
 //
-// Control: answer every ceremony as live (store.PgPasskeys.TakeCeremony answering true without
-// its row), and the replayed finish signs in and the row fails.
+// Control: record the used ceremony without its unique key (store's useCeremonyTx answering nil
+// when the insert found the challenge taken), and the replayed finish signs in and the row fails.
 func TestPasskeyCeremonyIsTakenOnce(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
@@ -829,22 +830,16 @@ func TestPasskeySettingsRefusals(t *testing.T) {
 	}, "DISPATCH_SIGNIN_PASSKEY")
 }
 
-// TestThePasskeyBeginsAreBoundedPerAddress: a ceremony's begin takes no credential and writes, so
-// one client address gets ten at once and then one a second: the eleventh at once is 429
-// PASSKEY_RATE_LIMITED with Retry-After, while another address still begins.
+// TestThePasskeyBeginsAreBoundedPerAddress: a ceremony's begin takes no credential, so one client
+// address, as the load balancer names it, gets ten at once and then one a second: the eleventh at
+// once is 429 PASSKEY_RATE_LIMITED with Retry-After, while another address still begins.
 //
 // Control: mount the begins without limitPasskeyBegins, and the eleventh begin answers 200 and the
 // row fails.
 func TestThePasskeyBeginsAreBoundedPerAddress(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	begin := func(address string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, passkeyOrigin+"/auth/passkey/login/begin", strings.NewReader("{}"))
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Origin", passkeyOrigin)
-		request.Header.Set("X-Forwarded-For", address)
-		response := httptest.NewRecorder()
-		r.handler.ServeHTTP(response, request)
-		return response
+		return beginThrough(r.handler, balancerPeer, address+", 35.191.0.10")
 	}
 	for n := range 10 {
 		if begun := begin("198.51.100.7"); begun.Code != http.StatusOK {
@@ -885,5 +880,102 @@ func TestTheCeremonyCookieIsTheHostsAlone(t *testing.T) {
 	set := call(insecure, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}).Result().Cookies()
 	if len(set) != 1 || set[0].Name != "dispatch_passkey_ceremony" || set[0].Secure || set[0].Path != "/" {
 		t.Fatalf("the begin under DISPATCH_INSECURE_COOKIE set %+v, want one plain dispatch_passkey_ceremony cookie, not Secure, with Path=/", set)
+	}
+}
+
+// balancerPeer is a connection's address in Google's external load balancer's ranges, whose
+// X-Forwarded-For a begin's bound reads.
+const balancerPeer = "35.191.0.10:443"
+
+// beginThrough is a sign-in's begin at the outside origin over a connection from peer, carrying
+// the X-Forwarded-For lines forwarded.
+func beginThrough(handler http.Handler, peer string, forwarded ...string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, passkeyOrigin+"/auth/passkey/login/begin", strings.NewReader("{}"))
+	request.RemoteAddr = peer
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", passkeyOrigin)
+	for _, line := range forwarded {
+		request.Header.Add("X-Forwarded-For", line)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+// TestABeginOffTheBalancerIsBoundedByItsConnection: a begin whose connection does not come from
+// the load balancer (a caller on the tailnet reaching the outside origin's backend) is bounded by
+// its connection's own address, whatever X-Forwarded-For it writes: eleven begins at once from one
+// connection, each naming another address, are ten served and one 429 PASSKEY_RATE_LIMITED.
+//
+// Control: bound such a begin by auth.ForwardedAddress (the rightmost entry the caller wrote), and
+// the eleventh begin answers 200 and the row fails.
+func TestABeginOffTheBalancerIsBoundedByItsConnection(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for n := range 10 {
+		if begun := beginThrough(r.handler, "100.64.0.9:51000", fmt.Sprintf("198.51.100.%d", n)); begun.Code != http.StatusOK {
+			t.Fatalf("begin %d from one connection answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
+		}
+	}
+	wantCode(t, "the eleventh begin at once from one connection, naming another address", beginThrough(r.handler, "100.64.0.9:51000", "198.51.100.200"), http.StatusTooManyRequests, "PASSKEY_RATE_LIMITED")
+}
+
+// TestAFloodOfBeginsFromManyAddressesLeavesAFreshAddressServed: 400 begins at once from 400
+// addresses through the load balancer do not refuse the person's begins, each from a fresh
+// address: the begins share no bound, only each address's own, so a stranger with many addresses
+// cannot lock the person out of signing in or enrolling.
+//
+// Control: bound every address together as well (a route-wide bucket of 50 a second, 200 at once,
+// as before), and the person's begin after the flood is 429 PASSKEY_RATE_LIMITED and the row fails.
+func TestAFloodOfBeginsFromManyAddressesLeavesAFreshAddressServed(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for n := range 400 {
+		beginThrough(r.handler, balancerPeer, fmt.Sprintf("198.18.%d.%d, 35.191.0.10", n/250, n%250))
+	}
+	for n := range 20 {
+		if begun := beginThrough(r.handler, balancerPeer, fmt.Sprintf("203.0.113.%d, 35.191.0.10", n)); begun.Code != http.StatusOK {
+			t.Fatalf("the person's begin %d from a fresh address after the flood answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
+		}
+	}
+}
+
+// TestTheBeginsWriteNothing: a ceremony's begin, which takes no credential, writes no row: the
+// signed ceremony cookie carries what its finish needs, and the finish records the challenge as
+// used only after the answer verifies (store.PgPasskeys.SignIn and Enroll), so a flood of begins
+// costs the database nothing.
+//
+// Control: record each begin's ceremony in passkey_ceremonies, as the begins did before this row,
+// and the table holds a row per begin and the row fails.
+func TestTheBeginsWriteNothing(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for range 3 {
+		if begun := beginThrough(r.handler, balancerPeer); begun.Code != http.StatusOK {
+			t.Fatalf("a sign-in's begin answered %d %s, want 200", begun.Code, begun.Body.String())
+		}
+	}
+	if begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail)); begun.Code != http.StatusOK {
+		t.Fatalf("an enrollment's begin answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	var rows int
+	if err := r.database.Pool.QueryRow(context.Background(), `select count(*) from passkey_ceremonies`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("after four begins passkey_ceremonies holds %d rows, want none", rows)
+	}
+}
+
+// TestABeginWithTwoForwardedForLinesIsRefused: Google's load balancer in front of the outside
+// origin writes X-Forwarded-For as one line, so a begin through it carrying two is no request it
+// forwarded as it writes them: it is 400 FORWARDED_FOR_INVALID, rather than bounded by the
+// balancer's own address, which every such request would share, while a begin with one line is
+// served.
+//
+// Control: bound the begin by auth.ForwardedAddress whatever its lines (passkeyBeginAddress without
+// the line count), and the two-line begin answers 200 and the row fails.
+func TestABeginWithTwoForwardedForLinesIsRefused(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	wantCode(t, "a begin through the balancer with two X-Forwarded-For lines", beginThrough(r.handler, balancerPeer, "198.51.100.9", "203.0.113.7, 35.191.0.10"), http.StatusBadRequest, "FORWARDED_FOR_INVALID")
+	if begun := beginThrough(r.handler, balancerPeer, "203.0.113.7, 35.191.0.10"); begun.Code != http.StatusOK {
+		t.Fatalf("a begin with one X-Forwarded-For line answered %d %s, want 200", begun.Code, begun.Body.String())
 	}
 }

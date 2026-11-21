@@ -931,12 +931,15 @@ through, so a link someone else used first shows up there. One owner binds a per
 a passkey signs its person in to every project whose list names them, so an owner makes a link
 only for a person no other owner's project names, the enrollment checks that again, and no other
 owner can name a person on their list, or be given a project naming them, while a passkey another
-owner's link enrolled stands. **Reset** ends the person's sign-in, deletes their passkeys, revokes
-the agent tokens they made and the machine logins they approved at the secrets broker, ends every
-link still waiting for them on any project, and keeps them on the list, so they enroll again with
-a new link. Taking the person off the last list that names them ends the sign-in and deletes the
-passkeys at once, and Dispatch also checks at least hourly, as above. No link is made for an
-address on a domain the organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain
+owner's link enrolled stands. The Access tab names the people another owner's project names, and
+offers no link for them; that block clears when the other project's owner takes the person off
+its list, or an operator does. **Reset** ends the person's sign-in, deletes their passkeys,
+revokes the agent tokens they made and the machine logins they approved at the secrets broker,
+ends every link still waiting for them on any project, and keeps them on the list, so they enroll
+again with a new link, under a new account. Taking the person off the last list that names them
+ends their access the same way at once, and so does Dispatch's check, at least hourly, of a person
+no list names any more, so whoever names the address later names a new account. No link is made
+for an address on a domain the organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain
 `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or a subdomain of one), nor for one of your people who
 has signed in with Google. List every domain the organization owns there: a domain left out is not
 the organization's to Dispatch, so an owner can make a link for an address of one of your people

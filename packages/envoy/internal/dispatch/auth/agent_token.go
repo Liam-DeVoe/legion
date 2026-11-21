@@ -251,6 +251,12 @@ func peerAddress(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// ThroughGoogleLoadBalancer reports whether r's connection came from Google's external load
+// balancer (googleLoadBalancerRanges), whose X-Forwarded-For ForwardedAddress reads.
+func ThroughGoogleLoadBalancer(r *http.Request) bool {
+	return fromGoogleLoadBalancer(peerAddress(r))
+}
+
 // fromGoogleLoadBalancer reports whether peer, a connection's address without its port, is one of
 // googleLoadBalancerRanges, an IPv4 address written as IPv6 included.
 func fromGoogleLoadBalancer(peer string) bool {

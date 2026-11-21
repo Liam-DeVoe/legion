@@ -361,3 +361,42 @@ func TestTheHourlyEndRevokesTheUnlistedPersonsPersonalTokens(t *testing.T) {
 	r.handler.ServeHTTP(response, request)
 	wantCode(t, "the outsider's old token reading MAL's access after the hourly end", response, http.StatusUnauthorized, "TOKEN_REVOKED")
 }
+
+// TestTheOwnersAnswerNamesWhomAnotherOwnersProjectNames (R5): while MAL, Mallory's, names alice's
+// outsider too, alice's access answer lists them in listed_by_another_owner and not in invitable,
+// so the Access tab offers no link the route would refuse (409 LISTED_BY_ANOTHER_OWNER) and says
+// why; once Mallory takes them off MAL, they are invitable again and listed_by_another_owner is [].
+//
+// Control: leave invitable as it was (withOwnersPasskeys skipping store.ListedByOtherOwners), and
+// the outsider is invitable while MAL names them and the row fails.
+func TestTheOwnersAnswerNamesWhomAnotherOwnersProjectNames(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	malloryCookie := r.ownerOf(t, "MAL", "mallory@example.com")
+	if listed := personOn(r.handler, malloryCookie, http.MethodPut, "MAL", outsiderEmail, ""); listed.Code != http.StatusOK {
+		t.Fatalf("Mallory names the outsider on MAL: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	type fields struct {
+		Invitable            []string `json:"invitable"`
+		ListedByAnotherOwner []string `json:"listed_by_another_owner"`
+	}
+	read := func(what string) fields {
+		t.Helper()
+		var answer fields
+		response := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &answer) != nil || answer.Invitable == nil || answer.ListedByAnotherOwner == nil {
+			t.Fatalf("alice's read of PRIV's access %s: %d %s, want both fields", what, response.Code, response.Body.String())
+		}
+		return answer
+	}
+	while := read("while MAL names the outsider")
+	if strings.Contains(strings.Join(while.Invitable, " "), outsiderEmail) || strings.Join(while.ListedByAnotherOwner, " ") != outsiderEmail {
+		t.Fatalf("while MAL names the outsider alice's answer is %+v, want them listed by another owner and not invitable", while)
+	}
+	if removed := personOn(r.handler, malloryCookie, http.MethodDelete, "MAL", outsiderEmail, ""); removed.Code != http.StatusOK {
+		t.Fatalf("Mallory takes the outsider off MAL: %d %s, want 200", removed.Code, removed.Body.String())
+	}
+	after := read("once MAL no longer names the outsider")
+	if !strings.Contains(strings.Join(after.Invitable, " "), outsiderEmail) || len(after.ListedByAnotherOwner) != 0 {
+		t.Fatalf("once MAL no longer names the outsider alice's answer is %+v, want them invitable and listed by no other owner", after)
+	}
+}

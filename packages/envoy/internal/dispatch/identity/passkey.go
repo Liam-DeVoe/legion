@@ -238,10 +238,10 @@ func (p *Passkeys) invitedPerson(ctx context.Context, token string) ([32]byte, s
 
 // BeginEnrollment begins the enrollment of a passkey with the link token names, refused as
 // invitedPerson refuses it: the options the browser passes to navigator.credentials.create, and the
-// ceremony its finish completes. It uses no link; it records the ceremony as one a finish may take
-// once (store.PgPasskeys.BeginCeremony). The user handle is the
-// person's passkey subject, the one their row records under the outside origin or, at their first
-// enrollment, a new one; the passkeys they hold already are excluded.
+// ceremony its finish completes. It uses no link and writes nothing: the ceremony rides in the
+// browser's signed cookie, and its finish records it used (store.PgPasskeys.Enroll). The user
+// handle is the person's passkey subject, the one their row records under the outside origin or,
+// at their first enrollment, a new one; the passkeys they hold already are excluded.
 func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (*protocol.CredentialCreation, PasskeyCeremony, error) {
 	hash, invitation, account, err := p.invitedPerson(ctx, token)
 	if err != nil {
@@ -262,24 +262,19 @@ func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (*protocol
 	if err != nil {
 		return nil, PasskeyCeremony{}, fmt.Errorf("begin the passkey enrollment: %w", err)
 	}
-	if err := p.store.BeginCeremony(ctx, session.Challenge, passkeyCeremonyTimeout); err != nil {
-		return nil, PasskeyCeremony{}, err
-	}
 	return creation, PasskeyCeremony{Enrollment: true, Session: *session, TokenHash: hash[:], Email: invitation.Email, Subject: subject}, nil
 }
 
 // FinishEnrollment completes ceremony, an enrollment BeginEnrollment began, with body, the browser's
 // answer (the PublicKeyCredential navigator.credentials.create made, as JSON): it verifies it
 // (ErrPasskeyRefused when it does not), asks the rule again (ErrWorkspaceAddress, ErrNotListed), and
-// enrolls the passkey, using the link and signing the person in as a restricted member in one
-// transaction (store.PgPasskeys.Enroll, whose refusals it returns). It answers the person's address
-// and subject, which the session cookie and its confirmation name.
+// enrolls the passkey, recording the ceremony used, using the link and signing the person in as a
+// restricted member in one transaction (store.PgPasskeys.Enroll, whose refusals it returns: the same
+// answer again is store.ErrPasskeyCeremonyUsed). It answers the person's address and subject, which
+// the session cookie and its confirmation name.
 func (p *Passkeys) FinishEnrollment(ctx context.Context, ceremony PasskeyCeremony, body io.Reader) (string, string, error) {
 	if !ceremony.Enrollment || len(ceremony.TokenHash) != sha256.Size {
 		return "", "", ErrPasskeyCeremonyExpired
-	}
-	if err := p.takeCeremony(ctx, ceremony); err != nil {
-		return "", "", err
 	}
 	parsed, err := protocol.ParseCredentialCreationResponseBody(body)
 	if err != nil {
@@ -295,7 +290,7 @@ func (p *Passkeys) FinishEnrollment(ctx context.Context, ceremony PasskeyCeremon
 	}
 	var hash [32]byte
 	copy(hash[:], ceremony.TokenHash)
-	if err := p.store.Enroll(ctx, hash, ceremony.Email, ceremony.Subject, storedCredential(*credential, user.handle)); err != nil {
+	if err := p.store.Enroll(ctx, ceremony.used(), hash, ceremony.Email, ceremony.Subject, storedCredential(*credential, user.handle)); err != nil {
 		return "", "", err
 	}
 	return ceremony.Email, ceremony.Subject, nil
@@ -303,31 +298,19 @@ func (p *Passkeys) FinishEnrollment(ctx context.Context, ceremony PasskeyCeremon
 
 // BeginSignIn begins a sign-in with a discoverable passkey: the options the browser passes to
 // navigator.credentials.get, naming no credential, with user verification required, and the
-// ceremony its finish completes. It records the ceremony as one a finish may take once
-// (store.PgPasskeys.BeginCeremony) and reads nothing else.
+// ceremony its finish completes. It reads and writes nothing: the ceremony rides in the browser's
+// signed cookie, and its finish records it used (store.PgPasskeys.SignIn).
 func (p *Passkeys) BeginSignIn(ctx context.Context) (*protocol.CredentialAssertion, PasskeyCeremony, error) {
 	assertion, session, err := p.relyingParty.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		return nil, PasskeyCeremony{}, fmt.Errorf("begin the passkey sign-in: %w", err)
 	}
-	if err := p.store.BeginCeremony(ctx, session.Challenge, passkeyCeremonyTimeout); err != nil {
-		return nil, PasskeyCeremony{}, err
-	}
 	return assertion, PasskeyCeremony{Session: *session}, nil
 }
 
-// takeCeremony takes ceremony's row, the moment its finish starts and before anything is verified
-// (store.PgPasskeys.TakeCeremony): ErrPasskeyCeremonyExpired when no begin recorded it, an earlier
-// finish took it, or it lapsed, so a ceremony's answer is used at most once.
-func (p *Passkeys) takeCeremony(ctx context.Context, ceremony PasskeyCeremony) error {
-	live, err := p.store.TakeCeremony(ctx, ceremony.Session.Challenge)
-	if err != nil {
-		return err
-	}
-	if !live {
-		return ErrPasskeyCeremonyExpired
-	}
-	return nil
+// used is the ceremony as its finish records it used, once its answer verified (store.UsedCeremony).
+func (c PasskeyCeremony) used() store.UsedCeremony {
+	return store.UsedCeremony{Challenge: c.Session.Challenge, Expires: c.Session.Expires}
 }
 
 // FinishSignIn completes ceremony, a sign-in BeginSignIn began, with body, the browser's answer (the
@@ -340,14 +323,12 @@ func (p *Passkeys) takeCeremony(ctx context.Context, ceremony PasskeyCeremony) e
 // and their passkeys deleted, as the hourly confirmation does (store.PgPasskeys.End), and the
 // refusal is returned (ErrNotListed, ErrWorkspaceAddress); lists that cannot be read are
 // ErrMembershipUnreadable and change nothing. Last, the sign-in is recorded through the account
-// binding (store.PgPasskeys.SignIn, whose refusals it returns). It answers the person's address and
-// subject.
+// binding with the ceremony recorded used, so its answer signs in once (store.PgPasskeys.SignIn,
+// whose refusals it returns: the same answer again is store.ErrPasskeyCeremonyUsed). It answers the
+// person's address and subject.
 func (p *Passkeys) FinishSignIn(ctx context.Context, ceremony PasskeyCeremony, body io.Reader) (string, string, error) {
 	if ceremony.Enrollment {
 		return "", "", ErrPasskeyCeremonyExpired
-	}
-	if err := p.takeCeremony(ctx, ceremony); err != nil {
-		return "", "", err
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBody(body)
 	if err != nil {
@@ -387,7 +368,7 @@ func (p *Passkeys) FinishSignIn(ctx context.Context, ceremony PasskeyCeremony, b
 		}
 		return "", "", err
 	}
-	if err := p.store.SignIn(ctx, stored, credential.Authenticator.SignCount, credential.Flags.MsgpByte()); err != nil {
+	if err := p.store.SignIn(ctx, ceremony.used(), stored, credential.Authenticator.SignCount, credential.Flags.MsgpByte()); err != nil {
 		return "", "", err
 	}
 	return model.CanonicalLogin(stored.Email), subject, nil

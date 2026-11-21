@@ -47,6 +47,9 @@ var (
 	// ErrPasskeyAccountMoved means the address records another account than the passkey's user
 	// handle: a sign-in by another account took the address since the passkey was enrolled.
 	ErrPasskeyAccountMoved = errors.New("the address records another account than this passkey's")
+	// ErrPasskeyCeremonyUsed means a finish already recorded the ceremony's answer (useCeremonyTx):
+	// the same answer sent again, which the routes answer as a lapsed ceremony.
+	ErrPasskeyCeremonyUsed = errors.New("the passkey ceremony's answer was used")
 )
 
 // InvitationLifetime is how long an owner's link lasts: it ends at its first use or 24 hours after
@@ -114,35 +117,35 @@ func (p *PgPasskeys) Issuer() string {
 	return p.issuer
 }
 
-// BeginCeremony records a ceremony a begin started, by its challenge, lapsing lifetime after the
-// database's now() (passkey_ceremonies), after deleting every ceremony that lapsed, so the table
-// holds no more than one lifetime of begins.
-func (p *PgPasskeys) BeginCeremony(ctx context.Context, challenge string, lifetime time.Duration) error {
-	hash := sha256.Sum256([]byte(challenge))
-	if _, err := p.people.pool.Exec(ctx, `delete from passkey_ceremonies where expires_at <= now()`); err != nil {
-		return fmt.Errorf("delete the lapsed passkey ceremonies: %w", err)
-	}
-	if _, err := p.people.pool.Exec(ctx, `insert into passkey_ceremonies (challenge_sha256, expires_at)
-		values ($1, now() + make_interval(secs => $2))`, hash[:], lifetime.Seconds()); err != nil {
-		return fmt.Errorf("record the passkey ceremony: %w", err)
-	}
-	return nil
+// UsedCeremony is a ceremony whose answer verified, as its finish records it used
+// (useCeremonyTx): its challenge and when it lapses.
+type UsedCeremony struct {
+	Challenge string
+	Expires   time.Time
 }
 
-// TakeCeremony deletes the ceremony challenge names and reports whether it was there and had not
-// lapsed: a finish takes its ceremony once, before it verifies anything, so its answer is used at
-// most once however often it is sent.
-func (p *PgPasskeys) TakeCeremony(ctx context.Context, challenge string) (bool, error) {
-	hash := sha256.Sum256([]byte(challenge))
-	var live bool
-	err := p.people.pool.QueryRow(ctx, `delete from passkey_ceremonies where challenge_sha256 = $1 returning expires_at > now()`, hash[:]).Scan(&live)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+// useCeremonyTx records, in tx, the ceremony's challenge as used, by its SHA-256 under a unique key
+// (passkey_ceremonies), after deleting every one that lapsed: a finish whose answer verified calls
+// it in the transaction that records what the answer does (Enroll, SignIn), so a ceremony's answer
+// does that at most once however often it is sent, and two finishes of one answer at once commit
+// one, the other waiting on the key and finding it taken (ErrPasskeyCeremonyUsed). No begin writes:
+// the signed ceremony cookie carries what the finish needs, so a begin, which takes no credential,
+// costs the database nothing. A lapsed ceremony's cookie is refused before its finish runs, so its
+// row is needed no longer.
+func useCeremonyTx(ctx context.Context, tx pgx.Tx, ceremony UsedCeremony) error {
+	if _, err := tx.Exec(ctx, `delete from passkey_ceremonies where expires_at <= now()`); err != nil {
+		return fmt.Errorf("delete the lapsed passkey ceremonies: %w", err)
 	}
+	hash := sha256.Sum256([]byte(ceremony.Challenge))
+	used, err := tx.Exec(ctx, `insert into passkey_ceremonies (challenge_sha256, expires_at) values ($1, $2)
+		on conflict (challenge_sha256) do nothing`, hash[:], ceremony.Expires)
 	if err != nil {
-		return false, fmt.Errorf("take the passkey ceremony: %w", err)
+		return fmt.Errorf("record the passkey ceremony used: %w", err)
 	}
-	return live, nil
+	if used.RowsAffected() == 0 {
+		return ErrPasskeyCeremonyUsed
+	}
+	return nil
 }
 
 // PasskeyReader is a pool or a transaction, which the passkey reads take.
@@ -413,6 +416,26 @@ func FullMembers(ctx context.Context, q PasskeyReader, emails []string) ([]strin
 	return full, nil
 }
 
+// ListedByOtherOwners answers which of emails a project whose owner is not owner names directly,
+// sorted, [] for none: the people ListedByAnotherOwner refuses a link of owner for, read at once
+// for the owner's access answer.
+func ListedByOtherOwners(ctx context.Context, q PasskeyReader, emails []string, owner string) ([]string, error) {
+	rows, err := q.Query(ctx, `select a.principal from project_access a join projects p on p.key = a.project_key
+		where a.principal_kind = 'person' and a.principal = any($1) and canonical_login(coalesce(p.owner, '')) <> canonical_login($2)
+		group by a.principal order by a.principal collate "C"`, emails, owner)
+	if err != nil {
+		return nil, fmt.Errorf("read which people another owner's project names: %w", err)
+	}
+	others, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which people another owner's project names: %w", err)
+	}
+	if others == nil {
+		others = []string{}
+	}
+	return others, nil
+}
+
 // Invitation reads the link tokenHash names: ErrInvitationUnknown when none does.
 func (p *PgPasskeys) Invitation(ctx context.Context, tokenHash [32]byte) (Invitation, error) {
 	return readInvitation(ctx, p.people.pool, tokenHash, "")
@@ -483,10 +506,11 @@ func (p *PgPasskeys) Account(ctx context.Context, email string) (PasskeyAccount,
 // under subject, the passkey's user handle, through the account binding (PgPeopleStore's
 // signInAccountTx, which ends what an account it replaces held), and stores the passkey. The link
 // is locked first, which a removal from the project's list and the owner's Reset lock to delete
-// it, so either commits first and the other reads what it wrote. A row that records another
-// passkey subject meanwhile is ErrEnrollmentSuperseded; a full member's row is
-// auth.ErrAddressHeldByMember. Each refusal writes nothing.
-func (p *PgPasskeys) Enroll(ctx context.Context, tokenHash [32]byte, email, subject string, credential PasskeyCredential) error {
+// it, so either commits first and the other reads what it wrote. The ceremony is recorded used
+// first (useCeremonyTx). A row that records another passkey subject meanwhile is
+// ErrEnrollmentSuperseded; a full member's row is auth.ErrAddressHeldByMember. Each refusal writes
+// nothing.
+func (p *PgPasskeys) Enroll(ctx context.Context, ceremony UsedCeremony, tokenHash [32]byte, email, subject string, credential PasskeyCredential) error {
 	login := model.CanonicalLogin(email)
 	if err := p.people.refuseAMembersAddress(ctx, login, subject, model.MemberRestricted); err != nil {
 		return err
@@ -499,6 +523,9 @@ func (p *PgPasskeys) Enroll(ctx context.Context, tokenHash [32]byte, email, subj
 		return fmt.Errorf("enroll the passkey: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := useCeremonyTx(ctx, tx, ceremony); err != nil {
+		return err
+	}
 	invitation, err := readInvitation(ctx, tx, tokenHash, "for update")
 	if err != nil {
 		return err
@@ -591,20 +618,24 @@ func readPasskey(ctx context.Context, q PasskeyReader, credentialID []byte, lock
 }
 
 // SignIn records a sign-in with the passkey read, which WebAuthn verified with signature counter
-// signCount and flags, in one transaction under the address's lock, which every write that ends a
-// passkey's sign-in or deletes its passkeys takes first (EndPasskeySignInTx, settle), so none of
-// them waits on another in a cycle: the passkey, locked, must still exist (else
+// signCount and flags under ceremony, which it records used first (useCeremonyTx: the same answer
+// again is ErrPasskeyCeremonyUsed), in one transaction under the address's lock, which every write
+// that ends a passkey's sign-in or deletes its passkeys takes first (EndPasskeySignInTx, settle),
+// so none of them waits on another in a cycle: the passkey, locked, must still exist (else
 // ErrPasskeyUnknown) with the counter read held (else ErrPasskeySignCount: another sign-in with it
 // finished first), and the address must still record the passkey's user handle under the outside
 // origin (else ErrPasskeyAccountMoved), so a passkey never replaces the account an address
 // records. Then it stores the new counter and flags, and signs the person in as a restricted
 // member through the account binding (signInAccountTx), which under the same account ends nothing.
-func (p *PgPasskeys) SignIn(ctx context.Context, read StoredPasskey, signCount uint32, flags byte) error {
+func (p *PgPasskeys) SignIn(ctx context.Context, ceremony UsedCeremony, read StoredPasskey, signCount uint32, flags byte) error {
 	tx, err := p.people.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("sign in with the passkey: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := useCeremonyTx(ctx, tx, ceremony); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, addressLockSQL, read.Email); err != nil {
 		return fmt.Errorf("sign in with the passkey: lock the address: %w", err)
 	}
