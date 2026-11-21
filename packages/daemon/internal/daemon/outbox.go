@@ -1741,10 +1741,10 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // holds — is the re-hold policy's (noticeAnswered, notice_exceptions.go), which a role-lane
 // exception of an earlier listener reaches by the same route (rehold). A listener of this release
 // never answers that a session did not confirm a delivery (`receipt_timeout`): no session confirms
-// a forward any more, and every forward its stream did not store is `delivery_failed`
-// (dispatch://INFRA-771), or the stream's 409 where the stream refused the message itself, so that
-// answer reaches the policy only from a listener of the deployed, older build, until that
-// rollout finishes.
+// a forward any more, since each session reads its own JetStream consumer and no plain NATS
+// subscription, and every forward its stream did not store is `delivery_failed`, or the stream's
+// 409 where the stream refused the message itself, so that answer reaches the policy only from a
+// listener of the deployed, older build, until that rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
 // catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
 // publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
@@ -2161,14 +2161,14 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
 // claim again (askRound). The round waits for every claim it asks until its bound, and a claim
 // the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
-// is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
-// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). An ask the message bus stream refuses
-// (notify.ErrStreamRefused) ends the row the same way, with one ERROR line, since the stream
-// refuses it however often it is sent, and the sweep's next reading of the round asks again. Every
-// other failure of the publish keeps the ordinary retry, as hookPrompt's does: a holder that did
-// not confirm in time, one that does not advertise the delivery mode, and a forward the listener's
-// own NATS grant denies can each go through on a later attempt. A mark the store did not take
-// keeps the row too, and the next attempt writes it and publishes nothing.
+// is the ordinary case, and a mark that counted such an ask as given held two issues' rounds for
+// hours on 2026-11-17. An ask the message bus stream refuses (notify.ErrStreamRefused) ends the
+// row the same way, with one ERROR line, since the stream refuses it however often it is sent,
+// and the sweep's next reading of the round asks again. Every other failure of the publish keeps
+// the ordinary retry, as hookPrompt's does: a holder that did not confirm in time, one that does
+// not advertise the delivery mode, and a forward the listener's own NATS grant denies can each go
+// through on a later attempt. A mark the store did not take keeps the row too, and the next
+// attempt writes it and publishes nothing.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -2292,26 +2292,26 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // dropped once its hour ends.
 //
 // Five other executors publish to a role's topic, each with its own rules for what the publisher
-// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
-// every other failure; deliverNotice, an architect's notice, holds the row for
-// a topic with no holder while the owning architect can hold its role again (noticeAnswered);
-// roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
-// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
-// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
+// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and for the
+// stream's refusal, and retries every other failure; deliverNotice, an architect's notice, holds
+// the row for a topic with no holder while the owning architect can hold its role again
+// (noticeAnswered); roleMessage ends the row for a topic with no holder, waits for a holder the
+// listener calls unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that
+// refuses the delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant
+// denies (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
 // merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
-// merger's claim has neither failed nor retired, and retries every other failure
-// (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
-// the same way while the role's claim has neither failed nor retired and the merge forward still
-// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
-// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone. All six end the row on the stream's refusal (notify.ErrStreamRefused) with
-// one ERROR line, as controllerNotice does for the controller topic: the stream refuses that
-// message however often it is sent, until an operator changes the stream, so a retry could only
-// repeat the refusal for ever.
+// merger's claim has neither failed nor retired, ends it for the stream's refusal, and retries
+// every other failure (merge_queue_removal.go); and mergeForwardMessage, a message of a merge
+// forward, holds its row the same way while the role's claim has neither failed nor retired and
+// the merge forward still stands at the row's head (merge_forward.go). Each of those five
+// publishes with keep: false: deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their
+// own row, and a kept copy beside it would be a second keeper of one message; roleMessage's
+// message is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its
+// bound whether or not the role answers. So whoever changes the rule for a topic with no holder
+// must read all six executors, not this function alone. All six end the row on the stream's
+// refusal (notify.ErrStreamRefused) with one ERROR line, as controllerNotice does for the
+// controller topic: the stream refuses that message however often it is sent, until an operator
+// changes the stream, so a retry could only repeat the refusal for ever.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	var refused notify.ErrStreamRefused

@@ -3316,12 +3316,15 @@ func TestListenerDeliveryHandler_RoleMessageHeldAtShutdownIsKept(t *testing.T) {
 
 // A message the lane has held up to roleHoldBound is not held again: an attempt after the stream's
 // duplicate window could store a second copy of a forward an earlier attempt stored while its
-// answer was lost. Its next hold makes the pinned forward once more, at once and so still inside
-// the window, and when that forward's outcome is again unknown it keeps the message on its role's
-// kept lane under the reason held_past_bound, with the WARN that a second holder may get a copy,
-// and frees its slot. The lane dates the message by the listener's clock when it takes it; the
-// second forward moves that clock to the bound before it fails, so the hold after it is past the
-// bound and the hold after the first is not, whatever the scheduler does in between.
+// answer was lost. Its next hold, whose wait would end past the bound, makes the pinned forward
+// once more, at once and so still inside the bound, and when that forward's outcome is again
+// unknown it keeps the message on its role's kept lane under the reason held_past_bound, with the
+// WARN that a second holder may get a copy, and frees its slot. The lane dates the message by the
+// listener's clock when it takes it; the second forward moves that clock to roleHoldFirst short of
+// the bound before it fails, so the wait the hold after it would set (twice roleHoldFirst) ends
+// past the bound while the forward once more still starts inside it, and the hold after the first
+// is not near the bound, whatever the scheduler does in between. A forward that would start at or
+// past the bound is not made at all (TestAHeldMessageWhoseWaitEndsPastItsBoundMakesNoForward).
 func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "held-to-bound"
@@ -3338,7 +3341,7 @@ func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
 	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		if forwards.Add(1) == 2 {
-			clock.Add(int64(roleHoldBound))
+			clock.Add(int64(roleHoldBound - roleHoldFirst))
 		}
 		return errors.New("nats: connection closed")
 	})

@@ -74,9 +74,9 @@ import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
 import { createStallAborter } from "../src/stall-abort";
-import { createStallTeller } from "../src/stall-evidence";
 import { createStallExits } from "../src/stall-exits";
 import { createStallProcesses, type StallProcessesDeps } from "../src/stall-recovery";
+import { createStallTeller } from "../src/stall-teller";
 import { createLegionTool } from "../src/tools";
 import { createTurnOutcomeReporter } from "../src/turn-outcome";
 import {

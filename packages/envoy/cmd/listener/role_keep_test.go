@@ -554,7 +554,7 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 		return nil
 	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-expired-1")
-	kept, err := keepRoleMessage(cfg, role, item)
+	kept, err := keepRoleMessage(context.Background(), cfg, role, item)
 	if err != nil {
 		t.Fatalf("keep the role message: %v; the listener log says why:\n%s", err, harness.logs.String())
 	}
@@ -753,7 +753,7 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 	var fresh []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-budget-%02d", i))
-		if _, err := keepRoleMessage(cfg, role, item); err != nil {
+		if _, err := keepRoleMessage(context.Background(), cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d: %v; the listener log says why:\n%s", i, err, harness.logs.String())
 		}
 		if !expired(i + 1) {
@@ -794,7 +794,7 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-two-drains-%02d", i))
-		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
+		if _, err := keepRoleMessage(context.Background(), harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d: %v; the listener log says why:\n%s", i, err, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -907,7 +907,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 			})
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+tc.role, tc.role+"-1")
 			tc.prepare(&item, holder)
-			if _, err := keepRoleMessage(cfg, tc.role, item); err != nil {
+			if _, err := keepRoleMessage(context.Background(), cfg, tc.role, item); err != nil {
 				t.Fatalf("keep the role message: %v; the listener log says why:\n%s", err, harness.logs.String())
 			}
 			claimRoleWith(t, harness, holder, tc.role, tc.entry)
@@ -1031,7 +1031,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 	}
 
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-under-claim-1")
-	if err := keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed, ""); err != nil {
+	if err := keepRoleLaneMessage(context.Background(), cfg, role, item, roleKeptUnclaimed, ""); err != nil {
 		t.Fatalf("keep the role message: %v; the listener log says why:\n%s", err, harness.logs.String())
 	}
 	select {

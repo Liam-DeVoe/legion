@@ -137,16 +137,19 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 }
 
 // refuseBusUnavailable answers a bus that did not serve the request and records the outcome the
-// status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
-// will not take however often it is sent, 403 the publish this listener's own grant denies, and
-// anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with one exception: a full stream
-// (bus.ErrStreamFull) shares its 503 with the bus not answering, so the error tells it apart.
+// status it wrote implies: 409 is the stream's refusal of the message itself, which no retry gets
+// past, 413 the caller's own oversized message, 400 the subject or key NATS will not take however
+// often it is sent, 403 the publish this listener's own grant denies, and anything else the bus not
+// answering. The status is read back from the write rather than classified a second time here, so
+// the pair cannot drift - a refusal that ended a publish an earlier send of which may have stored
+// the message is the maybe-stored 503, and is recorded bus_unavailable as that 503 is - with one
+// exception: a full stream (bus.ErrStreamFull) shares its 503 with the bus not answering, so the
+// error tells it apart.
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
-	case bus.StreamRefusesMessage(err):
+	case status == http.StatusConflict:
 		outcome = outcomeStreamRefused
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull

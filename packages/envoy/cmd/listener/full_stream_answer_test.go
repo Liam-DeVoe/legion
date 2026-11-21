@@ -81,8 +81,31 @@ func TestAFullStreamIsAnsweredAsFullNotAsABusThatDidNotAnswer(t *testing.T) {
 // A send or publish the stream refuses for the message itself (bus.StreamRefusesMessage) was
 // answered, and the answer is final: the 409 under streamRefusedPrefix, with no Retry-After, and
 // the request record's outcome stream_refused, so an operator reading it looks at the stream's
-// configuration or the message's size rather than for an outage or a full stream.
+// configuration or the message's size rather than for an outage or a full stream. The record reads
+// the 409 back from the answer: a refusal of a resend after a send nothing answered is the
+// maybe-stored 503, since the first send may have stored the message, and is recorded as that 503
+// is, bus_unavailable, never stream_refused beside a 503.
 func TestAStreamRefusalIsAnsweredAndRecordedAsARefusal(t *testing.T) {
+	t.Run("an unanswered send, then the stream's refusal of the resend", func(t *testing.T) {
+		failure := fmt.Errorf("%w: %w", bus.ErrUnacknowledged,
+			&nats.APIError{Code: http.StatusBadRequest, ErrorCode: 10109, Description: "invalid operation on sealed stream"})
+		recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				rec := &requestRecord{logger: logger, line: "listener publish", laneKey: "topic", lane: contracts.RoleTopicPrefix + "reviewer"}
+				rec.refuseBusUnavailable(w, failure)
+			}
+		}, postJSON("/v1/messages/publish", "{}"))
+		var answer listenerwire.APIError
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
+		}
+		if recorder.Code != http.StatusServiceUnavailable || answer.Code != listenerwire.CodeMaybeStored {
+			t.Fatalf("answered %d %s, want the 503 with code %s", recorder.Code, recorder.Body.String(), listenerwire.CodeMaybeStored)
+		}
+		if record["outcome"] != "bus_unavailable" || record["status"] != float64(http.StatusServiceUnavailable) {
+			t.Fatalf("the request record's outcome is %v with status %v, want bus_unavailable with 503, as the answer was; record = %v", record["outcome"], record["status"], record)
+		}
+	})
 	subject := contracts.RoleTopicPrefix + "reviewer"
 	for _, route := range []struct {
 		name    string

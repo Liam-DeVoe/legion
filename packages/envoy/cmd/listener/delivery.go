@@ -575,7 +575,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 			return sessionID, resolved.Entry, roleHolderLive, nil
 		}
 		if reason, keepable := roleKeptReason(resolved); keepable {
-			keepErr := keepRoleLaneMessage(cfg, role, item, reason, sessionID)
+			keepErr := keepRoleLaneMessage(context.Background(), cfg, role, item, reason, sessionID)
 			if keepErr == nil {
 				return "", session.SessionEntry{}, roleMessageEnded, nil
 			}
@@ -605,7 +605,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 	}
 	switch failure.Step {
 	case roles.ClaimRead:
-		keepErr := keepRoleLaneMessage(cfg, role, item, roleClaimUnread, "")
+		keepErr := keepRoleLaneMessage(context.Background(), cfg, role, item, roleClaimUnread, "")
 		if keepErr == nil {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
@@ -681,11 +681,11 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 			cfg.roleForwards.keepWhenTheLaneHasDrained(item, held.pinned, held, nil)
 			return
 		}
-		cfg.roleForwards.keepHeld(item, held, roleKeptAtShutdown, nil)
+		cfg.roleForwards.keepHeld(item, held, roleKeptAtShutdown, nil, time.Time{})
 		return
 	}
 	if held.pinned != "" {
-		stands, err := pinnedHolderStands(cfg, held.pinned)
+		stands, err := pinnedHolderStands(context.Background(), cfg, held.pinned)
 		if err != nil {
 			cfg.roleForwards.hold(item, held.pinned, held, err)
 			return

@@ -81,9 +81,13 @@ func (o sendOutcome) deliveryStatus() string {
 }
 
 // forwardWindow is one forward's wait for the stream's acknowledgement that it stored it:
-// roleForwardTimeout, or what is left of the send when that is less.
+// roleForwardTimeout, or what is left of ctx when that is less. A ctx with no deadline leaves the
+// forward its whole window.
 func forwardWindow(ctx context.Context) time.Duration {
-	deadline, _ := ctx.Deadline()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return roleForwardTimeout
+	}
 	return min(roleForwardTimeout, time.Until(deadline))
 }
 
@@ -111,15 +115,18 @@ func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item con
 // busRefusesForGood reports whether NATS refused a publish under a rule another attempt repeats:
 // NATS refuses the envelope or subject however often it is sent (bus.ErrRefused), the listener's
 // grant does not allow the subject (bus.ErrPublishDenied), or the stream refuses the message
-// itself (bus.StreamRefusesMessage). It is the one list of those rules: the role lane ends a
-// forward on it (roleForwardEnded) and ends a keep on it (keepFailureHolds), a role send answers
-// a forward it refuses at once, as requestRecord.refuseBusUnavailable maps it (413 or 400 for a
-// refusal, 403 for a denial, 409 for the stream's refusal), and a kept copy's walk takes a dead
-// letter it refuses as sent (endKeptCopyWithDeadLetter). A refusal class added here reaches every
-// one of them. A send that retried such a forward to its window would answer 504, which a sender
-// that re-sends on a 5xx re-sends for as long as the refusal stands.
+// itself and no send of it may have stored it (streamRefusesForGood). It is the one list of those
+// rules: the role lane ends a forward on it (roleForwardEnded) and ends a keep on it
+// (keepFailureHolds), a role send answers a forward it refuses at once, as
+// requestRecord.refuseBusUnavailable maps it (413 or 400 for a refusal, 403 for a denial, 409 for
+// the stream's refusal), and a kept copy's walk takes a dead letter it refuses as sent
+// (endKeptCopyWithDeadLetter). A refusal class added here reaches every one of them. A send that
+// retried such a forward to its window would answer 504, which a sender that re-sends on a 5xx
+// re-sends for as long as the refusal stands. A stream's refusal that ended a publish an earlier
+// send of which went out unanswered is no such rule: that send may have stored the message, so
+// every one of them holds it or answers the maybe-stored 503, as writeBusUnavailable does.
 func busRefusesForGood(err error) bool {
-	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied) || bus.StreamRefusesMessage(err)
+	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied) || streamRefusesForGood(err)
 }
 
 // confirm records that the stream stored the message under dedupeKey for sessionID through the
@@ -208,15 +215,16 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // cannot be kept, so it is answered the bus-unavailable 503 its error maps to, with no refusal
 // exception, and the sender sends again, as the role lane holds its own message in that case. A
 // keep whose publish went out and was never acknowledged (bus.ErrUnacknowledged) is such a
-// failure, and may have stored the copy, so its 503 is the maybe-stored one
-// (writeBusUnavailable); the sender's next send under the same dedupe key finds that copy if the
-// stream stored it (storeKeptRoleCopy), and stores nothing new. A keep that kept nothing under a
-// rule - one this send's keep flag turned off, one under a role token no claim can name, a refused
-// envelope or a denied subject, each logged by keepRoleMessage or keepForNextHolder - is answered
-// as a send that kept nothing is, since the sender's own fallback must run when the message was
-// not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion daemon reads
-// as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal exception
-// (publishRefusalException).
+// failure whatever answer ended it after - the stream's refusal of a later send among them - and
+// may have stored the copy, so its 503 is the maybe-stored one (writeBusUnavailable); the sender's
+// next send under the same dedupe key finds that copy if the stream stored it (storeKeptRoleCopy),
+// and stores nothing new. A keep that kept nothing under a rule - one this send's keep flag turned
+// off, one under a role token no claim can name, a refused envelope, a denied subject, or a stream
+// that refuses the message itself with no earlier send unanswered, each logged by keepRoleMessage
+// or keepForNextHolder - is answered as a send that kept nothing is, since the sender's own
+// fallback must run when the message was not kept: writeRoleHolderError's 404 (unclaimed or
+// holder_lapsed), which the Legion daemon reads as notify.ErrNoHolder, recorded role_unclaimed or
+// role_lapsed, with its refusal exception (publishRefusalException).
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -231,7 +239,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
+		kept, err := keepForNextHolder(context.Background(), *s.d.delivery, s.role, s.item)
 		if err == nil {
 			s.kept(result, kept)
 			return

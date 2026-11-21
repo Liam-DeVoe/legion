@@ -15,10 +15,10 @@ import {
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
 import type { LegionSessionKind } from "./classify";
-import { createStallTeller } from "./stall-evidence";
 // The import below is this file's merge-base check: on the merge base there is no `./stall-exits`,
 // so every test here fails to resolve rather than passing vacuously.
 import { createStallExits, type StallExitsRecord, stallExitsFile } from "./stall-exits";
+import { createStallTeller } from "./stall-teller";
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -18,8 +19,11 @@ import (
 // kept, so it is answered the bus-unavailable 503 with Retry-After: 1 (keepFailureHolds,
 // roleSend.noHolder), and the sender sends again. A keep whose publish went out and was never
 // acknowledged may have stored the copy, so its 503 carries listenerwire.CodeMaybeStored
-// (writeBusUnavailable); one that stored nothing carries no code. A keep a rule refuses is still
-// the 404 (TestAPublishWhoseKeepFailsOnNATSIsAnsweredUnavailable holds that half).
+// (writeBusUnavailable), whatever answer ended the keep after it - the stream's refusal of the
+// resend a reconnect made (bus.sendStored keeps the first send's bus.ErrUnacknowledged) among
+// them, since the first send may have stored the copy; one that stored nothing carries no code. A
+// keep a rule refuses is still the 404 (TestAPublishWhoseKeepFailsOnNATSIsAnsweredUnavailable
+// holds that half).
 func TestAPublishWhoseKeepFailedOnNATSIsAnsweredUnavailable(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -28,6 +32,8 @@ func TestAPublishWhoseKeepFailedOnNATSIsAnsweredUnavailable(t *testing.T) {
 	}{
 		{"the keep's publish went out and was never acknowledged: 503 maybe stored",
 			fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed")), listenerwire.CodeMaybeStored},
+		{"an unanswered send, then the stream's refusal of the resend: 503 maybe stored",
+			fmt.Errorf("%w: %w", bus.ErrUnacknowledged, &nats.APIError{Code: http.StatusBadRequest, ErrorCode: 10109, Description: "invalid operation on sealed stream"}), listenerwire.CodeMaybeStored},
 		{"a keep that stored nothing: 503 with no code",
 			errors.New("nats: no responders available for request"), ""},
 	} {

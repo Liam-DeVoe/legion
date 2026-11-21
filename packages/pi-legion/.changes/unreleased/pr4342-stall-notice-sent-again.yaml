@@ -10,5 +10,6 @@ body: |-
   after 4 such refusals; any other 429 is final. A resend that tells the owner records the owner as
   told. The overdue notice's re-sends stop once its call has returned or its turn has ended, or
   once the ladder has stopped short, whose own notice supersedes it; the stop's notice is still
-  sent again after its call ends. No attempt starts more than 4 minutes after the first. Before,
-  a failure no rule decides was logged and dropped.
+  sent again after its call ends. No attempt starts more than 4 minutes after the first, judged
+  again when each wait ends, so a wait that ends late sends nothing. Before, a failure no rule
+  decides was logged and dropped.
