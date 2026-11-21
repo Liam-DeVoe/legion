@@ -360,8 +360,9 @@ func (m *Machine) pauseHoldAtResult() bool {
 // started as every stop held for a turn's end does, at most the copy's budget and never past the
 // hold's own deadline, and a copy that fails or runs out of its budget lets it go
 // (waitForTurnCopy): the claim stays idle meanwhile, holding the stop and handed nothing. It runs
-// at the end of each row that decides an answer of the prompt, its result or its refusal, and
-// nowhere else (stopAfterAnswer).
+// at the end of the two rows that decide an answer of the prompt while such a stop can wait for
+// it, its result and its late refusal, and nowhere else (stopAfterAnswer); the refusal of a claim
+// that cannot be prompted (refusedUnprompted) finds no claim idle.
 func (m *Machine) stopAtResult(ctx context.Context) error {
 	if !m.pauseHoldAtResult() || m.waitForTurnCopy() {
 		return nil

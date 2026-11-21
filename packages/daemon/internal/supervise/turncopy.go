@@ -98,9 +98,11 @@ func (m *Machine) waitForTurnCopy() bool {
 // not the stop has begun to wait for it (turnCopy.stopWaits). It is the one predicate a guard
 // asks. A pause's stop held for the prompt's answer begins that wait only at the answer
 // (stopAfterAnswer), after the answer's own decisions have run, so a guard that asked whether the
-// wait had begun would let those decisions cut the copy. Two readers ask that narrower question,
-// and read the mark itself: a new suspension, which starts the wait where it has not (suspend),
-// and the held stop's deadline, whose line says which bound ran out (suspendAtTimeout).
+// wait had begun would let those decisions cut the copy. Where code needs the narrower question
+// it reads the mark itself: a new suspension, which starts the wait where it has not (suspend),
+// the held stop's deadline and the stall backstop, whose lines say which bound holds
+// (suspendAtTimeout, backstopStalledTurn), and the copy's own start and end, which carry the
+// mark to a later copy and run the waiting stop (copyTurnEnd, endTurnCopyWait).
 //
 // It is the precondition of every path that stops or replaces the claim's process while it holds
 // a stop (endHeld, suspendHeld, fail, replaceNow): such a path asks it first, and where it is true

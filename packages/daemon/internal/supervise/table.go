@@ -2407,8 +2407,9 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // outstanding, and the claim was recorded working for the turn the agent named — and the stop
 // then runs after it as it does after every answer (stopAfterAnswer). The task can also stand
 // confirmed here with a send of it in flight: while the turn that confirmed it runs, that send's
-// own answer decides it; where that turn has ended and a pause's stop is held over the idle claim,
-// the stop runs after this answer, and its let-go fences that send's answer out (letGo).
+// own answer decides it; where that turn has ended, the settle that follows this answer retires
+// the confirmed task, which fences that send's answer out (fenceOutcome), and a pause's stop held
+// over the idle claim runs after this answer, or begins its wait for the turn's copy.
 //
 // busy is whether the answer is Oh My Pi's busy answer (agentBusy): the agent is in a prompt now,
 // so this is one more of the places the daemon learns that its session is busy, and a ready or
@@ -2474,8 +2475,9 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 // for the copy of the turn's end where one is still being taken (waitForTurnCopy). An act whose
 // claim is idle under such a stop leaves the claim to it: the result of a turn that ran and the
 // waited-out answer that takes a confirmation back each return there without the turn's aftermath
-// (afterTurn). Wired here, once for both rows, no path through either act strands the stop until
-// the pause's stop row asks again. The refusal of a claim that cannot be prompted
+// (afterTurn). Wired here, once for both rows, no act that returns without an error strands the
+// stop until the pause's stop row asks again; one that fails a write returns first, and that row's
+// next ask runs the stop. The refusal of a claim that cannot be prompted
 // (refusedUnprompted) finds no claim idle, and runs without it.
 func stopAfterAnswer(act func(*Machine, context.Context, Event) error) func(*Machine, context.Context, Event) error {
 	return func(m *Machine, ctx context.Context, ev Event) error {
