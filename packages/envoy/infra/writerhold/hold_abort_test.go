@@ -188,3 +188,29 @@ func TestHoldAbortAfterTheProvenDiskIsGone(t *testing.T) {
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
 	require.True(t, h.journal(id).Complete)
 }
+
+// An abort killed after its row move and before its done entry leaves the row released under its
+// hold id and its intent pending, so the record is not complete and the end rule cannot apply: a
+// later `hold restore --hold` of that id would put an aborted hold back to held. Its rerun sends
+// no move and writes the done entry, which completes the record. The control is the rerun as it
+// stood, which printed "already released" and wrote nothing, leaving the record incomplete.
+func TestHoldAnAbortKilledBeforeItsDoneEntry(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	ctx := context.Background()
+	id := h.hubRestoreHold()
+	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil)
+	require.NoError(t, err)
+	_, err = h.s.Records.MoveRow(ctx, h.row().Gen, natsgrant.OperatorPhaseReleased, id, "abort's move, then its crash")
+	require.NoError(t, err)
+	require.False(t, h.journal(id).Complete, "the killed abort completed the record")
+	gen := h.row().Gen
+
+	code, stdout, _ := h.run(actionAbort, "--hold", id, "--reason", "the rerun of an abort killed after its move")
+	require.Zero(t, code)
+	require.Contains(t, stdout, "done entry is now written")
+	require.Equal(t, gen, h.row().Gen, "the rerun moved the row again")
+	d := h.journal(id)
+	require.Equal(t, "done", latestState(d, holdrecord.CommandAbort))
+	require.True(t, d.Complete, "the rerun left the aborted hold's record incomplete")
+}

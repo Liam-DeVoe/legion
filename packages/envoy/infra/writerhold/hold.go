@@ -144,8 +144,8 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 // it also needs every claim on its expected disk (abortDisks: the newest done prove's, else step
 // 1's), and names a proven disk that is gone: the disks read again, the row moved to released, the
 // disks read once more (a restore that lands between the last check and the move is a restore
-// outside any hold, which it names), then its done entry. A row already released under this hold id
-// is the abort's whole effect: a rerun after the move changes nothing.
+// outside any hold, which it names), then its done entry. On a row already released under this
+// hold id it sends no move, and writes the done entry an abort killed after its move left unwritten.
 func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -154,13 +154,22 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	if row.HoldID != o.holdID {
 		return refusef(StepPreflight, "the hold row is %s under hold %s, not %s", row.Phase, row.HoldID, o.holdID)
 	}
-	if row.Phase == natsgrant.OperatorPhaseReleased {
-		fmt.Fprintf(stdout, "hold %s is already released (row gen %d)\n", o.holdID, row.Gen)
-		return nil
-	}
 	d, _, err := records.Journal(ctx, o.holdID)
 	if err != nil {
 		return err
+	}
+	if row.Phase == natsgrant.OperatorPhaseReleased {
+		// An abort killed between its move and its done entry left its intent pending: the rerun
+		// sends no move and writes the done entry, which completes the record and ends the hold.
+		if latestState(d, holdrecord.CommandAbort) == "intent" {
+			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "hold %s was aborted (row gen %d) and its abort's done entry is now written\n", o.holdID, row.Gen)
+			return nil
+		}
+		fmt.Fprintf(stdout, "hold %s is already released (row gen %d)\n", o.holdID, row.Gen)
+		return nil
 	}
 	if row.Phase == natsgrant.OperatorPhasePrepare {
 		// A row that reads prepare after hold set's done entry was rolled back by a database
