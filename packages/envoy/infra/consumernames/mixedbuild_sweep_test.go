@@ -31,9 +31,10 @@ const mixedBuildSweepCap = 256
 // many it listed, judged gone and deleted (session_consumer_sweep.go, pass).
 const mixedBuildSweepLine = "session consumer sweep pass"
 
-// mixedBuildCensusCommand is the cutover workflow's final command (holdrecord table.go), whose
-// entries the streams census command does not write itself, so the row writes them around a clean
-// run as `hold set`'s are written (harness_test.go, held).
+// mixedBuildCensusCommand is the cutover workflow's final command (holdrecord table.go). Round
+// 17's window (mixedBuildCutoverByRound17) runs no census and writes that command's entries
+// itself, as `hold set`'s are written (harness_test.go, held); the window through the commands
+// runs the word, which writes its own (mixedBuildCensus).
 const mixedBuildCensusCommand = "streams census"
 
 // The listener entries of the stack (holdtest.ListenerMachines) the row's programs connect as: the
@@ -203,18 +204,16 @@ func (h *stack) mixedBuildCutoverWithTheCommands() {
 	require.NoError(h.t, h.release(id), "release the cutover hold after convert and a clean census")
 }
 
-// mixedBuildCensus runs `envoy-infra streams census` with consumernames' reader of the recorded
-// session consumers (censusCommand) until a run is clean, between its intent and done entries: a
-// run that removed something (exit 1) is run again, and an UNKNOWN (exit 2) fails the test.
+// mixedBuildCensus runs `envoy-infra streams census` (censusCommand, t-10's word with this
+// package's readers) until a run is clean: the word writes its intent at each run, its stop entry
+// after a run that removed something (exit 1), which is run again, and its done entry after the
+// clean run, which completes the cutover's record. An UNKNOWN (exit 2) fails the test.
 func (h *stack) mixedBuildCensus(id string, families ...string) {
 	h.t.Helper()
-	ctx := context.Background()
-	_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: mixedBuildCensusCommand}, nil)
-	require.NoError(h.t, err)
 	for run := 1; ; run++ {
 		code, stdout, stderr := h.censusCommand(id, families...)
 		if code == 0 {
-			require.NoError(h.t, h.records().AppendDone(ctx, id, mixedBuildCensusCommand, nil))
+			require.True(h.t, h.journal(id).Complete, "the clean census's done entry did not complete the record")
 			return
 		}
 		if code != 1 || run == 5 {

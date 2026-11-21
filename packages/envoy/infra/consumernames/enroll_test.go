@@ -337,15 +337,24 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	listedDB := h.database(daemonFamily(listed), daemonMigrations...)
 	h.replaceNotificationStream()
 	h.enrollWindow()
+	// The census's readers open each declared family's store from the file its flag names:
+	// Dispatch's, which the window converted and which holds no record, and the new project's.
+	dispatchFile, _ := censusStore(t, familyDispatch, dispatchMigrations...)
 	censusArgs := []string{"--family", familySession, "--family", familyDispatch, "--family", daemonFamily(project),
-		"--daemon-consumer", daemonFixedPrefix + project + "-dispatch=" + enrollDispatchFilter}
+		"--daemon-consumer", daemonFixedPrefix + project + "-dispatch=" + enrollDispatchFilter,
+		"--dispatch-database-file", dispatchFile, "--daemon-database", project + "=" + censusDatabaseFile(t, db)}
 
-	// Control: the census, before any enroll, refuses naming the new project's family alone, and
-	// changes nothing.
+	// Control: the census, before any enroll, refuses naming the new project's family alone,
+	// changes nothing, and prints no report it did not make; its stop entry records it unchanged,
+	// so the hold is released.
 	census := h.heldHold(holdrecord.WorkflowStreamsCensus)
-	code, _, stderr := h.censusCommand(census, censusArgs...)
+	code, censusOut, stderr := h.censusCommand(census, censusArgs...)
 	require.NotEqual(t, 0, code, "control: the census refuses before the family is enrolled")
 	require.Contains(t, stderr, "not done: "+daemonFamily(project)+" (no row)")
+	require.NotContains(t, censusOut, "CLEAN", "control: the refused census printed a report it did not make")
+	require.Equal(t, holdrecord.Operation{Command: censusCommandName, State: "stop"},
+		holdrecord.Operation{Command: h.enrollLast(census).Command, State: h.enrollLast(census).State})
+	require.Equal(t, holdrecord.LeftUnchanged, h.enrollLast(census).Outputs["left"])
 	require.NoError(t, h.release(census))
 
 	// Control: a store holding a checkpoint stops enroll, naming it.
@@ -424,11 +433,13 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	require.NoError(t, batch.Error())
 	require.Equal(t, published, delivered, "the enrolled daemon serves every message published to its durable")
 
-	// A later census reads the family done, and keeps the daemon's durable.
+	// A later census reads the family done, keeps the daemon's durable, which the project's store
+	// records (RecordedFreshNames), and its done entry completes the streams-census hold's record.
 	census = h.heldHold(holdrecord.WorkflowStreamsCensus)
+	code, stdout, stderr = h.censusCommand(census, censusArgs...)
+	require.Equal(t, 0, code, "the census reads every family done, %s with them, and runs clean: %s%s", daemonFamily(project), stdout, stderr)
+	require.True(t, h.journal(census).Complete, "the clean census's done entry completes the record")
 	nc, _ := h.operator()
-	code, _, stderr = h.censusCommand(census, censusArgs...)
-	require.Equal(t, 0, code, "the census reads every family done, %s with them, and runs clean: %s", daemonFamily(project), stderr)
 	require.Equal(t, []string{current}, enrollProjectConsumers(t, nc, project), "the census keeps the enrolled daemon's durable")
 }
 

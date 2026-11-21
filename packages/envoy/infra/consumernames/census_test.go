@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,110 +17,82 @@ import (
 	"github.com/stretchr/testify/require"
 
 	selection "github.com/sjawhar/envoy/consumernames"
-	"github.com/sjawhar/envoy/infra/streams"
 	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// censusCommand runs the census step of `envoy-infra streams census` in the stack, with this
-// package's reader of the recorded consumers (RecordedSessionConsumers), under hold holdID, on the
-// stack's hub as the operator, and extra: the census's --family, --listener-machine-id and
-// --daemon-consumer flags. It writes no journal entry. It returns the exit code and the output.
-func (h *stack) censusCommand(holdID string, extra ...string) (int, string, string) {
-	h.t.Helper()
-	return h.censusCommandWith(RecordedSessionConsumers, holdID, extra...)
+// censusReaders are the census's readers and writer as cmd/envoy-infra passes them to
+// writerhold.StreamsCommand: this package's reader of the recorded session consumers
+// (RecordedSessionConsumers), of the recorded fresh names (RecordedFreshNames) and its writer of
+// the daemon stores' stream ids (ReconcileDaemonStreamIDs).
+func censusReaders() writerhold.CensusReaders {
+	return writerhold.CensusReaders{Recorded: RecordedSessionConsumers, FreshNames: RecordedFreshNames, Stores: ReconcileDaemonStreamIDs}
 }
 
-// censusCommandWith is censusCommand with recorded as the census's reader; nil reads none, which
-// t-10's word refuses as writerhold.ErrNoRecordReader, UNKNOWN.
-//
-// It is the census step of t-10's word, writerhold's heldStreams, run on the stack: the word reads
-// the signing key and the hub through writerhold's real environment, which a test outside that
-// package cannot replace, so this runs the same streams.Census with the same input the word builds
-// (its families, its declared consumers, the broker's cutover rows, the hold's barrier and
-// recorded), prints the report as the word prints it, and answers the report's exit code, or 1
-// with the census's refusal on stderr. The word's RunHeld journal entries around it are not
-// written here.
-func (h *stack) censusCommandWith(recorded writerhold.RecordedSessionConsumers, holdID string, extra ...string) (int, string, string) {
+// censusCommand runs `envoy-infra streams census --hold holdID` in the stack with this package's
+// readers (censusReaders) and extra, the census's own flags: --family, --listener-machine-id,
+// --daemon-consumer, --dispatch-database-file and --daemon-database. It returns the exit code and
+// the output.
+func (h *stack) censusCommand(holdID string, extra ...string) (int, string, string) {
 	h.t.Helper()
-	var families, machineIDs []string
-	var daemons []streams.ConsumerShape
-	for i := 0; i < len(extra); i += 2 {
-		require.Less(h.t, i+1, len(extra), "the census flag %s has no value", extra[i])
-		switch value := extra[i+1]; extra[i] {
-		case "--family":
-			families = append(families, value)
-		case "--listener-machine-id":
-			machineIDs = append(machineIDs, value)
-		case "--daemon-consumer":
-			name, filters, ok := strings.Cut(value, "=")
-			require.True(h.t, ok, "--daemon-consumer %q is not <name>=<filter>[,<filter>...]", value)
-			daemons = append(daemons, streams.ConsumerShape{Stream: bus.Stream, Name: name,
-				FilterSubjects: strings.Split(filters, ","), AckPolicy: nats.AckExplicitPolicy})
-		default:
-			h.t.Fatalf("the census takes no flag %s", extra[i])
-		}
-	}
-	ctx := context.Background()
-	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.OperatorCredential()...)
-	require.NoError(h.t, err)
-	defer nc.Close()
-	js, err := jetstream.New(nc)
-	require.NoError(h.t, err)
-	replicas, err := bus.ParseNATSReplicas("")
-	require.NoError(h.t, err)
-	maxBytes, err := bus.ParseStreamMaxBytes("")
-	require.NoError(h.t, err)
-	maxAge, err := bus.ParseSessionMaxAge("")
-	require.NoError(h.t, err)
-	records := h.records()
-	report, err := streams.Census(ctx, nc, streams.CensusInput{
-		Settings: streamset.Settings{Replicas: replicas, StreamMaxBytes: maxBytes, SessionMaxAge: maxAge},
-		Phase: func(ctx context.Context) (natsgrant.OperatorPhase, error) {
-			row, err := records.Row(ctx)
-			return row.Phase, err
-		},
-		Families: families,
-		Cutovers: func(ctx context.Context) (map[string]string, error) {
-			rows, err := records.Cutovers(ctx)
-			if err != nil {
-				return nil, err
-			}
-			states := make(map[string]string, len(rows))
-			for _, row := range rows {
-				states[row.Family] = row.State
-			}
-			return states, nil
-		},
-		Barrier: func(ctx context.Context, bucket string) error {
-			return holdrecord.Barrier(ctx, js, bucket, holdID)
-		},
-		Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: machineIDs, Daemons: daemons}),
-		RecordedSessionConsumers: func(ctx context.Context) ([]streams.ConsumerShape, error) {
-			if recorded == nil {
-				return nil, writerhold.ErrNoRecordReader
-			}
-			return recorded(ctx, nc)
-		},
-	})
+	return h.censusCommandWith(censusReaders(), holdID, extra...)
+}
+
+// censusCommandWith is censusCommand with readers as the census's readers and writer; a nil one
+// makes the census UNKNOWN (writerhold.CensusReaders).
+//
+// It is t-10's word itself, writerhold.StreamsCommandOn on the stack's hold routes and hub
+// (streamsDeps), with the hold's flags, whose values it does not read. The word runs inside its
+// hold (writerhold.RunHeld): it writes its intent, then its done entry on a clean run or its stop
+// entry otherwise, and its held re-read and postcheck admit no connection to the hub but its own
+// and the auth service's, so this first closes every connection operator opened
+// (closeOperators), as run does: a row connects again after it.
+func (h *stack) censusCommandWith(readers writerhold.CensusReaders, holdID string, extra ...string) (int, string, string) {
+	h.t.Helper()
+	h.closeOperators()
+	args := append([]string{"census", "--hold", holdID, "--reason", "the row's streams census"}, extra...)
+	args = append(append(args, commonArgs...), writingArgs...)
 	var stdout, stderr bytes.Buffer
-	for _, line := range report.Lines() {
-		fmt.Fprintln(&stdout, line)
-	}
-	code := report.ExitCode()
-	if err != nil {
-		fmt.Fprintf(&stderr, "envoy-infra %v\n", err)
-		code = 1
-	}
+	code := writerhold.StreamsCommandOn(context.Background(), args, &stdout, &stderr, h.streamsDeps(readers))
 	h.t.Logf("envoy-infra streams census %s: exit %d\n%s%s", strings.Join(extra, " "), code, stdout.String(), stderr.String())
 	return code, stdout.String(), stderr.String()
+}
+
+// censusStreamID is the notification stream's identity in the census rows
+// (censusNotificationStream).
+const censusStreamID = "the-census-notification-stream"
+
+// censusNotificationStream creates ENVOY_NOTIFICATIONS on js with the build's configuration at one
+// copy, as notificationStream does, and with the stream's identity
+// (selection.StreamIdentityMetadataKey), as the listener writes it when it creates the stream: the
+// census's writer of the daemon stores' stream ids (ReconcileDaemonStreamIDs), which the word runs
+// after a clean census, refuses a stream that carries none.
+func censusNotificationStream(t *testing.T, js jetstream.JetStream) {
+	t.Helper()
+	raw, err := json.Marshal(bus.NotificationStreamConfig(1, 0))
+	require.NoError(t, err)
+	var config jetstream.StreamConfig
+	require.NoError(t, json.Unmarshal(raw, &config))
+	config.Metadata = map[string]string{selection.StreamIdentityMetadataKey: censusStreamID}
+	_, err = js.CreateStream(t.Context(), config)
+	require.NoError(t, err)
+}
+
+// censusDatabaseFile writes the URL of the store on pool, a database the stack made (database),
+// to a file of the test's, as the census's --dispatch-database-file and --daemon-database name one:
+// the census's readers open each store from its file (openDatabase), where the stack's commands
+// take the pool itself.
+func censusDatabaseFile(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "store.url")
+	require.NoError(t, os.WriteFile(file, []byte(pool.Config().ConnString()+"\n"), 0o600))
+	return file
 }
 
 // censusSessionConsumer creates, as the operator, session sessionID's consumer name on the
@@ -159,22 +130,27 @@ func censusConsumers(t *testing.T, nc *nats.Conn) []string {
 	return names
 }
 
-// The streams census command, given no reader of the recorded consumers, exits 2 printing UNKNOWN
-// and removes nothing. With this package's reader it runs complete, in a held hold whose session
-// family's cutover row is done, over a bucket holding three sessions' records: it keeps each
-// recorded session~<nuid> consumer, whose filter holds its session's agent subject and a topic
-// beside it, a retired one that cleanup has not yet deleted, and the fresh listener durable that
-// the listener's durable.<escaped durable> record names, and it removes a stray
-// listener-<m>~<nuid> that no record names and an unrecorded session~<nuid> of a recorded session,
-// in that session's own shape. Control: a recorded session~<nuid> whose filter does not hold its
-// session's agent subject is removed, so a recorded name is compared by its shape and never by
-// name alone. A second run is clean.
+// The streams census command (t-10's word, with this package's readers), given no reader of the
+// recorded consumers, exits 2 printing UNKNOWN, removes nothing, and writes its stop entry,
+// recording that it left everything unchanged. With this package's reader it runs complete, in a
+// held hold whose session family's cutover row is done, over a bucket holding three sessions'
+// records: it keeps each recorded session~<nuid> consumer, whose filter holds its session's agent
+// subject and a topic beside it, a retired one that cleanup has not yet deleted, the fresh
+// listener durable that the listener's durable.<escaped durable> record names, and the fresh
+// listener durable of a machine no --listener-machine-id names, which its record alone names (the
+// recorded fresh names keep a listener-<m>~<nuid> only through a declared listener-<m>, so
+// RecordedSessionConsumers' listener shapes keep this one). It removes a stray listener-<m>~<nuid>
+// that no record names and an unrecorded session~<nuid> of a recorded session, in that session's
+// own shape, exits 1 and writes its stop entry naming each removal. Control: a recorded
+// session~<nuid> whose filter does not hold its session's agent subject is removed, so a recorded
+// name is compared by its shape and never by name alone. A second run is clean, and its done entry
+// completes the hold's record, the census being the streams-census workflow's final command.
 func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
 	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
 	nc, js := h.operator()
-	h.notificationStream(js)
+	censusNotificationStream(t, js)
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
 	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
@@ -203,6 +179,12 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	_, err = store.Write(ctx, selection.DurableKey(durable), selection.Record{Current: listener, Start: 1}, 0)
 	require.NoError(t, err)
 	kept[listener] = "the listener durable its record names"
+	undeclared := bus.ListenerDurable("undeclared")
+	undeclaredListener := selection.FreshName(undeclared)
+	censusListenerDurable(t, nc, undeclared, undeclaredListener)
+	_, err = store.Write(ctx, selection.DurableKey(undeclared), selection.Record{Current: undeclaredListener, Start: 1}, 0)
+	require.NoError(t, err)
+	kept[undeclaredListener] = "the listener durable of a machine no --listener-machine-id names, which its record names"
 	stray := selection.FreshName(durable)
 	censusListenerDurable(t, nc, durable, stray)
 	unrecordedSession := selection.FreshName(sessionBucketPrefix)
@@ -215,9 +197,16 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	require.NoError(t, err)
 
 	flags := []string{"--family", familySession, "--listener-machine-id", "hub"}
-	code, stdout, _ := h.censusCommandWith(nil, id, flags...)
+	noRecorded := censusReaders()
+	noRecorded.Recorded = nil
+	code, stdout, stderr := h.censusCommandWith(noRecorded, id, flags...)
 	require.Equal(t, 2, code, "the census with no reader")
 	require.Contains(t, stdout, "UNKNOWN")
+	require.Contains(t, stderr, writerhold.ErrNoRecordReader.Error())
+	last := h.enrollLast(id)
+	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the census with no reader ends in its stop entry")
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	nc, _ = h.operator()
 	require.Contains(t, censusConsumers(t, nc), stray, "a census with no reader removed a consumer")
 
 	code, stdout, _ = h.censusCommand(id, flags...)
@@ -226,6 +215,12 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+stray+": removed")
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+planted+": removed", "control: the recorded name with another filter")
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+unrecordedSession+": removed", "the unrecorded session consumer")
+	last = h.enrollLast(id)
+	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the census that removed consumers ends in its stop entry")
+	for _, removed := range []string{stray, planted, unrecordedSession} {
+		require.Contains(t, last.Outputs["left"], removed, "the stop entry names each removal")
+	}
+	nc, _ = h.operator()
 	left := censusConsumers(t, nc)
 	for name, what := range kept {
 		require.Contains(t, left, name, "the census removed %s", what)
@@ -237,6 +232,8 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	code, stdout, _ = h.censusCommand(id, flags...)
 	require.Equal(t, 0, code, "the second census: %s", stdout)
 	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
+	require.Equal(t, writerhold.CommandStreamsCensus+" done", h.enrollLast(id).Command+" "+h.enrollLast(id).State)
+	require.True(t, h.journal(id).Complete, "the clean census's done entry completes the streams-census hold's record")
 }
 
 // sessionBucketPrefix is every fresh session consumer's prefix (bus.SessionConsumerNamePrefix).
@@ -484,24 +481,6 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 	require.ErrorContains(t, err, selection.DurableKey("delivery-planted"), "control: a durable record of no listener")
 }
 
-// censusWaitingEnv runs the rows that wait on the census's recorded-names input: set to anything,
-// TestTheCensusRemovesAStrayDispatchAndDaemonName runs instead of skipping.
-const censusWaitingEnv = "CONSUMERNAMES_RUN_WAITING_CENSUS_ROWS"
-
-// censusSetsReader is the census's reader built on ReadRecordedNames for families, dispatchFile
-// and daemons, the stand-in for the census's recorded-names input (cybermonklabs/legion#4687),
-// which takes a set per family: it reads every declared family's store first, so a family it
-// cannot read makes the census UNKNOWN, and then answers RecordedSessionConsumers' shapes, the
-// input today's census takes.
-func censusSetsReader(families []string, dispatchFile string, daemons []string) writerhold.RecordedSessionConsumers {
-	return func(ctx context.Context, conn *nats.Conn) ([]streams.ConsumerShape, error) {
-		if _, err := ReadRecordedNames(ctx, conn, families, dispatchFile, daemons); err != nil {
-			return nil, err
-		}
-		return RecordedSessionConsumers(ctx, conn)
-	}
-}
-
 // censusCreateConfig creates, as the operator on nc, a consumer of the notification stream with a
 // configuration in nats.go's older form (bus.DispatchDeliveryConsumer gives that form), through the
 // one create the operator's grant names (writeConsumer).
@@ -516,56 +495,61 @@ func censusCreateConfig(t *testing.T, nc *nats.Conn, config nats.ConsumerConfig)
 }
 
 // A census whose reader cannot read a declared family's store is UNKNOWN, exit 2, naming the
-// family, and removes nothing: the census declares the session family and daemon/PROJ, and no
-// --daemon-database names PROJ's store, so the stray listener-hub~<nuid> stays. Control: with the
-// store named, the same census runs complete and removes the stray.
+// family, removes nothing, and writes its stop entry, recording that it left everything unchanged:
+// the census declares the session family and daemon/PROJ, and no --daemon-database names PROJ's
+// store, so the recorded fresh names (RecordedFreshNames) are refused before the census lists
+// anything, and the stray listener-hub~<nuid> stays. The word prints no report it did not make, so
+// its standard output holds no CLEAN. Control: with the store named, the same census runs complete
+// and removes the stray.
 func TestTheCensusIsUnknownWhenADeclaredFamilyIsUnread(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
 	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
 	nc, js := h.operator()
-	h.notificationStream(js)
+	censusNotificationStream(t, js)
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
 	stray := selection.FreshName(bus.ListenerDurable("hub"))
 	censusListenerDurable(t, nc, bus.ListenerDurable("hub"), stray)
-	families := []string{familySession, daemonFamily("PROJ")}
-	for _, family := range families {
+	for _, family := range []string{familySession, daemonFamily("PROJ")} {
 		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)
 		require.NoError(t, err)
 	}
 	flags := []string{"--family", familySession, "--family", daemonFamily("PROJ"), "--listener-machine-id", "hub"}
 
-	code, stdout, _ := h.censusCommandWith(censusSetsReader(families, "", nil), id, flags...)
-	require.Equal(t, 2, code, "a census with a declared family unread: %s", stdout)
-	require.Contains(t, stdout, "UNKNOWN")
-	require.Contains(t, stdout, daemonFamily("PROJ"))
+	code, stdout, stderr := h.censusCommand(id, flags...)
+	require.Equal(t, 2, code, "a census with a declared family unread: %s%s", stdout, stderr)
+	require.Contains(t, stderr, "UNKNOWN")
+	require.Contains(t, stderr, daemonFamily("PROJ"))
 	require.NotContains(t, stdout, "CHANGED")
+	require.NotContains(t, stdout, "CLEAN", "an UNKNOWN census printed a report it did not make")
+	last := h.enrollLast(id)
+	require.Equal(t, writerhold.CommandStreamsCensus+" stop", last.Command+" "+last.State, "the UNKNOWN census ends in its stop entry")
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	nc, _ = h.operator()
 	require.Contains(t, censusConsumers(t, nc), stray, "an UNKNOWN census removed the stray")
 
 	daemon, _ := censusDaemonStore(t, "PROJ", daemonMigrations...)
-	code, stdout, _ = h.censusCommandWith(censusSetsReader(families, "", []string{daemon}), id, flags...)
+	code, stdout, _ = h.censusCommand(id, append(flags, "--daemon-database", daemon)...)
 	require.Equal(t, 1, code, "control: the census with every declared family read: %s", stdout)
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+stray+": removed")
 }
 
-// WAITING on the census's recorded-names input (cybermonklabs/legion#4687): it skips unless
-// censusWaitingEnv is set. The census declares the session family, Dispatch and daemon/PROJ, each
-// with its records: Dispatch's intake_consumers names delivery-events~<nuid> and PROJ's names
-// legion-go-PROJ-wake~<nuid>, each a consumer in its family's own shape. The census keeps each
-// recorded name and removes a stray delivery-events~<nuid> and a stray legion-go-PROJ-wake~<nuid>
-// that no record names, in the same shapes, naming each removal; a second run is clean. Today's
-// census keeps any <name>~<nuid> of Dispatch's and a daemon's shapes, so the row fails until the
-// census takes a set per family; then the census's input line below passes ReadRecordedNames.
+// The census declares the session family, Dispatch and daemon/PROJ, each with its records:
+// Dispatch's intake_consumers names delivery-events~<nuid> and PROJ's names
+// legion-go-PROJ-wake~<nuid>, each a consumer in its family's own shape. The word passes the census
+// the recorded fresh names (RecordedFreshNames) of every store its flags name, so the census keeps
+// each recorded name and removes a stray delivery-events~<nuid> and a stray
+// legion-go-PROJ-wake~<nuid> that no record names, in the same shapes, naming each removal; a
+// second run is clean, and its done entry completes the hold's record. Control: the same census
+// with no --dispatch-database-file cannot read a declared family's records, so it is UNKNOWN and
+// removes neither stray.
 func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
-	if os.Getenv(censusWaitingEnv) == "" {
-		t.Skip("waits on the census's recorded-names input (cybermonklabs/legion#4687); set " + censusWaitingEnv + " to run it")
-	}
 	h := newStack(t)
 	ctx := t.Context()
 	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
 	nc, js := h.operator()
-	h.notificationStream(js)
+	censusNotificationStream(t, js)
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
 
@@ -592,25 +576,35 @@ func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
 	_, err = selection.NewPGStore(daemonDB).Write(ctx, wake, selection.Record{Current: recordedW, Start: 1}, 0)
 	require.NoError(t, err)
 
-	families := []string{familySession, familyDispatch, daemonFamily("PROJ")}
-	flags := []string{"--daemon-consumer", wake + "=" + bus.LegionWakeTopic}
-	for _, family := range families {
+	flags := []string{"--daemon-consumer", wake + "=" + bus.LegionWakeTopic, "--daemon-database", daemon}
+	for _, family := range []string{familySession, familyDispatch, daemonFamily("PROJ")} {
 		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)
 		require.NoError(t, err)
 		flags = append(flags, "--family", family)
 	}
-	// The census's input: the line that changes when the census takes a set per family.
-	reader := censusSetsReader(families, dispatchFile, []string{daemon})
 
-	code, stdout, _ := h.censusCommandWith(reader, id, flags...)
+	code, stdout, stderr := h.censusCommand(id, flags...)
+	require.Equal(t, 2, code, "control: the census with Dispatch's records unread: %s%s", stdout, stderr)
+	require.Contains(t, stderr, familyDispatch+"'s store")
+	require.NotContains(t, stdout, "CHANGED")
+	nc, _ = h.operator()
+	left := censusConsumers(t, nc)
+	require.Contains(t, left, strayD, "control: an UNKNOWN census removed the stray Dispatch name")
+	require.Contains(t, left, strayW, "control: an UNKNOWN census removed the stray daemon name")
+
+	flags = append(flags, "--dispatch-database-file", dispatchFile)
+	code, stdout, _ = h.censusCommand(id, flags...)
 	require.Equal(t, 1, code, "the census removes the strays: %s", stdout)
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+strayD+": removed", "the stray Dispatch name")
 	require.Contains(t, stdout, "CHANGED "+notifications+" consumer "+strayW+": removed", "the stray daemon name")
-	left := censusConsumers(t, nc)
+	nc, _ = h.operator()
+	left = censusConsumers(t, nc)
 	require.Contains(t, left, recordedD)
 	require.Contains(t, left, recordedW)
 	require.NotContains(t, left, strayD)
 	require.NotContains(t, left, strayW)
-	code, stdout, _ = h.censusCommandWith(reader, id, flags...)
+	code, stdout, _ = h.censusCommand(id, flags...)
 	require.Equal(t, 0, code, "the second census: %s", stdout)
+	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
+	require.True(t, h.journal(id).Complete, "the clean census's done entry completes the streams-census hold's record")
 }

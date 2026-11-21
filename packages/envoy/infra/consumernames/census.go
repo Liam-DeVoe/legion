@@ -36,7 +36,12 @@ import (
 //   - A listener durable's record (a key selection.CheckDurableKey accepts, of a durable named
 //     listener-<machine id>) names that listener's push durable, which the census compares as it
 //     compares the fixed one (streams.DeclaredConsumers): every notification subject the build
-//     carries, delivered to a reply inbox, acknowledged one at a time.
+//     carries, delivered to a reply inbox, acknowledged one at a time. These shapes stay beside the
+//     recorded fresh names the census also takes (RecordedFreshNames, whose listener set holds the
+//     same names): streams.shapeMismatch keeps a listener-<m>~<nuid> of that set only as the fresh
+//     form of a declared listener-<m> shape, which the census has for each --listener-machine-id
+//     alone, so a recorded durable of a machine the census does not declare is kept by its shape
+//     here and by nothing else.
 //
 // Every other key holding a '.' is a system key (selection.SentinelKey, hold.barrier.<hold id>)
 // and names nothing. A key whose last write is a delete marker is lost state, which this reader

@@ -149,6 +149,19 @@ func (h *stack) closeOperators() {
 	}
 }
 
+// streamsDeps are what writerhold.StreamsCommandOn reaches in place of the broker, Secret Manager
+// and the hub its flags name, so the writer hold's held words run on the stack: the operator's
+// client of the stack's hold routes, as env.records answers it, the stack's Operator (op), the
+// wall clock, and readers, the census's readers and writer.
+func (h *stack) streamsDeps(readers writerhold.CensusReaders) writerhold.StreamsDeps {
+	return writerhold.StreamsDeps{
+		Records:       func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(h.t), nil },
+		Operator:      func(context.Context) (*writerhold.Operator, error) { return h.op, nil },
+		Now:           time.Now,
+		CensusReaders: readers,
+	}
+}
+
 // records is the operator's client of the stack's hold routes.
 func (h *stack) records() *holdrecord.Client { return h.s.Records }
 

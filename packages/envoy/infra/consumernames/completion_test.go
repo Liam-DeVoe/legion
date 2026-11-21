@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/infra/writerhold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
@@ -29,8 +30,10 @@ func (rig *convertRig) convertWith(ctx context.Context, rule convertRule, holdID
 	return code, stderr.String()
 }
 
-// censusClean runs `streams census` for families until a run prints CLEAN, three runs at most,
-// and requires one does.
+// censusClean runs `streams census` (censusCommand, t-10's word with this package's readers) for
+// families until a run prints CLEAN, three runs at most, and requires one does. The word writes
+// its own journal entries: its intent at each run, a stop entry after each run that is not clean,
+// and its done entry after the clean one.
 func (rig *convertRig) censusClean(holdID string, families ...string) {
 	rig.t.Helper()
 	var extra []string
@@ -47,23 +50,16 @@ func (rig *convertRig) censusClean(holdID string, families ...string) {
 }
 
 // censusCommandName is `envoy-infra streams census` as the cutover's workflow table names it, its
-// final command.
-const censusCommandName = "streams census"
+// final command (writerhold.CommandStreamsCensus).
+const censusCommandName = writerhold.CommandStreamsCensus
 
-// admittedCensus runs `streams census` as its contract writes the journal: its admission and intent
-// (holdrecord.Client.Admit) at its start, the census until a clean run, and its done entry at the
-// end, which, the census being the cutover's final command, completes the record. The census this
-// branch carries (infra/streams) writes no journal entry; the word moves to the writer hold's
-// command, which runs it inside the hold with those entries, and this is the one place the rows
-// switch to that word. Until then the row writes the two entries around the census, as that word
-// will.
+// admittedCensus runs `streams census` until a clean run (censusClean): the word admits each run
+// itself (holdrecord.Client.Admit, its intent), and the clean run's done entry, the census being
+// the cutover's final command, completes the record, which it requires.
 func (rig *convertRig) admittedCensus(holdID string, families ...string) {
 	rig.t.Helper()
-	ctx := context.Background()
-	_, err := rig.records().Admit(ctx, holdID, holdrecord.Request{Command: censusCommandName}, nil)
-	require.NoError(rig.t, err, "the census's admission")
 	rig.censusClean(holdID, families...)
-	require.NoError(rig.t, rig.records().AppendDone(ctx, holdID, censusCommandName, nil))
+	require.Equal(rig.t, "done", latestEntry(rig.journal(holdID), censusCommandName), "the clean census wrote no done entry")
 }
 
 // Completion covers the whole cutover (gate 1, red team F3): create-bucket succeeds and leaves the
@@ -111,9 +107,13 @@ func TestCompletionCoversTheWholeCutover(t *testing.T) {
 
 	nc, _ := rig.operator()
 	before := censusConsumers(t, nc)
+	journal := rig.journal(id).Ops
 	code, _, stderr = rig.censusCommand(id, "--family", familySession)
 	require.NotZero(t, code, "the census ran before convert completed")
 	require.Contains(t, stderr, "convert")
+	require.Contains(t, stderr, holdrecord.ErrBusy.Error(), "the word's own admission refuses while convert's intent is pending")
+	require.Equal(t, journal, rig.journal(id).Ops, "the refused census wrote to the journal")
+	nc, _ = rig.operator()
 	require.Equal(t, before, censusConsumers(t, nc), "the refused census changed the stream's consumers")
 	nc.Close()
 	_, err := rig.records().Admit(context.Background(), id, holdrecord.Request{Command: censusCommandName}, nil)
@@ -130,8 +130,10 @@ func TestCompletionCoversTheWholeCutover(t *testing.T) {
 // convert has not run, every family's store marker is written cutover = done as the stores' own
 // writers write it (the bucket's sentinel by a conditional KV write of its key, which a listener's
 // KVWriteExisting grant admits, and Dispatch's and the daemon's intake_consumers rows through
-// their databases), and no broker cutover row exists. streams census exits naming convert and
-// changes nothing, create-bucket's entries leave the record incomplete, and release is refused.
+// their databases), and no broker cutover row exists. streams census, with every store its readers
+// read named, exits naming convert and changes nothing: the word's own admission is refused, convert
+// having no done entry, before it reads any marker. create-bucket's entries leave the record
+// incomplete, and release is refused.
 // Control: every store marker reads done, which round 17's rule read, so that rule's census would
 // have run and its release succeeded with every fixed name unconverted. It fails when any step
 // decides on a store marker. The sentinel's write goes through the operator's connection: a
@@ -180,9 +182,14 @@ func TestAForgedStoreMarkerCompletesNothing(t *testing.T) {
 	}
 
 	before := censusConsumers(t, nc)
-	code, _, stderr = rig.censusCommand(id, "--family", familySession, "--family", familyDispatch, "--family", daemonFamily("p1"))
+	journal := rig.journal(id).Ops
+	code, _, stderr = rig.censusCommand(id, "--family", familySession, "--family", familyDispatch, "--family", daemonFamily("p1"),
+		"--dispatch-database-file", censusDatabaseFile(t, dispatch), "--daemon-database", "p1="+censusDatabaseFile(t, daemon))
 	require.NotZero(t, code, "the census ran on forged store markers")
 	require.Contains(t, stderr, "convert")
+	require.Contains(t, stderr, holdrecord.ErrOutOfOrder.Error(), "the word's own admission refuses before convert")
+	require.Equal(t, journal, rig.journal(id).Ops, "the refused census wrote to the journal")
+	nc, _ = rig.operator()
 	require.Equal(t, before, censusConsumers(t, nc), "the refused census changed the stream's consumers")
 	nc.Close()
 	require.Len(t, rig.fixedNames(), 3, "a fixed name was converted or removed")
