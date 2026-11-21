@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,17 +26,20 @@ import (
 )
 
 // typeMigrations are the files that write the type nodes, in the order the runner applies them:
-// the seed, then each migration that has changed a type since. The test runs them all a second
-// time, in that order and through the same path the migration runner runs each, to prove a second
-// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
-// the attributes it was written at, which every later type migration has moved on from.
+// the seed, then each migration that has changed a type since. The test runs them a second time,
+// in that order and through the same path the migration runner runs each, to prove a second run
+// leaves the same nodes, all but each one written as literal rows, which runs once
+// (requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes). The seed alone would not do: run
+// again, it puts back the version and the attributes it was written at, which every later type
+// migration has moved on from.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
 	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
-	// The lens_kind supertag and the attribute nodes of the types that declare no block type,
-	// each held to this file by requireStoreOnlyAttributesMatchTheirMigrations.
+	// The lens_kind supertag and the attribute nodes of the types that declare no block type, as
+	// literal rows, each held to this file by requireStoreOnlyAttributesMatchTheirMigrations. It
+	// runs once, so the second run leaves it out.
 	"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql",
 }
 
@@ -332,10 +334,12 @@ type storeOnlyNode struct {
 	tie  graphstore.Tuple
 }
 
-// storeOnlyAttribute matches one attribute a type migration declares of a type with no block
-// type, as the values list of 20261116123354 writes it: the supertag, the attribute's name, its
-// kind and its position among that type's attributes.
-var storeOnlyAttribute = regexp.MustCompile(`\('([a-z_ ]+)', '([a-z_]+)', '([a-z\[\]]+)', ([0-9]+)\)`)
+// storeOnlyAttribute matches one attribute node a type migration writes of a type with no block
+// type, as the literal rows of 20261116123354 write it: the supertag and the attribute's name, which
+// the node's id `<supertag>/<name>` joins, and its attributes column, a JSON object written as an
+// SQL string (each quote in it doubled) that holds the attribute's kind, its name and its position
+// among that type's attributes.
+var storeOnlyAttribute = regexp.MustCompile(`\('attribute', '([a-z_ ]+)/([a-z_]+)', 'attribute', '[a-z_]+', '[a-z_]+', '((?:[^']|'')*)'`)
 
 // requireStoreOnlyAttributesMatchTheirMigrations holds the attribute nodes of the types that
 // declare no block type to the type migrations that declare them, field by field and in both
@@ -356,12 +360,21 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
 		}
 		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(string(text), -1) {
-			position, err := strconv.Atoi(match[4])
-			if err != nil {
-				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], filepath.Base(migration), err)
+			id := match[1] + "/" + match[2]
+			var carried struct {
+				Kind     string `json:"kind"`
+				Name     string `json:"name"`
+				Position *int   `json:"position"`
 			}
-			declared[match[1]+"/"+match[2]] = declaration{
-				supertag: match[1], name: match[2], kind: match[3], migration: filepath.Base(migration), position: position,
+			if err := json.Unmarshal([]byte(strings.ReplaceAll(match[3], "''", "'")), &carried); err != nil {
+				t.Fatalf("read the attributes of attribute node %q in %s: %v", id, filepath.Base(migration), err)
+			}
+			if carried.Name != match[2] || carried.Kind == "" || carried.Position == nil {
+				t.Fatalf("%s writes attribute node %q with attributes %s, want its name %q, a kind and a position",
+					filepath.Base(migration), id, match[3], match[2])
+			}
+			declared[id] = declaration{
+				supertag: match[1], name: match[2], kind: carried.Kind, migration: filepath.Base(migration), position: *carried.Position,
 			}
 		}
 	}
@@ -539,12 +552,23 @@ func (d *schemaDrift) report(t *testing.T) {
 		what, versions, typeMigrationExample)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
-// order, and holds every node row and every tuple to being the one the first run left.
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again but those
+// that run once, in order, and holds every node row and every tuple to being the one the first run
+// left.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
+	// A type migration written after the store's backfill (cybermonklabs/legion#3178) writes only
+	// literal rows and runs once: graph_nodes and graph_tuples are above the census's size limit in
+	// production, where the census admits only literal `values` rows, so such a file holds no `on
+	// conflict` or `not exists` that would let a second run write nothing, and a second run is
+	// refused on graph_nodes' primary key. That branch's next head re-runs only its own type
+	// migrations, so this second run leaves these out.
+	runsOnce := []string{"20261116123354_lens_catalogue.up.sql"}
 	before, beforeTuples := schemaRows(t, ctx, pool)
 	for _, migration := range typeMigrations {
+		if slices.Contains(runsOnce, filepath.Base(migration)) {
+			continue
+		}
 		text, err := os.ReadFile(filepath.Clean(migration))
 		if err != nil {
 			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
