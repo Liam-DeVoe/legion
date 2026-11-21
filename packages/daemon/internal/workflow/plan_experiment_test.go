@@ -59,7 +59,7 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 
 		firstStep(t, pool, engine, child)
 
-		assertDefaultPlan(t, planStandingOf(t, pool, engine, child, 1).plan, child, 1, todaysDefaultSteps)
+		assertDefaultPlan(t, planStandingOf(t, pool, engine, child, 1).plan, child, 1, todaysStoredSteps)
 		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
 		if got := walkStandingOf(t, pool, engine, child, 1); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v", child, got, want)
@@ -102,7 +102,7 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 
 		firstStep(t, pool, engine, child)
 
-		assertDefaultPlan(t, planStandingOf(t, pool, engine, child, 1).plan, child, 1, todaysDefaultSteps)
+		assertDefaultPlan(t, planStandingOf(t, pool, engine, child, 1).plan, child, 1, todaysStoredSteps)
 		if got := noticesOf(t, pool, child, "plan-not-taken"); len(got) != 0 {
 			t.Fatalf("the plan-not-taken notices = %+v, want none: the store held no plan of its owner", got)
 		}
@@ -127,7 +127,7 @@ func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 
 	firstStep(t, pool, engine, issue)
 
-	assertDefaultPlan(t, planStandingOf(t, pool, engine, issue, 1).plan, issue, 1, todaysDefaultSteps)
+	assertDefaultPlan(t, planStandingOf(t, pool, engine, issue, 1).plan, issue, 1, todaysStoredSteps)
 	told := noticesOf(t, pool, issue, "plan-not-taken")
 	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + issue +
 		" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
@@ -156,7 +156,7 @@ func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing
 
 		firstStep(t, pool, engine, root.Key)
 
-		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysDefaultSteps)
+		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysStoredSteps)
 		if got := planRowsOf(t, pool, root.Key); got != [3]int{1, 1, len(todaysDefaultSteps)} {
 			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the owner's plan deleted", root.Key, got)
 		}
@@ -222,7 +222,7 @@ func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 
 		firstStep(t, pool, engine, root.Key)
 
-		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysDefaultSteps)
+		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysStoredSteps)
 		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
