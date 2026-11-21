@@ -48,8 +48,11 @@ jobs:
     # broker's real hold routes over this job's Postgres, each a 3-server cluster whose every server
     # a hold restarts: 15 to 70 s a row on a dev box without -race, about 40 rows. With no
     # measurement of them here yet, the unit step is given 40 minutes (race-unit.sh's -timeout) and
-    # each forced-order step 15, as the envoy-go-race job's are: 32 + 40 + 30 = 102.
-    timeout-minutes: 102
+    # each forced-order step 15, as the envoy-go-race job's are: 32 + 40 + 30 = 102. The
+    # consumer-names commands (consumernames) add their forced-order rows to both steps: on a
+    # loaded dev box the hooked compile and the rows of that package took 6 minutes on 2.15.1, so
+    # each step is given 10 more: 32 + 40 + 50 = 122.
+    timeout-minutes: 122
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -149,18 +152,20 @@ jobs:
             go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
           done
         working-directory: packages/envoy/infra
-      # The writer hold's forced-order tests (packages/envoy/scripts/forced-order.sh, run against
-      # this module with -C): every TestForcedOrderHold test of writerhold, built with -tags
-      # odatrace and -race against a nats-server whose own code carries the hold points
-      # internal/testnats/hooks.go drives. The first step hooks the nats-server the module links,
-      # the second v2.10.29; the script fails a package that declares no such test. Neither step
-      # sets an environment variable: check-ci-filters.sh reduces no go command of a job one of
-      # whose steps sets a GO* name.
-      - name: Writer hold forced-order tests on the hooked nats-server the module links
-        run: ../scripts/forced-order.sh -C . ./writerhold/
+      # The writer hold's and the consumer-names commands' forced-order tests
+      # (packages/envoy/scripts/forced-order.sh, run against this module with -C): every
+      # TestForcedOrder test of writerhold and consumernames, built with -tags odatrace and -race
+      # against a nats-server whose own code carries the hold points internal/testnats/hooks.go
+      # drives. The first step hooks the nats-server the module links, the second v2.10.29, where
+      # the session consumers' rows prove that build's refusal and skip; the script fails a package
+      # that declares no such test, or whose every one skipped. Neither step sets an environment
+      # variable: check-ci-filters.sh reduces no go command of a job one of whose steps sets a GO*
+      # name.
+      - name: Writer hold and consumer-names forced-order tests on the hooked nats-server the module links
+        run: ../scripts/forced-order.sh -C . ./writerhold/ ./consumernames/
         working-directory: packages/envoy/infra
-      - name: Writer hold forced-order tests on the hooked nats-server v2.10.29
-        run: ../scripts/forced-order.sh -C . -server 2.10.29 ./writerhold/
+      - name: Writer hold and consumer-names forced-order tests on the hooked nats-server v2.10.29
+        run: ../scripts/forced-order.sh -C . -server 2.10.29 ./writerhold/ ./consumernames/
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
