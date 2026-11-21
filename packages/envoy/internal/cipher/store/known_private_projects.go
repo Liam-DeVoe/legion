@@ -24,6 +24,11 @@ import (
 // is the database's statement_timestamp(), plus DatabaseClockOffset, never a time a caller passes
 // or a pod's clock, so pods whose clocks differ cannot move a row's hold. A row is held while its
 // newest number, listed or recorded, is above its forgotten number; only a held row fences.
+//
+// A held row's channels are the newest read's list, with each record made while the row stayed
+// held added to it, so several switches in flight are all fenced. A read or a record that finds
+// the row not held starts the set from its own list, and its time from the database's: the set it
+// finds belongs to a switch or a listing a forget already ended, and fenced nothing while unheld.
 
 // MaxPrivateSwitchDeadline is the longest deadline a switch to private may run under, from before
 // its transaction begins to its commit: Dispatch's switch sends its deadline with its record, and
@@ -39,7 +44,8 @@ const MaxPrivateSwitchDeadline = 90 * time.Second
 const KnownPrivateHold = 2 * MaxPrivateSwitchDeadline
 
 // maxKnownPrivateChannels bounds one list of channels a read or a record stores: Dispatch's own
-// bound on a project's list.
+// bound on a project's list. The table allows a row 1024, the union of a read's list and those of
+// the records made while the row stayed held, a number no real sequence of switches reaches.
 const maxKnownPrivateChannels = 16
 
 // ErrPrivateProjectInput is a record or a read naming a key that is no Dispatch project key, more
@@ -71,9 +77,13 @@ func (o *ClockOffset) micros() int64 { return o.Get().Microseconds() }
 // offset, its parameter $1.
 const dbNow = `(statement_timestamp() + $1::bigint * interval '1 microsecond')`
 
+// rowHeld is whether the row an upsert found (the alias k) was held before the statement.
+const rowHeld = `(greatest(coalesce(k.listed, 0), coalesce(k.record, 0)) > coalesce(k.forgotten, 0))`
+
 // KnownPrivateProject is one held row: the project's key, its Slack channels, sorted (nil while
-// unknown), when the stored set last gained a channel (zero while unknown), and the database's
-// time of the statement that read the row, so a caller compares the two on the database's clock.
+// unknown), when the stored set last gained a channel or was started afresh on a row that was not
+// held (zero while unknown), and the database's time of the statement that read the row, so a
+// caller compares the two on the database's clock.
 type KnownPrivateProject struct {
 	Key              string
 	SlackChannels    []string
@@ -126,9 +136,9 @@ func (s *Store) StampPrivateList(ctx context.Context) (PrivateListStamp, error) 
 // with its time; the channels take the read's list (nil for an entry with no slack_channels key,
 // which stores them unknown), unless the row's listing is already above the stamp, so a slower read
 // stamped earlier changes nothing a later one wrote. channels_stored_at moves to the database's time
-// when the new set holds a channel the stored one did not, or becomes known; else it stays. A row
-// the read does not name is deleted only when its newest listing, record or forget is more than
-// KnownPrivateHold older than the stamp's time.
+// when the row was not held, when the new set holds a channel the stored one did not, or when the
+// set becomes known, [] included; else it stays. A row the read does not name is deleted only when
+// its newest listing, record or forget is more than KnownPrivateHold older than the stamp's time.
 func (s *Store) KeepPrivateProjects(ctx context.Context, stamp PrivateListStamp, listed []KnownPrivateProject) ([]string, error) {
 	keys := make([]string, 0, len(listed))
 	for _, project := range listed {
@@ -164,6 +174,7 @@ func (s *Store) KeepPrivateProjects(ctx context.Context, stamp PrivateListStamp,
 				channels_stored_at = case
 					when k.listed > excluded.listed then k.channels_stored_at
 					when excluded.slack_channels is null then null
+					when not `+rowHeld+` then `+dbNow+`
 					when k.slack_channels is null then `+dbNow+`
 					when exists (select 1 from unnest(excluded.slack_channels) c where c <> all (k.slack_channels)) then `+dbNow+`
 					else k.channels_stored_at end,
@@ -202,10 +213,12 @@ func heldKnownPrivate(ctx context.Context, tx pgx.Tx, key string) (bool, error) 
 }
 
 // RecordPrivateProject records key, with channels, for a switch to private, in one statement, and
-// answers the record's number from the sequence. A new row takes channels ([] for none); a row of
-// known channels takes their union with channels; a row of unknown channels keeps them unknown.
-// channels_stored_at is the database's time for a new row and whenever the set gains a channel.
-// The record's number is above every forget before it, so the row is held.
+// answers the record's number from the sequence. A new row, or a row that is not held, takes
+// channels ([] for none), and channels_stored_at the database's time: a set a forget already ended
+// fences nothing, so a later switch neither keeps it nor adds to it. A held row of known channels
+// takes their union with channels, with channels_stored_at moved whenever the set gains a channel;
+// a held row of unknown channels keeps them unknown. The record's number is above every forget
+// before it, so the row is held.
 func (s *Store) RecordPrivateProject(ctx context.Context, key string, channels []string) (int64, error) {
 	if err := checkKnownPrivate(key, channels); err != nil {
 		return 0, err
@@ -219,9 +232,12 @@ func (s *Store) RecordPrivateProject(ctx context.Context, key string, channels [
 			(project, slack_channels, channels_stored_at, record, recorded_at)
 		values ($2, $3::text[], `+dbNow+`, nextval('known_private_projects_seq'), `+dbNow+`)
 		on conflict (project) do update set
-			slack_channels = case when k.slack_channels is null then null
+			slack_channels = case
+				when not `+rowHeld+` then excluded.slack_channels
+				when k.slack_channels is null then null
 				else array(select distinct c from unnest(k.slack_channels || excluded.slack_channels) c order by c) end,
 			channels_stored_at = case
+				when not `+rowHeld+` then excluded.recorded_at
 				when k.slack_channels is null then null
 				when exists (select 1 from unnest(excluded.slack_channels) c where c <> all (k.slack_channels)) then excluded.recorded_at
 				else k.channels_stored_at end,

@@ -3,9 +3,12 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -113,15 +116,26 @@ func listedAs(key string, channels []string) store.KnownPrivateProject {
 	return store.KnownPrivateProject{Key: key, SlackChannels: channels}
 }
 
+// attemptChannels is switch attempt n's 16 channels, none of them another attempt's, sorted.
+func attemptChannels(n int) []string {
+	channels := make([]string, 16)
+	for i := range channels {
+		channels[i] = fmt.Sprintf("C0TRY%d%04d", n, i)
+	}
+	return channels
+}
+
 // TestTheStoredPrivateListKeepsWhatAReadNamed holds the stored private list's rules against
 // Postgres, moving the database's time with DatabaseClockOffset: a read adds what it names with its
-// channels and its stamp, and moves the channels' time only when the set gains a channel; a slower
-// read stamped earlier undoes nothing a later one wrote; a project whose channels a read did not
-// answer is kept with unknown channels; a row no read names leaves only past KnownPrivateHold; a
-// switch's record is held, numbered from the sequence, and survives every read stamped before it or
-// within the hold after it; a forget changes only the record it names, or none younger than the
-// hold; and a record made again after its row was deleted is numbered above the old one, so a
-// delayed forget naming the old record changes nothing.
+// channels and its stamp, and moves the channels' time only when the set gains a channel or its row
+// was not held; a slower read stamped earlier undoes nothing a later one wrote; a project whose
+// channels a read did not answer is kept with unknown channels; a row no read names leaves only
+// past KnownPrivateHold; a switch's record is held, numbered from the sequence, and survives every
+// read stamped before it or within the hold after it; a record on a row a forget released starts
+// from its own channels, and one on a held row adds to them; a forget changes only the record it
+// names, or none younger than the hold; a record made again after its row was deleted is numbered
+// above the old one, so a delayed forget naming the old record changes nothing; and the table holds
+// each channel to one conversation id and a row to 1024 of them.
 func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 	c1, c2, c9 := "C0PRIV00001", "C0PRIV00002", "C0STALE0009"
 
@@ -282,6 +296,68 @@ func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 		}
 	})
 
+	t.Run("a record on a row a forget released starts from its own channels and time", func(t *testing.T) {
+		st := storetest.Open(t)
+		var storedAt time.Time
+		for n := 1; n <= 3; n++ {
+			advance(st, time.Minute)
+			channels := attemptChannels(n)
+			record, err := st.RecordPrivateProject(context.Background(), "SWITCH", channels)
+			if err != nil {
+				t.Errorf("switch attempt %d's record of 16 channels no earlier attempt named: %v; want a number", n, err)
+				continue
+			}
+			row := heldRow(t, st, "SWITCH")
+			if !slices.Equal(row.SlackChannels, channels) || !row.ChannelsStoredAt.After(storedAt) {
+				t.Errorf("SWITCH after attempt %d's record = %d channel(s) %v stored at %v; want attempt %d's 16 alone, stored after %v: the earlier attempts' forgets released them", n, len(row.SlackChannels), row.SlackChannels, row.ChannelsStoredAt, n, storedAt)
+			}
+			storedAt = row.ChannelsStoredAt
+			if got := forget(t, st, "SWITCH", &record); got.Outcome != store.ForgetForgotten || slices.Contains(heldKeys(t, st), "SWITCH") {
+				t.Fatalf("attempt %d's numbered forget of SWITCH = %+v, held %v; want forgotten and SWITCH unheld", n, got, heldKeys(t, st))
+			}
+		}
+		advance(st, time.Minute)
+		recordSwitch(t, st, "SWITCH", attemptChannels(3)...)
+		if row := heldRow(t, st, "SWITCH"); !row.ChannelsStoredAt.After(storedAt) {
+			t.Errorf("SWITCH recorded again with the channels its released row held = stored at %v; want after %v: no pod fenced them while the row was released, so their settle starts again", row.ChannelsStoredAt, storedAt)
+		}
+	})
+
+	t.Run("records on a held row add their channels to its set", func(t *testing.T) {
+		st := storetest.Open(t)
+		keep(t, st, stamp(t, st), listedAs("SWITCH", attemptChannels(1)))
+		want := attemptChannels(1)
+		for n := 2; n <= 3; n++ {
+			advance(st, time.Minute)
+			before := heldRow(t, st, "SWITCH").ChannelsStoredAt
+			recordSwitch(t, st, "SWITCH", attemptChannels(n)...)
+			want = append(want, attemptChannels(n)...)
+			if row := heldRow(t, st, "SWITCH"); !slices.Equal(row.SlackChannels, want) || !row.ChannelsStoredAt.After(before) {
+				t.Fatalf("SWITCH, held, after attempt %d's record = %d channel(s) stored at %v; want the %d of the read and every record so far, stored after %v", n, len(row.SlackChannels), row.ChannelsStoredAt, len(want), before)
+			}
+		}
+		before := heldRow(t, st, "SWITCH").ChannelsStoredAt
+		advance(st, time.Minute)
+		recordSwitch(t, st, "SWITCH", attemptChannels(2)[:3]...)
+		if row := heldRow(t, st, "SWITCH"); !slices.Equal(row.SlackChannels, want) || !row.ChannelsStoredAt.Equal(before) {
+			t.Fatalf("SWITCH, held, after a record of channels it holds = %d channel(s) stored at %v; want the same %d, stored at %v", len(row.SlackChannels), row.ChannelsStoredAt, len(want), before)
+		}
+	})
+
+	t.Run("a read that holds a forgotten row again starts its channels' time afresh", func(t *testing.T) {
+		st := storetest.Open(t)
+		keep(t, st, stamp(t, st), listedAs("SWITCH", []string{c2}))
+		first := heldRow(t, st, "SWITCH").ChannelsStoredAt
+		if got := forget(t, st, "SWITCH", nil); got.Outcome != store.ForgetForgotten {
+			t.Fatalf("a numberless forget of a listed SWITCH no switch recorded = %+v; want forgotten", got)
+		}
+		advance(st, time.Minute)
+		keep(t, st, stamp(t, st), listedAs("SWITCH", []string{c2}))
+		if row := heldRow(t, st, "SWITCH"); !row.ChannelsStoredAt.After(first) {
+			t.Errorf("SWITCH held again by a read naming the %s its released row held = stored at %v; want after %v: no pod fenced it while the row was released, so its settle starts again", c2, row.ChannelsStoredAt, first)
+		}
+	})
+
 	t.Run("a record refuses what Dispatch would not send", func(t *testing.T) {
 		st := storetest.Open(t)
 		for _, c := range []struct {
@@ -290,6 +366,38 @@ func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 		}{{"priv", nil}, {"PRIV", []string{"#general"}}, {"PRIV", make([]string, 17)}} {
 			if _, err := st.RecordPrivateProject(context.Background(), c.key, c.channels); !errors.Is(err, store.ErrPrivateProjectInput) {
 				t.Errorf("RecordPrivateProject(%q, %v) = %v; want ErrPrivateProjectInput", c.key, c.channels, err)
+			}
+		}
+	})
+
+	t.Run("the table holds each channel to one conversation id, and a row to 1024", func(t *testing.T) {
+		st := storetest.Open(t)
+		ids := func(n int) []string {
+			channels := make([]string, n)
+			for i := range channels {
+				channels[i] = fmt.Sprintf("C%09d", i)
+			}
+			return channels
+		}
+		for _, c := range []struct {
+			key, what string
+			channels  []string
+			refusedBy string
+		}{
+			{"TWOIDS", "two ids", []string{c1, c2}, ""},
+			{"FULL", "1024 ids", ids(1024), ""},
+			{"SPACE", "one element holding two ids and a space", []string{c1 + " " + c2}, "known_private_projects_channels_ids"},
+			{"EMPTY", "one empty element", []string{""}, "known_private_projects_channels_ids"},
+			{"OVER", "1025 ids", ids(1025), "known_private_projects_channels_bounded"},
+		} {
+			_, err := st.Pool.Exec(context.Background(), `insert into known_private_projects
+				(project, slack_channels, channels_stored_at, record, recorded_at) values ($1, $2::text[], now(), 1, now())`, c.key, c.channels)
+			var refused *pgconn.PgError
+			switch {
+			case c.refusedBy == "" && err != nil:
+				t.Errorf("a row of %s = %v; want it stored", c.what, err)
+			case c.refusedBy != "" && (!errors.As(err, &refused) || refused.Code != "23514" || refused.ConstraintName != c.refusedBy):
+				t.Errorf("a row of %s = %v; want the table's check %s to refuse it (23514)", c.what, err, c.refusedBy)
 			}
 		}
 	})

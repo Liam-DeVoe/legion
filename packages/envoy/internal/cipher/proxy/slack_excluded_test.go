@@ -555,8 +555,8 @@ func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.
 	return ""
 }
 
-// storedAt is when st's stored private list first held channel for key, on the database's clock,
-// failing t when it does not hold it.
+// storedAt is key's channels_stored_at in st's stored private list, on the database's clock: when
+// its held row last gained a channel or began to be held, failing t when it does not hold channel.
 func storedAt(t *testing.T, st *store.Store, key, channel string) time.Time {
 	t.Helper()
 	known, err := st.KnownPrivateProjects(t.Context())
