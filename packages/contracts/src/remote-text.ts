@@ -330,7 +330,7 @@ const withheldBoxes = new WeakSet<RemoteText>();
 /** A box for a field whose words must not print at all, a library error's that no request record
  *  covers: {@link RemoteText.equals} and its kin still read it as it came, so a branch decided by a
  *  refusal's code is decided as before, and every way it prints prints the empty string. */
-export function withheldRemoteText(text: string): RemoteText {
+function withheldRemoteText(text: string): RemoteText {
   const box = new RemoteText(text);
   withheldBoxes.add(box);
   return box;
@@ -752,11 +752,11 @@ function isAsciiSpace(code: number): boolean {
 
 /** The shortest run of a credential's characters {@link tokens} redacts wherever it stands. Go's
  *  `redact.TokenPiece`. */
-export const TOKEN_PIECE = 8;
+const TOKEN_PIECE = 8;
 
 /** What {@link tokens} writes in place of a run of a credential's characters. Go's
  *  `redact.Redacted`. */
-export const REDACTED = "[redacted]";
+const REDACTED = "[redacted]";
 
 /** A letter, a digit or `_`: what may not stand right beside a short credential {@link tokens}
  *  redacts. */

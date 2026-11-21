@@ -755,7 +755,6 @@ export class BrokerTokenClient {
       );
     }
     const status = statusOf(error);
-    // A failure that crossed `callLibrary` keeps its class (`LibraryError.thrownClass`).
     const failure = error instanceof LibraryError ? error.thrownClass : errorClass(error);
     const said = status === 0 ? failure : `HTTP ${status}: ${failure}`;
     // The broker as `urlForText` names it, and the failure by its class: the library's or the
