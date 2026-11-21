@@ -6,12 +6,15 @@
 # its world and helpers; its header says what the fakes model. The rows:
 #
 #   (ce) a mutating webhook whose selector can match a guarded namespace, backed by the Service
-#        hooks/hook: apps/deployer that may patch deployments, or create jobs (rv16), in hooks exits
-#        1 naming the webhook, on the operator's cluster or another; the same webhook whose
-#        namespaceSelector excludes the guarded namespaces by name exits 0; a webhook that calls a
-#        URL, and a refused list of webhook configurations, read UNKNOWN;
-#   (cf) Kyverno's ClusterPolicy and its MutatingPolicy of policies.kyverno.io (rv15), cluster-scoped:
-#        legion/worker that may create either exits 1 naming it; the CRD with no holder exits 0; a
+#        hooks/hook: apps/deployer that may patch deployments in hooks, or create jobs (rv16),
+#        cronjobs or replicationcontrollers, create pods/exec or pods/attach, or patch
+#        pods/ephemeralcontainers there (N2), exits 1 naming the webhook, on the operator's cluster or
+#        another; the same webhook whose namespaceSelector excludes the guarded namespaces by name
+#        exits 0; a webhook that calls a URL, and a refused list of webhook configurations, read
+#        UNKNOWN;
+#   (cf) Kyverno's ClusterPolicy and its MutatingPolicy of policies.kyverno.io (rv15), and
+#        Kubewarden's ClusterAdmissionPolicy of policies.kubewarden.io (N1), cluster-scoped:
+#        legion/worker that may create any exits 1 naming it; the CRD with no holder exits 0; a
 #        refused list of CRDs reads UNKNOWN;
 #   (cg) a MutatingAdmissionPolicy whose binding names the ConfigMap hooks/sidecar-params as its
 #        parameter: legion/worker that may update that ConfigMap by name exits 1 naming the policy;
@@ -52,13 +55,24 @@ backend_row() {
       want_line "FINDING system:serviceaccount:ci:runner: update services in hooks, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com on cluster $project/us-east1/other-cluster" \
         "ci/runner may update the webhook backend's Service on another cluster"
       ;;
-    jobs)
+    jobs | cronjobs | replicationcontrollers | exec | attach | ephemeralcontainers)
+      # rv16 and N2: each pod-making or pod-entry right RIGHTS_TABLE asks a guarded namespace.
+      local grant right verb group resource sub
+      case "$1" in
+        jobs) grant="create|batch|jobs|" right="create jobs.batch" ;;
+        cronjobs) grant="create|batch|cronjobs|" right="create cronjobs.batch" ;;
+        replicationcontrollers) grant="create||replicationcontrollers|" right="create replicationcontrollers" ;;
+        exec) grant="create||pods|exec" right="create pods/exec" ;;
+        attach) grant="create||pods|attach" right="create pods/attach" ;;
+        ephemeralcontainers) grant="patch||pods|ephemeralcontainers" right="patch pods/ephemeralcontainers" ;;
+      esac
+      IFS='|' read -r verb group resource sub <<<"$grant"
       hook_config "" "$service" >"$world/clusters/operator-cluster/webhooks.json"
-      subject_grant operator-cluster "$(sa_subject apps deployer)" create batch jobs "" hooks ""
+      subject_grant operator-cluster "$(sa_subject apps deployer)" "$verb" "$group" "$resource" "$sub" hooks ""
       run
-      want_status 1 "apps/deployer may create jobs in the webhook backend's namespace"
-      want_line "FINDING system:serviceaccount:apps:deployer: create jobs.batch in hooks, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com" \
-        "apps/deployer may create jobs in the webhook backend's namespace"
+      want_status 1 "apps/deployer may $right in the webhook backend's namespace"
+      want_line "FINDING system:serviceaccount:apps:deployer: $right in hooks, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com" \
+        "apps/deployer may $right in the webhook backend's namespace"
       ;;
     excluded)
       hook_config exclude "$service" >"$world/clusters/operator-cluster/webhooks.json"
@@ -82,8 +96,8 @@ backend_row() {
   esac
 }
 if row ce; then
-  each backend_row backend jobs other-cluster excluded url refused
-  passed "(ce) a write to a matching webhook's backend, a Deployment's patch or a Job's create (rv16), exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook and a refused list read UNKNOWN"
+  each backend_row backend jobs cronjobs replicationcontrollers exec attach ephemeralcontainers other-cluster excluded url refused
+  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, and N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers) exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook and a refused list read UNKNOWN"
 fi
 
 # --- (cf) A policy engine's cluster-scoped resources: Kyverno's ClusterPolicy mutates pods. ---
@@ -108,6 +122,15 @@ policy_crd_row() {
       want_line "FINDING system:serviceaccount:legion:worker: create mutatingpolicies.policies.kyverno.io cluster-wide, a policy engine's resource" \
         "legion/worker may create Kyverno MutatingPolicies"
       ;;
+    kubewarden)
+      jq -n '[{spec: {group: "policies.kubewarden.io", scope: "Cluster", names: {plural: "clusteradmissionpolicies", kind: "ClusterAdmissionPolicy"}}}]' \
+        >"$world/clusters/operator-cluster/crds.json"
+      subject_grant operator-cluster "$(sa_subject legion worker)" create policies.kubewarden.io clusteradmissionpolicies "" "" ""
+      run
+      want_status 1 "legion/worker may create Kubewarden ClusterAdmissionPolicies"
+      want_line "FINDING system:serviceaccount:legion:worker: create clusteradmissionpolicies.policies.kubewarden.io cluster-wide, a policy engine's resource" \
+        "legion/worker may create Kubewarden ClusterAdmissionPolicies"
+      ;;
     no-holder)
       run
       want_status 0 "Kyverno's ClusterPolicy with no holder"
@@ -121,8 +144,8 @@ policy_crd_row() {
   esac
 }
 if row cf; then
-  each policy_crd_row holder mutating-policy no-holder refused
-  passed "(cf) a holder of create on Kyverno's ClusterPolicy or MutatingPolicy (rv15) exits 1, the CRD with no holder exits 0, and a refused list of CRDs reads UNKNOWN"
+  each policy_crd_row holder mutating-policy kubewarden no-holder refused
+  passed "(cf) a holder of create on Kyverno's ClusterPolicy or MutatingPolicy (rv15), or Kubewarden's ClusterAdmissionPolicy, exits 1; the CRD with no holder exits 0; a refused list of CRDs reads UNKNOWN"
 fi
 
 # --- (cg) An admission policy's parameter object, named by its binding's paramRef. ---
