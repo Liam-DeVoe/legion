@@ -736,7 +736,7 @@ var indexPasses = map[string]string{
 	// the `#` of a block's id - the identity of the document, which no node of the store carries, and
 	// the value the lens's row held. It states the lens's own next fact from its own placement, and
 	// mends neither side of a projection, so it is no repair.
-	"graphstore/reasoning.go#queueLensArtifactIDs": "the part_of tuples the write places lenses by, the artifacts row at the address of the document each names, and the artifact_id each lens holds",
+	"graphstore/lens_row.go#queueLensArtifactIDs": "the part_of tuples the write places lenses by, the artifacts row at the address of the document each names, and the artifact_id each lens holds",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through
@@ -774,11 +774,11 @@ var indexPasses = map[string]string{
 	// attributes of the node rows its node write marked and moves them onto the write's cause,
 	// which it reads off those rows' marks (graphstore's nodeMarks). It reads the store's own rows
 	// its write just wrote, no projection, and mends nothing.
-	"graphstore/write.go#queueAppendStatement": "the tuples its caller states and the node rows its own node write marked",
+	"graphstore/append.go#queueAppendStatement": "the tuples its caller states and the node rows its own node write marked",
 	// queueChangedByRun, the last statement of an append made for a run, appends the changed_by_run
 	// each node the write changed owes the run, reading only whether the node already holds an
 	// asserted one to that run's interaction, which the store's own tuples say: no projection.
-	"graphstore/write.go#queueChangedByRun": "the changed_by_run tuples the write owes its run, and the newest changed_by_run each node holds to that run",
+	"graphstore/append.go#queueChangedByRun": "the changed_by_run tuples the write owes its run, and the newest changed_by_run each node holds to that run",
 	// FillScopes states the project of a node an earlier build stored with none: it locks and
 	// updates the rows of the nodes its caller names, reading of each only whether it carries a
 	// project already and its own made_at, made_by and cause, which the fact it states takes. The

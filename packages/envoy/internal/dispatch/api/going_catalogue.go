@@ -260,10 +260,11 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/handoffs/{phase}",
 		Path: map[string]string{"key": "issue", "phase": "phase"},
 	}},
-	// The writes of the reasoning nodes under an issue (reasoning_routes.go). Each node stands
-	// under its parent by its part_of tuple and states who wrote it by authored_by where the
-	// credential proves an author. The pointer row's {id} is the node's store address, which the
-	// caller percent-encodes as one segment as every placeholder here is (chooseGoingRoute).
+	// The writes of the reasoning nodes under an issue (reasoning_routes.go, constraint_routes.go
+	// and pointer_routes.go). Each node stands under its parent by its part_of tuple and states who
+	// wrote it by authored_by where the credential proves an author. The pointer row's {id} is the
+	// node's store address, which the caller percent-encodes as one segment as every placeholder
+	// here is (chooseGoingRoute).
 	"dispatch_lens": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/lenses",
 		Path:      map[string]string{"key": "issue"},
