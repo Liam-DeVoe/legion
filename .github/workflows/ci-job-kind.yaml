@@ -153,11 +153,15 @@ jobs:
             github_token=${{ secrets.GITHUB_TOKEN }}
 
       # Layers a docker archive holds are compressed already, so the artifact stores them as
-      # they are. A day is long enough for a re-run of the part that reads it.
+      # they are. A day is long enough for a re-run of the part that reads it. The name holds no
+      # run attempt: `gh run rerun --job <part>` starts the part's attempt without this job, and
+      # a download by name reads the run's artifacts of every attempt, so the part finds the image
+      # the first attempt built. A re-run of this job uploads the same commit's image under the
+      # same name, which a part may read in place of the first; either is this commit's.
       - name: Upload the worker image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/worker-image.tar
           compression-level: 0
           retention-days: 1
@@ -214,7 +218,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # The test builds its package's test binary, and the rig's library builds kind with `go
@@ -290,7 +294,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # The test builds its package's test binary, and the rig's library builds kind with `go
@@ -358,7 +362,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # The tests build their package's test binary, and the rig's library builds kind with `go
@@ -432,7 +436,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # The run's setup packs this checkout's pi-envoy and pi-legion through
@@ -510,7 +514,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Bun and Go, for what runtime-root's comments say.
@@ -580,7 +584,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Bun and Go, for what runtime-root's comments say.
@@ -648,7 +652,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Bun and Go, for what runtime-root's comments say.
@@ -717,7 +721,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Bun and Go, for what runtime-root's comments say.
@@ -791,7 +795,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # The test builds its package's test binary, and its rig (kind_tree_rig_live_test.go) the
@@ -881,7 +885,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Go, for what tree-claude's comments say: the test's rig is the same.
@@ -947,7 +951,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Go, for what tree-claude's comments say: the test's rig is the same.
@@ -1013,7 +1017,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: kind-worker-image-${{ github.run_attempt }}
+          name: kind-worker-image
           path: ${{ runner.temp }}/kind-image
 
       # Go, for what tree-claude's comments say: the test's rig is the same.
