@@ -130,7 +130,15 @@
 #        impersonate a named user bound to cluster-admin, or escalate a named clusterrole bound to
 #        it; each exits 1 naming the name;
 #   (ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the
-#        names, with every live step refused.
+#        names, with every live step refused;
+#   (aq) deploy/bot can become ci/runner, which can create pods in envoy-operator, by each of create
+#        jobs (rv5), create deployments, create pods/attach, patch pods/ephemeralcontainers, patch
+#        pods, create rolebindings, bind and escalate roles, and create a custom resource in ci; each
+#        is a finding naming the chain;
+#   (ar) a kube-system ServiceAccount that may mint the operator's token is no finding, but
+#        legion/worker, which may create pods in kube-system, is one naming the chain (rv6); on
+#        another cluster, ci/runner, which may create pods in kube-system, becomes its namespace
+#        controller and is one too.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -1551,6 +1559,61 @@ if row ap; then
   want_line "FINDING system:serviceaccount:legion:worker: escalate clusterroles.rbac.authorization.k8s.io view cluster-wide, declared by ClusterRoleBinding worker-masters" \
     "a render's name-limited escalate rule"
   passed "(ap) a render's rule limited by resourceNames on impersonate or escalate is a finding naming the names"
+fi
+
+# --- (aq) Every namespaced way to become a ServiceAccount with a finding. Each entry is the grant to
+# deploy/bot in ci (verb, API group, resource, subresource) and the right the run must name. ---
+become_ways=(
+  "create|batch|jobs|=create jobs.batch"
+  "create|apps|deployments|=create deployments.apps"
+  "create||pods|attach=create pods/attach"
+  "patch||pods|ephemeralcontainers=patch pods/ephemeralcontainers"
+  "patch||pods|=patch pods"
+  "create|rbac.authorization.k8s.io|rolebindings|=create rolebindings.rbac.authorization.k8s.io"
+  "bind|rbac.authorization.k8s.io|roles|=bind roles.rbac.authorization.k8s.io"
+  "escalate|rbac.authorization.k8s.io|roles|=escalate roles.rbac.authorization.k8s.io"
+  "create|agents.x-k8s.io|sandboxes|=create sandboxes.agents.x-k8s.io"
+)
+become_way_row() {
+  local right="${1#*=}" verb group resource sub
+  IFS='|' read -r verb group resource sub <<<"${1%%=*}"
+  base_world
+  echo sandboxes.agents.x-k8s.io >"$world/clusters/operator-cluster/api-resources"
+  add_sa operator-cluster ci runner
+  add_sa operator-cluster deploy bot
+  subject_grant operator-cluster "$(sa_subject ci runner)" create "" pods "" envoy-operator ""
+  subject_grant operator-cluster "$(sa_subject deploy bot)" "$verb" "$group" "$resource" "$sub" ci ""
+  run
+  want_status 1 "deploy/bot with $right in ci"
+  want_line "FINDING system:serviceaccount:deploy:bot: $right in ci, so it can become system:serviceaccount:ci:runner, which can create pods in envoy-operator" \
+    "deploy/bot with $right in ci"
+}
+if row aq; then
+  each become_way_row "${become_ways[@]}"
+  passed "(aq) a ServiceAccount that can become one with a finding by each of ${#become_ways[@]} more namespaced rights is a finding naming the chain"
+fi
+
+# --- (ar) A system namespace's ServiceAccount allowed a right seeds the chain, unreported itself. ---
+if row ar; then
+  base_world
+  subject_grant operator-cluster "$(sa_subject kube-system generic-garbage-collector)" create "" serviceaccounts token envoy-operator envoy-operator
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" kube-system ""
+  run
+  want_status 1 "legion/worker may create pods in kube-system, whose ServiceAccount may mint the operator's token"
+  want_line "FINDING system:serviceaccount:legion:worker: create pods in kube-system, so it can become system:serviceaccount:kube-system:generic-garbage-collector, which can create serviceaccounts/token envoy-operator in envoy-operator" \
+    "legion/worker may create pods in kube-system (rv6)"
+  [ "$(count_prefix 'FINDING system:serviceaccount:kube-system:')" -eq 0 ] || fail "rv6: a kube-system ServiceAccount is itself a finding"
+  passed "(ar) a kube-system ServiceAccount that may mint the operator's token is no finding, but who may create pods in kube-system is one, naming the chain (rv6)"
+
+  base_world
+  add_cluster other-cluster us-east1
+  add_sa other-cluster ci runner
+  subject_grant other-cluster "$(sa_subject ci runner)" create "" pods "" kube-system ""
+  run
+  want_status 1 "ci/runner may create pods in kube-system on another cluster"
+  want_line "FINDING system:serviceaccount:ci:runner: create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster $project/us-east1/other-cluster" \
+    "ci/runner may create pods in kube-system on another cluster"
+  passed "(ar) on another cluster, who may create pods in kube-system becomes its namespace controller and is a finding"
 fi
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }

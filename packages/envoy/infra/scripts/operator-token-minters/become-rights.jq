@@ -1,16 +1,19 @@
 # operator-token-minters/become-rights.jq: follow_becomes's rights (reviews.sh), read from a
-# ServiceAccount a line (namespace, name, the right of its first finding, tab-separated): in each
-# namespace, create pods, create and get pods/exec, and get, list and watch secrets, and for each
-# ServiceAccount by name, create serviceaccounts/token and impersonate; as rights_json writes
-# rights, each with `targets`, the ServiceAccounts it makes its holder.
-      [split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], name: .[1], why: .[2]}] as $sas
-      | def become($list): $list | map("system:serviceaccount:\(.ns):\(.name), which can \(.why)") | join(", or ");
-        def right($verb; $res; $sub; $ns; $name; $list):
-          {verb: $verb, group: "", resource: $res, sub: $sub, ns: $ns, name: $name,
-           key: ([$verb, "", $res, $sub, $ns, $name] | join("|")),
-           label: ("\($verb) \($res)\(if $sub != "" then "/" + $sub else "" end)\(if $name != "" then " " + $name else "" end) in \($ns), so it can become " + become($list)),
-           targets: [$list[] | "\(.ns):\(.name)"]};
-        [(([$sas[].ns] | unique)[] as $n | [$sas[] | select(.ns == $n)] as $in
-          | right("create"; "pods"; ""; $n; ""; $in), right("create"; "pods"; "exec"; $n; ""; $in), right("get"; "pods"; "exec"; $n; ""; $in),
-            right("get"; "secrets"; ""; $n; ""; $in), right("list"; "secrets"; ""; $n; ""; $in), right("watch"; "secrets"; ""; $n; ""; $in)),
-         ($sas[] | right("create"; "serviceaccounts"; "token"; .ns; .name; [.]), right("impersonate"; "serviceaccounts"; ""; .ns; .name; [.]))]
+# ServiceAccount a line (namespace, name, the right of its first finding, tab-separated). In each
+# such namespace, every namespaced right of RIGHTS_TABLE ($table, each {verb, group, resource, sub,
+# named}: workload controllers, pods/exec and attach, ephemeral containers, pod patch, rolebinding
+# create, bind and escalate, secrets), and create on each custom resource of $names (custom.jq);
+# a right `named` there (a token, impersonate) is asked of each ServiceAccount by its name. As
+# rights_json writes rights, each with `targets`, the ServiceAccounts it makes its holder.
+include "custom";
+[split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], name: .[1], why: .[2]}] as $sas
+| def become($list): $list | map("system:serviceaccount:\(.ns):\(.name), which can \(.why)") | join(", or ");
+  def right($r; $ns; $name; $list):
+    {verb: $r.verb, group: $r.group, resource: $r.resource, sub: $r.sub, ns: $ns, name: $name,
+     key: ([$r.verb, $r.group, $r.resource, $r.sub, $ns, $name] | join("|")),
+     label: ("\($r.verb) \($r.resource)\(if $r.sub != "" then "/" + $r.sub else "" end)\(if $r.group != "" then "." + $r.group else "" end)"
+             + "\(if $name != "" then " " + $name else "" end) in \($ns), so it can become " + become($list)),
+     targets: [$list[] | "\(.ns):\(.name)"]};
+  ([$table[] | select(.named | not)] + [custom_resources($names)[] | {verb: "create", group, resource, sub: ""}]) as $wide
+  | [(([$sas[].ns] | unique)[] as $n | [$sas[] | select(.ns == $n)] as $in | $wide[] | right(.; $n; ""; $in)),
+     ($sas[] as $s | $table[] | select(.named) | right(.; $s.ns; $s.name; [$s]))]

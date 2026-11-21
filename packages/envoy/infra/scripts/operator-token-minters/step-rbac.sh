@@ -29,10 +29,12 @@ else
   declare -A seen_groups=() seen_accounts=() pattern_matched=()
   accounts=0 agents=0
   while IFS="$US" read -r -u 3 ns name bound; do
-    ! system_namespace "$ns" || continue
+    if system_namespace "$ns"; then
+      sa_record "$ns" "$name" seed: >>"$WORK/principals.rec"
+      continue
+    fi
     accounts=$((accounts + 1))
-    printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
-      "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
+    sa_record "$ns" "$name" >>"$WORK/principals.rec"
     is_agent=false
     for pattern in "${AGENT_NAMESPACES[@]}"; do
       # shellcheck disable=SC2053 # the pattern is a glob on purpose: legion-*-sessions

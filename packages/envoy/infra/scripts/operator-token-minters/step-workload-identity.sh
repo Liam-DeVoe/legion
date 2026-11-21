@@ -42,10 +42,12 @@ read_other_cluster() {
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   while IFS="$US" read -r -u 3 ns name; do
-    ! system_namespace "$ns" || continue
+    if system_namespace "$ns"; then
+      sa_record "$ns" "$name" seed: >>"$WORK/principals.rec"
+      continue
+    fi
     accounts=$((accounts + 1))
-    printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
-      "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
+    sa_record "$ns" "$name" >>"$WORK/principals.rec"
   done 3<"$WORK/serviceaccounts.rec"
   bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"

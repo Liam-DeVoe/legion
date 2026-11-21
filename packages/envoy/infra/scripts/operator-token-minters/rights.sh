@@ -139,6 +139,16 @@ rights_json() {
                      + (if .name != "" then " " + .name else "" end) + (if .ns != "" then " in " + .ns else " cluster-wide" end))}]
     | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'
 }
+# TABLE_JSON: the namespaced rows of RIGHTS_TABLE ({verb, group, resource, sub, named}), the ways in
+# a namespace to become a ServiceAccount of it that follow_becomes asks; `named` rows name the
+# ServiceAccount.
+TABLE_JSON="$(while read -r verb group resource sub scope; do
+  [ -n "$verb" ] && [ "$scope" != cluster ] || continue
+  [ "$group" != - ] || group=""
+  [ "$sub" != - ] || sub=""
+  printf '%s\t%s\t%s\t%s\t%s\n' "$verb" "$group" "$resource" "$sub" "$scope"
+done <<<"$RIGHTS_TABLE" | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t")
+  | {verb: .[0], group: .[1], resource: .[2], sub: .[3], named: (.[4] == "named")}]')"
 # GUARD_RIGHTS: the rights no principal the Workload Identity step reviews may hold on a cluster of
 # the pool, as rights_json writes rights: create namespaces cluster-wide, and for each guarded
 # pair's namespace, create serviceaccounts and create pods there. A pod in the namespace runs as

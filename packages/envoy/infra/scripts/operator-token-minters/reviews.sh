@@ -44,14 +44,24 @@ WITNESS_RECORD=$'witness\x1f\x1fsystem:masters'
 # Anyone the API server cannot name: every cluster's reviews hold it, so a grant to the group
 # system:unauthenticated is a finding whether or not a binding names system:anonymous.
 ANONYMOUS_RECORD=$'user:system:anonymous\x1fsystem:anonymous\x1fsystem:unauthenticated'
+# sa_record NAMESPACE NAME [PREFIX]: a ServiceAccount's principal record, with the groups the API
+# server gives it; PREFIX `seed:` labels a system namespace's ServiceAccount, which is reviewed as a
+# seed for follow_becomes and never a finding itself.
+sa_record() {
+  printf '%ssystem:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
+    "${3:-}" "$1" "$2" "$1" "$2" "$1"
+}
 # FOUND_SAS: each ServiceAccount (<namespace>:<name>) with a finding on the cluster read last, and
-# the right of its first finding, for follow_becomes.
+# the right of its first finding, for follow_becomes; and each seed, a system namespace's
+# ServiceAccount (its principal labelled seed:<its name>) allowed a right asked: no finding itself,
+# but who can become it holds what it holds.
 declare -A FOUND_SAS=()
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
-# SUFFIX, granted where the API server's reason says. Returns 1 when the witness was refused.
+# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS.
+# Returns 1 when the witness was refused.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false
+  local principal label verdict error reason witness_refused=false who
   FOUND_SAS=()
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
@@ -60,6 +70,11 @@ judge_reviews() {
     fi
     case "$verdict" in
       allowed)
+        if [[ "$principal" == seed:* ]]; then
+          who="${principal#seed:system:serviceaccount:}"
+          [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
+          continue
+        fi
         finding "$principal" "$label$2" "$label" "$3" "$label" "$reason"
         if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
           FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$label"
@@ -73,16 +88,17 @@ judge_reviews() {
     return 1
   fi
 }
-# follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount with a finding
-# holds what it holds. In the ServiceAccount's namespace a principal becomes it by create pods (a
-# pod runs as any ServiceAccount of its namespace), create or get pods/exec (entering a pod that
-# runs as it), get, list or watch secrets (a token Secret of it), and, by its name, create
-# serviceaccounts/token or impersonate. Each principal of $WORK/principals.rec allowed one of these
-# is a finding naming the chain, and each ServiceAccount so found is followed in turn, up to 5
-# steps; one found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only
-# itself is no finding.
+# follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount of FOUND_SAS holds
+# what it holds. In the ServiceAccount's namespace a principal becomes it by any namespaced right of
+# RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its namespace; exec,
+# attach, an ephemeral container or a pod patch enters one; a rolebinding, bind or escalate grants
+# itself those; a token Secret is read) or by create on a custom resource there, and, by its name,
+# by create serviceaccounts/token or impersonate (become-rights.jq). Each principal of
+# $WORK/principals.rec allowed one of these is a finding naming the chain, but a seed, which is only
+# followed; each ServiceAccount so found is followed in turn, up to 5 steps; one found in the fifth
+# and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no finding.
 follow_becomes() {
-  local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason
+  local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who
   local -A followed=() targets_of=()
   for ((round = 0; round < 5; round++)); do
     : >"$WORK/become.tsv"
@@ -92,7 +108,7 @@ follow_becomes() {
       printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${FOUND_SAS[$sa]}" >>"$WORK/become.tsv"
     done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
     [ -s "$WORK/become.tsv" ] || return 0
-    rights="$(jq -R -s -c -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
+    rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
     targets_of=()
     while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
     if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights"; then
@@ -103,7 +119,13 @@ follow_becomes() {
       [ "$principal" != witness ] || continue
       case "$verdict" in
         allowed)
-          [ "${targets_of[$label]:-}" != "${principal#system:serviceaccount:}" ] || continue
+          who="${principal#seed:}"
+          who="${who#system:serviceaccount:}"
+          [ "${targets_of[$label]:-}" != "$who" ] || continue
+          if [[ "$principal" == seed:* ]]; then
+            [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
+            continue
+          fi
           finding "$principal" "$label$suffix" "$label" "$resource" "$label" "$reason"
           if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
             FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$label"
@@ -130,7 +152,7 @@ custom_rights() {
   if ! kubectl --kubeconfig "$1" api-resources --namespaced=true --verbs=create -o name >"$WORK/api-resources" 2>"$WORK/api-resources.err"; then
     CUSTOM_ERROR="the API server's discovery of namespaced resources could not be read whole, so create on a custom resource it leaves out is not reviewed: $(first_line "$WORK/api-resources.err")"
   fi
-  CUSTOM_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c --rawfile names "$WORK/api-resources" --arg style "$2" -f "$LIB/custom-rights.jq")"
+  CUSTOM_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -L "$LIB" --rawfile names "$WORK/api-resources" --arg style "$2" -f "$LIB/custom-rights.jq")"
   [ -z "$CUSTOM_ERROR" ]
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added

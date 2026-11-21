@@ -78,10 +78,14 @@
 #                     server whose answers cannot say yes proves nothing by saying no. Each
 #                     --agent-namespace pattern that matches no namespace holding a ServiceAccount
 #                     is UNKNOWN, so a mistyped one cannot drop its agents in silence. Then who can
-#                     become a ServiceAccount with a finding, in its namespace (create pods, create
-#                     or get pods/exec, get, list or watch secrets, and by its name create
-#                     serviceaccounts/token or impersonate), is a finding naming the chain, followed
-#                     in turn up to 5 steps.
+#                     become a ServiceAccount with a finding is a finding naming the chain, followed
+#                     in turn up to 5 steps: in its namespace, by any namespaced right of the list
+#                     below (a pod or a workload controller runs as it; exec, attach, an ephemeral
+#                     container or a pod patch enters one; a rolebinding, bind or escalate grants
+#                     those; a token Secret is read) or create on a custom resource there, and by
+#                     its name, create serviceaccounts/token or impersonate. A system namespace's
+#                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
+#                     a right asked, who can become it is followed the same way.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
 #                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
