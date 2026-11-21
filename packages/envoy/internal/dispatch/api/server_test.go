@@ -104,9 +104,12 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *ciphertoken.Verifier
-	// agentSecretsURL and agentSecretsTokenFile are Deps' broker relay for the credential pages
-	// (DISPATCH_AGENT_SECRETS_URL and the file holding Dispatch's own account token at that
-	// broker); empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	// agentSecretsURL points Deps' broker relay for the credential pages at a secrets broker
+	// (DISPATCH_AGENT_SECRETS_URL), and the server presents its account token there from
+	// agentSecretsTokenFile, or, when that is empty, from a file newRegisteredTestServer writes
+	// holding credentialTestAccountToken, as envoyURL's is; an empty agentSecretsURL is the
+	// deployment with no broker, whose credential routes answer FEATURE_OFF. A real broker's rig
+	// names its own token's file (agentSecretsTokenFile).
 	agentSecretsURL       string
 	agentSecretsTokenFile string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
@@ -315,6 +318,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
 	}
+	agentSecretsTokenFile := options.agentSecretsTokenFile
+	if options.agentSecretsURL != "" && agentSecretsTokenFile == "" {
+		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:            database,
 		Identity:         people,
@@ -352,7 +359,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BusProjects:           options.busProjects,
 		BrokerTokens:          brokerTokens,
 		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: options.agentSecretsTokenFile,
+		AgentSecretsTokenFile: agentSecretsTokenFile,
 		AgentStream:           options.agentStream,
 		AgentPublisher:        agentPublisher,
 		Embedder:              options.embedder,

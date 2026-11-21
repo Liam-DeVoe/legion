@@ -481,11 +481,13 @@ type routeScopeSet []string
 //
 // These are the routes Dispatch refused every bearer token on until INFRA-1017, and two scopes
 // decide them now: `person`, "this credential acts as its person", which every row here needs,
-// and `approve`, the right to settle what a person settles, which the eighteen rows below that
-// decide a credential, a sign-in, a review, a token or who may see a project need as well. A
-// person's browser, their personal tokens and their machine logins hold both; the shared token, a
-// pod's service-account token, a project-scoped session's token and a broker-issued token that
-// names a service and no person hold neither.
+// and `approve`, the right to settle what a person settles, which the rows below that decide a
+// credential, a sign-in, a review, a decision's Keep, a token, or who may see a project or where
+// its credentials may post need as well. A person's browser holds both, and their personal tokens
+// hold the set each token's row names. A broker-issued token that acts for its person holds
+// `person` alone, never `approve` (brokerTokenActor). The shared token, a pod's service-account
+// token, a project-scoped session's token and a broker-issued token that names a service and no
+// person hold neither.
 //
 // The scope `read` a read-only token holds is no value of this map: a scope here is one the
 // caller must hold, and no person holds that one. The routes such a token may call are a list of
@@ -518,7 +520,6 @@ var routeScopes = map[string]routeScopeSet{
 	"PUT /api/v1/me/issues/{key}/state":                      {model.ScopePerson},
 	"GET /api/v1/me/agents/state":                            {model.ScopePerson},
 	"PUT /api/v1/me/agents/{session_id}/state":               {model.ScopePerson},
-	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":     {model.ScopePerson},
 	"GET /api/v1/me/documents/{id}/read":                     {model.ScopePerson},
 	"PUT /api/v1/me/documents/{id}/read":                     {model.ScopePerson},
 	"PUT /api/v1/me/asks/{id}/snooze":                        {model.ScopePerson},
@@ -569,12 +570,13 @@ var routeScopes = map[string]routeScopeSet{
 	// The review that names the version its caller read settles what the review above settles,
 	// with that version as a guard.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
-	// A project's access list, its visibility and its owner decide who may see the project, and so
-	// does a group a private project's list names: its members are who it admits, its owner who
-	// changes that, and deleting it takes it off every list. A change to any of them settles what
-	// an owner settles, so a credential holding person alone - a personal token its owner minted
-	// or narrowed to person (POST /api/v1/me/agent-tokens, PATCH /api/v1/me/agent-tokens/{id})
-	// among them - reads the lists and groups and changes none of them.
+	// A project's access list, its visibility and its owner decide who may see the project, and its
+	// Slack channels decide where its credentials may post; a group a private project's list names
+	// decides who may see it too: its members are who it admits, its owner who changes that, and
+	// deleting it takes it off every list. A change to any of them settles what an owner settles,
+	// so a credential holding person alone - a personal token its owner minted or narrowed to person
+	// (POST /api/v1/me/agent-tokens, PATCH /api/v1/me/agent-tokens/{id}) among them - reads the
+	// lists and groups and changes none of them.
 	"PATCH /api/v1/projects/{key}/access":                 {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/projects/{key}/access/people/{email}":    {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/projects/{key}/access/people/{email}": {model.ScopePerson, model.ScopeApprove},
@@ -582,6 +584,9 @@ var routeScopes = map[string]routeScopeSet{
 	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/access-groups/{name}":                    {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/access-groups/{name}":                 {model.ScopePerson, model.ScopeApprove},
+	// Keeping a decision records the person's agreement with it ("Kept by" in the web app), which
+	// takes it out of what waits on their review, so it settles what a person settles too.
+	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
 }
 
 // readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
@@ -729,8 +734,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/projects/{key}/related", authAny, fmt.Sprintf("Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to %d issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over %d characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.", relatedExcludeLimit, contracts.SearchQueryMax), s.getRelated},
 		{http.MethodPost, "/api/v1/projects/{key}/related", authAny, fmt.Sprintf("The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over %d characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds. The two forms do not answer alike. This one is the check an agent runs to ask a question, so it answers other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in (owner.project), ranked by meaning alone and offered with no claim that they answer the question. The GET form answers none.", contracts.IssueTitleMax), s.postRelated},
 		{http.MethodGet, "/api/v1/settings/repo-projects", authAny, "List GitHub repository to project mappings, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed.", s.listRepoProjects},
-		{http.MethodPut, "/api/v1/settings/repo-projects/{owner}/{repo}", authAny, `Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. The path's owner and name are held to the characters GitHub allows, and a name that is . or .. or empty or longer than 100 characters (a trailing .git trimmed) is refused: such a path is 400 INVALID_REPO_PROJECT. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair that is not an owner and a name of the characters GitHub allows, or whose name is . or .. or longer than 100 characters (a trailing .git trimmed), a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy.`, s.putRepoProject},
-		{http.MethodDelete, "/api/v1/settings/repo-projects/{owner}/{repo}", authAny, "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. The path removes only the mapping stored under its own spelling, its two segments as unescaped and compared byte for byte: acme/x removes acme/x, and acme/x.git removes the mapping stored as acme/x.git and never acme/x, so the same DELETE sent again removes nothing more. A path naming no stored mapping removes nothing: 204, or 400 INVALID_ISSUE_REF where the path is no owner/name an issue reference takes.", s.deleteRepoProject},
+		{http.MethodPut, "/api/v1/settings/repo-projects/{owner}/{repo}", authAny, `Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. The path's owner and name are held to the characters GitHub allows, and a name that is . or .. or empty or longer than 100 characters (a trailing .git trimmed) is refused: such a path is 400 INVALID_REPO_PROJECT. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair that is not an owner and a name of the characters GitHub allows, or whose name is . or .. or longer than 100 characters (a trailing .git trimmed), a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default, or moves or clears the default its project held, is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy. A project the caller does not see, as the target or as the project the mapping is in, is answered exactly as a project no row holds.`, s.putRepoProject},
+		{http.MethodDelete, "/api/v1/settings/repo-projects/{owner}/{repo}", authAny, "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. The path removes only the mapping stored under its own spelling, its two segments as unescaped and compared byte for byte: acme/x removes acme/x, and acme/x.git removes the mapping stored as acme/x.git and never acme/x, so the same DELETE sent again removes nothing more. A path naming no stored mapping removes nothing: 204, or 400 INVALID_ISSUE_REF where the path is no owner/name an issue reference takes. A mapping of a project the caller does not see is answered as a path naming no stored mapping, and nothing is removed; the removal of a project's default is 403 REPOSITORY_NOT_AVAILABLE when the caller cannot read the repository through Dispatch's GitHub proxy.", s.deleteRepoProject},
 		{http.MethodGet, "/api/v1/github/app-installation/{owner}/{repo}", authAny, "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked.", s.getAppInstallation},
 		{http.MethodGet, "/api/v1/settings/architecture-sources", authAny, "List every project's architecture sources, by project and then in the order each project added them.", s.listArchitectureSources},
 		{http.MethodGet, "/api/v1/projects/{key}/architecture-sources", authAny, "A project's architecture sources, one per repository, in the order they were added; [] when it has none. The project's component model is every source's components together.", s.listProjectArchitectureSources},

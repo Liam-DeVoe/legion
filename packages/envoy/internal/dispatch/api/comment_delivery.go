@@ -1090,14 +1090,6 @@ func scanCommentDelivery(row pgx.Row, extra ...any) (model.CommentDelivery, erro
 	return attempt, nil
 }
 
-func loadCommentDelivery(ctx context.Context, q queryer, commentID, target string, attemptNumber int) (model.CommentDelivery, error) {
-	return scanCommentDelivery(q.QueryRow(ctx, `
-		select `+commentDeliveryColumns+`
-		from comment_deliveries
-		where comment_id = $1 and target = $2 and attempt = $3
-	`, commentID, target, attemptNumber))
-}
-
 // createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries.
 type createCommentDeliveryInput struct {
 	Actor    *model.Actor `json:"actor"`
@@ -1336,8 +1328,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
-		join comments c on c.id = m.comment_id
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
+		join comments c on c.id = m.comment_id
 		where m.comment_id = $1 and m.target = coalesce($2, m.target)
 		  and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$4")+`
 		order by m.target

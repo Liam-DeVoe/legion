@@ -1408,6 +1408,7 @@ dispatch_ui:
   - 'scripts/e2e/lib/loopback-dsn.py'
   - 'scripts/e2e/lib/loopback-dsn.sh'
   - 'scripts/e2e/lib/port-file.sh'
+  - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/two-builds.sh'
   # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
@@ -1617,6 +1618,7 @@ envoy_infra_go:
   - 'packages/envoy/infra/**'
   - '.github/scripts/go_build_tags.py'
   - *dispatch_server
+  - 'packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json'
   - *listener_command
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cmdtest/*'
@@ -2703,6 +2705,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/**/*_test.go'
   - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
   - '!packages/envoy/internal/dispatch/asks/**/*_test.go'
@@ -2959,6 +2962,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_checks_test.go'
   - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_run_test.go'
   - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_search_test.go'
@@ -3078,6 +3082,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/no_reach_base_test.go'
   - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
   - '!packages/envoy/internal/dispatch/asks/**/*_test.go'

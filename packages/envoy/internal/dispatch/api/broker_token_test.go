@@ -19,8 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -67,6 +65,15 @@ func liveNamedToken(jkt string) ciphertoken.Introspection {
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
+}
+
+// personScopedTokenAnswer is the broker's answer for a dev box session's token: live, bound to jkt,
+// acting as its person (the project scope person) and naming no project. It is what a person's
+// sign-in and a person's machine login both trade for.
+func personScopedTokenAnswer(jkt string) ciphertoken.Introspection {
+	answer := liveNamedToken(jkt)
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
+	return answer
 }
 
 // serviceOnlyToken is the broker's answer for a machine nobody has signed in on: live, bound to
@@ -338,9 +345,7 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-session-token"
-	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
-	rig.broker.Says(token, answer)
+	rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
 
 	response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
 	if response.Code != http.StatusOK {
@@ -1440,14 +1445,14 @@ func TestABrokerTokenOfAnAccountNotSignedInIsToldToSignIn(t *testing.T) {
 
 // TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison: the settle window refused, while a
 // revocation of the address was unsettled, a broker token recording another account than the one
-// people records or recording none, at its admission, at a held approve's re-read and at a held
-// mint's. The comparison refuses each of them first, owed or settled: the replaced account's token
-// records its account, which people no longer records (BROKER_TOKEN_NOT_ACTIVE); a token recording
-// none was made before the replacing sign-in recorded the holder's account, which set
-// sub_recorded_at in the transaction that recorded the revocation (BROKER_TOKEN_RECORDS_NO_ACCOUNT),
-// or its creation time is not known (the same). The old window admitted those again once the
-// revocation settled; the comparison never does. The holder's own token acts, owed or settled. So
-// there is no window left to wait out.
+// people records or recording none, at its admission (and, before no broker token held approve,
+// at a held approve's re-read and a held mint's). The comparison refuses each of them first, owed
+// or settled: the replaced account's token records its account, which people no longer records
+// (BROKER_TOKEN_NOT_ACTIVE); a token recording none was made before the replacing sign-in recorded
+// the holder's account, which set sub_recorded_at in the transaction that recorded the revocation
+// (BROKER_TOKEN_RECORDS_NO_ACCOUNT), or its creation time is not known (the same). The old window
+// admitted those again once the revocation settled; the comparison never does. The holder's own
+// token acts, owed or settled. So there is no window left to wait out.
 //
 // Control: brokerAccountReplaced turned off (the predicate false); the replaced account's and the
 // no-account tokens are then admitted, owed and settled.
@@ -1472,7 +1477,6 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(ctx, `select sub_recorded_at from people where email = $1`, person).Scan(&recordedAt); err != nil {
 		t.Fatal(err)
 	}
-	address := person
 	cases := []struct {
 		name    string
 		subject string
@@ -1492,21 +1496,6 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 			}
 			_, err := served.brokerPersonAdmitted(ctx, caller)
 			wantAPIError(t, err, http.StatusUnauthorized, c.code, c.name+" at its admission, "+when)
-			minter := brokerMinter{address: &address, subject: served.brokerTokenSubject(caller), created: timeOrNull(c.created)}
-			tx, err := rig.database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var minted string
-			err = tx.QueryRow(ctx, mintAgentTokenSQL, person, "held", []byte("hash of "+c.name), "prefix00", []string{model.ScopePerson}, []string{},
-				nil, nil, nil, minter.address, minter.subject, true, minter.created, minter.foreign).
-				Scan(&minted, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any))
-			if !errors.Is(err, pgx.ErrNoRows) {
-				t.Errorf("a held mint by %s, %s, answered %v, want nothing inserted", c.name, when, err)
-			} else {
-				wantAPIError(t, mintCallerGone(ctx, tx, nil, minter), http.StatusUnauthorized, c.code, "a held mint's refusal by "+c.name+", "+when)
-			}
-			_ = tx.Rollback(ctx)
 		}
 		if _, err := served.brokerPersonAdmitted(ctx, ciphertoken.Caller{Person: person,
 			AccountIssuer: "https://accounts.google.com", AccountSubject: "member-account"}); err != nil {
