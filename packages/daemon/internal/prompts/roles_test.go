@@ -590,6 +590,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once."},
 		{"reviewer.md", "Send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// A check of this issue whose pass lacks one role takes the refusal as a request for changes
+		// at once, naming the check and the role whose pass is missing: a reviewer that read a
+		// missing tester's pass as the worker skill's required check with no run at the head held
+		// its approval with a WAITING line instead of a review.
+		{"reviewer.md", "and a pass at another commit is none; the refusal is a `REQUEST_CHANGES` you submit at once, naming each such check and each role whose pass is missing there: a check of this issue whose pass lacks one role is not a required check with no run at the head, which `skill://legion-worker` waits on, so it takes no `WAITING` line."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
