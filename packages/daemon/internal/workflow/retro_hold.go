@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -39,6 +40,21 @@ func retroHeldNotice(parent string, beneath []string) record.Notice {
 		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
 			"A parent's head proves its children's merged work. Run each one to done, or park one with park_child "+parkRule+
 			"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))}
+}
+
+// heldForChildrenReason is why parent, held before its retro for the issues beneath it, still
+// waits, given beneath, the issues beneath it still open (openBeneath): the hold's own retro-held
+// sentence where any is open (retroHeldNotice), and otherwise why its tree runs nothing yet
+// (intake.HeldParentWaitsForTree), the one other way such a hold stands (releaseHeldParents).
+func (e *Engine) heldForChildrenReason(ctx context.Context, tx pgx.Tx, parent record.Issue, beneath []string) (string, error) {
+	if len(beneath) > 0 {
+		return retroHeldNotice(parent.Key, beneath).Reason, nil
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, parent.Tree)
+	if err != nil {
+		return "", err
+	}
+	return intake.HeldParentWaitsForTree(parent.Key, parent.Tree, lingers), nil
 }
 
 // releaseHeldParents is the one place a parent held before its retro for the issues beneath it

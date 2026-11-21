@@ -1933,16 +1933,22 @@ func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
 // where issue, a parent held before its retro for the issues beneath it (record.HoldForChildren),
-// has none of them open, so its retro waits only for its tree, tree, to run: the tree lingers after
-// its root left the workflow, where lingers says so, and otherwise its root waits in the line for
-// the tree to be opened. The reopen or the promotion that runs the tree starts the retro.
+// has none of them open, so its retro waits only for its tree to run (HeldParentWaitsForTree).
 func RetryOfHeldParentUntilTreeRuns(issue, tree string, lingers bool) *Refusal {
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForTree(issue, tree, lingers) + " This retry changed nothing."}
+}
+
+// HeldParentWaitsForTree says why issue, a parent held before its retro for the issues beneath it
+// with none of them open, still waits: its retro waits only for its tree, tree, to run. The tree
+// lingers after its root left the workflow, where lingers says so, and otherwise its root waits in
+// the line for the tree to be opened. The reopen or the promotion that runs the tree starts the
+// retro.
+func HeldParentWaitsForTree(issue, tree string, lingers bool) string {
 	waits := fmt.Sprintf("its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs", tree)
 	if lingers {
 		waits = fmt.Sprintf("its tree %s lingers after its root left the workflow, and Legion starts the retro once the tree runs again", tree)
 	}
-	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
-		"%s waits before its retro, and nothing beneath it is open: %s. This retry changed nothing.", issue, waits)}
+	return fmt.Sprintf("%s waits before its retro, and nothing beneath it is open: %s.", issue, waits)
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of

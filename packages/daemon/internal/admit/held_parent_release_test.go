@@ -229,7 +229,21 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, parent, "while it waits in the line")
 
-		assertRetriesRefused(t, pool, admission, engine, parent, parent+" waits before its retro, and nothing beneath it is open: its tree "+parent+
-			" waits in the line to be opened, and Legion starts the retro once the tree runs. This retry changed nothing.")
+		waits := parent + " waits before its retro, and nothing beneath it is open: its tree " + parent +
+			" waits in the line to be opened, and Legion starts the retro once the tree runs."
+		assertRetriesRefused(t, pool, admission, engine, parent, waits+" This retry changed nothing.")
+
+		// A person moves the waiting root and sets it to todo again. The todo leaves the hold, and
+		// the board is set back at the root's status with the same why beside it, so the person
+		// reads why the todo went back (workflow's heldForChildrenReason).
+		apply(t, pool, admission, "person-moves", intake.DispatchIssue{Key: parent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "in_progress",
+			Title: parent, Parent: root, Rank: "B", HandedOver: true}, engine)
+		apply(t, pool, admission, "person-todo", intake.DispatchIssue{Key: parent, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: "todo",
+			Title: parent, Parent: root, Rank: "B", HandedOver: true}, engine)
+		assertHeldForChildren(t, pool, parent, "after a person's todo")
+		writes := statusWritesOf(t, pool, parent)
+		if len(writes) == 0 || writes[len(writes)-1].ObservedStatus != "todo" || writes[len(writes)-1].Reason != waits {
+			t.Fatalf("the status writes of %s after a person's todo = %+v, want the last one over the todo with the reason %q", parent, writes, waits)
+		}
 	})
 }
