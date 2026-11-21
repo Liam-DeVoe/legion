@@ -203,12 +203,12 @@
  * record are the body that daemon serves a caller at its own contract, marked with that contract
  * as the daemon's and the caller's, the lowest contract its claims record, and each claim's update
  * state (`servedState`); and a completion sending `ready: true` is refused 400 READY_RETIRED once
- * its grant is redeemed (`RETIRES_READY`). The shaping of a body down to a contract a caller
- * states below the daemon's is not modelled (`unshaped` says why it is unreachable). A daemon
- * before #3659, main `ff2a10ef`'s and the labels' before it, states no contract, answers `GET
- * /healthz` with `{"status":"ok"}` alone, registers no record route, so `ROUTES` answers it 404,
- * serves the state as this served it before, and has its completion's `ready` taken as this took
- * every label's (`CompleteRequest`).
+ * its grant is redeemed (`RETIRES_READY`). A read the daemon would shape down to a contract below
+ * its own is answered 500 in this stand-in's own words (`unshaped` says why no run reaches one). A
+ * daemon before #3659, main `ff2a10ef`'s and the labels' before it, states no contract, answers
+ * `GET /healthz` with `{"status":"ok"}` alone, registers no record route, so `ROUTES` answers it
+ * 404, serves the state as this served it before, and has its completion's `ready` taken as this
+ * took every label's (`CompleteRequest`).
  *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
@@ -1980,13 +1980,16 @@ function unbuilt(error: unknown): Response {
  * one every claim of the issue records (`pluginContract`); a caller placed at or above the
  * daemon's own contract, or by claims recording none, is served the daemon's own body. The
  * shaping of a body down to a lower contract (shaping.go's `shapeAnswer`, its bands and the
- * records of contract-shapes.json) is not modelled, and such a read is answered 500 in this
- * stand-in's own words, never with a body of the daemon's own contract. So is a headerless read
- * whose claims record a contract below the daemon's that the daemon counts for nothing, one at or
- * above `shapedAnswersContract`, where the daemon serves its own body: this refuses rather than
- * reads that bound. Unreachable from a run: every agent of a run loads its own label's plugin,
- * whose client states that label's contract on every request (pi-shared's daemon-client.ts) and
- * registers it, and a checkout's plugin and daemon declare one number. */
+ * records of contract-shapes.json) is not modelled: such a read is answered 500 in this stand-in's
+ * own words, never with a body of the daemon's own contract, and so is a headerless read whose
+ * claims record a contract below the daemon's that the daemon counts for nothing (one at or above
+ * `shapedAnswersContract`, where it serves its own body), since this refuses rather than reads
+ * that bound. Unreachable: a read is placed below the daemon's contract only by a plugin that
+ * states a lower `Legion-Plugin-Contract`, or, stating none, by a pod whose claims record a lower
+ * one, and every agent of a run loads its own label's plugin, a build of that label's checkout
+ * (rig.sh's load_label), whose client states that build's contract on every request (pi-shared's
+ * daemon-client.ts) and registers it as the claim's (`claims/register`'s `pluginContract`), and a
+ * checkout's plugin and daemon declare one number. */
 function unshaped(stated: string | null): Response | undefined {
   if (DAEMON_CONTRACT === undefined) return undefined;
   // As Go's strconv.Atoi reads it: digits with an optional sign; no positive whole number is no

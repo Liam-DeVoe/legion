@@ -73,7 +73,7 @@ test("the class search finds no instance outside its residuals at this checkout,
     stderr: "",
   });
   expect(stdout).toContain(
-    "result: 0 findings outside the residuals, 9 residuals found, 14 declared unreachable found, 0 stale\n"
+    "result: 0 findings outside the residuals, 9 residuals found, 15 declared unreachable found, 0 stale\n"
   );
   for (const check of CHECKS) expect(stdout).toContain(`== ${check.name}\n`);
 }, 900_000);
@@ -586,6 +586,32 @@ test.each(PLANTED)(
   },
   60_000
 );
+
+// Catches: hand search 3 reading a line about the reviewer's thermonuclear pair, whose two halves
+// are its two review agents with a `Thermo` row each (main's gate on an approval in
+// skills/legion-worker/references/merge-gate.md), as a gate on the engine's retired tell; and an
+// exemption so wide that a line holding "both halves" and naming no `Thermo` row is read true.
+test("hand search 3 reads a line of the thermonuclear pair's Thermo rows as true, and any other both halves as an instance", async () => {
+  const file = "skills/planted.md";
+  const text = [
+    "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run`.",
+    "Approve only once both halves have handed off.",
+  ].join("\n");
+  const worlds = new Worlds(tree, []);
+  try {
+    const hits = await checkNamed(
+      "hand search 3: a gate on a tell main's engine makes unreachable"
+    ).run(new Tree(CHECKOUT, new Map([[file, `${text}\n`]])), worlds);
+    expect(
+      hits.filter(({ at }) => at.startsWith(`${file}:`)).map(({ at, verdict }) => [at, verdict])
+    ).toEqual([
+      [`${file}:1`, "true"],
+      [`${file}:2`, "instance"],
+    ]);
+  } finally {
+    worlds.done();
+  }
+});
 
 // Catches: a check that takes a setDefaultTimeout of any value for the bound, so a file whose rows
 // run processes under one second passes; a bound set inside a block read as the file's; a `_`

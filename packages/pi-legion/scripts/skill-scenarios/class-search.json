@@ -157,6 +157,12 @@
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ What the daemon tells the roles of a head's CI is not modelled: .* Unreachable: no run's Envoy publishes a checks settlement, ",
       "reason": "rig.sh unsets every ENVOY_* variable of its caller's environment at its start, and its start_listener starts each label's listener with ENVOY_API_TOKEN, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and PORT alone, no ENVOY_WEBHOOKS, so webhook.LoadWebhookConfig enables no GitHub route, the listener's ciStore is nil and cistore.StartSummaryLoop, the one publisher of a pr.<n>.checks settlement, never starts; and rig.sh's concluded_checks gives every head of every world test, lint and CodeQL completed with success, so no check of a world runs on or is skipped"
+    },
+    {
+      "name": "a body shaped down to a caller's lower contract",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ The shaping of a body down to a lower contract \\(shaping\\.go's `shapeAnswer`, .* is not modelled: .* Unreachable: a read is placed below the daemon's contract only by a plugin that states a lower `Legion-Plugin-Contract`, or, stating none, by a pod whose claims record a lower one, ",
+      "reason": "#3659's daemon places a read below its own contract only for a caller whose Legion-Plugin-Contract header states a lower contract, or, with no header, by the lowest contract the claims of the caller's pod record (shaping.go's contractsFor and podContracts); every agent a scenario boots loads its own label's plugin, installed from that label's checkout (rig.sh's load_label and profile), whose client states that build's legion.daemonApiVersion on every request and registers it as the claim's pluginContract (pi-shared's daemon-client.ts, pi-legion's claim-session.ts), and that number is the label daemon's own DaemonAPIVersion (193 in both packages/pi-legion/package.json and packages/daemon/internal/api/version.go of the head and of main 8a954068, the base); daemon-standin.test.ts's row \"on a label whose daemon states its contract, every answer states it, ...\" holds the 500 for both placements"
     }
   ],
   "searches": [

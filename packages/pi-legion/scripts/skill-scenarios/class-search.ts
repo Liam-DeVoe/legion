@@ -1702,11 +1702,13 @@ const greps: Check[] = [
     pattern: /both halves|not merely once your|awaiting_merge/,
     reading:
       "grep the skills, the daemon's prompts and the documentation site for `both halves`, `not merely once your` and `awaiting_merge`",
-    rule: "an instance, but a line that is about `jj split`, which keeps a commit's author on both halves: a true statement about jj, not the engine",
+    rule: "an instance, but a line that is about `jj split`, which keeps a commit's author on both halves: a true statement about jj, not the engine; and a line that is about the reviewer's thermonuclear pair, whose two halves are its two review agents, each with a `Thermo` row of its own (skills/legion-worker/references/merge-gate.md's gate on an approval, main's since 2026-11-20): a true statement about the pair, not the engine",
     verdict: ({ text }) =>
       /jj split/.test(text)
         ? holds("about jj split, not the engine")
-        : instance("a gate on the retired tell"),
+        : /`Thermo` rows?\b/.test(text)
+          ? holds("about the reviewer's thermonuclear pair, not the engine")
+          : instance("a gate on the retired tell"),
   }),
   grepCheck({
     name: "hand search 4 and 6: one fact defined in two places",
