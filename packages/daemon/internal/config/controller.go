@@ -10,6 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/cipherclient"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -215,32 +217,25 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 // ControllerIdentityVariables are the variables that name the secrets broker and this machine's
 // identity at it, which the controller's session trades for the broker token its Envoy client
 // presents the listener (brokerCredential, packages/envoy-client).
-var ControllerIdentityVariables = []string{"AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY"}
-
-// machineTokenFileVariable names the projected service-account token file that the identity kinds
-// in tokenFileIdentities read (MachineTokenFileVar, packages/envoy/internal/cipherclient).
-const machineTokenFileVariable = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
-
-// tokenFileIdentities are the AGENT_SECRETS_MACHINE_IDENTITY kinds that read
-// machineTokenFileVariable: kubernetes presents the token it names, and pool federates it through a
-// workload identity pool (machineIdentity, packages/cipher-client; MachineIdentity in Go). The
-// third kind, metadata, asks the metadata server and reads no file.
-var tokenFileIdentities = []string{"kubernetes", "pool"}
+var ControllerIdentityVariables = []string{cipherclient.BrokerURLVar, cipherclient.IdentityVar}
 
 // CheckListener refuses envoy_url when the controller's session, whose environment is env, would
 // present the listener no credential and the listener is off loopback. The listener takes no
 // shared bearer, so the session presents the broker token it trades with this machine's identity
-// where env names both ControllerIdentityVariables and every variable that identity's kind needs,
+// where env names both ControllerIdentityVariables and an identity the broker client can prove,
 // and otherwise nothing, which only a listener bound to loopback serves, as the daemon under
-// runtime: tmux is held to (checkLoopbackListener). A kind in tokenFileIdentities with no
-// machineTokenFileVariable is refused in the client's own words ("<variable> is required by
-// AGENT_SECRETS_MACHINE_IDENTITY=<kind>"). The host is judged as written, and the refusal names
-// it alone, never the URL.
+// runtime: tmux is held to (checkLoopbackListener). The identity is read by the client's own
+// cipherclient.MachineIdentity, as the controller's Dispatch broker check reads it
+// (controllerDispatchBroker, cmd/legion), so a kind with one of its variables missing, or a kind
+// the client does not know, is refused in the client's words. The host is judged as written, and
+// the refusal names it alone, never the URL.
 func (c ControllerConfig) CheckListener(env map[string]string) error {
 	noIdentity := slices.ContainsFunc(ControllerIdentityVariables, func(name string) bool { return env[name] == "" })
-	kind := strings.TrimSpace(env["AGENT_SECRETS_MACHINE_IDENTITY"])
-	noTokenFile := !noIdentity && slices.Contains(tokenFileIdentities, kind) && strings.TrimSpace(env[machineTokenFileVariable]) == ""
-	if !noIdentity && !noTokenFile {
+	var unproven error
+	if !noIdentity {
+		_, unproven = cipherclient.MachineIdentity(func(name string) string { return env[name] })
+	}
+	if !noIdentity && unproven == nil {
 		return nil
 	}
 	parsed, err := endpointURL(c.EnvoyURL, "envoy_url")
@@ -254,9 +249,9 @@ func (c ControllerConfig) CheckListener(env map[string]string) error {
 	if isLoopbackHost(host) {
 		return nil
 	}
-	if noTokenFile {
-		return fmt.Errorf("%s is required by AGENT_SECRETS_MACHINE_IDENTITY=%s, which reads the projected service-account token that file names: without it the controller's session trades nothing and presents the Envoy listener %s no credential, and a listener off loopback answers a caller that presents none 401; set %s, or name a loopback listener",
-			machineTokenFileVariable, kind, host, machineTokenFileVariable)
+	if unproven != nil {
+		return fmt.Errorf("%w: the controller's session cannot prove this machine's identity, so it trades nothing and presents the Envoy listener %s no credential, and a listener off loopback answers a caller that presents none 401; give the identity what it needs, or name a loopback listener",
+			unproven, host)
 	}
 	return fmt.Errorf("envoy_url names %s, which is not a loopback host, and the environment names no secrets broker and machine identity (%s): the controller's session would present the Envoy listener no credential, which takes no shared bearer, and a listener off loopback answers a caller that presents none 401; name a loopback listener, or start the controller where %s are set",
 		host, strings.Join(ControllerIdentityVariables, ", "), strings.Join(ControllerIdentityVariables, " and "))
