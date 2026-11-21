@@ -50,6 +50,31 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 	return nil
 }
 
+// refuseUnreadableNATSURL refuses the first of urls that does not parse as nats.go parses a server
+// URL (a scheme added where it has none), naming it without its userinfo (natsURLWithoutUserinfo)
+// and with url.Parse's reason alone. nats.go refuses such a URL with url.Parse's own error, which
+// quotes the URL whole, a token or a password in its userinfo included, and only once each of the
+// connect's ten attempts has failed (connectWithContext); refuseRemoteNATS reads no URL of a run
+// that may reach remote NATS, so this reads them for every run, before any dial.
+func refuseUnreadableNATSURL(urls []string) error {
+	for _, raw := range urls {
+		server := raw
+		if !strings.Contains(server, "://") {
+			server = "nats://" + server
+		}
+		_, err := url.Parse(server)
+		if err == nil {
+			continue
+		}
+		var unread *url.Error
+		if errors.As(err, &unread) {
+			err = unread.Err
+		}
+		return fmt.Errorf("bus: the NATS server URL %s cannot be read: %w", natsURLWithoutUserinfo(raw), err)
+	}
+	return nil
+}
+
 // LocalNATSURL reports whether raw names a server on this machine. It reads the URL and never
 // resolves it: a lookup would reach the network the refusal is about, and a name that resolves to
 // a loopback address on one machine resolves to a shared server on another - the devbox's own
