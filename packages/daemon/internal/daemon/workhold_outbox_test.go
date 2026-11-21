@@ -1084,6 +1084,41 @@ func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 	})
 }
 
+// Spec step 3 ("A stop that the daemon has not made when the gate opens again is not made"), row
+// H32 and check a3d61f8e ("A gate that opens again before a stop is made stops nothing more"),
+// for the order the tester's whole-daemon drive met: the close's stop is held for the worker's
+// turn, the opening commits, and the turn ends before the stop row's next attempt reads the
+// opening. The stop was not made when the gate opened, so the turn's end makes none: the claim
+// ends its turn idle with its process, and nothing stops and relaunches it.
+func TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	r.working(claim.RoleImplementer)
+	launched := r.launches(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+	r.runOnce()
+	if c := r.machine(claim.RoleImplementer).Claim(); !c.WorkHeld() || c.State != supervise.StateWorking {
+		t.Fatalf("before the opening the implementer is %s, held %v; want its stop held for its turn", c.State, c.WorkHeld())
+	}
+	r.approve(4, 12)
+	endTurn(r.ctx, t, r.machine(claim.RoleImplementer), r.token(claim.RoleImplementer))
+	if c := r.machine(claim.RoleImplementer).Claim(); c.State == supervise.StateSuspended {
+		t.Fatalf("the implementer's turn ended after the gate opened again, and the turn's end stopped it by %q: "+
+			"a stop the daemon had not made when the gate opened was made", c.SuspendedBy)
+	}
+	r.drain()
+	if c := r.machine(claim.RoleImplementer).Claim(); c.State != supervise.StateIdle || c.WorkHeld() || c.SuspensionHeld {
+		t.Fatalf("after the drain the implementer is %s by %q, held %v, a stop held %v; want it idle and not stopped",
+			c.State, c.SuspendedBy, c.WorkHeld(), c.SuspensionHeld)
+	}
+	if state, by := r.stored(claim.RoleImplementer); state == supervise.StateSuspended {
+		t.Fatalf("the implementer is stored suspended by %q, want it never stopped", by)
+	}
+	if got := r.launches(claim.RoleImplementer); got != launched {
+		t.Fatalf("the runtime started the implementer %d times since the close, want none: its process was never to be stopped", got-launched)
+	}
+}
+
 // Spec step 4, H22 to H24, check a3d61f8e: with the tester stopped by the hold and the implementer
 // in the turn its stop is held for, a task, a notice, a wake, a CI settlement, admission's slot
 // repair, and a daemon restart during the drain and after it leave every claim the hold stopped
