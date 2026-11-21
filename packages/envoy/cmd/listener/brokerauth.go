@@ -165,10 +165,11 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 		Account:   b.config.account(),
 		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
 		Replay:    spentProofs{kv: kv},
-		// The listener trusts no forwarding header for this: it has no proxy-trust setting of
-		// its own, and a bucket keyed on a header a caller writes bounds nothing. The connection
-		// is what is left, which is right for the listener's own deployments, where /v1 is
-		// reached directly.
+		// The listener trusts a forwarding header for this only where it is the edge behind
+		// Google's load balancer, and only from that balancer's own proxies (edgeCallerAddress,
+		// which apiAuth reads): a bucket keyed on a header any caller writes bounds nothing.
+		// Everywhere else the connection is what is left, which is right for the listener's other
+		// deployments, where /v1 is reached directly.
 		Address: listenerSourceAddress,
 	})
 	if err != nil {
@@ -211,9 +212,13 @@ func (b *brokerTokens) describe() string {
 	return "broker tokens at " + b.config.BrokerURL + " as " + identity
 }
 
-// listenerSourceAddress is the address one introspection bucket is keyed on: the connection's
-// own, with its port dropped so a caller's every connection shares one bucket.
+// listenerSourceAddress is the address one introspection bucket is keyed on: the address an edge
+// listener read for the caller from Google's load balancer (withCallerAddress), and otherwise the
+// connection's own, with its port dropped so a caller's every connection shares one bucket.
 func listenerSourceAddress(r *http.Request) string {
+	if address, ok := r.Context().Value(callerAddressKey{}).(string); ok {
+		return address
+	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}

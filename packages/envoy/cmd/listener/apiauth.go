@@ -280,6 +280,24 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// An edge listener reads its caller's address from Google's load balancer before anything
+		// else of the request, and refuses a request from the balancer's proxies that names none
+		// (edgeCallerAddress): that address is what the broker token's introspection bucket keys
+		// on (listenerSourceAddress), so it is read once, here.
+		if len(auth.edgeProjects) > 0 {
+			address, forwarded, err := edgeCallerAddress(r)
+			if err != nil {
+				auth.logger.Warn("listener: edge request without the address Google's load balancer forwards",
+					slog.String("reason", err.Error()),
+					slog.String("path", r.URL.Path),
+					slog.String("remote", r.RemoteAddr))
+				writeJSONError(w, http.StatusBadRequest, edgeForwardedRefusal)
+				return
+			}
+			if forwarded {
+				r = r.WithContext(withCallerAddress(r.Context(), address))
+			}
+		}
 		if open && !servesHost(r.Host, auth.allowedHosts) {
 			auth.logger.Warn("listener: request for a host it does not serve",
 				slog.String("host", r.Host),
