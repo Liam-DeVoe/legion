@@ -1454,12 +1454,19 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a pod variable whose value is no string",
 			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: {host: x}}\n",
-			want: "runtime.kubernetes.pod.env value for OPENAI_BASE_URL must be a string",
+			want: "runtime.kubernetes.pod.env entry 1: its value must be a string",
+		},
+		{
+			// A credential made only of letters, digits and underscores passes the name rule; with
+			// a list value the refusal names the entry by position and quotes none of it.
+			name: "a pod variable with a token-shaped name and a list value",
+			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: https://api.example, madeUp_pod_credential_0123456789: [x]}\n",
+			want: "runtime.kubernetes.pod.env entry 2: its value must be a string",
 		},
 		{
 			name: "a credential-shaped pod variable",
 			body: kubernetesFile + "    pod:\n      env: {ANTHROPIC_API_KEY: sk-ant}\n",
-			want: "runtime.kubernetes.pod.env sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
+			want: "runtime.kubernetes.pod.env entry 1 sets a credential-shaped variable: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
 		},
 		{
 			name: "pod volumes are not a sequence",

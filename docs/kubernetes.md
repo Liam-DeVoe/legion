@@ -3761,7 +3761,7 @@ A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, a
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
 the other two, which are not credentials, go in `runtime.kubernetes.pod.env`.
-The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a
+The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`entry <n> sets a credential-shaped variable: a credential comes from a
 Secret, …`), which is why the key takes the `provider_keys` route.
 A provider key reaches every role's child under this runtime, Oh My Pi's included
 — that is this runtime's standing rule for every provider key, not something a Claude Code role changes:

@@ -1546,22 +1546,29 @@ func TestLoadRefuses(t *testing.T) {
 			// reaches a pane as a file.
 			name: "runtime.tmux.pane_env naming a credential",
 			body: minimalFile + "runtime: {tmux: {pane_env: {LEDGER_TOKEN: hunter2}}}\n",
-			want: "runtime.tmux.pane_env names LEDGER_TOKEN, a credential-shaped name: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line",
+			want: "runtime.tmux.pane_env entry 1 names a credential-shaped variable: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line",
 		},
 		{
 			name: "runtime.tmux.pane_env naming one variable twice",
 			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, ELAN_HOME: /srv/elan}}}\n",
-			want: "runtime.tmux.pane_env names ELAN_HOME twice",
+			want: "runtime.tmux.pane_env entry 2 names a variable an earlier entry names",
 		},
 		{
 			name: "runtime.tmux.pane_env with a value that is not a string",
 			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: [/opt/elan]}}}\n",
-			want: "runtime.tmux.pane_env.ELAN_HOME must be a string",
+			want: "runtime.tmux.pane_env entry 1: its value must be a string",
 		},
 		{
 			name: "runtime.tmux.pane_env with a null value",
 			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: null}}}\n",
-			want: "runtime.tmux.pane_env.ELAN_HOME must be a string",
+			want: "runtime.tmux.pane_env entry 1: its value must be a string",
+		},
+		{
+			// A credential made only of letters, digits and underscores passes the name rule; with
+			// a null value the refusal names the entry by position and quotes none of it.
+			name: "runtime.tmux.pane_env with a token-shaped name and a null value",
+			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, madeUp_pane_credential_0123456789: null}}}\n",
+			want: "runtime.tmux.pane_env entry 2: its value must be a string",
 		},
 		{
 			// PI_CONFIG_FILES separates its overlays with `:`, so it could not name this path.
