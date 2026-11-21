@@ -323,37 +323,45 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 			return "", 0, err
 		}
 	}
-	if actor.Act == nil && s.deps.Standing != nil && s.deps.Standing.ChecksDirectory() {
-		if err := s.browserDeciderHeld(r.Context(), actor.ID); err != nil {
-			return "", 0, err
-		}
+	if err := s.browserDeciderHeld(r.Context(), actor); err != nil {
+		return "", 0, err
 	}
 	return subject, generation, nil
 }
 
-// membershipHeldDeciderDirectoryText is the refusal of a decision at a browser under IAP identity
-// whose person the Workspace Directory holds (browserDeciderHeld).
+// membershipHeldDeciderDirectoryText is the refusal of a decision, a mint or a scope change at a
+// browser under IAP identity whose person the Workspace Directory holds (browserDeciderHeld).
 const membershipHeldDeciderDirectoryText = "Google's Workspace Directory no longer confirms this caller; their decisions work again once it does"
 
-// errDeciderUnreadable is a decision whose caller's standing could not be read: the statement of
-// approverStanding failed, or under IAP identity Standing failed or answered unavailable. It is
-// never an accept.
+// errDeciderUnreadable is a decision, a mint or a scope change whose caller's standing could not
+// be read: the statement of approverStanding failed, or under IAP identity Standing failed or
+// answered unavailable (browserDeciderHeld). It is never an accept.
 func errDeciderUnreadable() error {
 	return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
 		"whether this caller may still decide could not be read; try again in a minute")
 }
 
-// browserDeciderHeld answers nil while login, a person deciding a credential request at their
-// browser under IAP identity, may decide. IAP signs a fresh assertion for each request and keeps no
-// session that a hold could end, and the Directory, not a sign-in, records and ends a hold, so the
-// decision asks Standing, as a personal token's use does there (personalTokenHeld): a held answer
-// is 401 MEMBERSHIP_HELD in the Directory's words, and one it cannot give, or an unavailable one
-// (identity.Standing.Unavailable: no Active Directory answer in 24 hours), 503
-// IDENTITY_UNAVAILABLE. IAP itself still admits the person's browser; only the decision is refused.
-func (s *server) browserDeciderHeld(ctx context.Context, login string) error {
-	standing, err := s.deps.Standing.Standing(ctx, login)
+// browserDeciderHeld answers nil while actor may act at their browser on what outlives it: decide
+// a credential request (approverStanding), mint a personal token (createAgentToken) or change a
+// token's scopes (updateAgentTokenScopes). It reads anything only under IAP identity
+// (Standing.ChecksDirectory) and only for a person at their browser (actor.Act nil). IAP signs a
+// fresh assertion for each request and keeps no session that a hold could end, and the Directory,
+// not a sign-in, records and ends a hold, so the request asks Standing, as a personal token's use
+// does there (personalTokenHeld): a held answer is 401 MEMBERSHIP_HELD in the Directory's words,
+// and one it cannot give, or an unavailable one (identity.Standing.Unavailable: no Active Directory
+// answer in 24 hours), 503 IDENTITY_UNAVAILABLE. IAP itself still admits the person's browser;
+// only the request is refused. A credential's caller is held by its own check (personalTokenHeld,
+// brokerPersonAdmitted), and outside IAP a hold ends a cookie's session, so for either it reads
+// nothing. Each caller asks once the request's body has been read, which a browser may hold back
+// as long as it likes, and outside any transaction, since Standing takes a pooled connection of
+// its own (store.ErrNestedAcquire).
+func (s *server) browserDeciderHeld(ctx context.Context, actor model.Actor) error {
+	if actor.Act != nil || s.deps.Standing == nil || !s.deps.Standing.ChecksDirectory() {
+		return nil
+	}
+	standing, err := s.deps.Standing.Standing(ctx, actor.ID)
 	if err != nil {
-		slog.Warn("dispatch: a credential decision at a browser was refused: whether Dispatch holds its caller could not be read", "error", err)
+		slog.Warn("dispatch: a decision, a mint or a scope change at a browser was refused: whether Dispatch holds its caller could not be read", "error", err)
 		return errDeciderUnreadable()
 	}
 	switch {

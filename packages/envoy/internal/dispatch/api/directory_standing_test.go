@@ -173,6 +173,109 @@ func TestAnIAPPersonalTokenAsksStandingFirst(t *testing.T) {
 		"carol's token in cookie identity, her confirmation two hours old and Standing answering held")
 }
 
+// TestABrowserMintAndScopeChangeAskStandingUnderIAPAlone (browserDeciderHeld): under IAP identity
+// (Standing.ChecksDirectory) a person at their browser, who presents no credential (here the
+// trusted header, as IAP's assertion is there), mints a personal token and changes a token's
+// scopes only while Standing serves them, asking it about them once: a held answer is 401
+// MEMBERSHIP_HELD in the Directory's words, an unavailable one and a Standing that fails 503
+// IDENTITY_UNAVAILABLE, and a not-held one with a deadline after its read serves. A personal
+// token's mint there asks Standing once, its own check's (personalTokenHeld), and nothing more. In
+// cookie identity a held answer refuses neither, and neither asks Standing.
+//
+// Controls: the hold asked for every caller with no credential whatever the identity fails the
+// cookie identity's rows; asked for every caller under IAP, it fails the personal token's count.
+func TestABrowserMintAndScopeChangeAskStandingUnderIAPAlone(t *testing.T) {
+	_, database, deps := newTestServer(t, testServerOptions{})
+	seedPeople(t, database, accessDave)
+	directory := &standingFake{directory: true}
+	deps.Standing = directory
+	iap := servedWith(t, deps)
+	cookie := &standingFake{}
+	cookieDeps := deps
+	cookieDeps.Standing = cookie
+	signedIn := servedWith(t, cookieDeps)
+	mint := func(handler http.Handler) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "dave's token", "scopes": []string{model.ScopePerson}}, accessDave)
+	}
+	minted := mint(iap)
+	var token struct {
+		ID string `json:"id"`
+	}
+	if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.ID == "" {
+		t.Fatalf("dave's mint at his browser under IAP, Standing answering not held = %d %s, want 201 with a token", minted.Code, minted.Body.String())
+	}
+	widen := func(handler http.Handler) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+token.ID, map[string]any{"scopes": []string{model.ScopePerson, model.ScopeApprove}}, accessDave)
+	}
+
+	at := time.Date(2026, 11, 20, 9, 30, 0, 0, time.UTC)
+	const unreadableText = "whether this caller may still decide could not be read; try again in a minute"
+	for _, row := range []struct {
+		name     string
+		standing identity.Standing
+		err      error
+		served   bool
+		status   int
+		code     string
+		text     string
+	}{
+		{name: "held by the Directory", standing: identity.Standing{Held: true, AsOf: at},
+			status: http.StatusUnauthorized, code: codeMembershipHeld, text: membershipHeldDeciderDirectoryText},
+		{name: "unavailable", standing: identity.Standing{AsOf: at, NotHeldUntil: at},
+			status: http.StatusServiceUnavailable, code: "IDENTITY_UNAVAILABLE", text: unreadableText},
+		{name: "a Standing that fails", err: identity.ErrMembershipUnreadable,
+			status: http.StatusServiceUnavailable, code: "IDENTITY_UNAVAILABLE", text: unreadableText},
+		{name: "not held before its deadline", standing: identity.Standing{AsOf: at, NotHeldUntil: at.Add(time.Second)}, served: true},
+	} {
+		directory.answers(row.standing, row.err)
+		for _, use := range []struct {
+			name   string
+			call   func(http.Handler) *httptest.ResponseRecorder
+			served int
+		}{
+			{"mint", mint, http.StatusCreated},
+			{"widening", widen, http.StatusOK},
+		} {
+			before := len(directory.askedSoFar())
+			response := use.call(iap)
+			var refusal refusalAnswer
+			_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+			status, code, text := row.status, row.code, row.text
+			if row.served {
+				status = use.served
+			}
+			if response.Code != status || refusal.Code != code || refusal.Error != text {
+				t.Errorf("dave's %s at his browser under IAP, Standing %s = %d %s, want %d %s %q", use.name, row.name, response.Code, strings.TrimSpace(response.Body.String()), status, code, text)
+			}
+			if asked := directory.askedSoFar()[before:]; len(asked) != 1 || asked[0] != accessDave {
+				t.Errorf("dave's %s at his browser under IAP, Standing %s, asked Standing about %v; want %s once", use.name, row.name, asked, accessDave)
+			}
+		}
+	}
+
+	daveToken := personalTokenOwnedBy(t, database, accessDave, model.ScopePerson, model.ScopeApprove)
+	before := len(directory.askedSoFar())
+	if response := agentRequest(t, iap, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "minted by dave's token", "scopes": []string{model.ScopePerson}}, daveToken); response.Code != http.StatusCreated {
+		t.Errorf("a mint by dave's token under IAP, Standing answering not held = %d %s, want 201", response.Code, response.Body.String())
+	}
+	if asked := directory.askedSoFar()[before:]; len(asked) != 1 || asked[0] != accessDave {
+		t.Errorf("a mint by dave's token under IAP asked Standing about %v; want %s once: the token's own check asks, and the browser's hold is not the token's", asked, accessDave)
+	}
+
+	cookie.answers(identity.Standing{Held: true, AsOf: at}, nil)
+	if response := mint(signedIn); response.Code != http.StatusCreated {
+		t.Errorf("dave's mint at his browser in cookie identity, Standing answering held = %d %s, want 201: a hold there ends a cookie's session", response.Code, response.Body.String())
+	}
+	if response := widen(signedIn); response.Code != http.StatusOK {
+		t.Errorf("dave's widening at his browser in cookie identity, Standing answering held = %d %s, want 200: a hold there ends a cookie's session", response.Code, response.Body.String())
+	}
+	if asked := cookie.askedSoFar(); len(asked) != 0 {
+		t.Errorf("dave's mint and widening at his browser in cookie identity asked Standing about %v; want nothing", asked)
+	}
+}
+
 // TestThePersonAnswerCarriesNotHeldUntil (K11): the person route carries Standing's NotHeldUntil as
 // not_held_until on a not-held answer under IAP identity; an unavailable answer is held false with
 // not_held_until equal to as_of; and a held answer, and every answer outside IAP, leave it out.

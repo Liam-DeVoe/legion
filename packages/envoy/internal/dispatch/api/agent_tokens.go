@@ -130,6 +130,12 @@ type createAgentTokenInput struct {
 // credentialSubjectSQL), read in the insert beside that re-check: an approve by the token names
 // that account as the approving one (approverStanding), never whichever account holds the address
 // when the approve is relayed.
+//
+// Under IAP identity a person at their browser presents only the assertion IAP signs for the
+// request, which no hold ends, so once the body has been read the mint asks whether the Workspace
+// Directory holds them (browserDeciderHeld), as a decision there does: 401 MEMBERSHIP_HELD while it
+// does, and 503 IDENTITY_UNAVAILABLE past their deadline. A credential's caller is held by its own
+// check before this handler runs.
 func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -151,6 +157,11 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, ok := s.tokenProjects(w, r, input.Projects)
 	if !ok {
+		return
+	}
+	// Before the transaction: Standing takes a pooled connection of its own.
+	if err := s.browserDeciderHeld(r.Context(), actor); err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 
@@ -351,7 +362,8 @@ type updateAgentTokenScopesInput struct {
 // mint — so its key keeps that answer, which is why it is not in answerHoldsSecret
 // (request_keys.go). The update runs in a transaction of the shared pool, as every keyed write
 // does: the commit step marks the request's key committed with the write itself
-// (markRequestKeyCommitted).
+// (markRequestKeyCommitted). The mint's hold of a person at their browser under IAP refuses it the
+// same way (browserDeciderHeld), so a held person widens no token there.
 func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -384,6 +396,11 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	} else if reader, ok = s.readerOf(w, r); !ok {
+		return
+	}
+	// Before the transaction: Standing takes a pooled connection of its own.
+	if err := s.browserDeciderHeld(r.Context(), actor); err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	tx, err := s.begin(r.Context())

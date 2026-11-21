@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +299,119 @@ func (r *leaverRig) decideAtBrowserHeld(t *testing.T, p *leaverPerson, decision,
 	request := r.iapRequest(t, p, http.MethodPost, "/api/v1/credential-requests/"+recordID+"/"+decision, body)
 	request.ContentLength = int64(len(decided))
 	return serveHeld(t, r.handler, request, body, whileHeld)
+}
+
+// TestIAPHeldPersonMintsAndWidensNothingAtHerBrowser (R2, R9; createAgentToken,
+// updateAgentTokenScopes, browserDeciderHeld): under IAP a person mints a personal token, and
+// changes a token's scopes, at her browser with only the assertion IAP signs for that request. Ada
+// and bob each mint at their browser a token holding the person scope alone. Once the membership
+// pass finds ada's account suspended, her mint of another token and her change of her token's
+// scopes to person and approve are 401 MEMBERSHIP_HELD in the Directory's words, though IAP still
+// admits her browser (GET /auth/whoami 200): no token is written, and hers keeps the person scope
+// alone. Bob, whom the Directory answers active, mints and widens at his browser throughout. Once a
+// later pass finds her account active, her mint and her widening serve. Once her last active
+// answer and its deadline are 25 hours old and the Directory fails each check of her account, her
+// mint and her widening are 503 IDENTITY_UNAVAILABLE.
+//
+// Control: ask no standing for a mint or a scope change at a browser (createAgentToken and
+// updateAgentTokenScopes as they were): ada's mint while the Directory holds her answers 201 and her
+// widening 200, and the test fails there.
+func TestIAPHeldPersonMintsAndWidensNothingAtHerBrowser(t *testing.T) {
+	r := newLeaverRig(t, withBrokerGate(), withIAP())
+	r.directoryAccount(adaEmail, false)
+	r.directoryAccount(bobEmail, false)
+	ada, bob := r.signIn(t, adaEmail), r.signIn(t, bobEmail)
+	// IAP's sign-in records each person and checks no Directory: the first pass answers both
+	// accounts active, as the hourly pass does after a person's first request.
+	if err := r.membershipPass(nil).Run(context.Background()); err != nil {
+		t.Fatalf("the first membership pass: %v", err)
+	}
+	adasToken := r.mintedAtBrowser(t, ada, "ada's narrow token")
+	bobsToken := r.mintedAtBrowser(t, bob, "bob's narrow token")
+
+	r.directoryAccount(adaEmail, true)
+	r.directoryPass(t, adaEmail)
+	mint := r.mintAtBrowser(t, ada, "minted while held")
+	expectRefusal(t, "ada@example.com's mint at her browser while the Directory holds her", mint.Code, mint.Body.Bytes(), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapBrowserDecisionHeldText)
+	widen := r.widenAtBrowser(t, ada, adasToken)
+	expectRefusal(t, "ada@example.com's widening of her token at her browser while the Directory holds her", widen.Code, widen.Body.Bytes(), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapBrowserDecisionHeldText)
+	if minted := r.tokensNamed(t, adaEmail, "minted while held"); minted != 0 {
+		t.Errorf("ada@example.com's refused mint wrote %d tokens, want none", minted)
+	}
+	if scopes := r.tokenScopes(t, adasToken); !slices.Equal(scopes, []string{"person"}) {
+		t.Errorf("ada@example.com's token after her refused widening holds %v, want [person]", scopes)
+	}
+	if whoami := r.browser(t, ada, http.MethodGet, "/auth/whoami", ""); whoami.Code != http.StatusOK {
+		t.Errorf("GET /auth/whoami with ada@example.com's valid assertion while the Directory holds her answered %d %s, want 200: IAP admits her browser", whoami.Code, whoami.Body.String())
+	}
+	expectAnswer(t, "bob@example.com's mint at his browser while the Directory holds ada", http.StatusCreated, "").got(dispatchAnswer(r.mintAtBrowser(t, bob, "bob's token while ada is held")))
+	expectAnswer(t, "bob@example.com's widening at his browser while the Directory holds ada", http.StatusOK, "").got(dispatchAnswer(r.widenAtBrowser(t, bob, bobsToken)))
+	if t.Failed() {
+		return
+	}
+
+	r.directoryAccount(adaEmail, false)
+	r.directoryPass(t, adaEmail)
+	released := r.mintedAtBrowser(t, ada, "minted after the release")
+	expectAnswer(t, "ada@example.com's widening at her browser after the release", http.StatusOK, "").got(dispatchAnswer(r.widenAtBrowser(t, ada, adasToken)))
+	if t.Failed() {
+		return
+	}
+
+	r.directory.AnswerUser(adaEmail, directorytest.Answer{Status: http.StatusInternalServerError, Body: `{"error":{"code":500}}`})
+	r.ageDirectory(t, adaEmail, 25*time.Hour)
+	mint = r.mintAtBrowser(t, ada, "minted past the deadline")
+	expectRefusal(t, "ada@example.com's mint at her browser past her deadline", mint.Code, mint.Body.Bytes(), http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", iapBrowserDecisionUnavailableText)
+	widen = r.widenAtBrowser(t, ada, released)
+	expectRefusal(t, "ada@example.com's widening of her token at her browser past her deadline", widen.Code, widen.Body.Bytes(), http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", iapBrowserDecisionUnavailableText)
+	expectAnswer(t, "bob@example.com's mint at his browser past ada's deadline", http.StatusCreated, "").got(dispatchAnswer(r.mintAtBrowser(t, bob, "bob's token past ada's deadline")))
+}
+
+// mintAtBrowser is POST /api/v1/me/agent-tokens from p's browser, as the agent tokens page sends
+// it, for a token named name holding the person scope alone.
+func (r *leaverRig) mintAtBrowser(t *testing.T, p *leaverPerson, name string) *httptest.ResponseRecorder {
+	t.Helper()
+	return r.browser(t, p, http.MethodPost, "/api/v1/me/agent-tokens", leaverBody(t, map[string]any{"name": name, "scopes": []string{"person"}}))
+}
+
+// mintedAtBrowser is mintAtBrowser's token id, failing t unless the mint answers 201 with one.
+func (r *leaverRig) mintedAtBrowser(t *testing.T, p *leaverPerson, name string) string {
+	t.Helper()
+	minted := r.mintAtBrowser(t, p, name)
+	var token struct {
+		ID string `json:"id"`
+	}
+	if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.ID == "" {
+		t.Fatalf("POST /api/v1/me/agent-tokens for %q on %s's browser answered %d %s, want 201 with a token", name, p.email, minted.Code, minted.Body.String())
+	}
+	return token.ID
+}
+
+// widenAtBrowser is PATCH /api/v1/me/agent-tokens/{id} from p's browser, as the agent tokens page
+// sends it, giving the token id the person and approve scopes.
+func (r *leaverRig) widenAtBrowser(t *testing.T, p *leaverPerson, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	return r.browser(t, p, http.MethodPatch, "/api/v1/me/agent-tokens/"+id, leaverBody(t, map[string]any{"scopes": []string{"person", "approve"}}))
+}
+
+// tokensNamed is how many personal tokens email owns named name.
+func (r *leaverRig) tokensNamed(t *testing.T, email, name string) int {
+	t.Helper()
+	var count int
+	if err := r.outside.database.Pool.QueryRow(context.Background(), `select count(*) from agent_tokens where canonical_login(owner) = $1 and name = $2`, email, name).Scan(&count); err != nil {
+		t.Fatalf("count %s's tokens named %q: %v", email, name, err)
+	}
+	return count
+}
+
+// tokenScopes is the scopes the personal token id holds.
+func (r *leaverRig) tokenScopes(t *testing.T, id string) []string {
+	t.Helper()
+	var scopes []string
+	if err := r.outside.database.Pool.QueryRow(context.Background(), `select scopes from agent_tokens where id = $1`, id).Scan(&scopes); err != nil {
+		t.Fatalf("read the scopes of token %s: %v", id, err)
+	}
+	return scopes
 }
 
 // directoryAccount makes the fake Directory answer email's own Workspace account, suspended as
