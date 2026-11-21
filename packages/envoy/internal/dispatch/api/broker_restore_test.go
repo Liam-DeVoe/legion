@@ -60,26 +60,28 @@ var runbookPsqlCall = regexp.MustCompile(`PGPASSWORD="\$([A-Z]+)_PGPASSWORD" psq
 var psqlCommand = regexp.MustCompile(`\bpsql\b`)
 
 // runbookPsqlPages are the pages whose psql calls TestTheRunbookPassesNoDatabasePasswordOnACommandLine
-// holds to runbookPsqlCall: the runbook's two pages, the store README and the delivery audit's.
-var runbookPsqlPages = append(append([]string{}, runbookPaths...), "../store/README.md", "../deliveryaudit/README.md")
+// holds to runbookPsqlCall: the runbook's two pages, the store README, the delivery audit's and the
+// comment-delivery run's (scripts/dispatch).
+var runbookPsqlPages = append(append([]string{}, runbookPaths...), "../store/README.md", "../deliveryaudit/README.md",
+	"../../../../../scripts/dispatch/README.md")
 
 // TestTheRunbookPassesNoDatabasePasswordOnACommandLine: a database URL that holds its password,
 // given to psql as an argument, sits in /proc/<pid>/cmdline while the call runs, which every user
-// of the box can read. So every psql command in a fenced block of the runbook's two pages, the
-// store README and the delivery audit's README is given its database's password-free URL,
-// DISPATCH_PSQL_URL or BROKER_PSQL_URL, and that database's password in PGPASSWORD, which the
-// environment carries rather than the command line: a psql named in any other form - a variable
-// unquoted, a URL or a keyword/value string written out - fails. And the step that makes them
-// (Signing people in) takes the password out of each server's URL, in its user info and in a
-// password parameter, with the pool_ parameters libpq refuses, keeps every other parameter, reads
-// a password the environment does not already hold from its input, and refuses, making no URL, a
-// server's connection string whose password it cannot take out (psqlURLRows).
+// of the box can read. So every psql command in a fenced block of runbookPsqlPages is given its
+// database's password-free URL, DISPATCH_PSQL_URL or BROKER_PSQL_URL, and that database's password
+// in PGPASSWORD, which the environment carries rather than the command line: a psql named in any
+// other form - a variable unquoted, a URL or a keyword/value string written out - fails. And the
+// step that makes them (Signing people in) takes the password out of each server's URL, in its
+// user info and in a password parameter, with the pool_ parameters libpq refuses, keeps every
+// other parameter, reads a password the environment does not already hold from its input, and
+// refuses, making no URL, a server's connection string whose password it cannot take out
+// (psqlURLRows).
 //
 // Controls: the pages as they stood at 697b987b46 (psql "$DATABASE_URL" with the password in the
 // URL); the step's sed without its user-info arm (the URL keeps the password); the delivery audit's
-// README as it stood before this row named it (psql "$DATABASE_URL", twice); the step as it stood at
-// 74a730474c, without its two refusals (the keyword/value string and the unencoded / keep their
-// passwords).
+// README and the comment-delivery run's as they stood before this row named them (psql
+// "$DATABASE_URL", twice each); the step as it stood at 74a730474c, without its two refusals (the
+// keyword/value string and the unencoded / keep their passwords).
 func TestTheRunbookPassesNoDatabasePasswordOnACommandLine(t *testing.T) {
 	calls := 0
 	for _, path := range runbookPsqlPages {

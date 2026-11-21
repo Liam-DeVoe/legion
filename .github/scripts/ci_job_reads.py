@@ -948,7 +948,14 @@ RULES = {
          "runbookPaths, for the broker's libpq URL step every block names"),
         ("docs/site/src/content/docs/dispatch/after-a-restore.md",
          "internal/dispatch/api/broker_restore_test.go:115 (runbookLines) reads it, the second of "
-         "runbookPaths, for the reset's, the restore's and the sweep's blocks the tests run")),
+         "runbookPaths, for the reset's, the restore's and the sweep's blocks the tests run"),
+        (f"{ENVOY}/internal/dispatch/deliveryaudit/README.md",
+         "internal/dispatch/api/broker_restore_test.go:88 reads it, a page of runbookPsqlPages, for "
+         "the delivery audit's psql calls TestTheRunbookPassesNoDatabasePasswordOnACommandLine holds"),
+        ("scripts/dispatch/README.md",
+         "internal/dispatch/api/broker_restore_test.go:88 reads it, a page of runbookPsqlPages, for "
+         "the comment-delivery run's psql calls TestTheRunbookPassesNoDatabasePasswordOnACommandLine "
+         "holds")),
     f"{ENVOY}/internal/cipher/store/person_subject_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/cipher/store/person_subject_test.go:152 (operatorClearBlock) reads it, for the "
