@@ -164,7 +164,11 @@ export function SidePanel(): ReactNode {
             }
           }}
           placeholder={
-            asking.planWaits ? "Enter approves, or say what to change" : "Ask, or ask for a change"
+            asking.planWaits
+              ? "Enter approves, or say what to change"
+              : asking.runWaits
+                ? "Reading the plan…"
+                : "Ask, or ask for a change"
           }
           type="text"
           value={words}

@@ -575,15 +575,19 @@ function PaletteDialog({
     showHits,
     words: searchText,
   });
+  // While the run waits and its plan is still being read, Enter answers nothing (`useAsk`), and
+  // the line says why.
   const lineLabel = asking.planWaits
     ? "Revise the plan"
-    : line === "file"
-      ? scope.context.project
-        ? `File as a new issue in ${scope.context.project}`
-        : "File as a new issue"
-      : line === "do"
-        ? "Do"
-        : "Ask";
+    : asking.runWaits
+      ? "Reading the plan…"
+      : line === "file"
+        ? scope.context.project
+          ? `File as a new issue in ${scope.context.project}`
+          : "File as a new issue"
+        : line === "do"
+          ? "Do"
+          : "Ask";
   const lineSection: CommandSection = {
     id: LINE_GROUP_ID,
     label: "Next step",

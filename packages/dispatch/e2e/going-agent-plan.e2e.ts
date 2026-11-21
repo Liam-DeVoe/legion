@@ -210,7 +210,7 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
 });
 
 // SLOW(>=2s): a waiting run whose plan the bar reads late, and the approval once it has.
-test("Enter in the empty box before the bar has read the waiting plan opens no row, and approves once it has", async ({
+test("before the bar has read the waiting plan, the line says so, Enter opens no row and starts no run, and it approves once it has", async ({
   browser,
 }) => {
   modelsLane();
@@ -231,7 +231,12 @@ test("Enter in the empty box before the bar has read the waiting plan opens no r
     await askTheAgent(page, words);
     await planWaits(page);
     await expect(planCard(page)).toHaveCount(0);
-    await searchBox(page).focus();
+    // Words in the box: the line names the read, and Enter keeps the words and starts no run.
+    await searchBox(page).fill("keep the dome whole");
+    await expect(lineOnTop(page)).toContainText("Reading the plan");
+    await searchBox(page).press("Enter");
+    await expect(searchBox(page)).toHaveValue("keep the dome whole");
+    await searchBox(page).fill("");
     await searchBox(page).press("Enter");
 
     release();
