@@ -122,10 +122,11 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 		}
 		refused := m.transient(response, body, failed)
 		if response.StatusCode == http.StatusUnprocessableEntity {
-			// GitHub documents its rate limits on a 429 and a 403 (githubrest.RateLimited), but
-			// the headers or the secondary-limit text of a limit on a 422 are that limit too,
-			// and no verdict on what the request asked for: the same request may pass later, so
-			// it is GitHub's trouble and never the installation's permissions. Its answer is no
+			// GitHub documents its rate limits on a 429 and a 403 (githubrest's
+			// Answer.RateLimited), but the headers or the secondary-limit text of a limit on a
+			// 422 are that limit too, and no verdict on what the request asked for: the same
+			// request may pass later, so it is GitHub's trouble and never the installation's
+			// permissions. Its answer is no
 			// rate limit githubrest names, so the daemon's start retries it as GitHub's trouble
 			// rather than waiting it out (internal/daemon's bootLimit).
 			if githubrest.RateLimitSignals(response, body) {

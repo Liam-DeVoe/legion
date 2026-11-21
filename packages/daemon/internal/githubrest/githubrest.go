@@ -245,16 +245,11 @@ func PathUnder(api string, target *url.URL) string {
 // guard reads no answer as a limit less often than before.
 var secondaryLimitMessages = []string{"secondary rate limit", "secondary rate-limit", "abuse detection mechanism"}
 
-// RateLimited says whether response, read as read, is GitHub's rate limit: a 429, or a 403 carrying
-// x-ratelimit-remaining: 0 or a retry-after, or one whose body, as it came, says it is the
-// secondary limit, which GitHub's REST documentation allows with neither header set. Those are the
-// statuses GitHub documents a limit on; a caller that reads another status as an answer of its own
-// asks RateLimitSignals before it does.
-func RateLimited(response *http.Response, read oauth2call.Answer) bool {
-	return rateLimited(response, oauth2call.Holds(read, namesSecondaryLimit))
-}
-
-// rateLimited is RateLimited of an answer whose body names the secondary limit or does not (named).
+// rateLimited says whether response is GitHub's rate limit, where named says whether its body, as
+// it came, says it is the secondary limit: a 429, or a 403 carrying x-ratelimit-remaining: 0 or a
+// retry-after, or naming the secondary limit, which GitHub's REST documentation allows with
+// neither header set. Those are the statuses GitHub documents a limit on; a caller that reads
+// another status as an answer of its own asks RateLimitSignals before it does.
 func rateLimited(response *http.Response, named bool) bool {
 	if response.StatusCode == http.StatusTooManyRequests {
 		return true
@@ -281,7 +276,7 @@ func signals(response *http.Response, named bool) bool {
 }
 
 // Limit is whether response, whose body is body as a caller read it from another client, is
-// GitHub's rate limit (RateLimited), and the budget the limit spent (spent): the reading this
+// GitHub's rate limit (rateLimited), and the budget the limit spent (spent): the reading this
 // package gives its own answers, for a caller that reads GitHub's answers through another client,
 // as the leak guard reads them through gh.
 func Limit(response *http.Response, body []byte) (bool, Budget) {

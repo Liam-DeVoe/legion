@@ -108,9 +108,9 @@ func (m *Manager) answered(response *http.Response, read oauth2call.Answer, err 
 }
 
 // transient marks a response, read as read, as GitHub's trouble rather than an answer: a 5xx, or
-// a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body as it came
-// for a secondary limit GitHub names there alone). Either way err carries GitHub's answer
-// (answered).
+// a rate limit (the answer's RateLimited, which githubrest decides from the status, the rate-limit
+// headers and, for a secondary limit GitHub names in the body alone, the body as it came). Either
+// way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, read oauth2call.Answer, err error) error {
 	refused := m.answered(response, read, err)
 	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {

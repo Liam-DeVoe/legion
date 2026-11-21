@@ -304,7 +304,7 @@ func TestAnAnswerCarriesTheRateLimitHeadersGitHubSent(t *testing.T) {
 }
 
 // Limit reads an answer another client received as this client reads its own. Whether the answer
-// is GitHub's rate limit is RateLimited's rule: a 429, or a 403 with X-RateLimit-Remaining: 0, a
+// is GitHub's rate limit is rateLimited's rule: a 429, or a 403 with X-RateLimit-Remaining: 0, a
 // Retry-After, or a message naming the secondary limit (spelled "rate limit" or "rate-limit") or
 // GitHub's abuse detection mechanism. Which limit it is, is spent's rule, which never reads the
 // status: the secondary limit where the message names it, whatever X-RateLimit-Remaining says
