@@ -885,17 +885,22 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
 // completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
 // there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
-// while no role was named for that phase. A parent held for its children (record.HeldForChildren)
-// is the one hold read where it stands, at its retro (record.StandsAt): the pass of its last step
-// moved it there in place of the retro, as an approval moves an issue into accepting, so the
-// report of the run that pass ended is taken as it is there. A task with plan rows takes it the
-// same way, whatever step it stands at now; the test of the run itself is ranUnreported.
+// while no role was named for that phase. The two holds of an owner's plan are read where their
+// issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
+// as it is without the hold. A parent held for its children stands at its retro: the pass of its
+// last step moved it there in place of the retro, as an approval moves an issue into accepting, so
+// the report of the run that pass ended is taken as it is there. A task its owner stopped stands at
+// the step the stop ended: the report of a run that left that phase earlier - a review the review
+// event moved back to implementing before the stop - is taken as it is there, and the report of the
+// role that works the phase it stands at is none of a phase that role has left, so it is answered
+// as the run the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever
+// step it stands at now; the test of the run itself is ranUnreported.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	at := issue.Phase
-	if record.HeldForChildren(issue) {
+	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
 		at = record.StandsAt(issue)
 	}
-	if at == phase.Admitted || RoleFor(at) == "" || phase.LeftBy(role, at) == "" {
+	if works := RoleFor(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
 		return false, nil
 	}
 	return e.ranUnreported(ctx, tx, issue, role, token)
