@@ -19,6 +19,7 @@ import {
   type Gh,
   type GhResult,
   INSTALLERS_COLUMNS,
+  KEEP_RULES_VERSION,
   keepsEntry,
   lenientFields,
   listCopies,
@@ -321,8 +322,23 @@ class World {
   refuseTreeBatches = false;
   /** The GraphQL tree batches answered, each with its subtrees. */
   readonly treeBatches: number[] = [];
-  /** When set, called as each GraphQL tree batch is answered, before its answer is made. */
-  onTreeBatch: (() => void) | undefined = undefined;
+  /** When set, called as each GraphQL tree batch is answered, before its answer is made, with the
+   *  ids of the subtrees it asks for. */
+  onTreeBatch: ((shas: readonly string[]) => void) | undefined = undefined;
+  /** When set, called with each call's arguments: an error line it gives is gh's answer to that
+   *  call, as when GitHub refuses it for a rate limit. */
+  refuse: ((args: readonly string[]) => string | undefined) | undefined = undefined;
+  /** The seconds from now to each limit's reset that `gh api rate_limit` gives. */
+  rateLimitResetIn = 45;
+  /** When set, each tree read of a repository waits for what this gives it before it is
+   *  answered. */
+  treeGate: ((repository: string) => Promise<void>) | undefined = undefined;
+  /** When set, each search waits for it before it is answered. */
+  searchGate: Promise<void> | undefined = undefined;
+  /** The tree reads and searches answered, in their order: `tree <repository>`, `search <q>`. */
+  readonly answered: string[] = [];
+  /** When set, called with each line `answered` takes, as it takes it. */
+  onAnswer: ((what: string) => void) | undefined = undefined;
   /** Each tree answer waits this many microtask turns (no timer), or its repository's in
    *  `treeTurnsOf`, so reads made at once overlap; the most tree reads in flight at once, in all
    *  and of one repository, and the most repositories with one in flight. */
@@ -383,6 +399,8 @@ class World {
       stderr: "",
     });
     const fail = (line: string): GhResult => ({ code: 1, stdout: "", stderr: `${line}\n` });
+    const refusal = this.refuse?.(args);
+    if (refusal !== undefined) return fail(refusal);
     const answer = (value: unknown) => (typeof value === "string" ? fail(value) : ok(value));
     if (args[0] === "repo" && args[1] === "list") {
       const listing = this.listings.get(args[2] ?? "");
@@ -412,7 +430,7 @@ class World {
           return fail("gh: Something went wrong while executing your query.");
         const trees = [...query.matchAll(/(t\d+): object\(oid: "([0-9a-f]{40})"\)/g)];
         this.treeBatches.push(trees.length);
-        this.onTreeBatch?.();
+        this.onTreeBatch?.(trees.map(([, , sha = ""]) => sha));
         const repository = Object.fromEntries(
           trees.map(([, alias = "", sha = ""]) => {
             const found = this.trees.get(`${owner}/${name} ${sha}`) as
@@ -472,6 +490,8 @@ class World {
         if (this.searched.size >= this.holdFirstSearches) this.firstSearches.resolve();
         await this.firstSearches.promise;
       }
+      if (this.searchGate !== undefined) await this.searchGate;
+      this.noteAnswered(`search ${q}`);
       this.inFlight.set(owner, (this.inFlight.get(owner) ?? 1) - 1);
       const status = reply.status ?? 200;
       const headers = {
@@ -494,11 +514,12 @@ class World {
     }
     const endpoint = args[1] ?? "";
     if (endpoint === "rate_limit") {
-      const reset = Math.floor(this.clock / 1000) + 45;
+      const reset = Math.floor(this.clock / 1000) + this.rateLimitResetIn;
       return ok({
         resources: {
           core: { limit: 15000, remaining: 0, reset },
           code_search: { limit: 10, remaining: 0, reset },
+          graphql: { limit: 5000, remaining: 0, reset },
         },
       });
     }
@@ -555,6 +576,8 @@ class World {
       );
       const turns = this.treeTurnsOf.get(repository) ?? this.treeTurns;
       for (let turn = 0; turn < turns; turn++) await Promise.resolve();
+      if (this.treeGate !== undefined) await this.treeGate(repository);
+      this.noteAnswered(`tree ${repository}`);
       this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 1) - 1);
       const found = this.trees.get(`${tree[1]} ${tree[2]}${tree[3] ? " recursive" : ""}`);
       if (found === undefined) return fail("gh: Not Found (HTTP 404)");
@@ -584,6 +607,11 @@ class World {
     }
     return fail(`stand-in gh: no answer for ${args.join(" ")}`);
   };
+
+  private noteAnswered(what: string) {
+    this.answered.push(what);
+    this.onAnswer?.(what);
+  }
 }
 
 /** F6's tree of cybermonklabs/legion. */
@@ -743,6 +771,11 @@ async function run(
         .filter((line) => line !== "")
         .map((line) => JSON.parse(line) as Record<string, unknown>),
   };
+}
+
+/** Every output file of a run, by name. */
+function outputs(r: Run): Record<string, string> {
+  return Object.fromEntries(readdirSync(r.out).map((file) => [file, r.text(file)]));
 }
 
 /** The file the cache under `cacheDir` holds for `repository`. */
@@ -1656,13 +1689,11 @@ describe("a fork read against its parent", () => {
 });
 
 describe("a truncated tree", () => {
-  /** The F6 tree served the way GitHub serves a truncated one: the root's recursive read and the
-   *  skills/ directory's are truncated, so both are read one level down. */
-  function truncatedWorld(): World {
-    const w = world();
-    const { entries } = legionTree();
+  /** Each directory of F6's tree, by its path, with its tree id: F6's where its tree lists the
+   *  directory, else a made-up one. */
+  function legionDirs(): Map<string, string> {
     const dirs = new Map<string, string>();
-    for (const entry of entries) {
+    for (const entry of legionTree().entries) {
       const parts = entry.path.split("/");
       for (let depth = 1; depth < parts.length; depth++) {
         const dir = parts.slice(0, depth).join("/");
@@ -1670,6 +1701,15 @@ describe("a truncated tree", () => {
       }
       if (entry.type === "tree") dirs.set(entry.path, entry.sha);
     }
+    return dirs;
+  }
+
+  /** The F6 tree served the way GitHub serves a truncated one: the root's recursive read and the
+   *  skills/ directory's are truncated, so both are read one level down. */
+  function truncatedWorld(): World {
+    const w = world();
+    const { entries } = legionTree();
+    const dirs = legionDirs();
     const all: TreeEntry[] = [
       ...entries.filter((entry) => entry.type === "blob"),
       ...[...dirs].map(([dir, sha]) => ({ path: dir, mode: "040000", type: "tree", sha })),
@@ -1845,6 +1885,215 @@ describe("a truncated tree", () => {
     expect(six.files["repositories.tsv"]).toContain("cybermonklabs/small-4");
     expect(six.files).toEqual(one.files);
   }, 30_000);
+
+  const LEGION_ONLY = ["--only", "cybermonklabs/legion", "--max-search-calls", "0"];
+
+  /** Each subtree's level in the truncated tree's walk: the root's 0, a directory's the count of
+   *  its path's parts. */
+  function depthsOf(): Map<string, number> {
+    const depthOf = new Map([[LEGION_ROOT, 0]]);
+    for (const [dir, sha] of legionDirs()) depthOf.set(sha, dir.split("/").length);
+    return depthOf;
+  }
+
+  /** A run over `cacheDir` that stops (its memory passes the limit) once its walk asks for its
+   *  third level; returns the levels it saved there, each its file, key and value. */
+  async function stoppedWalk(cacheDir: string) {
+    const depthOf = depthsOf();
+    const w = truncatedWorld();
+    let stop = false;
+    w.onTreeBatch = (shas) => {
+      if (shas.some((sha) => depthOf.get(sha) === 2)) stop = true;
+    };
+    const stopped = await run(w, [...LEGION_ONLY, "--cache-dir", cacheDir], {}, () =>
+      stop ? MEMORY_LIMIT_BYTES + 1 : PEAK_BYTES
+    );
+    expect(stopped.code).toBe(3);
+    const walkDir = path.join(cacheDir, "walk");
+    return readdirSync(walkDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => {
+        const file = path.join(walkDir, name);
+        const { key, value } = JSON.parse(readFileSync(file, "utf8")) as {
+          key: string;
+          value: { kept: unknown[]; subtrees: { sha: string }[]; count: number };
+        };
+        return { file, key, value };
+      });
+  }
+
+  /** The kind of GraphQL batch a gh call reads (subtrees, blobs by id, or files by path), or
+   *  undefined for a call that is none. */
+  function graphqlKind(args: readonly string[]): "tree" | "blob" | "file" | undefined {
+    if (args[1] !== "graphql") return undefined;
+    const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+    if (query.includes("... on Tree")) return "tree";
+    return query.includes("object(expression:") ? "file" : "blob";
+  }
+
+  test("a walk stopped after a level goes on from the next when run again, into the same output", async () => {
+    const whole = await run(truncatedWorld(), LEGION_ONLY);
+    const depthOf = depthsOf();
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    // The levels the first run finished are in the cache, each keyed by the repository, its root
+    // tree, the fork flag, the keep rules' version and the level, with the next level's subtrees.
+    const saved = new Map<number, { subtrees: { sha: string }[] }>();
+    for (const { key, value } of await stoppedWalk(cacheDir)) {
+      const [repository, root, fork, rules, level] = key.split("\0");
+      expect([repository, root, fork, rules]).toEqual([
+        "cybermonklabs/legion",
+        LEGION_ROOT,
+        "false",
+        String(KEEP_RULES_VERSION),
+      ]);
+      saved.set(Number(level), value);
+    }
+    const last = Math.max(...saved.keys());
+    const levels = [...saved.keys()].sort((a, b) => a - b);
+    expect(levels).toEqual(Array.from({ length: last + 1 }, (_, level) => level));
+    expect(last).toBeGreaterThanOrEqual(1);
+    expect(last).toBeLessThan(Math.max(...depthOf.values()));
+
+    // The second run reads no whole tree and no level the first finished: its first batch is the
+    // first subtrees of the level after the last saved.
+    const second = truncatedWorld();
+    const asked: string[][] = [];
+    second.onTreeBatch = (shas) => {
+      asked.push([...shas]);
+    };
+    const resumed = await run(second, [...LEGION_ONLY, "--cache-dir", cacheDir]);
+    expect(resumed.code).toBe(0);
+    expect(second.calls.filter((call) => /\/git\/trees\//.test(call[1] ?? ""))).toEqual([]);
+    const next = saved.get(last)?.subtrees.map((subtree) => subtree.sha) ?? [];
+    expect(next.length).toBeGreaterThan(0);
+    expect(asked[0]).toEqual(next.slice(0, 50));
+    expect(asked.flat().every((sha) => (depthOf.get(sha) ?? -1) > last)).toBe(true);
+    // Its output, the walk's "by directory, N reads" with it, is that of a walk never stopped.
+    expect(resumed.table("repositories.tsv")[0]?.tree_read).toMatch(/^by directory, \d+ reads$/);
+    expect(outputs(resumed)).toEqual(outputs(whole));
+  }, 60_000);
+
+  test("a walk's levels saved under other keep rules are read again", async () => {
+    const whole = await run(truncatedWorld(), LEGION_ONLY);
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    // As a run under other keep rules saved them: each level under the key of another rules
+    // version, and holding no entry, so a replay of one would change the output.
+    const saved = await stoppedWalk(cacheDir);
+    expect(saved.length).toBeGreaterThanOrEqual(2);
+    for (const { file, key, value } of saved) {
+      const parts = key.split("\0");
+      parts[3] = String(KEEP_RULES_VERSION + 1);
+      const other = parts.join("\0");
+      rmSync(file);
+      writeFileSync(
+        path.join(path.dirname(file), `${sha1(other)}.json`),
+        JSON.stringify({ key: other, value: { ...value, kept: [], count: 0 } })
+      );
+    }
+    const w = truncatedWorld();
+    const asked: string[][] = [];
+    w.onTreeBatch = (shas) => {
+      asked.push([...shas]);
+    };
+    const again = await run(w, [...LEGION_ONLY, "--cache-dir", cacheDir]);
+    expect(again.code).toBe(0);
+    // It reads the whole tree, which is truncated, then walks it from its root.
+    expect(w.calls.filter((call) => /\/git\/trees\//.test(call[1] ?? ""))).toHaveLength(1);
+    expect(asked[0]).toEqual([LEGION_ROOT]);
+    expect(outputs(again)).toEqual(outputs(whole));
+  }, 60_000);
+
+  test("a batch refused for the GraphQL rate limit is sent again after the reset, not halved", async () => {
+    const f6 = fixtureJson("F6-search-code.json");
+    const read = async (limited: boolean) => {
+      const w = truncatedWorld();
+      // F6's hits, read by path (`filesAt`) at the commit read.
+      w.search = (q) =>
+        q === '"legion-worker" repo:cybermonklabs/legion' ? { body: f6 } : { body: EMPTY_SEARCH };
+      // The first batch of subtrees, of blobs and of files is refused for the GraphQL limit.
+      const left = new Set(limited ? ["tree", "blob", "file"] : []);
+      w.refuse = (args) => {
+        const kind = graphqlKind(args);
+        if (kind === undefined || !left.delete(kind)) return undefined;
+        return "GraphQL: API rate limit exceeded for user ID 1001.";
+      };
+      return { w, r: await run(w, ["--only", "cybermonklabs/legion"]) };
+    };
+    const calm = await read(false);
+    const limited = await read(true);
+    expect(limited.r.code).toBe(0);
+    // Each was sent again whole: the next call of its kind is the same call.
+    for (const kind of ["tree", "blob", "file"]) {
+      const [refused, again] = limited.w.calls.filter((call) => graphqlKind(call) === kind);
+      expect(refused).toBeDefined();
+      expect(again).toEqual(refused);
+    }
+    expect(
+      limited.r.errors.filter(
+        (line) => line === "copies: the graphql rate limit is spent; waiting 46 s"
+      )
+    ).toHaveLength(3);
+    // None was halved or read alone: the batches answered, and the REST reads, are those of a run
+    // GitHub refused nothing.
+    expect(limited.r.errors.filter((line) => line.includes("each is read alone"))).toEqual([]);
+    expect([...limited.w.treeBatches].sort()).toEqual([...calm.w.treeBatches].sort());
+    expect(limited.w.batches).toEqual(calm.w.batches);
+    const rest = (w: World) => w.calls.filter((call) => /^repos\/.*\/git\//.test(call[1] ?? ""));
+    expect(rest(limited.w)).toEqual(rest(calm.w));
+    for (const name of ["skill-copies.tsv", "manifests.tsv", "loaders.tsv", "queries.jsonl"]) {
+      expect(limited.r.text(name)).toBe(calm.r.text(name));
+    }
+    // The call refused is a gh call of the walk: it counts one read more.
+    const reads = (r: Run) => {
+      const treeRead = r.table("repositories.tsv")[0]?.tree_read ?? "";
+      return Number(/^by directory, (\d+) reads$/.exec(treeRead)?.[1]);
+    };
+    expect(reads(calm.r)).toBeGreaterThan(0);
+    expect(reads(limited.r)).toBe(reads(calm.r) + 1);
+  }, 60_000);
+
+  test("a call refused for the secondary rate limit is sent again after a minute, then two, not at the reset", async () => {
+    const secondary = "gh: You have exceeded a secondary rate limit. (HTTP 403)";
+    const calm = await run(world(), LEGION_ONLY);
+    const w = world();
+    // Each limit's reset is an hour away. The commit read (a REST call) is refused once for the
+    // secondary limit, and the first batch of blobs (a GraphQL call) twice.
+    w.rateLimitResetIn = 3_600;
+    let commitRefusals = 1;
+    let blobRefusals = 2;
+    w.refuse = (args) => {
+      if (/\/commits\?/.test(args[1] ?? "") && commitRefusals > 0) {
+        commitRefusals--;
+        return secondary;
+      }
+      if (graphqlKind(args) === "blob" && blobRefusals > 0) {
+        blobRefusals--;
+        return secondary;
+      }
+      return undefined;
+    };
+    const r = await run(w, LEGION_ONLY);
+    expect(r.code).toBe(0);
+    // A minute for each first refusal, two for the second: no wait for the reset, which is not
+    // even asked for.
+    expect(w.sleeps).toEqual([60_000, 60_000, 120_000]);
+    expect(
+      r.errors.filter((line) => line.startsWith("copies: GitHub's secondary rate limit"))
+    ).toEqual(
+      [60, 60, 120].map(
+        (seconds) => `copies: GitHub's secondary rate limit refused a call; waiting ${seconds} s`
+      )
+    );
+    expect(w.calls.some((call) => call[1] === "rate_limit")).toBe(false);
+    // The same calls were sent again, and the output is that of a run GitHub refused nothing.
+    const commits = w.calls.filter((call) => /\/commits\?/.test(call[1] ?? ""));
+    expect(commits).toEqual([commits[0], commits[0]]);
+    const blobs = w.calls.filter((call) => graphqlKind(call) === "blob");
+    expect(blobs.slice(0, 3)).toEqual([blobs[0], blobs[0], blobs[0]]);
+    expect(outputs(r)).toEqual(outputs(calm));
+  }, 60_000);
 });
 
 describe("the read slots", () => {
@@ -1901,8 +2150,6 @@ describe("a run started again over --cache-dir", () => {
     w.failingBlobs.clear();
     return w;
   };
-  const outputs = (r: Run) =>
-    Object.fromEntries(readdirSync(r.out).map((file) => [file, r.text(file)]));
 
   test("a second run makes no gh call and writes the same output", async () => {
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
@@ -2427,6 +2674,125 @@ describe("the owners' searches at once, each paced by its own limit", () => {
     expect(last - first).toBe(Math.max(minutes("cybermonklabs"), minutes("acme")) * 60_000);
     expect(last - first).toBeLessThan((minutes("cybermonklabs") + minutes("acme")) * 60_000);
   });
+});
+
+describe("the searches beside the tree reads", () => {
+  /** acme/slow, a made-up repository beside the world's, whose tree a run reads last: it holds
+   *  slow-skill, a name no other repository holds, a copy of alpha, and a guide naming slow-skill.
+   */
+  const SLOW = "acme/slow";
+  const SLOW_FILES: MadeFile[] = [
+    {
+      path: "skills/slow-skill/SKILL.md",
+      text: skill("name: slow-skill\ndescription: A made-up skill of a repository read last."),
+    },
+    {
+      path: "skills/alpha/SKILL.md",
+      text: skill("name: alpha\ndescription: A made-up copy of alpha."),
+    },
+    { path: "docs/slow.md", text: "# Slow\n\nLoad skill://slow-skill first.\n" },
+  ];
+  const slowWorld = () => {
+    const w = world();
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      {
+        nameWithOwner: SLOW,
+        isFork: false,
+        isArchived: false,
+        defaultBranchRef: { name: "main" },
+        parent: null,
+      },
+    ]);
+    w.addFiles(SLOW_FILES);
+    w.addRepository(SLOW, treeOf(SLOW, SLOW_FILES));
+    // alpha's owner-wide search in acme reaches GitHub's cap, so it is run again in each
+    // repository of acme that holds a skill, acme/slow among them; slow-skill's finds the guide.
+    w.search = (q) => {
+      const reply = acmeSearch(q);
+      if (q === '"alpha" user:acme') {
+        return { body: { ...(reply.body as object), total_count: 1000 } };
+      }
+      if (q === '"slow-skill" user:acme') {
+        const guide = {
+          name: "slow.md",
+          path: "docs/slow.md",
+          sha: sha1("docs/slow.md"),
+          repository: { full_name: SLOW, fork: false },
+        };
+        return { body: { total_count: 1, incomplete_results: false, items: [guide] } };
+      }
+      return reply;
+    };
+    return w;
+  };
+  /** Every output file of a run over `w`, by name; `err` takes each progress line. */
+  const outputsOf = async (w: World, err: (line: string) => void) => {
+    const result = await listCopies(
+      parseConfig(CONFIG),
+      { at: AT, only: [], maxSearchCalls: Number.POSITIVE_INFINITY },
+      { gh: w.gh, sleep: w.sleep, now: w.now, out: () => {}, err, peakRssBytes: () => 0 }
+    );
+    const out = mkdtempSync(path.join(tmpdir(), "copies-searches-"));
+    scratch.push(out);
+    writeOutputs(out, result);
+    return Object.fromEntries(
+      readdirSync(out).map((file) => [file, readFileSync(path.join(out, file), "utf8")])
+    );
+  };
+
+  test("a run whose searches start before its last tree ends writes the same output, byte for byte, as one that searches after", async () => {
+    // After: each search is answered only once every tree is read (the run then reads its
+    // SKILL.md files).
+    const after = slowWorld();
+    const treesRead = Promise.withResolvers<void>();
+    after.searchGate = treesRead.promise;
+    const late = await outputsOf(after, (line) => {
+      if (/^copies: reading \d+ SKILL\.md files$/.test(line)) treesRead.resolve();
+    });
+    // Before: acme/slow's tree is answered only once three searches are.
+    const before = slowWorld();
+    const searched = Promise.withResolvers<void>();
+    let answers = 0;
+    before.onAnswer = (what) => {
+      if (what.startsWith("search ") && ++answers === 3) searched.resolve();
+    };
+    before.treeGate = async (repository) => {
+      if (repository === SLOW) await searched.promise;
+    };
+    const early = await outputsOf(before, () => {});
+
+    const isTree = (what: string) => what.startsWith("tree ");
+    const isSearch = (what: string) => what.startsWith("search ");
+    const firstSearch = before.answered.findIndex(isSearch);
+    expect(firstSearch).toBeGreaterThanOrEqual(0);
+    expect(firstSearch).toBeLessThan(before.answered.indexOf(`tree ${SLOW}`));
+    expect(before.answered.filter(isTree).at(-1)).toBe(`tree ${SLOW}`);
+    expect(after.answered.findLastIndex(isTree)).toBeLessThan(after.answered.findIndex(isSearch));
+    expect(early).toEqual(late);
+
+    // The records keep one order: each name, sorted, in each scope, then each owner's reruns,
+    // acme/slow's among them, since they were queued once every tree was read.
+    const queries = (early["queries.jsonl"] ?? "")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((query) => query.type === "search");
+    const names = [...new Set(parseTsv(early["skill-copies.tsv"] ?? "").map((row) => row.name))];
+    expect(names).toContain("slow-skill");
+    expect(queries.map((query) => query.q)).toEqual([
+      ...names.sort().flatMap((name) => [`"${name}" org:cybermonklabs`, `"${name}" user:acme`]),
+      '"alpha" repo:acme/skills',
+      `"alpha" repo:${SLOW}`,
+    ]);
+    expect(parseTsv(early["loaders.tsv"] ?? "")).toContainEqual({
+      repository: SLOW,
+      path: "docs/slow.md",
+      skill: "slow-skill",
+      match: "skill-uri",
+      source: "code search",
+    });
+  }, 60_000);
 });
 
 describe("the pure parts", () => {

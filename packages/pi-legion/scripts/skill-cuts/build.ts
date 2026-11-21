@@ -1899,16 +1899,24 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
+  /** The commit of `repo` at the session's start, and the evidence for it. */
+  const readCommit = async (repo: string): Promise<{ sha: string; line: Evidence }> => {
+    const { branch, from } = await github.branch(repo);
+    const sha = await github.commitAt(repo, branch, input.sessionStart);
+    return {
+      sha,
+      line: {
+        item: `commit ${sha} of ${repo}`,
+        source: `the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
+      },
+    };
+  };
   const commitOf = async (repo: string): Promise<string> => {
     const known = commits.get(repo);
     if (known !== undefined) return known;
-    const { branch, from } = await github.branch(repo);
-    const sha = await github.commitAt(repo, branch, input.sessionStart);
+    const { sha, line } = await readCommit(repo);
     commits.set(repo, sha);
-    evidence.push({
-      item: `commit ${sha} of ${repo}`,
-      source: `the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
-    });
+    evidence.push(line);
     return sha;
   };
 
@@ -2025,16 +2033,29 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   const held = new Map<string, RepositoryAt>();
-  for (const repo of [...repositories].sort()) {
-    const commit = await commitOf(repo);
-    const at = await github.at(repo, commit, run.config.excludePaths);
+  // The repositories' reads start together; their evidence, and the first failure, follow the
+  // sorted order, as reading them one after another gives them.
+  const reads = await Promise.allSettled(
+    [...repositories].sort().map(async (repo) => {
+      const commit = await readCommit(repo);
+      return { repo, commit, at: await github.at(repo, commit.sha, run.config.excludePaths) };
+    })
+  );
+  for (const settled of reads) {
+    if (settled.status === "rejected") throw settled.reason;
+    const { repo, commit, at } = settled.value;
+    commits.set(repo, commit.sha);
+    evidence.push(commit.line);
     held.set(repo, at);
     evidence.push({
-      item: `the skills and manifests of ${repo} at ${commit}`,
-      source: `gh api repos/${repo}/git/trees/${commit}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
+      item: `the skills and manifests of ${repo} at ${commit.sha}`,
+      source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
     });
     for (const fault of at.faults) {
-      evidence.push({ item: `left out: ${repo} ${fault.file} at ${commit}`, source: fault.why });
+      evidence.push({
+        item: `left out: ${repo} ${fault.file} at ${commit.sha}`,
+        source: fault.why,
+      });
     }
   }
   const resolved = resolveInstallers(
@@ -2543,21 +2564,21 @@ function listsSkill(
 }
 
 /**
- * The load test's profile of the session whose transcript is in `spool` (the file `transcriptPath`
- * of `store`), rebuilt as build-cases rebuilds a case's at the session's start: its context
- * (`sessionContext`), and `caseProfile` from every read of its branch, so the units its host had,
- * at their commits then, their plugins and the context files; a subagent's recorded system prompt
- * (its secrets taken out) and tools. The tested skill `skill` is left out of the skills, since the
- * load test installs it. Throws, naming why, when the session gives none.
+ * The load test's profile of the session whose transcript is `t` (read from the file
+ * `transcriptPath` of `store`; its caller parsed it, `readTranscript`), rebuilt as build-cases
+ * rebuilds a case's at the session's start: its context (`sessionContext`), and `caseProfile` from
+ * every read of its branch, so the units its host had, at their commits then, their plugins and
+ * the context files; a subagent's recorded system prompt (its secrets taken out) and tools. The
+ * tested skill `skill` is left out of the skills, since the load test installs it. Throws, naming
+ * why, when the session gives none.
  */
 async function sessionProfile(
   run: ProfileRun,
   store: StoreContext,
   transcriptPath: string,
-  spool: string,
+  t: Transcript,
   skill: string
 ): Promise<SessionProfile> {
-  const t = readTranscript(spool);
   const header = sessionHeader(t);
   if ("drop" in header) throw new Error(`${header.drop}: ${header.detail}`);
   const rebuilt = sessionContext(store, t, transcriptPath);
@@ -4040,8 +4061,8 @@ function profilesPlan(
   };
 }
 
-/** The profile of the file `filePath` of `store`, pulled into `spool` and rebuilt by
- *  `sessionProfile`. Throws, naming why, when the session gives none. */
+/** The profile of the file `filePath` of `store`, pulled into `spool`, parsed (`readTranscript`)
+ *  and rebuilt by `sessionProfile`. Throws, naming why, when the session gives none. */
 async function pulledProfile(
   run: ProfileRun,
   store: string,
@@ -4051,7 +4072,7 @@ async function pulledProfile(
 ): Promise<SessionProfile> {
   const { bytes } = await pullTranscript(run.config.psqlCommand, store, filePath, spool);
   if (bytes === 0) throw new Error("the pull returned no row");
-  return sessionProfile(run, storeNamed(run.config, store), filePath, spool, skill);
+  return sessionProfile(run, storeNamed(run.config, store), filePath, readTranscript(spool), skill);
 }
 
 /** The context session of a run and its profile, the one each written task takes. */
@@ -4870,7 +4891,7 @@ async function buildControlTasks(
           plan.run,
           storeNamed(config, candidate.store),
           transcriptPath,
-          spool,
+          t,
           skill.name
         );
       } catch (error) {

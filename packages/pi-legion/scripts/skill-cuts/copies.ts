@@ -30,8 +30,11 @@
  * loses nothing: each owner's listing, each repository whole (its commit at `--at`, kept tree
  * entries and their count, the SKILL.md and manifest blobs it read, and apart from them a fork's
  * text files, written the moment that repository is done, keyed by repository, default branch
- * and `--at`, which name one commit), and each code search run whole, keyed by its query. A
- * cached read makes no GitHub call; a read that failed is not cached, so it is tried again.
+ * and `--at`, which name one commit), each level a truncated tree's walk finishes (keyed by
+ * repository, root tree, fork flag, KEEP_RULES_VERSION and level: a tree's id fixes its content,
+ * so a walk stopped midway goes on from its next level), and each code search run whole, keyed by
+ * its query. A cached read makes no GitHub call; a read that failed is not cached, so it is tried
+ * again.
  * Without `--cache-dir` the same files go to a temporary directory, removed when the run ends.
  * stderr gets one line per repository done (`copies: tree <n>/<total> <owner/repo>: <entries>
  * entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25 searches with the calls
@@ -46,14 +49,17 @@
  *    answer is read (`keepsEntry`: each `SKILL.md`, each file of a manifest kind, and in a fork
  *    each text file its scan may read); the rest are counted (`repositories.tsv`'s `tree_entries`)
  *    and dropped. A tree GitHub answers `truncated` is walked a level at a time, each level's
- *    subtrees in GraphQL batches of up to 50 (`readTree`), with REST where GitHub refuses a batch;
- *    the walk holds only the kept entries and the subtrees of its next level. A listing, commit or
- *    tree read that fails names its repository with gh's error. Forks and archived repositories
- *    stay, marked (a fork with its parent). REPOSITORY_JOBS (6) repositories are read at once, and
- *    every gh call reading one (commit, tree, subtrees, blobs) takes one of READ_CALLS (8) slots
- *    across the run, at most READ_CALLS_PER_REPOSITORY (4) of them its repository's, so a large
- *    repository's walk and the small repositories share them; the output is the same, byte for
- *    byte, as one repository at a time.
+ *    subtrees in GraphQL batches of up to 50 (`readTree`), with REST where GitHub refuses a batch
+ *    (but for its rate limit: a batch, of subtrees, blobs or files, refused for the GraphQL rate
+ *    limit is sent again after its reset, or for the secondary rate limit after a minute, doubled
+ *    at each refusal, `Github.rateWait`); the walk holds only the kept entries and the subtrees
+ *    of its next level. A listing, commit or tree read that fails names its repository with gh's
+ *    error. Forks and archived repositories stay, marked (a fork with its parent).
+ *    REPOSITORY_JOBS (6) repositories are read at once, and every gh call reading one (commit,
+ *    tree, subtrees, blobs), and every code search (step 5, which runs beside these reads), takes
+ *    one of READ_CALLS (8) slots across the run, at most READ_CALLS_PER_REPOSITORY (4) of them its
+ *    repository's, so a large repository's walk, the small repositories and the searches share
+ *    them; the output is the same, byte for byte, as one repository at a time.
  * 2. Skills. Each `SKILL.md` blob outside a configured `excludePaths` prefix of its repository: its
  *    frontmatter `name` (else its directory's name) and `description`, read from the blob. The
  *    frontmatter is read as YAML (Bun.YAML); one that is not valid YAML is read by `lenientFields`
@@ -93,7 +99,12 @@
  *    own limit: at most `x-ratelimit-limit` (10 when absent) calls started in any 60 seconds, a
  *    wait for `x-ratelimit-reset` when `x-ratelimit-remaining` is 0, and a call refused for its
  *    rate limit run again after its `retry-after`, else its reset, else the reset `gh api
- *    rate_limit` gives.
+ *    rate_limit` gives. The searches start once the listing and the `users/<owner>` calls are
+ *    done, beside the tree reads: each name is queued for every scope as the repository step that
+ *    first gives it ends, and the reruns once every tree is read (`SearchQueues`). The records are
+ *    written in one order (the names sorted, each in scope order, then each owner's reruns), and
+ *    a record depends only on its query, so the output is the same as searching after the trees,
+ *    unless `--max-search-calls` stops the searches (the queries it leaves not run may differ).
  *    `--max-search-calls <n>` stops searching after n calls; every query it leaves out is in
  *    `queries.jsonl` as not run. A query whose hits GitHub counts past its 1,000-result cap (or the
  *    budget cut short) keeps how many it left unread (`unread`), and skill-copies.md lists it.
@@ -220,16 +231,23 @@ function rethrowStop(error: unknown): void {
 }
 
 const RATE_LIMITED = /rate limit|HTTP 429/i;
+/** GitHub's refusal for its secondary rate limit, which has no reset to wait for (`rateWait`). */
+const SECONDARY_LIMITED = /secondary rate limit/i;
+/** The first wait after a refusal for the secondary rate limit, doubled at each refusal after. */
+const SECONDARY_WAIT_MS = 60_000;
 const MAX_RATE_RETRIES = 5;
 const REST_JOBS = 4;
 /** The repositories read at once, each its commit, tree and blobs, the slower of them sharing the
  *  read slots below with the rest. */
 export const REPOSITORY_JOBS = 6;
 /** The most gh calls reading repositories (a commit, a tree or its subtrees, a blob or a batch of
- *  blobs) in flight at once, across a run and per repository, so one large repository's walk does
- *  not hold every slot. Each call is a gh process of its own, about 110 MB resident in the pod
- *  whatever it reads (measured 2026-11-20), so the caps are what the run costs the pod beside its
- *  own memory. */
+ *  blobs) or searching code in flight at once, across a run and per repository, so one large
+ *  repository's walk does not hold every slot. Each call is a gh process of its own, about 110 MB
+ *  resident in the pod whatever it reads (measured 2026-11-20), so the caps are what the run costs
+ *  the pod beside its own memory. The code searches run beside the tree reads (`SearchQueues`),
+ *  so each takes a slot too, keyed by its owner (one search of an owner at a time): the gh calls
+ *  in flight stay at most READ_CALLS however the searches and the reads overlap, and a search,
+ *  whose key holds no slot while it waits, takes the next slot a read frees (`ReadSlots`). */
 export const READ_CALLS = 8;
 export const READ_CALLS_PER_REPOSITORY = 4;
 /** The most subtrees one GraphQL tree read asks for. */
@@ -380,6 +398,16 @@ const CachedRepository = z.object({
   forkFilesApart: z.boolean().optional(),
 });
 type CachedRepository = z.infer<typeof CachedRepository>;
+/** One level a truncated tree's walk finished, as `--cache-dir` keeps it (`readTree`): the entries
+ *  it kept, the subtrees of the next level, how many entries it held, and the gh calls it took
+ *  (the first level's with the whole read before it). */
+const CachedLevel = z.object({
+  kept: z.array(CachedEntry),
+  subtrees: z.array(z.object({ sha: z.string(), prefix: z.string() })),
+  count: z.number(),
+  calls: z.number(),
+});
+type CachedLevel = z.infer<typeof CachedLevel>;
 /** One line of a fork's text files on disk: its path, blob id, and text (null when its read
  *  failed, so its scan reads it again). */
 const ForkFileLine = z.tuple([z.string(), z.string(), z.string().nullable()]);
@@ -475,12 +503,21 @@ class ReadCache {
     return existsSync(this.file(kind, key, ".jsonl"));
   }
 
-  /** The lines `lineWriter` wrote for `kind` and `key`, read from disk one at a time; none when
-   *  the file is missing or its first line names another key. */
-  async *lines(kind: string, key: string): AsyncGenerator<string> {
-    const file = this.file(kind, key, ".jsonl");
-    if (!existsSync(file)) return;
-    const reader = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+  /** The lines `lineWriter` wrote for `kind` and `key`, read from disk one at a time (none when
+   *  their first line names another key), or undefined when they are not on disk. */
+  lines(kind: string, key: string): AsyncGenerator<string> | undefined {
+    let fd: number;
+    try {
+      fd = openSync(this.file(kind, key, ".jsonl"), "r");
+    } catch (error) {
+      if (Reflect.get(Object(error), "code") === "ENOENT") return undefined;
+      throw error;
+    }
+    return this.keyedLines(fd, key);
+  }
+
+  private async *keyedLines(fd: number, key: string): AsyncGenerator<string> {
+    const reader = createInterface({ input: createReadStream("", { fd }), crlfDelay: Infinity });
     let first = true;
     for await (const line of reader) {
       if (first) {
@@ -577,18 +614,51 @@ class Github {
     return this.io.gh(args);
   }
 
-  /** `read`, a gh call reading `repository`, in one of the run's read slots (`ReadSlots`). */
+  /** `read`, a gh call reading `repository` (or a code search, by its owner's key), in one of the
+   *  run's read slots (`ReadSlots`). */
   inSlot<T>(repository: string, read: () => Promise<T>): Promise<T> {
     return this.slots.run(repository, read);
   }
 
-  /** gh's standard output for `args`; throws gh's first error line. */
+  /** gh's answer to a GraphQL read `send` makes, sent again while GitHub refuses it for its rate
+   *  limit (RATE_LIMITED), after the wait `rateWait` gives, at most MAX_RATE_RETRIES times: a
+   *  batch halved, or read alone over REST, would spend the limit faster. Any other refusal is its
+   *  caller's to handle. */
+  async graphql(send: () => Promise<GhResult>): Promise<GhResult> {
+    for (let attempt = 0; ; attempt++) {
+      const result = await send();
+      if (result.code === 0 || attempt >= MAX_RATE_RETRIES || !RATE_LIMITED.test(result.stderr))
+        return result;
+      await this.io.sleep(await this.rateWait(result.stderr, attempt, "graphql"));
+    }
+  }
+
+  /** The milliseconds to wait before a call GitHub refused for its rate limit is sent again, at
+   *  its `attempt`-th refusal (from 0), whose error is `stderr`. GitHub's secondary rate limit has
+   *  no reset: GitHub asks a client to wait its `retry-after` (which gh shows only with `-i`, so
+   *  never for these calls), else at least a minute, and to back off; so the wait is
+   *  SECONDARY_WAIT_MS, doubled at each refusal. A primary limit is waited out to `resource`'s
+   *  reset (`waitForReset`). */
+  private async rateWait(
+    stderr: string,
+    attempt: number,
+    resource: "core" | "graphql"
+  ): Promise<number> {
+    if (!SECONDARY_LIMITED.test(stderr)) return this.waitForReset(resource);
+    const wait = SECONDARY_WAIT_MS * 2 ** attempt;
+    this.io.err(`copies: GitHub's secondary rate limit refused a call; waiting ${wait / 1000} s`);
+    return wait;
+  }
+
+  /** gh's standard output for `args`, sent again after the wait `rateWait` gives while GitHub
+   *  refuses it for its rate limit, at most MAX_RATE_RETRIES times; throws gh's first error
+   *  line. */
   async text(args: readonly string[]): Promise<string> {
     for (let attempt = 0; ; attempt++) {
       const result = await this.call(args);
       if (result.code === 0) return result.stdout;
       if (attempt < MAX_RATE_RETRIES && RATE_LIMITED.test(result.stderr)) {
-        await this.io.sleep(await this.waitForReset("core"));
+        await this.io.sleep(await this.rateWait(result.stderr, attempt, "core"));
         continue;
       }
       throw new Error(firstLine(result.stderr) || `gh exited ${result.code}`);
@@ -609,7 +679,7 @@ class Github {
 
   /** The milliseconds to the reset `gh api rate_limit` gives for `resource`, at most an hour; a
    *  minute when it gives none or one already past. */
-  async waitForReset(resource: "core" | "code_search"): Promise<number> {
+  async waitForReset(resource: "core" | "code_search" | "graphql"): Promise<number> {
     const result = await this.call(["api", "rate_limit"]);
     const parsed = RateLimit.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
     const reset = parsed.success ? parsed.data.resources[resource]?.reset : undefined;
@@ -634,7 +704,8 @@ class Github {
    *  drops it. They are read in GraphQL batches (`graphqlArgs`), up to BLOB_BATCH blobs and
    *  BLOB_BATCH_BYTES bytes a call and one batch at a time, so at most one batch's texts are held
    *  at once; a blob a batch does not give whole (binary, truncated, missing, or in a batch that
-   *  fails) is read alone. Entries of one blob id are read once. */
+   *  fails for another reason than the rate limit, `graphql`) is read alone. Entries of one blob
+   *  id are read once. */
   async readBlobs(
     repository: string,
     entries: readonly TreeEntry[],
@@ -647,8 +718,8 @@ class Github {
       let given: z.infer<typeof BlobBatch>["data"]["repository"] | undefined;
       // A blob id that is not 40 hex characters goes in no query: its batch is read alone.
       if (batch.every((entry) => /^[0-9a-f]{40}$/.test(entry.sha))) {
-        const result = await this.inSlot(repository, () =>
-          this.call(graphqlArgs(repository, blobQuery(batch)))
+        const result = await this.graphql(() =>
+          this.inSlot(repository, () => this.call(graphqlArgs(repository, blobQuery(batch))))
         );
         const parsed = BlobBatch.safeParse(
           result.code === 0 ? parseJson(result.stdout) : undefined
@@ -686,7 +757,8 @@ class Github {
 
   /** The files `paths` of `repository` at `commit`, read by path in one GraphQL batch (routed as
    *  `readBlobs` is) and cached nowhere: a caller checks each and drops it. A file the batch does
-   *  not give whole (truncated, or a batch that fails) is read alone over REST. */
+   *  not give whole (truncated, or a batch that fails for another reason than the rate limit,
+   *  `graphql`) is read alone over REST. */
   async filesAt(
     repository: string,
     commit: string,
@@ -699,7 +771,7 @@ class Github {
       )
       .join(" ");
     const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-    const result = await this.call(graphqlArgs(repository, query));
+    const result = await this.graphql(() => this.call(graphqlArgs(repository, query)));
     const parsed = FileBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
     if (!parsed.success) {
       const why = firstLine(result.stderr) || "an answer not of its shape";
@@ -875,10 +947,17 @@ export interface Repository {
   error: string;
 }
 
+/** The version of the rules `keepsEntry` keeps by. A walk's saved levels (`readTree`) hold only the
+ *  entries the rules of the run that saved them kept, so the key of each holds this version, and a
+ *  level saved under other rules is read again. Bump it with every change to what `keepsEntry`
+ *  keeps, `manifestKind`, MANIFEST_KINDS, TEXT_EXTENSIONS and TEXT_NAMES included. */
+export const KEEP_RULES_VERSION = 1;
+
 /** Whether a tree entry is one this list uses, of a fork's tree when `fork`: a `SKILL.md`, a file
  *  of a manifest kind, or, in a fork, a text file its scan may read. Every other entry is
  *  counted and dropped as the tree is read: a data repository's tree holds hundreds of thousands
- *  of entries, and a hit file is read by its path, not looked up in the tree. */
+ *  of entries, and a hit file is read by its path, not looked up in the tree. A change to what it
+ *  keeps bumps KEEP_RULES_VERSION, so no walk level saved under the old rules is replayed. */
 export function keepsEntry(
   entry: Pick<TreeEntry, "path" | "mode" | "type">,
   fork: boolean
@@ -916,6 +995,12 @@ function appendPart(into: TreePart, part: TreePart): void {
   for (const subtree of part.subtrees) into.subtrees.push(subtree);
 }
 
+/** Where a walk keeps each level it finishes, and finds it again (`readTree`). */
+interface WalkLevels {
+  get(level: number): CachedLevel | undefined;
+  put(level: number, saved: CachedLevel): void;
+}
+
 /** The tree `sha` of `repository`: the entries `keep` keeps, and how many it holds. The whole tree
  *  is asked for in one REST read (through gh's jq, TREE_JQ, one line per entry). A tree GitHub
  *  answers truncated, or whose whole read fails (gh cut off the answer of a large tree: "unexpected
@@ -923,16 +1008,22 @@ function appendPart(into: TreePart, part: TreePart): void {
  *  batches of up to TREE_BATCH (`object(oid:)` fields, one level of entries each, routed as
  *  `graphqlArgs` says), READ_CALLS_PER_REPOSITORY batches at once under the read slots
  *  (`Github.inSlot`). A batch GitHub refuses (a node limit, a timeout) is halved, and a subtree
- *  refused alone is read over REST, one level. The entries and their count are the same whichever
- *  way a subtree is read. Each read keeps, as it parses its answer, only the entries `keep` keeps,
- *  the subtrees of a one-level read and a count of the entries: a data repository's tree holds
- *  millions of entries, so no read and no level holds them all, and a walk holds only the kept
- *  entries and the subtrees of its next level. `reads` counts the gh calls. */
+ *  refused alone is read over REST, one level; a batch refused for the GraphQL rate limit is sent
+ *  again after the wait `Github.graphql` gives instead. The entries and their count are the same
+ *  whichever way a subtree is read. Each read keeps, as it parses its answer, only the entries
+ *  `keep` keeps, the subtrees of a one-level read and a count of the entries: a data repository's
+ *  tree holds millions of entries, so no read and no level holds them all, and a walk holds only
+ *  the kept entries and the subtrees of its next level. Each level the walk finishes goes to
+ *  `levels` (its kept entries, the next level's subtrees, its count and its gh calls), and a walk
+ *  that finds its levels there replays them and reads on from the first it does not find, with
+ *  no whole read once the first is there: the same entries, order, count and `reads`, the gh
+ *  calls, those of the replayed levels included. */
 export async function readTree(
   github: Github,
   repository: string,
   sha: string,
-  keep: (entry: TreeEntry) => boolean
+  keep: (entry: TreeEntry) => boolean,
+  levels: WalkLevels
 ): Promise<{ entries: TreeEntry[]; count: number; reads: number; truncated: boolean }> {
   let reads = 0;
   /** Counts `entry` into `part`, keeping it when `keep` does, and its subtree in a one-level read. */
@@ -954,6 +1045,9 @@ export async function readTree(
     let end = text.indexOf("\n");
     const flag = end < 0 ? text : text.slice(0, end);
     if (flag !== "true" && flag !== "false") throw new Error("the tree answer is not of its shape");
+    // A truncated whole tree is walked instead: its entries are not read.
+    if (recursive && flag === "true")
+      return { part: { kept: [], subtrees: [], count: 0 }, truncated: true };
     const part: TreePart = { kept: [], subtrees: [], count: 0 };
     while (end >= 0) {
       const start = end + 1;
@@ -979,9 +1073,8 @@ export async function readTree(
     return { part, truncated: flag === "true" };
   };
   /** One level of each of `trees`, in one GraphQL read; halved, then read over REST, where
-   *  GitHub refuses it. */
+   *  GitHub refuses it for another reason than its rate limit. */
   const levelOf = async (trees: readonly Subtree[]): Promise<TreePart> => {
-    reads++;
     const fields = trees
       .map(
         (tree, index) =>
@@ -989,9 +1082,10 @@ export async function readTree(
       )
       .join(" ");
     const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-    const result = await github.inSlot(repository, () =>
-      github.call(graphqlArgs(repository, query))
-    );
+    const result = await github.graphql(() => {
+      reads++;
+      return github.inSlot(repository, () => github.call(graphqlArgs(repository, query)));
+    });
     const parsed = TreeBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
     const answers = parsed.success
       ? trees.map((_, index) => parsed.data.data.repository?.[`t${index}`])
@@ -1030,32 +1124,55 @@ export async function readTree(
       throw new Error(`the tree of ${shown(tree.prefix)} is truncated even one level at a time`);
     return one.part;
   };
-  let whole: { part: TreePart; truncated: boolean } | undefined;
-  try {
-    whole = await restRead(sha, "", true);
-  } catch (error) {
-    rethrowStop(error);
-  }
-  if (whole !== undefined && !whole.truncated) {
-    return { entries: whole.part.kept, count: whole.part.count, reads, truncated: false };
+  // A walk whose first level an earlier run saved needs no whole read: that read was truncated, or
+  // failed.
+  let saved = levels.get(0);
+  if (saved === undefined) {
+    let whole: { part: TreePart; truncated: boolean } | undefined;
+    try {
+      whole = await restRead(sha, "", true);
+    } catch (error) {
+      rethrowStop(error);
+    }
+    if (whole !== undefined && !whole.truncated) {
+      return { entries: whole.part.kept, count: whole.part.count, reads, truncated: false };
+    }
   }
   // mapLimit gives a level's batches in their order: the kept entries keep one order every run.
   const walk: TreePart = { kept: [], subtrees: [{ sha, prefix: "" }], count: 0 };
-  while (walk.subtrees.length > 0) {
+  /** The gh calls counted into the levels so far. */
+  let counted = 0;
+  for (let depth = 0; walk.subtrees.length > 0; depth++) {
     const level = walk.subtrees.splice(0);
-    const batches: Subtree[][] = [];
-    for (let start = 0; start < level.length; start += TREE_BATCH)
-      batches.push(level.slice(start, start + TREE_BATCH));
-    for (const part of await mapLimit(batches, READ_CALLS_PER_REPOSITORY, levelOf)) {
-      appendPart(walk, part);
+    if (depth > 0) saved = levels.get(depth);
+    if (saved === undefined) {
+      const batches: Subtree[][] = [];
+      for (let start = 0; start < level.length; start += TREE_BATCH)
+        batches.push(level.slice(start, start + TREE_BATCH));
+      const part: TreePart = { kept: [], subtrees: [], count: 0 };
+      for (const each of await mapLimit(batches, READ_CALLS_PER_REPOSITORY, levelOf)) {
+        appendPart(part, each);
+      }
+      saved = { ...part, calls: reads - counted };
+      levels.put(depth, saved);
+    } else {
+      reads += saved.calls;
     }
+    counted = reads;
+    appendPart(walk, saved);
   }
   return { entries: walk.kept, count: walk.count, reads, truncated: true };
 }
 
-/** Reads the commit of `repo` at `at` and its tree; returns the tree's gh calls. A read that
- *  fails sets `repo.error`. */
-async function readRepository(github: Github, repo: Repository, at: string): Promise<number> {
+/** Reads the commit of `repo` at `at` and its tree, a walk's levels kept in `cache` (keyed by
+ *  repository, root tree, fork flag, KEEP_RULES_VERSION and level); returns the tree's gh calls.
+ *  A read that fails sets `repo.error`. */
+async function readRepository(
+  github: Github,
+  cache: ReadCache,
+  repo: Repository,
+  at: string
+): Promise<number> {
   if (repo.branch === "") {
     repo.error = "the listing gives no default branch (an empty repository)";
     return 0;
@@ -1081,8 +1198,17 @@ async function readRepository(github: Github, repo: Repository, at: string): Pro
     return 0;
   }
   try {
-    const tree = await readTree(github, repo.repository, treeSha, (entry) =>
-      keepsEntry(entry, repo.fork)
+    const levelKey = (level: number) =>
+      [repo.repository, treeSha, repo.fork, KEEP_RULES_VERSION, level].join("\0");
+    const tree = await readTree(
+      github,
+      repo.repository,
+      treeSha,
+      (entry) => keepsEntry(entry, repo.fork),
+      {
+        get: (level) => cache.get("walk", levelKey(level), CachedLevel),
+        put: (level, saved) => cache.put("walk", levelKey(level), saved),
+      }
     );
     repo.tree = tree.entries;
     repo.treeEntries = tree.count;
@@ -1340,7 +1466,7 @@ async function readRepositoryStep(
   const key = repositoryKey(repo, at);
   const texts = new Map<string, string>();
   const cached = takeCached(cache, key, repo, excludePaths, texts);
-  const calls = cached === undefined ? await readRepository(github, repo, at) : 0;
+  const calls = cached === undefined ? await readRepository(github, cache, repo, at) : 0;
   if (repo.error !== "") return { read: undefined, calls, cached: false };
   const scanned = repo.fork && holdsSkill(repo.tree);
   if (cached === undefined && scanned) {
@@ -3182,20 +3308,24 @@ class CodeSearch {
       if (this.calls >= this.budget) return undefined;
       this.calls++;
       record.calls++;
-      pace.starts.push(io.now());
-      const result = await this.github.call([
-        "api",
-        "-i",
-        "-X",
-        "GET",
-        "search/code",
-        "-f",
-        `q=${q}`,
-        "-f",
-        "per_page=100",
-        "-f",
-        `page=${page}`,
-      ]);
+      // A search takes a read slot as a tree read does (READ_CALLS), keyed by its owner, whose
+      // searches run one at a time; it starts, for its pace, once it holds the slot.
+      const result = await this.github.inSlot(`search ${job.owner}`, () => {
+        pace.starts.push(io.now());
+        return this.github.call([
+          "api",
+          "-i",
+          "-X",
+          "GET",
+          "search/code",
+          "-f",
+          `q=${q}`,
+          "-f",
+          "per_page=100",
+          "-f",
+          `page=${page}`,
+        ]);
+      });
       const answer = splitIncluded(result.stdout);
       const header = (name: string) => {
         const value = Number(answer.headers.get(name));
@@ -3344,50 +3474,177 @@ function rerunsOf(job: SearchJob, record: QueryRecord, holders: readonly string[
     }));
 }
 
-/** Runs the jobs: each owner's in order, one at a time, and the owners' at once, so each owner's
- *  token is paced by its own limit while the others' run. `followUps` gives, for a job that ran,
- *  more jobs, each queued at the end of its own owner's queue. Returns one record per job: the
- *  jobs' in their order, then the follow-ups' in the order they were queued. */
-async function runSearches(
-  search: CodeSearch,
-  jobs: readonly SearchJob[],
-  io: CopiesIo,
-  followUps: (job: SearchJob, record: QueryRecord) => readonly SearchJob[] = () => []
-): Promise<QueryRecord[]> {
-  const queued = jobs.map((job) => ({ job, record: newRecord(job) }));
-  const queues = new Map<string, typeof queued>();
-  const enqueue = (entry: (typeof queued)[number]) => {
-    const queue = queues.get(entry.job.owner);
-    if (queue === undefined) queues.set(entry.job.owner, [entry]);
-    else queue.push(entry);
-  };
-  for (const entry of queued) enqueue(entry);
-  const started = io.now();
-  let done = 0;
-  await Promise.all(
-    [...queues.values()].map(async (queue) => {
-      // The queue grows while it runs: a follow-up joins the end of its owner's own queue.
-      for (let index = 0; index < queue.length; index++) {
-        const entry = queue[index];
-        if (entry === undefined) continue;
-        // runSearch takes a cached search first, then stops at the budget (status "not run").
-        await runSearch(search, entry.job, entry.record);
-        for (const job of followUps(entry.job, entry.record)) {
-          const next = { job, record: newRecord(job) };
-          queued.push(next);
-          enqueue(next);
-        }
-        done++;
-        if (done % 25 === 0) {
-          const minutes = Math.round((io.now() - started) / MINUTE_MS);
-          io.err(
-            `copies: ${done}/${queued.length} searches, ${search.calls} calls, ${minutes} min`
-          );
-        }
+/** A search job but its name: the scope a name is searched in. */
+type SearchScope = Omit<SearchJob, "name">;
+
+/** A search queued (`SearchQueues`): its job and record, its scope's place among the run's
+ *  scopes, the follow-ups it gave, and whether it ran. */
+interface QueuedSearch {
+  readonly job: SearchJob;
+  readonly record: QueryRecord;
+  readonly scopeIndex: number;
+  readonly followUps: QueuedSearch[];
+  ran: boolean;
+}
+
+/** One owner's searches in the order they were queued, the next to run, the run of them, and how
+ *  to wake that run while it waits for more. */
+interface OwnerQueue {
+  readonly entries: QueuedSearch[];
+  next: number;
+  wake: (() => void) | undefined;
+  running: Promise<void>;
+}
+
+/** Queued searches by name (as `Array.prototype.sort` orders strings), then by scope. */
+function byNameThenScope(a: QueuedSearch, b: QueuedSearch): number {
+  if (a.job.name !== b.job.name) return a.job.name < b.job.name ? -1 : 1;
+  return a.scopeIndex - b.scopeIndex;
+}
+
+/**
+ * The code searches of a run, started before its trees are all read: one queue per owner, each
+ * running its searches one at a time in the order they were queued, and the owners' at once, so
+ * each owner's token is paced by its own limit while the others' run (`CodeSearch`). `add` queues
+ * a search of each name a repository's step gives that no step gave before, in each scope;
+ * `finish`, once every tree is read, queues each search's follow-ups (`rerunsOf`, which needs
+ * every repository that holds a skill) at the end of its owner's queue, waits for every queue,
+ * and returns the records in the order the output writes them: the names sorted, each in scope
+ * order, then each owner's follow-ups, in its names' order. A record depends only on its query,
+ * and a search's follow-ups on its record, so they are those of searching after the trees, unless
+ * the call budget stops the searches: then the order they ran in decides which are not run.
+ */
+class SearchQueues {
+  private readonly queues = new Map<string, OwnerQueue>();
+  private readonly base: QueuedSearch[] = [];
+  private readonly named = new Set<string>();
+  private followUps: ((job: SearchJob, record: QueryRecord) => readonly SearchJob[]) | undefined;
+  private closed = false;
+  private stopped = false;
+  private queued = 0;
+  private done = 0;
+  private readonly started: number;
+
+  constructor(
+    private readonly search: CodeSearch,
+    private readonly scopes: readonly SearchScope[],
+    private readonly io: CopiesIo
+  ) {
+    this.started = io.now();
+  }
+
+  /** Queues a search of each of `names` not queued yet, in each scope, the names sorted. */
+  add(names: readonly string[]): void {
+    for (const name of [...new Set(names)].sort()) {
+      if (this.named.has(name)) continue;
+      this.named.add(name);
+      for (const [scopeIndex, scope] of this.scopes.entries()) {
+        const job = { name, ...scope };
+        const entry: QueuedSearch = {
+          job,
+          record: newRecord(job),
+          scopeIndex,
+          followUps: [],
+          ran: false,
+        };
+        this.base.push(entry);
+        this.enqueue(entry);
       }
-    })
-  );
-  return queued.map((entry) => entry.record);
+    }
+  }
+
+  /** Once every tree is read: queues the follow-ups `followUps` gives each search, in that
+   *  search's owner's queue (those of a search that ran already now, the others' as each ends),
+   *  lets each queue end once it is empty, and returns every record in the order the output
+   *  writes them. Throws what a search threw. */
+  async finish(
+    followUps: (job: SearchJob, record: QueryRecord) => readonly SearchJob[]
+  ): Promise<QueryRecord[]> {
+    this.followUps = followUps;
+    const base = [...this.base].sort(byNameThenScope);
+    for (const entry of base) if (entry.ran) this.queueFollowUps(entry);
+    this.closed = true;
+    for (const queue of this.queues.values()) queue.wake?.();
+    await Promise.all([...this.queues.values()].map((queue) => queue.running));
+    const withFollowUps = (entry: QueuedSearch): QueuedSearch[] => [
+      entry,
+      ...entry.followUps.flatMap(withFollowUps),
+    ];
+    const followed = [...base]
+      .sort((a, b) => a.scopeIndex - b.scopeIndex)
+      .flatMap((entry) => entry.followUps.flatMap(withFollowUps));
+    return [...base, ...followed].map((entry) => entry.record);
+  }
+
+  /** Stops each queue before its next search: the run ends with an error. */
+  stop(): void {
+    this.stopped = true;
+    for (const queue of this.queues.values()) queue.wake?.();
+  }
+
+  private enqueue(entry: QueuedSearch): void {
+    this.queued++;
+    const queue = this.queues.get(entry.job.owner);
+    if (queue !== undefined) {
+      queue.entries.push(entry);
+      queue.wake?.();
+      return;
+    }
+    const started: OwnerQueue = {
+      entries: [entry],
+      next: 0,
+      wake: undefined,
+      running: Promise.resolve(),
+    };
+    this.queues.set(entry.job.owner, started);
+    started.running = this.run(started);
+    // A search that throws (the run's memory stop) stops every queue; `finish` throws it again.
+    started.running.catch(() => this.stop());
+  }
+
+  /** Runs `queue`'s searches as they come, until it is empty and no more will come. */
+  private async run(queue: OwnerQueue): Promise<void> {
+    for (;;) {
+      if (this.stopped) return;
+      const entry = queue.entries[queue.next];
+      if (entry === undefined) {
+        if (this.closed) return;
+        const more = Promise.withResolvers<void>();
+        queue.wake = more.resolve;
+        await more.promise;
+        queue.wake = undefined;
+        continue;
+      }
+      queue.next++;
+      // runSearch takes a cached search first, then stops at the budget (status "not run").
+      await runSearch(this.search, entry.job, entry.record);
+      entry.ran = true;
+      this.queueFollowUps(entry);
+      this.done++;
+      if (this.done % 25 === 0) {
+        const minutes = Math.round((this.io.now() - this.started) / MINUTE_MS);
+        this.io.err(
+          `copies: ${this.done}/${this.queued} searches, ${this.search.calls} calls, ${minutes} min`
+        );
+      }
+    }
+  }
+
+  /** Queues the follow-ups of `entry`, which ran, once `finish` gave how to know them. */
+  private queueFollowUps(entry: QueuedSearch): void {
+    if (this.followUps === undefined) return;
+    for (const job of this.followUps(entry.job, entry.record)) {
+      const next: QueuedSearch = {
+        job,
+        record: newRecord(job),
+        scopeIndex: entry.scopeIndex,
+        followUps: [],
+        ran: false,
+      };
+      entry.followUps.push(next);
+      this.enqueue(next);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4029,6 +4286,42 @@ async function readAll(
     missing.push(...options.only.filter((repository) => !found.has(repository.toLowerCase())));
   }
   repositories.sort((a, b) => a.repository.localeCompare(b.repository));
+
+  // Step 5's scopes are known before any tree is read, so its searches start beside the reads.
+  const search = new CodeSearch(github, options.maxSearchCalls, cache);
+  const scopes: SearchScope[] = [];
+  // A `users/<owner>` call that fails goes to `failures` where step 5 is, after the manifests'.
+  const ownerFailures: string[] = [];
+  if (only.length > 0) {
+    for (const repo of repositories) {
+      if (!repo.fork)
+        scopes.push({ scope: `repo:${repo.repository}`, owner: repo.owner, reason: "--only" });
+    }
+  } else {
+    // Each owner whose listing succeeded: one not listed has no repository read, so no hit there
+    // could be checked.
+    const listed = owners.filter(
+      (owner) => !listingErrors.some((failed) => failed.owner === owner)
+    );
+    for (const owner of listed) {
+      let qualifier = "user";
+      try {
+        const type =
+          cache.get("owner-type", owner, z.string()) ??
+          (await github.api(`users/${owner}`, GithubUser)).type;
+        cache.put("owner-type", owner, type);
+        if (type === "Organization") qualifier = "org";
+      } catch (error) {
+        rethrowStop(error);
+        ownerFailures.push(
+          `users/${owner}: ${(error as Error).message}; searched as user:${owner}`
+        );
+      }
+      scopes.push({ scope: `${qualifier}:${owner}`, owner, reason: "owner" });
+    }
+  }
+  const searches = new SearchQueues(search, scopes, io);
+
   io.err(`copies: reading ${repositories.length} repositories at ${options.at}`);
   // Each repository whole, read or taken from the cache (`readRepositoryStep`), written to the
   // cache the moment it is done; the run keeps only what the later steps and the output need of
@@ -4037,18 +4330,27 @@ async function readAll(
   let done = 0;
   // Repositories finish in any order; each result lands on its own repository, and every later
   // step goes through them in name order, so the output does not depend on that order.
-  await mapLimit(repositories, options.repositoryJobs ?? REPOSITORY_JOBS, async (repo) => {
-    const started = io.now();
-    const step = await readRepositoryStep(github, cache, repo, options.at, config.excludePaths);
-    if (step.read !== undefined) reads.set(repo, step.read);
-    done++;
-    const seconds = Math.round((io.now() - started) / 1000);
-    io.err(
-      repo.error === ""
-        ? `copies: tree ${done}/${repositories.length} ${repo.repository}: ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
-        : `copies: tree ${done}/${repositories.length} ${repo.repository}: failed (${repo.error}), ${seconds} s`
-    );
-  });
+  try {
+    await mapLimit(repositories, options.repositoryJobs ?? REPOSITORY_JOBS, async (repo) => {
+      const started = io.now();
+      const step = await readRepositoryStep(github, cache, repo, options.at, config.excludePaths);
+      if (step.read !== undefined) {
+        reads.set(repo, step.read);
+        // Its skills' names are searched now, beside the trees still being read.
+        searches.add(step.read.copies.map((copy) => copy.name));
+      }
+      done++;
+      const seconds = Math.round((io.now() - started) / 1000);
+      io.err(
+        repo.error === ""
+          ? `copies: tree ${done}/${repositories.length} ${repo.repository}: ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
+          : `copies: tree ${done}/${repositories.length} ${repo.repository}: failed (${repo.error}), ${seconds} s`
+      );
+    });
+  } catch (error) {
+    searches.stop();
+    throw error;
+  }
 
   // 2. Skills, parsed in each repository's step.
   const excluded: { repository: string; file: string }[] = [];
@@ -4096,7 +4398,10 @@ async function readAll(
       notOfKind.set(manifest.kind, (notOfKind.get(manifest.kind) ?? 0) + 1);
   }
 
-  // 5. Code search: each name, with the plugins that ship it.
+  // 5. Code search: each name, with the plugins that ship it. Its searches started beside the
+  // tree reads (`SearchQueues`): one per name and scope (`searchTerms` says why one stands for the
+  // brief's five).
+  failures.push(...ownerFailures);
   const names = [...new Set(copies.map((copy) => copy.name))].sort();
   const pluginsOf = new Map<string, string[]>();
   for (const unit of resolveInstallers(read, new CopyIndex(copies)).units) {
@@ -4107,47 +4412,13 @@ async function readAll(
       if (!known.includes(plugin)) pluginsOf.set(member.copy.name, [...known, plugin].sort());
     }
   }
-  const search = new CodeSearch(github, options.maxSearchCalls, cache);
-  const scopes: { scope: string; owner: string; reason: string }[] = [];
-  if (only.length > 0) {
-    for (const repo of repositories) {
-      if (!repo.fork)
-        scopes.push({ scope: `repo:${repo.repository}`, owner: repo.owner, reason: "--only" });
-    }
-  } else {
-    // Each owner whose listing succeeded: one not listed has no repository read, so no hit there
-    // could be checked.
-    const listed = owners.filter(
-      (owner) => !listingErrors.some((failed) => failed.owner === owner)
-    );
-    for (const owner of listed) {
-      let qualifier = "user";
-      try {
-        const type =
-          cache.get("owner-type", owner, z.string()) ??
-          (await github.api(`users/${owner}`, GithubUser)).type;
-        cache.put("owner-type", owner, type);
-        if (type === "Organization") qualifier = "org";
-      } catch (error) {
-        rethrowStop(error);
-        failures.push(`users/${owner}: ${(error as Error).message}; searched as user:${owner}`);
-      }
-      scopes.push({ scope: `${qualifier}:${owner}`, owner, reason: "owner" });
-    }
-  }
-  // One search per name and scope (`searchTerms` says why one stands for the brief's five).
-  const baseJobs: SearchJob[] = names.flatMap((name) =>
-    scopes.map((scope) => ({ name, ...scope }))
-  );
-  io.err(`copies: ${baseJobs.length} code searches for ${names.length} names`);
+  io.err(`copies: ${names.length * scopes.length} code searches for ${names.length} names`);
   // An owner's search that `rerunsOf` names is run again once per repository of that owner
-  // holding a skill, queued behind that owner's own searches.
+  // holding a skill, queued behind that owner's own searches now that every tree is read.
   const holders = repositories
     .filter((repo) => !repo.fork && withSkill.has(repo.repository))
     .map((repo) => repo.repository);
-  const records = await runSearches(search, baseJobs, io, (job, record) =>
-    rerunsOf(job, record, holders)
-  );
+  const records = await searches.finish((job, record) => rerunsOf(job, record, holders));
 
   // Each hit file, read by its path at its repository's commit (the trees keep only the entries
   // this list uses), and kept where it names the skill. Each file is read once for all the names
@@ -4296,8 +4567,9 @@ async function readAll(
     );
     // Its text files, from disk one at a time (its step wrote them), each dropped once matched.
     const key = repositoryKey(repo, options.at);
-    if (!cache.hasLines("fork-files", key)) scan.failures.push("its text files are not on disk");
-    for await (const line of cache.lines("fork-files", key)) {
+    const lines = cache.lines("fork-files", key);
+    if (lines === undefined) scan.failures.push("its text files are not on disk");
+    for await (const line of lines ?? []) {
       const parsed = ForkFileLine.safeParse(parseJson(line));
       if (!parsed.success) {
         scan.failures.push("a line of its text files on disk is not of its shape");
