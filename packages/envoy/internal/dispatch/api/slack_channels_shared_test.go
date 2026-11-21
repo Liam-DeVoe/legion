@@ -186,11 +186,13 @@ func TestASharedSlackChannelIsRefused(t *testing.T) {
 // TestTheSharedChannelRefusalReadsTheCallersCredential: the refusal names the other private
 // project only to a caller who sees it by the read rule, resolved for the request's own
 // credential, never for the person actingPerson answers. An agent credential with no list sees
-// only public projects, so alice's personal token and her broker token, each listing no project,
-// read the refusal that names none, though alice herself sees PRIV and reads its name at her
-// browser. Controls: name PRIV to a credential with no list whenever its person sees it, or
-// resolve actingPerson's actor in place of the request's caller, and the token rows fail naming
-// the token.
+// only public projects, so alice's personal token, listing no project, reads the refusal that
+// names none, though alice herself sees PRIV and reads its name at her browser. Her broker token
+// never reaches the check: the access writes need the approve scope (#4156), which no broker
+// token holds (main's #4644), so it is refused 403 OAUTH_SCOPE_REQUIRED first, and that refusal
+// names no project either. Controls: name PRIV to a credential with no list whenever its person
+// sees it, or resolve actingPerson's actor in place of the request's caller, and the personal
+// token's row fails naming the token.
 func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	// alice owns both, so she sees PRIV.
@@ -207,26 +209,27 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
 	for _, row := range []struct {
-		who  string
-		send func() *httptest.ResponseRecorder
-		want string
+		who        string
+		send       func() *httptest.ResponseRecorder
+		status     int
+		code, want string
 	}{
 		{"alice at her browser", func() *httptest.ResponseRecorder {
 			return dispatchRequest(t, rig.handler, http.MethodPatch, path, body, "alice")
-		}, "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project"},
+		}, http.StatusConflict, "SLACK_CHANNEL_SHARED", "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project"},
 		// The access writes need the person and approve scopes (#4156), so the token holds both.
 		{"alice's dsp_ token listing no project", func() *httptest.ResponseRecorder {
 			return agentRequest(t, rig.handler, http.MethodPatch, path, body, personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson, model.ScopeApprove))
-		}, "C0SHARED001 is listed by a private project you cannot see"},
+		}, http.StatusConflict, "SLACK_CHANNEL_SHARED", "C0SHARED001 is listed by a private project you cannot see"},
 		{"alice's broker token listing no project", func() *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, http.MethodPatch, path, brokerToken, body))
-		}, "C0SHARED001 is listed by a private project you cannot see"},
+		}, http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", "this request's credential does not hold the approve scope, which this route requires"},
 	} {
 		before := allEvents(t, rig.database)
 		response := row.send()
 		refusal := decodeBody[errorBody](t, response)
-		if response.Code != http.StatusConflict || refusal.Code != "SLACK_CHANNEL_SHARED" || refusal.Error != row.want {
-			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want 409 SLACK_CHANNEL_SHARED reading %q", row.who, response.Code, response.Body.String(), row.want)
+		if response.Code != row.status || refusal.Code != row.code || refusal.Error != row.want {
+			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want %d %s reading %q", row.who, response.Code, response.Body.String(), row.status, row.code, row.want)
 		}
 		wantChannelsUnwritten(t, rig.database, "PRIV2", before)
 	}

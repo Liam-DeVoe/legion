@@ -383,6 +383,7 @@ test("a draft on one project's Access tab is not saved to the project the reader
     project: key,
     not_signed_in: [],
     slack_channels: stored[key] ?? [],
+    slack_channels_changed_at: null,
     visibility: "public",
   }));
   const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([]);
@@ -394,6 +395,7 @@ test("a draft on one project's Access tab is not saved to the project the reader
       project: key,
       not_signed_in: [],
       slack_channels: body.slack_channels ?? stored[key] ?? [],
+      slack_channels_changed_at: null,
       visibility: "public",
     })
   );
