@@ -199,6 +199,7 @@ readonly subscriber_log_file="${out_dir}/subscriber.log"
 readonly nats_log_file="${out_dir}/nats.log"
 readonly listener_binary="${out_dir}/listener"
 readonly nats_binary="${out_dir}/natsd"
+readonly fixturebuckets_binary="${out_dir}/fixturebuckets"
 readonly nats_store_dir="${out_dir}/nats-store"
 readonly lock_file="${out_dir}/run.lock"
 readonly session_ready_fifo="${out_dir}/session-ready.fifo"
@@ -291,7 +292,7 @@ rm -f "$envelopes_file" "$session_frames_file" "$session_offers_file" "$session_
   "$nocursor_subscribe_response_file" "$nocursor_send_response_file" "$nocursor_registry_response_file" \
   "$nocursor_relaunch_response_file" "$nocursor_session_log_file" "$nocursor_ready_fifo" \
   "$listener_log_file" "$stream_listener_log_file" "$session_log_file" "$subscriber_log_file" "$nats_log_file" \
-  "$listener_binary" "$nats_binary" "$session_ready_fifo" "$subscriber_ready_fifo"
+  "$listener_binary" "$nats_binary" "$fixturebuckets_binary" "$session_ready_fifo" "$subscriber_ready_fifo"
 rm -rf "$nats_store_dir"
 : >"$envelopes_file"
 : >"$resume_records_file"
@@ -312,11 +313,12 @@ rm -rf "$nats_store_dir"
 : >"$nocursor_session_log_file"
 mkfifo "$session_ready_fifo" "$subscriber_ready_fifo" "$nocursor_ready_fifo"
 
-printf 'building listener and NATS server\n'
+printf 'building listener, NATS server and fixturebuckets\n'
 (
   cd "$envoy_dir"
   go build -o "$listener_binary" ./cmd/listener
   go build -o "$nats_binary" ./internal/testnats/cmd/natsd
+  go build -o "$fixturebuckets_binary" ./internal/testnats/cmd/fixturebuckets
 )
 
 printf 'starting NATS\n'
@@ -418,6 +420,11 @@ make_session_bucket() {
   }
   printf 'session consumer selection bucket envoy_session_consumers made, sentinel %s\n' "$sentinel"
 }
+
+# No listener creates a bucket it copies: this run's own server is given them before
+# the listener starts on it.
+printf 'provisioning NATS with the buckets a listener copies\n'
+"$fixturebuckets_binary" -url "$nats_url"
 
 # The fresh naming mode: the stream exists before the bucket, as it does wherever an operator runs
 # create-bucket, so the listener starts once to create ENVOY_NOTIFICATIONS, the bucket is made from

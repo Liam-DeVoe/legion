@@ -159,9 +159,9 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // StartWithCalloutServer configures its one server - the auth service's own user, each static user
 // with its grant, and the auth callout naming the issuer, $G and the curve key - and routed as
 // StartClusterConfig routes its members, with JetStream clustered across them, as the clustered hub
-// runs. Every member's relay and client port listen on a loopback address of their own, as every
-// server start makes. It returns once one member leads the JetStream meta group, which counts all
-// n, and every member admits the service's own user.
+// runs. Every member's relay and client port listen on a loopback address of their own (start). It
+// returns once one member leads the JetStream meta group, which counts all n, and every member
+// admits the service's own user.
 //
 // No member admits a client with no credential, so the cluster is not awaited as StartCluster's
 // is (AwaitReady, whose last step connects with none and asks JetStream for the account's info): a
@@ -170,7 +170,21 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // service it starts admits.
 func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...StaticUser) *Cluster {
 	t.Helper()
-	cluster := startCluster(t, n, calloutAuthorization(keys, static...))
+	return startClusterWithCallout(t, n, keys, nil, static...)
+}
+
+// StartClusterWithCalloutRouteAuth is StartClusterWithCallout with route authorization of user and
+// password, as StartClusterRouteAuth gives it: a route that presents no credential, or others, is
+// refused and never joins the cluster.
+func StartClusterWithCalloutRouteAuth(t testing.TB, n int, keys CalloutKeys, user, password string, static ...StaticUser) *Cluster {
+	t.Helper()
+	return startClusterWithCallout(t, n, keys, newRouteAuth(t, user, password), static...)
+}
+
+// startClusterWithCallout is StartClusterWithCallout with route authorization when auth is not nil.
+func startClusterWithCallout(t testing.TB, n int, keys CalloutKeys, auth *routeAuth, static ...StaticUser) *Cluster {
+	t.Helper()
+	cluster := startCluster(t, n, calloutAuthorization(keys, static...), auth)
 	cluster.awaitMeta(t)
 	for _, server := range cluster.Servers {
 		awaitSeed(t, server.URL(), keys.ServiceSeed)

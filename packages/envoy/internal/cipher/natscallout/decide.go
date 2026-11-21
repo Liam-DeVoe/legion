@@ -185,6 +185,7 @@ const (
 	labelUnsealed          = "unsealed"
 	labelWaitingBound      = "waiting_bound"
 	labelHoldUnknown       = "hold_unknown"
+	labelHeld              = "held"
 )
 
 // credentialKind is which credential req presents: a session's token beside a proof and no user,
@@ -228,14 +229,23 @@ const operatorLife = 10 * time.Minute
 // read; its label in the decision counter is labelHoldUnknown.
 const holdUnknownReason = "hold_unknown: the NATS writer hold cannot be read"
 
-// outsideTheHold is decision, the answer to a client other than the operator, once the hold row
-// is known (holdView), or the refusal hold_unknown while it is not: the row is read once, now,
-// inside the decision's budget. Under every known phase the decision stands as it was made, held
-// included, since refusing other clients under held is a later step's. With HoldRead nil nothing
-// is read and the decision stands.
+// heldReason is the refusal of every client but the operator while the hold row holds held; its
+// label in the decision counter is labelHeld.
+const heldReason = "held: the NATS writer hold is set, and admits only its operator"
+
+// outsideTheHold is decision, the answer to a client other than the operator, under released and
+// prepare; the refusal held while the hold row holds held; and the refusal hold_unknown while it
+// cannot be read (holdView). The row is read once, now, inside the decision's budget. So while a
+// hold is set no client but the operator is admitted to any server of the hub, and one that the
+// hold's restart disconnects is refused again at each reconnect. With HoldRead nil nothing is read
+// and the decision stands.
 func outsideTheHold(ctx context.Context, deps Deps, decision Decision) (Decision, error) {
-	if _, err := deps.view().phase(ctx); err != nil {
+	phase, err := deps.view().phase(ctx)
+	switch {
+	case err != nil:
 		return Decision{}, refuse(labelHoldUnknown, holdUnknownReason).because(err)
+	case phase == natsgrant.OperatorPhaseHeld:
+		return Decision{}, refuse(labelHeld, heldReason)
 	}
 	return decision, nil
 }
@@ -267,10 +277,10 @@ func decideOperator(ctx context.Context, deps Deps, entry ServiceEntry, expiry t
 // without any stream create, update, delete or restore (natsgrant.ForCallout; scopeGrant,
 // sessionScope), so no connection it admits but the operator's makes, changes or removes a stream.
 // The operator entry's grant is the writer hold's phase's (decideOperator), and every other client
-// it would admit is refused while the hold row cannot be read (outsideTheHold); either reads the
-// row once, after the credential verified, so a client refused for its credential costs the
-// broker's Postgres nothing. The grant it answers is not yet checked: every answer passes the guard
-// in admit (callout.go), whatever decided it.
+// it would admit is refused while the hold row holds held or cannot be read (outsideTheHold);
+// either reads the row once, after the credential verified, so a client refused for its credential
+// costs the broker's Postgres nothing. The grant it answers is not yet checked: every answer passes
+// the guard in admit (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:

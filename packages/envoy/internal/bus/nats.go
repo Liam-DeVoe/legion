@@ -23,10 +23,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithImmediateReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
+// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
+// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -52,12 +52,13 @@ type connectOpts struct {
 	silentCutDetection          bool
 	immediateReconnect          bool
 	consumerNames               consumernames.Mode
+	inboxPrefix                 string
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection, the retry of WithImmediateReconnect and WithInboxPrefix's reply inboxes,
+// each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -65,6 +66,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.immediateReconnect {
 		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -177,6 +181,16 @@ func WithName(name string) ConnectOption {
 // changes it.
 func WithConsumerNames(mode consumernames.Mode) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.consumerNames = mode })
+}
+
+// WithInboxPrefix has every connection of the client take its reply inboxes under prefix, in place
+// of nats.go's _INBOX: every request it sends, a JetStream API call included, asks for its answer on
+// prefix.<token>. A NATS user whose grant subscribes prefix.> alone can then run the client, where
+// one granted _INBOX.> would receive every other client's replies under _INBOX - a session's push
+// deliveries among them. `envoy-infra buckets` connects with _INBOX_envoy_buckets, and the NATS auth
+// service's own connection (Dial) with _INBOX_envoy_auth.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without
