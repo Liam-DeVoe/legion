@@ -119,23 +119,18 @@ type editLostError struct {
 }
 
 // writeHandlerError answers r, whose handler failed with err. A request the server could not
-// serve - its deadline passed, its client went away, or a bound of the server's own ended one of
-// its calls before the database answered it - and a call it never got an answer to, whose
-// outcome is unknown, are both admission.WriteUnserved's to answer, and it is asked first: a
-// retryable 503, a 429, nothing for a client that is gone, or the 500 naming the unknown
-// outcome. Whether this request can have written is what that answer turns on, and the route's
-// method is what says so (admission.Reads): no GET of the table writes. Only then is err mapped
-// to the failure it names.
+// serve - its deadline passed, its client went away, a bound of the server's own ended one of
+// its calls before the database answered it, or admission refused the units it asked back - and a
+// call it never got an answer to, whose outcome is unknown, are both admission.WriteUnserved's to
+// answer, and it is asked first: a retryable 503, a 429, nothing for a client that is gone, or the
+// 500 naming the unknown outcome. Whether this request can have written is what that answer turns
+// on, and the route's method is what says so (admission.Reads): no GET of the table writes. A
+// write that waited for a document's writer gate gave its admission units back while it waited
+// (docs.Service.AcquireDocumentWriter) and found no room to take them back is one of those, its
+// refusal err itself, and is answered as admission refuses a request. Only then is err mapped to
+// the failure it names.
 func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
 	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
-		return
-	}
-	// A write that waited for a document's writer gate gave its admission units back while it
-	// waited (docs.Service.AcquireDocumentWriter) and found no room to take them back: refused
-	// as admission refuses a request, before its transaction opened.
-	var refusal *admission.Refusal
-	if errors.As(err, &refusal) {
-		admission.WriteRefused(w, refusal)
 		return
 	}
 	var apiErr *apiError

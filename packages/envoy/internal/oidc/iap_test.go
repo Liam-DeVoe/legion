@@ -147,11 +147,11 @@ func TestIAPVerifierReportsAnUnreadableKeySetAsUnavailable(t *testing.T) {
 	}
 }
 
-// WouldReadKeySet answers from the assertion's header and the cache alone whether Verify reads
-// IAP's key set: the first assertion does, the next under the same key does not, one under a key
-// the set does not hold does, and one whose header cannot be read is answered as one that does.
-// Asking reads nothing.
-func TestIAPVerifierSaysWhetherAVerificationReadsTheKeySet(t *testing.T) {
+// An IAP verification runs the before-wait hook its context carries exactly where it reads IAP's
+// key set, before the read: the first assertion does, the next under the same key does not, one
+// under a key the set does not hold does (the miss window is open), and one that is no assertion at
+// all is refused before any key is asked for and runs none.
+func TestIAPVerifierRunsTheBeforeWaitHookExactlyWhereItReadsTheKeySet(t *testing.T) {
 	rig := newIAPRig(t)
 	assertion := rig.server.Mint(t, rig.signing, iapClaims())
 	unpublished := rig.server.Mint(t, oidctest.NewES256Key(t, "rotated-in"), iapClaims())
@@ -162,22 +162,26 @@ func TestIAPVerifierSaysWhetherAVerificationReadsTheKeySet(t *testing.T) {
 		{name: "the first assertion", raw: assertion, reads: true},
 		{name: "an assertion under a key the read set holds", raw: assertion, reads: false},
 		{name: "an assertion under a key the set does not hold", raw: unpublished, reads: true},
-		{name: "an assertion whose header cannot be read", raw: "not-an-assertion", reads: true},
+		{name: "an assertion whose header cannot be read", raw: "not-an-assertion", reads: false},
 	} {
 		before := rig.server.JWKSFetches()
-		if got := rig.verifier.WouldReadKeySet(step.raw); got != step.reads {
-			t.Errorf("%s: WouldReadKeySet = %t, want %t", step.name, got, step.reads)
+		runs, atRead := 0, -1
+		ctx := WithBeforeWait(context.Background(), func() {
+			runs++
+			atRead = rig.server.JWKSFetches()
+		})
+		_, err := rig.verifier.Verify(ctx, step.raw)
+		if step.raw == assertion && err != nil {
+			t.Fatalf("%s: Verify: %v", step.name, err)
 		}
-		if fetches := rig.server.JWKSFetches(); fetches != before {
-			t.Fatalf("%s: WouldReadKeySet read the key set (%d reads, want %d)", step.name, fetches, before)
+		if read := rig.server.JWKSFetches() > before; read != step.reads {
+			t.Errorf("%s: Verify read the key set %t, want %t", step.name, read, step.reads)
 		}
-		if step.raw == assertion {
-			if _, err := rig.verifier.Verify(context.Background(), step.raw); err != nil {
-				t.Fatalf("%s: Verify: %v", step.name, err)
-			}
-			if read := rig.server.JWKSFetches() > before; read != step.reads {
-				t.Errorf("%s: Verify read the key set %t, where WouldReadKeySet answered %t", step.name, read, step.reads)
-			}
+		switch {
+		case step.reads && (runs != 1 || atRead != before):
+			t.Errorf("%s: the before-wait hook ran %d times, the last with %d reads answered, want once with %d: before the read", step.name, runs, atRead, before)
+		case !step.reads && runs != 0:
+			t.Errorf("%s: Verify read nothing and ran its before-wait hook %d times, want none", step.name, runs)
 		}
 	}
 }

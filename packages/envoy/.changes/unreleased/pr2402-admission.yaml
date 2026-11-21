@@ -40,12 +40,13 @@ body: |-
   on another server: a request whose caller's resolution waits on IAP's key set (an assertion
   under a key the set in memory lacks, or a set due to be read again), on the sign-in issuer
   renewing a lapsed confirmation, or on a service-account issuer's discovery or key set gives its
-  units back for that wait, and a read its pinned connection with them, and asks for them again
-  after it, at the place it arrived and within what is left of its class's wait, where an IAP key
-  rotation or a slow issuer had every such request hold a unit for up to ten seconds and every
-  request whose caller resolves from memory refused `429 OVERLOADED` meanwhile; one that finds no
-  room once the issuer has answered is answered `429 OVERLOADED`, its handler cancelled so nothing
-  of it runs after. A read has a deadline of 20 seconds, and a file version download 5
+  units back for that wait, and a read its pinned connection with them, at the point the key set
+  or the discovery decides to wait, and asks for them again after it, at the place it arrived and
+  within what is left of its class's wait, where an IAP key rotation or a slow issuer had every
+  such request hold a unit for up to ten seconds and every request whose caller resolves from
+  memory refused `429 OVERLOADED` meanwhile; one that finds no room once the issuer has answered
+  is answered `429 OVERLOADED`, and every statement and commit it tries after is refused, so
+  nothing of it runs after. A read has a deadline of 20 seconds, and a file version download 5
   minutes for the work it does before its answer begins - reading its row and opening the file
   store - after which the answer's own bounds carry the file's bytes however long its reader
   takes; past either is `503 REQUEST_TIMEOUT`. A write has none and runs to completion

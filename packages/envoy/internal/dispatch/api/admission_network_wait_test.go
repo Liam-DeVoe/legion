@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -194,6 +195,13 @@ type iapWaitRig struct {
 
 func newIAPWaitRig(t *testing.T) *iapWaitRig {
 	t.Helper()
+	return newIAPWaitRigOn(t, nil)
+}
+
+// newIAPWaitRigOn is newIAPWaitRig with clock as its key cache's clock (oidc.Keys.Now), nil for
+// the wall clock.
+func newIAPWaitRigOn(t *testing.T, clock func() time.Time) *iapWaitRig {
+	t.Helper()
 	database := storetest.Open(t)
 	issuer := oidctest.New(t)
 	cached := oidctest.NewES256Key(t, "iap-key")
@@ -201,6 +209,7 @@ func newIAPWaitRig(t *testing.T) *iapWaitRig {
 	reads := newHeldKeySetReads()
 	source := oidc.NewKeysAt(issuer.URL() + "/keys")
 	source.HTTPClient = &http.Client{Transport: reads}
+	source.Now = clock
 	rig := &iapWaitRig{
 		limiter: networkWaitLimiter(),
 		person: &countedLogins{Identity: identity.IAPIdentity{
@@ -233,6 +242,93 @@ func newIAPWaitRig(t *testing.T) *iapWaitRig {
 func (r *iapWaitRig) assertion(t *testing.T, key *oidctest.Key) http.Header {
 	t.Helper()
 	return iapSocketKeys{keys: r.issuer, signing: key}.assertion(t, time.Now().Add(9*time.Minute))
+}
+
+// boundaryClock is a key cache's clock (oidc.Keys.Now) that reads at, a fixed time, everywhere but
+// inside a call of oidc.Keys.Key once the row has armed a jump, where it reads at+jump. A boundary
+// the jump crosses - the set's Lifetime ending, the miss window opening again - so falls between
+// everything the request did before its key lookup (its admission, and any question asked of the
+// cache before the lookup, as the predicate this branch once asked was) and the lookup itself,
+// at the same point on every run.
+type boundaryClock struct {
+	at   time.Time
+	jump atomic.Int64
+}
+
+func (c *boundaryClock) now() time.Time {
+	if jump := time.Duration(c.jump.Load()); jump != 0 && insideKeyLookup() {
+		return c.at.Add(jump)
+	}
+	return c.at
+}
+
+// insideKeyLookup reports whether the caller runs inside oidc.Keys.Key, inlined or not.
+func insideKeyLookup() bool {
+	callers := make([]uintptr, 64)
+	frames := runtime.CallersFrames(callers[:runtime.Callers(2, callers)])
+	for {
+		frame, more := frames.Next()
+		if strings.HasSuffix(frame.Function, "/oidc.(*Keys).Key") {
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+// A boundary of the key cache passed between a request's admission and its key lookup - the set's
+// Lifetime ends, or the miss window for a key id the set does not hold opens again - turns a
+// lookup the cache would have answered from memory into a read of IAP's key set, and the request
+// still gives its admission unit back before it waits on that read: the read class's in-flight
+// count reads 0 while the read is held. The cache's clock crosses the boundary only inside the
+// lookup (boundaryClock), so it falls after anything the request asked the cache before it, every
+// run. Once the read answers, the request takes its unit back and is answered 200.
+func TestAKeySetBoundaryPassedBeforeTheLookupStillGivesTheUnitBackBeforeTheWait(t *testing.T) {
+	for _, boundary := range []string{"the set's Lifetime ends", "the miss window opens again"} {
+		t.Run(boundary, func(t *testing.T) {
+			clock := &boundaryClock{at: time.Now()}
+			rig := newIAPWaitRigOn(t, clock.now)
+			presented := rig.cached
+			jump := oidc.DefaultKeysLifetime + time.Second
+			if boundary == "the miss window opens again" {
+				// The rotated key's lookup reads the set while the window is open and closes it;
+				// a key published after that read is then one the set does not hold, inside the
+				// window, until the window opens again.
+				rig.reads.hold.Store(false)
+				if answer := serveTimed(rig.handler, whoamiAs(rig.assertion(t, rig.rotated))); answer.status != http.StatusOK {
+					t.Fatalf("the rotated key's assertion, which reads the set and closes the miss window: status=%d body=%s, want 200", answer.status, answer.body)
+				}
+				rig.reads.hold.Store(true)
+				presented = oidctest.NewES256Key(t, "iap-key-published-later")
+				rig.issuer.Publish(presented)
+				jump = oidc.DefaultKeysMinRefresh + time.Second
+			}
+			rig.person.begun.Store(0)
+			clock.jump.Store(int64(jump))
+			group := startWaiters(rig.handler, []*http.Request{whoamiAs(rig.assertion(t, presented))})
+			rig.waiting = append(rig.waiting, group)
+			if !testwait.Holds(5*time.Second, time.Millisecond, func() bool {
+				return rig.person.begun.Load() == 1 && rig.reads.held.Load() == 1
+			}) {
+				t.Fatalf("the request's resolution began %d times and %d key set reads are held, want the one resolution waiting on the one read", rig.person.begun.Load(), rig.reads.held.Load())
+			}
+			if !testwait.Holds(time.Second, time.Millisecond, func() bool {
+				return rig.limiter.Stats()[admission.Read].InFlight == 0
+			}) {
+				t.Errorf("with the request waiting on the key set read its passed boundary started, the read class holds %d units, want none: the unit is given back before the wait",
+					rig.limiter.Stats()[admission.Read].InFlight)
+			}
+			rig.reads.letGo()
+			answer := group.collect(t, 1, rig.timeout+5*time.Second)[0]
+			if answer.status != http.StatusOK {
+				t.Errorf("the request once the read answered: status=%d body=%s, want 200", answer.status, strings.TrimSpace(answer.body))
+			}
+			if stats := rig.limiter.Stats()[admission.Read]; stats.InFlight != 0 {
+				t.Errorf("once the request was answered the read class holds %d units, want none", stats.InFlight)
+			}
+		})
+	}
 }
 
 // waitOnRotatedKey sets count browsers going whose assertions name the rotated key, which the

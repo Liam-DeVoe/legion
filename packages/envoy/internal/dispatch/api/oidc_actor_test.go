@@ -179,8 +179,6 @@ func (issuerDownVerifier) Verify(context.Context, string) (oidc.Claims, error) {
 	return oidc.Claims{}, fmt.Errorf("%w: the test's issuer is down", oidc.ErrIssuerUnavailable)
 }
 
-func (issuerDownVerifier) WouldReadIssuer(string) bool { return false }
-
 // signInDownIdentity is a person whose lapsed confirmation the sign-in issuer could not renew,
 // as identity.Membership answers it: ErrSignInUnavailable with the issuer's own failure behind it.
 type signInDownIdentity struct{}

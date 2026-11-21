@@ -272,9 +272,10 @@ type loginAnswer struct {
 // A verification that will wait on IAP's key set gives its place of the request pool's share
 // outside admission back before it waits: here an assertion signed by a key the cached set does
 // not hold arrives while another assertion's read of the set, which closed the miss window, is
-// under way, so the verification joins that read (oidc.Keys.WouldRead answers true, and Key
-// waits). The place is free for as long as the read is held, and Login takes it again for the
-// person's record once the read answers; the set is read once for both assertions.
+// under way, so the verification joins that read, and the before-wait hook Keys runs there
+// (oidc.WithBeforeWait) gives the place back. The place is free for as long as the read is held,
+// and Login takes it again for the person's record once the read answers; the set is read once
+// for both assertions.
 func TestIAPIdentityGivesItsPlaceBackBeforeWaitingOnAReadUnderWay(t *testing.T) {
 	rig := newIAPRig(t)
 	if _, err := rig.login(rig.assertion(t, rig.signing, "example.com", nil), nil); err != nil {
@@ -297,9 +298,6 @@ func TestIAPIdentityGivesItsPlaceBackBeforeWaitingOnAReadUnderWay(t *testing.T) 
 	}
 
 	assertion := rig.assertion(t, rotated, "example.com", nil)
-	if !rig.identity.Verifier.WouldReadKeySet(assertion) {
-		t.Error("WouldReadKeySet for the rotated key while the read it needs is under way = false, want true")
-	}
 	outside := admission.New(admission.DefaultLimits()).Outside()
 	place, err := outside.Hold(context.Background(), admission.HeartbeatCheck)
 	if err != nil {
@@ -340,10 +338,10 @@ func TestIAPIdentityGivesItsPlaceBackBeforeWaitingOnAReadUnderWay(t *testing.T) 
 }
 
 // A verification answered from a key set already read and fresh keeps its place through the
-// verification: WouldReadKeySet answers false, so Login neither gives the place back nor waits to
-// take it again. Every other place of the share is held and one more work waits for one, so a
-// place given back would go to that work and the record's retake would wait out the share's wait
-// behind it and be answered a busy pool.
+// verification: Keys waits on nothing, so it runs no before-wait hook, and Login neither gives the
+// place back nor waits to take it again. Every other place of the share is held and one more work
+// waits for one, so a place given back would go to that work and the record's retake would wait
+// out the share's wait behind it and be answered a busy pool.
 func TestIAPIdentityKeepsItsPlaceThroughAVerificationFromTheCachedSet(t *testing.T) {
 	rig := newIAPRig(t)
 	if _, err := rig.login(rig.assertion(t, rig.signing, "example.com", nil), nil); err != nil {
@@ -377,9 +375,6 @@ func TestIAPIdentityKeepsItsPlaceThroughAVerificationFromTheCachedSet(t *testing
 	})
 
 	assertion := rig.assertion(t, rig.signing, "example.com", nil)
-	if rig.identity.Verifier.WouldReadKeySet(assertion) {
-		t.Error("WouldReadKeySet for the cached key of a fresh set = true, want false")
-	}
 	before := rig.keys.JWKSFetches()
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request = request.WithContext(admission.WithPlace(request.Context(), places[0]))

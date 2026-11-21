@@ -67,20 +67,8 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 		}),
 		issuer:     IAPIssuer,
 		audience:   audience,
-		keys:       keys,
 		skipExpiry: true,
 	}}
-}
-
-// WouldReadKeySet reports whether Verify of raw, asked now, would read IAP's key set or wait for a
-// read of it under way: the first assertion, the first once the set's Lifetime is up, and a key id
-// the set does not hold while the miss window is open or a read is under way. It is the
-// service-account verifier's own question (Verifier.WouldReadIssuer: Keys.WouldRead for the key id
-// and algorithm raw's header names), asked of IAP's key set, so it costs no round trip and answers
-// true where it cannot read that header: a caller that holds something across Verify only where
-// this answers false holds it across no read and no wait for one.
-func (v *IAPVerifier) WouldReadKeySet(raw string) bool {
-	return v.verifier.WouldReadIssuer(raw)
 }
 
 // Verify checks raw, an X-Goog-IAP-JWT-Assertion header's value, as Google documents

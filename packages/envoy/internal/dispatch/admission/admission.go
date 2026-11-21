@@ -450,9 +450,6 @@ type Ticket struct {
 	mu       sync.Mutex
 	held     bool
 	released bool
-	// refuse ends the request's context with a refusal as its cause (RefuseWith), nil where its
-	// holder gave none.
-	refuse context.CancelCauseFunc
 }
 
 // Park gives the ticket's units back to its class, and to the combined cap, while its holder
@@ -475,34 +472,6 @@ func (t *Ticket) park() bool {
 	t.held = false
 	t.arrival.limiter.release(t.arrival.class, t.arrival.units)
 	return true
-}
-
-// RefuseWith gives the ticket refuse, the cancellation that ends its request's context with a
-// refusal as its cause, which a refused take-back after a wait on the network calls
-// (Away.TakeBack): the request then stops where it stands, whatever layer of it swallowed the
-// error its caller's resolution answered, and is answered the refusal (WriteUnserved). The API
-// gives every admitted request's ticket one (api's admitted).
-func (t *Ticket) RefuseWith(refuse context.CancelCauseFunc) {
-	if t == nil {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.refuse = refuse
-}
-
-// refused ends the ticket's request on refusal, the units it asked back after a wait on the
-// network refused (Away.TakeBack): the ticket is released for good, so it counts nothing and
-// nothing resumes it again, and its request's context ends with the refusal as its cause where
-// its holder gave the cancellation (RefuseWith).
-func (t *Ticket) refused(refusal *Refusal) {
-	t.Release()
-	t.mu.Lock()
-	refuse := t.refuse
-	t.mu.Unlock()
-	if refuse != nil {
-		refuse(refusal)
-	}
 }
 
 // Resume takes a parked ticket's units back, waiting in its class's queue at the place the
@@ -599,9 +568,9 @@ func TicketFrom(ctx context.Context) *Ticket {
 
 // Away is what a request gave back of the server's room for a wait on the network (GiveBack),
 // which TakeBack takes again once the wait is over. The zero Away gave back nothing and takes
-// nothing back, so a caller that gives back only where its wait may come - where the verifier says
-// it may read or wait (oidc.IAPVerifier.WouldReadKeySet, oidc.LazyVerifier.WouldReadIssuer) -
-// takes back on every way out alike.
+// nothing back, so a caller that gives back only where the wait comes - from the before-wait hook
+// a verifier runs where it has decided to wait (oidc.WithBeforeWait) - takes back on every way out
+// alike, whether or not the hook ran.
 type Away struct {
 	// ticket is the ticket whose units GiveBack parked, nil where it parked none.
 	ticket *Ticket
@@ -654,12 +623,13 @@ func GiveBack(ctx context.Context) Away {
 // seconds no time to take its units back in. So the take-back waits at most its class's queue
 // wait, and never longer, whatever the network took. Where no unit comes free in that time, or the
 // class's queue is full, the request is refused as admission refuses one: its ticket is released
-// for good, so no unit is counted for it and nothing resumes it again, its context ends with the
-// refusal as its cause (Ticket.RefuseWith), so whatever of it runs on fails where it stands and it
-// is answered 429 OVERLOADED with Retry-After as a request refused before it ran
-// (WriteUnserved), and TakeBack answers the *Refusal itself. A refusal after the issuer answered
-// drops that answer, as a write a busy pool refused would. A request whose context ends while it
-// waits is answered that context's error, holding nothing.
+// for good, so no unit is counted for it and nothing resumes it again; the refusal goes on the
+// request's store mark (store.RefuseRequest), so every statement and commit the request tries
+// after it fails with it, whatever layer of it swallowed the error, and it is answered 429
+// OVERLOADED with Retry-After as a request refused before it ran (WriteUnserved); and TakeBack
+// answers the *Refusal itself. A refusal after the issuer answered drops that answer, as a write a
+// busy pool refused would. A request whose context ends while it waits is answered that context's
+// error, holding nothing.
 //
 // A place comes back as Place.Retake takes one, waiting for it as Take waits. A place refused is a
 // bound of this server's own that ended the work before it asked the database anything, so nothing
@@ -672,7 +642,8 @@ func (a Away) TakeBack(ctx context.Context) error {
 	if err := a.ticket.Resume(ctx); err != nil {
 		var refusal *Refusal
 		if errors.As(err, &refusal) {
-			a.ticket.refused(refusal)
+			a.ticket.Release()
+			store.RefuseRequest(ctx, refusal)
 		}
 		return err
 	}

@@ -181,11 +181,35 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 	}
 }
 
-// WouldRead answers, before each Key, whether that Key reads the set, and reads nothing itself: yes
-// for a set never read, no for a key the fresh set holds, yes for a key id the set does not hold
-// while the miss window is open and no once that read has opened it, and yes again once the set's
-// Lifetime is up.
-func TestWouldReadAnswersWhetherKeyReadsTheSet(t *testing.T) {
+// hookRuns is a context carrying a before-wait hook (WithBeforeWait) that counts its runs into
+// runs, and records into atRead how many reads the issuer had answered when it last ran.
+func hookRuns(issuer *oidctest.Issuer, runs, atRead *int) context.Context {
+	return WithBeforeWait(context.Background(), func() {
+		*runs++
+		*atRead = issuer.JWKSFetches()
+	})
+}
+
+// requireHookAtTheRead holds a Key's before-wait hook to the read it made: run once, before the
+// read reached the issuer, where the Key read the set, and not at all where it answered from
+// memory.
+func requireHookAtTheRead(t *testing.T, step string, reads bool, runs, atRead, before int) {
+	t.Helper()
+	switch {
+	case reads && runs != 1:
+		t.Errorf("%s: Key read the set and ran its before-wait hook %d times, want once", step, runs)
+	case reads && atRead != before:
+		t.Errorf("%s: the before-wait hook ran with %d reads answered, want %d: before the read", step, atRead, before)
+	case !reads && runs != 0:
+		t.Errorf("%s: Key answered from memory and ran its before-wait hook %d times, want none", step, runs)
+	}
+}
+
+// Key runs the before-wait hook its context carries exactly where it reads the set, once and
+// before the read: for a set never read, for a key id the set does not hold while the miss window
+// is open, and once the set's Lifetime is up; never for a key the fresh set holds, nor for a key
+// id the set does not hold inside the window, which are answered from memory.
+func TestKeyRunsTheBeforeWaitHookExactlyWhereItReadsTheSet(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
 	for _, step := range []struct {
@@ -201,25 +225,21 @@ func TestWouldReadAnswersWhetherKeyReadsTheSet(t *testing.T) {
 	} {
 		keys.Lifetime = step.lifetime
 		before := issuer.JWKSFetches()
-		if got := keys.WouldRead(step.kid, testAlgorithm); got != step.reads {
-			t.Errorf("%s: WouldRead(%q) = %t, want %t", step.name, step.kid, got, step.reads)
-		}
-		if fetches := issuer.JWKSFetches(); fetches != before {
-			t.Fatalf("%s: WouldRead read the key set (%d reads, want %d)", step.name, fetches, before)
-		}
-		_, _ = keys.Key(context.Background(), step.kid, testAlgorithm)
+		var runs, atRead int
+		_, _ = keys.Key(hookRuns(issuer, &runs, &atRead), step.kid, testAlgorithm)
 		if read := issuer.JWKSFetches() > before; read != step.reads {
-			t.Errorf("%s: Key read the set %t, where WouldRead answered %t", step.name, read, step.reads)
+			t.Errorf("%s: Key read the set %t, want %t", step.name, read, step.reads)
 		}
+		requireHookAtTheRead(t, step.name, step.reads, runs, atRead, before)
 	}
 }
 
-// WouldRead answers what Key does around a read that failed: yes for a set never read, which Key
-// reads; no inside FailureSpacing of that failed first read, where Key answers the failure at once
-// and reads nothing; yes once the spacing has passed, and once the issuer answers again; yes for a
-// key id the fresh set does not hold while the miss window is open, and no inside MinRefresh once
+// Key runs the before-wait hook around a read that failed as it reads: for a set never read, which
+// Key reads; not inside FailureSpacing of that failed first read, where Key answers the failure at
+// once and reads nothing; once the spacing has passed, and once the issuer answers again; for a
+// key id the fresh set does not hold while the miss window is open, and not inside MinRefresh once
 // that read has failed, where Key answers ErrKeySet at once (settleMiss) and reads nothing.
-func TestWouldReadAnswersWhatKeyDoesAroundAFailedRead(t *testing.T) {
+func TestKeyRunsTheBeforeWaitHookAroundAFailedRead(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
 	for _, step := range []struct {
@@ -242,16 +262,40 @@ func TestWouldReadAnswersWhatKeyDoesAroundAFailedRead(t *testing.T) {
 		}
 		keys.FailureSpacing = step.spacing
 		before := issuer.JWKSFetches()
-		if got := keys.WouldRead(step.kid, testAlgorithm); got != step.reads {
-			t.Errorf("%s: WouldRead(%q) = %t, want %t", step.name, step.kid, got, step.reads)
-		}
-		if fetches := issuer.JWKSFetches(); fetches != before {
-			t.Fatalf("%s: WouldRead read the key set (%d reads, want %d)", step.name, fetches, before)
-		}
-		_, _ = keys.Key(context.Background(), step.kid, testAlgorithm)
+		var runs, atRead int
+		_, _ = keys.Key(hookRuns(issuer, &runs, &atRead), step.kid, testAlgorithm)
 		if read := issuer.JWKSFetches() > before; read != step.reads {
 			t.Errorf("%s: Key read the set %t, where the row says %t", step.name, read, step.reads)
 		}
+		requireHookAtTheRead(t, step.name, step.reads, runs, atRead, before)
+	}
+}
+
+// A verification that waits twice - on the issuer's discovery and then on its key set - runs its
+// before-wait hook once, before the first wait, and a verification answered from what both reads
+// left in memory runs it not at all.
+func TestALazyVerificationRunsItsBeforeWaitHookOnceAcrossItsWaits(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "lazy-key")
+	verifier := NewLazyVerifier(issuer.URL(), "dispatch")
+	token := issuer.Mint(t, signing, issuer.Claims("system:serviceaccount:legion:worker", "dispatch"))
+	for _, step := range []struct {
+		name string
+		runs int
+	}{
+		{name: "the first token, which discovers the issuer and reads its key set", runs: 1},
+		{name: "the same token again, answered from memory", runs: 0},
+	} {
+		runs := 0
+		if _, err := verifier.Verify(WithBeforeWait(context.Background(), func() { runs++ }), token); err != nil {
+			t.Fatalf("%s: Verify: %v", step.name, err)
+		}
+		if runs != step.runs {
+			t.Errorf("%s: the before-wait hook ran %d times, want %d", step.name, runs, step.runs)
+		}
+	}
+	if discovered, read := issuer.DiscoveryRequests(), issuer.JWKSFetches(); discovered != 1 || read != 1 {
+		t.Errorf("the issuer was discovered %d times and its key set read %d times, want once each", discovered, read)
 	}
 }
 
@@ -279,11 +323,11 @@ func (h *heldKeyReads) RoundTrip(request *http.Request) (*http.Response, error) 
 	return http.DefaultTransport.RoundTrip(request)
 }
 
-// WouldRead answers yes for a key id the fresh set does not hold while the read another token
-// naming it prompted is under way, though that read has closed the miss window: Key then waits for
-// that read (settleMiss) and is answered from the set it reads, with no read of its own. The read
-// is held at its start until the test lets it go, so it is under way for every question asked.
-func TestWouldReadAnswersYesWhileTheReadAKeyIDNeedsIsUnderWay(t *testing.T) {
+// A Key for a key id the fresh set does not hold, arriving while the read another token naming it
+// prompted is under way (which has closed the miss window), runs its before-wait hook and then
+// waits for that read (settleMiss), and is answered from the set it reads, with no read of its own.
+// The read is held at its start until the test lets it go, so it is under way throughout.
+func TestKeyRunsTheBeforeWaitHookBeforeJoiningTheReadAKeyIDNeeds(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "key-a")
 	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
@@ -310,14 +354,17 @@ func TestWouldReadAnswersYesWhileTheReadAKeyIDNeedsIsUnderWay(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the first token naming key-b prompted no read within 5 s")
 	}
-	if !keys.WouldRead("key-b", testAlgorithm) {
-		t.Error("WouldRead(key-b) while the read key-b needs is under way = false, want true: Key waits for that read")
-	}
+	hooked := make(chan struct{}, 1)
 	second := make(chan error, 1)
 	go func() {
-		_, err := keys.Key(context.Background(), "key-b", testAlgorithm)
+		_, err := keys.Key(WithBeforeWait(context.Background(), func() { hooked <- struct{}{} }), "key-b", testAlgorithm)
 		second <- err
 	}()
+	select {
+	case <-hooked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second Key(key-b) ran no before-wait hook within 5 s while the read it needs was held, want it run before the Key waits for that read")
+	}
 	select {
 	case err := <-second:
 		t.Fatalf("a second Key(key-b) answered %v while the read it needs was held, want it to wait for that read", err)

@@ -451,8 +451,9 @@ func TestAResumedTicketIsGrantedAheadOfLaterArrivals(t *testing.T) {
 // its class's wait however long the network took, since that wait is no wait for room and is not
 // counted into the one wait the queue costs the request; a place as Retake takes one. A take-back
 // refused releases the ticket for good - no unit is counted for it, and nothing resumes it again -
-// and ends its request's context with the refusal as its cause; a place refused is answered as a
-// busy pool. Units parked already, by a body still arriving, are left parked.
+// and puts the refusal on the request's store mark, so its next statement and its commit are
+// refused with it, while its context goes on; a place refused is answered as a busy pool. Units
+// parked already, by a body still arriving, are left parked.
 func TestAUnitGivenBackForAWaitOnTheNetworkIsTakenBackWithinItsClassesWait(t *testing.T) {
 	const (
 		wait  = 300 * time.Millisecond
@@ -461,9 +462,7 @@ func TestAUnitGivenBackForAWaitOnTheNetworkIsTakenBackWithinItsClassesWait(t *te
 	l := newLimiter(1, 1, wait)
 	ticket := admit(t, l, Read, 1)
 	defer ticket.Release()
-	ctx, refuse := context.WithCancelCause(WithTicket(context.Background(), ticket))
-	defer refuse(nil)
-	ticket.RefuseWith(refuse)
+	ctx := store.WithTransactionTracking(WithTicket(context.Background(), ticket))
 
 	away := GiveBack(ctx)
 	if stats := classStats(l, Read); stats.InFlight != 0 {
@@ -491,8 +490,11 @@ func TestAUnitGivenBackForAWaitOnTheNetworkIsTakenBackWithinItsClassesWait(t *te
 		t.Errorf("the take-back was refused after %v, want after its class's %v wait: the network's wait is not counted into it, and it waits no longer", waited, wait)
 	}
 	var refusal *Refusal
-	if !errors.As(context.Cause(ctx), &refusal) || refusal.Reason != WaitExceeded {
-		t.Errorf("the refused request's context ended with %v, want the refusal as its cause", context.Cause(ctx))
+	if committed := store.CommitRefusal(ctx); !errors.As(committed, &refusal) || refusal.Reason != WaitExceeded {
+		t.Errorf("the refused request's commit is refused with %v, want the take-back's refusal", committed)
+	}
+	if ctx.Err() != nil {
+		t.Errorf("the refused request's context ended (%v), want it live: the refusal rides on its store mark", ctx.Err())
 	}
 	if err := away.TakeBack(context.Background()); err != nil {
 		t.Fatalf("a second take-back of the refused ticket: %v, want nothing taken and no error", err)

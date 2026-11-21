@@ -72,12 +72,16 @@ func (d *discovery[T]) done() bool {
 // flight, or fails at once with the last attempt's error when that attempt failed less than
 // discoveryRetrySpacing ago. The attempt runs on a context of its own, detached from ctx's
 // cancellation, since its result belongs to every caller; ctx ending stops only this caller's
-// wait. Every error matches ErrIssuerUnavailable.
+// wait. Every error matches ErrIssuerUnavailable. A caller that waits for an attempt, its own or
+// one in flight, runs the before-wait hook ctx carries first (WithBeforeWait), at the point the
+// settled answer is found missing, so a verification that waits on discovery gives up what it
+// holds before it waits and one answered from the settled value gives up nothing.
 func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 	var zero T
 	if value, err, settled := d.settled(); settled {
 		return value, err
 	}
+	beforeWait(ctx)
 	attempt := d.flight.DoChan("discover", func() (any, error) {
 		// An attempt that ended just before this flight began has settled it already.
 		if value, err, settled := d.settled(); settled {
@@ -173,32 +177,15 @@ func NewLazyVerifier(issuer, audience string) *LazyVerifier {
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
-// and an attempt is due; before that every error matches ErrIssuerUnavailable.
+// and an attempt is due; before that every error matches ErrIssuerUnavailable. A verification that
+// waits on the discovery or on the key set runs the before-wait hook ctx carries first, once
+// (WithBeforeWait).
 func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	verifier, err := v.discovery.discover(ctx)
 	if err != nil {
 		return Claims{}, err
 	}
 	return verifier.Verify(ctx, raw)
-}
-
-// WouldReadIssuer reports whether Verify of raw, asked now, would read the issuer - its discovery
-// document or its key set - or wait for a read of either under way, before it answers: while the
-// issuer is undiscovered and an attempt is due or in flight (discovery.settled, the answer discover
-// takes its course from), and once it is discovered, where the verifier's key set would be read or
-// waited for (Verifier.WouldReadIssuer). The last attempt's failure, younger than
-// discoveryRetrySpacing, answers at once and reads nothing. It reads nothing itself, so it costs no
-// round trip; a caller asks it before Verify to decide what to give up for the read's length (the
-// API gives back the request's admission unit: admission.GiveBack).
-func (v *LazyVerifier) WouldReadIssuer(raw string) bool {
-	verifier, err, settled := v.discovery.settled()
-	switch {
-	case !settled:
-		return true
-	case err != nil:
-		return false
-	}
-	return verifier.WouldReadIssuer(raw)
 }
 
 // VerifyGoogleIdentity is Verifier.VerifyGoogleIdentity once the issuer is discovered, discovering

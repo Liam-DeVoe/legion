@@ -123,12 +123,15 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //     (store.CommitContext), so a client that leaves while the commit runs out its bound is the
 //     likeliest way this is met. The request is then answered as a client that went away is,
 //     below, and the line records the 499 that it is;
-//   - a request cancelled by a refusal of the units it asked back (Ticket.Resume, whose refusal
-//     the caller made ctx's cause: a write's body that arrived after its units were parked, and
-//     a caller's resolution back from a wait on the network, Away.TakeBack): 429 OVERLOADED, as a
-//     request refused before it ran is answered. It is told before the cancellation below because
-//     that cancellation reads as a client that went away, which it is not: the client is still
-//     there, and what it is owed is the refusal;
+//   - a request refused the units it asked back (Ticket.Resume): 429 OVERLOADED, as a request
+//     refused before it ran is answered. The refusal is ctx's cause where the caller cancelled the
+//     request with it - a write's body that arrived after its units were parked - and err where a
+//     statement or a commit was refused it - a caller's resolution back from a wait on the network
+//     (Away.TakeBack, whose refusal the store answers every later statement with:
+//     store.RefuseRequest) - or where the call that asked returned it - a write that waited for a
+//     document's writer gate (docs.Service.AcquireDocumentWriter). It is told before the
+//     cancellation below because that cancellation reads as a client that went away, which it is
+//     not: the client is still there, and what it is owed is the refusal;
 //   - the read's deadline passed (DeadlinePassed): 503 REQUEST_TIMEOUT, whatever err says,
 //     since every failure after the deadline is the deadline's;
 //   - the client went away (ctx cancelled with net/http's own cause, the plain context.Canceled):
@@ -209,7 +212,7 @@ func unknownOutcome(err error) string {
 func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	var refusal *Refusal
 	switch {
-	case errors.As(context.Cause(ctx), &refusal):
+	case errors.As(context.Cause(ctx), &refusal), errors.As(err, &refusal):
 		slog.Debug("dispatch: request refused the units it asked back", "error", refusal)
 		WriteRefused(w, refusal)
 	case DeadlinePassed(ctx):

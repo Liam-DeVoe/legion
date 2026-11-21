@@ -75,12 +75,11 @@ const repoLabelPrefix = "repo:"
 
 // ServiceTokenVerifier verifies a Kubernetes pod's projected service-account token.
 // *oidc.LazyVerifier is the one Dispatch serves with: until its issuer is discovered every Verify
-// fails with an error matching oidc.ErrIssuerUnavailable. WouldReadIssuer answers, before Verify,
-// whether Verify would wait on the issuer - its discovery or its key set - so the request gives its
-// admission unit back for that wait (serviceTokenActor).
+// fails with an error matching oidc.ErrIssuerUnavailable. A Verify that waits on the issuer - its
+// discovery or its key set - runs the before-wait hook its context carries first
+// (oidc.WithBeforeWait), where the request gives its admission unit back (serviceTokenActor).
 type ServiceTokenVerifier interface {
 	Verify(ctx context.Context, raw string) (oidc.Claims, error)
-	WouldReadIssuer(raw string) bool
 }
 
 // AgentPublisher is what a person's targeted message is queued through when no store of the
@@ -1140,13 +1139,13 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // its statements and its commit fail where they stand and nothing of the request is written,
 // whether or not the handler reads the refusal from the read that ended its body. Its answer is
 // the refusal, which admission.WriteUnserved writes from the cause: the client is still there,
-// so this cancellation is never the 499 of a client that went away. Every admitted request's
-// ticket carries the same cancellation (admission.Ticket.RefuseWith) for the other take-back a
-// request may be refused: its caller's resolution gives its units back while it waits on an issuer
-// - IAP's key set, the sign-in issuer's renewal, a service-account issuer's discovery or key set -
-// and asks for them again after (admission.GiveBack, admission.Away.TakeBack). Refused there, the
-// request is cancelled the same way, so a layer that reads the resolution's error as no caller
-// and goes on (refuseChangedLogin, callerHoldsScope) runs nothing of it unadmitted.
+// so this cancellation is never the 499 of a client that went away. The other take-back a request
+// may be refused - its caller's resolution gives its units back while it waits on an issuer and
+// asks for them again after (admission.GiveBack, admission.Away.TakeBack) - needs no cancellation
+// of its own: the refusal is put on the request's store mark (store.RefuseRequest), so every
+// statement and commit the request tries after it is refused with it, and a layer that reads the
+// resolution's error as no caller and goes on (refuseChangedLogin, callerHoldsScope) runs nothing
+// of it unadmitted. So only a request whose body went through the drain makes the cancellation.
 //
 // A request whose client went away while it waited is answered nothing, since nobody is left to
 // read it, and its line carries 499 rather than the 200 of a handler that wrote nothing: under
@@ -1192,10 +1191,11 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 			}
 		}
 		defer ticket.Release()
-		ctx, refused := context.WithCancelCause(admission.WithTicket(r.Context(), ticket))
-		defer refused(nil)
-		ticket.RefuseWith(refused)
+		ctx := admission.WithTicket(r.Context(), ticket)
 		if body, drained := r.Body.(*drainedBody); drained {
+			var refused context.CancelCauseFunc
+			ctx, refused = context.WithCancelCause(ctx)
+			defer refused(nil)
 			body.admit(ticket, refused)
 		}
 		handler(w, r.WithContext(ctx))
@@ -1804,19 +1804,18 @@ var (
 //
 // The verification may wait on the issuer - its discovery document while it is undiscovered, its
 // key set for the first token, once the set's Lifetime is up, and for a key id the set does not
-// hold - a round trip of up to ten seconds that reads no pool. Where the verifier says it will
-// (ServiceTokenVerifier.WouldReadIssuer), the request gives its admission unit back for the wait,
-// and its pinned connection with it, and takes the unit back once the verification has answered
-// (admission.GiveBack, admission.Away.TakeBack), as a browser's resolution does around IAP's key
-// set (identity.IAPIdentity.Login): an issuer slow to answer then holds no unit, and the requests
-// whose callers resolve from memory are not refused for want of one meanwhile. A take-back refused
-// is the request's answer, admission's 429 OVERLOADED (writeHandlerError).
+// hold - a round trip of up to ten seconds that reads no pool. The request gives its admission
+// unit back for that wait, and its pinned connection with it, from the before-wait hook the
+// verifier runs where it has decided to wait, before it blocks (oidc.WithBeforeWait,
+// admission.GiveBack), and takes the unit back once the verification has answered
+// (admission.Away.TakeBack; nothing where the hook never ran), as a browser's resolution does
+// around IAP's key set (identity.IAPIdentity.Login): an issuer slow to answer then holds no unit,
+// and the requests whose callers resolve from memory are not refused for want of one meanwhile. A
+// take-back refused is the request's answer, admission's 429 OVERLOADED (writeHandlerError).
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	var away admission.Away
-	if s.deps.OIDC.WouldReadIssuer(token) {
-		away = admission.GiveBack(r.Context())
-	}
-	claims, err := s.deps.OIDC.Verify(r.Context(), token)
+	verifying := oidc.WithBeforeWait(r.Context(), func() { away = admission.GiveBack(r.Context()) })
+	claims, err := s.deps.OIDC.Verify(verifying, token)
 	if back := away.TakeBack(r.Context()); back != nil {
 		return model.Actor{}, false, back
 	}

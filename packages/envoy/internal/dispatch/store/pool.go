@@ -47,10 +47,47 @@ var ErrNestedAcquire = errors.New(
 // transaction, its open cursor, or one it acquired directly. One writer sets it and one reader
 // tests it, so a flag is the whole state - a transaction never opens a second transaction of its
 // own. A pinned request (PinConnection) also carries its pinned connection here, so a context
-// made with a mark of its own (ForConcurrentRead) pins nothing.
+// made with a mark of its own (ForConcurrentRead) pins nothing. It also carries the request's
+// refusal (RefuseRequest), which a mark ForConcurrentRead made reads from the request's own.
 type holding struct {
 	connection atomic.Bool
 	pin        *pinnedConnection
+	// request is the mark of the request a ForConcurrentRead mark was made from, nil on the
+	// request's own mark.
+	request *holding
+	// refusal is the request's refusal (RefuseRequest), nil while it may run its statements. It is
+	// read on the request's own mark (owner).
+	refusal atomic.Pointer[error]
+}
+
+// owner is the request's own mark: h, or the mark a ForConcurrentRead mark was made from.
+func (h *holding) owner() *holding {
+	if h.request != nil {
+		return h.request
+	}
+	return h
+}
+
+// refused is the request's refusal (RefuseRequest), nil while it may run its statements.
+func (h *holding) refused() error {
+	if refusal := h.owner().refusal.Load(); refusal != nil {
+		return *refusal
+	}
+	return nil
+}
+
+// RefuseRequest refuses every later statement of ctx's request with refusal: each call it makes
+// on any pool (refuseOrPin), a read ForConcurrentRead split off it included, and the commit of a
+// transaction it opened (CommitRefusal). admission.Away.TakeBack puts it on a request refused the
+// admission units it gave back for a wait on the network, so a layer that reads that refusal as
+// no caller and goes on runs nothing on the database without its units: the next statement fails
+// with the refusal, which the API answers as admission's own (admission.WriteUnserved). It does
+// nothing for a context the pool cannot see (WithTransactionTracking), and the first refusal
+// stands.
+func RefuseRequest(ctx context.Context, refusal error) {
+	if state, ok := ctx.Value(holdingKey{}).(*holding); ok {
+		state.owner().refusal.CompareAndSwap(nil, &refusal)
+	}
 }
 
 type holdingKey struct{}
@@ -135,7 +172,11 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 		logRefusal()
 		return nil, ErrNestedAcquire
 	}
-	return context.WithValue(ctx, holdingKey{}, &holding{}), nil
+	split := &holding{}
+	if state, ok := ctx.Value(holdingKey{}).(*holding); ok {
+		split.request = state.owner()
+	}
+	return context.WithValue(ctx, holdingKey{}, split), nil
 }
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
@@ -248,6 +289,9 @@ func (p *Pool) refuseOrPin(ctx context.Context) (*pinnedConnection, error) {
 	if state == nil {
 		return nil, nil
 	}
+	if refusal := state.refused(); refusal != nil {
+		return nil, refusal
+	}
 	if state.connection.Load() || (p.name != RequestsPool && state.pin.held()) {
 		return nil, ErrNestedAcquire
 	}
@@ -258,7 +302,7 @@ func (p *Pool) refuseOrPin(ctx context.Context) (*pinnedConnection, error) {
 // call on.
 func (p *Pool) guard(ctx context.Context) error {
 	_, err := p.refuseOrPin(ctx)
-	if err != nil {
+	if errors.Is(err, ErrNestedAcquire) {
 		logRefusal()
 	}
 	return err
@@ -285,7 +329,9 @@ type connection interface {
 func (p *Pool) target(ctx context.Context) (connection, func(), error) {
 	pin, err := p.refuseOrPin(ctx)
 	if err != nil {
-		logRefusal()
+		if errors.Is(err, ErrNestedAcquire) {
+			logRefusal()
+		}
 		return nil, nil, err
 	}
 	if pin == nil {
@@ -427,7 +473,9 @@ func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 func (p *Pool) handOver(ctx context.Context) (*pgxpool.Conn, error) {
 	pin, err := p.refuseOrPin(ctx)
 	if err != nil {
-		logRefusal()
+		if errors.Is(err, ErrNestedAcquire) {
+			logRefusal()
+		}
 		return nil, err
 	}
 	if pin == nil {
@@ -946,12 +994,18 @@ func RanOutTheRollbackBound(ctx context.Context, err error) error {
 // line for a client that went away.
 var ErrRequestEnded = errors.New("the request ended before its commit began; nothing was committed")
 
-// CommitRefusal is the error a commit on ctx is refused with when ctx has already ended, and nil
-// while it is live. It is read where a commit begins and before CommitContext detaches it - the
-// transaction an API handler opened (api.server.begin) and the document ledger's commit
-// (docs.Ledger.Commit) - so a request already gone starts no commit, rather than holding its
-// rows, its documents' rooms and the event horizon for a commit nobody will read.
+// CommitRefusal is the error a commit on ctx is refused with when ctx has already ended, or its
+// request was refused (RefuseRequest, which it answers as it was given), and nil while it is live.
+// It is read where a commit begins and before CommitContext detaches it - the transaction an API
+// handler opened (api.server.begin) and the document ledger's commit (docs.Ledger.Commit) - so a
+// request already gone or refused starts no commit, rather than holding its rows, its documents'
+// rooms and the event horizon for a commit nobody will read.
 func CommitRefusal(ctx context.Context) error {
+	if state, ok := ctx.Value(holdingKey{}).(*holding); ok {
+		if refusal := state.refused(); refusal != nil {
+			return refusal
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w: %w", ErrRequestEnded, err)
 	}

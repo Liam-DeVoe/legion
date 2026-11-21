@@ -317,9 +317,9 @@ func (h *heldLogins) Login(r *http.Request) (string, error) {
 // An IAP key set already read and fresh keeps the place through the verification: a heartbeat
 // check's resolution and a document socket's admission hold their place of the request pool's
 // share outside admission from the moment they take it to the person's record, since the
-// verification is answered from the set in memory and waits on nothing
-// (oidc.IAPVerifier.WouldReadKeySet, identity.IAPIdentity.Login). Only a verification that will
-// read the set gives its place back
+// verification is answered from the set in memory and waits on nothing, so it runs no
+// before-wait hook (oidc.WithBeforeWait, identity.IAPIdentity.Login). Only a verification that
+// will read the set gives its place back
 // (TestAnIAPKeySetSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission). So with every other place
 // held and one more work waiting for a place, the resolution answers its person, the waiting work
 // is still waiting when it does - the place was never given back for it to take - nothing was
