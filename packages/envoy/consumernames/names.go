@@ -67,6 +67,12 @@ type Config struct {
 	// name, the consumer convert replaces or deletes. Prefix(logical) when nil, as for a durable,
 	// whose fixed name is its logical one.
 	Fixed func(logical string) string
+	// Metadata is the metadata every consumer of logical carries, which the family's CreateFunc
+	// writes: a consumer a record of logical names is logical's only when its own metadata holds
+	// each of these (Owns); any other is never read for a floor, bound, updated, adopted or deleted
+	// for logical. {LogicalMetadataKey: logical} when nil. The fixed name carries none and is
+	// logical's by its name.
+	Metadata func(logical string) map[string]string
 	// Floor is the family's ack floor of a consumer's info.
 	Floor func(*jetstream.ConsumerInfo) uint64
 	// StreamID reads the stream's identity, which a last floor must carry to count.
@@ -260,6 +266,58 @@ func (n *Names) checkNames(logical string, record Record) error {
 	return nil
 }
 
+// metadata is the metadata every consumer of logical carries (Config.Metadata).
+func (n *Names) metadata(logical string) map[string]string {
+	if n.cfg.Metadata != nil {
+		return n.cfg.Metadata(logical)
+	}
+	return map[string]string{LogicalMetadataKey: logical}
+}
+
+// Owns is nil when info, a consumer a record of logical names, is logical's own: its metadata
+// holds each pair the family's consumers carry (Config.Metadata), or it is logical's fixed name.
+// Anything else is ErrMalformedRecord naming the consumer and the pair it lacks: a record that
+// names another key's consumer is no record of logical's, however well formed, and nothing reads,
+// binds, updates, adopts or deletes that consumer for logical. A family that reads a consumer's
+// info again on its own, to correct or bind it, asks here too.
+func (n *Names) Owns(logical string, info *jetstream.ConsumerInfo) error {
+	if info.Name == n.fixed(logical) {
+		return nil
+	}
+	for key, want := range n.metadata(logical) {
+		if got, ok := info.Config.Metadata[key]; !ok || got != want {
+			return fmt.Errorf("%w: the consumer %s that the key %s's record names carries %s=%q, not %q", ErrMalformedRecord, info.Name, logical, key, got, want)
+		}
+	}
+	return nil
+}
+
+// info reads consumer name, which a record of logical names, and answers it only when it is
+// logical's own (Owns); a consumer the server does not hold is ErrNotFound.
+func (n *Names) info(ctx context.Context, logical, name string) (*jetstream.ConsumerInfo, error) {
+	info, err := n.cfg.Server.Info(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := n.Owns(logical, info); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// deleteOwned deletes consumer name, which a record of logical names, once its info shows it is
+// logical's own (info); one the server does not hold is no error, and one of another key is
+// ErrMalformedRecord and is not deleted.
+func (n *Names) deleteOwned(ctx context.Context, logical, name string) error {
+	if _, err := n.info(ctx, logical, name); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	return n.cfg.Server.Delete(ctx, name)
+}
+
 func (n *Names) observe(op Operation, outcome Outcome) {
 	if n.cfg.Observe != nil {
 		n.cfg.Observe(op, outcome)
@@ -335,12 +393,13 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 		if sel.Record.Current == "" || !readCurrent || sel.Info != nil {
 			return sel, nil
 		}
-		info, err := n.cfg.Server.Info(ctx, sel.Record.Current)
+		info, err := n.info(ctx, logical, sel.Record.Current)
 		if err == nil {
 			sel.Info = info
 			return sel, nil
 		}
 		if !errors.Is(err, ErrNotFound) {
+			n.observeErr(OperationSelect, err)
 			return sel, err
 		}
 		if create == nil {
@@ -428,7 +487,7 @@ func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, 
 		}
 		return n.launch(ctx, next, create, OperationRecover)
 	}
-	info, err := n.cfg.Server.Info(ctx, op.Candidate)
+	info, err := n.info(ctx, sel.Logical, op.Candidate)
 	if err == nil {
 		return n.publish(ctx, sel, info, OperationRecover, OutcomeAdopted)
 	}
@@ -468,7 +527,7 @@ func (n *Names) abandon(ctx context.Context, sel Selection) (Selection, error) {
 // error.
 func (n *Names) saveReplaceStart(ctx context.Context, sel Selection) (Selection, error) {
 	op := sel.Record.Op
-	info, err := n.cfg.Server.Info(ctx, op.Old)
+	info, err := n.info(ctx, sel.Logical, op.Old)
 	if errors.Is(err, ErrNotFound) {
 		return sel, stepError(sel.Logical, OperationReplace, op.Old, fmt.Errorf("the replace reserved no start and its predecessor is absent: %w", err))
 	}
@@ -491,7 +550,7 @@ func (n *Names) settleDelete(ctx context.Context, sel Selection) (Selection, err
 		}
 		sel = next
 	}
-	if err := n.cfg.Server.Delete(ctx, op.Old); err != nil {
+	if err := n.deleteOwned(ctx, sel.Logical, op.Old); err != nil {
 		return sel, stepError(sel.Logical, OperationDelete, op.Old, err)
 	}
 	next, err := n.clearDeleted(ctx, sel)
@@ -508,7 +567,7 @@ func (n *Names) recordDeleteFloor(ctx context.Context, sel Selection, info *jets
 	op := sel.Record.Op
 	record := sel.Record.clone()
 	if info == nil {
-		read, err := n.cfg.Server.Info(ctx, op.Old)
+		read, err := n.info(ctx, sel.Logical, op.Old)
 		switch {
 		case err == nil:
 			info = read
@@ -708,7 +767,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			case attempt == 0:
 				n.deleteRetiredHeld(ctx, sel)
 			case op.Kind == OpReplace && op.Old != "" && !predecessorDeleted:
-				if err := n.cfg.Server.Delete(ctx, op.Old); err != nil {
+				if err := n.deleteOwned(ctx, sel.Logical, op.Old); err != nil {
 					n.observe(operation, OutcomeError)
 					return sel, stepError(sel.Logical, operation, op.Old, err)
 				}
@@ -728,9 +787,13 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			n.observe(operation, OutcomeError)
 			return sel, stepError(sel.Logical, operation, op.Candidate, err)
 		}
-		found, infoErr := n.cfg.Server.Info(ctx, op.Candidate)
+		found, infoErr := n.info(ctx, sel.Logical, op.Candidate)
 		if infoErr == nil {
 			return n.publish(ctx, sel, found, operation, OutcomeAdopted)
+		}
+		if errors.Is(infoErr, ErrMalformedRecord) {
+			n.observe(operation, OutcomeRefused)
+			return sel, stepError(sel.Logical, operation, op.Candidate, infoErr)
 		}
 		if !errors.Is(infoErr, ErrNotFound) || retried {
 			n.observe(operation, OutcomeError)
@@ -818,7 +881,7 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	if old == "" {
 		return next, nil
 	}
-	if err := n.cfg.Server.Delete(ctx, old); err != nil {
+	if err := n.deleteOwned(ctx, sel.Logical, old); err != nil {
 		n.observe(OperationCleanup, OutcomeError)
 		return next, nil
 	}
@@ -840,7 +903,7 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 // deleteRetiredHeld deletes the retired names of sel that the server holds, to free their slots.
 func (n *Names) deleteRetiredHeld(ctx context.Context, sel Selection) {
 	for _, name := range sel.Record.Retired {
-		if _, err := n.cfg.Server.Info(ctx, name); err == nil {
+		if _, err := n.info(ctx, sel.Logical, name); err == nil {
 			n.observeErr(OperationCleanup, n.cfg.Server.Delete(ctx, name))
 		}
 	}
@@ -872,6 +935,15 @@ func (n *Names) deleteOnce(ctx context.Context, logical string, listed *jetstrea
 	current := sel.Record.Current
 	if current == "" {
 		return 0, nil
+	}
+	// The current must be logical's own before anything is reserved for it: a listed info is
+	// checked as it is, and with none the server's info is read.
+	if listed != nil && listed.Name == current {
+		if err := n.Owns(logical, listed); err != nil {
+			return 0, err
+		}
+	} else if _, err := n.info(ctx, logical, current); err != nil && !errors.Is(err, ErrNotFound) {
+		return 0, err
 	}
 	record := sel.Record.clone()
 	record.Op = &Op{Kind: OpDelete, Owner: n.cfg.Owner, Old: current, ReservedAt: n.cfg.Now()}
@@ -929,8 +1001,9 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 
 // Cleanup deletes logical's retired names that the server holds, and drops from the record each
 // retired name the server no longer holds. It answers how many it deleted. Only retired names are
-// deleted, never the current, never by name pattern. A refused write of the record leaves the
-// names for the next cleanup, which finds them gone.
+// deleted, never the current, never by name pattern, and never a consumer of another key (Owns),
+// which refuses the call as a malformed record. A refused write of the record leaves the names for
+// the next cleanup, which finds them gone.
 func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 	sel, err := n.selectRecord(ctx, logical, nil, false)
 	if err != nil || len(sel.Record.Retired) == 0 {
@@ -942,7 +1015,7 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 		if name == sel.Record.Current {
 			continue
 		}
-		_, err := n.cfg.Server.Info(ctx, name)
+		_, err := n.info(ctx, logical, name)
 		switch {
 		case err == nil:
 			if err := n.cfg.Server.Delete(ctx, name); err != nil {
@@ -951,6 +1024,9 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 			}
 			deleted++
 			n.observe(OperationCleanup, OutcomeOK)
+		case errors.Is(err, ErrMalformedRecord):
+			n.observe(OperationCleanup, OutcomeRefused)
+			return deleted, err
 		case !errors.Is(err, ErrNotFound):
 			continue
 		}

@@ -94,6 +94,9 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 				(*observe)(op, outcome)
 			}
 		},
+		Metadata: func(sessionID string) map[string]string {
+			return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
+		},
 	})
 	return fresh
 }
@@ -477,6 +480,9 @@ func (s *SessionConsumers) freshKeepListed(ctx context.Context, sessionID string
 	}
 	if sel.Record.Current != info.Name {
 		return SessionConsumerStart{}, false, nil
+	}
+	if err := s.freshAnswer(sessionID, s.fresh.names.Owns(sessionID, info)); err != nil {
+		return SessionConsumerStart{}, false, err
 	}
 	state, err := s.streamState(ctx)
 	if err != nil {

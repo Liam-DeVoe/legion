@@ -86,3 +86,79 @@ func TestARecordNamesOnlyItsOwnFamilysConsumers(t *testing.T) {
 		})
 	}
 }
+
+// A record takes a consumer it names only when that consumer's own metadata names the record's
+// key: a session~ consumer of ses-2 named by ses-1's record, as its current, a retired name, an
+// open candidate or a listed current, is refused as a malformed record, and the protocol never
+// adopts, deletes or hands it out for ses-1. The control is the same record naming ses-1's own
+// consumer, which is served.
+func TestARecordTakesOnlyAConsumerWhoseMetadataNamesItsKey(t *testing.T) {
+	const key, other = "ses-1", "ses-2"
+	for _, tc := range []struct {
+		name string
+		// owner is the key the named consumer's metadata names.
+		owner  string
+		record Record
+		call   func(ctx context.Context, names *Names, h *harness) error
+	}{
+		{name: "a current", owner: other, record: Record{Current: "session~X", Start: 3}, call: selectCall},
+		{name: "a current on Ensure", owner: other, record: Record{Current: "session~X", Start: 3}, call: func(ctx context.Context, names *Names, h *harness) error {
+			_, _, err := names.Ensure(ctx, key, CreateRequest{Create: h.server.create(key), First: first(1)})
+			return err
+		}},
+		{name: "a candidate Step 0 would adopt", owner: other, record: Record{Start: 3, Op: &Op{Kind: OpCreate, Candidate: "session~X", ReservedAt: testEpoch}}, call: selectCall},
+		{name: "a retired name", owner: other, record: Record{Retired: []string{"session~X"}}, call: func(ctx context.Context, names *Names, _ *harness) error {
+			_, err := names.Cleanup(ctx, key)
+			return err
+		}},
+		{name: "a listed current on Delete", owner: other, record: Record{Current: "session~X", Start: 3}, call: func(ctx context.Context, names *Names, h *harness) error {
+			listed, err := h.server.Info(ctx, "session~X")
+			if err != nil {
+				return err
+			}
+			_, err = names.Delete(ctx, key, listed)
+			return err
+		}},
+		{name: "control: its own current", owner: key, record: Record{Current: "session~X", Start: 3}, call: selectCall},
+		{name: "control: its own retired name", owner: key, record: Record{Retired: []string{"session~X"}}, call: func(ctx context.Context, names *Names, _ *harness) error {
+			_, err := names.Cleanup(ctx, key)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness()
+			if _, err := h.server.create(tc.owner)(context.Background(), "session~X", Start{Seq: 3}); err != nil {
+				t.Fatal(err)
+			}
+			record := tc.record
+			record.Key = key
+			h.store.put(key, record)
+			names := h.names("p1")
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			creates := len(h.server.creates)
+			err := tc.call(ctx, names, h)
+			if tc.owner == key {
+				if err != nil {
+					t.Fatalf("the call over its own consumer = %v, want it served", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrMalformedRecord) {
+				t.Fatalf("the call over %s's consumer = %v, want ErrMalformedRecord", tc.owner, err)
+			}
+			if !h.server.holds("session~X") || len(h.server.deletes) != 0 || len(h.server.creates) != creates {
+				t.Fatalf("the refused call touched the server: held %t, deletes %v, creates %v", h.server.holds("session~X"), h.server.deletes, h.server.creates[creates:])
+			}
+			if got := h.store.record(t, key); got.Current != tc.record.Current {
+				t.Fatalf("the refused call published %q over the record's current %q", got.Current, tc.record.Current)
+			}
+		})
+	}
+}
+
+// selectCall is Select of ses-1, which reads the record's current.
+func selectCall(ctx context.Context, names *Names, h *harness) error {
+	_, err := names.Select(ctx, "ses-1", h.server.create("ses-1"))
+	return err
+}

@@ -77,6 +77,7 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			return info.Config.Metadata[bus.StreamIDMetadataKey], nil
 		},
 		CheckKey: consumernames.CheckDurableKey,
+		Metadata: func(string) map[string]string { return map[string]string{consumernames.LogicalMetadataKey: durable} },
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 	})
 }
@@ -99,18 +100,26 @@ func boundedContext(ctx context.Context) (context.Context, context.CancelFunc) {
 func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats.ConsumerInfo, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
-	name := durable
 	if client.ConsumerNames() == consumernames.ModeFresh {
-		sel, err := durableNames(client, durable).Resolve(ctx, consumernames.DurableKey(durable))
+		names := durableNames(client, durable)
+		key := consumernames.DurableKey(durable)
+		sel, err := names.Resolve(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		if sel.Record.Current == "" {
 			return nil, fmt.Errorf("%w: the selection of %s names no current", nats.ErrConsumerNotFound, durable)
 		}
-		name = sel.Record.Current
+		info, err := client.JS().ConsumerInfo(bus.Stream, sel.Record.Current, nats.Context(ctx))
+		if err != nil {
+			return nil, err
+		}
+		if err := names.Owns(key, protocolInfo(info)); err != nil {
+			return nil, err
+		}
+		return info, nil
 	}
-	return client.JS().ConsumerInfo(bus.Stream, name, nats.Context(ctx))
+	return client.JS().ConsumerInfo(bus.Stream, durable, nats.Context(ctx))
 }
 
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
@@ -121,7 +130,9 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string, subjects []string) (string, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
-	sel, created, err := durableNames(client, durable).Ensure(ctx, consumernames.DurableKey(durable), consumernames.CreateRequest{
+	names := durableNames(client, durable)
+	key := consumernames.DurableKey(durable)
+	sel, created, err := names.Ensure(ctx, key, consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
 			// The deliver subject is a random inbox, as today's create gives it (startListenerSubscription).
 			config := nats.ConsumerConfig{
@@ -168,6 +179,9 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	}
 	info, err := client.JS().ConsumerInfo(bus.Stream, current, nats.Context(ctx))
 	if err != nil {
+		return "", err
+	}
+	if err := names.Owns(key, protocolInfo(info)); err != nil {
 		return "", err
 	}
 	if err := listenerDurableRefusal(current, info.Config); err != nil {
